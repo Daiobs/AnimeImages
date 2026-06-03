@@ -55,6 +55,21 @@ User uploads and downloaded files live under `media/` locally. For production, u
 
 The Xiaohongshu download endpoint returns a browser ZIP download instead of writing to arbitrary server paths. Keep this boundary in production; do not allow untrusted users to choose absolute server filesystem paths.
 
+Recommended production settings:
+
+```text
+XHS_ALLOW_SERVER_SAVE=False
+XHS_ALLOW_ABSOLUTE_SAVE_PATH=False
+```
+
+For local development only, these can be enabled to save files from the Django process to a server-side directory:
+
+```text
+XHS_ALLOW_SERVER_SAVE=True
+XHS_ALLOW_ABSOLUTE_SAVE_PATH=True
+XHS_DEFAULT_SERVER_SAVE_DIR=/Users/your-name/Downloads/xhs
+```
+
 ## Rollback
 
 Keep each deployed version tied to a Git commit. If deployment fails:

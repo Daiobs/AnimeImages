@@ -45,3 +45,11 @@ The Xiaohongshu module uses a service-oriented shape:
 - `views.py`: render pages, proxy preview images, and return ZIP download responses
 
 Downloads are returned to the browser as ZIP files. The server no longer accepts arbitrary client-provided filesystem paths. This keeps local development convenient while avoiding unsafe production behavior.
+
+For local development, server-side save can be enabled with environment variables:
+
+- `XHS_ALLOW_SERVER_SAVE=True`
+- `XHS_ALLOW_ABSOLUTE_SAVE_PATH=True`
+- `XHS_DEFAULT_SERVER_SAVE_DIR=xhs`
+
+When server-side save is disabled, the UI falls back to browser ZIP download only.

@@ -56,6 +56,20 @@ Run Configuration 可使用普通 Python 配置：
 - Working directory: 当前目录
 - Environment variables 可参考 `.env.example`
 
+## 小红书下载模式
+
+默认推荐使用“生产安全模式”：后端打包 ZIP，浏览器保存到默认下载目录；支持 File System Access API 的浏览器可以在下载时选择保存位置。
+
+本地开发/测试时，可以在环境变量中开启服务端保存：
+
+```text
+XHS_ALLOW_SERVER_SAVE=True
+XHS_ALLOW_ABSOLUTE_SAVE_PATH=True
+XHS_DEFAULT_SERVER_SAVE_DIR=/Users/your-name/Downloads/xhs
+```
+
+开启后，小红书页面设置里会出现“开发保存模式”，可以像之前一样填写服务端绝对路径。
+
 ## 部署说明
 
 Django 后端建议部署到支持 Python WSGI/ASGI 的平台，例如 Render、Railway、Fly.io 或 VPS + Gunicorn/Nginx。

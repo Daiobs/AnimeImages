@@ -2,6 +2,8 @@
     --brand: #ff2442;
     --brand-light: #fff0f3;
     --text-main: #1f2329;
+    --text-muted: #646a73;
+    --line-soft: #e5e6eb;
     --page-bg: #f7f8fa;
 }
 
@@ -60,6 +62,7 @@ body {
 
 .asset-card.selected {
     border-color: var(--brand);
+    box-shadow: 0 8px 28px rgba(255, 36, 66, 0.16);
 }
 
 .asset-card img {
@@ -100,4 +103,59 @@ body {
 .note-preview-bg {
     background-image: radial-gradient(rgba(255,36,66,.18) 1px, transparent 1px);
     background-size: 18px 18px;
+}
+
+.settings-panel {
+    display: grid;
+    gap: 16px;
+}
+
+.settings-section {
+    border: 1px solid var(--line-soft);
+    border-radius: 8px;
+    padding: 16px;
+    background: #fff;
+}
+
+.settings-section-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    color: var(--text-main);
+    font-weight: 700;
+}
+
+.settings-section-title i {
+    color: var(--brand);
+}
+
+.settings-subsection {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px dashed var(--line-soft);
+}
+
+.download-location-toggle {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.download-location-toggle .btn {
+    min-height: 44px;
+    white-space: normal;
+}
+
+.download-location-toggle .btn:disabled {
+    color: var(--text-muted);
+    background: #f2f3f5;
+    border-color: var(--line-soft);
+    opacity: 1;
+}
+
+@media (max-width: 575.98px) {
+    .download-location-toggle {
+        grid-template-columns: 1fr;
+    }
 }

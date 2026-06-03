@@ -2,6 +2,7 @@ import json
 import logging
 
 import requests
+from django.conf import settings
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.utils.http import content_disposition_header
@@ -16,7 +17,7 @@ from .services.common import (
     request_get_with_retry,
     validate_media_url,
 )
-from .services.downloads import build_download_archive
+from .services.downloads import build_download_archive, save_media_items_to_server
 from .services.parser import parse_xhs_page
 
 
@@ -24,13 +25,22 @@ logger = logging.getLogger(__name__)
 
 
 def search_view(request):
-    return render(request, "xhs_download.html")
+    return render(request, "xhs_download.html", get_download_settings_context())
+
+
+def get_download_settings_context():
+    return {
+        "xhs_allow_server_save": settings.XHS_ALLOW_SERVER_SAVE,
+        "xhs_allow_absolute_save_path": settings.XHS_ALLOW_ABSOLUTE_SAVE_PATH,
+        "xhs_default_server_save_dir": settings.XHS_DEFAULT_SERVER_SAVE_DIR,
+    }
 
 
 def search_results_view(request):
     query = request.GET.get("q", "").strip()
 
     context = {
+        **get_download_settings_context(),
         "query": query,
         "post_type": "",
         "image_items": [],
@@ -137,6 +147,26 @@ def download_images_api(request):
         media_items = [{"type": "image", "url": url} for url in image_urls]
 
     try:
+        download_mode = (data.get("download_mode") or "browser").lower().strip()
+        if download_mode == "server":
+            if not settings.XHS_ALLOW_SERVER_SAVE:
+                return JsonResponse({"status": "error", "message": "当前环境未开启服务端保存。"}, status=403)
+
+            result = save_media_items_to_server(
+                media_items=media_items,
+                base_filename=data.get("base_filename", "xhs"),
+                save_dir=data.get("save_dir") or settings.XHS_DEFAULT_SERVER_SAVE_DIR,
+                save_format=data.get("save_format", "jpg"),
+                quality=data.get("quality", 95),
+                video_save_mode=data.get("video_save_mode", "video"),
+                allow_absolute=settings.XHS_ALLOW_ABSOLUTE_SAVE_PATH,
+            )
+            return JsonResponse({
+                "status": "success",
+                "message": f"服务端保存完成：成功 {result['saved_count']} 个，失败 {result['failed_count']} 个",
+                **result,
+            })
+
         archive = build_download_archive(
             media_items=media_items,
             base_filename=data.get("base_filename", "xhs"),
@@ -147,8 +177,8 @@ def download_images_api(request):
     except XhsDownloadError as error:
         return JsonResponse({"status": "error", "message": str(error)}, status=400)
     except Exception as error:
-        logger.exception("XHS download archive failed")
-        return JsonResponse({"status": "error", "message": f"打包下载失败：{error}"}, status=500)
+        logger.exception("XHS download failed")
+        return JsonResponse({"status": "error", "message": f"下载失败：{error}"}, status=500)
 
     response = HttpResponse(archive["content"], content_type="application/zip")
     response["Content-Disposition"] = content_disposition_header(True, archive["filename"])

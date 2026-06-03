@@ -8,3 +8,4 @@
 - Added image library initialization command for generated `padded` assets.
 - Refactored Xiaohongshu parsing/download helpers into services.
 - Changed Xiaohongshu downloads to browser ZIP responses instead of arbitrary server save paths.
+- Added environment-gated local server save mode for Xiaohongshu downloads.

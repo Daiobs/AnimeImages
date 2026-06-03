@@ -1,8 +1,10 @@
 from io import BytesIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 from zipfile import ZipFile
 
-from django.test import Client, SimpleTestCase
+from django.test import Client, SimpleTestCase, override_settings
 from PIL import Image
 
 from .services.common import XhsSecurityError, clean_filename, validate_media_url, validate_page_url
@@ -11,6 +13,8 @@ from .services.downloads import (
     normalize_quality,
     normalize_save_format,
     normalize_video_save_mode,
+    resolve_server_save_folder,
+    save_media_items_to_server,
 )
 from .services.parser import normalize_xhs_image_url, parse_xhs_html
 
@@ -112,6 +116,43 @@ class XhsDownloadArchiveTests(SimpleTestCase):
         self.assertEqual(archive["saved_count"], 1)
         self.assertEqual(archive["failed_count"], 0)
 
+    def test_resolve_server_save_folder_rejects_absolute_when_disabled(self):
+        with self.assertRaisesMessage(Exception, "当前环境不允许保存到绝对路径"):
+            resolve_server_save_folder("/tmp/xhs", allow_absolute=False)
+
+    def test_resolve_server_save_folder_keeps_relative_inside_media_root(self):
+        with TemporaryDirectory() as tmp_dir:
+            with override_settings(MEDIA_ROOT=Path(tmp_dir) / "media", XHS_DEFAULT_SERVER_SAVE_DIR="xhs"):
+                folder = resolve_server_save_folder("xhs", allow_absolute=False)
+
+        self.assertTrue(str(folder).endswith("media/xhs"))
+
+    def test_resolve_server_save_folder_rejects_relative_escape(self):
+        with TemporaryDirectory() as tmp_dir:
+            with override_settings(MEDIA_ROOT=Path(tmp_dir) / "media", XHS_DEFAULT_SERVER_SAVE_DIR="xhs"):
+                with self.assertRaisesMessage(Exception, "保存路径不能跳出 MEDIA_ROOT"):
+                    resolve_server_save_folder("../outside", allow_absolute=False)
+
+    @patch("xhs_download.services.downloads.request_get_with_retry")
+    def test_save_media_items_to_server_writes_file_when_allowed(self, mock_get):
+        response = Mock()
+        response.iter_content.return_value = [make_image_bytes()]
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=None)
+        mock_get.return_value = response
+
+        with TemporaryDirectory() as tmp_dir:
+            result = save_media_items_to_server(
+                media_items=[{"type": "image", "url": "https://ci.xiaohongshu.com/spectrum/a?imageView2/format/jpg"}],
+                base_filename="base",
+                save_dir=str(Path(tmp_dir) / "xhs"),
+                save_format="jpg",
+                allow_absolute=True,
+            )
+
+            self.assertEqual(result["saved_count"], 1)
+            self.assertTrue(Path(result["saved_files"][0]).exists())
+
 
 class XhsDownloadViewTests(SimpleTestCase):
     @patch("xhs_download.views.build_download_archive")
@@ -141,3 +182,13 @@ class XhsDownloadViewTests(SimpleTestCase):
         )
 
         self.assertEqual(response.status_code, 400)
+
+    def test_server_save_mode_is_forbidden_when_disabled(self):
+        with override_settings(XHS_ALLOW_SERVER_SAVE=False):
+            response = Client().post(
+                "/xhs_download/download-images/",
+                data='{"download_mode":"server","media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a"}]}',
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 403)
