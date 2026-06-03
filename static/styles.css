@@ -1,0 +1,42 @@
+.header form {
+    display: flex; /* 设置表单为flex布局 */
+    align-items: center; /* 垂直居中对齐 */
+}
+
+.search-box, .search-btn, .download-btn {
+    margin-right: 10px; /* 在元素之间添加一些间隔 */
+}
+
+.download-btn {
+    background-color: blue; /* 设置按钮背景色为蓝色 */
+    color: white; /* 设置按钮文字颜色为白色 */
+    border: none; /* 移除边框 */
+    padding: 10px 20px; /* 添加一些内边距 */
+    cursor: pointer; /* 将鼠标指针变为手形图标 */
+}
+
+.download-btn:hover {
+    background-color: darkblue; /* 鼠标悬停时的背景色 */
+}
+
+
+#image-display-area {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-around;
+    align-items: flex-start; /* 确保图片在垂直方向上对齐 */
+}
+
+.responsive-image {
+    max-width: 23%;
+    max-height: 23%;
+    padding-bottom: 20px;
+}
+
+.selected-image {
+    border: 4px solid blue; /* 选中图片时的边框样式 */
+}
+
+.base_filename {
+    text-align: center;
+}

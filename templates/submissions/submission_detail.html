@@ -1,0 +1,14 @@
+<h1>{{ submission.title }}</h1>
+<div class="submission-detail">
+    {% if submission.image %}
+        <img src="{{ submission.image.url }}" alt="封面图" style="max-width: 100%;">
+    {% endif %}
+    <p>分类：{{ submission.get_category_display }}</p>
+    <p>内容：{{ submission.content }}</p>
+    <p>链接地址：</p>
+    <ul>
+        {% for link in submission.video_link.splitlines %}
+            <li>{{ link }}</li>
+        {% endfor %}
+    </ul>
+</div>

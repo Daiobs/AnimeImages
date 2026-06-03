@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Search Page</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif; /* 使用Arial字体，也可以选择其他字体 */
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh; /* 使body高度等于视口高度 */
+            background-color: #f0f0f0; /* 设置一个轻微的背景色，你可以选择你喜欢的颜色 */
+            text-align: center;
+        }
+        h1 {
+            font-size: 2em;
+            margin-bottom: 20px; /* 增加标题和搜索框之间的空间 */
+        }
+        form {
+            margin-top: 20px; /* 增加搜索框和标题之间的空间 */
+        }
+        input[type="text"] {
+            font-size: 1.2em;
+            width: 300px; /* 设置输入框的宽度 */
+            padding: 10px;
+            margin-bottom: 10px; /* 增加输入框和按钮之间的空间 */
+        }
+        input[type="submit"] {
+            font-size: 1.2em;
+            padding: 10px 20px; /* 设置按钮的填充以增加大小 */
+        }
+    </style>
+</head>
+<body>
+    <h1>only 星空 fans 的图库小助手</h1>
+    <form method="get" action="{% url 'search_results' %}">
+        <input type="text" name="q" placeholder="Search..." required>
+{#        <br>  <!-- 新增换行符以将按钮放在新的一行 -->#}
+        <input type="submit" value="Search">
+    </form>
+</body>
+</html>

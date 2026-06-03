@@ -1,0 +1,505 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}小红书素材下载{% endblock %}
+
+{% block content %}
+    <section class="py-5">
+        <div class="container">
+
+            <!-- 搜索区 -->
+            <div class="hero-card p-4 p-md-5 mb-4">
+                <div class="row align-items-center g-4">
+                    <div class="col-lg-6">
+                        <h1 class="fw-bold mb-3">
+                            小红书<span class="brand-text">素材</span>解析下载
+                        </h1>
+                        <p class="text-muted mb-0">
+                            粘贴小红书链接，解析图片/视频内容，选择需要的素材保存到本地。
+                        </p>
+                    </div>
+
+                    <div class="col-lg-6">
+                        <form method="get" action="{% url 'results' %}" class="card border-0 shadow-sm p-3">
+                            {% csrf_token %}
+
+                            <label class="form-label small text-muted">小红书链接</label>
+
+                            <div class="input-group mb-3">
+                            <span class="input-group-text bg-white">
+                                <i class="bi bi-link-45deg"></i>
+                            </span>
+                                <input
+                                        type="text"
+                                        name="q"
+                                        class="form-control"
+                                        placeholder="粘贴小红书链接..."
+                                        value="{{ query|default:'' }}"
+                                        required
+                                >
+                            </div>
+
+                            <div class="d-flex gap-2">
+                                <button type="submit" class="btn btn-brand flex-fill">
+                                    <i class="bi bi-magic me-1"></i>
+                                    获取素材
+                                </button>
+
+                                <button type="button" class="btn btn-outline-secondary" data-bs-toggle="modal"
+                                        data-bs-target="#settingsModal">
+                                    <i class="bi bi-gear"></i>
+                                    设置
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            {% if error_message %}
+                <div class="alert alert-danger">
+                    <i class="bi bi-exclamation-triangle me-1"></i>
+                    {{ error_message }}
+                </div>
+            {% endif %}
+
+            <!-- 解析结果区 -->
+            {% if image_items or video_items %}
+                <div class="card result-card border-0 shadow-sm mb-4">
+                    <div class="card-header bg-white d-flex flex-wrap justify-content-between align-items-center gap-2 py-3">
+                        <div>
+                            <div class="fw-bold">
+                                {% if post_type == "video" %}
+                                    <i class="bi bi-play-circle text-danger me-1"></i>
+                                    视频笔记
+                                {% else %}
+                                    <i class="bi bi-images text-danger me-1"></i>
+                                    图片笔记
+                                {% endif %}
+                                {{ base_filename|default:"xhs_image" }}
+                            </div>
+
+                            <div class="text-muted small">
+                                {% if post_type == "video" %}
+                                    已解析到 1 个视频资源
+                                {% else %}
+                                    共解析到 {{ image_items|length }} 张图片
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        <div class="d-flex gap-2">
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="select-all-btn">
+                                <i class="bi bi-check2-square me-1"></i>
+                                全选
+                            </button>
+
+                            <button type="button" class="btn btn-brand btn-sm" id="download-btn">
+                                <i class="bi bi-download me-1"></i>
+                                保存选中资源
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="card-body note-preview-bg">
+
+                        {% if video_items %}
+                            <h5 class="fw-bold mb-3">
+                                <i class="bi bi-play-circle text-danger me-1"></i>
+                                视频资源
+                            </h5>
+
+                            <div class="asset-grid">
+                                {% for item in video_items %}
+                                    <div class="asset-card"
+                                         data-type="video"
+                                         data-url="{{ item.video_url }}"
+                                         data-cover-url="{{ item.cover_url|default:'' }}">
+                        <span class="asset-check">
+                            <i class="bi bi-check-lg"></i>
+                        </span>
+
+                                        {% if item.cover_url %}
+                                        <img
+    src="{% url 'proxy_image' %}?u={{ item.encoded_cover_url }}"
+    alt="视频封面"
+    loading="lazy"
+    data-retry="0"
+    onerror="retryImage(this)"
+>
+                                        {% else %}
+                                            <div class="p-5 text-center bg-white">
+                                                <div class="display-4 text-danger">
+                                                    <i class="bi bi-play-btn"></i>
+                                                </div>
+                                            </div>
+                                        {% endif %}
+
+                                        <div class="position-absolute top-50 start-50 translate-middle">
+                                            <div class="bg-dark bg-opacity-75 text-white rounded-circle d-flex align-items-center justify-content-center"
+                                                 style="width:56px;height:56px;">
+                                                <i class="bi bi-play-fill fs-3"></i>
+                                            </div>
+                                        </div>
+
+                                        <div class="position-absolute bottom-0 start-0 end-0 p-2 bg-dark bg-opacity-50 text-white small">
+                                            视频资源，点击选中
+                                        </div>
+                                    </div>
+                                {% endfor %}
+                            </div>
+                        {% endif %}
+
+                        {% if image_items %}
+                            <h5 class="fw-bold mb-3">
+                                <i class="bi bi-images text-danger me-1"></i>
+                                图片资源
+                            </h5>
+
+                            <div class="asset-grid">
+                                {% for item in image_items %}
+                                    <div class="asset-card"
+                                         data-type="image"
+                                         data-url="{{ item.url }}">
+                        <span class="asset-check">
+                            <i class="bi bi-check-lg"></i>
+                        </span>
+<img
+    src="{% url 'proxy_image' %}?u={{ item.encoded_url }}"
+    alt="XHS Image"
+    loading="lazy"
+    data-retry="0"
+    onerror="retryImage(this)"
+>
+                                    </div>
+                                {% endfor %}
+                            </div>
+                        {% endif %}
+
+                    </div>
+
+                    <div class="card-footer bg-white">
+                        <div id="status" class="small text-muted">
+                            点击资源卡片可选择，支持批量保存。
+                        </div>
+                    </div>
+                </div>
+            {% endif %}
+
+            <!-- 使用说明 -->
+            <section class="mt-5">
+                <h2 class="text-center fw-bold mb-4">如何使用</h2>
+
+                <div class="row g-4">
+                    <div class="col-md-4">
+                        <div class="card h-100 border-0 shadow-sm rounded-4">
+                            <div class="card-body text-center">
+                                <div class="display-5 brand-text mb-3">
+                                    <i class="bi bi-link"></i>
+                                </div>
+                                <h5 class="fw-bold">复制链接</h5>
+                                <p class="text-muted small mb-0">从小红书复制需要保存的笔记链接。</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-md-4">
+                        <div class="card h-100 border-0 shadow-sm rounded-4">
+                            <div class="card-body text-center">
+                                <div class="display-5 brand-text mb-3">
+                                    <i class="bi bi-magic"></i>
+                                </div>
+                                <h5 class="fw-bold">解析素材</h5>
+                                <p class="text-muted small mb-0">粘贴链接后获取图片和视频素材。</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-md-4">
+                        <div class="card h-100 border-0 shadow-sm rounded-4">
+                            <div class="card-body text-center">
+                                <div class="display-5 brand-text mb-3">
+                                    <i class="bi bi-download"></i>
+                                </div>
+                                <h5 class="fw-bold">选择保存</h5>
+                                <p class="text-muted small mb-0">点击图片选择需要保存的素材。</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+        </div>
+    </section>
+
+    <!-- 设置弹窗 -->
+    <div class="modal fade" id="settingsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content rounded-4 border-0 shadow">
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold">
+                        <i class="bi bi-gear me-1"></i>
+                        下载设置
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">保存位置</label>
+                        <input
+                                type="text"
+                                id="save-dir"
+                                class="form-control"
+                                value="xhs"
+                                placeholder="例如：xhs 或 E:\cos场照\AAA整理完成"
+                        >
+                        <div class="form-text">
+                            相对路径会保存到 MEDIA_ROOT 下；绝对路径会保存到指定文件夹。
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">保存格式</label>
+                        <select id="save-format" class="form-select">
+                            <option value="jpg" selected>JPG，适合照片，体积小</option>
+                            <option value="png">PNG，适合透明图，体积大</option>
+                            <option value="webp">WEBP，体积更小，兼容性略低</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">图片质量</label>
+                        <input type="number" id="quality" class="form-control" value="95" min="1" max="100">
+                        <div class="form-text">
+                            仅 JPG / WEBP 生效。推荐 90-95。
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">视频保存内容</label>
+                        <select id="video-save-mode" class="form-select">
+                            <option value="video" selected>仅下载视频</option>
+                            <option value="cover">仅下载封面</option>
+                            <option value="both">视频 + 封面都下载</option>
+                        </select>
+                        <div class="form-text">
+                            仅对视频笔记生效；封面会使用上方的图片格式和质量设置。
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-footer">
+                    <button class="btn btn-outline-secondary" data-bs-dismiss="modal">
+                        取消
+                    </button>
+                    <button class="btn btn-brand" id="save-settings-btn" data-bs-dismiss="modal">
+                        <i class="bi bi-check-lg me-1"></i>
+                        保存设置
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endblock %}
+
+{% block extra_js %}
+    <script>
+        function getCookie(name) {
+            let cookieValue = null;
+
+            if (document.cookie && document.cookie !== "") {
+                const cookies = document.cookie.split(";");
+
+                for (let cookie of cookies) {
+                    cookie = cookie.trim();
+
+                    if (cookie.startsWith(name + "=")) {
+                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                        break;
+                    }
+                }
+            }
+
+            return cookieValue;
+        }
+
+function retryImage(img) {
+    let retry = parseInt(img.dataset.retry || "0");
+
+    if (retry >= 3) {
+        return;
+    }
+
+    retry += 1;
+    img.dataset.retry = retry;
+
+    setTimeout(() => {
+        const url = new URL(img.src, window.location.origin);
+        url.searchParams.set("_retry", Date.now());
+        img.src = url.toString();
+    }, retry * 1000);
+}
+
+        document.addEventListener("DOMContentLoaded", () => {
+            const cards = document.querySelectorAll(".asset-card");
+            const downloadBtn = document.getElementById("download-btn");
+            const selectAllBtn = document.getElementById("select-all-btn");
+            const status = document.getElementById("status");
+
+            const saveDirInput = document.getElementById("save-dir");
+            const saveFormatInput = document.getElementById("save-format");
+            const qualityInput = document.getElementById("quality");
+            const saveSettingsBtn = document.getElementById("save-settings-btn");
+            const videoSaveModeInput = document.getElementById("video-save-mode");
+            const baseFilename = "{{ base_filename|default:'xhs_image'|escapejs }}";
+
+            let selected = [];
+
+            const savedSettings = JSON.parse(localStorage.getItem("xhsDownloadSettings") || "{}");
+
+            if (savedSettings.save_dir && saveDirInput) {
+                saveDirInput.value = savedSettings.save_dir;
+            }
+
+            if (savedSettings.save_format && saveFormatInput) {
+                saveFormatInput.value = savedSettings.save_format;
+            }
+
+            if (savedSettings.quality && qualityInput) {
+                qualityInput.value = savedSettings.quality;
+            }
+            if (savedSettings.video_save_mode) {
+                videoSaveModeInput.value = savedSettings.video_save_mode;
+            }
+
+            function getCardItem(card) {
+                const type = card.dataset.type || "image";
+
+                if (type === "video") {
+                    return {
+                        type: "video",
+                        url: card.dataset.url,
+                        cover_url: card.dataset.coverUrl || ""
+                    };
+                }
+
+                return {
+                    type: "image",
+                    url: card.dataset.url
+                };
+            }
+
+            function getItemKey(item) {
+                return `${item.type}:${item.url}`;
+            }
+
+            function updateStatus() {
+                if (status) {
+                    status.innerText = `已选择 ${selected.length} 个资源`;
+                }
+            }
+
+            cards.forEach(card => {
+                card.addEventListener("click", () => {
+                    const item = getCardItem(card);
+                    const key = getItemKey(item);
+
+                    const exists = selected.some(i => getItemKey(i) === key);
+
+                    if (exists) {
+                        selected = selected.filter(i => getItemKey(i) !== key);
+                        card.classList.remove("selected");
+                    } else {
+                        selected.push(item);
+                        card.classList.add("selected");
+                    }
+
+                    updateStatus();
+                });
+            });
+
+            if (selectAllBtn) {
+                selectAllBtn.addEventListener("click", () => {
+                    const allSelected = selected.length === cards.length;
+
+                    selected = [];
+
+                    cards.forEach(card => {
+                        if (allSelected) {
+                            card.classList.remove("selected");
+                        } else {
+                            card.classList.add("selected");
+                            selected.push(getCardItem(card));
+                        }
+                    });
+
+                    selectAllBtn.innerHTML = allSelected
+                        ? '<i class="bi bi-check2-square me-1"></i>全选'
+                        : '<i class="bi bi-x-square me-1"></i>取消全选';
+
+                    updateStatus();
+                });
+            }
+
+            if (saveSettingsBtn) {
+                saveSettingsBtn.addEventListener("click", () => {
+                    const settings = {
+                        save_dir: saveDirInput.value.trim() || "xhs",
+                        save_format: saveFormatInput.value,
+                        quality: qualityInput.value || 95,
+                        video_save_mode: videoSaveModeInput.value || "video",
+                    };
+
+                    localStorage.setItem("xhsDownloadSettings", JSON.stringify(settings));
+
+                    if (status) {
+                        status.innerText = "设置已保存";
+                    }
+                });
+            }
+
+            if (downloadBtn) {
+                downloadBtn.addEventListener("click", () => {
+                    if (selected.length === 0) {
+                        alert("请先选择需要保存的资源");
+                        return;
+                    }
+
+                    if (status) {
+                        status.innerText = "正在保存，请稍候...";
+                    }
+
+                    fetch("{% url 'download_images_api' %}", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "X-CSRFToken": getCookie("csrftoken"),
+                        },
+                        body: JSON.stringify({
+                            media_items: selected,
+                            base_filename: baseFilename,
+                            save_dir: saveDirInput.value.trim() || "xhs",
+                            save_format: saveFormatInput.value,
+                            quality: qualityInput.value || 95,
+                            video_save_mode: videoSaveModeInput.value || "video",
+                        }),
+                    })
+                        .then(response => response.json())
+                        .then(data => {
+                            console.log(data);
+
+                            if (data.status === "success") {
+                                status.innerText = `${data.message}，保存位置：${data.save_folder}`;
+                            } else {
+                                status.innerText = data.message || "保存失败";
+                            }
+                        })
+                        .catch(error => {
+                            console.error(error);
+                            status.innerText = "保存失败，请查看浏览器控制台或 Django 后台日志";
+                        });
+                });
+            }
+        });
+    </script>
+{% endblock %}

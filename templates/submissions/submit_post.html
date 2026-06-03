@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>投稿</title>
+    <style>
+        /* 自适应基础样式 */
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            box-sizing: border-box;
+        }
+        .container {
+            max-width: 100%; /* 页面宽度限制 */
+            padding: 20px;
+            margin: 0 auto;
+            overflow-x: hidden; /* 禁止水平滚动条 */
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 10px;
+            font-weight: bold;
+        }
+        .form-control,
+        .form-select,
+        .form-control-file {
+            width: 100%; /* 表单控件占满宽度 */
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        .form-select {
+            max-width: 200px; /* 分类框宽度 */
+        }
+        .submit-btn {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .submit-btn:hover {
+            background-color: #0056b3;
+        }
+
+        /* 响应式调整 */
+        @media (max-width: 768px) {
+            .form-select {
+                width: 100%; /* 分类框在小屏设备上拉伸 */
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>投稿</h1>
+        <form method="post" enctype="multipart/form-data">
+            {% csrf_token %}
+
+            <!-- 标题 -->
+            <div class="form-group">
+                <label for="id_title">标题 *</label>
+                {{ form.title }}
+            </div>
+
+            <!-- 分类 -->
+            <div class="form-group">
+                <label for="id_category">分类 *</label>
+                {{ form.category }}
+            </div>
+
+            <!-- 上传图片 -->
+            <div class="form-group">
+                <label for="id_image">上传图片 *</label>
+                {{ form.image }}
+            </div>
+
+            <!-- 链接地址 -->
+            <div class="form-group">
+                <label for="id_video_link">链接地址 *</label>
+                {{ form.video_link }}
+            </div>
+
+            <!-- 正文 -->
+            <div class="form-group">
+                <label for="id_content">正文 *</label>
+                {{ form.content }}
+            </div>
+
+            <!-- 提交按钮 -->
+            <button type="submit" class="submit-btn">提交</button>
+        </form>
+    </div>
+</body>
+</html>

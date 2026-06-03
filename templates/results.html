@@ -1,0 +1,189 @@
+{#<!DOCTYPE html>#}
+{#<html>#}
+{#<head>#}
+{#    <title>Search Results for "{{ query }}"</title>#}
+{#    <style>#}
+{#        body {#}
+{#            display: flex;#}
+{#            flex-direction: column;#}
+{#            align-items: center;#}
+{#            padding: 20px;#}
+{#        }#}
+{#        h1 {#}
+{#            width: 100%;#}
+{#            text-align: center;#}
+{#            margin-bottom: 20px;#}
+{#        }#}
+{#        .grid {#}
+{#            display: grid;#}
+{#            grid-template-columns: repeat(3, 1fr);#}
+{#            gap: 10px;#}
+{#            width: 100%;#}
+{#        }#}
+{#        img {#}
+{#            width: 100%;#}
+{#            height: auto;#}
+{#            border: 1px solid #ddd;#}
+{#        }#}
+{#    </style>#}
+{#</head>#}
+{#<body>#}
+{#    <h1>{{ query }}</h1>#}
+{#    <div class="grid">#}
+{#        {% for image in images %}#}
+{#            <div>#}
+{#                <img src="{{ image.url }}" alt="{{ image.name }}">#}
+{#            </div>#}
+{#        {% endfor %}#}
+{#    </div>#}
+{#</body>#}
+{#</html>#}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>搜索结果：{{ query }}</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+        }
+        .back-home {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            text-decoration: none;
+            padding: 10px 15px;
+            color: #fff;
+            background-color: #007bff;
+            border-radius: 5px;
+            font-size: 14px;
+            font-weight: bold;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            transition: background-color 0.3s ease;
+        }
+        .back-home:hover {
+            background-color: #0056b3;
+        }
+        h1 {
+            width: 100%;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .tabs {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+        .tabs a {
+            padding: 10px 20px;
+            margin: 0 5px;
+            text-decoration: none;
+            color: #333;
+            border: 1px solid #ddd;
+            border-bottom: none;
+            background-color: #f9f9f9;
+        }
+        .tabs a.active {
+            font-weight: bold;
+            background-color: #fff;
+            border-top: 2px solid #007bff;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            width: 100%;
+            max-width: 800px;
+        }
+        .grid img {
+            width: 100%;
+            height: auto;
+            border: 1px solid #ddd;
+        }
+        .pagination {
+            margin-top: 20px;
+        }
+        .pagination a {
+            margin: 0 5px;
+            text-decoration: none;
+            color: #007bff;
+        }
+        .pagination span {
+            margin: 0 5px;
+            color: #555;
+        }
+        .tabs {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+        .tabs a {
+            padding: 10px 20px;
+            margin: 0 5px;
+            text-decoration: none;
+            color: #333;
+            border: 1px solid #ddd;
+            border-bottom: none;
+            background-color: #f9f9f9;
+        }
+        .tabs a.active {
+            font-weight: bold;
+            background-color: #fff;
+            border-top: 2px solid #007bff;
+        }
+    </style>
+</head>
+<body>
+    <!-- 返回主页面标签 -->
+    <!--  href="/"：指向网站的主页面路径，您可以根据实际的主页面路由修改路径。-->
+    <a href="/" class="back-home">返回首页</a>
+    <h1>搜索结果：{{ query }}</h1>
+
+{#    <!-- 姿势选项卡 -->#}
+{#    <div class="tabs">#}
+{#        <a href="?q={{ query }}&posture=站" class="{% if posture == '站' %}active{% endif %}">站姿</a>#}
+{#        <a href="?q={{ query }}&posture=坐" class="{% if posture == '坐' %}active{% endif %}">坐姿</a>#}
+{#    </div>#}
+    <!-- 姿势选项卡 -->
+    {% if folders %}
+        <div class="tabs">
+            {% for folder in folders %}
+                <a href="?q={{ query }}&folder={{ folder }}" class="{% if folder == selected_folder %}active{% endif %}">
+                    {{ folder }}
+                </a>
+            {% endfor %}
+        </div>
+    {% endif %}
+
+    <!-- 图片展示 -->
+    {% if images %}
+        <div class="grid">
+            {% for image in images %}
+                <div>
+                    <img src="{{ image.url }}" alt="{{ image.name }}">
+                </div>
+            {% endfor %}
+        </div>
+    {% else %}
+       <p>没有找到相关图片。</p>
+    {% endif %}
+
+    {% if images and page_obj %}
+        <div class="pagination">
+            {% if page_obj.has_previous %}
+                <a href="?q={{ query }}{% if selected_folder %}&folder={{ selected_folder }}{% endif %}&page={{ page_obj.previous_page_number }}">上一页</a>
+            {% endif %}
+
+            <span>第 {{ page_obj.number }} 页，共 {{ page_obj.paginator.num_pages }} 页</span>
+
+            {% if page_obj.has_next %}
+                <a href="?q={{ query }}{% if selected_folder %}&folder={{ selected_folder }}{% endif %}&page={{ page_obj.next_page_number }}">下一页</a>
+            {% endif %}
+        </div>
+    {% endif %}
+</body>
+</html>
