@@ -34,3 +34,14 @@ Keep views thin over time:
 - services: parsing, downloading, image normalization, storage
 - management commands: one-off or batch maintenance tasks
 - tests: no import-time network or filesystem side effects
+
+## Xiaohongshu Download Flow
+
+The Xiaohongshu module uses a service-oriented shape:
+
+- `services/parser.py`: parse note HTML and extract image/video candidates
+- `services/common.py`: filename cleanup, URL encoding, request retry, domain validation
+- `services/downloads.py`: validate selected media, convert images, and build a ZIP archive
+- `views.py`: render pages, proxy preview images, and return ZIP download responses
+
+Downloads are returned to the browser as ZIP files. The server no longer accepts arbitrary client-provided filesystem paths. This keeps local development convenient while avoiding unsafe production behavior.

@@ -247,15 +247,19 @@
                 <div class="modal-body">
                     <div class="mb-3">
                         <label class="form-label">保存位置</label>
-                        <input
-                                type="text"
-                                id="save-dir"
-                                class="form-control"
-                                value="xhs"
-                                placeholder="例如：xhs 或 E:\cos场照\AAA整理完成"
-                        >
+                        <div class="input-group">
+                            <input
+                                    type="text"
+                                    class="form-control"
+                                    value="浏览器默认下载路径"
+                                    disabled
+                            >
+                            <button type="button" class="btn btn-outline-secondary" id="choose-download-location-btn">
+                                选择保存位置
+                            </button>
+                        </div>
                         <div class="form-text">
-                            相对路径会保存到 MEDIA_ROOT 下；绝对路径会保存到指定文件夹。
+                            默认由浏览器保存到下载目录。支持 File System Access API 的浏览器可在下载时选择 ZIP 保存位置。
                         </div>
                     </div>
 
@@ -346,7 +350,7 @@ function retryImage(img) {
             const selectAllBtn = document.getElementById("select-all-btn");
             const status = document.getElementById("status");
 
-            const saveDirInput = document.getElementById("save-dir");
+            const chooseDownloadLocationBtn = document.getElementById("choose-download-location-btn");
             const saveFormatInput = document.getElementById("save-format");
             const qualityInput = document.getElementById("quality");
             const saveSettingsBtn = document.getElementById("save-settings-btn");
@@ -356,9 +360,22 @@ function retryImage(img) {
             let selected = [];
 
             const savedSettings = JSON.parse(localStorage.getItem("xhsDownloadSettings") || "{}");
+            let useFilePicker = Boolean(savedSettings.use_file_picker);
 
-            if (savedSettings.save_dir && saveDirInput) {
-                saveDirInput.value = savedSettings.save_dir;
+            function updateDownloadLocationButton() {
+                if (!chooseDownloadLocationBtn) {
+                    return;
+                }
+
+                if (!window.showSaveFilePicker) {
+                    chooseDownloadLocationBtn.disabled = true;
+                    chooseDownloadLocationBtn.innerText = "当前浏览器不支持";
+                    return;
+                }
+
+                chooseDownloadLocationBtn.innerText = useFilePicker
+                    ? "下载时会询问位置"
+                    : "使用浏览器默认路径";
             }
 
             if (savedSettings.save_format && saveFormatInput) {
@@ -371,6 +388,8 @@ function retryImage(img) {
             if (savedSettings.video_save_mode) {
                 videoSaveModeInput.value = savedSettings.video_save_mode;
             }
+
+            updateDownloadLocationButton();
 
             function getCardItem(card) {
                 const type = card.dataset.type || "image";
@@ -444,10 +463,10 @@ function retryImage(img) {
             if (saveSettingsBtn) {
                 saveSettingsBtn.addEventListener("click", () => {
                     const settings = {
-                        save_dir: saveDirInput.value.trim() || "xhs",
                         save_format: saveFormatInput.value,
                         quality: qualityInput.value || 95,
                         video_save_mode: videoSaveModeInput.value || "video",
+                        use_file_picker: useFilePicker,
                     };
 
                     localStorage.setItem("xhsDownloadSettings", JSON.stringify(settings));
@@ -458,8 +477,49 @@ function retryImage(img) {
                 });
             }
 
+            if (chooseDownloadLocationBtn && window.showSaveFilePicker) {
+                chooseDownloadLocationBtn.addEventListener("click", () => {
+                    useFilePicker = !useFilePicker;
+                    updateDownloadLocationButton();
+                });
+            }
+
+            function getDownloadFilename(response) {
+                const disposition = response.headers.get("Content-Disposition") || "";
+                const match = disposition.match(/filename="([^"]+)"/);
+                return match ? match[1] : `${baseFilename || "xhs"}.zip`;
+            }
+
+            async function saveZipBlob(blob, filename) {
+                if (useFilePicker && window.showSaveFilePicker) {
+                    const handle = await window.showSaveFilePicker({
+                        suggestedName: filename,
+                        types: [
+                            {
+                                description: "ZIP archive",
+                                accept: {"application/zip": [".zip"]},
+                            },
+                        ],
+                    });
+                    const writable = await handle.createWritable();
+                    await writable.write(blob);
+                    await writable.close();
+                    return "已保存到选择的位置";
+                }
+
+                const downloadUrl = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.href = downloadUrl;
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                URL.revokeObjectURL(downloadUrl);
+                return "已交给浏览器下载";
+            }
+
             if (downloadBtn) {
-                downloadBtn.addEventListener("click", () => {
+                downloadBtn.addEventListener("click", async () => {
                     if (selected.length === 0) {
                         alert("请先选择需要保存的资源");
                         return;
@@ -478,25 +538,27 @@ function retryImage(img) {
                         body: JSON.stringify({
                             media_items: selected,
                             base_filename: baseFilename,
-                            save_dir: saveDirInput.value.trim() || "xhs",
                             save_format: saveFormatInput.value,
                             quality: qualityInput.value || 95,
                             video_save_mode: videoSaveModeInput.value || "video",
                         }),
                     })
-                        .then(response => response.json())
-                        .then(data => {
-                            console.log(data);
-
-                            if (data.status === "success") {
-                                status.innerText = `${data.message}，保存位置：${data.save_folder}`;
-                            } else {
-                                status.innerText = data.message || "保存失败";
+                        .then(async response => {
+                            if (!response.ok) {
+                                const data = await response.json();
+                                throw new Error(data.message || "保存失败");
                             }
+
+                            const filename = getDownloadFilename(response);
+                            const blob = await response.blob();
+                            const savedMessage = await saveZipBlob(blob, filename);
+                            const savedCount = response.headers.get("X-Saved-Count") || "?";
+                            const failedCount = response.headers.get("X-Failed-Count") || "0";
+                            status.innerText = `${savedMessage}：${filename}，成功 ${savedCount} 个，失败 ${failedCount} 个`;
                         })
                         .catch(error => {
                             console.error(error);
-                            status.innerText = "保存失败，请查看浏览器控制台或 Django 后台日志";
+                            status.innerText = error.message || "保存失败，请查看浏览器控制台或 Django 后台日志";
                         });
                 });
             }

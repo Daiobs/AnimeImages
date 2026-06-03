@@ -53,6 +53,8 @@ Before switching databases:
 
 User uploads and downloaded files live under `media/` locally. For production, use persistent storage or object storage. Do not rely on ephemeral container disk for important uploads.
 
+The Xiaohongshu download endpoint returns a browser ZIP download instead of writing to arbitrary server paths. Keep this boundary in production; do not allow untrusted users to choose absolute server filesystem paths.
+
 ## Rollback
 
 Keep each deployed version tied to a Git commit. If deployment fails:
