@@ -37,12 +37,23 @@ Keep views thin over time:
 
 ## Xiaohongshu Download Flow
 
-The Xiaohongshu module uses a service-oriented shape:
+The current download module keeps the `/xhs_download/` route as a stable UI entry while its parser layer is being prepared for multiple platforms. New parsing work should use the platform adapter shape instead of adding platform-specific logic to views.
 
-- `services/parser.py`: parse note HTML and extract image/video candidates
+- `services/assets.py`: shared `MediaAsset` and `ParseResult` data structures
+- `services/registry.py`: choose the right platform adapter for a submitted URL
+- `services/platforms/base.py`: platform adapter protocol
+- `services/platforms/xiaohongshu.py`: Xiaohongshu URL support, HTML parsing, preview URL normalization, and media asset extraction
+- `services/parser.py`: backward-compatible Xiaohongshu wrapper over the adapter layer
 - `services/common.py`: filename cleanup, URL encoding, request retry, initial/final domain validation
 - `services/downloads.py`: validate selected media, preserve original files by default, and build a temporary ZIP archive
 - `views.py`: render pages, proxy preview images, and return ZIP download responses
+
+The intended extension path for Douyin and future platforms is:
+
+1. Add a new adapter under `services/platforms/`.
+2. Register it in `services/registry.py`.
+3. Return `ParseResult` with platform-neutral `MediaAsset` objects.
+4. Reuse the existing preview proxy, original-file download, and ZIP archive pipeline.
 
 Downloads are returned to the browser as ZIP files. The ZIP is built through a temporary file instead of keeping the whole archive in memory. Images default to original-file output so parsed source bytes are not re-encoded during normal use. Conversion helpers remain internal, but the current UI intentionally hides image format and quality controls to keep the product aligned with original-material backup.
 

@@ -21,7 +21,7 @@ from .services.downloads import (
     read_limited_response,
     save_media_items_to_server,
 )
-from .services.parser import normalize_xhs_preview_image_url, parse_xhs_page
+from .services.registry import parse_media_page
 
 
 logger = logging.getLogger(__name__)
@@ -46,6 +46,7 @@ def search_results_view(request):
     context = {
         **get_download_settings_context(),
         "query": query,
+        "platform": "",
         "post_type": "",
         "image_items": [],
         "video_items": [],
@@ -57,31 +58,32 @@ def search_results_view(request):
         return render(request, "xhs_download.html", context)
 
     try:
-        result = parse_xhs_page(query)
-        context["post_type"] = result["post_type"]
-        context["base_filename"] = result["base_filename"]
+        result = parse_media_page(query)
+        context["platform"] = result.platform
+        context["post_type"] = result.post_type
+        context["base_filename"] = result.base_filename
         context["image_items"] = [
             {
                 "type": "image",
-                "url": url,
-                "encoded_url": encode_url(url),
-                "encoded_preview_url": encode_url(normalize_xhs_preview_image_url(url) or url),
+                "url": asset.url,
+                "encoded_url": encode_url(asset.url),
+                "encoded_preview_url": encode_url(asset.preview_url or asset.url),
             }
-            for url in result["image_urls"]
+            for asset in result.image_assets
         ]
         context["video_items"] = [
             {
                 "type": "video",
-                "video_url": item["video_url"],
-                "cover_url": item["cover_url"],
-                "encoded_cover_url": encode_url(item["cover_url"]) if item["cover_url"] else "",
+                "video_url": asset.url,
+                "cover_url": asset.cover_url,
+                "encoded_cover_url": encode_url(asset.cover_url) if asset.cover_url else "",
                 "encoded_preview_cover_url": (
-                    encode_url(normalize_xhs_preview_image_url(item["cover_url"]) or item["cover_url"])
-                    if item["cover_url"]
+                    encode_url(asset.cover_preview_url or asset.cover_url)
+                    if asset.cover_url
                     else ""
                 ),
             }
-            for item in result["video_items"]
+            for asset in result.video_assets
         ]
 
         if not context["image_items"] and not context["video_items"]:

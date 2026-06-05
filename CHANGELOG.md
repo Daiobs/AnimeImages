@@ -12,3 +12,4 @@
 - Changed Xiaohongshu image downloads to preserve original files by default, with image conversion as an explicit option.
 - Added final redirect host validation and temporary-file ZIP creation for Xiaohongshu downloads.
 - Hid image format and quality controls from the Xiaohongshu download UI so normal downloads always use original files.
+- Added a platform adapter registry and migrated Xiaohongshu parsing behind the adapter interface.

@@ -23,7 +23,9 @@ from .services.downloads import (
     resolve_server_save_folder,
     save_media_items_to_server,
 )
+from .services.platforms import XiaohongshuAdapter
 from .services.parser import normalize_xhs_image_url, normalize_xhs_preview_image_url, parse_xhs_html
+from .services.registry import get_adapter_for_url
 
 
 def make_image_bytes():
@@ -89,6 +91,16 @@ class XhsUtilityTests(SimpleTestCase):
 
 
 class XhsParserTests(SimpleTestCase):
+    def test_registry_resolves_xiaohongshu_adapter(self):
+        adapter = get_adapter_for_url("https://www.xiaohongshu.com/explore/abc123")
+
+        self.assertIsInstance(adapter, XiaohongshuAdapter)
+
+    def test_registry_resolves_xiaohongshu_short_link_adapter(self):
+        adapter = get_adapter_for_url("https://xhslink.com/a/b")
+
+        self.assertIsInstance(adapter, XiaohongshuAdapter)
+
     def test_normalize_image_url_extracts_spectrum_key(self):
         self.assertEqual(
             normalize_xhs_image_url("https://sns-img.xhscdn.com/spectrum/abc123!webp"),
@@ -115,6 +127,23 @@ class XhsParserTests(SimpleTestCase):
         self.assertEqual(result["post_type"], "image")
         self.assertEqual(result["base_filename"], "user_title")
         self.assertEqual(result["image_urls"], ["https://ci.xiaohongshu.com/spectrum/abc123?imageView2/format/jpg"])
+
+    def test_xiaohongshu_adapter_returns_media_assets(self):
+        html = """
+        <html>
+          <meta name="og:image" content="https://sns-img.xhscdn.com/spectrum/abc123!webp">
+        </html>
+        """
+
+        result = XiaohongshuAdapter().parse_html(html)
+
+        self.assertEqual(result.platform, "xiaohongshu")
+        self.assertEqual(result.post_type, "image")
+        self.assertEqual(result.image_assets[0].url, "https://ci.xiaohongshu.com/spectrum/abc123?imageView2/format/jpg")
+        self.assertEqual(
+            result.image_assets[0].preview_url,
+            "https://ci.xiaohongshu.com/spectrum/abc123?imageView2/2/w/640/format/webp",
+        )
 
     def test_parse_html_returns_video_post(self):
         html = """
