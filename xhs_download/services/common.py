@@ -17,8 +17,18 @@ HEADERS = {
     "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
 }
 
-PAGE_HOST_SUFFIXES = ("xiaohongshu.com", "xhslink.com")
-MEDIA_HOST_SUFFIXES = ("xiaohongshu.com", "xhscdn.com")
+PAGE_HOST_SUFFIXES = ("xiaohongshu.com", "xhslink.com", "douyin.com", "iesdouyin.com")
+MEDIA_HOST_SUFFIXES = (
+    "xiaohongshu.com",
+    "xhscdn.com",
+    "douyin.com",
+    "douyinpic.com",
+    "douyinvod.com",
+    "douyincdn.com",
+    "douyinstatic.com",
+    "byteimg.com",
+    "bytetos.com",
+)
 
 
 class XhsError(ValueError):

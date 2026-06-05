@@ -1,10 +1,28 @@
+import re
+from urllib.parse import urlparse
+
 from .common import XhsParseError
-from .platforms import XiaohongshuAdapter
+from .platforms import DouyinAdapter, XiaohongshuAdapter
 
 
 DEFAULT_ADAPTERS = (
     XiaohongshuAdapter(),
+    DouyinAdapter(),
 )
+
+
+URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+")
+TRAILING_URL_CHARS = "，,。；;！!？?）)]】》"
+
+
+def extract_url_from_text(value):
+    value = (value or "").strip()
+    match = URL_PATTERN.search(value)
+    candidate = match.group(0).rstrip(TRAILING_URL_CHARS) if match else value
+    parsed = urlparse(candidate)
+    if parsed.scheme in {"http", "https"} and parsed.hostname:
+        return candidate
+    return value
 
 
 class PlatformRegistry:
@@ -12,12 +30,14 @@ class PlatformRegistry:
         self.adapters = tuple(adapters or DEFAULT_ADAPTERS)
 
     def get_adapter_for_url(self, url):
+        url = extract_url_from_text(url)
         for adapter in self.adapters:
             if adapter.supports_url(url):
                 return adapter
         raise XhsParseError("暂不支持该平台链接")
 
     def parse_url(self, url):
+        url = extract_url_from_text(url)
         adapter = self.get_adapter_for_url(url)
         return adapter.parse_url(url)
 

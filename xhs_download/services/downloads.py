@@ -14,9 +14,11 @@ from .common import (
     MEDIA_HOST_SUFFIXES,
     XhsDownloadError,
     clean_filename,
+    host_matches,
     request_get_with_retry,
     validate_media_url,
 )
+from .platforms.douyin import DOUYIN_HEADERS, DOUYIN_MEDIA_HOST_SUFFIXES
 
 
 MAX_DOWNLOAD_ITEMS = 30
@@ -25,6 +27,17 @@ MAX_VIDEO_BYTES = 500 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
 CHUNK_SIZE = 1024 * 256
 ORIGINAL_FORMAT = "original"
+
+
+def get_media_headers(url, platform=None):
+    if platform == "douyin":
+        return DOUYIN_HEADERS
+
+    hostname = (urlparse(url or "").hostname or "").lower()
+    if host_matches(hostname, DOUYIN_MEDIA_HOST_SUFFIXES):
+        return DOUYIN_HEADERS
+
+    return HEADERS
 
 
 def normalize_save_format(save_format):
@@ -162,7 +175,7 @@ def fetch_media_response(url, headers=None, timeout=30):
     validate_media_url(url)
     return request_get_with_retry(
         url,
-        headers=headers or HEADERS,
+        headers=headers or get_media_headers(url),
         timeout=timeout,
         retries=3,
         stream=True,

@@ -5,13 +5,15 @@ from bs4 import BeautifulSoup
 from ..assets import MediaAsset, ParseResult
 from ..common import (
     HEADERS,
-    MEDIA_HOST_SUFFIXES,
-    PAGE_HOST_SUFFIXES,
     clean_filename,
     normalize_text,
     request_get_with_retry,
 )
 from .base import BasePlatformAdapter
+
+
+XHS_PAGE_HOST_SUFFIXES = ("xiaohongshu.com", "xhslink.com")
+XHS_MEDIA_HOST_SUFFIXES = ("xiaohongshu.com", "xhscdn.com")
 
 
 def normalize_xhs_image_url(url):
@@ -99,8 +101,8 @@ def extract_video_urls(html):
 class XiaohongshuAdapter(BasePlatformAdapter):
     platform_id = "xiaohongshu"
     display_name = "小红书"
-    page_host_suffixes = PAGE_HOST_SUFFIXES
-    media_host_suffixes = MEDIA_HOST_SUFFIXES
+    page_host_suffixes = XHS_PAGE_HOST_SUFFIXES
+    media_host_suffixes = XHS_MEDIA_HOST_SUFFIXES
     headers = HEADERS
 
     def parse_html(self, html, source_url=None):

@@ -1,4 +1,5 @@
 from io import BytesIO
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
@@ -17,15 +18,17 @@ from .services.common import (
 )
 from .services.downloads import (
     build_download_archive,
+    get_media_headers,
     normalize_quality,
     normalize_save_format,
     normalize_video_save_mode,
     resolve_server_save_folder,
     save_media_items_to_server,
 )
-from .services.platforms import XiaohongshuAdapter
+from .services.platforms import DouyinAdapter, XiaohongshuAdapter
+from .services.platforms.douyin import DOUYIN_HEADERS
 from .services.parser import normalize_xhs_image_url, normalize_xhs_preview_image_url, parse_xhs_html
-from .services.registry import get_adapter_for_url
+from .services.registry import extract_url_from_text, get_adapter_for_url
 
 
 def make_image_bytes():
@@ -101,6 +104,28 @@ class XhsParserTests(SimpleTestCase):
 
         self.assertIsInstance(adapter, XiaohongshuAdapter)
 
+    def test_registry_resolves_douyin_adapter(self):
+        adapter = get_adapter_for_url("https://v.douyin.com/abc123/")
+
+        self.assertIsInstance(adapter, DouyinAdapter)
+
+    def test_registry_resolves_douyin_share_text(self):
+        adapter = get_adapter_for_url("复制打开抖音，看看这个作品 https://v.douyin.com/abc123/ ！")
+
+        self.assertIsInstance(adapter, DouyinAdapter)
+
+    def test_extract_url_from_share_text_strips_trailing_punctuation(self):
+        self.assertEqual(
+            extract_url_from_text("复制打开 https://v.douyin.com/abc123/，"),
+            "https://v.douyin.com/abc123/",
+        )
+
+    def test_extract_url_from_share_text_handles_url_prefix(self):
+        self.assertEqual(
+            extract_url_from_text("https://v.douyin.com/abc123/ 复制此链接，打开抖音搜索"),
+            "https://v.douyin.com/abc123/",
+        )
+
     def test_normalize_image_url_extracts_spectrum_key(self):
         self.assertEqual(
             normalize_xhs_image_url("https://sns-img.xhscdn.com/spectrum/abc123!webp"),
@@ -158,6 +183,73 @@ class XhsParserTests(SimpleTestCase):
         self.assertEqual(result["post_type"], "video")
         self.assertEqual(result["video_items"][0]["video_url"], "https://sns-video-bd.xhscdn.com/video-key-123456789")
         self.assertEqual(result["video_items"][0]["cover_url"], "https://ci.xiaohongshu.com/spectrum/cover123?imageView2/format/jpg")
+
+
+class DouyinAdapterTests(SimpleTestCase):
+    def test_parse_html_returns_image_post_from_render_data(self):
+        data = {
+            "aweme_detail": {
+                "aweme_id": "123",
+                "desc": "图文标题",
+                "author": {"nickname": "作者"},
+                "images": [
+                    {"url_list": ["https://p3-sign.douyinpic.com/image-1.webp"]},
+                    {"download_url_list": ["https://p6-sign.douyinpic.com/image-2.webp"]},
+                ],
+            }
+        }
+        encoded = json.dumps(data, ensure_ascii=False)
+        html = f'<script id="RENDER_DATA" type="application/json">{encoded}</script>'
+
+        result = DouyinAdapter().parse_html(html)
+
+        self.assertEqual(result.platform, "douyin")
+        self.assertEqual(result.post_type, "image")
+        self.assertEqual(result.base_filename, "作者_图文标题")
+        self.assertEqual(len(result.image_assets), 2)
+        self.assertEqual(result.image_assets[0].url, "https://p3-sign.douyinpic.com/image-1.webp")
+
+    def test_parse_html_returns_highest_bitrate_video(self):
+        data = {
+            "loaderData": {
+                "aweme": {
+                    "aweme_id": "456",
+                    "desc": "视频标题",
+                    "author": {"nickname": "作者"},
+                    "video": {
+                        "cover": {"url_list": ["https://p3-sign.douyinpic.com/cover.webp"]},
+                        "bit_rate": [
+                            {
+                                "bit_rate": 1000,
+                                "play_addr": {"url_list": ["https://v3-web.douyinvod.com/low.mp4"]},
+                            },
+                            {
+                                "bit_rate": 3000,
+                                "play_addr": {"url_list": ["https://v3-web.douyinvod.com/high.mp4"]},
+                            },
+                        ],
+                    },
+                }
+            }
+        }
+        html = f"""
+        <script>
+          window._ROUTER_DATA = {json.dumps(data, ensure_ascii=False)};
+        </script>
+        """
+
+        result = DouyinAdapter().parse_html(html)
+
+        self.assertEqual(result.platform, "douyin")
+        self.assertEqual(result.post_type, "video")
+        self.assertEqual(result.video_assets[0].url, "https://v3-web.douyinvod.com/high.mp4")
+        self.assertEqual(result.video_assets[0].cover_url, "https://p3-sign.douyinpic.com/cover.webp")
+
+    def test_get_media_headers_uses_douyin_headers_for_douyin_media(self):
+        self.assertIs(
+            get_media_headers("https://v3-web.douyinvod.com/video.mp4"),
+            DOUYIN_HEADERS,
+        )
 
 
 class XhsDownloadArchiveTests(SimpleTestCase):
@@ -244,6 +336,84 @@ class XhsDownloadArchiveTests(SimpleTestCase):
 
 
 class XhsDownloadViewTests(SimpleTestCase):
+    def test_home_route_renders_download_page(self):
+        response = Client().get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "星空的高清下载小站")
+        self.assertContains(response, "theme-home")
+        self.assertContains(response, "nav-settings-btn")
+        self.assertContains(response, "css/app.css?v=")
+        self.assertContains(response, "js/xhs_download.js?v=")
+        self.assertContains(response, "feature-card", count=4)
+        self.assertContains(response, "无需登录解析去水印，支持视频、图片、批量无水印保存")
+        self.assertContains(response, 'placeholder="请将复制的链接粘贴到这里"')
+        self.assertContains(response, "paste-link-icon-btn")
+        self.assertContains(response, "无需登录/注册")
+        self.assertContains(response, "打开页面即可解析链接，无使用限制。")
+        self.assertContains(response, "原始文件保存")
+        self.assertContains(response, "去除水印，保持原始画质。")
+        self.assertContains(response, 'action="/results/"')
+        self.assertContains(response, 'href="/xhs/"')
+        self.assertContains(response, "小红书")
+        self.assertContains(response, 'href="/tiktok/"')
+        self.assertContains(response, "抖音")
+        self.assertContains(response, 'href="/bilibili/"')
+        self.assertContains(response, "哔哩哔哩")
+
+    def test_xhs_route_uses_xhs_results_action(self):
+        response = Client().get("/xhs/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "theme-xhs")
+        self.assertContains(response, 'action="/xhs/results/"')
+
+    def test_tiktok_route_uses_tiktok_results_action(self):
+        response = Client().get("/tiktok/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "theme-tiktok")
+        self.assertContains(response, 'action="/tiktok/results/"')
+
+    def test_bilibili_route_uses_bilibili_results_action(self):
+        response = Client().get("/bilibili/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "theme-bilibili")
+        self.assertContains(response, 'action="/bilibili/results/"')
+
+    @patch("xhs_download.views.parse_media_page")
+    def test_home_results_keep_home_result_theme(self, mock_parse):
+        mock_parse.return_value = DouyinAdapter().parse_aweme({
+            "aweme_id": "123",
+            "desc": "标题",
+            "author": {"nickname": "作者"},
+            "images": [{"url_list": ["https://p3-sign.douyinpic.com/image.webp"]}],
+        })
+
+        response = Client().get("/results/", {"q": "https://v.douyin.com/abc123/"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "result-theme-home")
+        self.assertContains(response, "抖音")
+
+    @patch("xhs_download.views.parse_media_page")
+    def test_xhs_route_can_parse_douyin_link(self, mock_parse):
+        mock_parse.return_value = DouyinAdapter().parse_aweme({
+            "aweme_id": "123",
+            "desc": "标题",
+            "author": {"nickname": "作者"},
+            "images": [{"url_list": ["https://p3-sign.douyinpic.com/image.webp"]}],
+        })
+
+        response = Client().get("/xhs/results/", {"q": "https://v.douyin.com/abc123/"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "你粘贴的是抖音链接，已自动使用对应解析器。")
+        self.assertContains(response, "抖音")
+        self.assertContains(response, "result-theme-xhs")
+        mock_parse.assert_called_once_with("https://v.douyin.com/abc123/")
+
     @patch("xhs_download.views.build_download_archive_file")
     def test_download_endpoint_returns_zip_response(self, mock_archive):
         mock_archive.return_value = {
@@ -254,7 +424,7 @@ class XhsDownloadViewTests(SimpleTestCase):
         }
 
         response = Client().post(
-            "/xhs_download/download-images/",
+            "/media/download-images/",
             data='{"media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a"}],"base_filename":"base"}',
             content_type="application/json",
         )
@@ -265,7 +435,7 @@ class XhsDownloadViewTests(SimpleTestCase):
 
     def test_download_endpoint_rejects_invalid_json(self):
         response = Client().post(
-            "/xhs_download/download-images/",
+            "/media/download-images/",
             data="{bad",
             content_type="application/json",
         )
@@ -275,7 +445,7 @@ class XhsDownloadViewTests(SimpleTestCase):
     def test_server_save_mode_is_forbidden_when_disabled(self):
         with override_settings(XHS_ALLOW_SERVER_SAVE=False):
             response = Client().post(
-                "/xhs_download/download-images/",
+                "/media/download-images/",
                 data='{"download_mode":"server","media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a"}]}',
                 content_type="application/json",
             )

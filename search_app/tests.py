@@ -69,7 +69,7 @@ class SearchViewTests(SimpleTestCase):
             self.create_image_file(raw)
 
             with override_settings(BASE_DIR=base_dir):
-                response = Client().get("/results/", {"q": "春日野穹"})
+                response = Client().get("/library/results/", {"q": "春日野穹"})
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "/static/images/单人IP/春日野穹/padded/a.jpg")
@@ -82,13 +82,13 @@ class SearchViewTests(SimpleTestCase):
             self.create_image_file(image)
 
             with override_settings(BASE_DIR=base_dir):
-                response = Client().get("/results/", {"q": "纳西妲", "folder": "站"})
+                response = Client().get("/library/results/", {"q": "纳西妲", "folder": "站"})
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "/static/images/原神/纳西妲/padded/站/a.jpg")
 
     def test_path_like_query_returns_empty_results(self):
-        response = Client().get("/results/", {"q": "../secret"})
+        response = Client().get("/library/results/", {"q": "../secret"})
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "没有找到相关图片。")

@@ -5,10 +5,10 @@ import requests
 from django.conf import settings
 from django.http import FileResponse, HttpResponse, JsonResponse
 from django.shortcuts import render
+from django.urls import reverse
 from django.views.decorators.http import require_GET, require_POST
 
 from .services.common import (
-    HEADERS,
     XhsDownloadError,
     XhsError,
     decode_url,
@@ -28,25 +28,99 @@ logger = logging.getLogger(__name__)
 PREVIEW_MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 
-def search_view(request):
-    return render(request, "xhs_download.html", get_download_settings_context())
+PLATFORM_PAGE_CONFIG = {
+    "home": {
+        "title": "星空的高清下载小站",
+        "display_name": "首页",
+        "platform_id": "",
+        "theme": "home",
+        "heading": "高清素材解析下载",
+        "description": "无需登录解析去水印，支持视频、图片、批量无水印保存",
+        "label": "素材链接",
+        "placeholder": "请将复制的链接粘贴到这里",
+        "results_route": "home_results",
+    },
+    "xhs": {
+        "title": "小红书高清下载",
+        "display_name": "小红书",
+        "platform_id": "xiaohongshu",
+        "theme": "xhs",
+        "heading": "小红书高清素材下载",
+        "description": "粘贴小红书链接，解析图片/视频内容，保存原始素材文件。",
+        "label": "小红书链接",
+        "placeholder": "粘贴小红书链接...",
+        "results_route": "xhs_results",
+    },
+    "tiktok": {
+        "title": "抖音高清下载",
+        "display_name": "抖音",
+        "platform_id": "douyin",
+        "theme": "tiktok",
+        "heading": "抖音高清素材下载",
+        "description": "粘贴抖音链接，解析图文图片或视频内容，保存原始素材文件。",
+        "label": "抖音链接",
+        "placeholder": "粘贴抖音链接或分享文案...",
+        "results_route": "tiktok_results",
+    },
+    "bilibili": {
+        "title": "哔哩哔哩高清下载",
+        "display_name": "哔哩哔哩",
+        "platform_id": "bilibili",
+        "theme": "bilibili",
+        "heading": "哔哩哔哩高清素材下载",
+        "description": "粘贴哔哩哔哩链接，后续可扩展解析视频、图片与封面素材。",
+        "label": "哔哩哔哩链接",
+        "placeholder": "粘贴哔哩哔哩链接...",
+        "results_route": "bilibili_results",
+    },
+}
+
+PLATFORM_DISPLAY_NAMES = {
+    "xiaohongshu": "小红书",
+    "douyin": "抖音",
+    "bilibili": "哔哩哔哩",
+}
 
 
-def get_download_settings_context():
+def get_platform_page_config(platform_key):
+    return PLATFORM_PAGE_CONFIG.get(platform_key, PLATFORM_PAGE_CONFIG["home"])
+
+
+def search_view(request, platform_key="home"):
+    return render(request, "xhs_download.html", get_download_settings_context(platform_key))
+
+
+def get_download_settings_context(platform_key="home"):
+    page_config = get_platform_page_config(platform_key)
     return {
+        "platform_key": platform_key,
+        "theme_class": f"theme-{page_config['theme']}",
+        "result_theme": page_config["theme"],
+        "page_platform_id": page_config["platform_id"],
+        "page_platform_name": page_config["display_name"],
+        "page_title": page_config["title"],
+        "page_heading": page_config["heading"],
+        "page_description": page_config["description"],
+        "link_label": page_config["label"],
+        "link_placeholder": page_config["placeholder"],
+        "parse_action_url": reverse(page_config["results_route"]),
+        "proxy_image_url": reverse("media_proxy_image"),
+        "download_url": reverse("media_download_images_api"),
         "xhs_allow_server_save": settings.XHS_ALLOW_SERVER_SAVE,
         "xhs_allow_absolute_save_path": settings.XHS_ALLOW_ABSOLUTE_SAVE_PATH,
         "xhs_default_server_save_dir": settings.XHS_DEFAULT_SERVER_SAVE_DIR,
     }
 
 
-def search_results_view(request):
+def search_results_view(request, platform_key="home"):
     query = request.GET.get("q", "").strip()
 
     context = {
-        **get_download_settings_context(),
+        **get_download_settings_context(platform_key),
         "query": query,
         "platform": "",
+        "platform_name": "",
+        "platform_notice": "",
         "post_type": "",
         "image_items": [],
         "video_items": [],
@@ -60,6 +134,9 @@ def search_results_view(request):
     try:
         result = parse_media_page(query)
         context["platform"] = result.platform
+        context["platform_name"] = PLATFORM_DISPLAY_NAMES.get(result.platform, result.platform or "未知平台")
+        if context["page_platform_id"] and context["page_platform_id"] != result.platform:
+            context["platform_notice"] = f"你粘贴的是{context['platform_name']}链接，已自动使用对应解析器。"
         context["post_type"] = result.post_type
         context["base_filename"] = result.base_filename
         context["image_items"] = [
@@ -92,7 +169,7 @@ def search_results_view(request):
     except XhsError as error:
         context["error_message"] = f"解析失败：{error}"
     except requests.RequestException as error:
-        context["error_message"] = f"请求小红书页面失败：{error}"
+        context["error_message"] = f"请求页面失败：{error}"
 
     return render(request, "xhs_download.html", context)
 
@@ -128,7 +205,6 @@ def proxy_image_view(request):
         validate_media_url(image_url)
         response = fetch_media_response(
             image_url,
-            headers=HEADERS,
             timeout=15,
         )
 

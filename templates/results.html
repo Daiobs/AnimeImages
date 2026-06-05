@@ -139,8 +139,7 @@
 </head>
 <body>
     <!-- 返回主页面标签 -->
-    <!--  href="/"：指向网站的主页面路径，您可以根据实际的主页面路由修改路径。-->
-    <a href="/" class="back-home">返回首页</a>
+    <a href="{% url 'search' %}" class="back-home">返回图库</a>
     <h1>搜索结果：{{ query }}</h1>
 
 {#    <!-- 姿势选项卡 -->#}

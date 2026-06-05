@@ -10,12 +10,16 @@
 
 `djangoProject/urls.py` routes:
 
-- `/`: image library search
-- `/results/`: image search results
-- `/xhs_download/`: Xiaohongshu parser UI
-- `/xhs_download/results/`: parser results
-- `/xhs_download/proxy-image/`: preview image proxy
-- `/xhs_download/download-images/`: selected media download API
+- `/`: download site home
+- `/xhs/`: Xiaohongshu parser UI
+- `/xhs/results/`: Xiaohongshu parser results
+- `/tiktok/`: Douyin parser UI
+- `/tiktok/results/`: Douyin parser results
+- `/media/proxy-image/`: preview image proxy
+- `/media/download-images/`: selected media download API
+- `/library/`: image library search
+- `/library/results/`: image search results
+- `/xhs_download/`: legacy Xiaohongshu redirect/API compatibility path
 - `/submissions/submit/`: submission form
 - `/submissions/list`: submission list
 
@@ -43,6 +47,7 @@ The current download module keeps the `/xhs_download/` route as a stable UI entr
 - `services/registry.py`: choose the right platform adapter for a submitted URL
 - `services/platforms/base.py`: platform adapter protocol
 - `services/platforms/xiaohongshu.py`: Xiaohongshu URL support, HTML parsing, preview URL normalization, and media asset extraction
+- `services/platforms/douyin.py`: initial Douyin URL support and embedded JSON image/video asset extraction
 - `services/parser.py`: backward-compatible Xiaohongshu wrapper over the adapter layer
 - `services/common.py`: filename cleanup, URL encoding, request retry, initial/final domain validation
 - `services/downloads.py`: validate selected media, preserve original files by default, and build a temporary ZIP archive
@@ -54,6 +59,8 @@ The intended extension path for Douyin and future platforms is:
 2. Register it in `services/registry.py`.
 3. Return `ParseResult` with platform-neutral `MediaAsset` objects.
 4. Reuse the existing preview proxy, original-file download, and ZIP archive pipeline.
+
+Douyin support is intentionally test-first at this stage. It handles common embedded JSON shapes (`RENDER_DATA`, `__UNIVERSAL_DATA_FOR_REHYDRATION__`, and router data scripts), but real-world page variants should be captured as fixtures before expanding parser behavior.
 
 Downloads are returned to the browser as ZIP files. The ZIP is built through a temporary file instead of keeping the whole archive in memory. Images default to original-file output so parsed source bytes are not re-encoded during normal use. Conversion helpers remain internal, but the current UI intentionally hides image format and quality controls to keep the product aligned with original-material backup.
 

@@ -1,58 +1,70 @@
 {% extends "base.html" %}
 {% load static %}
 
-{% block title %}小红书素材下载{% endblock %}
+{% block title %}{{ page_title|default:"星空的高清下载小站" }}{% endblock %}
+
+{% block nav_actions %}
+    <button type="button" class="btn btn-outline-secondary btn-sm nav-settings-btn" data-bs-toggle="modal"
+            data-bs-target="#settingsModal">
+        <i class="bi bi-gear"></i>
+        设置
+    </button>
+{% endblock %}
 
 {% block content %}
     <section
-            class="py-5 xhs-download-page"
-            data-download-url="{% url 'download_images_api' %}"
+            class="xhs-download-page {{ theme_class|default:'theme-home' }}"
+            data-download-url="{{ download_url }}"
             data-base-filename="{{ base_filename|default:'xhs_image' }}"
     >
-        <div class="container">
+        <div class="container-fluid px-4 px-md-5">
 
             <!-- 搜索区 -->
-            <div class="hero-card p-4 p-md-5 mb-4">
-                <div class="row align-items-center g-4">
-                    <div class="col-lg-6">
-                        <h1 class="fw-bold mb-3">
-                            小红书<span class="brand-text">素材</span>解析下载
+            <div class="hero-section">
+                <div class="row justify-content-center g-4">
+                    <div class="col-lg-10 col-xl-8 text-center">
+                        <h1 class="hero-title">
+                            {{ page_heading|default:"高清素材解析下载" }}
                         </h1>
-                        <p class="text-muted mb-0">
-                            粘贴小红书链接，解析图片/视频内容，选择需要的素材保存到本地。
+                        <p class="hero-subtitle">
+                            {{ page_description|default:"粘贴小红书或抖音链接，解析图片/视频内容，选择需要的素材保存到本地。" }}
                         </p>
                     </div>
 
-                    <div class="col-lg-6">
-                        <form method="get" action="{% url 'results' %}" class="card border-0 shadow-sm p-3">
+                    <div class="col-lg-7 col-xl-6">
+                        <form method="get" action="{{ parse_action_url }}" class="hero-search-form">
                             {% csrf_token %}
 
-                            <label class="form-label small text-muted">小红书链接</label>
+                            <label class="visually-hidden" for="media-link-input">{{ link_label|default:"素材链接" }}</label>
 
-                            <div class="input-group mb-3">
-                            <span class="input-group-text bg-white">
-                                <i class="bi bi-link-45deg"></i>
-                            </span>
+                            <div class="hero-input-shell">
+                                <button
+                                        type="button"
+                                        class="hero-paste-icon-btn"
+                                        id="paste-link-icon-btn"
+                                        aria-label="粘贴链接"
+                                        title="粘贴链接"
+                                >
+                                    <i class="bi bi-clipboard"></i>
+                                </button>
                                 <input
+                                        id="media-link-input"
                                         type="text"
                                         name="q"
-                                        class="form-control"
-                                        placeholder="粘贴小红书链接..."
+                                        class="form-control hero-link-input"
+                                        placeholder="{{ link_placeholder|default:'请将复制的链接粘贴到这里' }}"
                                         value="{{ query|default:'' }}"
                                         required
                                 >
                             </div>
 
-                            <div class="d-flex gap-2">
-                                <button type="submit" class="btn btn-brand flex-fill">
+                            <div class="hero-action-row">
+                                <button type="submit" class="btn btn-brand hero-primary-action">
                                     <i class="bi bi-magic me-1"></i>
                                     获取素材
                                 </button>
-
-                                <button type="button" class="btn btn-outline-secondary" data-bs-toggle="modal"
-                                        data-bs-target="#settingsModal">
-                                    <i class="bi bi-gear"></i>
-                                    设置
+                                <button type="button" class="btn btn-outline-secondary hero-clear-action" id="clear-link-btn">
+                                    清除
                                 </button>
                             </div>
                         </form>
@@ -67,23 +79,33 @@
                 </div>
             {% endif %}
 
+            {% if platform_notice %}
+                <div class="alert alert-info">
+                    <i class="bi bi-info-circle me-1"></i>
+                    {{ platform_notice }}
+                </div>
+            {% endif %}
+
             <!-- 解析结果区 -->
             {% if image_items or video_items %}
-                <div class="card result-card border-0 shadow-sm mb-4">
+                <div class="card result-card result-theme-{{ result_theme|default:'home' }} border-0 shadow-sm mb-4">
                     <div class="card-header bg-white d-flex flex-wrap justify-content-between align-items-center gap-2 py-3">
                         <div>
                             <div class="fw-bold">
                                 {% if post_type == "video" %}
-                                    <i class="bi bi-play-circle text-danger me-1"></i>
+                                    <i class="bi bi-play-circle result-icon me-1"></i>
                                     视频笔记
                                 {% else %}
-                                    <i class="bi bi-images text-danger me-1"></i>
+                                    <i class="bi bi-images result-icon me-1"></i>
                                     图片笔记
                                 {% endif %}
                                 {{ base_filename|default:"xhs_image" }}
                             </div>
 
                             <div class="text-muted small">
+                                {% if platform_name %}
+                                    <span class="platform-pill">{{ platform_name }}</span>
+                                {% endif %}
                                 {% if post_type == "video" %}
                                     已解析到 1 个视频资源
                                 {% else %}
@@ -109,7 +131,7 @@
 
                         {% if video_items %}
                             <h5 class="fw-bold mb-3">
-                                <i class="bi bi-play-circle text-danger me-1"></i>
+                                <i class="bi bi-play-circle result-icon me-1"></i>
                                 视频资源
                             </h5>
 
@@ -125,7 +147,7 @@
 
                                         {% if item.cover_url %}
                                         <img
-    src="{% url 'proxy_image' %}?u={{ item.encoded_preview_cover_url|default:item.encoded_cover_url }}"
+    src="{{ proxy_image_url }}?u={{ item.encoded_preview_cover_url|default:item.encoded_cover_url }}"
     alt="视频封面"
     loading="lazy"
     decoding="async"
@@ -134,7 +156,7 @@
 >
                                         {% else %}
                                             <div class="p-5 text-center bg-white">
-                                                <div class="display-4 text-danger">
+                                                <div class="display-4 result-icon">
                                                     <i class="bi bi-play-btn"></i>
                                                 </div>
                                             </div>
@@ -157,7 +179,7 @@
 
                         {% if image_items %}
                             <h5 class="fw-bold mb-3">
-                                <i class="bi bi-images text-danger me-1"></i>
+                                <i class="bi bi-images result-icon me-1"></i>
                                 图片资源
                             </h5>
 
@@ -170,8 +192,8 @@
                             <i class="bi bi-check-lg"></i>
                         </span>
 <img
-    src="{% url 'proxy_image' %}?u={{ item.encoded_preview_url|default:item.encoded_url }}"
-    alt="XHS Image"
+    src="{{ proxy_image_url }}?u={{ item.encoded_preview_url|default:item.encoded_url }}"
+    alt="素材图片"
     loading="lazy"
     decoding="async"
     data-retry="0"
@@ -192,6 +214,50 @@
                 </div>
             {% endif %}
 
+            <section class="feature-section">
+                <div class="row g-4">
+                    <div class="col-sm-6 col-xl-3">
+                        <div class="feature-card">
+                            <div class="feature-icon">
+                                <i class="bi bi-person-check"></i>
+                            </div>
+                            <h3>无需登录/注册</h3>
+                            <p>打开页面即可解析链接，无使用限制。</p>
+                        </div>
+                    </div>
+
+                    <div class="col-sm-6 col-xl-3">
+                        <div class="feature-card">
+                            <div class="feature-icon">
+                                <i class="bi bi-file-earmark-arrow-down"></i>
+                            </div>
+                            <h3>原始文件保存</h3>
+                            <p>去除水印，保持原始画质。</p>
+                        </div>
+                    </div>
+
+                    <div class="col-sm-6 col-xl-3">
+                        <div class="feature-card">
+                            <div class="feature-icon">
+                                <i class="bi bi-images"></i>
+                            </div>
+                            <h3>图片视频支持</h3>
+                            <p>支持解析图文图片、视频和视频封面。</p>
+                        </div>
+                    </div>
+
+                    <div class="col-sm-6 col-xl-3">
+                        <div class="feature-card">
+                            <div class="feature-icon">
+                                <i class="bi bi-archive"></i>
+                            </div>
+                            <h3>批量打包下载</h3>
+                            <p>选择多个素材后统一打包保存到本地。</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <!-- 使用说明 -->
             <section class="mt-5">
                 <h2 class="text-center fw-bold mb-4">如何使用</h2>
@@ -204,7 +270,7 @@
                                     <i class="bi bi-link"></i>
                                 </div>
                                 <h5 class="fw-bold">复制链接</h5>
-                                <p class="text-muted small mb-0">从小红书复制需要保存的笔记链接。</p>
+                                <p class="text-muted small mb-0">从小红书或抖音复制需要保存的内容链接。</p>
                             </div>
                         </div>
                     </div>
@@ -320,7 +386,7 @@
                             <option value="both">视频 + 封面都下载</option>
                         </select>
                         <div class="form-text">
-                            仅对视频笔记生效；封面会使用上方的图片格式和质量设置。
+                            仅对视频笔记生效；封面默认按原始文件保存。
                         </div>
                     </section>
                 </div>
@@ -340,5 +406,5 @@
 {% endblock %}
 
 {% block extra_js %}
-    <script src="{% static 'js/xhs_download.js' %}"></script>
+    <script src="{% static 'js/xhs_download.js' %}?v={{ static_asset_version }}"></script>
 {% endblock %}

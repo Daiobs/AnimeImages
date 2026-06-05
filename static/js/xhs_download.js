@@ -157,6 +157,9 @@
         const downloadBtn = document.getElementById("download-btn");
         const selectAllBtn = document.getElementById("select-all-btn");
         const status = document.getElementById("status");
+        const linkInput = document.getElementById("media-link-input");
+        const pasteLinkIconBtn = document.getElementById("paste-link-icon-btn");
+        const clearLinkBtn = document.getElementById("clear-link-btn");
         const downloadModeInput = document.getElementById("download-mode");
         const browserDownloadSettings = document.getElementById("browser-download-settings");
         const serverSaveSettings = document.getElementById("server-save-settings");
@@ -294,6 +297,30 @@
 
                 updateSelectedStatus();
                 updateSelectAllButton();
+            });
+        }
+
+        if (clearLinkBtn && linkInput) {
+            clearLinkBtn.addEventListener("click", () => {
+                linkInput.value = "";
+                linkInput.focus();
+            });
+        }
+
+        if (pasteLinkIconBtn && linkInput) {
+            pasteLinkIconBtn.addEventListener("click", async () => {
+                try {
+                    if (!navigator.clipboard || !navigator.clipboard.readText) {
+                        linkInput.focus();
+                        return;
+                    }
+                    const text = await navigator.clipboard.readText();
+                    if (text) {
+                        linkInput.value = text.trim();
+                    }
+                } catch (error) {
+                    linkInput.focus();
+                }
             });
         }
 

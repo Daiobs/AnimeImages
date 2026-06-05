@@ -13,3 +13,6 @@
 - Added final redirect host validation and temporary-file ZIP creation for Xiaohongshu downloads.
 - Hid image format and quality controls from the Xiaohongshu download UI so normal downloads always use original files.
 - Added a platform adapter registry and migrated Xiaohongshu parsing behind the adapter interface.
+- Added an initial Douyin adapter for page URL recognition and embedded JSON image/video extraction.
+- Moved the image library to `/library/` and added SnapAny-style site navigation for home, Xiaohongshu, and Douyin.
+- Simplified the header to site name plus settings, kept primary actions blue, and scoped platform colors to parsed results.
