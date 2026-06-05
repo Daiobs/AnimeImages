@@ -1,9 +1,8 @@
 import re
 
-import requests
 from bs4 import BeautifulSoup
 
-from .common import HEADERS, clean_filename, normalize_text, validate_page_url
+from .common import HEADERS, PAGE_HOST_SUFFIXES, clean_filename, normalize_text, request_get_with_retry, validate_page_url
 
 
 def normalize_xhs_image_url(url):
@@ -27,6 +26,15 @@ def normalize_xhs_image_url(url):
         return f"https://ci.xiaohongshu.com/{match.group(1)}?imageView2/format/jpg"
 
     return url
+
+
+def normalize_xhs_preview_image_url(url, width=640):
+    image_url = normalize_xhs_image_url(url)
+    if not image_url:
+        return None
+
+    base_url = image_url.split("!")[0].split("?")[0]
+    return f"{base_url}?imageView2/2/w/{int(width)}/format/webp"
 
 
 def normalize_video_url(value):
@@ -137,6 +145,15 @@ def parse_xhs_html(html):
 
 def parse_xhs_page(url):
     validate_page_url(url)
-    response = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
-    response.raise_for_status()
-    return parse_xhs_html(response.text)
+    response = request_get_with_retry(
+        url,
+        headers=HEADERS,
+        timeout=15,
+        retries=3,
+        allowed_final_host_suffixes=PAGE_HOST_SUFFIXES,
+        final_url_message="小红书页面跳转到了不允许的域名",
+    )
+    try:
+        return parse_xhs_html(response.text)
+    finally:
+        response.close()

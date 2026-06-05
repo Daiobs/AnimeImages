@@ -3,9 +3,8 @@ import logging
 
 import requests
 from django.conf import settings
-from django.http import HttpResponse, JsonResponse
+from django.http import FileResponse, HttpResponse, JsonResponse
 from django.shortcuts import render
-from django.utils.http import content_disposition_header
 from django.views.decorators.http import require_GET, require_POST
 
 from .services.common import (
@@ -14,14 +13,19 @@ from .services.common import (
     XhsError,
     decode_url,
     encode_url,
-    request_get_with_retry,
     validate_media_url,
 )
-from .services.downloads import build_download_archive, save_media_items_to_server
-from .services.parser import parse_xhs_page
+from .services.downloads import (
+    build_download_archive_file,
+    fetch_media_response,
+    read_limited_response,
+    save_media_items_to_server,
+)
+from .services.parser import normalize_xhs_preview_image_url, parse_xhs_page
 
 
 logger = logging.getLogger(__name__)
+PREVIEW_MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 
 def search_view(request):
@@ -61,6 +65,7 @@ def search_results_view(request):
                 "type": "image",
                 "url": url,
                 "encoded_url": encode_url(url),
+                "encoded_preview_url": encode_url(normalize_xhs_preview_image_url(url) or url),
             }
             for url in result["image_urls"]
         ]
@@ -70,6 +75,11 @@ def search_results_view(request):
                 "video_url": item["video_url"],
                 "cover_url": item["cover_url"],
                 "encoded_cover_url": encode_url(item["cover_url"]) if item["cover_url"] else "",
+                "encoded_preview_cover_url": (
+                    encode_url(normalize_xhs_preview_image_url(item["cover_url"]) or item["cover_url"])
+                    if item["cover_url"]
+                    else ""
+                ),
             }
             for item in result["video_items"]
         ]
@@ -114,18 +124,20 @@ def proxy_image_view(request):
     try:
         image_url = decode_url(encoded_url)
         validate_media_url(image_url)
-        response = request_get_with_retry(
+        response = fetch_media_response(
             image_url,
             headers=HEADERS,
             timeout=15,
-            retries=3,
         )
 
-        content_type = response.headers.get("Content-Type", "image/jpeg")
-        if "image" not in content_type.lower():
-            return placeholder_image_response()
+        with response:
+            content_type = response.headers.get("Content-Type", "image/jpeg")
+            if "image" not in content_type.lower():
+                return placeholder_image_response()
 
-        result = HttpResponse(response.content, content_type=content_type)
+            content = read_limited_response(response, max_bytes=PREVIEW_MAX_IMAGE_BYTES)
+
+        result = HttpResponse(content, content_type=content_type)
         result["Cache-Control"] = "private, max-age=300"
         return result
 
@@ -156,7 +168,7 @@ def download_images_api(request):
                 media_items=media_items,
                 base_filename=data.get("base_filename", "xhs"),
                 save_dir=data.get("save_dir") or settings.XHS_DEFAULT_SERVER_SAVE_DIR,
-                save_format=data.get("save_format", "jpg"),
+                save_format=data.get("save_format", "original"),
                 quality=data.get("quality", 95),
                 video_save_mode=data.get("video_save_mode", "video"),
                 allow_absolute=settings.XHS_ALLOW_ABSOLUTE_SAVE_PATH,
@@ -167,10 +179,10 @@ def download_images_api(request):
                 **result,
             })
 
-        archive = build_download_archive(
+        archive = build_download_archive_file(
             media_items=media_items,
             base_filename=data.get("base_filename", "xhs"),
-            save_format=data.get("save_format", "jpg"),
+            save_format=data.get("save_format", "original"),
             quality=data.get("quality", 95),
             video_save_mode=data.get("video_save_mode", "video"),
         )
@@ -180,8 +192,12 @@ def download_images_api(request):
         logger.exception("XHS download failed")
         return JsonResponse({"status": "error", "message": f"下载失败：{error}"}, status=500)
 
-    response = HttpResponse(archive["content"], content_type="application/zip")
-    response["Content-Disposition"] = content_disposition_header(True, archive["filename"])
+    response = FileResponse(
+        archive["file"],
+        as_attachment=True,
+        filename=archive["filename"],
+        content_type="application/zip",
+    )
     response["X-Saved-Count"] = str(archive["saved_count"])
     response["X-Failed-Count"] = str(archive["failed_count"])
     return response

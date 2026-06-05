@@ -1,24 +1,38 @@
-from pathlib import Path
+import os
+import shutil
+import tempfile
 from io import BytesIO
+from pathlib import Path
+from urllib.parse import urlparse
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from django.conf import settings
 from PIL import Image
 
-from .common import HEADERS, XhsDownloadError, clean_filename, request_get_with_retry, validate_media_url
+from .common import (
+    HEADERS,
+    MEDIA_HOST_SUFFIXES,
+    XhsDownloadError,
+    clean_filename,
+    request_get_with_retry,
+    validate_media_url,
+)
 
 
 MAX_DOWNLOAD_ITEMS = 30
 MAX_IMAGE_BYTES = 50 * 1024 * 1024
 MAX_VIDEO_BYTES = 500 * 1024 * 1024
+MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
+CHUNK_SIZE = 1024 * 256
+ORIGINAL_FORMAT = "original"
 
 
 def normalize_save_format(save_format):
-    save_format = (save_format or "jpg").lower().strip()
+    save_format = (save_format or ORIGINAL_FORMAT).lower().strip()
     if save_format == "jpeg":
         save_format = "jpg"
-    if save_format not in ["jpg", "png", "webp"]:
-        save_format = "jpg"
+    if save_format not in [ORIGINAL_FORMAT, "jpg", "png", "webp"]:
+        save_format = ORIGINAL_FORMAT
     return save_format
 
 
@@ -46,6 +60,50 @@ def guess_video_extension(url):
     return "mp4"
 
 
+IMAGE_CONTENT_TYPE_EXTENSIONS = {
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/gif": "gif",
+    "image/avif": "avif",
+}
+
+VIDEO_CONTENT_TYPE_EXTENSIONS = {
+    "video/mp4": "mp4",
+    "video/quicktime": "mov",
+    "application/vnd.apple.mpegurl": "m3u8",
+    "application/x-mpegurl": "m3u8",
+}
+
+
+def get_extension_from_url(url, allowed_extensions):
+    suffix = Path(urlparse(url or "").path).suffix.lower().lstrip(".")
+    if suffix == "jpeg":
+        suffix = "jpg"
+    return suffix if suffix in allowed_extensions else None
+
+
+def get_extension_from_content_type(content_type, mapping):
+    content_type = (content_type or "").split(";", 1)[0].strip().lower()
+    return mapping.get(content_type)
+
+
+def guess_image_extension(url, content_type=None):
+    return (
+        get_extension_from_content_type(content_type, IMAGE_CONTENT_TYPE_EXTENSIONS)
+        or get_extension_from_url(url, set(IMAGE_CONTENT_TYPE_EXTENSIONS.values()))
+        or "jpg"
+    )
+
+
+def guess_video_extension_from_response(url, content_type=None):
+    return (
+        get_extension_from_content_type(content_type, VIDEO_CONTENT_TYPE_EXTENSIONS)
+        or guess_video_extension(url)
+    )
+
+
 def save_image_to_buffer(image, save_format, quality):
     save_format = normalize_save_format(save_format)
     quality = normalize_quality(quality)
@@ -65,29 +123,89 @@ def save_image_to_buffer(image, save_format, quality):
     return buffer.getvalue()
 
 
-def read_limited_response(response, max_bytes):
-    chunks = []
+def parse_content_length(response):
+    try:
+        return int(response.headers.get("Content-Length") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def validate_content_length(response, max_bytes):
+    content_length = parse_content_length(response)
+    if content_length and content_length > max_bytes:
+        raise XhsDownloadError("资源超过允许的大小限制")
+
+
+def write_limited_response(response, target, max_bytes):
     total = 0
 
-    for chunk in response.iter_content(chunk_size=1024 * 256):
+    validate_content_length(response, max_bytes)
+
+    for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
         if not chunk:
             continue
         total += len(chunk)
         if total > max_bytes:
             raise XhsDownloadError("资源超过允许的大小限制")
-        chunks.append(chunk)
+        target.write(chunk)
 
-    return b"".join(chunks)
+    return total
+
+
+def read_limited_response(response, max_bytes):
+    buffer = BytesIO()
+    write_limited_response(response, buffer, max_bytes)
+    return buffer.getvalue()
+
+
+def fetch_media_response(url, headers=None, timeout=30):
+    validate_media_url(url)
+    return request_get_with_retry(
+        url,
+        headers=headers or HEADERS,
+        timeout=timeout,
+        retries=3,
+        stream=True,
+        allowed_final_host_suffixes=MEDIA_HOST_SUFFIXES,
+        final_url_message="资源 URL 跳转到了不允许的下载域名",
+    )
+
+
+def fetch_to_temp_path(url, headers=None, timeout=30, max_bytes=MAX_IMAGE_BYTES):
+    response = fetch_media_response(url, headers=headers, timeout=timeout)
+    fd, temp_path = tempfile.mkstemp(prefix="xhs_media_")
+
+    try:
+        with os.fdopen(fd, "wb") as temp_file:
+            fd = None
+            with response:
+                content_type = response.headers.get("Content-Type", "")
+                final_url = response.url
+                size = write_limited_response(response, temp_file, max_bytes=max_bytes)
+        return {
+            "path": temp_path,
+            "content_type": content_type,
+            "final_url": final_url,
+            "size": size,
+        }
+    except Exception:
+        response.close()
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        Path(temp_path).unlink(missing_ok=True)
+        raise
 
 
 def fetch_binary(url, headers=None, timeout=30, max_bytes=MAX_IMAGE_BYTES):
-    validate_media_url(url)
-    response = request_get_with_retry(url, headers=headers or HEADERS, timeout=timeout, retries=3, stream=True)
+    response = fetch_media_response(url, headers=headers, timeout=timeout)
     with response:
         return read_limited_response(response, max_bytes=max_bytes)
 
 
-def iter_download_files(media_items, base_filename, save_format="jpg", quality=95, video_save_mode="video"):
+def iter_download_files(media_items, base_filename, save_format=ORIGINAL_FORMAT, quality=95, video_save_mode="video"):
     base_filename = clean_filename(base_filename or "xhs")
     save_format = normalize_save_format(save_format)
     quality = normalize_quality(quality)
@@ -103,10 +221,19 @@ def iter_download_files(media_items, base_filename, save_format="jpg", quality=9
                 raise XhsDownloadError("资源 URL 为空")
 
             if media_type == "image":
-                content = fetch_binary(url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
-                image = Image.open(BytesIO(content))
-                filename = clean_filename(f"{base_filename}_{index}.{save_format}")
-                yield filename, save_image_to_buffer(image, save_format, quality)
+                if save_format == ORIGINAL_FORMAT:
+                    temp_result = fetch_to_temp_path(url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                    try:
+                        ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
+                        filename = clean_filename(f"{base_filename}_{index}.{ext}")
+                        yield filename, Path(temp_result["path"]).read_bytes()
+                    finally:
+                        Path(temp_result["path"]).unlink(missing_ok=True)
+                else:
+                    content = fetch_binary(url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                    with Image.open(BytesIO(content)) as image:
+                        filename = clean_filename(f"{base_filename}_{index}.{save_format}")
+                        yield filename, save_image_to_buffer(image, save_format, quality)
 
             elif media_type == "video":
                 if video_save_mode in ["video", "both"]:
@@ -118,10 +245,19 @@ def iter_download_files(media_items, base_filename, save_format="jpg", quality=9
                     cover_url = item.get("cover_url")
                     if not cover_url:
                         raise XhsDownloadError("当前视频没有解析到封面")
-                    content = fetch_binary(cover_url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
-                    image = Image.open(BytesIO(content))
-                    filename = clean_filename(f"{base_filename}_{index}_cover.{save_format}")
-                    yield filename, save_image_to_buffer(image, save_format, quality)
+                    if save_format == ORIGINAL_FORMAT:
+                        temp_result = fetch_to_temp_path(cover_url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                        try:
+                            ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
+                            filename = clean_filename(f"{base_filename}_{index}_cover.{ext}")
+                            yield filename, Path(temp_result["path"]).read_bytes()
+                        finally:
+                            Path(temp_result["path"]).unlink(missing_ok=True)
+                    else:
+                        content = fetch_binary(cover_url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                        with Image.open(BytesIO(content)) as image:
+                            filename = clean_filename(f"{base_filename}_{index}_cover.{save_format}")
+                            yield filename, save_image_to_buffer(image, save_format, quality)
 
             else:
                 raise XhsDownloadError(f"暂不支持的资源类型：{media_type}")
@@ -133,33 +269,170 @@ def iter_download_files(media_items, base_filename, save_format="jpg", quality=9
         yield "failed.txt", "\n".join(failures).encode("utf-8")
 
 
-def build_download_archive(media_items, base_filename, save_format="jpg", quality=95, video_save_mode="video"):
+def assert_download_request(media_items):
     if not media_items:
         raise XhsDownloadError("没有选择资源")
     if len(media_items) > MAX_DOWNLOAD_ITEMS:
         raise XhsDownloadError(f"一次最多下载 {MAX_DOWNLOAD_ITEMS} 个资源")
 
+
+def assert_archive_total(current_total, next_size):
+    if current_total + next_size > MAX_ARCHIVE_BYTES:
+        raise XhsDownloadError("本次下载资源总大小超过允许限制")
+
+
+def write_archive_entry_from_temp(archive, temp_result, filename, current_total):
+    assert_archive_total(current_total, temp_result["size"])
+    archive.write(temp_result["path"], filename)
+    return temp_result["size"]
+
+
+def write_archive_entry_from_bytes(archive, filename, content, current_total):
+    assert_archive_total(current_total, len(content))
+    archive.writestr(filename, content)
+    return len(content)
+
+
+def build_download_archive_file(
+    media_items,
+    base_filename,
+    save_format=ORIGINAL_FORMAT,
+    quality=95,
+    video_save_mode="video",
+):
+    assert_download_request(media_items)
+
     base_filename = clean_filename(base_filename or "xhs")
-    archive_buffer = BytesIO()
+    save_format = normalize_save_format(save_format)
+    quality = normalize_quality(quality)
+    video_save_mode = normalize_video_save_mode(video_save_mode)
+    archive_file = tempfile.NamedTemporaryFile(prefix="xhs_archive_", suffix=".zip")
     saved_count = 0
-    failed_count = 0
+    total_size = 0
+    failures = []
 
-    with ZipFile(archive_buffer, "w", ZIP_DEFLATED) as archive:
-        for filename, content in iter_download_files(media_items, base_filename, save_format, quality, video_save_mode):
-            archive.writestr(filename, content)
-            if filename == "failed.txt":
-                failed_count = content.decode("utf-8").count("\n") + 1 if content else 0
-            else:
-                saved_count += 1
+    try:
+        with ZipFile(archive_file, "w", ZIP_DEFLATED, allowZip64=True) as archive:
+            for index, item in enumerate(media_items, start=1):
+                media_type = item.get("type", "image")
+                url = item.get("url")
 
-    if saved_count == 0:
-        raise XhsDownloadError("没有资源保存成功")
+                try:
+                    if not url:
+                        raise XhsDownloadError("资源 URL 为空")
+
+                    if media_type == "image":
+                        if save_format == ORIGINAL_FORMAT:
+                            temp_result = fetch_to_temp_path(url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                            try:
+                                ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
+                                filename = clean_filename(f"{base_filename}_{index}.{ext}")
+                                total_size += write_archive_entry_from_temp(
+                                    archive,
+                                    temp_result,
+                                    filename,
+                                    total_size,
+                                )
+                                saved_count += 1
+                            finally:
+                                Path(temp_result["path"]).unlink(missing_ok=True)
+                        else:
+                            content = fetch_binary(url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                            with Image.open(BytesIO(content)) as image:
+                                filename = clean_filename(f"{base_filename}_{index}.{save_format}")
+                                converted = save_image_to_buffer(image, save_format, quality)
+                            total_size += write_archive_entry_from_bytes(archive, filename, converted, total_size)
+                            saved_count += 1
+
+                    elif media_type == "video":
+                        if video_save_mode in ["video", "both"]:
+                            temp_result = fetch_to_temp_path(url, timeout=60, max_bytes=MAX_VIDEO_BYTES)
+                            try:
+                                ext = guess_video_extension_from_response(
+                                    temp_result["final_url"],
+                                    temp_result["content_type"],
+                                )
+                                filename = clean_filename(f"{base_filename}_{index}.{ext}")
+                                total_size += write_archive_entry_from_temp(
+                                    archive,
+                                    temp_result,
+                                    filename,
+                                    total_size,
+                                )
+                                saved_count += 1
+                            finally:
+                                Path(temp_result["path"]).unlink(missing_ok=True)
+
+                        if video_save_mode in ["cover", "both"]:
+                            cover_url = item.get("cover_url")
+                            if not cover_url:
+                                raise XhsDownloadError("当前视频没有解析到封面")
+
+                            if save_format == ORIGINAL_FORMAT:
+                                temp_result = fetch_to_temp_path(cover_url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                                try:
+                                    ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
+                                    filename = clean_filename(f"{base_filename}_{index}_cover.{ext}")
+                                    total_size += write_archive_entry_from_temp(
+                                        archive,
+                                        temp_result,
+                                        filename,
+                                        total_size,
+                                    )
+                                    saved_count += 1
+                                finally:
+                                    Path(temp_result["path"]).unlink(missing_ok=True)
+                            else:
+                                content = fetch_binary(cover_url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                                with Image.open(BytesIO(content)) as image:
+                                    filename = clean_filename(f"{base_filename}_{index}_cover.{save_format}")
+                                    converted = save_image_to_buffer(image, save_format, quality)
+                                total_size += write_archive_entry_from_bytes(
+                                    archive,
+                                    filename,
+                                    converted,
+                                    total_size,
+                                )
+                                saved_count += 1
+
+                    else:
+                        raise XhsDownloadError(f"暂不支持的资源类型：{media_type}")
+
+                except Exception as error:
+                    failures.append(f"{media_type}: {url or '-'} -> {error}")
+
+            if failures:
+                archive.writestr("failed.txt", "\n".join(failures).encode("utf-8"))
+
+        if saved_count == 0:
+            raise XhsDownloadError("没有资源保存成功")
+
+        archive_file.seek(0)
+        return {
+            "filename": clean_filename(f"{base_filename}.zip"),
+            "file": archive_file,
+            "saved_count": saved_count,
+            "failed_count": len(failures),
+        }
+
+    except Exception:
+        archive_file.close()
+        raise
+
+
+def build_download_archive(media_items, base_filename, save_format=ORIGINAL_FORMAT, quality=95, video_save_mode="video"):
+    archive_file = build_download_archive_file(media_items, base_filename, save_format, quality, video_save_mode)
+
+    try:
+        content = archive_file["file"].read()
+    finally:
+        archive_file["file"].close()
 
     return {
-        "filename": clean_filename(f"{base_filename}.zip"),
-        "content": archive_buffer.getvalue(),
-        "saved_count": saved_count,
-        "failed_count": failed_count,
+        "filename": archive_file["filename"],
+        "content": content,
+        "saved_count": archive_file["saved_count"],
+        "failed_count": archive_file["failed_count"],
     }
 
 
@@ -187,30 +460,98 @@ def save_media_items_to_server(
     media_items,
     base_filename,
     save_dir=None,
-    save_format="jpg",
+    save_format=ORIGINAL_FORMAT,
     quality=95,
     video_save_mode="video",
     allow_absolute=False,
 ):
-    if not media_items:
-        raise XhsDownloadError("没有选择资源")
-    if len(media_items) > MAX_DOWNLOAD_ITEMS:
-        raise XhsDownloadError(f"一次最多下载 {MAX_DOWNLOAD_ITEMS} 个资源")
+    assert_download_request(media_items)
 
+    base_filename = clean_filename(base_filename or "xhs")
+    save_format = normalize_save_format(save_format)
+    quality = normalize_quality(quality)
+    video_save_mode = normalize_video_save_mode(video_save_mode)
     save_folder = resolve_server_save_folder(save_dir, allow_absolute=allow_absolute)
     save_folder.mkdir(parents=True, exist_ok=True)
 
     saved_files = []
-    failed_count = 0
-    for filename, content in iter_download_files(media_items, base_filename, save_format, quality, video_save_mode):
-        if filename == "failed.txt":
-            failed_count = content.decode("utf-8").count("\n") + 1 if content else 0
-            (save_folder / filename).write_bytes(content)
-            continue
+    failures = []
 
-        target = save_folder / filename
-        target.write_bytes(content)
-        saved_files.append(str(target))
+    for index, item in enumerate(media_items, start=1):
+        media_type = item.get("type", "image")
+        url = item.get("url")
+
+        try:
+            if not url:
+                raise XhsDownloadError("资源 URL 为空")
+
+            if media_type == "image":
+                if save_format == ORIGINAL_FORMAT:
+                    temp_result = fetch_to_temp_path(url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                    try:
+                        ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
+                        filename = clean_filename(f"{base_filename}_{index}.{ext}")
+                        target = save_folder / filename
+                        shutil.move(temp_result["path"], target)
+                        saved_files.append(str(target))
+                    finally:
+                        Path(temp_result["path"]).unlink(missing_ok=True)
+                else:
+                    content = fetch_binary(url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                    with Image.open(BytesIO(content)) as image:
+                        filename = clean_filename(f"{base_filename}_{index}.{save_format}")
+                        converted = save_image_to_buffer(image, save_format, quality)
+                    target = save_folder / filename
+                    target.write_bytes(converted)
+                    saved_files.append(str(target))
+
+            elif media_type == "video":
+                if video_save_mode in ["video", "both"]:
+                    temp_result = fetch_to_temp_path(url, timeout=60, max_bytes=MAX_VIDEO_BYTES)
+                    try:
+                        ext = guess_video_extension_from_response(
+                            temp_result["final_url"],
+                            temp_result["content_type"],
+                        )
+                        filename = clean_filename(f"{base_filename}_{index}.{ext}")
+                        target = save_folder / filename
+                        shutil.move(temp_result["path"], target)
+                        saved_files.append(str(target))
+                    finally:
+                        Path(temp_result["path"]).unlink(missing_ok=True)
+
+                if video_save_mode in ["cover", "both"]:
+                    cover_url = item.get("cover_url")
+                    if not cover_url:
+                        raise XhsDownloadError("当前视频没有解析到封面")
+
+                    if save_format == ORIGINAL_FORMAT:
+                        temp_result = fetch_to_temp_path(cover_url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                        try:
+                            ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
+                            filename = clean_filename(f"{base_filename}_{index}_cover.{ext}")
+                            target = save_folder / filename
+                            shutil.move(temp_result["path"], target)
+                            saved_files.append(str(target))
+                        finally:
+                            Path(temp_result["path"]).unlink(missing_ok=True)
+                    else:
+                        content = fetch_binary(cover_url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                        with Image.open(BytesIO(content)) as image:
+                            filename = clean_filename(f"{base_filename}_{index}_cover.{save_format}")
+                            converted = save_image_to_buffer(image, save_format, quality)
+                        target = save_folder / filename
+                        target.write_bytes(converted)
+                        saved_files.append(str(target))
+
+            else:
+                raise XhsDownloadError(f"暂不支持的资源类型：{media_type}")
+
+        except Exception as error:
+            failures.append(f"{media_type}: {url or '-'} -> {error}")
+
+    if failures:
+        (save_folder / "failed.txt").write_text("\n".join(failures), encoding="utf-8")
 
     if not saved_files:
         raise XhsDownloadError("没有资源保存成功")
@@ -218,6 +559,6 @@ def save_media_items_to_server(
     return {
         "save_folder": str(save_folder),
         "saved_count": len(saved_files),
-        "failed_count": failed_count,
+        "failed_count": len(failures),
         "saved_files": saved_files,
     }

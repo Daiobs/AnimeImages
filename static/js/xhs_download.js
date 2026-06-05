@@ -324,7 +324,7 @@
                 saveSettings({
                     download_mode: downloadModeInput ? downloadModeInput.value : "browser",
                     save_dir: saveDirInput ? saveDirInput.value.trim() : "xhs",
-                    save_format: saveFormatInput ? saveFormatInput.value : "jpg",
+                    save_format: saveFormatInput ? saveFormatInput.value : "original",
                     quality: qualityInput ? qualityInput.value || 95 : 95,
                     video_save_mode: videoSaveModeInput ? videoSaveModeInput.value : "video",
                     use_file_picker: useFilePicker,
@@ -356,7 +356,7 @@
                             base_filename: baseFilename,
                             download_mode: downloadModeInput ? downloadModeInput.value : "browser",
                             save_dir: saveDirInput ? saveDirInput.value.trim() : "xhs",
-                            save_format: saveFormatInput ? saveFormatInput.value : "jpg",
+                            save_format: saveFormatInput ? saveFormatInput.value : "original",
                             quality: qualityInput ? qualityInput.value || 95 : 95,
                             video_save_mode: videoSaveModeInput ? videoSaveModeInput.value : "video",
                         }),

@@ -7,7 +7,14 @@ from zipfile import ZipFile
 from django.test import Client, SimpleTestCase, override_settings
 from PIL import Image
 
-from .services.common import XhsSecurityError, clean_filename, validate_media_url, validate_page_url
+from .services.common import (
+    MEDIA_HOST_SUFFIXES,
+    XhsSecurityError,
+    clean_filename,
+    request_get_with_retry,
+    validate_media_url,
+    validate_page_url,
+)
 from .services.downloads import (
     build_download_archive,
     normalize_quality,
@@ -16,7 +23,7 @@ from .services.downloads import (
     resolve_server_save_folder,
     save_media_items_to_server,
 )
-from .services.parser import normalize_xhs_image_url, parse_xhs_html
+from .services.parser import normalize_xhs_image_url, normalize_xhs_preview_image_url, parse_xhs_html
 
 
 def make_image_bytes():
@@ -33,12 +40,13 @@ class XhsUtilityTests(SimpleTestCase):
         self.assertEqual(clean_filename("***"), "xhs_image")
 
     def test_normalize_save_format_accepts_supported_formats(self):
+        self.assertEqual(normalize_save_format("original"), "original")
         self.assertEqual(normalize_save_format("jpeg"), "jpg")
         self.assertEqual(normalize_save_format("png"), "png")
         self.assertEqual(normalize_save_format("webp"), "webp")
 
-    def test_normalize_save_format_falls_back_to_jpg(self):
-        self.assertEqual(normalize_save_format("bmp"), "jpg")
+    def test_normalize_save_format_falls_back_to_original(self):
+        self.assertEqual(normalize_save_format("bmp"), "original")
 
     def test_normalize_quality_clamps_range(self):
         self.assertEqual(normalize_quality("0"), 1)
@@ -57,12 +65,40 @@ class XhsUtilityTests(SimpleTestCase):
         with self.assertRaises(XhsSecurityError):
             validate_media_url("http://127.0.0.1:8000/private")
 
+    def test_validate_media_url_rejects_private_ip(self):
+        with self.assertRaises(XhsSecurityError):
+            validate_media_url("http://10.0.0.2/private")
+
+    @patch("xhs_download.services.common.requests.get")
+    def test_request_get_with_retry_rejects_bad_final_redirect_host(self, mock_get):
+        response = Mock()
+        response.status_code = 200
+        response.url = "http://127.0.0.1/private"
+        response.close = Mock()
+        mock_get.return_value = response
+
+        with self.assertRaises(XhsSecurityError):
+            request_get_with_retry(
+                "https://ci.xiaohongshu.com/a",
+                allowed_final_host_suffixes=MEDIA_HOST_SUFFIXES,
+                retries=1,
+                sleep_seconds=0,
+            )
+
+        response.close.assert_called()
+
 
 class XhsParserTests(SimpleTestCase):
     def test_normalize_image_url_extracts_spectrum_key(self):
         self.assertEqual(
             normalize_xhs_image_url("https://sns-img.xhscdn.com/spectrum/abc123!webp"),
             "https://ci.xiaohongshu.com/spectrum/abc123?imageView2/format/jpg",
+        )
+
+    def test_normalize_preview_image_url_uses_small_webp_variant(self):
+        self.assertEqual(
+            normalize_xhs_preview_image_url("https://sns-img.xhscdn.com/spectrum/abc123!webp"),
+            "https://ci.xiaohongshu.com/spectrum/abc123?imageView2/2/w/640/format/webp",
         )
 
     def test_parse_html_returns_image_post(self):
@@ -97,8 +133,31 @@ class XhsParserTests(SimpleTestCase):
 
 class XhsDownloadArchiveTests(SimpleTestCase):
     @patch("xhs_download.services.downloads.request_get_with_retry")
+    def test_build_download_archive_keeps_original_image_bytes_by_default(self, mock_get):
+        raw_content = b"raw-webp-content"
+        response = Mock()
+        response.headers = {"Content-Type": "image/webp", "Content-Length": str(len(raw_content))}
+        response.url = "https://sns-img.xhscdn.com/spectrum/a.webp"
+        response.iter_content.return_value = [raw_content]
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=None)
+        mock_get.return_value = response
+
+        archive = build_download_archive(
+            media_items=[{"type": "image", "url": "https://ci.xiaohongshu.com/spectrum/a?imageView2/format/jpg"}],
+            base_filename="base",
+        )
+
+        with ZipFile(BytesIO(archive["content"])) as zip_file:
+            self.assertEqual(zip_file.read("base_1.webp"), raw_content)
+
+        self.assertEqual(archive["saved_count"], 1)
+        self.assertEqual(archive["failed_count"], 0)
+
+    @patch("xhs_download.services.downloads.request_get_with_retry")
     def test_build_download_archive_returns_zip(self, mock_get):
         response = Mock()
+        response.headers = {"Content-Type": "image/jpeg"}
         response.iter_content.return_value = [make_image_bytes()]
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=None)
@@ -136,6 +195,7 @@ class XhsDownloadArchiveTests(SimpleTestCase):
     @patch("xhs_download.services.downloads.request_get_with_retry")
     def test_save_media_items_to_server_writes_file_when_allowed(self, mock_get):
         response = Mock()
+        response.headers = {"Content-Type": "image/jpeg"}
         response.iter_content.return_value = [make_image_bytes()]
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=None)
@@ -155,11 +215,11 @@ class XhsDownloadArchiveTests(SimpleTestCase):
 
 
 class XhsDownloadViewTests(SimpleTestCase):
-    @patch("xhs_download.views.build_download_archive")
+    @patch("xhs_download.views.build_download_archive_file")
     def test_download_endpoint_returns_zip_response(self, mock_archive):
         mock_archive.return_value = {
             "filename": "base.zip",
-            "content": b"zip-content",
+            "file": BytesIO(b"zip-content"),
             "saved_count": 1,
             "failed_count": 0,
         }

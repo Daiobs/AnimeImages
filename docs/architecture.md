@@ -40,11 +40,13 @@ Keep views thin over time:
 The Xiaohongshu module uses a service-oriented shape:
 
 - `services/parser.py`: parse note HTML and extract image/video candidates
-- `services/common.py`: filename cleanup, URL encoding, request retry, domain validation
-- `services/downloads.py`: validate selected media, convert images, and build a ZIP archive
+- `services/common.py`: filename cleanup, URL encoding, request retry, initial/final domain validation
+- `services/downloads.py`: validate selected media, preserve original files by default, and build a temporary ZIP archive
 - `views.py`: render pages, proxy preview images, and return ZIP download responses
 
-Downloads are returned to the browser as ZIP files. The server no longer accepts arbitrary client-provided filesystem paths. This keeps local development convenient while avoiding unsafe production behavior.
+Downloads are returned to the browser as ZIP files. The ZIP is built through a temporary file instead of keeping the whole archive in memory. Images default to original-file output so parsed source bytes are not re-encoded during normal use. Conversion helpers remain internal, but the current UI intentionally hides image format and quality controls to keep the product aligned with original-material backup.
+
+The server no longer accepts arbitrary client-provided filesystem paths. This keeps local development convenient while avoiding unsafe production behavior.
 
 For local development, server-side save can be enabled with environment variables:
 

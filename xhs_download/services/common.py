@@ -1,4 +1,5 @@
 import base64
+import ipaddress
 import re
 import time
 from urllib.parse import urlparse
@@ -16,7 +17,7 @@ HEADERS = {
     "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
 }
 
-PAGE_HOST_SUFFIXES = ("xiaohongshu.com",)
+PAGE_HOST_SUFFIXES = ("xiaohongshu.com", "xhslink.com")
 MEDIA_HOST_SUFFIXES = ("xiaohongshu.com", "xhscdn.com")
 
 
@@ -67,11 +68,33 @@ def host_matches(hostname, allowed_suffixes):
     return any(hostname == suffix or hostname.endswith(f".{suffix}") for suffix in allowed_suffixes)
 
 
+def is_blocked_hostname(hostname):
+    hostname = (hostname or "").strip().lower()
+    if not hostname:
+        return True
+    if hostname in {"localhost", "127.0.0.1", "::1"} or hostname.endswith(".localhost"):
+        return True
+
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+
+    return (
+        address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+    )
+
+
 def validate_external_url(url, allowed_suffixes, message="不允许请求该 URL"):
     parsed = urlparse(url or "")
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise XhsSecurityError(message)
-    if parsed.hostname in {"localhost", "127.0.0.1", "::1"}:
+    if is_blocked_hostname(parsed.hostname):
         raise XhsSecurityError(message)
     if not host_matches(parsed.hostname, allowed_suffixes):
         raise XhsSecurityError(message)
@@ -86,7 +109,16 @@ def validate_media_url(url):
     return validate_external_url(url, MEDIA_HOST_SUFFIXES, "资源 URL 不在允许的下载域名内")
 
 
-def request_get_with_retry(url, headers=None, timeout=15, retries=3, sleep_seconds=0.8, stream=False):
+def request_get_with_retry(
+    url,
+    headers=None,
+    timeout=15,
+    retries=3,
+    sleep_seconds=0.8,
+    stream=False,
+    allowed_final_host_suffixes=None,
+    final_url_message="请求跳转到了不允许的 URL",
+):
     last_error = None
 
     for attempt in range(retries):
@@ -100,6 +132,16 @@ def request_get_with_retry(url, headers=None, timeout=15, retries=3, sleep_secon
             )
 
             if response.status_code == 200:
+                if allowed_final_host_suffixes:
+                    try:
+                        validate_external_url(
+                            response.url,
+                            allowed_final_host_suffixes,
+                            final_url_message,
+                        )
+                    except Exception:
+                        response.close()
+                        raise
                 return response
 
             last_error = XhsDownloadError(f"HTTP {response.status_code}")
