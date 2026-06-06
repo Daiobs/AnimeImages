@@ -17,3 +17,4 @@
 - Moved the image library to `/library/` and added SnapAny-style site navigation for home, Xiaohongshu, and Douyin.
 - Simplified the header to site name plus settings, kept primary actions blue, and scoped platform colors to parsed results.
 - Added Douyin mobile share-page fallback and public play URL variants for more reliable baseline video parsing.
+- Added a baseline Bilibili adapter for BV/AV links, public mp4 video URLs, and cover downloads.

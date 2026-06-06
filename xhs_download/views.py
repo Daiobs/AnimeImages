@@ -68,7 +68,7 @@ PLATFORM_PAGE_CONFIG = {
         "platform_id": "bilibili",
         "theme": "bilibili",
         "heading": "哔哩哔哩高清素材下载",
-        "description": "粘贴哔哩哔哩链接，后续可扩展解析视频、图片与封面素材。",
+        "description": "粘贴哔哩哔哩视频链接，解析视频内容和封面素材，保存原始文件。",
         "label": "哔哩哔哩链接",
         "placeholder": "粘贴哔哩哔哩链接...",
         "results_route": "bilibili_results",

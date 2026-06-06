@@ -2,12 +2,13 @@ import re
 from urllib.parse import urlparse
 
 from .common import XhsParseError
-from .platforms import DouyinAdapter, XiaohongshuAdapter
+from .platforms import BilibiliAdapter, DouyinAdapter, XiaohongshuAdapter
 
 
 DEFAULT_ADAPTERS = (
     XiaohongshuAdapter(),
     DouyinAdapter(),
+    BilibiliAdapter(),
 )
 
 

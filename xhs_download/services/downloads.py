@@ -18,6 +18,7 @@ from .common import (
     request_get_with_retry,
     validate_media_url,
 )
+from .platforms.bilibili import BILIBILI_HEADERS, BILIBILI_MEDIA_HOST_SUFFIXES
 from .platforms.douyin import DOUYIN_HEADERS, DOUYIN_MEDIA_HOST_SUFFIXES
 
 
@@ -30,10 +31,14 @@ ORIGINAL_FORMAT = "original"
 
 
 def get_media_headers(url, platform=None):
+    if platform == "bilibili":
+        return BILIBILI_HEADERS
     if platform == "douyin":
         return DOUYIN_HEADERS
 
     hostname = (urlparse(url or "").hostname or "").lower()
+    if host_matches(hostname, BILIBILI_MEDIA_HOST_SUFFIXES):
+        return BILIBILI_HEADERS
     if host_matches(hostname, DOUYIN_MEDIA_HOST_SUFFIXES):
         return DOUYIN_HEADERS
 

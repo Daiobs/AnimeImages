@@ -17,7 +17,14 @@ HEADERS = {
     "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
 }
 
-PAGE_HOST_SUFFIXES = ("xiaohongshu.com", "xhslink.com", "douyin.com", "iesdouyin.com")
+PAGE_HOST_SUFFIXES = (
+    "xiaohongshu.com",
+    "xhslink.com",
+    "douyin.com",
+    "iesdouyin.com",
+    "bilibili.com",
+    "b23.tv",
+)
 MEDIA_HOST_SUFFIXES = (
     "xiaohongshu.com",
     "xhscdn.com",
@@ -31,6 +38,8 @@ MEDIA_HOST_SUFFIXES = (
     "byteimg.com",
     "bytetos.com",
     "zjcdn.com",
+    "bilivideo.com",
+    "hdslb.com",
 )
 
 

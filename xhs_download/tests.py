@@ -25,7 +25,9 @@ from .services.downloads import (
     resolve_server_save_folder,
     save_media_items_to_server,
 )
-from .services.platforms import DouyinAdapter, XiaohongshuAdapter
+from .services.assets import MediaAsset, ParseResult
+from .services.platforms import BilibiliAdapter, DouyinAdapter, XiaohongshuAdapter
+from .services.platforms.bilibili import BILIBILI_HEADERS
 from .services.platforms.douyin import DOUYIN_HEADERS, extract_aweme_id, get_video_candidates
 from .services.parser import normalize_xhs_image_url, normalize_xhs_preview_image_url, parse_xhs_html
 from .services.registry import extract_url_from_text, get_adapter_for_url
@@ -78,6 +80,10 @@ class XhsUtilityTests(SimpleTestCase):
         validate_media_url("https://aweme.snssdk.com/aweme/v1/play/?video_id=abc")
         validate_media_url("https://v3-dy-o.zjcdn.com/video/tos/cn/path")
 
+    def test_validate_media_url_allows_bilibili_media_hosts(self):
+        validate_media_url("https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/video.mp4")
+        validate_media_url("https://i0.hdslb.com/bfs/archive/cover.jpg")
+
     @patch("xhs_download.services.common.requests.get")
     def test_request_get_with_retry_rejects_bad_final_redirect_host(self, mock_get):
         response = Mock()
@@ -117,6 +123,16 @@ class XhsParserTests(SimpleTestCase):
         adapter = get_adapter_for_url("复制打开抖音，看看这个作品 https://v.douyin.com/abc123/ ！")
 
         self.assertIsInstance(adapter, DouyinAdapter)
+
+    def test_registry_resolves_bilibili_adapter(self):
+        adapter = get_adapter_for_url("https://www.bilibili.com/video/BV1xx411c7mD/")
+
+        self.assertIsInstance(adapter, BilibiliAdapter)
+
+    def test_registry_resolves_bilibili_short_link_adapter(self):
+        adapter = get_adapter_for_url("https://b23.tv/abc123")
+
+        self.assertIsInstance(adapter, BilibiliAdapter)
 
     def test_extract_url_from_share_text_strips_trailing_punctuation(self):
         self.assertEqual(
@@ -384,6 +400,108 @@ class DouyinAdapterTests(SimpleTestCase):
             DOUYIN_HEADERS,
         )
 
+
+class BilibiliAdapterTests(SimpleTestCase):
+    @patch("xhs_download.services.platforms.bilibili.request_get_with_retry")
+    def test_parse_url_returns_video_asset_from_public_apis(self, mock_get):
+        view_response = Mock()
+        view_response.json.return_value = {
+            "code": 0,
+            "data": {
+                "bvid": "BV1xx411c7mD",
+                "aid": 2,
+                "title": "测试标题",
+                "pic": "https://i0.hdslb.com/bfs/archive/cover.jpg",
+                "owner": {"name": "作者"},
+                "pages": [{"cid": 62131, "page": 1, "part": "P1"}],
+            },
+        }
+        view_response.close = Mock()
+
+        play_response = Mock()
+        play_response.json.return_value = {
+            "code": 0,
+            "data": {
+                "quality": 80,
+                "durl": [
+                    {
+                        "order": 2,
+                        "size": 100,
+                        "url": "https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/low.mp4",
+                    },
+                    {
+                        "order": 1,
+                        "size": 200,
+                        "url": "https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/high.mp4",
+                    },
+                ],
+            },
+        }
+        play_response.close = Mock()
+        mock_get.side_effect = [view_response, play_response]
+
+        result = BilibiliAdapter().parse_url("https://www.bilibili.com/video/BV1xx411c7mD/")
+
+        self.assertEqual(result.platform, "bilibili")
+        self.assertEqual(result.post_type, "video")
+        self.assertEqual(result.base_filename, "作者_测试标题")
+        self.assertEqual(len(result.video_assets), 2)
+        self.assertEqual(
+            result.video_assets[0].url,
+            "https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/high.mp4",
+        )
+        self.assertEqual(
+            result.video_assets[1].url,
+            "https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/low.mp4",
+        )
+        self.assertEqual(result.video_assets[0].cover_url, "https://i0.hdslb.com/bfs/archive/cover.jpg")
+        self.assertIn("x/web-interface/view?bvid=BV1xx411c7mD", mock_get.call_args_list[0].args[0])
+        self.assertIn("x/player/playurl?", mock_get.call_args_list[1].args[0])
+
+    @patch("xhs_download.services.platforms.bilibili.request_get_with_retry")
+    def test_parse_url_resolves_b23_short_link(self, mock_get):
+        resolve_response = Mock()
+        resolve_response.url = "https://www.bilibili.com/video/BV1xx411c7mD/?p=1"
+        resolve_response.close = Mock()
+
+        view_response = Mock()
+        view_response.json.return_value = {
+            "code": 0,
+            "data": {
+                "bvid": "BV1xx411c7mD",
+                "aid": 2,
+                "title": "测试标题",
+                "pic": "//i0.hdslb.com/bfs/archive/cover.jpg",
+                "owner": {"name": "作者"},
+                "pages": [{"cid": 62131, "page": 1, "part": "P1"}],
+            },
+        }
+        view_response.close = Mock()
+
+        play_response = Mock()
+        play_response.json.return_value = {
+            "code": 0,
+            "data": {
+                "quality": 64,
+                "durl": [{"size": 100, "url": "//upos-sz-mirrorcosov.bilivideo.com/upgcxcode/video.mp4"}],
+            },
+        }
+        play_response.close = Mock()
+        mock_get.side_effect = [resolve_response, view_response, play_response]
+
+        result = BilibiliAdapter().parse_url("https://b23.tv/abc123")
+
+        self.assertEqual(result.video_assets[0].url, "https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/video.mp4")
+        self.assertEqual(result.video_assets[0].cover_url, "https://i0.hdslb.com/bfs/archive/cover.jpg")
+        self.assertEqual(mock_get.call_args_list[0].args[0], "https://b23.tv/abc123")
+
+    def test_get_media_headers_uses_bilibili_headers_for_bilibili_media(self):
+        self.assertIs(
+            get_media_headers("https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/video.mp4"),
+            BILIBILI_HEADERS,
+        )
+
+
 class XhsDownloadArchiveTests(SimpleTestCase):
     @patch("xhs_download.services.downloads.request_get_with_retry")
     def test_build_download_archive_keeps_original_image_bytes_by_default(self, mock_get):
@@ -513,6 +631,7 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "theme-bilibili")
         self.assertContains(response, 'action="/bilibili/results/"')
+        self.assertContains(response, "粘贴哔哩哔哩视频链接")
 
     @patch("xhs_download.views.parse_media_page")
     def test_home_results_keep_home_result_theme(self, mock_parse):
@@ -546,6 +665,31 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertContains(response, "抖音")
         self.assertContains(response, "result-theme-xhs")
         mock_parse.assert_called_once_with("https://v.douyin.com/abc123/")
+
+    @patch("xhs_download.views.parse_media_page")
+    def test_bilibili_results_render_video_asset(self, mock_parse):
+        mock_parse.return_value = ParseResult(
+            platform="bilibili",
+            post_type="video",
+            base_filename="作者_标题",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url="https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/video.mp4",
+                    platform="bilibili",
+                    cover_url="https://i0.hdslb.com/bfs/archive/cover.jpg",
+                    cover_preview_url="https://i0.hdslb.com/bfs/archive/cover.jpg",
+                ),
+            ),
+        )
+
+        response = Client().get("/bilibili/results/", {"q": "https://www.bilibili.com/video/BV1xx411c7mD/"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "视频笔记")
+        self.assertContains(response, "哔哩哔哩")
+        self.assertContains(response, "已解析到 1 个视频资源")
+        mock_parse.assert_called_once_with("https://www.bilibili.com/video/BV1xx411c7mD/")
 
     @patch("xhs_download.views.build_download_archive_file")
     def test_download_endpoint_returns_zip_response(self, mock_archive):

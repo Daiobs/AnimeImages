@@ -107,7 +107,7 @@
                                     <span class="platform-pill">{{ platform_name }}</span>
                                 {% endif %}
                                 {% if post_type == "video" %}
-                                    已解析到 1 个视频资源
+                                    已解析到 {{ video_items|length }} 个视频资源
                                 {% else %}
                                     共解析到 {{ image_items|length }} 张图片
                                 {% endif %}
@@ -270,7 +270,7 @@
                                     <i class="bi bi-link"></i>
                                 </div>
                                 <h5 class="fw-bold">复制链接</h5>
-                                <p class="text-muted small mb-0">从小红书或抖音复制需要保存的内容链接。</p>
+                                <p class="text-muted small mb-0">从小红书、抖音或哔哩哔哩复制需要保存的内容链接。</p>
                             </div>
                         </div>
                     </div>
