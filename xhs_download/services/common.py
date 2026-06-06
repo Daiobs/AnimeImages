@@ -21,6 +21,8 @@ PAGE_HOST_SUFFIXES = ("xiaohongshu.com", "xhslink.com", "douyin.com", "iesdouyin
 MEDIA_HOST_SUFFIXES = (
     "xiaohongshu.com",
     "xhscdn.com",
+    "amemv.com",
+    "snssdk.com",
     "douyin.com",
     "douyinpic.com",
     "douyinvod.com",
@@ -28,6 +30,7 @@ MEDIA_HOST_SUFFIXES = (
     "douyinstatic.com",
     "byteimg.com",
     "bytetos.com",
+    "zjcdn.com",
 )
 
 

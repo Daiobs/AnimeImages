@@ -26,7 +26,7 @@ from .services.downloads import (
     save_media_items_to_server,
 )
 from .services.platforms import DouyinAdapter, XiaohongshuAdapter
-from .services.platforms.douyin import DOUYIN_HEADERS
+from .services.platforms.douyin import DOUYIN_HEADERS, extract_aweme_id, get_video_candidates
 from .services.parser import normalize_xhs_image_url, normalize_xhs_preview_image_url, parse_xhs_html
 from .services.registry import extract_url_from_text, get_adapter_for_url
 
@@ -73,6 +73,10 @@ class XhsUtilityTests(SimpleTestCase):
     def test_validate_media_url_rejects_private_ip(self):
         with self.assertRaises(XhsSecurityError):
             validate_media_url("http://10.0.0.2/private")
+
+    def test_validate_media_url_allows_douyin_redirect_hosts(self):
+        validate_media_url("https://aweme.snssdk.com/aweme/v1/play/?video_id=abc")
+        validate_media_url("https://v3-dy-o.zjcdn.com/video/tos/cn/path")
 
     @patch("xhs_download.services.common.requests.get")
     def test_request_get_with_retry_rejects_bad_final_redirect_host(self, mock_get):
@@ -124,6 +128,16 @@ class XhsParserTests(SimpleTestCase):
         self.assertEqual(
             extract_url_from_text("https://v.douyin.com/abc123/ 复制此链接，打开抖音搜索"),
             "https://v.douyin.com/abc123/",
+        )
+
+    def test_extract_aweme_id_from_douyin_urls(self):
+        self.assertEqual(
+            extract_aweme_id("https://www.douyin.com/video/7324602766213598501"),
+            "7324602766213598501",
+        )
+        self.assertEqual(
+            extract_aweme_id("https://www.douyin.com/?modal_id=7324602766213598501"),
+            "7324602766213598501",
         )
 
     def test_normalize_image_url_extracts_spectrum_key(self):
@@ -245,12 +259,130 @@ class DouyinAdapterTests(SimpleTestCase):
         self.assertEqual(result.video_assets[0].url, "https://v3-web.douyinvod.com/high.mp4")
         self.assertEqual(result.video_assets[0].cover_url, "https://p3-sign.douyinpic.com/cover.webp")
 
+    def test_parse_html_returns_video_from_mobile_share_router_data(self):
+        data = {
+            "loaderData": {
+                "video_(id)/page": {
+                    "videoInfoRes": {
+                        "item_list": [
+                            {
+                                "aweme_id": "7324602766213598501",
+                                "desc": "视频标题",
+                                "author": {"nickname": "作者"},
+                                "video": {
+                                    "play_addr": {
+                                        "url_list": [
+                                            "https://aweme.snssdk.com/aweme/v1/playwm/?video_id=abc&ratio=720p"
+                                        ]
+                                    },
+                                    "cover": {"url_list": ["https://p3-sign.douyinpic.com/cover.webp"]},
+                                },
+                            }
+                        ],
+                        "status_code": 0,
+                    }
+                }
+            }
+        }
+        html = f"""
+        <script>
+          window._ROUTER_DATA = {json.dumps(data, ensure_ascii=False)};
+        </script>
+        """
+
+        result = DouyinAdapter().parse_html(html)
+
+        self.assertEqual(result.platform, "douyin")
+        self.assertEqual(result.post_type, "video")
+        self.assertEqual(
+            result.video_assets[0].url,
+            "https://aweme.snssdk.com/aweme/v1/play/?video_id=abc&ratio=4k",
+        )
+        self.assertEqual(result.video_assets[0].cover_url, "https://p3-sign.douyinpic.com/cover.webp")
+
+    @patch("xhs_download.services.platforms.douyin.request_get_with_retry")
+    def test_parse_url_falls_back_to_mobile_share_page(self, mock_get):
+        desktop_response = Mock()
+        desktop_response.status_code = 200
+        desktop_response.url = "https://www.douyin.com/video/7324602766213598501"
+        desktop_response.text = "<html><body></body></html>"
+        desktop_response.close = Mock()
+
+        mobile_data = {
+            "loaderData": {
+                "video_(id)/page": {
+                    "videoInfoRes": {
+                        "item_list": [
+                            {
+                                "aweme_id": "7324602766213598501",
+                                "desc": "视频标题",
+                                "author": {"nickname": "作者"},
+                                "video": {
+                                    "play_addr": {
+                                        "url_list": [
+                                            "https://aweme.snssdk.com/aweme/v1/playwm/?video_id=abc"
+                                        ]
+                                    },
+                                },
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+        mobile_response = Mock()
+        mobile_response.status_code = 200
+        mobile_response.url = "https://www.iesdouyin.com/share/video/7324602766213598501/?region=CN"
+        mobile_response.text = f"<script>window._ROUTER_DATA = {json.dumps(mobile_data)};</script>"
+        mobile_response.close = Mock()
+        mock_get.side_effect = [desktop_response, mobile_response]
+
+        result = DouyinAdapter().parse_url("https://www.douyin.com/video/7324602766213598501")
+
+        self.assertEqual(result.post_type, "video")
+        self.assertEqual(len(result.video_assets), 1)
+        self.assertIn("/share/video/7324602766213598501/", mock_get.call_args_list[1].args[0])
+        desktop_response.close.assert_called_once()
+        mobile_response.close.assert_called_once()
+
+    def test_get_video_candidates_prefers_high_quality_unwatermarked_play_url(self):
+        candidates = get_video_candidates({
+            "play_addr": {
+                "url_list": ["https://aweme.snssdk.com/aweme/v1/playwm/?video_id=abc"]
+            }
+        })
+
+        self.assertEqual(
+            candidates[0],
+            "https://aweme.snssdk.com/aweme/v1/play/?video_id=abc&ratio=4k",
+        )
+        self.assertIn(
+            "https://aweme.snssdk.com/aweme/v1/play/?video_id=abc&ratio=1080p",
+            candidates,
+        )
+
+    def test_get_video_candidates_keeps_ratio_priority_with_bitrate_items(self):
+        candidates = get_video_candidates({
+            "bit_rate": [
+                {
+                    "bit_rate": 1200000,
+                    "play_addr": {
+                        "url_list": ["https://aweme.snssdk.com/aweme/v1/playwm/?video_id=abc&ratio=720p"]
+                    },
+                }
+            ]
+        })
+
+        self.assertEqual(
+            candidates[0],
+            "https://aweme.snssdk.com/aweme/v1/play/?video_id=abc&ratio=4k",
+        )
+
     def test_get_media_headers_uses_douyin_headers_for_douyin_media(self):
         self.assertIs(
             get_media_headers("https://v3-web.douyinvod.com/video.mp4"),
             DOUYIN_HEADERS,
         )
-
 
 class XhsDownloadArchiveTests(SimpleTestCase):
     @patch("xhs_download.services.downloads.request_get_with_retry")
@@ -396,6 +528,7 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "result-theme-home")
         self.assertContains(response, "抖音")
+        mock_parse.assert_called_once_with("https://v.douyin.com/abc123/")
 
     @patch("xhs_download.views.parse_media_page")
     def test_xhs_route_can_parse_douyin_link(self, mock_parse):

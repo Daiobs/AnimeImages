@@ -16,3 +16,4 @@
 - Added an initial Douyin adapter for page URL recognition and embedded JSON image/video extraction.
 - Moved the image library to `/library/` and added SnapAny-style site navigation for home, Xiaohongshu, and Douyin.
 - Simplified the header to site name plus settings, kept primary actions blue, and scoped platform colors to parsed results.
+- Added Douyin mobile share-page fallback and public play URL variants for more reliable baseline video parsing.

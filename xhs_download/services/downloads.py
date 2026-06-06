@@ -418,7 +418,8 @@ def build_download_archive_file(
                 archive.writestr("failed.txt", "\n".join(failures).encode("utf-8"))
 
         if saved_count == 0:
-            raise XhsDownloadError("没有资源保存成功")
+            detail = f"：{failures[0]}" if failures else ""
+            raise XhsDownloadError(f"没有资源保存成功{detail}")
 
         archive_file.seek(0)
         return {
@@ -567,7 +568,8 @@ def save_media_items_to_server(
         (save_folder / "failed.txt").write_text("\n".join(failures), encoding="utf-8")
 
     if not saved_files:
-        raise XhsDownloadError("没有资源保存成功")
+        detail = f"：{failures[0]}" if failures else ""
+        raise XhsDownloadError(f"没有资源保存成功{detail}")
 
     return {
         "save_folder": str(save_folder),
