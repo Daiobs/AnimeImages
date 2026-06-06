@@ -15,6 +15,7 @@
     <section
             class="xhs-download-page {{ theme_class|default:'theme-home' }}"
             data-download-url="{{ download_url }}"
+            data-download-task-url="{{ download_task_url }}"
             data-base-filename="{{ base_filename|default:'xhs_image' }}"
     >
         <div class="container-fluid px-4 px-md-5">
@@ -170,7 +171,7 @@
                                         </div>
 
                                         <div class="position-absolute bottom-0 start-0 end-0 p-2 bg-dark bg-opacity-50 text-white small">
-                                            视频资源，点击选中
+                                            视频资源 · {{ item.size_label|default:"大小未知" }}
                                         </div>
                                     </div>
                                 {% endfor %}
@@ -207,6 +208,12 @@
                     </div>
 
                     <div class="card-footer bg-white">
+                        <div class="download-progress-wrap mb-2" id="download-progress-wrap" hidden>
+                            <div class="download-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                                <div class="download-progress-bar" id="download-progress-bar" style="width: 0%;"></div>
+                            </div>
+                            <div class="download-progress-percent" id="download-progress-percent">0%</div>
+                        </div>
                         <div id="status" class="small text-muted">
                             点击资源卡片可选择，支持批量保存。
                         </div>

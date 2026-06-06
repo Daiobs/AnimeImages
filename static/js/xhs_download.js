@@ -146,6 +146,10 @@
         }
     }
 
+    function sleep(ms) {
+        return new Promise((resolve) => window.setTimeout(resolve, ms));
+    }
+
     document.addEventListener("DOMContentLoaded", () => {
         const page = document.querySelector(".xhs-download-page");
 
@@ -173,6 +177,11 @@
         const videoSaveModeInput = document.getElementById("video-save-mode");
         const baseFilename = page.dataset.baseFilename || "xhs_image";
         const downloadUrl = page.dataset.downloadUrl;
+        const downloadTaskUrl = page.dataset.downloadTaskUrl;
+        const progressWrap = document.getElementById("download-progress-wrap");
+        const progressTrack = progressWrap ? progressWrap.querySelector("[role='progressbar']") : null;
+        const progressBar = document.getElementById("download-progress-bar");
+        const progressPercent = document.getElementById("download-progress-percent");
         const savedSettings = loadSettings();
 
         let selected = [];
@@ -260,6 +269,115 @@
             if (serverSaveSettings) {
                 serverSaveSettings.hidden = downloadMode !== "server";
             }
+        }
+
+        function setProgress(percent) {
+            const value = Math.max(0, Math.min(100, Math.round(percent || 0)));
+            if (progressWrap) {
+                progressWrap.hidden = false;
+            }
+            if (progressTrack) {
+                progressTrack.setAttribute("aria-valuenow", String(value));
+            }
+            if (progressBar) {
+                progressBar.style.width = `${value}%`;
+            }
+            if (progressPercent) {
+                progressPercent.innerText = `${value}%`;
+            }
+        }
+
+        async function readResponseBlobWithProgress(response, startPercent, endPercent) {
+            const contentLength = Number.parseInt(response.headers.get("Content-Length") || "0", 10);
+            if (!response.body || !contentLength) {
+                const blob = await response.blob();
+                setProgress(endPercent);
+                return blob;
+            }
+
+            const reader = response.body.getReader();
+            const chunks = [];
+            let received = 0;
+
+            while (true) {
+                const {done, value} = await reader.read();
+                if (done) {
+                    break;
+                }
+                chunks.push(value);
+                received += value.length;
+                const ratio = received / contentLength;
+                setProgress(startPercent + (endPercent - startPercent) * ratio);
+            }
+
+            setProgress(endPercent);
+            return new Blob(chunks, {type: response.headers.get("Content-Type") || "application/zip"});
+        }
+
+        async function waitForDownloadTask(taskStatusUrl) {
+            while (true) {
+                const response = await fetch(taskStatusUrl, {cache: "no-store"});
+                if (!response.ok) {
+                    throw new Error(await parseErrorResponse(response));
+                }
+
+                const task = await response.json();
+                setProgress(task.progress || 0);
+
+                if (task.status === "failed") {
+                    throw new Error(task.message || "下载失败");
+                }
+
+                if (task.status === "completed") {
+                    return task;
+                }
+
+                await sleep(500);
+            }
+        }
+
+        async function downloadWithTask(payload) {
+            if (!downloadTaskUrl) {
+                throw new Error("当前页面缺少下载任务接口");
+            }
+
+            setProgress(0);
+            setStatus(status, "正在准备下载...");
+
+            const createResponse = await fetch(downloadTaskUrl, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-CSRFToken": getCookie("csrftoken"),
+                },
+                body: JSON.stringify(payload),
+            });
+
+            if (!createResponse.ok) {
+                throw new Error(await parseErrorResponse(createResponse));
+            }
+
+            const created = await createResponse.json();
+            const completed = await waitForDownloadTask(created.status_url);
+            const fileUrl = completed.file_url || created.file_url;
+
+            setProgress(95);
+            setStatus(status, "正在接收文件...");
+
+            const fileResponse = await fetch(fileUrl, {cache: "no-store"});
+            if (!fileResponse.ok) {
+                throw new Error(await parseErrorResponse(fileResponse));
+            }
+
+            const filename = getDownloadFilename(fileResponse, baseFilename);
+            const blob = await readResponseBlobWithProgress(fileResponse, 95, 100);
+            const savedMessage = await saveZipBlob(blob, filename, useFilePicker);
+            const savedCount = fileResponse.headers.get("X-Saved-Count") || completed.saved_count || "?";
+            const failedCount = fileResponse.headers.get("X-Failed-Count") || completed.failed_count || "0";
+            const variant = String(failedCount) === "0" ? "text-success" : "text-muted";
+
+            setProgress(100);
+            setStatus(status, `${savedMessage}：${filename}，成功 ${savedCount} 个，失败 ${failedCount} 个`, variant);
         }
 
         cards.forEach((card) => {
@@ -372,21 +490,29 @@
                 downloadBtn.disabled = true;
 
                 try {
+                    const payload = {
+                        media_items: selected,
+                        base_filename: baseFilename,
+                        download_mode: downloadModeInput ? downloadModeInput.value : "browser",
+                        save_dir: saveDirInput ? saveDirInput.value.trim() : "xhs",
+                        save_format: saveFormatInput ? saveFormatInput.value : "original",
+                        quality: qualityInput ? qualityInput.value || 95 : 95,
+                        video_save_mode: videoSaveModeInput ? videoSaveModeInput.value : "video",
+                    };
+
+                    if (payload.download_mode === "browser") {
+                        await downloadWithTask(payload);
+                        return;
+                    }
+
+                    setProgress(0);
                     const response = await fetch(downloadUrl, {
                         method: "POST",
                         headers: {
                             "Content-Type": "application/json",
                             "X-CSRFToken": getCookie("csrftoken"),
                         },
-                        body: JSON.stringify({
-                            media_items: selected,
-                            base_filename: baseFilename,
-                            download_mode: downloadModeInput ? downloadModeInput.value : "browser",
-                            save_dir: saveDirInput ? saveDirInput.value.trim() : "xhs",
-                            save_format: saveFormatInput ? saveFormatInput.value : "original",
-                            quality: qualityInput ? qualityInput.value || 95 : 95,
-                            video_save_mode: videoSaveModeInput ? videoSaveModeInput.value : "video",
-                        }),
+                        body: JSON.stringify(payload),
                     });
 
                     if (!response.ok) {
@@ -396,12 +522,13 @@
                     const contentType = response.headers.get("Content-Type") || "";
                     if (contentType.includes("application/json")) {
                         const data = await response.json();
+                        setProgress(100);
                         setStatus(status, data.message || "服务端保存完成", "text-success");
                         return;
                     }
 
                     const filename = getDownloadFilename(response, baseFilename);
-                    const blob = await response.blob();
+                    const blob = await readResponseBlobWithProgress(response, 0, 100);
                     const savedMessage = await saveZipBlob(blob, filename, useFilePicker);
                     const savedCount = response.headers.get("X-Saved-Count") || "?";
                     const failedCount = response.headers.get("X-Failed-Count") || "0";

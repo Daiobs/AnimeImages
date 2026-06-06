@@ -2,6 +2,7 @@ import re
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from ..assets import MediaAsset, ParseResult
+from ..candidates import MediaCandidate, dedupe_candidates
 from ..common import (
     XhsParseError,
     clean_filename,
@@ -138,25 +139,25 @@ def build_play_params(view_data, page, preferred_qn=80):
     return params
 
 
-def get_play_urls(play_data):
+def get_play_items(play_data):
     durls = play_data.get("durl") or []
-    urls = []
+    items = []
     for item in durls:
         url = normalize_bilibili_url(item.get("url") or "")
         if not url:
             continue
-        order = int(item.get("order") or len(urls) + 1)
-        urls.append((order, url))
+        order = int(item.get("order") or len(items) + 1)
+        size = int(item.get("size") or 0)
+        items.append((order, url, size))
 
-    urls.sort(key=lambda item: item[0])
-    seen = set()
-    ordered_urls = []
-    for _, url in urls:
-        if url in seen:
-            continue
-        seen.add(url)
-        ordered_urls.append(url)
-    return ordered_urls
+    items.sort(key=lambda item: item[0])
+    candidates = []
+    for _, url, size in items:
+        candidates.append(MediaCandidate(url=url, size_bytes=size, source="durl"))
+    return [
+        {"url": candidate.url, "size_bytes": candidate.size_bytes}
+        for candidate in dedupe_candidates(candidates)
+    ]
 
 
 class BilibiliAdapter(BasePlatformAdapter):
@@ -190,8 +191,8 @@ class BilibiliAdapter(BasePlatformAdapter):
             build_play_params(view_data, page),
             referer=page_url,
         )
-        video_urls = get_play_urls(play_data)
-        if not video_urls:
+        video_items = get_play_items(play_data)
+        if not video_items:
             raise XhsParseError("没有解析到可直接下载的哔哩哔哩视频源")
 
         owner = view_data.get("owner") or {}
@@ -208,14 +209,15 @@ class BilibiliAdapter(BasePlatformAdapter):
             assets=tuple(
                 MediaAsset(
                     media_type="video",
-                    url=video_url,
+                    url=video_item["url"],
                     platform=self.platform_id,
                     cover_url=cover_url,
                     cover_preview_url=cover_url,
                     headers=self.headers,
                     media_host_suffixes=self.media_host_suffixes,
                     quality_label=f"{play_data.get('quality')}P" if play_data.get("quality") else "原始文件",
+                    size_bytes=video_item["size_bytes"],
                 )
-                for video_url in video_urls
+                for video_item in video_items
             ),
         )

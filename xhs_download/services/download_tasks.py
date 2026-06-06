@@ -1,0 +1,136 @@
+import threading
+import time
+import uuid
+
+from .downloads import build_download_archive_file
+
+
+TASK_TTL_SECONDS = 30 * 60
+_tasks = {}
+_lock = threading.Lock()
+
+
+def _now():
+    return time.time()
+
+
+def cleanup_download_tasks():
+    cutoff = _now() - TASK_TTL_SECONDS
+    expired = []
+
+    with _lock:
+        for task_id, task in _tasks.items():
+            if task.get("created_at", 0) < cutoff:
+                expired.append((task_id, task))
+        for task_id, _ in expired:
+            _tasks.pop(task_id, None)
+
+    for _, task in expired:
+        archive_file = task.get("file")
+        if archive_file:
+            try:
+                archive_file.close()
+            except Exception:
+                pass
+
+
+def serialize_task(task):
+    return {
+        "task_id": task["task_id"],
+        "status": task["status"],
+        "progress": int(task.get("progress", 0)),
+        "message": task.get("message", ""),
+        "filename": task.get("filename", ""),
+        "saved_count": task.get("saved_count", 0),
+        "failed_count": task.get("failed_count", 0),
+    }
+
+
+def get_download_task(task_id):
+    cleanup_download_tasks()
+    with _lock:
+        task = _tasks.get(task_id)
+        return dict(task) if task else None
+
+
+def pop_download_task(task_id):
+    with _lock:
+        return _tasks.pop(task_id, None)
+
+
+def update_task(task_id, **changes):
+    with _lock:
+        task = _tasks.get(task_id)
+        if not task:
+            return
+        task.update(changes)
+        task["updated_at"] = _now()
+
+
+def run_download_task(task_id, payload):
+    def progress_callback(completed, total):
+        if total <= 0:
+            return
+        completed = max(0, min(float(completed), float(total)))
+        progress = 5 + round((completed / total) * 90)
+        completed_count = min(int(completed), total)
+        update_task(
+            task_id,
+            progress=min(progress, 95),
+            message=f"正在打包 {completed_count}/{total}",
+        )
+
+    try:
+        update_task(task_id, status="running", progress=5, message="正在准备资源")
+        archive = build_download_archive_file(
+            media_items=payload.get("media_items", []),
+            base_filename=payload.get("base_filename", "xhs"),
+            save_format=payload.get("save_format", "original"),
+            quality=payload.get("quality", 95),
+            video_save_mode=payload.get("video_save_mode", "video"),
+            progress_callback=progress_callback,
+        )
+        update_task(
+            task_id,
+            status="completed",
+            progress=100,
+            message="打包完成",
+            filename=archive["filename"],
+            file=archive["file"],
+            saved_count=archive["saved_count"],
+            failed_count=archive["failed_count"],
+        )
+    except Exception as error:
+        update_task(
+            task_id,
+            status="failed",
+            progress=100,
+            message=str(error),
+        )
+
+
+def create_download_task(payload):
+    cleanup_download_tasks()
+    task_id = uuid.uuid4().hex
+    task = {
+        "task_id": task_id,
+        "status": "queued",
+        "progress": 0,
+        "message": "等待开始",
+        "filename": "",
+        "saved_count": 0,
+        "failed_count": 0,
+        "created_at": _now(),
+        "updated_at": _now(),
+    }
+
+    with _lock:
+        _tasks[task_id] = task
+
+    worker = threading.Thread(
+        target=run_download_task,
+        args=(task_id, payload),
+        daemon=True,
+    )
+    worker.start()
+    return task

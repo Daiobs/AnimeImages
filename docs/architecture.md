@@ -44,14 +44,16 @@ Keep views thin over time:
 The current download module keeps the `/xhs_download/` route as a stable UI entry while its parser layer is being prepared for multiple platforms. New parsing work should use the platform adapter shape instead of adding platform-specific logic to views.
 
 - `services/assets.py`: shared `MediaAsset` and `ParseResult` data structures
+- `services/candidates.py`: lightweight media candidate ranking/deduplication for platforms that expose multiple source URLs
 - `services/registry.py`: choose the right platform adapter for a submitted URL
 - `services/platforms/base.py`: platform adapter protocol
 - `services/platforms/xiaohongshu.py`: Xiaohongshu URL support, HTML parsing, preview URL normalization, and media asset extraction
-- `services/platforms/douyin.py`: Douyin URL support, mobile share-page fallback, and embedded JSON image/video asset extraction
-- `services/platforms/bilibili.py`: Bilibili URL support, BV/AV metadata lookup, public mp4 play URL extraction, and cover handling
+- `services/platforms/douyin.py`: Douyin URL support, embedded JSON extraction, mobile feed/share providers, and ranked video candidate selection
+- `services/platforms/bilibili.py`: Bilibili URL support, BV/AV metadata lookup, public mp4 play URL extraction, candidate URL deduplication, and cover handling
 - `services/parser.py`: backward-compatible Xiaohongshu wrapper over the adapter layer
 - `services/common.py`: filename cleanup, URL encoding, request retry, initial/final domain validation
 - `services/downloads.py`: validate selected media, preserve original files by default, and build a temporary ZIP archive
+- `services/download_tasks.py`: lightweight in-memory download task state for browser ZIP progress in local/single-process use
 - `views.py`: render pages, proxy preview images, and return ZIP download responses
 
 The intended extension path for Douyin and future platforms is:
@@ -61,9 +63,13 @@ The intended extension path for Douyin and future platforms is:
 3. Return `ParseResult` with platform-neutral `MediaAsset` objects.
 4. Reuse the existing preview proxy, original-file download, and ZIP archive pipeline.
 
-Douyin support is intentionally scoped to stable no-login parsing at this stage. It handles common embedded JSON shapes, mobile share router data, and public play URL variants. Bilibili support currently uses the public view/playurl APIs for direct mp4 URLs; DASH audio/video merge and higher-quality source selection should be added later as a separate provider layer that can enumerate candidate streams, probe size/bitrate, and fall back to the stable source without changing the adapter/view contract.
+Douyin support is intentionally scoped to stable no-login parsing at this stage. It handles common embedded JSON shapes, mobile share router data, mobile feed candidate URLs, and public play URL variants. Douyin now has an internal provider flow: the adapter builds a parse context, then fallback providers such as mobile feed and mobile share try to return a `ParseResult`. Candidate video URLs are ranked by known file size, resolution, bitrate, ratio preference, and source priority. This keeps the future ultra-high path clean: a native app endpoint provider or optional external API provider can be added without growing view logic or replacing the adapter contract.
+
+Xiaohongshu does not currently need the same provider split because the stable path is still page HTML plus normalized media URLs. Keep it as a compact adapter until a second independent source, such as an app API or high-definition video provider, is introduced. Bilibili support currently uses the public view/playurl APIs for direct mp4 URLs; its `durl` values are treated as ordered source segments and only share candidate deduplication. DASH audio/video merge and higher-quality source selection should be added later as a separate provider layer that can enumerate candidate streams, probe size/bitrate, and fall back to the stable source without changing the adapter/view contract.
 
 Downloads are returned to the browser as ZIP files. The ZIP is built through a temporary file instead of keeping the whole archive in memory. Images default to original-file output so parsed source bytes are not re-encoded during normal use. Conversion helpers remain internal, but the current UI intentionally hides image format and quality controls to keep the product aligned with original-material backup.
+
+The result UI follows a simple display contract: images stay visual-only because original quality is implied, while videos can show file size when the adapter or a lightweight probe can provide it. Browser ZIP downloads use an in-memory task to expose percent progress while the server builds the archive; when a response has `Content-Length`, progress advances within a single large file by bytes read, then the frontend streams the final ZIP response from 95% to 100%. This is appropriate for the current local/PyCharm workflow; a multi-worker production deployment should replace it with a shared queue/state backend such as Redis plus Celery/RQ.
 
 The server no longer accepts arbitrary client-provided filesystem paths. This keeps local development convenient while avoiding unsafe production behavior.
 

@@ -1,11 +1,13 @@
 import json
 import re
+from dataclasses import dataclass
 from html import unescape
 from urllib.parse import parse_qsl, urlencode, unquote, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
 
 from ..assets import MediaAsset, ParseResult
+from ..candidates import MediaCandidate, rank_media_candidates
 from ..common import (
     clean_filename,
     normalize_text,
@@ -25,6 +27,7 @@ DOUYIN_MEDIA_HOST_SUFFIXES = (
     "douyinstatic.com",
     "byteimg.com",
     "bytetos.com",
+    "365yg.com",
     "zjcdn.com",
 )
 DOUYIN_HEADERS = {
@@ -45,6 +48,15 @@ DOUYIN_MOBILE_HEADERS = {
     ),
     "Referer": "https://www.iesdouyin.com/",
 }
+DOUYIN_APP_HEADERS = {
+    **DOUYIN_HEADERS,
+    "User-Agent": (
+        "com.ss.android.ugc.aweme/260000 "
+        "(Linux; U; Android 12; zh_CN; Pixel 6; Build/SP1A.210812.016)"
+    ),
+    "Accept": "application/json",
+    "Referer": "https://www.douyin.com/",
+}
 
 
 AWEME_ID_PATTERNS = (
@@ -61,6 +73,16 @@ VIDEO_RATIO_SCORES = {
     "720p": 2000,
     "540p": 1000,
 }
+BROWSER_IMAGE_EXTENSIONS = {
+    "jpg": 60,
+    "jpeg": 60,
+    "webp": 55,
+    "png": 50,
+    "avif": 45,
+    "gif": 40,
+    "image": 20,
+}
+UNSUPPORTED_PREVIEW_IMAGE_EXTENSIONS = {"heic", "heif"}
 
 
 def normalize_douyin_url(url):
@@ -100,7 +122,14 @@ def get_ratio_score(ratio):
 def expand_video_quality_urls(url):
     url = normalize_douyin_video_url(url)
     parsed = urlparse(url)
-    if "video_id=" not in parsed.query or "/aweme/v1/play" not in parsed.path:
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if (
+        "video_id" not in query
+        or "/aweme/v1/play" not in parsed.path
+        or query.get("sign")
+        or query.get("biz_sign")
+        or query.get("is_play_url")
+    ):
         return [(get_ratio_score(get_url_ratio(url)), url)]
 
     expanded = []
@@ -143,6 +172,41 @@ def first_url(value):
             if url:
                 return url
     return ""
+
+
+def get_url_extension(url):
+    path = urlparse(url or "").path.lower()
+    if "." not in path:
+        return ""
+    return path.rsplit(".", 1)[1]
+
+
+def is_http_url(url):
+    parsed = urlparse(url or "")
+    return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+
+
+def iter_urls(value):
+    if not value:
+        return
+    if isinstance(value, str):
+        url = normalize_douyin_url(value)
+        if url:
+            yield url
+        return
+    if isinstance(value, list):
+        for item in value:
+            yield from iter_urls(item)
+        return
+    if isinstance(value, dict):
+        for key in ("url_list", "urlList", "url", "uri", "download_url", "downloadUrl"):
+            yield from iter_urls(value.get(key))
+
+
+def iter_http_urls(value):
+    for url in iter_urls(value) or ():
+        if is_http_url(url):
+            yield url
 
 
 def iter_dicts(value):
@@ -302,45 +366,144 @@ def get_image_items(aweme):
     return image_items
 
 
+def get_browser_image_score(url):
+    extension = get_url_extension(url)
+    if extension in UNSUPPORTED_PREVIEW_IMAGE_EXTENSIONS:
+        return 0
+    return BROWSER_IMAGE_EXTENSIONS.get(extension, 10)
+
+
+def choose_browser_preview_image_url(value):
+    candidates = [
+        (get_browser_image_score(url), index, url)
+        for index, url in enumerate(iter_http_urls(value))
+        if get_browser_image_score(url) > 0
+    ]
+    if not candidates:
+        return ""
+    candidates.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+    return candidates[0][2]
+
+
+def get_video_cover_urls(video):
+    cover_url = ""
+    preview_url = ""
+
+    for key in ("cover", "origin_cover", "dynamic_cover", "animated_cover"):
+        value = video.get(key)
+        if not cover_url:
+            cover_url = choose_browser_preview_image_url(value) or next(iter_http_urls(value), "")
+        if not preview_url:
+            preview_url = choose_browser_preview_image_url(value)
+        if cover_url and preview_url:
+            return cover_url, preview_url
+
+    for thumb in video.get("big_thumbs") or []:
+        if not isinstance(thumb, dict):
+            continue
+        value = thumb.get("img_urls") or thumb.get("img_url")
+        if not cover_url:
+            cover_url = choose_browser_preview_image_url(value) or next(iter_http_urls(value), "")
+        if not preview_url:
+            preview_url = choose_browser_preview_image_url(value)
+        if cover_url and preview_url:
+            return cover_url, preview_url
+
+    return cover_url, preview_url or cover_url
+
+
 def get_video_cover_url(video):
-    for key in ("origin_cover", "cover", "dynamic_cover"):
-        url = first_url(video.get(key))
-        if url:
-            return url
+    cover_url, _ = get_video_cover_urls(video)
+    return cover_url
     return ""
 
 
-def get_video_candidates(video):
+def parse_int(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def get_addr_size(addr):
+    if not isinstance(addr, dict):
+        return 0
+    return parse_int(addr.get("data_size") or addr.get("size"))
+
+
+def get_addr_dimension(addr, key):
+    if not isinstance(addr, dict):
+        return 0
+    return parse_int(addr.get(key))
+
+
+def get_video_media_candidates(video):
     candidates = []
 
     for item in video.get("bit_rate") or []:
         if not isinstance(item, dict):
             continue
-        play_addr = item.get("play_addr") or item.get("play_addr_265") or item.get("play_addr_h264")
-        url = first_url(play_addr)
-        if not url:
-            continue
-        score = int(item.get("bit_rate") or item.get("quality_type") or 0)
-        for ratio_score, candidate_url in expand_video_quality_urls(url):
-            candidates.append(((score, ratio_score), candidate_url))
+        bit_rate = parse_int(item.get("bit_rate"))
+        quality_type = parse_int(item.get("quality_type"))
+        for key in ("play_addr", "play_addr_h264", "play_addr_265"):
+            play_addr = item.get(key)
+            size_bytes = get_addr_size(play_addr)
+            width = get_addr_dimension(play_addr, "width")
+            height = get_addr_dimension(play_addr, "height")
+            for url in iter_urls(play_addr) or ():
+                for ratio_score, candidate_url in expand_video_quality_urls(url):
+                    candidates.append(
+                        MediaCandidate(
+                            url=candidate_url,
+                            size_bytes=size_bytes,
+                            width=width,
+                            height=height,
+                            bit_rate=bit_rate,
+                            ratio_score=ratio_score,
+                            quality_type=quality_type,
+                            source=f"bit_rate.{key}",
+                            quality_label=get_url_ratio(candidate_url) or video.get("ratio") or "原始文件",
+                        )
+                    )
 
-    for key in ("play_addr", "download_addr", "play_addr_265", "play_addr_h264"):
-        url = first_url(video.get(key))
-        if url:
-            candidates.extend(
-                ((0, ratio_score), candidate_url)
-                for ratio_score, candidate_url in expand_video_quality_urls(url)
-            )
+    for priority, key in enumerate(("download_addr", "play_addr_h264", "play_addr", "play_addr_265"), start=1):
+        addr = video.get(key)
+        size_bytes = get_addr_size(addr)
+        width = get_addr_dimension(addr, "width")
+        height = get_addr_dimension(addr, "height")
+        for url in iter_urls(addr) or ():
+            for ratio_score, candidate_url in expand_video_quality_urls(url):
+                candidates.append(
+                    MediaCandidate(
+                        url=candidate_url,
+                        size_bytes=size_bytes,
+                        width=width,
+                        height=height,
+                        ratio_score=ratio_score,
+                        priority=priority,
+                        source=key,
+                        quality_label=get_url_ratio(candidate_url) or video.get("ratio") or "原始文件",
+                    )
+                )
 
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    urls = []
-    seen = set()
-    for _, url in candidates:
-        if url in seen:
-            continue
-        seen.add(url)
-        urls.append(url)
-    return urls
+    return rank_media_candidates(candidates)
+
+
+def get_video_candidate_items(video):
+    return [
+        {
+            "url": candidate.url,
+            "size_bytes": candidate.size_bytes,
+            "quality_label": candidate.quality_label,
+            "score": candidate.score,
+            "source": candidate.source,
+        }
+        for candidate in get_video_media_candidates(video)
+    ]
+
+
+def get_video_candidates(video):
+    return [item["url"] for item in get_video_candidate_items(video)]
 
 
 def build_mobile_share_urls(aweme_id):
@@ -352,12 +515,130 @@ def build_mobile_share_urls(aweme_id):
     )
 
 
+def build_mobile_feed_url(aweme_id):
+    if not aweme_id:
+        return ""
+    params = {
+        "aid": "1128",
+        "app_name": "aweme",
+        "version_name": "26.0.0",
+        "version_code": "260000",
+        "device_platform": "android",
+        "os": "android",
+        "ssmix": "a",
+        "device_type": "Pixel 6",
+        "device_brand": "google",
+        "language": "zh",
+        "os_api": "31",
+        "os_version": "12",
+        "openudid": "1234567890",
+        "manifest_version_code": "260000",
+        "resolution": "1080*1920",
+        "dpi": "420",
+        "update_version_code": "26009900",
+        "aweme_id": aweme_id,
+    }
+    return f"https://aweme.snssdk.com/aweme/v1/feed/?{urlencode(params)}"
+
+
+def find_aweme_by_id(data, aweme_id):
+    if not aweme_id:
+        return {}
+    for item in iter_dicts(data):
+        if item.get("aweme_id") == aweme_id and ("video" in item or "images" in item):
+            return item
+    return {}
+
+
+@dataclass
+class DouyinParseContext:
+    url: str
+    final_url: str = ""
+    html: str = ""
+    aweme_id: str = ""
+    direct_result: ParseResult | None = None
+    direct_error: Exception | None = None
+
+
+class DouyinResultProvider:
+    name = ""
+
+    def parse(self, adapter, context):
+        raise NotImplementedError
+
+
+class DouyinMobileFeedProvider(DouyinResultProvider):
+    name = "mobile_feed"
+
+    def parse(self, adapter, context):
+        if not context.aweme_id:
+            return None
+
+        feed_url = build_mobile_feed_url(context.aweme_id)
+        if not feed_url:
+            return None
+
+        response = request_get_with_retry(
+            feed_url,
+            headers=DOUYIN_APP_HEADERS,
+            timeout=15,
+            retries=2,
+            allowed_final_host_suffixes=("snssdk.com",),
+            final_url_message="抖音移动接口跳转到了不允许的域名",
+        )
+        try:
+            data = response.json()
+        finally:
+            response.close()
+
+        aweme = find_aweme_by_id(data, context.aweme_id)
+        if not aweme:
+            return None
+        result = adapter.parse_aweme(aweme)
+        return result if result.assets else None
+
+
+class DouyinMobileShareProvider(DouyinResultProvider):
+    name = "mobile_share"
+
+    def parse(self, adapter, context):
+        if not context.aweme_id:
+            return None
+
+        for share_url in build_mobile_share_urls(context.aweme_id):
+            try:
+                response = request_get_with_retry(
+                    share_url,
+                    headers=DOUYIN_MOBILE_HEADERS,
+                    timeout=15,
+                    retries=2,
+                    allowed_final_host_suffixes=adapter.page_host_suffixes,
+                    final_url_message="抖音移动分享页跳转到了不允许的域名",
+                )
+                try:
+                    result = adapter.parse_html(response.text, source_url=response.url)
+                    if result.assets:
+                        return result
+                finally:
+                    response.close()
+            except Exception:
+                continue
+        return None
+
+
+DOUYIN_RESULT_PROVIDERS = (
+    DouyinMobileFeedProvider(),
+    DouyinMobileShareProvider(),
+)
+
+
 class DouyinAdapter(BasePlatformAdapter):
     platform_id = "douyin"
     display_name = "抖音"
     page_host_suffixes = DOUYIN_PAGE_HOST_SUFFIXES
     media_host_suffixes = DOUYIN_MEDIA_HOST_SUFFIXES
     headers = DOUYIN_HEADERS
+    result_providers = DOUYIN_RESULT_PROVIDERS
 
     def parse_html(self, html, source_url=None):
         for data in load_json_candidates(html):
@@ -384,9 +665,10 @@ class DouyinAdapter(BasePlatformAdapter):
             )
 
         video = aweme.get("video") or {}
-        video_urls = get_video_candidates(video)
-        if video_urls:
-            cover_url = get_video_cover_url(video)
+        video_candidates = get_video_candidate_items(video)
+        if video_candidates:
+            video_candidate = video_candidates[0]
+            cover_url, cover_preview_url = get_video_cover_urls(video)
             return ParseResult(
                 platform=self.platform_id,
                 post_type="video",
@@ -394,10 +676,12 @@ class DouyinAdapter(BasePlatformAdapter):
                 assets=(
                     MediaAsset(
                         media_type="video",
-                        url=video_urls[0],
+                        url=video_candidate["url"],
                         platform=self.platform_id,
                         cover_url=cover_url,
-                        cover_preview_url=cover_url,
+                        cover_preview_url=cover_preview_url,
+                        quality_label=video_candidate["quality_label"],
+                        size_bytes=video_candidate["size_bytes"],
                         headers=self.headers,
                         media_host_suffixes=self.media_host_suffixes,
                     ),
@@ -433,13 +717,16 @@ class DouyinAdapter(BasePlatformAdapter):
 
         return assets
 
-    def parse_url(self, url):
-        self.require_supported_url(url)
-        direct_result = None
-        final_url = ""
-        html = ""
-        direct_error = None
+    def parse_mobile_feed(self, aweme_id):
+        context = DouyinParseContext(url="", aweme_id=aweme_id)
+        return DouyinMobileFeedProvider().parse(self, context)
 
+    def parse_mobile_share(self, aweme_id):
+        context = DouyinParseContext(url="", aweme_id=aweme_id)
+        return DouyinMobileShareProvider().parse(self, context)
+
+    def build_parse_context(self, url):
+        context = DouyinParseContext(url=url)
         try:
             response = request_get_with_retry(
                 url,
@@ -450,40 +737,40 @@ class DouyinAdapter(BasePlatformAdapter):
                 final_url_message="抖音页面跳转到了不允许的域名",
             )
             try:
-                final_url = response.url
-                html = response.text
-                direct_result = self.parse_html(html, source_url=final_url)
-                if direct_result.assets:
-                    return direct_result
+                context.final_url = response.url
+                context.html = response.text
+                context.direct_result = self.parse_html(context.html, source_url=context.final_url)
             finally:
                 response.close()
         except Exception as error:
-            direct_error = error
+            context.direct_error = error
 
-        aweme_id = extract_aweme_id(url) or extract_aweme_id(final_url) or extract_aweme_id(html)
-        for share_url in build_mobile_share_urls(aweme_id):
+        context.aweme_id = (
+            extract_aweme_id(context.url)
+            or extract_aweme_id(context.final_url)
+            or extract_aweme_id(context.html)
+        )
+        return context
+
+    def parse_url(self, url):
+        self.require_supported_url(url)
+        context = self.build_parse_context(url)
+
+        for provider in self.result_providers:
             try:
-                response = request_get_with_retry(
-                    share_url,
-                    headers=DOUYIN_MOBILE_HEADERS,
-                    timeout=15,
-                    retries=2,
-                    allowed_final_host_suffixes=self.page_host_suffixes,
-                    final_url_message="抖音移动分享页跳转到了不允许的域名",
-                )
-                try:
-                    result = self.parse_html(response.text, source_url=response.url)
-                    if result.assets:
-                        return result
-                finally:
-                    response.close()
+                result = provider.parse(self, context)
+                if result and result.assets:
+                    return result
             except Exception:
                 continue
 
-        if direct_result is not None:
-            return direct_result
-        if direct_error:
-            raise direct_error
+        if context.direct_result is not None and context.direct_result.assets:
+            return context.direct_result
+
+        if context.direct_result is not None:
+            return context.direct_result
+        if context.direct_error:
+            raise context.direct_error
 
         return ParseResult(
             platform=self.platform_id,

@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import requests
 from django.conf import settings
 from PIL import Image
 
@@ -16,6 +17,7 @@ from .common import (
     clean_filename,
     host_matches,
     request_get_with_retry,
+    validate_external_url,
     validate_media_url,
 )
 from .platforms.bilibili import BILIBILI_HEADERS, BILIBILI_MEDIA_HOST_SUFFIXES
@@ -154,8 +156,9 @@ def validate_content_length(response, max_bytes):
         raise XhsDownloadError("资源超过允许的大小限制")
 
 
-def write_limited_response(response, target, max_bytes):
+def write_limited_response(response, target, max_bytes, progress_callback=None):
     total = 0
+    content_length = parse_content_length(response)
 
     validate_content_length(response, max_bytes)
 
@@ -166,6 +169,8 @@ def write_limited_response(response, target, max_bytes):
         if total > max_bytes:
             raise XhsDownloadError("资源超过允许的大小限制")
         target.write(chunk)
+        if progress_callback:
+            progress_callback(total, content_length)
 
     return total
 
@@ -189,7 +194,69 @@ def fetch_media_response(url, headers=None, timeout=30):
     )
 
 
-def fetch_to_temp_path(url, headers=None, timeout=30, max_bytes=MAX_IMAGE_BYTES):
+def parse_content_range_total(content_range):
+    if not content_range:
+        return 0
+    try:
+        return int(str(content_range).split("/", 1)[1])
+    except (IndexError, TypeError, ValueError):
+        return 0
+
+
+def probe_media_size(url, headers=None, timeout=6):
+    validate_media_url(url)
+    request_headers = headers or get_media_headers(url)
+
+    try:
+        response = requests.head(
+            url,
+            headers=request_headers,
+            timeout=timeout,
+            allow_redirects=True,
+        )
+        try:
+            if response.status_code < 400:
+                validate_external_url(
+                    response.url,
+                    MEDIA_HOST_SUFFIXES,
+                    "资源 URL 跳转到了不允许的下载域名",
+                )
+                size = parse_content_length(response)
+                if size:
+                    return size
+        finally:
+            response.close()
+    except Exception:
+        pass
+
+    try:
+        response = requests.get(
+            url,
+            headers={**request_headers, "Range": "bytes=0-0"},
+            timeout=timeout,
+            allow_redirects=True,
+            stream=True,
+        )
+        try:
+            if response.status_code < 400:
+                validate_external_url(
+                    response.url,
+                    MEDIA_HOST_SUFFIXES,
+                    "资源 URL 跳转到了不允许的下载域名",
+                )
+                return (
+                    parse_content_range_total(response.headers.get("Content-Range"))
+                    or parse_content_length(response)
+                )
+        finally:
+            response.close()
+    except Exception:
+        pass
+
+    return 0
+
+
+def fetch_to_temp_path(url, headers=None, timeout=30, max_bytes=MAX_IMAGE_BYTES, progress_callback=None):
     response = fetch_media_response(url, headers=headers, timeout=timeout)
     fd, temp_path = tempfile.mkstemp(prefix="xhs_media_")
 
@@ -199,7 +266,12 @@ def fetch_to_temp_path(url, headers=None, timeout=30, max_bytes=MAX_IMAGE_BYTES)
             with response:
                 content_type = response.headers.get("Content-Type", "")
                 final_url = response.url
-                size = write_limited_response(response, temp_file, max_bytes=max_bytes)
+                size = write_limited_response(
+                    response,
+                    temp_file,
+                    max_bytes=max_bytes,
+                    progress_callback=progress_callback,
+                )
         return {
             "path": temp_path,
             "content_type": content_type,
@@ -317,6 +389,7 @@ def build_download_archive_file(
     save_format=ORIGINAL_FORMAT,
     quality=95,
     video_save_mode="video",
+    progress_callback=None,
 ):
     assert_download_request(media_items)
 
@@ -328,6 +401,14 @@ def build_download_archive_file(
     saved_count = 0
     total_size = 0
     failures = []
+    processed_count = 0
+    total_items = len(media_items)
+
+    def report_item_progress(item_index, bytes_read, content_length):
+        if not progress_callback or not content_length:
+            return
+        item_fraction = min(bytes_read / content_length, 0.98)
+        progress_callback((item_index - 1) + item_fraction, total_items)
 
     try:
         with ZipFile(archive_file, "w", ZIP_DEFLATED, allowZip64=True) as archive:
@@ -341,7 +422,16 @@ def build_download_archive_file(
 
                     if media_type == "image":
                         if save_format == ORIGINAL_FORMAT:
-                            temp_result = fetch_to_temp_path(url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                            temp_result = fetch_to_temp_path(
+                                url,
+                                timeout=20,
+                                max_bytes=MAX_IMAGE_BYTES,
+                                progress_callback=lambda done, total, item_index=index: report_item_progress(
+                                    item_index,
+                                    done,
+                                    total,
+                                ),
+                            )
                             try:
                                 ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
                                 filename = clean_filename(f"{base_filename}_{index}.{ext}")
@@ -364,7 +454,16 @@ def build_download_archive_file(
 
                     elif media_type == "video":
                         if video_save_mode in ["video", "both"]:
-                            temp_result = fetch_to_temp_path(url, timeout=60, max_bytes=MAX_VIDEO_BYTES)
+                            temp_result = fetch_to_temp_path(
+                                url,
+                                timeout=60,
+                                max_bytes=MAX_VIDEO_BYTES,
+                                progress_callback=lambda done, total, item_index=index: report_item_progress(
+                                    item_index,
+                                    done,
+                                    total,
+                                ),
+                            )
                             try:
                                 ext = guess_video_extension_from_response(
                                     temp_result["final_url"],
@@ -387,7 +486,16 @@ def build_download_archive_file(
                                 raise XhsDownloadError("当前视频没有解析到封面")
 
                             if save_format == ORIGINAL_FORMAT:
-                                temp_result = fetch_to_temp_path(cover_url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                                temp_result = fetch_to_temp_path(
+                                    cover_url,
+                                    timeout=20,
+                                    max_bytes=MAX_IMAGE_BYTES,
+                                    progress_callback=lambda done, total, item_index=index: report_item_progress(
+                                        item_index,
+                                        done,
+                                        total,
+                                    ),
+                                )
                                 try:
                                     ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
                                     filename = clean_filename(f"{base_filename}_{index}_cover.{ext}")
@@ -418,6 +526,10 @@ def build_download_archive_file(
 
                 except Exception as error:
                     failures.append(f"{media_type}: {url or '-'} -> {error}")
+                finally:
+                    processed_count += 1
+                    if progress_callback:
+                        progress_callback(processed_count, total_items)
 
             if failures:
                 archive.writestr("failed.txt", "\n".join(failures).encode("utf-8"))

@@ -309,6 +309,39 @@ body {
     display: inline-flex;
 }
 
+.download-progress-wrap {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 48px;
+    gap: 10px;
+    align-items: center;
+}
+
+.download-progress-wrap[hidden] {
+    display: none;
+}
+
+.download-progress-track {
+    height: 10px;
+    border-radius: 999px;
+    background: var(--brand-light);
+    overflow: hidden;
+}
+
+.download-progress-bar {
+    width: 0;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(135deg, var(--brand), var(--brand-hover));
+    transition: width .18s ease;
+}
+
+.download-progress-percent {
+    color: var(--brand);
+    font-size: .85rem;
+    font-weight: 800;
+    text-align: right;
+}
+
 .tag-pill {
     display: inline-flex;
     align-items: center;

@@ -18,3 +18,6 @@
 - Simplified the header to site name plus settings, kept primary actions blue, and scoped platform colors to parsed results.
 - Added Douyin mobile share-page fallback and public play URL variants for more reliable baseline video parsing.
 - Added a baseline Bilibili adapter for BV/AV links, public mp4 video URLs, and cover downloads.
+- Added video size display and browser ZIP percent progress through lightweight download tasks.
+- Added a Douyin mobile feed candidate source and 365yg media-domain allowance for higher baseline video downloads.
+- Added shared media candidate ranking/deduplication and refactored Douyin fallback parsing into a provider flow.

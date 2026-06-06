@@ -37,6 +37,7 @@ MEDIA_HOST_SUFFIXES = (
     "douyinstatic.com",
     "byteimg.com",
     "bytetos.com",
+    "365yg.com",
     "zjcdn.com",
     "bilivideo.com",
     "hdslb.com",

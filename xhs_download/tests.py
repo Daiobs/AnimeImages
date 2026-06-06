@@ -1,7 +1,8 @@
 from io import BytesIO
 import json
+import time
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from unittest.mock import Mock, patch
 from zipfile import ZipFile
 
@@ -18,6 +19,7 @@ from .services.common import (
 )
 from .services.downloads import (
     build_download_archive,
+    build_download_archive_file,
     get_media_headers,
     normalize_quality,
     normalize_save_format,
@@ -26,6 +28,7 @@ from .services.downloads import (
     save_media_items_to_server,
 )
 from .services.assets import MediaAsset, ParseResult
+from .services.candidates import MediaCandidate, dedupe_candidates, rank_media_candidates
 from .services.platforms import BilibiliAdapter, DouyinAdapter, XiaohongshuAdapter
 from .services.platforms.bilibili import BILIBILI_HEADERS
 from .services.platforms.douyin import DOUYIN_HEADERS, extract_aweme_id, get_video_candidates
@@ -37,6 +40,30 @@ def make_image_bytes():
     buffer = BytesIO()
     Image.new("RGB", (10, 8), (255, 0, 0)).save(buffer, "JPEG")
     return buffer.getvalue()
+
+
+class FakeStreamingResponse:
+    def __init__(self, content, url="https://ci.xiaohongshu.com/a.jpg", content_type="image/jpeg"):
+        self.content = content
+        self.url = url
+        self.headers = {
+            "Content-Length": str(len(content)),
+            "Content-Type": content_type,
+        }
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+    def iter_content(self, chunk_size):
+        for index in range(0, len(self.content), chunk_size):
+            yield self.content[index:index + chunk_size]
+
+    def close(self):
+        self.closed = True
 
 
 class XhsUtilityTests(SimpleTestCase):
@@ -79,10 +106,29 @@ class XhsUtilityTests(SimpleTestCase):
     def test_validate_media_url_allows_douyin_redirect_hosts(self):
         validate_media_url("https://aweme.snssdk.com/aweme/v1/play/?video_id=abc")
         validate_media_url("https://v3-dy-o.zjcdn.com/video/tos/cn/path")
+        validate_media_url("https://v9-default.365yg.com/video/tos/cn/path")
 
     def test_validate_media_url_allows_bilibili_media_hosts(self):
         validate_media_url("https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/video.mp4")
         validate_media_url("https://i0.hdslb.com/bfs/archive/cover.jpg")
+
+    def test_dedupe_candidates_preserves_first_occurrence(self):
+        candidates = dedupe_candidates([
+            MediaCandidate(url="https://example.com/a.mp4", size_bytes=100),
+            MediaCandidate(url="https://example.com/a.mp4", size_bytes=200),
+            MediaCandidate(url="https://example.com/b.mp4", size_bytes=50),
+        ])
+
+        self.assertEqual([item.url for item in candidates], ["https://example.com/a.mp4", "https://example.com/b.mp4"])
+        self.assertEqual(candidates[0].size_bytes, 100)
+
+    def test_rank_media_candidates_prefers_larger_verified_sources(self):
+        candidates = rank_media_candidates([
+            MediaCandidate(url="https://example.com/low.mp4", size_bytes=1_000, width=1920, height=1080),
+            MediaCandidate(url="https://example.com/high.mp4", size_bytes=20_000, width=1280, height=720),
+        ])
+
+        self.assertEqual(candidates[0].url, "https://example.com/high.mp4")
 
     @patch("xhs_download.services.common.requests.get")
     def test_request_get_with_retry_rejects_bad_final_redirect_host(self, mock_get):
@@ -316,6 +362,38 @@ class DouyinAdapterTests(SimpleTestCase):
         )
         self.assertEqual(result.video_assets[0].cover_url, "https://p3-sign.douyinpic.com/cover.webp")
 
+    def test_parse_aweme_prefers_browser_friendly_cover_urls(self):
+        result = DouyinAdapter().parse_aweme({
+            "aweme_id": "456",
+            "desc": "视频标题",
+            "author": {"nickname": "作者"},
+            "video": {
+                "cover": {
+                    "url_list": [
+                        "https://p3-sign.douyinpic.com/tos/cover~tplv-dy.heic?x=1",
+                        "https://p3-sign.douyinpic.com/tos/cover~tplv-dy.jpeg?x=1",
+                    ],
+                },
+                "origin_cover": {
+                    "url_list": [
+                        "https://p3-sign.douyinpic.com/tos/origin~tplv-dy.heic?x=1",
+                    ],
+                },
+                "play_addr": {
+                    "url_list": ["https://aweme.snssdk.com/aweme/v1/playwm/?video_id=abc&ratio=720p"],
+                },
+            },
+        })
+
+        self.assertEqual(
+            result.video_assets[0].cover_url,
+            "https://p3-sign.douyinpic.com/tos/cover~tplv-dy.jpeg?x=1",
+        )
+        self.assertEqual(
+            result.video_assets[0].cover_preview_url,
+            "https://p3-sign.douyinpic.com/tos/cover~tplv-dy.jpeg?x=1",
+        )
+
     @patch("xhs_download.services.platforms.douyin.request_get_with_retry")
     def test_parse_url_falls_back_to_mobile_share_page(self, mock_get):
         desktop_response = Mock()
@@ -351,15 +429,107 @@ class DouyinAdapterTests(SimpleTestCase):
         mobile_response.url = "https://www.iesdouyin.com/share/video/7324602766213598501/?region=CN"
         mobile_response.text = f"<script>window._ROUTER_DATA = {json.dumps(mobile_data)};</script>"
         mobile_response.close = Mock()
-        mock_get.side_effect = [desktop_response, mobile_response]
+        mock_get.side_effect = [desktop_response, ValueError("feed unavailable"), mobile_response]
 
         result = DouyinAdapter().parse_url("https://www.douyin.com/video/7324602766213598501")
 
         self.assertEqual(result.post_type, "video")
         self.assertEqual(len(result.video_assets), 1)
-        self.assertIn("/share/video/7324602766213598501/", mock_get.call_args_list[1].args[0])
+        self.assertIn("/aweme/v1/feed/", mock_get.call_args_list[1].args[0])
+        self.assertIn("/share/video/7324602766213598501/", mock_get.call_args_list[2].args[0])
         desktop_response.close.assert_called_once()
         mobile_response.close.assert_called_once()
+
+    @patch("xhs_download.services.platforms.douyin.request_get_with_retry")
+    def test_parse_url_continues_to_note_share_when_video_share_fails(self, mock_get):
+        desktop_response = Mock()
+        desktop_response.status_code = 200
+        desktop_response.url = "https://www.douyin.com/note/7324602766213598501"
+        desktop_response.text = "<html><body></body></html>"
+        desktop_response.close = Mock()
+
+        note_data = {
+            "loaderData": {
+                "aweme": {
+                    "aweme_id": "7324602766213598501",
+                    "desc": "图文标题",
+                    "author": {"nickname": "作者"},
+                    "images": [{"url_list": ["https://p3-sign.douyinpic.com/image.webp"]}],
+                }
+            }
+        }
+        note_response = Mock()
+        note_response.status_code = 200
+        note_response.url = "https://www.iesdouyin.com/share/note/7324602766213598501/?region=CN"
+        note_response.text = f"<script>window._ROUTER_DATA = {json.dumps(note_data)};</script>"
+        note_response.close = Mock()
+        mock_get.side_effect = [
+            desktop_response,
+            ValueError("feed unavailable"),
+            ValueError("video share unavailable"),
+            note_response,
+        ]
+
+        result = DouyinAdapter().parse_url("https://www.douyin.com/note/7324602766213598501")
+
+        self.assertEqual(result.post_type, "image")
+        self.assertEqual(result.image_assets[0].url, "https://p3-sign.douyinpic.com/image.webp")
+        self.assertIn("/share/video/7324602766213598501/", mock_get.call_args_list[2].args[0])
+        self.assertIn("/share/note/7324602766213598501/", mock_get.call_args_list[3].args[0])
+        desktop_response.close.assert_called_once()
+        note_response.close.assert_called_once()
+
+    @patch("xhs_download.services.platforms.douyin.request_get_with_retry")
+    def test_parse_url_uses_mobile_feed_download_addr_when_available(self, mock_get):
+        desktop_response = Mock()
+        desktop_response.status_code = 200
+        desktop_response.url = "https://www.douyin.com/video/7324602766213598501"
+        desktop_response.text = "<html><body></body></html>"
+        desktop_response.close = Mock()
+
+        feed_response = Mock()
+        feed_response.json.return_value = {
+            "aweme_list": [
+                {
+                    "aweme_id": "7324602766213598501",
+                    "desc": "视频标题",
+                    "author": {"nickname": "作者"},
+                    "video": {
+                        "download_addr": {
+                            "data_size": 4_395_633,
+                            "height": 720,
+                            "width": 720,
+                            "url_list": ["https://api-play.amemv.com/aweme/v1/play/?video_id=abc&watermark=1&biz_sign=abc"],
+                        },
+                        "bit_rate": [
+                            {
+                                "bit_rate": 626067,
+                                "play_addr": {
+                                    "data_size": 1_270_448,
+                                    "height": 576,
+                                    "width": 1024,
+                                    "url_list": ["https://v3-web.douyinvod.com/low.mp4"],
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+        feed_response.close = Mock()
+        mock_get.side_effect = [desktop_response, feed_response]
+
+        result = DouyinAdapter().parse_url("https://www.douyin.com/video/7324602766213598501")
+
+        self.assertEqual(result.post_type, "video")
+        self.assertEqual(
+            result.video_assets[0].url,
+            "https://api-play.amemv.com/aweme/v1/play/?video_id=abc&watermark=1&biz_sign=abc",
+        )
+        self.assertEqual(result.video_assets[0].size_bytes, 4_395_633)
+        self.assertIn("/aweme/v1/feed/", mock_get.call_args_list[1].args[0])
+        desktop_response.close.assert_called_once()
+        feed_response.close.assert_called_once()
 
     def test_get_video_candidates_prefers_high_quality_unwatermarked_play_url(self):
         candidates = get_video_candidates({
@@ -454,6 +624,8 @@ class BilibiliAdapterTests(SimpleTestCase):
             result.video_assets[1].url,
             "https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/low.mp4",
         )
+        self.assertEqual(result.video_assets[0].size_bytes, 200)
+        self.assertEqual(result.video_assets[1].size_bytes, 100)
         self.assertEqual(result.video_assets[0].cover_url, "https://i0.hdslb.com/bfs/archive/cover.jpg")
         self.assertIn("x/web-interface/view?bvid=BV1xx411c7mD", mock_get.call_args_list[0].args[0])
         self.assertIn("x/player/playurl?", mock_get.call_args_list[1].args[0])
@@ -595,6 +767,7 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertContains(response, "nav-settings-btn")
         self.assertContains(response, "css/app.css?v=")
         self.assertContains(response, "js/xhs_download.js?v=")
+        self.assertContains(response, "data-download-task-url")
         self.assertContains(response, "feature-card", count=4)
         self.assertContains(response, "无需登录解析去水印，支持视频、图片、批量无水印保存")
         self.assertContains(response, 'placeholder="请将复制的链接粘贴到这里"')
@@ -679,6 +852,7 @@ class XhsDownloadViewTests(SimpleTestCase):
                     platform="bilibili",
                     cover_url="https://i0.hdslb.com/bfs/archive/cover.jpg",
                     cover_preview_url="https://i0.hdslb.com/bfs/archive/cover.jpg",
+                    size_bytes=1024 * 1024,
                 ),
             ),
         )
@@ -689,6 +863,8 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertContains(response, "视频笔记")
         self.assertContains(response, "哔哩哔哩")
         self.assertContains(response, "已解析到 1 个视频资源")
+        self.assertContains(response, "1.0 MB")
+        self.assertContains(response, "download-progress-wrap")
         mock_parse.assert_called_once_with("https://www.bilibili.com/video/BV1xx411c7mD/")
 
     @patch("xhs_download.views.build_download_archive_file")
@@ -728,3 +904,64 @@ class XhsDownloadViewTests(SimpleTestCase):
             )
 
         self.assertEqual(response.status_code, 403)
+
+    @patch("xhs_download.services.downloads.fetch_media_response")
+    def test_archive_progress_updates_during_large_file_download(self, mock_fetch):
+        content = b"a" * (1024 * 300)
+        mock_fetch.return_value = FakeStreamingResponse(content)
+        progress_events = []
+
+        archive = build_download_archive_file(
+            media_items=[{"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"}],
+            base_filename="base",
+            progress_callback=lambda completed, total: progress_events.append((completed, total)),
+        )
+
+        try:
+            self.assertTrue(any(0 < completed < 1 for completed, _ in progress_events))
+            self.assertEqual(progress_events[-1], (1, 1))
+        finally:
+            archive["file"].close()
+
+    @patch("xhs_download.services.download_tasks.build_download_archive_file")
+    def test_download_task_flow_returns_progress_and_file(self, mock_archive):
+        archive_file = NamedTemporaryFile(prefix="test_archive_", suffix=".zip")
+        archive_file.write(b"zip-content")
+        archive_file.seek(0)
+        mock_archive.return_value = {
+            "filename": "base.zip",
+            "file": archive_file,
+            "saved_count": 1,
+            "failed_count": 0,
+        }
+
+        response = Client().post(
+            "/media/download-tasks/",
+            data=json.dumps({
+                "media_items": [{"type": "image", "url": "https://ci.xiaohongshu.com/a"}],
+                "base_filename": "base",
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "success")
+
+        status_payload = None
+        for _ in range(20):
+            status_response = Client().get(payload["status_url"])
+            self.assertEqual(status_response.status_code, 200)
+            status_payload = status_response.json()
+            if status_payload["status"] == "completed":
+                break
+            time.sleep(0.02)
+
+        self.assertEqual(status_payload["status"], "completed")
+        self.assertEqual(status_payload["progress"], 100)
+        self.assertEqual(status_payload["saved_count"], 1)
+
+        file_response = Client().get(status_payload["file_url"])
+        self.assertEqual(file_response.status_code, 200)
+        self.assertEqual(file_response["Content-Type"], "application/zip")
+        self.assertEqual(b"".join(file_response.streaming_content), b"zip-content")
