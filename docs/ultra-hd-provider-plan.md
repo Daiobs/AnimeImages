@@ -49,9 +49,24 @@ Suggested environment variables:
 ULTRA_HD_PROVIDER_ENABLED=False
 TIKHUB_API_KEY=
 TIKHUB_BASE_URL=
-DOUYIN_PROVIDER_ORDER=native,tikhub
+TIKHUB_REGION=CN
+TIKHUB_CACHE_TTL_SECONDS=1800
+TIKHUB_DAILY_LIMIT=20
+DOUYIN_PROVIDER_ORDER=tikhub,native_enhanced,native
 XHS_PROVIDER_ORDER=native,tikhub
 ```
+
+Current local-enhanced default:
+
+```text
+DOUYIN_PROVIDER_ORDER=native_enhanced,native
+```
+
+The default request path uses only `native` so ordinary parsing remains fast even when provider infrastructure is configured. `native_enhanced` is disabled unless `ULTRA_HD_PROVIDER_ENABLED=True` and the request asks for ultra-HD; `native` remains the fallback. TikHub integration uses the official Douyin highest-quality play URL endpoint and is disabled unless `ULTRA_HD_PROVIDER_ENABLED=True`, `TIKHUB_API_KEY` is configured, and the request asks for ultra-HD. When the request asks for ultra-HD, TikHub is promoted ahead of local providers so the switch has clear semantics; however, TikHub and the native fast path run concurrently, and the returned TikHub source is still compared with the native result by probed size, so a smaller TikHub 720p source cannot replace a larger native 1080p source. Provider failures or daily-limit rejections fall back to local parsing. `TIKHUB_CACHE_TTL_SECONDS` caches identical TikHub lookups inside the current Django process, while `TIKHUB_DAILY_LIMIT` can cap paid calls per process per day. A value of `0` means unlimited.
+
+The Django settings module loads the project-root `.env` file before reading environment variables. Real provider keys should live in local `.env` or deployment secrets, not in committed files. The ultra-HD request switch is intentionally placed in the settings modal instead of the hero parser area so normal parsing remains clean and free by default.
+
+Current status note: although the provider path now avoids default-mode slowdown and runs TikHub with the native fast path in parallel, manual PyCharm/browser testing still shows some Douyin ultra-HD parses taking more than 10 seconds. Treat ultra-HD as a research feature until provider timing diagnostics identify the slow segment.
 
 ### Cookie Provider
 
@@ -135,6 +150,11 @@ Add server-side diagnostics logs for:
 - selected candidate source
 - size/resolution/bitrate if known
 - fallback reason
+- provider duration
+- TikHub API duration
+- candidate probe duration
+- cache hit/miss
+- daily-limit state
 
 Do not expose noisy diagnostics in the main UI yet.
 
@@ -168,13 +188,16 @@ Short-term plan:
 
 ## Implementation Order
 
-1. Add provider settings and provider-order parsing.
-2. Add `QualityProbe` service and tests.
-3. Move Douyin provider orchestration behind a clearer provider interface.
-4. Add disabled-by-default Douyin external provider.
-5. Add provider diagnostics logging.
-6. Manually compare Douyin baseline versus external provider candidates with known links.
-7. Repeat the model for Xiaohongshu video sources.
+1. Add provider settings and provider-order parsing. Done in `services/provider_settings.py`.
+2. Add `QualityProbe` service and tests. Done in `services/quality.py`.
+3. Move Douyin provider orchestration behind a clearer provider interface. Done in `services/platforms/douyin_providers.py`.
+4. Add Douyin candidate diagnostics service and command. Done in `services/diagnostics.py` and `inspect_douyin_candidates`.
+5. Add disabled-by-default `DouyinNativeEnhancedProvider`. Done in `services/platforms/douyin_providers.py`.
+6. Manually compare Douyin baseline versus native-enhanced candidates with known links. Done for `modal_id=7618531038729648354`; 8K/4320p/native query variants did not find the 90 MiB source.
+7. Add disabled-by-default Douyin external provider if native-enhanced cannot find larger validated sources. Done as `DouyinTikHubProvider`.
+8. Add request-level ultra-HD switch plus basic TikHub cost controls. Done with the `ultra_hd` request flag, TikHub cache TTL, and optional daily limit.
+9. Add provider timing diagnostics for slow ultra-HD parses. Pending.
+10. Repeat the model for Xiaohongshu video sources.
 
 ## Success Criteria
 
@@ -183,3 +206,4 @@ Short-term plan:
 - Ultra-HD candidates are only selected after lightweight validation.
 - The UI continues to show one best video resource unless a later UX decision adds manual source selection.
 - Douyin has the first working optional higher-quality provider before Xiaohongshu work begins.
+- Ultra-HD latency can be explained through diagnostics before promising competitor-level speed.

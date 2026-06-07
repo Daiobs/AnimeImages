@@ -45,10 +45,14 @@ The current download module keeps the `/xhs_download/` route as a stable UI entr
 
 - `services/assets.py`: shared `MediaAsset` and `ParseResult` data structures
 - `services/candidates.py`: lightweight media candidate ranking/deduplication for platforms that expose multiple source URLs
+- `services/provider_settings.py`: provider feature flags, provider order parsing, and optional external-provider credentials
+- `services/quality.py`: lightweight HEAD/Range probing for reachable URLs, file size, content type, and final-host validation
+- `services/diagnostics.py`: candidate diagnostics and probe-aware best-candidate selection used by provider research
 - `services/registry.py`: choose the right platform adapter for a submitted URL
 - `services/platforms/base.py`: platform adapter protocol
 - `services/platforms/xiaohongshu.py`: Xiaohongshu URL support, HTML parsing, preview URL normalization, and media asset extraction
-- `services/platforms/douyin.py`: Douyin URL support, embedded JSON extraction, mobile feed/share providers, and ranked video candidate selection
+- `services/platforms/douyin.py`: Douyin URL support, embedded JSON extraction, native parser helpers, and ranked video candidate selection
+- `services/platforms/douyin_providers.py`: Douyin provider orchestration, with disabled-by-default native-enhanced probing and native mobile feed/share/direct fallback
 - `services/platforms/bilibili.py`: Bilibili URL support, BV/AV metadata lookup, public mp4 play URL extraction, candidate URL deduplication, and cover handling
 - `services/parser.py`: backward-compatible Xiaohongshu wrapper over the adapter layer
 - `services/common.py`: filename cleanup, URL encoding, request retry, initial/final domain validation
@@ -63,7 +67,7 @@ The intended extension path for Douyin and future platforms is:
 3. Return `ParseResult` with platform-neutral `MediaAsset` objects.
 4. Reuse the existing preview proxy, original-file download, and ZIP archive pipeline.
 
-Douyin support is intentionally scoped to stable no-login parsing at this stage. It handles common embedded JSON shapes, mobile share router data, mobile feed candidate URLs, and public play URL variants. Douyin now has an internal provider flow: the adapter builds a parse context, then fallback providers such as mobile feed and mobile share try to return a `ParseResult`. Candidate video URLs are ranked by known file size, resolution, bitrate, ratio preference, and source priority. This keeps the future ultra-high path clean: a native app endpoint provider or optional external API provider can be added without growing view logic or replacing the adapter contract.
+Douyin support is intentionally scoped to stable no-login parsing at this stage. It handles common embedded JSON shapes, mobile share router data, mobile feed candidate URLs, and public play URL variants. Douyin now has an internal provider flow: the adapter builds a parse context, then provider orchestration can call `native_enhanced` before the native fallback path when ultra-HD research is enabled. Candidate video URLs are ranked by known file size, resolution, bitrate, ratio preference, and source priority; the enhanced path additionally probes candidates and can select the largest reachable source by verified size. This keeps the future ultra-high path clean: a native app endpoint provider or optional external API provider can be added without growing view logic or replacing the adapter contract.
 
 Xiaohongshu does not currently need the same provider split because the stable path is still page HTML plus normalized media URLs. Keep it as a compact adapter until a second independent source, such as an app API or high-definition video provider, is introduced. Bilibili support currently uses the public view/playurl APIs for direct mp4 URLs; its `durl` values are treated as ordered source segments and only share candidate deduplication. DASH audio/video merge and higher-quality source selection should be added later as a separate provider layer that can enumerate candidate streams, probe size/bitrate, and fall back to the stable source without changing the adapter/view contract.
 
@@ -72,6 +76,18 @@ Downloads are returned to the browser as ZIP files. The ZIP is built through a t
 The result UI follows a simple display contract: images stay visual-only because original quality is implied, while videos can show file size when the adapter or a lightweight probe can provide it. Browser ZIP downloads use an in-memory task to expose percent progress while the server builds the archive; when a response has `Content-Length`, progress advances within a single large file by bytes read, then the frontend streams the final ZIP response from 95% to 100%. This is appropriate for the current local/PyCharm workflow; a multi-worker production deployment should replace it with a shared queue/state backend such as Redis plus Celery/RQ.
 
 The server no longer accepts arbitrary client-provided filesystem paths. This keeps local development convenient while avoiding unsafe production behavior.
+
+Ultra-HD provider settings are intentionally disabled by default. `ULTRA_HD_PROVIDER_ENABLED=False` keeps research/extra providers inactive even if names such as `native_enhanced` or `tikhub` appear in `DOUYIN_PROVIDER_ORDER` or `XHS_PROVIDER_ORDER`. Local development settings can come from the project-root `.env`; deployment should use environment variables or secret storage. `native` is always available as the safe fallback provider and is the only provider used when the request does not include the ultra-HD flag, keeping ordinary parsing on the fast path. Third-party provider credentials such as `TIKHUB_API_KEY` should only be configured when the operator intentionally accepts sending submitted links to that provider. The TikHub provider calls the Douyin highest-quality play URL endpoint only when the request includes the ultra-HD flag from the settings modal, normalizes any returned video URLs into internal candidates, probes them, and falls back to native parsing when the external response is unavailable or unvalidated. When ultra-HD is requested, TikHub is promoted ahead of local providers so the UI switch means "try paid ultra-HD first"; without the request flag both TikHub and enhanced probing are removed from the provider chain. TikHub and native fast-path parsing run concurrently, and a valid TikHub source is compared with the local native result by effective size before returning, preventing a third-party 720p response from replacing a larger native 1080p result without serializing the whole provider chain. Identical TikHub lookups are cached in process for `TIKHUB_CACHE_TTL_SECONDS`, and `TIKHUB_DAILY_LIMIT` can cap paid calls per process per day during testing.
+
+Current limitation: ultra-HD parsing can still exceed 10 seconds in manual browser testing. The architecture now separates the fast native path from optional provider work, but it does not yet emit enough provider timing data to identify whether slow requests are caused by TikHub API latency, CDN URL probing, native fallback, or network retries.
+
+Douyin candidate research can be inspected with:
+
+```bash
+python manage.py inspect_douyin_candidates "https://v.douyin.com/xxxx/" --json
+```
+
+The command compares direct page, mobile feed, and mobile share candidates and records declared size, probed size, source field, quality label, final host, content type, and probe errors.
 
 For local development, server-side save can be enabled with environment variables:
 

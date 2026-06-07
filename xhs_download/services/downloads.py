@@ -6,7 +6,6 @@ from pathlib import Path
 from urllib.parse import urlparse
 from zipfile import ZIP_DEFLATED, ZipFile
 
-import requests
 from django.conf import settings
 from PIL import Image
 
@@ -17,11 +16,11 @@ from .common import (
     clean_filename,
     host_matches,
     request_get_with_retry,
-    validate_external_url,
     validate_media_url,
 )
 from .platforms.bilibili import BILIBILI_HEADERS, BILIBILI_MEDIA_HOST_SUFFIXES
 from .platforms.douyin import DOUYIN_HEADERS, DOUYIN_MEDIA_HOST_SUFFIXES
+from .quality import QualityProbe, parse_content_length
 
 
 MAX_DOWNLOAD_ITEMS = 30
@@ -143,13 +142,6 @@ def save_image_to_buffer(image, save_format, quality):
     return buffer.getvalue()
 
 
-def parse_content_length(response):
-    try:
-        return int(response.headers.get("Content-Length") or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
 def validate_content_length(response, max_bytes):
     content_length = parse_content_length(response)
     if content_length and content_length > max_bytes:
@@ -194,66 +186,9 @@ def fetch_media_response(url, headers=None, timeout=30):
     )
 
 
-def parse_content_range_total(content_range):
-    if not content_range:
-        return 0
-    try:
-        return int(str(content_range).split("/", 1)[1])
-    except (IndexError, TypeError, ValueError):
-        return 0
-
-
 def probe_media_size(url, headers=None, timeout=6):
-    validate_media_url(url)
-    request_headers = headers or get_media_headers(url)
-
-    try:
-        response = requests.head(
-            url,
-            headers=request_headers,
-            timeout=timeout,
-            allow_redirects=True,
-        )
-        try:
-            if response.status_code < 400:
-                validate_external_url(
-                    response.url,
-                    MEDIA_HOST_SUFFIXES,
-                    "资源 URL 跳转到了不允许的下载域名",
-                )
-                size = parse_content_length(response)
-                if size:
-                    return size
-        finally:
-            response.close()
-    except Exception:
-        pass
-
-    try:
-        response = requests.get(
-            url,
-            headers={**request_headers, "Range": "bytes=0-0"},
-            timeout=timeout,
-            allow_redirects=True,
-            stream=True,
-        )
-        try:
-            if response.status_code < 400:
-                validate_external_url(
-                    response.url,
-                    MEDIA_HOST_SUFFIXES,
-                    "资源 URL 跳转到了不允许的下载域名",
-                )
-                return (
-                    parse_content_range_total(response.headers.get("Content-Range"))
-                    or parse_content_length(response)
-                )
-        finally:
-            response.close()
-    except Exception:
-        pass
-
-    return 0
+    result = QualityProbe().probe(url, headers=headers or get_media_headers(url), timeout=timeout)
+    return result.size_bytes if result.reachable else 0
 
 
 def fetch_to_temp_path(url, headers=None, timeout=30, max_bytes=MAX_IMAGE_BYTES, progress_callback=None):

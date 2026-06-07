@@ -16,6 +16,29 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
+def load_local_env(path):
+    if not path.exists():
+        return
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].strip()
+        if "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+load_local_env(BASE_DIR / ".env")
+
+
 def env_bool(name, default=False):
     value = os.environ.get(name)
     if value is None:
@@ -159,6 +182,15 @@ MEDIA_ROOT = BASE_DIR / 'media'
 XHS_ALLOW_SERVER_SAVE = env_bool("XHS_ALLOW_SERVER_SAVE", DEBUG)
 XHS_ALLOW_ABSOLUTE_SAVE_PATH = env_bool("XHS_ALLOW_ABSOLUTE_SAVE_PATH", DEBUG)
 XHS_DEFAULT_SERVER_SAVE_DIR = os.environ.get("XHS_DEFAULT_SERVER_SAVE_DIR", "xhs")
+
+ULTRA_HD_PROVIDER_ENABLED = env_bool("ULTRA_HD_PROVIDER_ENABLED", False)
+TIKHUB_API_KEY = os.environ.get("TIKHUB_API_KEY", "")
+TIKHUB_BASE_URL = os.environ.get("TIKHUB_BASE_URL", "")
+TIKHUB_REGION = os.environ.get("TIKHUB_REGION", "CN")
+TIKHUB_CACHE_TTL_SECONDS = int(os.environ.get("TIKHUB_CACHE_TTL_SECONDS", "1800") or 0)
+TIKHUB_DAILY_LIMIT = int(os.environ.get("TIKHUB_DAILY_LIMIT", "0") or 0)
+DOUYIN_PROVIDER_ORDER = env_list("DOUYIN_PROVIDER_ORDER", ["tikhub", "native_enhanced", "native"])
+XHS_PROVIDER_ORDER = env_list("XHS_PROVIDER_ORDER", ["native"])
 
 SECURE_SSL_REDIRECT = env_bool("DJANGO_SECURE_SSL_REDIRECT", not DEBUG)
 SESSION_COOKIE_SECURE = env_bool("DJANGO_SESSION_COOKIE_SECURE", not DEBUG)

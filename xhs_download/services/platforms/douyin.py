@@ -1,6 +1,5 @@
 import json
 import re
-from dataclasses import dataclass
 from html import unescape
 from urllib.parse import parse_qsl, urlencode, unquote, urlparse, urlunparse
 
@@ -13,7 +12,9 @@ from ..common import (
     normalize_text,
     request_get_with_retry,
 )
+from ..diagnostics import select_best_media_candidate
 from .base import BasePlatformAdapter
+from .douyin_providers import DouyinParseContext, build_douyin_result_providers
 
 
 DOUYIN_PAGE_HOST_SUFFIXES = ("douyin.com", "iesdouyin.com")
@@ -330,6 +331,14 @@ def find_aweme_detail(data):
     return {}
 
 
+def find_aweme_in_html(html):
+    for data in load_json_candidates(html):
+        aweme = find_aweme_detail(data)
+        if aweme:
+            return aweme
+    return {}
+
+
 def get_author_name(aweme):
     author = aweme.get("author") or {}
     return author.get("nickname") or author.get("unique_id") or ""
@@ -415,7 +424,6 @@ def get_video_cover_urls(video):
 def get_video_cover_url(video):
     cover_url, _ = get_video_cover_urls(video)
     return cover_url
-    return ""
 
 
 def parse_int(value):
@@ -550,101 +558,17 @@ def find_aweme_by_id(data, aweme_id):
     return {}
 
 
-@dataclass
-class DouyinParseContext:
-    url: str
-    final_url: str = ""
-    html: str = ""
-    aweme_id: str = ""
-    direct_result: ParseResult | None = None
-    direct_error: Exception | None = None
-
-
-class DouyinResultProvider:
-    name = ""
-
-    def parse(self, adapter, context):
-        raise NotImplementedError
-
-
-class DouyinMobileFeedProvider(DouyinResultProvider):
-    name = "mobile_feed"
-
-    def parse(self, adapter, context):
-        if not context.aweme_id:
-            return None
-
-        feed_url = build_mobile_feed_url(context.aweme_id)
-        if not feed_url:
-            return None
-
-        response = request_get_with_retry(
-            feed_url,
-            headers=DOUYIN_APP_HEADERS,
-            timeout=15,
-            retries=2,
-            allowed_final_host_suffixes=("snssdk.com",),
-            final_url_message="抖音移动接口跳转到了不允许的域名",
-        )
-        try:
-            data = response.json()
-        finally:
-            response.close()
-
-        aweme = find_aweme_by_id(data, context.aweme_id)
-        if not aweme:
-            return None
-        result = adapter.parse_aweme(aweme)
-        return result if result.assets else None
-
-
-class DouyinMobileShareProvider(DouyinResultProvider):
-    name = "mobile_share"
-
-    def parse(self, adapter, context):
-        if not context.aweme_id:
-            return None
-
-        for share_url in build_mobile_share_urls(context.aweme_id):
-            try:
-                response = request_get_with_retry(
-                    share_url,
-                    headers=DOUYIN_MOBILE_HEADERS,
-                    timeout=15,
-                    retries=2,
-                    allowed_final_host_suffixes=adapter.page_host_suffixes,
-                    final_url_message="抖音移动分享页跳转到了不允许的域名",
-                )
-                try:
-                    result = adapter.parse_html(response.text, source_url=response.url)
-                    if result.assets:
-                        return result
-                finally:
-                    response.close()
-            except Exception:
-                continue
-        return None
-
-
-DOUYIN_RESULT_PROVIDERS = (
-    DouyinMobileFeedProvider(),
-    DouyinMobileShareProvider(),
-)
-
-
 class DouyinAdapter(BasePlatformAdapter):
     platform_id = "douyin"
     display_name = "抖音"
     page_host_suffixes = DOUYIN_PAGE_HOST_SUFFIXES
     media_host_suffixes = DOUYIN_MEDIA_HOST_SUFFIXES
     headers = DOUYIN_HEADERS
-    result_providers = DOUYIN_RESULT_PROVIDERS
 
-    def parse_html(self, html, source_url=None):
-        for data in load_json_candidates(html):
-            aweme = find_aweme_detail(data)
-            if aweme:
-                return self.parse_aweme(aweme)
+    def parse_html(self, html, source_url=None, probe_video_candidates=False):
+        aweme = find_aweme_in_html(html)
+        if aweme:
+            return self.parse_aweme(aweme, probe_video_candidates=probe_video_candidates)
 
         return ParseResult(
             platform=self.platform_id,
@@ -653,7 +577,7 @@ class DouyinAdapter(BasePlatformAdapter):
             assets=(),
         )
 
-    def parse_aweme(self, aweme):
+    def parse_aweme(self, aweme, probe_video_candidates=False):
         base_filename = get_base_filename(aweme)
         image_assets = self.build_image_assets(aweme)
         if image_assets:
@@ -665,9 +589,17 @@ class DouyinAdapter(BasePlatformAdapter):
             )
 
         video = aweme.get("video") or {}
-        video_candidates = get_video_candidate_items(video)
+        video_candidates = get_video_media_candidates(video)
         if video_candidates:
             video_candidate = video_candidates[0]
+            if probe_video_candidates:
+                selection = select_best_media_candidate(
+                    video_candidates,
+                    headers=self.headers,
+                    allowed_final_host_suffixes=self.media_host_suffixes,
+                )
+                video_candidate = selection.candidate or video_candidate
+
             cover_url, cover_preview_url = get_video_cover_urls(video)
             return ParseResult(
                 platform=self.platform_id,
@@ -676,12 +608,12 @@ class DouyinAdapter(BasePlatformAdapter):
                 assets=(
                     MediaAsset(
                         media_type="video",
-                        url=video_candidate["url"],
+                        url=video_candidate.url,
                         platform=self.platform_id,
                         cover_url=cover_url,
                         cover_preview_url=cover_preview_url,
-                        quality_label=video_candidate["quality_label"],
-                        size_bytes=video_candidate["size_bytes"],
+                        quality_label=video_candidate.quality_label,
+                        size_bytes=video_candidate.size_bytes,
                         headers=self.headers,
                         media_host_suffixes=self.media_host_suffixes,
                     ),
@@ -717,46 +649,106 @@ class DouyinAdapter(BasePlatformAdapter):
 
         return assets
 
+    def fetch_mobile_feed_aweme(self, aweme_id):
+        feed_url = build_mobile_feed_url(aweme_id)
+        if not feed_url:
+            return {}
+
+        response = request_get_with_retry(
+            feed_url,
+            headers=DOUYIN_APP_HEADERS,
+            timeout=15,
+            retries=2,
+            allowed_final_host_suffixes=("snssdk.com",),
+            final_url_message="抖音移动接口跳转到了不允许的域名",
+        )
+        try:
+            data = response.json()
+        finally:
+            response.close()
+
+        return find_aweme_by_id(data, aweme_id)
+
+    def fetch_mobile_feed_result(self, aweme_id, probe_video_candidates=False):
+        aweme = self.fetch_mobile_feed_aweme(aweme_id)
+        if not aweme:
+            return None
+        result = self.parse_aweme(aweme, probe_video_candidates=probe_video_candidates)
+        return result if result.assets else None
+
+    def fetch_mobile_share_aweme(self, aweme_id):
+        for share_url in build_mobile_share_urls(aweme_id):
+            try:
+                response = request_get_with_retry(
+                    share_url,
+                    headers=DOUYIN_MOBILE_HEADERS,
+                    timeout=15,
+                    retries=2,
+                    allowed_final_host_suffixes=self.page_host_suffixes,
+                    final_url_message="抖音移动分享页跳转到了不允许的域名",
+                )
+                try:
+                    aweme = find_aweme_in_html(response.text)
+                    if aweme:
+                        return aweme
+                finally:
+                    response.close()
+            except Exception:
+                continue
+        return {}
+
+    def fetch_mobile_share_result(self, aweme_id, probe_video_candidates=False):
+        aweme = self.fetch_mobile_share_aweme(aweme_id)
+        if aweme:
+            result = self.parse_aweme(aweme, probe_video_candidates=probe_video_candidates)
+            if result.assets:
+                return result
+        return None
+
     def parse_mobile_feed(self, aweme_id):
-        context = DouyinParseContext(url="", aweme_id=aweme_id)
-        return DouyinMobileFeedProvider().parse(self, context)
+        return self.fetch_mobile_feed_result(aweme_id)
 
     def parse_mobile_share(self, aweme_id):
-        context = DouyinParseContext(url="", aweme_id=aweme_id)
-        return DouyinMobileShareProvider().parse(self, context)
+        return self.fetch_mobile_share_result(aweme_id)
 
-    def build_parse_context(self, url):
+    def build_parse_context(self, url, fetch_direct_page=True):
         context = DouyinParseContext(url=url)
-        try:
-            response = request_get_with_retry(
-                url,
-                headers=self.headers,
-                timeout=15,
-                retries=3,
-                allowed_final_host_suffixes=self.page_host_suffixes,
-                final_url_message="抖音页面跳转到了不允许的域名",
-            )
+        context.aweme_id = extract_aweme_id(context.url)
+
+        if fetch_direct_page or not context.aweme_id:
             try:
-                context.final_url = response.url
-                context.html = response.text
-                context.direct_result = self.parse_html(context.html, source_url=context.final_url)
-            finally:
-                response.close()
-        except Exception as error:
-            context.direct_error = error
+                response = request_get_with_retry(
+                    url,
+                    headers=self.headers,
+                    timeout=15,
+                    retries=3,
+                    allowed_final_host_suffixes=self.page_host_suffixes,
+                    final_url_message="抖音页面跳转到了不允许的域名",
+                )
+                try:
+                    context.final_url = response.url
+                    context.html = response.text
+                    context.direct_result = self.parse_html(context.html, source_url=context.final_url)
+                finally:
+                    response.close()
+            except Exception as error:
+                context.direct_error = error
 
         context.aweme_id = (
-            extract_aweme_id(context.url)
+            context.aweme_id
             or extract_aweme_id(context.final_url)
             or extract_aweme_id(context.html)
         )
         return context
 
-    def parse_url(self, url):
-        self.require_supported_url(url)
-        context = self.build_parse_context(url)
+    def get_result_providers(self, prefer_ultra_hd=False):
+        return build_douyin_result_providers(prefer_ultra_hd=prefer_ultra_hd)
 
-        for provider in self.result_providers:
+    def parse_url(self, url, prefer_ultra_hd=False):
+        self.require_supported_url(url)
+        context = self.build_parse_context(url, fetch_direct_page=not bool(extract_aweme_id(url)))
+
+        for provider in self.get_result_providers(prefer_ultra_hd=prefer_ultra_hd):
             try:
                 result = provider.parse(self, context)
                 if result and result.assets:

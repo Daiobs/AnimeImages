@@ -37,9 +37,11 @@ class PlatformRegistry:
                 return adapter
         raise XhsParseError("暂不支持该平台链接")
 
-    def parse_url(self, url):
+    def parse_url(self, url, prefer_ultra_hd=False):
         url = extract_url_from_text(url)
         adapter = self.get_adapter_for_url(url)
+        if getattr(adapter, "platform_id", "") == "douyin":
+            return adapter.parse_url(url, prefer_ultra_hd=prefer_ultra_hd)
         return adapter.parse_url(url)
 
 
@@ -50,5 +52,5 @@ def get_adapter_for_url(url):
     return default_registry.get_adapter_for_url(url)
 
 
-def parse_media_page(url):
-    return default_registry.parse_url(url)
+def parse_media_page(url, prefer_ultra_hd=False):
+    return default_registry.parse_url(url, prefer_ultra_hd=prefer_ultra_hd)

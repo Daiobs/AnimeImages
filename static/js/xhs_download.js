@@ -164,6 +164,8 @@
         const linkInput = document.getElementById("media-link-input");
         const pasteLinkIconBtn = document.getElementById("paste-link-icon-btn");
         const clearLinkBtn = document.getElementById("clear-link-btn");
+        const ultraHdRequestInput = document.getElementById("ultra-hd-request-input");
+        const ultraHdSettingInput = document.getElementById("ultra-hd-setting");
         const downloadModeInput = document.getElementById("download-mode");
         const browserDownloadSettings = document.getElementById("browser-download-settings");
         const serverSaveSettings = document.getElementById("server-save-settings");
@@ -187,6 +189,23 @@
         let selected = [];
         let useFilePicker = Boolean(savedSettings.use_file_picker);
         let downloadMode = savedSettings.download_mode || "browser";
+
+        function isUltraHdEnabled() {
+            return Boolean(ultraHdSettingInput && ultraHdSettingInput.checked && !ultraHdSettingInput.disabled);
+        }
+
+        function updateUltraHdRequestValue() {
+            if (!ultraHdRequestInput) {
+                return;
+            }
+
+            ultraHdRequestInput.value = isUltraHdEnabled() ? "1" : "0";
+        }
+
+        if (ultraHdSettingInput) {
+            ultraHdSettingInput.checked = Boolean(savedSettings.ultra_hd_enabled) && !ultraHdSettingInput.disabled;
+            updateUltraHdRequestValue();
+        }
 
         if (optionExists(downloadModeInput, downloadMode)) {
             downloadModeInput.value = downloadMode;
@@ -473,7 +492,9 @@
                     quality: qualityInput ? qualityInput.value || 95 : 95,
                     video_save_mode: videoSaveModeInput ? videoSaveModeInput.value : "video",
                     use_file_picker: useFilePicker,
+                    ultra_hd_enabled: isUltraHdEnabled(),
                 });
+                updateUltraHdRequestValue();
 
                 setStatus(status, "设置已保存", "text-success");
             });

@@ -116,6 +116,10 @@ PLATFORM_DISPLAY_NAMES = {
 }
 
 
+def request_flag(value):
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def get_platform_page_config(platform_key):
     return PLATFORM_PAGE_CONFIG.get(platform_key, PLATFORM_PAGE_CONFIG["home"])
 
@@ -144,18 +148,25 @@ def get_download_settings_context(platform_key="home"):
         "xhs_allow_server_save": settings.XHS_ALLOW_SERVER_SAVE,
         "xhs_allow_absolute_save_path": settings.XHS_ALLOW_ABSOLUTE_SAVE_PATH,
         "xhs_default_server_save_dir": settings.XHS_DEFAULT_SERVER_SAVE_DIR,
+        "ultra_hd_available": (
+            settings.ULTRA_HD_PROVIDER_ENABLED
+            and bool(settings.TIKHUB_API_KEY)
+        ),
     }
 
 
 def search_results_view(request, platform_key="home"):
     query = request.GET.get("q", "").strip()
+    prefer_ultra_hd = request_flag(request.GET.get("ultra_hd"))
 
     context = {
         **get_download_settings_context(platform_key),
         "query": query,
+        "prefer_ultra_hd": prefer_ultra_hd,
         "platform": "",
         "platform_name": "",
         "platform_notice": "",
+        "provider_notice": "",
         "post_type": "",
         "image_items": [],
         "video_items": [],
@@ -167,11 +178,16 @@ def search_results_view(request, platform_key="home"):
         return render(request, "xhs_download.html", context)
 
     try:
-        result = parse_media_page(query)
+        result = parse_media_page(query, prefer_ultra_hd=prefer_ultra_hd)
         context["platform"] = result.platform
         context["platform_name"] = PLATFORM_DISPLAY_NAMES.get(result.platform, result.platform or "未知平台")
         if context["page_platform_id"] and context["page_platform_id"] != result.platform:
             context["platform_notice"] = f"你粘贴的是{context['platform_name']}链接，已自动使用对应解析器。"
+        if prefer_ultra_hd:
+            if result.platform == "douyin":
+                context["provider_notice"] = "本次已尝试使用抖音超高清 Provider；若不可用会自动回退本地解析。"
+            else:
+                context["provider_notice"] = "超高清 Provider 目前仅用于抖音视频，本次已按对应平台本地解析。"
         context["post_type"] = result.post_type
         context["base_filename"] = result.base_filename
         context["image_items"] = [

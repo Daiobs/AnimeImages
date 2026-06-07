@@ -35,6 +35,12 @@
                     <div class="col-lg-7 col-xl-6">
                         <form method="get" action="{{ parse_action_url }}" class="hero-search-form">
                             {% csrf_token %}
+                            <input
+                                    type="hidden"
+                                    name="ultra_hd"
+                                    id="ultra-hd-request-input"
+                                    value="{% if prefer_ultra_hd and ultra_hd_available %}1{% else %}0{% endif %}"
+                            >
 
                             <label class="visually-hidden" for="media-link-input">{{ link_label|default:"素材链接" }}</label>
 
@@ -84,6 +90,13 @@
                 <div class="alert alert-info">
                     <i class="bi bi-info-circle me-1"></i>
                     {{ platform_notice }}
+                </div>
+            {% endif %}
+
+            {% if provider_notice %}
+                <div class="alert alert-info">
+                    <i class="bi bi-speedometer2 me-1"></i>
+                    {{ provider_notice }}
                 </div>
             {% endif %}
 
@@ -378,6 +391,36 @@
                                 </div>
                             </div>
                         {% endif %}
+                    </section>
+
+                    <section class="settings-section">
+                        <div class="settings-section-title">
+                            <i class="bi bi-speedometer2"></i>
+                            <span>解析质量</span>
+                        </div>
+
+                        <label class="settings-toggle{% if not ultra_hd_available %} is-disabled{% endif %}">
+                            <input
+                                    type="checkbox"
+                                    id="ultra-hd-setting"
+                                    {% if not ultra_hd_available %}disabled{% endif %}
+                            >
+                            <span class="settings-switch-control" aria-hidden="true"></span>
+                            <span>
+                                <strong>抖音超高清</strong>
+                                <small>
+                                    {% if ultra_hd_available %}
+                                        解析抖音时优先使用 TikHub 获取原始上传画质。
+                                    {% else %}
+                                        需要在 .env 配置 TikHub key 后启用。
+                                    {% endif %}
+                                </small>
+                            </span>
+                        </label>
+
+                        <div class="form-text">
+                            默认关闭，关闭时只使用本地解析；开启后仅对抖音视频尝试第三方 Provider，失败或超限会自动回退。
+                        </div>
                     </section>
 
                     <section class="settings-section">

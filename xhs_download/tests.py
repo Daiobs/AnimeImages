@@ -29,9 +29,25 @@ from .services.downloads import (
 )
 from .services.assets import MediaAsset, ParseResult
 from .services.candidates import MediaCandidate, dedupe_candidates, rank_media_candidates
+from .services.diagnostics import CandidateDiagnostic, select_best_media_candidate
+from .services.provider_settings import (
+    ProviderSettings,
+    get_platform_provider_settings,
+    normalize_provider_order,
+)
+from .services.quality import QualityProbe, QualityProbeResult
 from .services.platforms import BilibiliAdapter, DouyinAdapter, XiaohongshuAdapter
 from .services.platforms.bilibili import BILIBILI_HEADERS
 from .services.platforms.douyin import DOUYIN_HEADERS, extract_aweme_id, get_video_candidates
+from .services.platforms.douyin_providers import (
+    DouyinParseContext,
+    DouyinNativeEnhancedProvider,
+    DouyinNativeProvider,
+    DouyinTikHubProvider,
+    TIKHUB_CACHE,
+    TIKHUB_USAGE,
+    build_douyin_result_providers,
+)
 from .services.parser import normalize_xhs_image_url, normalize_xhs_preview_image_url, parse_xhs_html
 from .services.registry import extract_url_from_text, get_adapter_for_url
 
@@ -129,6 +145,127 @@ class XhsUtilityTests(SimpleTestCase):
         ])
 
         self.assertEqual(candidates[0].url, "https://example.com/high.mp4")
+
+    def test_normalize_provider_order_deduplicates_names(self):
+        self.assertEqual(
+            normalize_provider_order("native,tikhub,native,"),
+            ("native", "tikhub"),
+        )
+
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=False,
+        TIKHUB_API_KEY="secret",
+        DOUYIN_PROVIDER_ORDER=["native", "tikhub"],
+    )
+    def test_provider_settings_keep_external_providers_disabled_by_default(self):
+        provider_settings = get_platform_provider_settings("douyin")
+
+        self.assertEqual(provider_settings.provider_order, ("native", "tikhub"))
+        self.assertEqual(provider_settings.enabled_provider_order, ("native",))
+
+    def test_provider_settings_enable_tikhub_when_configured(self):
+        provider_settings = ProviderSettings(
+            ultra_hd_enabled=True,
+            provider_order=("native", "tikhub"),
+            tikhub_api_key="secret",
+        )
+
+        self.assertEqual(provider_settings.enabled_provider_order, ("native", "tikhub"))
+
+    def test_provider_settings_gate_native_enhanced_provider(self):
+        provider_settings = ProviderSettings(
+            ultra_hd_enabled=False,
+            provider_order=("native_enhanced", "native"),
+        )
+
+        self.assertEqual(provider_settings.enabled_provider_order, ("native",))
+
+    @patch("xhs_download.services.quality.requests.head")
+    def test_quality_probe_uses_head_content_length(self, mock_head):
+        response = Mock()
+        response.status_code = 200
+        response.url = "https://aweme.snssdk.com/aweme/v1/play/?video_id=abc"
+        response.headers = {"Content-Length": "1234", "Content-Type": "video/mp4"}
+        response.close = Mock()
+        mock_head.return_value = response
+
+        result = QualityProbe().probe("https://aweme.snssdk.com/aweme/v1/play/?video_id=abc")
+
+        self.assertTrue(result.reachable)
+        self.assertEqual(result.size_bytes, 1234)
+        self.assertEqual(result.method, "HEAD")
+        response.close.assert_called_once()
+
+    @patch("xhs_download.services.quality.requests.get")
+    @patch("xhs_download.services.quality.requests.head")
+    def test_quality_probe_falls_back_to_range_when_head_has_no_size(self, mock_head, mock_get):
+        head_response = Mock()
+        head_response.status_code = 200
+        head_response.url = "https://aweme.snssdk.com/aweme/v1/play/?video_id=abc"
+        head_response.headers = {"Content-Type": "video/mp4"}
+        head_response.close = Mock()
+        mock_head.return_value = head_response
+
+        range_response = Mock()
+        range_response.status_code = 206
+        range_response.url = "https://aweme.snssdk.com/aweme/v1/play/?video_id=abc"
+        range_response.headers = {"Content-Range": "bytes 0-0/5678", "Content-Type": "video/mp4"}
+        range_response.close = Mock()
+        mock_get.return_value = range_response
+
+        result = QualityProbe().probe("https://aweme.snssdk.com/aweme/v1/play/?video_id=abc")
+
+        self.assertTrue(result.reachable)
+        self.assertEqual(result.size_bytes, 5678)
+        self.assertEqual(result.method, "RANGE")
+        head_response.close.assert_called_once()
+        range_response.close.assert_called_once()
+
+    def test_select_best_media_candidate_prefers_probed_size(self):
+        low = "https://v3-web.douyinvod.com/low.mp4"
+        high = "https://v3-web.douyinvod.com/high.mp4"
+        probe = Mock()
+        probe.probe.side_effect = lambda url, headers=None, timeout=6: QualityProbeResult(
+            url=url,
+            final_url=url,
+            reachable=True,
+            size_bytes=20_000 if url == high else 2_000,
+            content_type="video/mp4",
+            method="HEAD",
+        )
+
+        selection = select_best_media_candidate(
+            [
+                MediaCandidate(url=low, size_bytes=10_000, source="declared_low"),
+                MediaCandidate(url=high, size_bytes=1_000, source="declared_high"),
+            ],
+            quality_probe=probe,
+        )
+
+        self.assertEqual(selection.candidate.url, high)
+        self.assertEqual(selection.candidate.size_bytes, 20_000)
+        self.assertEqual(selection.reason, "selected_reachable_probe")
+
+    def test_candidate_diagnostic_exposes_cdn_quality_params(self):
+        diagnostic = CandidateDiagnostic(
+            index=1,
+            candidate=MediaCandidate(url="https://api-play.amemv.com/aweme/v1/play/?video_id=abc&ratio=540p"),
+            reachable=True,
+            probed_size_bytes=94_441_025,
+            final_url=(
+                "https://v11-default.365yg.com/video/tos/cn/path?"
+                "br=48808&bt=48808&qs=13&btag=80000e00010000&cquery=106H&dy_q=1780802540"
+            ),
+            content_type="video/mp4",
+            probe_method="HEAD",
+        )
+
+        data = diagnostic.as_dict()
+
+        self.assertEqual(data["final_quality_params"]["br"], "48808")
+        self.assertEqual(data["final_quality_params"]["bt"], "48808")
+        self.assertEqual(data["final_quality_params"]["qs"], "13")
+        self.assertEqual(data["final_quality_params"]["cquery"], "106H")
 
     @patch("xhs_download.services.common.requests.get")
     def test_request_get_with_retry_rejects_bad_final_redirect_host(self, mock_get):
@@ -262,6 +399,342 @@ class XhsParserTests(SimpleTestCase):
 
 
 class DouyinAdapterTests(SimpleTestCase):
+    @patch("xhs_download.services.platforms.douyin.request_get_with_retry")
+    def test_parse_url_skips_direct_page_fetch_for_modal_id_without_ultra_hd(self, mock_request_get):
+        expected = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="native",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url="https://v3-web.douyinvod.com/native.mp4",
+                    platform="douyin",
+                ),
+            ),
+        )
+
+        with patch.object(DouyinAdapter, "fetch_mobile_feed_result", return_value=expected) as mock_feed:
+            result = DouyinAdapter().parse_url(
+                "https://www.douyin.com/user/self?from_tab_name=main&modal_id=7539896907901062452",
+                prefer_ultra_hd=False,
+            )
+
+        self.assertEqual(result.video_assets[0].url, "https://v3-web.douyinvod.com/native.mp4")
+        mock_feed.assert_called_once_with("7539896907901062452")
+        mock_request_get.assert_not_called()
+
+    @patch("xhs_download.services.platforms.douyin.request_get_with_retry")
+    @patch("xhs_download.services.platforms.douyin.build_douyin_result_providers")
+    def test_parse_url_skips_direct_page_fetch_for_modal_id_with_ultra_hd(self, mock_provider_builder, mock_request_get):
+        expected = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="ultra",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url="https://v11-default.365yg.com/ultra.mp4",
+                    platform="douyin",
+                    size_bytes=90_000_000,
+                ),
+            ),
+        )
+
+        class FakeProvider:
+            def parse(self, adapter, context):
+                self.context = context
+                return expected
+
+        provider = FakeProvider()
+        mock_provider_builder.return_value = (provider,)
+
+        result = DouyinAdapter().parse_url(
+            "https://www.douyin.com/user/self?from_tab_name=main&modal_id=7539896907901062452",
+            prefer_ultra_hd=True,
+        )
+
+        self.assertEqual(result.video_assets[0].url, "https://v11-default.365yg.com/ultra.mp4")
+        self.assertEqual(provider.context.aweme_id, "7539896907901062452")
+        mock_request_get.assert_not_called()
+
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=False,
+        TIKHUB_API_KEY="",
+        DOUYIN_PROVIDER_ORDER=["tikhub"],
+    )
+    def test_douyin_provider_builder_falls_back_to_native_provider(self):
+        providers = build_douyin_result_providers()
+
+        self.assertEqual(len(providers), 1)
+        self.assertIsInstance(providers[0], DouyinNativeProvider)
+
+    def test_douyin_provider_builder_keeps_native_fallback_for_enhanced(self):
+        providers = build_douyin_result_providers(ProviderSettings(
+            ultra_hd_enabled=True,
+            provider_order=("native_enhanced",),
+        ))
+
+        self.assertEqual(len(providers), 2)
+        self.assertIsInstance(providers[0], DouyinNativeEnhancedProvider)
+        self.assertIsInstance(providers[1], DouyinNativeProvider)
+
+    def test_douyin_provider_builder_includes_tikhub_when_enabled(self):
+        providers = build_douyin_result_providers(ProviderSettings(
+            ultra_hd_enabled=True,
+            provider_order=("tikhub",),
+            tikhub_api_key="secret",
+        ))
+
+        self.assertEqual(len(providers), 2)
+        self.assertIsInstance(providers[0], DouyinTikHubProvider)
+        self.assertIsInstance(providers[1], DouyinNativeProvider)
+
+    def test_douyin_provider_builder_prioritizes_tikhub_with_request_switch(self):
+        providers = build_douyin_result_providers(ProviderSettings(
+            ultra_hd_enabled=True,
+            provider_order=("native", "tikhub"),
+            tikhub_api_key="secret",
+        ))
+
+        self.assertEqual(len(providers), 2)
+        self.assertIsInstance(providers[0], DouyinTikHubProvider)
+        self.assertIsInstance(providers[1], DouyinNativeProvider)
+
+    def test_douyin_provider_builder_does_not_inject_tikhub_when_removed_from_order(self):
+        providers = build_douyin_result_providers(ProviderSettings(
+            ultra_hd_enabled=True,
+            provider_order=("native",),
+            tikhub_api_key="secret",
+        ))
+
+        self.assertFalse(any(isinstance(provider, DouyinTikHubProvider) for provider in providers))
+        self.assertEqual(len(providers), 1)
+        self.assertIsInstance(providers[0], DouyinNativeProvider)
+
+    def test_douyin_provider_builder_uses_fast_native_path_without_request_switch(self):
+        providers = build_douyin_result_providers(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tikhub", "native_enhanced", "native"),
+                tikhub_api_key="secret",
+            ),
+            prefer_ultra_hd=False,
+        )
+
+        self.assertEqual(len(providers), 1)
+        self.assertIsInstance(providers[0], DouyinNativeProvider)
+
+    @patch("xhs_download.services.diagnostics.QualityProbe.probe")
+    @patch("xhs_download.services.platforms.douyin_providers.requests.get")
+    def test_tikhub_provider_returns_validated_original_video_url(self, mock_get, mock_probe):
+        TIKHUB_CACHE.clear()
+        TIKHUB_USAGE.clear()
+
+        class FakeAdapter:
+            platform_id = "douyin"
+            headers = DOUYIN_HEADERS
+            media_host_suffixes = ("365yg.com",)
+
+            def fetch_mobile_feed_result(self, aweme_id, probe_video_candidates=False):
+                return ParseResult(
+                    platform="douyin",
+                    post_type="video",
+                    base_filename="native_title",
+                    assets=(
+                        MediaAsset(
+                            media_type="video",
+                            url="https://v3-web.douyinvod.com/native.mp4",
+                            platform="douyin",
+                            cover_url="https://p3-sign.douyinpic.com/cover.jpeg",
+                        ),
+                    ),
+                )
+
+        response = Mock()
+        response.json.return_value = {
+            "code": 200,
+            "data": {
+                "original_video_url": (
+                    "https://v11-default.365yg.com/video/tos/cn/path?"
+                    "br=48808&bt=48808&qs=13"
+                )
+            },
+        }
+        response.raise_for_status = Mock()
+        response.close = Mock()
+        mock_get.return_value = response
+        mock_probe.return_value = QualityProbeResult(
+            url=response.json.return_value["data"]["original_video_url"],
+            final_url=response.json.return_value["data"]["original_video_url"],
+            reachable=True,
+            size_bytes=94_441_025,
+            content_type="video/mp4",
+            method="HEAD",
+        )
+
+        result = DouyinTikHubProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tikhub",),
+                tikhub_api_key="secret",
+                tikhub_region="CN",
+            )
+        ).parse(
+            FakeAdapter(),
+            DouyinParseContext(
+                url="https://www.douyin.com/video/7618531038729648354",
+                aweme_id="7618531038729648354",
+            ),
+        )
+
+        self.assertEqual(result.base_filename, "native_title")
+        self.assertEqual(result.video_assets[0].size_bytes, 94_441_025)
+        self.assertEqual(result.video_assets[0].quality_label, "原始上传画质")
+        self.assertEqual(result.video_assets[0].cover_url, "https://p3-sign.douyinpic.com/cover.jpeg")
+        self.assertIn("fetch_video_high_quality_play_url", mock_get.call_args.args[0])
+        self.assertEqual(mock_get.call_args.kwargs["params"]["aweme_id"], "7618531038729648354")
+        self.assertEqual(mock_get.call_args.kwargs["headers"]["Authorization"], "Bearer secret")
+
+    @patch("xhs_download.services.diagnostics.QualityProbe.probe")
+    @patch("xhs_download.services.platforms.douyin_providers.requests.get")
+    def test_tikhub_provider_keeps_native_when_tikhub_video_is_smaller(self, mock_get, mock_probe):
+        TIKHUB_CACHE.clear()
+        TIKHUB_USAGE.clear()
+
+        class FakeAdapter:
+            platform_id = "douyin"
+            headers = DOUYIN_HEADERS
+            media_host_suffixes = ("365yg.com", "douyinvod.com")
+
+            def fetch_mobile_feed_result(self, aweme_id, probe_video_candidates=False):
+                return ParseResult(
+                    platform="douyin",
+                    post_type="video",
+                    base_filename="native_1080p",
+                    assets=(
+                        MediaAsset(
+                            media_type="video",
+                            url="https://v3-web.douyinvod.com/native-1080p.mp4",
+                            platform="douyin",
+                            size_bytes=20_000_000,
+                            cover_url="https://p3-sign.douyinpic.com/native-cover.jpeg",
+                        ),
+                    ),
+                )
+
+            def fetch_mobile_share_result(self, aweme_id, probe_video_candidates=False):
+                return ParseResult(
+                    platform="douyin",
+                    post_type="video",
+                    base_filename="native_720p",
+                    assets=(
+                        MediaAsset(
+                            media_type="video",
+                            url="https://v3-web.douyinvod.com/native-720p.mp4",
+                            platform="douyin",
+                            size_bytes=2_500_000,
+                        ),
+                    ),
+                )
+
+        response = Mock()
+        response.json.return_value = {
+            "code": 200,
+            "data": {
+                "original_video_url": "https://v11-default.365yg.com/video/tos/cn/path?br=1200&bt=1200&qs=13",
+            },
+        }
+        response.raise_for_status = Mock()
+        response.close = Mock()
+        mock_get.return_value = response
+        mock_probe.return_value = QualityProbeResult(
+            url=response.json.return_value["data"]["original_video_url"],
+            final_url=response.json.return_value["data"]["original_video_url"],
+            reachable=True,
+            size_bytes=2_000_000,
+            content_type="video/mp4",
+            method="HEAD",
+        )
+
+        result = DouyinTikHubProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tikhub",),
+                tikhub_api_key="secret",
+            )
+        ).parse(
+            FakeAdapter(),
+            DouyinParseContext(
+                url="https://www.douyin.com/video/7539896907901062452",
+                aweme_id="7539896907901062452",
+            ),
+        )
+
+        self.assertEqual(result.base_filename, "native_1080p")
+        self.assertEqual(result.video_assets[0].url, "https://v3-web.douyinvod.com/native-1080p.mp4")
+        self.assertEqual(result.video_assets[0].size_bytes, 20_000_000)
+
+    @patch("xhs_download.services.platforms.douyin_providers.requests.get")
+    def test_tikhub_provider_caches_identical_requests(self, mock_get):
+        TIKHUB_CACHE.clear()
+        TIKHUB_USAGE.clear()
+        response = Mock()
+        response.json.return_value = {"code": 200, "data": {"original_video_url": "https://v11-default.365yg.com/a.mp4"}}
+        response.raise_for_status = Mock()
+        response.close = Mock()
+        mock_get.return_value = response
+        provider = DouyinTikHubProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tikhub",),
+                tikhub_api_key="secret",
+                tikhub_cache_ttl_seconds=60,
+            )
+        )
+        context = DouyinParseContext(
+            url="https://www.douyin.com/video/7618531038729648354",
+            aweme_id="7618531038729648354",
+        )
+
+        self.assertEqual(provider.fetch_high_quality_data(context), response.json.return_value)
+        self.assertEqual(provider.fetch_high_quality_data(context), response.json.return_value)
+
+        self.assertEqual(mock_get.call_count, 1)
+
+    def test_native_enhanced_provider_selects_largest_video_result_across_sources(self):
+        class FakeAdapter:
+            def fetch_mobile_feed_result(self, aweme_id, probe_video_candidates=False):
+                return ParseResult(
+                    platform="douyin",
+                    post_type="video",
+                    base_filename="feed",
+                    assets=(MediaAsset(media_type="video", url="https://v3-web.douyinvod.com/feed.mp4", platform="douyin", size_bytes=100),),
+                )
+
+            def fetch_mobile_share_result(self, aweme_id, probe_video_candidates=False):
+                return ParseResult(
+                    platform="douyin",
+                    post_type="video",
+                    base_filename="share",
+                    assets=(MediaAsset(media_type="video", url="https://v3-web.douyinvod.com/share.mp4", platform="douyin", size_bytes=1000),),
+                )
+
+            def parse_html(self, html, source_url=None, probe_video_candidates=False):
+                return ParseResult(
+                    platform="douyin",
+                    post_type="video",
+                    base_filename="direct",
+                    assets=(MediaAsset(media_type="video", url="https://v3-web.douyinvod.com/direct.mp4", platform="douyin", size_bytes=500),),
+                )
+
+        result = DouyinNativeEnhancedProvider().parse(
+            FakeAdapter(),
+            DouyinParseContext(url="https://www.douyin.com/video/123", aweme_id="123", html="<html></html>"),
+        )
+
+        self.assertEqual(result.video_assets[0].url, "https://v3-web.douyinvod.com/share.mp4")
+
     def test_parse_html_returns_image_post_from_render_data(self):
         data = {
             "aweme_detail": {
@@ -320,6 +793,49 @@ class DouyinAdapterTests(SimpleTestCase):
         self.assertEqual(result.post_type, "video")
         self.assertEqual(result.video_assets[0].url, "https://v3-web.douyinvod.com/high.mp4")
         self.assertEqual(result.video_assets[0].cover_url, "https://p3-sign.douyinpic.com/cover.webp")
+
+    @patch("xhs_download.services.diagnostics.QualityProbe.probe")
+    def test_parse_aweme_enhanced_prefers_larger_probed_video(self, mock_probe):
+        low = "https://v3-web.douyinvod.com/low.mp4"
+        high = "https://v3-web.douyinvod.com/high.mp4"
+        mock_probe.side_effect = lambda url, headers=None, timeout=6: QualityProbeResult(
+            url=url,
+            final_url=url,
+            reachable=True,
+            size_bytes=25_000 if url == high else 5_000,
+            content_type="video/mp4",
+            method="HEAD",
+        )
+
+        result = DouyinAdapter().parse_aweme(
+            {
+                "aweme_id": "456",
+                "desc": "视频标题",
+                "author": {"nickname": "作者"},
+                "video": {
+                    "bit_rate": [
+                        {
+                            "bit_rate": 3000,
+                            "play_addr": {
+                                "data_size": 12_000,
+                                "url_list": [low],
+                            },
+                        },
+                        {
+                            "bit_rate": 1000,
+                            "play_addr": {
+                                "data_size": 1_000,
+                                "url_list": [high],
+                            },
+                        },
+                    ],
+                },
+            },
+            probe_video_candidates=True,
+        )
+
+        self.assertEqual(result.video_assets[0].url, high)
+        self.assertEqual(result.video_assets[0].size_bytes, 25_000)
 
     def test_parse_html_returns_video_from_mobile_share_router_data(self):
         data = {
@@ -396,12 +912,6 @@ class DouyinAdapterTests(SimpleTestCase):
 
     @patch("xhs_download.services.platforms.douyin.request_get_with_retry")
     def test_parse_url_falls_back_to_mobile_share_page(self, mock_get):
-        desktop_response = Mock()
-        desktop_response.status_code = 200
-        desktop_response.url = "https://www.douyin.com/video/7324602766213598501"
-        desktop_response.text = "<html><body></body></html>"
-        desktop_response.close = Mock()
-
         mobile_data = {
             "loaderData": {
                 "video_(id)/page": {
@@ -429,25 +939,18 @@ class DouyinAdapterTests(SimpleTestCase):
         mobile_response.url = "https://www.iesdouyin.com/share/video/7324602766213598501/?region=CN"
         mobile_response.text = f"<script>window._ROUTER_DATA = {json.dumps(mobile_data)};</script>"
         mobile_response.close = Mock()
-        mock_get.side_effect = [desktop_response, ValueError("feed unavailable"), mobile_response]
+        mock_get.side_effect = [ValueError("feed unavailable"), mobile_response]
 
         result = DouyinAdapter().parse_url("https://www.douyin.com/video/7324602766213598501")
 
         self.assertEqual(result.post_type, "video")
         self.assertEqual(len(result.video_assets), 1)
-        self.assertIn("/aweme/v1/feed/", mock_get.call_args_list[1].args[0])
-        self.assertIn("/share/video/7324602766213598501/", mock_get.call_args_list[2].args[0])
-        desktop_response.close.assert_called_once()
+        self.assertIn("/aweme/v1/feed/", mock_get.call_args_list[0].args[0])
+        self.assertIn("/share/video/7324602766213598501/", mock_get.call_args_list[1].args[0])
         mobile_response.close.assert_called_once()
 
     @patch("xhs_download.services.platforms.douyin.request_get_with_retry")
     def test_parse_url_continues_to_note_share_when_video_share_fails(self, mock_get):
-        desktop_response = Mock()
-        desktop_response.status_code = 200
-        desktop_response.url = "https://www.douyin.com/note/7324602766213598501"
-        desktop_response.text = "<html><body></body></html>"
-        desktop_response.close = Mock()
-
         note_data = {
             "loaderData": {
                 "aweme": {
@@ -464,7 +967,6 @@ class DouyinAdapterTests(SimpleTestCase):
         note_response.text = f"<script>window._ROUTER_DATA = {json.dumps(note_data)};</script>"
         note_response.close = Mock()
         mock_get.side_effect = [
-            desktop_response,
             ValueError("feed unavailable"),
             ValueError("video share unavailable"),
             note_response,
@@ -474,19 +976,12 @@ class DouyinAdapterTests(SimpleTestCase):
 
         self.assertEqual(result.post_type, "image")
         self.assertEqual(result.image_assets[0].url, "https://p3-sign.douyinpic.com/image.webp")
-        self.assertIn("/share/video/7324602766213598501/", mock_get.call_args_list[2].args[0])
-        self.assertIn("/share/note/7324602766213598501/", mock_get.call_args_list[3].args[0])
-        desktop_response.close.assert_called_once()
+        self.assertIn("/share/video/7324602766213598501/", mock_get.call_args_list[1].args[0])
+        self.assertIn("/share/note/7324602766213598501/", mock_get.call_args_list[2].args[0])
         note_response.close.assert_called_once()
 
     @patch("xhs_download.services.platforms.douyin.request_get_with_retry")
     def test_parse_url_uses_mobile_feed_download_addr_when_available(self, mock_get):
-        desktop_response = Mock()
-        desktop_response.status_code = 200
-        desktop_response.url = "https://www.douyin.com/video/7324602766213598501"
-        desktop_response.text = "<html><body></body></html>"
-        desktop_response.close = Mock()
-
         feed_response = Mock()
         feed_response.json.return_value = {
             "aweme_list": [
@@ -517,7 +1012,7 @@ class DouyinAdapterTests(SimpleTestCase):
             ]
         }
         feed_response.close = Mock()
-        mock_get.side_effect = [desktop_response, feed_response]
+        mock_get.return_value = feed_response
 
         result = DouyinAdapter().parse_url("https://www.douyin.com/video/7324602766213598501")
 
@@ -527,8 +1022,7 @@ class DouyinAdapterTests(SimpleTestCase):
             "https://api-play.amemv.com/aweme/v1/play/?video_id=abc&watermark=1&biz_sign=abc",
         )
         self.assertEqual(result.video_assets[0].size_bytes, 4_395_633)
-        self.assertIn("/aweme/v1/feed/", mock_get.call_args_list[1].args[0])
-        desktop_response.close.assert_called_once()
+        self.assertIn("/aweme/v1/feed/", mock_get.call_args_list[0].args[0])
         feed_response.close.assert_called_once()
 
     def test_get_video_candidates_prefers_high_quality_unwatermarked_play_url(self):
@@ -768,10 +1262,48 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertContains(response, "css/app.css?v=")
         self.assertContains(response, "js/xhs_download.js?v=")
         self.assertContains(response, "data-download-task-url")
+
+    @override_settings(ULTRA_HD_PROVIDER_ENABLED=True, TIKHUB_API_KEY="secret")
+    @patch("xhs_download.views.parse_media_page")
+    def test_results_passes_ultra_hd_request_flag(self, mock_parse):
+        mock_parse.return_value = ParseResult(
+            platform="douyin",
+            post_type="unknown",
+            base_filename="douyin",
+            assets=(),
+        )
+
+        response = Client().get("/results/", {"q": "https://www.douyin.com/video/123", "ultra_hd": "1"})
+
+        self.assertEqual(response.status_code, 200)
+        mock_parse.assert_called_once_with("https://www.douyin.com/video/123", prefer_ultra_hd=True)
+        self.assertContains(response, "本次已尝试使用抖音超高清 Provider")
+        self.assertContains(response, 'id="ultra-hd-request-input"')
+        self.assertContains(response, 'value="1"')
+
+    @override_settings(ULTRA_HD_PROVIDER_ENABLED=True, TIKHUB_API_KEY="secret")
+    @patch("xhs_download.views.parse_media_page")
+    def test_results_defaults_to_local_provider_without_ultra_hd_flag(self, mock_parse):
+        mock_parse.return_value = ParseResult(
+            platform="douyin",
+            post_type="unknown",
+            base_filename="douyin",
+            assets=(),
+        )
+
+        response = Client().get("/results/", {"q": "https://www.douyin.com/video/123"})
+
+        self.assertEqual(response.status_code, 200)
+        mock_parse.assert_called_once_with("https://www.douyin.com/video/123", prefer_ultra_hd=False)
         self.assertContains(response, "feature-card", count=4)
         self.assertContains(response, "无需登录解析去水印，支持视频、图片、批量无水印保存")
         self.assertContains(response, 'placeholder="请将复制的链接粘贴到这里"')
         self.assertContains(response, "paste-link-icon-btn")
+        self.assertContains(response, 'id="ultra-hd-request-input"')
+        self.assertContains(response, 'id="ultra-hd-setting"')
+        self.assertContains(response, "解析质量")
+        self.assertContains(response, "默认关闭，关闭时只使用本地解析")
+        self.assertNotContains(response, "hero-provider-row")
         self.assertContains(response, "无需登录/注册")
         self.assertContains(response, "打开页面即可解析链接，无使用限制。")
         self.assertContains(response, "原始文件保存")
@@ -820,7 +1352,7 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "result-theme-home")
         self.assertContains(response, "抖音")
-        mock_parse.assert_called_once_with("https://v.douyin.com/abc123/")
+        mock_parse.assert_called_once_with("https://v.douyin.com/abc123/", prefer_ultra_hd=False)
 
     @patch("xhs_download.views.parse_media_page")
     def test_xhs_route_can_parse_douyin_link(self, mock_parse):
@@ -837,7 +1369,7 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertContains(response, "你粘贴的是抖音链接，已自动使用对应解析器。")
         self.assertContains(response, "抖音")
         self.assertContains(response, "result-theme-xhs")
-        mock_parse.assert_called_once_with("https://v.douyin.com/abc123/")
+        mock_parse.assert_called_once_with("https://v.douyin.com/abc123/", prefer_ultra_hd=False)
 
     @patch("xhs_download.views.parse_media_page")
     def test_bilibili_results_render_video_asset(self, mock_parse):
@@ -865,7 +1397,7 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertContains(response, "已解析到 1 个视频资源")
         self.assertContains(response, "1.0 MB")
         self.assertContains(response, "download-progress-wrap")
-        mock_parse.assert_called_once_with("https://www.bilibili.com/video/BV1xx411c7mD/")
+        mock_parse.assert_called_once_with("https://www.bilibili.com/video/BV1xx411c7mD/", prefer_ultra_hd=False)
 
     @patch("xhs_download.views.build_download_archive_file")
     def test_download_endpoint_returns_zip_response(self, mock_archive):

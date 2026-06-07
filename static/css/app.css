@@ -479,6 +479,71 @@ body {
     border-top: 1px dashed var(--line-soft);
 }
 
+.settings-toggle {
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr);
+    gap: 12px;
+    align-items: center;
+    margin-bottom: 8px;
+    cursor: pointer;
+}
+
+.settings-toggle input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.settings-switch-control {
+    position: relative;
+    width: 48px;
+    height: 26px;
+    border-radius: 999px;
+    background: #d1d5db;
+    transition: background .18s ease;
+}
+
+.settings-switch-control::after {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 4px rgba(17, 24, 39, .22);
+    transition: transform .18s ease;
+    content: "";
+}
+
+.settings-toggle input:checked + .settings-switch-control {
+    background: var(--brand);
+}
+
+.settings-toggle input:checked + .settings-switch-control::after {
+    transform: translateX(22px);
+}
+
+.settings-toggle strong,
+.settings-toggle small {
+    display: block;
+    line-height: 1.4;
+}
+
+.settings-toggle strong {
+    font-size: .98rem;
+}
+
+.settings-toggle small {
+    color: var(--text-muted);
+    font-size: .86rem;
+}
+
+.settings-toggle.is-disabled {
+    cursor: not-allowed;
+    opacity: .62;
+}
+
 .download-location-toggle {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
