@@ -98,6 +98,15 @@ ULTRA_HD_PUBLIC_ACCESS_ENABLED=False
 
 Keep public access disabled until TikHub cost and rate limits have been validated in staging.
 
+For country-aware TikHub routing, Cloudflare deployments may set:
+
+```text
+TIKHUB_TRUST_COUNTRY_HEADER=True
+TIKHUB_COUNTRY_HEADER=HTTP_CF_IPCOUNTRY
+```
+
+Only enable this when the origin accepts traffic through the trusted proxy and the proxy overwrites the country header. Direct deployments should keep header trust disabled and configure a GeoIP2 Country database with `TIKHUB_GEOIP_DATABASE_PATH`. Without either source, routing falls back to `TIKHUB_DEFAULT_COUNTRY_CODE=CN`.
+
 For local development only, these can be enabled to save files from the Django process to a server-side directory:
 
 ```text

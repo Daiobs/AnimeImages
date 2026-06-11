@@ -1,9 +1,10 @@
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
 import hashlib
+import inspect
 import json
 import logging
-from time import time
+from time import monotonic, time
 from urllib.parse import urljoin, urlsplit
 
 import requests
@@ -12,13 +13,14 @@ from django.utils import timezone
 
 from ..assets import MediaAsset, ParseResult
 from ..candidates import MediaCandidate
+from ..common import validate_external_url
 from ..diagnostics import select_best_media_candidate
 from ..provider_settings import get_platform_provider_settings
 
 
 DEFAULT_TIKHUB_BASE_URL = "https://api.tikhub.io"
+DEFAULT_TIKHUB_CHINA_BASE_URL = "https://api.tikhub.dev"
 TIKHUB_HIGH_QUALITY_ENDPOINT = "/api/v1/douyin/app/v3/fetch_video_high_quality_play_url"
-TIKHUB_LOW_CONFIDENCE_BYTES = 8 * 1024 * 1024
 TIKHUB_VIDEO_URL_KEYS = (
     "original_video_url",
     "originalVideoUrl",
@@ -29,6 +31,10 @@ TIKHUB_VIDEO_URL_KEYS = (
     "play_url",
     "video_url",
     "url",
+)
+DOUYIN_ULTRA_EXECUTOR = ThreadPoolExecutor(
+    max_workers=8,
+    thread_name_prefix="douyin-ultra",
 )
 logger = logging.getLogger(__name__)
 
@@ -78,6 +84,8 @@ class DouyinParseContext:
     aweme_id: str = ""
     direct_result: object | None = None
     direct_error: Exception | None = None
+    deadline_monotonic: float = 0
+    client_country_code: str = ""
 
 
 @dataclass(frozen=True)
@@ -87,6 +95,26 @@ class ProviderResponse:
     message: str = ""
     request_id: str = ""
     candidates: tuple[MediaCandidate, ...] = ()
+
+
+@dataclass(frozen=True)
+class ValidatedProviderCandidate:
+    candidate: MediaCandidate
+    final_url: str = ""
+    content_type: str = ""
+    cache_hit: bool = False
+    candidate_count: int = 0
+    probe_duration_ms: int = 0
+    code: str = ""
+    message: str = ""
+    request_id: str = ""
+
+
+@dataclass(frozen=True)
+class TikHubRequestRoute:
+    country_code: str
+    region: str
+    base_url: str
 
 
 class DouyinResultProvider:
@@ -134,6 +162,54 @@ def build_tikhub_base_url(base_url):
     return (base_url or DEFAULT_TIKHUB_BASE_URL).rstrip("/") + "/"
 
 
+def tikhub_response_status_code(response):
+    try:
+        return int(response.status_code)
+    except (TypeError, ValueError):
+        return 200
+
+
+def is_retryable_tikhub_failure(response, provider_response):
+    status_code = tikhub_response_status_code(response)
+    if status_code in {429, 500, 502, 503, 504}:
+        return True
+    if status_code != 400 and provider_response.code != "400":
+        return False
+
+    message = (provider_response.message or "").lower()
+    return "retry" in message or "重试" in message
+
+
+def is_unusable_tikhub_payload(data, provider_response):
+    if not provider_response.ok or not provider_response.candidates:
+        return False
+
+    content_type = get_tikhub_declared_content_type(data)
+    if content_type in {"text/html", "text/plain", "application/json"}:
+        return True
+
+    declared_size = provider_response.candidates[0].size_bytes
+    return 0 < declared_size < 1024 * 1024
+
+
+def get_tikhub_request_timeout(provider_settings, context):
+    connect_timeout = max(
+        0.1,
+        provider_settings.tikhub_connect_timeout_seconds,
+    )
+    read_timeout = max(
+        0.1,
+        provider_settings.tikhub_read_timeout_seconds,
+    )
+    if not context.deadline_monotonic:
+        return connect_timeout, read_timeout
+
+    remaining = max(0.1, context.deadline_monotonic - monotonic())
+    connect_timeout = min(connect_timeout, remaining)
+    read_timeout = min(read_timeout, max(0.1, remaining - connect_timeout))
+    return connect_timeout, read_timeout
+
+
 def build_tikhub_cache_key(params):
     normalized = tuple(sorted((key, str(value)) for key, value in params.items() if value))
     digest = hashlib.sha256(
@@ -142,16 +218,68 @@ def build_tikhub_cache_key(params):
     return f"tikhub:cache:{digest}"
 
 
-def get_cached_tikhub_data(cache_key, ttl_seconds):
-    if ttl_seconds <= 0:
+def build_tikhub_validated_cache_key(context, params, base_url=""):
+    identity = context.aweme_id or build_tikhub_cache_key(params).rsplit(":", 1)[-1]
+    region = str(params.get("region") or "default").lower()
+    api_host = (urlsplit(base_url).hostname or "default").lower()
+    return f"tikhub:validated:{api_host}:{region}:{identity}"
+
+
+def serialize_validated_candidate(validated):
+    return {
+        "url": validated.candidate.url,
+        "size_bytes": validated.candidate.size_bytes,
+        "quality_label": validated.candidate.quality_label,
+        "source": validated.candidate.source,
+        "final_url": validated.final_url,
+        "content_type": validated.content_type,
+        "candidate_count": validated.candidate_count,
+        "selected_at": timezone.now().isoformat(),
+    }
+
+
+def get_cached_validated_candidate(cache_key, allowed_host_suffixes):
+    data = cache.get(cache_key)
+    if not isinstance(data, dict):
         return None
-    return cache.get(cache_key)
+
+    try:
+        url = str(data["url"])
+        size_bytes = int(data["size_bytes"])
+        validate_external_url(
+            url,
+            allowed_host_suffixes,
+            "缓存的 TikHub URL 不在允许的媒体域名内",
+        )
+        if size_bytes <= 0:
+            return None
+    except (KeyError, TypeError, ValueError):
+        cache.delete(cache_key)
+        return None
+
+    return ValidatedProviderCandidate(
+        candidate=MediaCandidate(
+            url=url,
+            size_bytes=size_bytes,
+            quality_label=str(data.get("quality_label") or "原始上传画质"),
+            source=str(data.get("source") or "tikhub.validated_cache"),
+            priority=len(TIKHUB_VIDEO_URL_KEYS),
+        ),
+        final_url=str(data.get("final_url") or url),
+        content_type=str(data.get("content_type") or ""),
+        cache_hit=True,
+        candidate_count=int(data.get("candidate_count") or 1),
+    )
 
 
-def cache_tikhub_data(cache_key, data, ttl_seconds):
+def cache_validated_candidate(cache_key, validated, ttl_seconds):
     if ttl_seconds <= 0:
         return
-    cache.set(cache_key, data, timeout=ttl_seconds)
+    cache.set(
+        cache_key,
+        serialize_validated_candidate(validated),
+        timeout=ttl_seconds,
+    )
 
 
 def reserve_tikhub_call(daily_limit):
@@ -173,6 +301,18 @@ def reserve_tikhub_call(daily_limit):
 def build_tikhub_candidates(data):
     candidates = []
     seen = set()
+    payload = data.get("data") if isinstance(data, dict) else None
+    declared_size = 0
+    if isinstance(payload, dict):
+        try:
+            declared_size = int(
+                payload.get("file_size")
+                or payload.get("fileSize")
+                or payload.get("size_bytes")
+                or 0
+            )
+        except (TypeError, ValueError):
+            declared_size = 0
 
     for key in TIKHUB_VIDEO_URL_KEYS:
         value = get_nested_value(data, key)
@@ -185,6 +325,7 @@ def build_tikhub_candidates(data):
             candidates.append(
                 MediaCandidate(
                     url=url,
+                    size_bytes=declared_size if key in {"original_video_url", "originalVideoUrl"} else 0,
                     quality_label="原始上传画质",
                     source=f"tikhub.{key}",
                     priority=len(TIKHUB_VIDEO_URL_KEYS) - TIKHUB_VIDEO_URL_KEYS.index(key),
@@ -194,6 +335,18 @@ def build_tikhub_candidates(data):
     return tuple(candidates)
 
 
+def get_tikhub_declared_content_type(data):
+    payload = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(payload, dict):
+        return ""
+    return str(
+        payload.get("content_type")
+        or payload.get("contentType")
+        or payload.get("mime_type")
+        or ""
+    ).split(";", 1)[0].strip().lower()
+
+
 def build_tikhub_provider_response(data):
     code = ""
     message = ""
@@ -201,11 +354,35 @@ def build_tikhub_provider_response(data):
     ok = True
 
     if isinstance(data, dict):
-        raw_code = data.get("code") or data.get("status_code") or data.get("statusCode")
+        detail = data.get("detail")
+        detail = detail if isinstance(detail, dict) else {}
+        raw_code = (
+            data.get("code")
+            or data.get("status_code")
+            or data.get("statusCode")
+            or detail.get("code")
+            or detail.get("status_code")
+            or detail.get("statusCode")
+        )
         if raw_code is not None:
             code = str(raw_code)
-        message = str(data.get("message") or data.get("msg") or data.get("detail") or "")
-        request_id = str(data.get("request_id") or data.get("requestId") or data.get("log_id") or data.get("logId") or "")
+        message = str(
+            data.get("message")
+            or data.get("msg")
+            or detail.get("message")
+            or detail.get("message_zh")
+            or data.get("detail")
+            or ""
+        )
+        request_id = str(
+            data.get("request_id")
+            or data.get("requestId")
+            or data.get("log_id")
+            or data.get("logId")
+            or detail.get("request_id")
+            or detail.get("requestId")
+            or ""
+        )
         if raw_code not in (None, 0, "0", 200, "200"):
             ok = False
 
@@ -245,27 +422,63 @@ def get_reference_result(adapter, context):
     return None
 
 
-def get_fast_native_result(adapter, context):
+def call_native_fetcher(fetcher, aweme_id, timeout_seconds):
+    parameters = inspect.signature(fetcher).parameters
+    request_options = {}
+    if "request_timeout" in parameters:
+        request_options["request_timeout"] = max(0.1, timeout_seconds)
+    if "request_retries" in parameters:
+        request_options["request_retries"] = 1
+    return fetcher(aweme_id, **request_options)
+
+
+def get_fast_native_result(adapter, context, timeout_seconds=5.0):
     started_at = time()
     try:
-        result = DouyinNativeProvider().parse(adapter, context)
+        if context.direct_result and context.direct_result.assets:
+            result = context.direct_result
+        elif context.aweme_id:
+            native_deadline = monotonic() + max(0.1, timeout_seconds)
+            result = None
+            for provider_name, fetcher_name, budget_ratio in (
+                ("native_fast_feed", "fetch_mobile_feed_result", 0.6),
+                ("native_fast_share", "fetch_mobile_share_result", 1.0),
+            ):
+                fetcher = getattr(adapter, fetcher_name, None)
+                if not fetcher:
+                    continue
+                remaining = native_deadline - monotonic()
+                if remaining <= 0:
+                    break
+                request_budget = min(
+                    remaining,
+                    max(0.1, timeout_seconds * budget_ratio),
+                )
+                fetch_started_at = time()
+                try:
+                    result = call_native_fetcher(
+                        fetcher,
+                        context.aweme_id,
+                        request_budget,
+                    )
+                except Exception as error:
+                    log_provider_failure(
+                        provider_name,
+                        context,
+                        error,
+                        fetch_started_at,
+                    )
+                    continue
+                if result and result.assets:
+                    break
+        else:
+            result = None
         if result and result.assets:
             return with_parse_metadata(result, selected_provider="native", fallback_reason="fast_native")
     except Exception as error:
         log_provider_failure("native_fast", context, error, started_at)
         return None
     return None
-
-
-def get_best_native_result(adapter, context):
-    started_at = time()
-    try:
-        result = DouyinNativeEnhancedProvider().parse(adapter, context)
-        if result and result.assets:
-            return with_parse_metadata(result, selected_provider="native_enhanced", fallback_reason="enhanced_comparison")
-    except Exception as error:
-        log_provider_failure("native_enhanced_comparison", context, error, started_at)
-    return get_reference_result(adapter, context)
 
 
 def get_reference_video_asset(result):
@@ -302,109 +515,201 @@ def build_external_parse_result(adapter, context, candidate, reference_result=No
 class DouyinTikHubProvider(DouyinResultProvider):
     name = "tikhub"
 
-    def __init__(self, provider_settings=None, timeout=20):
+    def __init__(self, provider_settings=None):
         self.provider_settings = provider_settings or get_platform_provider_settings("douyin")
-        self.timeout = timeout
 
-    def build_request_params(self, context):
+    def get_request_route(self, context):
+        country_code = str(context.client_country_code or "").strip().upper()
+        if len(country_code) != 2 or not country_code.isalpha():
+            country_code = str(
+                self.provider_settings.tikhub_region or "CN"
+            ).strip().upper()
+
+        if country_code == "CN":
+            return TikHubRequestRoute(
+                country_code="CN",
+                region="CN",
+                base_url=(
+                    self.provider_settings.tikhub_china_base_url
+                    or DEFAULT_TIKHUB_CHINA_BASE_URL
+                ),
+            )
+
+        return TikHubRequestRoute(
+            country_code=country_code,
+            region=country_code,
+            base_url=(
+                self.provider_settings.tikhub_base_url
+                or DEFAULT_TIKHUB_BASE_URL
+            ),
+        )
+
+    def build_request_params(self, context, route=None):
+        route = route or self.get_request_route(context)
         params = {
-            "region": self.provider_settings.tikhub_region or "CN",
+            "region": route.region,
         }
         if context.aweme_id:
             params["aweme_id"] = context.aweme_id
-        share_url = context.final_url or context.url
-        if share_url:
-            params["share_url"] = share_url
+        else:
+            share_url = context.final_url or context.url
+            if share_url:
+                params["share_url"] = share_url
         return params
 
+    def get_attempt_route(self, context, attempt):
+        route = self.get_request_route(context)
+        if route.country_code == "CN" and attempt > 1:
+            return replace(route, region="HK")
+        return route
+
     def fetch_high_quality_data(self, context):
-        params = self.build_request_params(context)
-        cache_key = build_tikhub_cache_key(params)
-        cached_data = get_cached_tikhub_data(cache_key, self.provider_settings.tikhub_cache_ttl_seconds)
-        if cached_data is not None:
-            log_provider_event("douyin_provider_cache_hit", self.name, context, cache_hit=True)
-            return cached_data
+        max_attempts = max(1, self.provider_settings.tikhub_max_attempts)
+        for attempt in range(1, max_attempts + 1):
+            if context.deadline_monotonic and context.deadline_monotonic <= monotonic():
+                raise FutureTimeoutError("Douyin ultra-HD deadline reached before TikHub request")
+            if not reserve_tikhub_call(
+                self.provider_settings.tikhub_daily_limit
+            ):
+                log_provider_event(
+                    "douyin_provider_limit_reached",
+                    self.name,
+                    context,
+                    daily_limit=self.provider_settings.tikhub_daily_limit,
+                    attempt=attempt,
+                )
+                raise RuntimeError("TikHub daily limit reached")
 
-        if not reserve_tikhub_call(self.provider_settings.tikhub_daily_limit):
-            log_provider_event("douyin_provider_limit_reached", self.name, context, daily_limit=self.provider_settings.tikhub_daily_limit)
-            raise RuntimeError("TikHub daily limit reached")
+            route = self.get_attempt_route(context, attempt)
+            params = self.build_request_params(context, route=route)
+            endpoint = urljoin(
+                build_tikhub_base_url(route.base_url),
+                TIKHUB_HIGH_QUALITY_ENDPOINT.lstrip("/"),
+            )
+            started_at = time()
+            try:
+                response = requests.get(
+                    endpoint,
+                    params=params,
+                    headers={
+                        "Accept": "application/json",
+                        "Authorization": f"Bearer {self.provider_settings.tikhub_api_key}",
+                    },
+                    timeout=get_tikhub_request_timeout(
+                        self.provider_settings,
+                        context,
+                    ),
+                )
+            except (requests.Timeout, requests.ConnectionError) as error:
+                log_provider_failure(
+                    self.name,
+                    context,
+                    error,
+                    started_at,
+                    client_country_code=route.country_code,
+                    region=route.region,
+                    api_host=urlsplit(route.base_url).hostname or "",
+                    attempt=attempt,
+                    retryable=True,
+                )
+                if attempt < max_attempts:
+                    continue
+                raise
+            try:
+                try:
+                    data = response.json()
+                except ValueError as error:
+                    log_provider_failure(
+                        self.name,
+                        context,
+                        error,
+                        started_at,
+                        client_country_code=route.country_code,
+                        region=route.region,
+                        api_host=urlsplit(route.base_url).hostname or "",
+                        attempt=attempt,
+                        retryable=True,
+                        response_status=tikhub_response_status_code(response),
+                    )
+                    if attempt < max_attempts:
+                        continue
+                    raise
+                provider_response = build_tikhub_provider_response(data)
+                retryable = is_retryable_tikhub_failure(
+                    response,
+                    provider_response,
+                )
+                unusable_payload = is_unusable_tikhub_payload(
+                    data,
+                    provider_response,
+                )
+                log_provider_event(
+                    "douyin_provider_response",
+                    self.name,
+                    context,
+                    started_at,
+                    cache_hit=False,
+                    code=provider_response.code,
+                    provider_message=provider_response.message,
+                    request_id=provider_response.request_id,
+                    candidate_count=len(provider_response.candidates),
+                    client_country_code=route.country_code,
+                    region=route.region,
+                    api_host=urlsplit(route.base_url).hostname or "",
+                    attempt=attempt,
+                    retryable=retryable,
+                    unusable_payload=unusable_payload,
+                )
+                try:
+                    response.raise_for_status()
+                except requests.HTTPError:
+                    if retryable and attempt < max_attempts:
+                        continue
+                    raise
+                if unusable_payload and attempt < max_attempts:
+                    continue
+                if provider_response.ok or not retryable or attempt >= max_attempts:
+                    return data
+            finally:
+                response.close()
 
-        endpoint = urljoin(build_tikhub_base_url(self.provider_settings.tikhub_base_url), TIKHUB_HIGH_QUALITY_ENDPOINT.lstrip("/"))
-        started_at = time()
-        response = requests.get(
-            endpoint,
-            params=params,
-            headers={
-                "Accept": "application/json",
-                "Authorization": f"Bearer {self.provider_settings.tikhub_api_key}",
-            },
-            timeout=self.timeout,
+        raise RuntimeError("TikHub request attempts exhausted")
+
+    def resolve_validated_candidate(self, adapter, context):
+        route = self.get_request_route(context)
+        params = self.build_request_params(context, route=route)
+        validated_cache_key = build_tikhub_validated_cache_key(
+            context,
+            params,
+            route.base_url,
         )
-        try:
-            response.raise_for_status()
-            data = response.json()
-            provider_response = build_tikhub_provider_response(data)
+        cached = get_cached_validated_candidate(
+            validated_cache_key,
+            adapter.media_host_suffixes,
+        )
+        if cached:
             log_provider_event(
-                "douyin_provider_response",
+                "douyin_provider_validated_cache_hit",
                 self.name,
                 context,
-                started_at,
-                cache_hit=False,
-                code=provider_response.code,
-                provider_message=provider_response.message,
-                request_id=provider_response.request_id,
-                candidate_count=len(provider_response.candidates),
+                cache_hit=True,
+                selected_size_bytes=cached.candidate.size_bytes,
             )
-            cache_tikhub_data(cache_key, data, self.provider_settings.tikhub_cache_ttl_seconds)
-            return data
-        finally:
-            response.close()
+            return cached
 
-    def fetch_high_quality_data_with_native_result(self, adapter, context):
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            tikhub_future = executor.submit(self.fetch_high_quality_data, context)
-            native_future = executor.submit(get_fast_native_result, adapter, context)
-
-            try:
-                data = tikhub_future.result()
-            except Exception as error:
-                log_provider_failure(self.name, context, error)
-                try:
-                    return None, native_future.result()
-                except Exception as native_error:
-                    log_provider_failure("native_fast", context, native_error)
-                    return None, None
-
-            try:
-                native_result = native_future.result()
-            except Exception as error:
-                log_provider_failure("native_fast", context, error)
-                native_result = None
-
-            return data, native_result
-
-    def parse(self, adapter, context):
-        if not self.provider_settings.provider_is_enabled(self.name):
-            return None
-
-        parse_started_at = time()
-        data, native_result = self.fetch_high_quality_data_with_native_result(adapter, context)
-        if not data:
-            return native_result
-
+        data = self.fetch_high_quality_data(context)
         provider_response = build_tikhub_provider_response(data)
         if not provider_response.ok:
             log_provider_event(
                 "douyin_provider_rejected",
                 self.name,
                 context,
-                parse_started_at,
                 fallback_reason="provider_response_not_ok",
                 code=provider_response.code,
                 provider_message=provider_response.message,
                 request_id=provider_response.request_id,
             )
-            return native_result
+            return None
 
         candidates = provider_response.candidates
         if not candidates:
@@ -412,99 +717,232 @@ class DouyinTikHubProvider(DouyinResultProvider):
                 "douyin_provider_no_candidates",
                 self.name,
                 context,
-                parse_started_at,
                 code=provider_response.code,
                 provider_message=provider_response.message,
                 request_id=provider_response.request_id,
             )
-            return native_result
+            return None
+
+        declared_content_type = get_tikhub_declared_content_type(data)
+        declared_candidate = candidates[0]
+        if (
+            declared_candidate.size_bytes > 0
+            and declared_content_type in {"video/mp4", "application/octet-stream"}
+        ):
+            validate_external_url(
+                declared_candidate.url,
+                adapter.media_host_suffixes,
+                "TikHub URL 不在允许的媒体域名内",
+            )
+            validated = ValidatedProviderCandidate(
+                candidate=declared_candidate,
+                final_url=declared_candidate.url,
+                content_type=declared_content_type,
+                cache_hit=False,
+                candidate_count=len(candidates),
+                code=provider_response.code,
+                message=provider_response.message,
+                request_id=provider_response.request_id,
+            )
+            cache_validated_candidate(
+                validated_cache_key,
+                validated,
+                self.provider_settings.tikhub_validated_cache_ttl_seconds,
+            )
+            log_provider_event(
+                "douyin_provider_declared_candidate_accepted",
+                self.name,
+                context,
+                candidate_count=len(candidates),
+                selected_size_bytes=declared_candidate.size_bytes,
+                content_type=declared_content_type,
+            )
+            return validated
+
+        remaining_budget = (
+            context.deadline_monotonic - monotonic()
+            if context.deadline_monotonic
+            else self.provider_settings.tikhub_probe_timeout_seconds
+        )
+        if remaining_budget <= 0:
+            raise FutureTimeoutError("Douyin ultra-HD deadline reached before CDN probe")
 
         probe_started_at = time()
         selection = select_best_media_candidate(
             candidates,
             headers=adapter.headers,
             allowed_final_host_suffixes=adapter.media_host_suffixes,
-            timeout=6,
-            max_candidates=4,
+            timeout=min(
+                self.provider_settings.tikhub_probe_timeout_seconds,
+                remaining_budget,
+            ),
+            max_candidates=self.provider_settings.tikhub_max_probe_candidates,
             expected_type="video",
+            probe_strategy="range_first",
+            probe_fallback=False,
         )
         probe_duration_ms = duration_ms(probe_started_at)
-        if not selection.candidate or not selection.candidate.size_bytes:
+        selected_diagnostic = selection.selected_diagnostic
+        if (
+            not selection.candidate
+            or not selection.candidate.size_bytes
+            or not selected_diagnostic
+            or not selected_diagnostic.reachable
+        ):
             log_provider_event(
                 "douyin_provider_unvalidated",
                 self.name,
                 context,
-                parse_started_at,
                 candidate_count=len(candidates),
                 probe_duration_ms=probe_duration_ms,
                 fallback_reason="no_validated_candidate",
             )
-            return native_result
+            return None
 
-        selected_diagnostic = selection.selected_diagnostic
-        if selected_diagnostic and selected_diagnostic.content_type and "video" not in selected_diagnostic.content_type.lower():
+        selected_url = selected_diagnostic.final_url or selection.candidate.url
+        validate_external_url(
+            selected_url,
+            adapter.media_host_suffixes,
+            "TikHub URL 跳转到了不允许的媒体域名",
+        )
+        candidate = replace(selection.candidate, url=selected_url)
+        validated = ValidatedProviderCandidate(
+            candidate=candidate,
+            final_url=selected_diagnostic.final_url,
+            content_type=selected_diagnostic.content_type,
+            cache_hit=False,
+            candidate_count=len(candidates),
+            probe_duration_ms=probe_duration_ms,
+            code=provider_response.code,
+            message=provider_response.message,
+            request_id=provider_response.request_id,
+        )
+        cache_validated_candidate(
+            validated_cache_key,
+            validated,
+            self.provider_settings.tikhub_validated_cache_ttl_seconds,
+        )
+        return validated
+
+    def run_fast_paths(self, adapter, context):
+        deadline = context.deadline_monotonic or (
+            monotonic() + max(
+                0.1,
+                self.provider_settings.ultra_total_timeout_seconds,
+            )
+        )
+        remaining_budget = deadline - monotonic()
+        if remaining_budget <= 0:
+            direct_result = (
+                context.direct_result
+                if context.direct_result and context.direct_result.assets
+                else None
+            )
+            return None, direct_result
+
+        validated_cache_key = build_tikhub_validated_cache_key(
+            context,
+            self.build_request_params(context),
+            self.get_request_route(context).base_url,
+        )
+        cached = get_cached_validated_candidate(
+            validated_cache_key,
+            adapter.media_host_suffixes,
+        )
+        if cached:
             log_provider_event(
-                "douyin_provider_unvalidated",
+                "douyin_provider_validated_cache_hit",
                 self.name,
                 context,
-                parse_started_at,
-                candidate_count=len(candidates),
-                probe_duration_ms=probe_duration_ms,
-                fallback_reason="invalid_content_type",
-                content_type=selected_diagnostic.content_type,
+                cache_hit=True,
+                selected_size_bytes=cached.candidate.size_bytes,
             )
+            return cached, None
+
+        native_future = DOUYIN_ULTRA_EXECUTOR.submit(
+            get_fast_native_result,
+            adapter,
+            context,
+            min(
+                self.provider_settings.ultra_native_timeout_seconds,
+                remaining_budget,
+            ),
+        )
+        tikhub_future = DOUYIN_ULTRA_EXECUTOR.submit(
+            self.resolve_validated_candidate,
+            adapter,
+            context,
+        )
+
+        validated = None
+        try:
+            validated = tikhub_future.result(
+                timeout=max(0, deadline - monotonic()),
+            )
+        except FutureTimeoutError:
+            tikhub_future.cancel()
+            log_provider_event(
+                "douyin_provider_budget_exceeded",
+                self.name,
+                context,
+                total_timeout_seconds=self.provider_settings.ultra_total_timeout_seconds,
+            )
+        except Exception as error:
+            log_provider_failure(self.name, context, error)
+
+        if validated:
+            native_result = None
+            if native_future.done():
+                try:
+                    native_result = native_future.result(timeout=0)
+                except Exception as error:
+                    log_provider_failure("native_fast", context, error)
+            else:
+                native_future.cancel()
+            return validated, native_result
+
+        native_result = None
+        try:
+            native_result = native_future.result(
+                timeout=max(0, deadline - monotonic()),
+            )
+        except FutureTimeoutError:
+            native_future.cancel()
+            log_provider_event(
+                "douyin_native_budget_exceeded",
+                "native_fast",
+                context,
+                total_timeout_seconds=self.provider_settings.ultra_total_timeout_seconds,
+            )
+        except Exception as error:
+            log_provider_failure("native_fast", context, error)
+
+        return validated, native_result
+
+    def parse(self, adapter, context):
+        if not self.provider_settings.provider_is_enabled(self.name):
+            return None
+
+        parse_started_at = time()
+        validated, native_result = self.run_fast_paths(adapter, context)
+        if not validated:
             return native_result
 
+        candidate = validated.candidate
         native_size = get_largest_video_size(native_result)
-        if native_result and native_result.video_assets and native_size > selection.candidate.size_bytes:
-            result = with_parse_metadata(
-                native_result,
-                selected_provider="native",
-                fallback_reason="native_larger_than_tikhub",
-                tikhub_size_bytes=selection.candidate.size_bytes,
-                native_size_bytes=native_size,
-                tikhub_candidate_count=len(candidates),
-                tikhub_probe_duration_ms=probe_duration_ms,
-            )
-            log_provider_event(
-                "douyin_provider_selected",
-                "native",
-                context,
-                parse_started_at,
-                fallback_reason="native_larger_than_tikhub",
-                tikhub_size_bytes=selection.candidate.size_bytes,
-                native_size_bytes=native_size,
-                candidate_count=len(candidates),
-                probe_duration_ms=probe_duration_ms,
-            )
-            return result
-
-        if not native_size and selection.candidate.size_bytes < TIKHUB_LOW_CONFIDENCE_BYTES:
-            native_result = get_best_native_result(adapter, context)
-            native_size = get_largest_video_size(native_result)
-            if native_result and native_result.video_assets and native_size > selection.candidate.size_bytes:
-                return with_parse_metadata(
-                    native_result,
-                    selected_provider="native_enhanced",
-                    fallback_reason="enhanced_native_larger_than_low_confidence_tikhub",
-                    tikhub_size_bytes=selection.candidate.size_bytes,
-                    native_size_bytes=native_size,
-                    tikhub_candidate_count=len(candidates),
-                    tikhub_probe_duration_ms=probe_duration_ms,
-                )
-
-        result = build_external_parse_result(adapter, context, selection.candidate, native_result)
+        result = build_external_parse_result(adapter, context, candidate, native_result)
         result = with_parse_metadata(
             result,
             selected_provider=self.name,
             fallback_reason="tikhub_validated",
-            tikhub_size_bytes=selection.candidate.size_bytes,
+            tikhub_size_bytes=candidate.size_bytes,
             native_size_bytes=native_size,
-            tikhub_candidate_count=len(candidates),
-            tikhub_probe_duration_ms=probe_duration_ms,
-            tikhub_code=provider_response.code,
-            tikhub_message=provider_response.message,
-            tikhub_request_id=provider_response.request_id,
+            tikhub_candidate_count=validated.candidate_count,
+            tikhub_probe_duration_ms=validated.probe_duration_ms,
+            tikhub_cache_hit=validated.cache_hit,
+            tikhub_code=validated.code,
+            tikhub_message=validated.message,
+            tikhub_request_id=validated.request_id,
         )
         log_provider_event(
             "douyin_provider_selected",
@@ -512,10 +950,11 @@ class DouyinTikHubProvider(DouyinResultProvider):
             context,
             parse_started_at,
             fallback_reason="tikhub_validated",
-            selected_size_bytes=selection.candidate.size_bytes,
+            selected_size_bytes=candidate.size_bytes,
             native_size_bytes=native_size,
-            candidate_count=len(candidates),
-            probe_duration_ms=probe_duration_ms,
+            candidate_count=validated.candidate_count,
+            probe_duration_ms=validated.probe_duration_ms,
+            cache_hit=validated.cache_hit,
         )
         return result
 
@@ -622,7 +1061,18 @@ def build_douyin_result_providers(provider_settings=None, prefer_ultra_hd=True):
                 if provider_name == "native"
             ),
         )
-    elif "tikhub" in provider_settings.provider_order and provider_settings.provider_is_enabled("tikhub"):
+    else:
+        fast_provider_order = tuple(
+            provider_name
+            for provider_name in provider_settings.provider_order
+            if provider_name != "native_enhanced"
+        )
+        provider_settings = replace(
+            provider_settings,
+            provider_order=fast_provider_order,
+        )
+
+    if "tikhub" in provider_settings.provider_order and provider_settings.provider_is_enabled("tikhub"):
         provider_settings = replace(
             provider_settings,
             provider_order=(

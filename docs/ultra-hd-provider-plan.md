@@ -49,25 +49,60 @@ Suggested environment variables:
 ULTRA_HD_PROVIDER_ENABLED=False
 ULTRA_HD_PUBLIC_ACCESS_ENABLED=False
 TIKHUB_API_KEY=
-TIKHUB_BASE_URL=
+TIKHUB_BASE_URL=https://api.tikhub.io
+TIKHUB_CHINA_BASE_URL=https://api.tikhub.dev
 TIKHUB_REGION=CN
-TIKHUB_CACHE_TTL_SECONDS=1800
+TIKHUB_DEFAULT_COUNTRY_CODE=CN
+TIKHUB_TRUST_COUNTRY_HEADER=False
+TIKHUB_COUNTRY_HEADER=HTTP_CF_IPCOUNTRY
+TIKHUB_GEOIP_DATABASE_PATH=
 TIKHUB_DAILY_LIMIT=20
-DOUYIN_PROVIDER_ORDER=tikhub,native_enhanced,native
+DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS=15.0
+DOUYIN_ULTRA_NATIVE_TIMEOUT_SECONDS=5.0
+TIKHUB_CONNECT_TIMEOUT_SECONDS=1.0
+TIKHUB_READ_TIMEOUT_SECONDS=6.5
+TIKHUB_MAX_ATTEMPTS=2
+TIKHUB_PROBE_TIMEOUT_SECONDS=1.8
+TIKHUB_MAX_PROBE_CANDIDATES=1
+TIKHUB_VALIDATED_CACHE_TTL_SECONDS=600
+DOUYIN_PROVIDER_ORDER=tikhub,native
 XHS_PROVIDER_ORDER=native,tikhub
 ```
 
-Current local-enhanced default:
+The default request path uses only `native`. TikHub additionally requires `ULTRA_HD_PUBLIC_ACCESS_ENABLED=True` before a visitor request can reach the paid provider. In ultra mode, short-link resolution and one orchestrator share the same request deadline; the orchestrator runs TikHub and the native fast path concurrently. TikHub uses separate connect/read timeouts, validates only its first preferred candidate with a Range request, and returns native when the enhancement budget expires. The synchronous web path does not run `native_enhanced`; deep multi-source comparison remains available only for diagnostics.
 
-```text
-DOUYIN_PROVIDER_ORDER=native_enhanced,native
-```
+`TIKHUB_VALIDATED_CACHE_TTL_SECONDS` caches the selected URL, verified byte size, content type, and final CDN URL. A cache hit skips both the paid API call and CDN probe. Signed URLs can expire, so the default TTL is 600 seconds. `TIKHUB_DAILY_LIMIT` counts every outbound attempt, including retries, and uses the same Django cache; production requires shared Redis so workers enforce one cache and one paid-call counter.
 
-The default request path uses only `native` so ordinary parsing remains fast even when provider infrastructure is configured. TikHub additionally requires `ULTRA_HD_PUBLIC_ACCESS_ENABLED=True` before a visitor request can reach the paid provider. TikHub and the native fast path run concurrently, and the returned source is compared with the native result by probed size. Provider failures or daily-limit rejections fall back to local parsing. `TIKHUB_CACHE_TTL_SECONDS` and `TIKHUB_DAILY_LIMIT` use Django cache; production requires shared Redis so workers enforce one cache and one paid-call counter. A value of `0` means unlimited.
+TikHub routing is request-aware. Mainland China uses `https://api.tikhub.dev` with `region=CN`; all other countries use `https://api.tikhub.io` with the visitor's normalized ISO country code. Validated candidate cache keys include both API host and region, so a CDN URL selected for one region cannot leak into another region's response. Country detection accepts a proxy header only when `TIKHUB_TRUST_COUNTRY_HEADER=True`; otherwise it uses the optional local GeoIP2 database and falls back to `TIKHUB_DEFAULT_COUNTRY_CODE`.
+
+The high-quality endpoint can occasionally return a temporary HTTP/provider `400`, a network timeout, or an unusable HTML/tiny-file payload. `TIKHUB_MAX_ATTEMPTS=2` retries those transient cases plus `429/5xx` responses. A mainland retry keeps the accelerated `api.tikhub.dev` domain but changes the second attempt to `region=HK`, which avoids repeatedly selecting a broken CN CDN response. The 15-second ultra budget is intentionally separate from normal parsing so one retry can finish without downgrading a known 170MB-class source to native 1080p.
+
+Short-link resolution stops as soon as any validated Douyin redirect URL exposes an `aweme_id`, including the common first-hop `iesdouyin.com/share/video/{id}` URL. It does not fetch the subsequent desktop video page before starting provider work.
 
 The Django settings module loads the project-root `.env` file before reading environment variables. Real provider keys should live in local `.env` or deployment secrets, not in committed files. Environment templates are split into `.env.example.local` and `.env.example.production`; production mode requires explicit secret, allowed hosts, and Redis cache URL. The ultra-HD request switch is intentionally placed in the settings modal instead of the hero parser area so normal parsing remains clean and free by default.
 
-Current status note: although the provider path now avoids default-mode slowdown and runs TikHub with the native fast path in parallel, manual PyCharm/browser testing still shows some Douyin ultra-HD parses taking more than 10 seconds. Treat ultra-HD as a research feature until provider timing diagnostics are easy to inspect and identify the slow segment.
+Current measured behavior: the paid API can take about 4-6 seconds. Ultra mode treats a valid TikHub candidate as authoritative and returns it immediately without comparing its size to native or waiting for an unfinished native request. When TikHub supplies a valid allowlisted video URL, positive `file_size`, and video content type, the request trusts that structured metadata and skips a redundant CDN Range probe. Cache hits skip native entirely. TikHub failure falls back first to the concurrent native result, then to the normal native provider.
+
+## Long-Term Cold-Latency Plan
+
+Cold ultra-HD requests still depend on a TikHub call that can exceed 7 seconds. This is not considered solved by the current timeout and retry work. The long-term target is:
+
+- validated-cache hit P50 below 1 second
+- cold-request P50 below 4 seconds
+- cold-request P95 below 8 seconds
+- no quality downgrade solely to meet the latency target
+
+Implementation order:
+
+1. Persist provider stage timings by API host, region, endpoint, cache state, and outcome. Build P50/P95 dashboards from real traffic instead of one-off CLI tests.
+2. Reuse DNS/TLS connections with a bounded thread-local HTTP session or async client. Benchmark `.dev` and `.io` independently from the returned CDN download speed.
+3. Add Redis single-flight per `aweme_id + country route` so concurrent visitors share one paid TikHub request instead of producing duplicate calls.
+4. Keep validated results in Redis and implement stale-while-refresh near signed-URL expiry. Delete the cache entry and refresh once when a cached download URL fails.
+5. Maintain short-lived regional health scores. Route new cold requests through the fastest healthy API host/region combination permitted for that user, while retaining the mainland-accessible `.dev` domain.
+6. Move cold ultra-HD resolution to a shared background task. The page can render native metadata immediately, show provider progress, and replace the video source when the ultra candidate arrives without holding one Django request open.
+7. Research a second provider or self-hosted source acquisition path. A hard sub-3-second cold guarantee is not realistic while one external API consistently needs 4-7 seconds.
+
+The synchronous request path should remain as a fallback until Redis-backed tasks and browser polling are proven reliable.
 
 ### Cookie Provider
 

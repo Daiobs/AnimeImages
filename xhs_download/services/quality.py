@@ -54,26 +54,38 @@ class QualityProbe:
     def __init__(self, allowed_final_host_suffixes=MEDIA_HOST_SUFFIXES):
         self.allowed_final_host_suffixes = allowed_final_host_suffixes or MEDIA_HOST_SUFFIXES
 
-    def probe(self, url, headers=None, timeout=6, expected_type=""):
+    def probe(
+        self,
+        url,
+        headers=None,
+        timeout=6,
+        expected_type="",
+        strategy="head_first",
+        allow_fallback=True,
+    ):
         validate_media_url(url)
         request_headers = headers or {}
-        last_error = ""
+        probes = (
+            (self._probe_range, self._probe_head)
+            if strategy == "range_first"
+            else (self._probe_head, self._probe_range)
+        )
 
-        head_result = self._probe_head(url, request_headers, timeout, expected_type)
-        if head_result.reachable and head_result.size_bytes:
-            return head_result
-        if head_result.error:
-            last_error = head_result.error
+        primary_result = probes[0](url, request_headers, timeout, expected_type)
+        if primary_result.reachable and primary_result.size_bytes:
+            return primary_result
+        if not allow_fallback:
+            return primary_result
 
-        range_result = self._probe_range(url, request_headers, timeout, expected_type)
-        if range_result.reachable:
-            return range_result
-        if head_result.reachable:
-            return head_result
-        if range_result.error:
-            last_error = range_result.error
-
-        return QualityProbeResult(url=url, error=last_error)
+        fallback_result = probes[1](url, request_headers, timeout, expected_type)
+        if fallback_result.reachable:
+            return fallback_result
+        if primary_result.reachable:
+            return primary_result
+        return QualityProbeResult(
+            url=url,
+            error=fallback_result.error or primary_result.error,
+        )
 
     def _validate_final_url(self, url):
         validate_external_url(
@@ -140,14 +152,16 @@ class QualityProbe:
                         content_type=content_type,
                         error=f"Unexpected content type {content_type}",
                     )
+                size_bytes = (
+                    parse_content_range_total(response.headers.get("Content-Range"))
+                    if response.status_code == 206
+                    else parse_content_length(response)
+                )
                 return QualityProbeResult(
                     url=url,
                     final_url=response.url,
                     reachable=True,
-                    size_bytes=(
-                        parse_content_range_total(response.headers.get("Content-Range"))
-                        or parse_content_length(response)
-                    ),
+                    size_bytes=size_bytes,
                     content_type=content_type,
                     method="RANGE",
                 )

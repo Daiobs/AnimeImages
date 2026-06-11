@@ -173,6 +173,7 @@ def request_get_with_retry(
         except Exception as error:
             last_error = error
 
-        time.sleep(sleep_seconds * (attempt + 1))
+        if attempt < retries - 1:
+            time.sleep(sleep_seconds * (attempt + 1))
 
     raise last_error

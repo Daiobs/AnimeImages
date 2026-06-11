@@ -19,13 +19,18 @@ class LimitResult:
     retry_after: int = 0
 
 
-def get_client_identity(request):
+def get_client_ip(request):
     remote_addr = (request.META.get("REMOTE_ADDR") or "unknown").strip()
     if getattr(settings, "DOWNLOAD_TRUST_X_FORWARDED_FOR", False):
         forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR", "")
         first_forwarded = forwarded_for.split(",", 1)[0].strip()
         if first_forwarded:
             remote_addr = first_forwarded
+    return remote_addr
+
+
+def get_client_identity(request):
+    remote_addr = get_client_ip(request)
     return hashlib.sha256(remote_addr.encode("utf-8")).hexdigest()[:24]
 
 

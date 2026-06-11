@@ -39,6 +39,7 @@ from .services.rate_limits import (
     has_daily_capacity,
     release_concurrency,
 )
+from .services.region_routing import get_request_country_code
 
 
 logger = logging.getLogger(__name__)
@@ -347,7 +348,15 @@ def search_results_view(request, platform_key="home"):
         context["provider_notice"] = "当前环境未向访客开放超高清 Provider，本次使用本地解析。"
 
     try:
-        result = parse_media_page(query, prefer_ultra_hd=prefer_ultra_hd)
+        client_country_code = (
+            get_request_country_code(request)
+            if prefer_ultra_hd
+            else ""
+        )
+        parse_options = {"prefer_ultra_hd": prefer_ultra_hd}
+        if client_country_code:
+            parse_options["client_country_code"] = client_country_code
+        result = parse_media_page(query, **parse_options)
         context["platform"] = result.platform
         context["platform_name"] = PLATFORM_DISPLAY_NAMES.get(result.platform, result.platform or "未知平台")
         if context["page_platform_id"] and context["page_platform_id"] != result.platform:

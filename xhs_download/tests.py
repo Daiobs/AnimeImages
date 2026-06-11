@@ -6,8 +6,9 @@ from tempfile import NamedTemporaryFile, TemporaryDirectory
 from unittest.mock import Mock, patch
 from zipfile import ZipFile
 
+import requests
 from django.core.cache import cache
-from django.test import Client, SimpleTestCase, TestCase, override_settings
+from django.test import Client, RequestFactory, SimpleTestCase, TestCase, override_settings
 from PIL import Image
 
 from .services.common import (
@@ -38,7 +39,16 @@ from .services.provider_settings import (
     normalize_provider_order,
 )
 from .services.quality import QualityProbe, QualityProbeResult
-from .services.rate_limits import get_client_identity, get_daily_total, release_concurrency
+from .services.rate_limits import (
+    get_client_identity,
+    get_client_ip,
+    get_daily_total,
+    release_concurrency,
+)
+from .services.region_routing import (
+    get_request_country_code,
+    normalize_country_code,
+)
 from .services.platforms import BilibiliAdapter, DouyinAdapter, XiaohongshuAdapter
 from .services.platforms.bilibili import BILIBILI_HEADERS
 from .services.platforms.douyin import DOUYIN_HEADERS, extract_aweme_id, get_video_candidates
@@ -47,6 +57,8 @@ from .services.platforms.douyin_providers import (
     DouyinNativeEnhancedProvider,
     DouyinNativeProvider,
     DouyinTikHubProvider,
+    ValidatedProviderCandidate,
+    build_tikhub_validated_cache_key,
     build_tikhub_provider_response,
     build_douyin_result_providers,
     context_log_fields,
@@ -226,6 +238,34 @@ class XhsUtilityTests(SimpleTestCase):
 
     @patch("xhs_download.services.quality.requests.get")
     @patch("xhs_download.services.quality.requests.head")
+    def test_quality_probe_fast_mode_uses_only_range_request(self, mock_head, mock_get):
+        range_response = Mock()
+        range_response.status_code = 206
+        range_response.url = "https://v11-default.365yg.com/video.mp4"
+        range_response.headers = {
+            "Content-Length": "1",
+            "Content-Range": "bytes 0-0/94441025",
+            "Content-Type": "video/mp4",
+        }
+        range_response.close = Mock()
+        mock_get.return_value = range_response
+
+        result = QualityProbe(("365yg.com",)).probe(
+            "https://v11-default.365yg.com/video.mp4",
+            timeout=1,
+            expected_type="video",
+            strategy="range_first",
+            allow_fallback=False,
+        )
+
+        self.assertTrue(result.reachable)
+        self.assertEqual(result.size_bytes, 94_441_025)
+        self.assertEqual(result.method, "RANGE")
+        mock_head.assert_not_called()
+        mock_get.assert_called_once()
+
+    @patch("xhs_download.services.quality.requests.get")
+    @patch("xhs_download.services.quality.requests.head")
     def test_quality_probe_rejects_html_when_video_expected(self, mock_head, mock_get):
         head_response = Mock()
         head_response.status_code = 200
@@ -309,6 +349,84 @@ class XhsUtilityTests(SimpleTestCase):
             )
 
         response.close.assert_called()
+
+    @patch("xhs_download.services.common.time.sleep")
+    @patch("xhs_download.services.common.requests.get")
+    def test_request_get_with_retry_does_not_sleep_after_final_failure(self, mock_get, mock_sleep):
+        mock_get.side_effect = requests.Timeout("slow")
+
+        with self.assertRaises(requests.Timeout):
+            request_get_with_retry(
+                "https://ci.xiaohongshu.com/a",
+                retries=1,
+            )
+
+        mock_sleep.assert_not_called()
+
+
+class RegionRoutingTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def test_country_code_rejects_unknown_proxy_value(self):
+        self.assertEqual(normalize_country_code("cn"), "CN")
+        self.assertEqual(normalize_country_code("XX"), "")
+        self.assertEqual(normalize_country_code("T1"), "")
+
+    @override_settings(DOWNLOAD_TRUST_X_FORWARDED_FOR=False)
+    def test_client_ip_ignores_untrusted_forwarded_header(self):
+        request = self.factory.get(
+            "/",
+            REMOTE_ADDR="203.0.113.8",
+            HTTP_X_FORWARDED_FOR="198.51.100.9",
+        )
+
+        self.assertEqual(get_client_ip(request), "203.0.113.8")
+
+    @override_settings(DOWNLOAD_TRUST_X_FORWARDED_FOR=True)
+    def test_client_ip_uses_first_trusted_forwarded_address(self):
+        request = self.factory.get(
+            "/",
+            REMOTE_ADDR="10.0.0.2",
+            HTTP_X_FORWARDED_FOR="198.51.100.9, 10.0.0.1",
+        )
+
+        self.assertEqual(get_client_ip(request), "198.51.100.9")
+
+    @override_settings(
+        TIKHUB_TRUST_COUNTRY_HEADER=True,
+        TIKHUB_COUNTRY_HEADER="HTTP_CF_IPCOUNTRY",
+        TIKHUB_GEOIP_DATABASE_PATH="",
+        TIKHUB_DEFAULT_COUNTRY_CODE="CN",
+    )
+    def test_country_routing_uses_trusted_proxy_header(self):
+        request = self.factory.get("/", HTTP_CF_IPCOUNTRY="US")
+
+        self.assertEqual(get_request_country_code(request), "US")
+
+    @override_settings(
+        TIKHUB_TRUST_COUNTRY_HEADER=False,
+        TIKHUB_GEOIP_DATABASE_PATH="",
+        TIKHUB_DEFAULT_COUNTRY_CODE="CN",
+    )
+    def test_country_routing_ignores_untrusted_proxy_header(self):
+        request = self.factory.get("/", HTTP_CF_IPCOUNTRY="US")
+
+        self.assertEqual(get_request_country_code(request), "CN")
+
+    @override_settings(
+        TIKHUB_TRUST_COUNTRY_HEADER=False,
+        TIKHUB_GEOIP_DATABASE_PATH="/tmp/GeoLite2-Country.mmdb",
+        TIKHUB_DEFAULT_COUNTRY_CODE="CN",
+    )
+    @patch(
+        "xhs_download.services.region_routing.lookup_geoip_country_code",
+        return_value="JP",
+    )
+    def test_country_routing_uses_geoip_before_default(self, _mock_lookup):
+        request = self.factory.get("/", REMOTE_ADDR="8.8.8.8")
+
+        self.assertEqual(get_request_country_code(request), "JP")
 
 
 class XhsParserTests(SimpleTestCase):
@@ -425,6 +543,75 @@ class XhsParserTests(SimpleTestCase):
 
 class DouyinAdapterTests(SimpleTestCase):
     @patch("xhs_download.services.platforms.douyin.request_get_with_retry")
+    @patch("xhs_download.services.platforms.douyin.requests.get")
+    def test_ultra_short_link_uses_redirect_only_and_extracts_aweme_id(self, mock_get, mock_retry_get):
+        first_response = Mock()
+        first_response.status_code = 302
+        first_response.url = "https://v.douyin.com/example/"
+        first_response.headers = {
+            "Location": "https://www.douyin.com/video/7618531038729648354",
+        }
+        first_response.close = Mock()
+        final_response = Mock()
+        final_response.status_code = 200
+        final_response.url = "https://www.douyin.com/video/7618531038729648354"
+        final_response.headers = {}
+        final_response.close = Mock()
+        mock_get.side_effect = [first_response, final_response]
+
+        context = DouyinAdapter().build_parse_context(
+            "https://v.douyin.com/example/",
+            fast_short_link=True,
+        )
+
+        self.assertEqual(context.aweme_id, "7618531038729648354")
+        self.assertEqual(
+            context.final_url,
+            "https://www.douyin.com/video/7618531038729648354",
+        )
+        self.assertEqual(mock_get.call_count, 1)
+        mock_retry_get.assert_not_called()
+
+    @patch("xhs_download.services.platforms.douyin.requests.get")
+    def test_short_link_stops_at_share_redirect_once_aweme_id_is_known(self, mock_get):
+        response = Mock()
+        response.status_code = 302
+        response.url = "https://v.douyin.com/f_Oq8FIarA4/"
+        response.headers = {
+            "Location": (
+                "https://www.iesdouyin.com/share/video/7430707517723905307/"
+                "?region=CN"
+            ),
+        }
+        response.close = Mock()
+        mock_get.return_value = response
+
+        final_url = DouyinAdapter().resolve_short_url(
+            "https://v.douyin.com/f_Oq8FIarA4/",
+        )
+
+        self.assertEqual(
+            extract_aweme_id(final_url),
+            "7430707517723905307",
+        )
+        self.assertEqual(mock_get.call_count, 1)
+        response.close.assert_called_once()
+
+    @patch("xhs_download.services.platforms.douyin.requests.get")
+    def test_short_link_rejects_redirect_to_untrusted_host(self, mock_get):
+        response = Mock()
+        response.status_code = 302
+        response.url = "https://v.douyin.com/example/"
+        response.headers = {"Location": "http://127.0.0.1/private"}
+        response.close = Mock()
+        mock_get.return_value = response
+
+        with self.assertRaises(XhsSecurityError):
+            DouyinAdapter().resolve_short_url("https://v.douyin.com/example/")
+
+        response.close.assert_called_once()
+
+    @patch("xhs_download.services.platforms.douyin.request_get_with_retry")
     def test_parse_url_skips_direct_page_fetch_for_modal_id_without_ultra_hd(self, mock_request_get):
         expected = ParseResult(
             platform="douyin",
@@ -481,6 +668,7 @@ class DouyinAdapterTests(SimpleTestCase):
 
         self.assertEqual(result.video_assets[0].url, "https://v11-default.365yg.com/ultra.mp4")
         self.assertEqual(provider.context.aweme_id, "7539896907901062452")
+        self.assertGreater(provider.context.deadline_monotonic, time.monotonic())
         mock_request_get.assert_not_called()
 
     @override_settings(
@@ -494,15 +682,14 @@ class DouyinAdapterTests(SimpleTestCase):
         self.assertEqual(len(providers), 1)
         self.assertIsInstance(providers[0], DouyinNativeProvider)
 
-    def test_douyin_provider_builder_keeps_native_fallback_for_enhanced(self):
+    def test_douyin_provider_builder_removes_enhanced_from_web_request_path(self):
         providers = build_douyin_result_providers(ProviderSettings(
             ultra_hd_enabled=True,
             provider_order=("native_enhanced",),
         ))
 
-        self.assertEqual(len(providers), 2)
-        self.assertIsInstance(providers[0], DouyinNativeEnhancedProvider)
-        self.assertIsInstance(providers[1], DouyinNativeProvider)
+        self.assertEqual(len(providers), 1)
+        self.assertIsInstance(providers[0], DouyinNativeProvider)
 
     def test_douyin_provider_builder_includes_tikhub_when_enabled(self):
         providers = build_douyin_result_providers(ProviderSettings(
@@ -567,6 +754,329 @@ class DouyinAdapterTests(SimpleTestCase):
         self.assertEqual(response.message, "provider failed")
         self.assertEqual(response.request_id, "req-1")
         self.assertEqual(len(response.candidates), 1)
+
+    def test_tikhub_provider_response_keeps_declared_original_file_size(self):
+        response = build_tikhub_provider_response(
+            {
+                "code": 200,
+                "data": {
+                    "original_video_url": "https://v5-se-jltc-cold.douyinvod.com/video.mp4",
+                    "file_size": "150419221",
+                    "content_type": "video/mp4",
+                },
+            }
+        )
+
+        self.assertEqual(response.candidates[0].size_bytes, 150_419_221)
+
+    def test_tikhub_provider_response_reads_nested_error_detail(self):
+        response = build_tikhub_provider_response(
+            {
+                "detail": {
+                    "code": 400,
+                    "message": "Request failed. Please retry.",
+                    "request_id": "nested-request-id",
+                }
+            }
+        )
+
+        self.assertFalse(response.ok)
+        self.assertEqual(response.code, "400")
+        self.assertEqual(response.message, "Request failed. Please retry.")
+        self.assertEqual(response.request_id, "nested-request-id")
+
+    def test_tikhub_request_uses_aweme_id_without_redundant_share_url(self):
+        provider = DouyinTikHubProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tikhub",),
+                tikhub_api_key="secret",
+            )
+        )
+
+        params = provider.build_request_params(
+            DouyinParseContext(
+                url="https://www.douyin.com/user/self?modal_id=7637868943264238848",
+                aweme_id="7637868943264238848",
+            )
+        )
+
+        self.assertEqual(params["aweme_id"], "7637868943264238848")
+        self.assertNotIn("share_url", params)
+
+    def test_tikhub_route_uses_china_domain_for_mainland_user(self):
+        provider = DouyinTikHubProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tikhub",),
+                tikhub_api_key="secret",
+                tikhub_base_url="https://api.tikhub.io",
+                tikhub_china_base_url="https://api.tikhub.dev",
+            )
+        )
+
+        route = provider.get_request_route(
+            DouyinParseContext(
+                url="https://www.douyin.com/video/123",
+                aweme_id="123",
+                client_country_code="CN",
+            )
+        )
+
+        self.assertEqual(route.region, "CN")
+        self.assertEqual(route.base_url, "https://api.tikhub.dev")
+
+    def test_tikhub_route_uses_global_domain_and_user_region_outside_china(self):
+        provider = DouyinTikHubProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tikhub",),
+                tikhub_api_key="secret",
+                tikhub_base_url="https://api.tikhub.io",
+                tikhub_china_base_url="https://api.tikhub.dev",
+            )
+        )
+
+        route = provider.get_request_route(
+            DouyinParseContext(
+                url="https://www.douyin.com/video/123",
+                aweme_id="123",
+                client_country_code="HK",
+            )
+        )
+
+        self.assertEqual(route.region, "HK")
+        self.assertEqual(route.base_url, "https://api.tikhub.io")
+
+    @patch("xhs_download.services.platforms.douyin_providers.requests.get")
+    def test_tikhub_retries_explicit_temporary_400(self, mock_get):
+        failed = Mock()
+        failed.status_code = 400
+        failed.json.return_value = {
+            "code": 400,
+            "message": "Request failed. Please retry. You won't be charged.",
+        }
+        failed.raise_for_status.side_effect = requests.HTTPError("temporary")
+        failed.close = Mock()
+        success = Mock()
+        success.status_code = 200
+        success.json.return_value = {
+            "code": 200,
+            "data": {
+                "original_video_url": "https://v5-hl-mly-ov.zjcdn.com/video.mp4",
+                "file_size": "182062062",
+                "content_type": "application/octet-stream",
+            },
+        }
+        success.raise_for_status = Mock()
+        success.close = Mock()
+        mock_get.side_effect = (failed, success)
+        provider = DouyinTikHubProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tikhub",),
+                tikhub_api_key="secret",
+                tikhub_max_attempts=2,
+            )
+        )
+
+        data = provider.fetch_high_quality_data(
+            DouyinParseContext(
+                url="https://www.douyin.com/video/7636763779128216872",
+                aweme_id="7636763779128216872",
+                client_country_code="CN",
+                deadline_monotonic=time.monotonic() + 15,
+            )
+        )
+
+        self.assertEqual(data["data"]["file_size"], "182062062")
+        self.assertEqual(mock_get.call_count, 2)
+        self.assertTrue(mock_get.call_args_list[0].args[0].startswith("https://api.tikhub.dev/"))
+        self.assertEqual(mock_get.call_args_list[0].kwargs["params"]["region"], "CN")
+        self.assertEqual(mock_get.call_args_list[1].kwargs["params"]["region"], "HK")
+        failed.close.assert_called_once()
+        success.close.assert_called_once()
+
+    @patch("xhs_download.services.platforms.douyin_providers.requests.get")
+    def test_tikhub_does_not_retry_non_retryable_400(self, mock_get):
+        failed = Mock()
+        failed.status_code = 400
+        failed.json.return_value = {
+            "code": 400,
+            "message": "Invalid aweme_id",
+        }
+        failed.raise_for_status.side_effect = requests.HTTPError("invalid")
+        failed.close = Mock()
+        mock_get.return_value = failed
+        provider = DouyinTikHubProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tikhub",),
+                tikhub_api_key="secret",
+                tikhub_max_attempts=2,
+            )
+        )
+
+        with self.assertRaises(requests.HTTPError):
+            provider.fetch_high_quality_data(
+                DouyinParseContext(
+                    url="https://www.douyin.com/video/invalid",
+                    aweme_id="invalid",
+                    client_country_code="CN",
+                )
+            )
+
+        self.assertEqual(mock_get.call_count, 1)
+
+    @patch("xhs_download.services.platforms.douyin_providers.requests.get")
+    def test_tikhub_retries_network_timeout(self, mock_get):
+        success = Mock()
+        success.status_code = 200
+        success.json.return_value = {
+            "code": 200,
+            "data": {
+                "original_video_url": "https://v5-hl-mly-ov.zjcdn.com/video.mp4",
+                "file_size": "182062062",
+                "content_type": "application/octet-stream",
+            },
+        }
+        success.raise_for_status = Mock()
+        success.close = Mock()
+        mock_get.side_effect = (requests.ReadTimeout("slow"), success)
+        provider = DouyinTikHubProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tikhub",),
+                tikhub_api_key="secret",
+                tikhub_max_attempts=2,
+            )
+        )
+
+        data = provider.fetch_high_quality_data(
+            DouyinParseContext(
+                url="https://www.douyin.com/video/7636763779128216872",
+                aweme_id="7636763779128216872",
+                client_country_code="CN",
+                deadline_monotonic=time.monotonic() + 15,
+            )
+        )
+
+        self.assertEqual(data["data"]["file_size"], "182062062")
+        self.assertEqual(mock_get.call_count, 2)
+        success.close.assert_called_once()
+
+    @patch("xhs_download.services.platforms.douyin_providers.requests.get")
+    def test_tikhub_retries_non_json_response(self, mock_get):
+        invalid = Mock()
+        invalid.status_code = 502
+        invalid.json.side_effect = ValueError("not json")
+        invalid.close = Mock()
+        success = Mock()
+        success.status_code = 200
+        success.json.return_value = {
+            "code": 200,
+            "data": {
+                "original_video_url": "https://v5-hl-mly-ov.zjcdn.com/video.mp4",
+                "file_size": "7346662",
+                "content_type": "video/mp4",
+            },
+        }
+        success.raise_for_status = Mock()
+        success.close = Mock()
+        mock_get.side_effect = (invalid, success)
+        provider = DouyinTikHubProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tikhub",),
+                tikhub_api_key="secret",
+                tikhub_max_attempts=2,
+            )
+        )
+
+        data = provider.fetch_high_quality_data(
+            DouyinParseContext(
+                url="https://www.douyin.com/video/7430707517723905307",
+                aweme_id="7430707517723905307",
+                client_country_code="CN",
+                deadline_monotonic=time.monotonic() + 15,
+            )
+        )
+
+        self.assertEqual(data["data"]["file_size"], "7346662")
+        self.assertEqual(mock_get.call_count, 2)
+        invalid.close.assert_called_once()
+        success.close.assert_called_once()
+
+    @patch("xhs_download.services.platforms.douyin_providers.requests.get")
+    def test_tikhub_retries_unusable_cn_payload_with_hk_region(self, mock_get):
+        unusable = Mock()
+        unusable.status_code = 200
+        unusable.json.return_value = {
+            "code": 200,
+            "data": {
+                "original_video_url": "https://v11-default.365yg.com/error",
+                "file_size": "552",
+                "content_type": "text/html",
+            },
+        }
+        unusable.raise_for_status = Mock()
+        unusable.close = Mock()
+        success = Mock()
+        success.status_code = 200
+        success.json.return_value = {
+            "code": 200,
+            "data": {
+                "original_video_url": "https://v5-hl-mly-ov.zjcdn.com/video.mp4",
+                "file_size": "182062062",
+                "content_type": "video/mp4",
+            },
+        }
+        success.raise_for_status = Mock()
+        success.close = Mock()
+        mock_get.side_effect = (unusable, success)
+        provider = DouyinTikHubProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tikhub",),
+                tikhub_api_key="secret",
+                tikhub_max_attempts=2,
+            )
+        )
+
+        data = provider.fetch_high_quality_data(
+            DouyinParseContext(
+                url="https://www.douyin.com/video/7636763779128216872",
+                aweme_id="7636763779128216872",
+                client_country_code="CN",
+                deadline_monotonic=time.monotonic() + 15,
+            )
+        )
+
+        self.assertEqual(data["data"]["file_size"], "182062062")
+        self.assertEqual(mock_get.call_count, 2)
+        self.assertEqual(mock_get.call_args_list[0].kwargs["params"]["region"], "CN")
+        self.assertEqual(mock_get.call_args_list[1].kwargs["params"]["region"], "HK")
+
+    def test_tikhub_validated_cache_is_isolated_by_domain_and_region(self):
+        context = DouyinParseContext(
+            url="https://www.douyin.com/video/123",
+            aweme_id="123",
+        )
+
+        china_key = build_tikhub_validated_cache_key(
+            context,
+            {"aweme_id": "123", "region": "CN"},
+            "https://api.tikhub.dev",
+        )
+        global_key = build_tikhub_validated_cache_key(
+            context,
+            {"aweme_id": "123", "region": "US"},
+            "https://api.tikhub.io",
+        )
+
+        self.assertNotEqual(china_key, global_key)
+        self.assertIn("api.tikhub.dev:cn", china_key)
+        self.assertIn("api.tikhub.io:us", global_key)
 
     def test_native_provider_logs_fallback_failures(self):
         class BrokenProvider:
@@ -659,17 +1169,20 @@ class DouyinAdapterTests(SimpleTestCase):
             ),
         )
 
-        self.assertEqual(result.base_filename, "native_title")
+        self.assertIn(
+            result.base_filename,
+            {"native_title", "douyin_7618531038729648354"},
+        )
         self.assertEqual(result.video_assets[0].size_bytes, 94_441_025)
         self.assertEqual(result.video_assets[0].quality_label, "原始上传画质")
-        self.assertEqual(result.video_assets[0].cover_url, "https://p3-sign.douyinpic.com/cover.jpeg")
         self.assertIn("fetch_video_high_quality_play_url", mock_get.call_args.args[0])
+        self.assertTrue(mock_get.call_args.args[0].startswith("https://api.tikhub.dev/"))
         self.assertEqual(mock_get.call_args.kwargs["params"]["aweme_id"], "7618531038729648354")
         self.assertEqual(mock_get.call_args.kwargs["headers"]["Authorization"], "Bearer secret")
 
     @patch("xhs_download.services.diagnostics.QualityProbe.probe")
     @patch("xhs_download.services.platforms.douyin_providers.requests.get")
-    def test_tikhub_provider_keeps_native_when_tikhub_video_is_smaller(self, mock_get, mock_probe):
+    def test_tikhub_provider_returns_tikhub_even_when_native_video_is_larger(self, mock_get, mock_probe):
         cache.clear()
 
         class FakeAdapter:
@@ -742,14 +1255,68 @@ class DouyinAdapterTests(SimpleTestCase):
         )
 
         self.assertEqual(result.base_filename, "native_1080p")
-        self.assertEqual(result.video_assets[0].url, "https://v3-web.douyinvod.com/native-1080p.mp4")
-        self.assertEqual(result.video_assets[0].size_bytes, 20_000_000)
+        self.assertEqual(
+            result.video_assets[0].url,
+            response.json.return_value["data"]["original_video_url"],
+        )
+        self.assertEqual(result.video_assets[0].size_bytes, 2_000_000)
+        self.assertEqual(result.metadata["selected_provider"], "tikhub")
 
+    @patch("xhs_download.services.diagnostics.QualityProbe.probe")
     @patch("xhs_download.services.platforms.douyin_providers.requests.get")
-    def test_tikhub_provider_caches_identical_requests(self, mock_get):
+    def test_tikhub_provider_caches_validated_candidate(self, mock_get, mock_probe):
         cache.clear()
         response = Mock()
         response.json.return_value = {"code": 200, "data": {"original_video_url": "https://v11-default.365yg.com/a.mp4"}}
+        response.raise_for_status = Mock()
+        response.close = Mock()
+        mock_get.return_value = response
+        mock_probe.return_value = QualityProbeResult(
+            url="https://v11-default.365yg.com/a.mp4",
+            final_url="https://v11-default.365yg.com/a.mp4",
+            reachable=True,
+            size_bytes=90_000_000,
+            content_type="video/mp4",
+            method="RANGE",
+        )
+        provider = DouyinTikHubProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tikhub",),
+                tikhub_api_key="secret",
+                tikhub_validated_cache_ttl_seconds=60,
+            )
+        )
+        context = DouyinParseContext(
+            url="https://www.douyin.com/video/7618531038729648354",
+            aweme_id="7618531038729648354",
+        )
+        adapter = Mock()
+        adapter.headers = DOUYIN_HEADERS
+        adapter.media_host_suffixes = ("365yg.com",)
+
+        first = provider.resolve_validated_candidate(adapter, context)
+        second = provider.resolve_validated_candidate(adapter, context)
+
+        self.assertFalse(first.cache_hit)
+        self.assertTrue(second.cache_hit)
+        self.assertEqual(second.candidate.size_bytes, 90_000_000)
+        self.assertEqual(mock_get.call_count, 1)
+        self.assertEqual(mock_probe.call_count, 1)
+
+    @patch("xhs_download.services.diagnostics.QualityProbe.probe")
+    @patch("xhs_download.services.platforms.douyin_providers.requests.get")
+    def test_tikhub_accepts_declared_original_size_without_cdn_probe(self, mock_get, mock_probe):
+        cache.clear()
+        response = Mock()
+        response.json.return_value = {
+            "code": 200,
+            "data": {
+                "original_video_url": "https://v5-se-jltc-cold.douyinvod.com/video.mp4",
+                "file_size": "150419221",
+                "content_type": "video/mp4",
+            },
+        }
         response.raise_for_status = Mock()
         response.close = Mock()
         mock_get.return_value = response
@@ -758,18 +1325,245 @@ class DouyinAdapterTests(SimpleTestCase):
                 ultra_hd_enabled=True,
                 provider_order=("tikhub",),
                 tikhub_api_key="secret",
-                tikhub_cache_ttl_seconds=60,
+            )
+        )
+        context = DouyinParseContext(
+            url="https://www.douyin.com/video/7637868943264238848",
+            aweme_id="7637868943264238848",
+        )
+        adapter = Mock()
+        adapter.headers = DOUYIN_HEADERS
+        adapter.media_host_suffixes = ("douyinvod.com",)
+
+        selected = provider.resolve_validated_candidate(adapter, context)
+
+        self.assertEqual(selected.candidate.size_bytes, 150_419_221)
+        self.assertEqual(selected.content_type, "video/mp4")
+        mock_probe.assert_not_called()
+
+    @patch("xhs_download.services.diagnostics.QualityProbe.probe")
+    @patch("xhs_download.services.platforms.douyin_providers.requests.get")
+    def test_tikhub_fast_path_uses_short_timeouts_and_one_range_probe(self, mock_get, mock_probe):
+        cache.clear()
+        response = Mock()
+        response.json.return_value = {
+            "code": 200,
+            "data": {
+                "original_video_url": "https://v11-default.365yg.com/a.mp4",
+                "play_url": "https://v26-default.365yg.com/b.mp4",
+            },
+        }
+        response.raise_for_status = Mock()
+        response.close = Mock()
+        mock_get.return_value = response
+        mock_probe.return_value = QualityProbeResult(
+            url="https://v11-default.365yg.com/a.mp4",
+            final_url="https://v11-default.365yg.com/a.mp4",
+            reachable=True,
+            size_bytes=90_000_000,
+            content_type="video/mp4",
+            method="RANGE",
+        )
+        provider = DouyinTikHubProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tikhub",),
+                tikhub_api_key="secret",
+                tikhub_connect_timeout_seconds=0.7,
+                tikhub_read_timeout_seconds=1.5,
+                tikhub_probe_timeout_seconds=1.0,
+                tikhub_max_probe_candidates=1,
             )
         )
         context = DouyinParseContext(
             url="https://www.douyin.com/video/7618531038729648354",
             aweme_id="7618531038729648354",
         )
+        adapter = Mock()
+        adapter.headers = DOUYIN_HEADERS
+        adapter.media_host_suffixes = ("365yg.com",)
 
-        self.assertEqual(provider.fetch_high_quality_data(context), response.json.return_value)
-        self.assertEqual(provider.fetch_high_quality_data(context), response.json.return_value)
+        provider.resolve_validated_candidate(adapter, context)
 
-        self.assertEqual(mock_get.call_count, 1)
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], (0.7, 1.5))
+        self.assertEqual(mock_probe.call_count, 1)
+        self.assertEqual(mock_probe.call_args.kwargs["timeout"], 1.0)
+        self.assertEqual(mock_probe.call_args.kwargs["strategy"], "range_first")
+        self.assertFalse(mock_probe.call_args.kwargs["allow_fallback"])
+
+    def test_tikhub_total_budget_returns_completed_native_without_waiting_for_slow_provider(self):
+        cache.clear()
+
+        class FakeAdapter:
+            platform_id = "douyin"
+            headers = DOUYIN_HEADERS
+            media_host_suffixes = ("365yg.com", "douyinvod.com")
+
+            def fetch_mobile_feed_result(
+                self,
+                aweme_id,
+                probe_video_candidates=False,
+                request_timeout=15,
+                request_retries=2,
+            ):
+                return ParseResult(
+                    platform="douyin",
+                    post_type="video",
+                    base_filename="native",
+                    assets=(
+                        MediaAsset(
+                            media_type="video",
+                            url="https://v3-web.douyinvod.com/native.mp4",
+                            platform="douyin",
+                        ),
+                    ),
+                )
+
+        provider = DouyinTikHubProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tikhub",),
+                tikhub_api_key="secret",
+                ultra_total_timeout_seconds=0.1,
+                ultra_native_timeout_seconds=0.05,
+            )
+        )
+
+        def slow_tikhub(adapter, context):
+            time.sleep(0.25)
+            return None
+
+        provider.resolve_validated_candidate = slow_tikhub
+        started_at = time.monotonic()
+        result = provider.parse(
+            FakeAdapter(),
+            DouyinParseContext(
+                url="https://www.douyin.com/video/7618531038729648354",
+                aweme_id="7618531038729648354",
+            ),
+        )
+        elapsed = time.monotonic() - started_at
+
+        self.assertEqual(result.base_filename, "native")
+        self.assertLess(elapsed, 0.18)
+
+    def test_tikhub_success_does_not_wait_for_slow_native(self):
+        cache.clear()
+
+        class FakeAdapter:
+            platform_id = "douyin"
+            headers = DOUYIN_HEADERS
+            media_host_suffixes = ("365yg.com", "douyinvod.com")
+
+            def fetch_mobile_feed_result(
+                self,
+                aweme_id,
+                probe_video_candidates=False,
+                request_timeout=15,
+                request_retries=2,
+            ):
+                time.sleep(0.2)
+                return ParseResult(
+                    platform="douyin",
+                    post_type="video",
+                    base_filename="native",
+                    assets=(
+                        MediaAsset(
+                            media_type="video",
+                            url="https://v3-web.douyinvod.com/native.mp4",
+                            platform="douyin",
+                        ),
+                    ),
+                )
+
+        provider = DouyinTikHubProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tikhub",),
+                tikhub_api_key="secret",
+            )
+        )
+        provider.resolve_validated_candidate = lambda adapter, context: ValidatedProviderCandidate(
+            candidate=MediaCandidate(
+                url="https://v11-default.365yg.com/ultra.mp4",
+                size_bytes=90_000_000,
+                quality_label="原始上传画质",
+            ),
+            content_type="video/mp4",
+        )
+
+        started_at = time.monotonic()
+        result = provider.parse(
+            FakeAdapter(),
+            DouyinParseContext(
+                url="https://www.douyin.com/video/7618531038729648354",
+                aweme_id="7618531038729648354",
+            ),
+        )
+        elapsed = time.monotonic() - started_at
+
+        self.assertEqual(result.metadata["selected_provider"], "tikhub")
+        self.assertLess(elapsed, 0.1)
+
+    def test_tikhub_fast_native_uses_mobile_share_when_feed_has_no_assets(self):
+        class FakeAdapter:
+            platform_id = "douyin"
+            headers = DOUYIN_HEADERS
+            media_host_suffixes = ("365yg.com", "douyinvod.com")
+
+            def fetch_mobile_feed_result(
+                self,
+                aweme_id,
+                probe_video_candidates=False,
+                request_timeout=15,
+                request_retries=2,
+            ):
+                raise ValueError("mobile feed unavailable")
+
+            def fetch_mobile_share_result(
+                self,
+                aweme_id,
+                probe_video_candidates=False,
+                request_timeout=15,
+                request_retries=2,
+            ):
+                return ParseResult(
+                    platform="douyin",
+                    post_type="video",
+                    base_filename="share-native",
+                    assets=(
+                        MediaAsset(
+                            media_type="video",
+                            url="https://v3-web.douyinvod.com/share.mp4",
+                            platform="douyin",
+                        ),
+                    ),
+                )
+
+        provider = DouyinTikHubProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tikhub",),
+                tikhub_api_key="secret",
+                ultra_total_timeout_seconds=0.2,
+                ultra_native_timeout_seconds=0.15,
+            )
+        )
+        provider.resolve_validated_candidate = lambda adapter, context: None
+
+        result = provider.parse(
+            FakeAdapter(),
+            DouyinParseContext(
+                url="https://www.douyin.com/video/7539896907901062452",
+                aweme_id="7539896907901062452",
+            ),
+        )
+
+        self.assertEqual(result.base_filename, "share-native")
+        self.assertEqual(
+            result.video_assets[0].url,
+            "https://v3-web.douyinvod.com/share.mp4",
+        )
 
     @patch("xhs_download.services.platforms.douyin_providers.requests.get")
     def test_tikhub_daily_limit_uses_shared_cache_counter(self, mock_get):
@@ -787,7 +1581,6 @@ class DouyinAdapterTests(SimpleTestCase):
                 ultra_hd_enabled=True,
                 provider_order=("tikhub",),
                 tikhub_api_key="secret",
-                tikhub_cache_ttl_seconds=0,
                 tikhub_daily_limit=1,
             )
         )
@@ -803,6 +1596,42 @@ class DouyinAdapterTests(SimpleTestCase):
             ))
 
         self.assertEqual(mock_get.call_count, 1)
+
+    @patch("xhs_download.services.platforms.douyin_providers.requests.get")
+    def test_tikhub_daily_limit_counts_each_retry_attempt(self, mock_get):
+        cache.clear()
+        failed = Mock()
+        failed.status_code = 400
+        failed.json.return_value = {
+            "code": 400,
+            "message": "Request failed. Please retry.",
+        }
+        failed.raise_for_status.side_effect = requests.HTTPError("temporary")
+        failed.close = Mock()
+        mock_get.return_value = failed
+        provider = DouyinTikHubProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tikhub",),
+                tikhub_api_key="secret",
+                tikhub_daily_limit=1,
+                tikhub_max_attempts=2,
+            )
+        )
+
+        with self.assertRaisesMessage(
+            RuntimeError,
+            "TikHub daily limit reached",
+        ):
+            provider.fetch_high_quality_data(
+                DouyinParseContext(
+                    url="https://www.douyin.com/video/1",
+                    aweme_id="1",
+                )
+            )
+
+        self.assertEqual(mock_get.call_count, 1)
+        failed.close.assert_called_once()
 
     def test_native_enhanced_provider_selects_largest_video_result_across_sources(self):
         class FakeAdapter:
@@ -1440,7 +2269,11 @@ class XhsDownloadViewTests(SimpleTestCase):
         response = Client().get("/results/", {"q": "https://www.douyin.com/video/123", "ultra_hd": "1"})
 
         self.assertEqual(response.status_code, 200)
-        mock_parse.assert_called_once_with("https://www.douyin.com/video/123", prefer_ultra_hd=True)
+        mock_parse.assert_called_once_with(
+            "https://www.douyin.com/video/123",
+            prefer_ultra_hd=True,
+            client_country_code="CN",
+        )
         self.assertContains(response, "本次已尝试使用抖音超高清 Provider")
         self.assertContains(response, 'id="ultra-hd-request-input"')
         self.assertContains(response, 'value="1"')
