@@ -7,13 +7,14 @@ from unittest.mock import Mock, patch
 from zipfile import ZipFile
 
 from django.core.cache import cache
-from django.test import Client, SimpleTestCase, override_settings
+from django.test import Client, SimpleTestCase, TestCase, override_settings
 from PIL import Image
 
 from .services.common import (
     MEDIA_HOST_SUFFIXES,
     XhsSecurityError,
     clean_filename,
+    encode_url,
     request_get_with_retry,
     validate_media_url,
     validate_page_url,
@@ -37,8 +38,7 @@ from .services.provider_settings import (
     normalize_provider_order,
 )
 from .services.quality import QualityProbe, QualityProbeResult
-from .services.rate_limits import get_daily_total
-from .services.rate_limits import release_concurrency
+from .services.rate_limits import get_client_identity, get_daily_total, release_concurrency
 from .services.platforms import BilibiliAdapter, DouyinAdapter, XiaohongshuAdapter
 from .services.platforms.bilibili import BILIBILI_HEADERS
 from .services.platforms.douyin import DOUYIN_HEADERS, extract_aweme_id, get_video_candidates
@@ -1368,6 +1368,65 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertContains(response, "js/xhs_download.js?v=")
         self.assertContains(response, "data-download-task-url")
 
+    @override_settings(
+        PREVIEW_RATE_LIMIT_PER_MINUTE=1,
+        PREVIEW_DAILY_REQUEST_LIMIT_PER_IP=0,
+        PREVIEW_GLOBAL_DAILY_REQUEST_LIMIT=0,
+        PREVIEW_DAILY_BYTES_LIMIT_PER_IP=0,
+        PREVIEW_GLOBAL_DAILY_BYTES_LIMIT=0,
+    )
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_applies_ip_rate_limit(self, mock_fetch):
+        mock_fetch.return_value = FakeStreamingResponse(make_image_bytes())
+        params = {
+            "u": encode_url("https://ci.xiaohongshu.com/spectrum/a.jpg"),
+        }
+
+        first = Client().get("/media/proxy-image/", params)
+        second = Client().get("/media/proxy-image/", params)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 429)
+        self.assertIn("Retry-After", second)
+        self.assertEqual(mock_fetch.call_count, 1)
+
+    @override_settings(
+        PREVIEW_RATE_LIMIT_PER_MINUTE=0,
+        PREVIEW_DAILY_REQUEST_LIMIT_PER_IP=0,
+        PREVIEW_GLOBAL_DAILY_REQUEST_LIMIT=0,
+        PREVIEW_DAILY_BYTES_LIMIT_PER_IP=1,
+        PREVIEW_GLOBAL_DAILY_BYTES_LIMIT=0,
+    )
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_enforces_daily_byte_limit(self, mock_fetch):
+        mock_fetch.return_value = FakeStreamingResponse(make_image_bytes())
+
+        response = Client().get(
+            "/media/proxy-image/",
+            {"u": encode_url("https://ci.xiaohongshu.com/spectrum/a.jpg")},
+        )
+
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(
+            get_daily_total(
+                "preview-bytes-ip",
+                get_client_identity(response.wsgi_request),
+            ),
+            len(make_image_bytes()),
+        )
+
+    @patch(
+        "xhs_download.views.check_preview_request_limits",
+        side_effect=RuntimeError("redis unavailable"),
+    )
+    def test_preview_proxy_fails_closed_when_cache_is_unavailable(self, _mock_limits):
+        response = Client().get(
+            "/media/proxy-image/",
+            {"u": encode_url("https://ci.xiaohongshu.com/spectrum/a.jpg")},
+        )
+
+        self.assertEqual(response.status_code, 503)
+
     @override_settings(ULTRA_HD_PROVIDER_ENABLED=True, TIKHUB_API_KEY="secret")
     @patch("xhs_download.views.parse_media_page")
     def test_results_passes_ultra_hd_request_flag(self, mock_parse):
@@ -1718,3 +1777,54 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertEqual(file_response.status_code, 200)
         self.assertEqual(file_response["Content-Type"], "application/zip")
         self.assertEqual(b"".join(file_response.streaming_content), b"zip-content")
+
+
+class RuntimeHealthViewTests(SimpleTestCase):
+    def test_liveness_does_not_depend_on_external_services(self):
+        response = Client().get("/health/live/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "ok"})
+        self.assertEqual(response["Cache-Control"], "no-store")
+
+    @patch("djangoProject.health.get_runtime_readiness")
+    def test_readiness_reports_available_components(self, mock_readiness):
+        mock_readiness.return_value = {
+            "ready": True,
+            "components": {"cache": True, "database": True},
+        }
+
+        response = Client().get("/health/ready/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "ready")
+        self.assertEqual(
+            response.json()["components"],
+            {"cache": True, "database": True},
+        )
+
+    @patch("djangoProject.health.get_runtime_readiness")
+    def test_readiness_returns_503_without_exposing_error_details(self, mock_readiness):
+        mock_readiness.return_value = {
+            "ready": False,
+            "components": {"cache": False, "database": True},
+        }
+
+        response = Client().get("/health/ready/")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["status"], "unavailable")
+        self.assertNotIn("error", response.json())
+
+
+class RuntimeHealthCheckTests(TestCase):
+    def test_runtime_readiness_checks_cache_and_database(self):
+        from djangoProject.health import get_runtime_readiness
+
+        readiness = get_runtime_readiness()
+
+        self.assertTrue(readiness["ready"])
+        self.assertEqual(
+            readiness["components"],
+            {"cache": True, "database": True},
+        )

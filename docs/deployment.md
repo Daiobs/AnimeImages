@@ -40,6 +40,13 @@ gunicorn djangoProject.wsgi:application
 
 Add `gunicorn` to dependencies when a deployment target is chosen.
 
+Configure the deployment platform or load balancer with:
+
+- `/health/live/` for process liveness. It does not contact external services.
+- `/health/ready/` for traffic readiness. It verifies the configured Django cache/Redis and database with a real round trip.
+
+Both endpoints disable response caching and expose only component availability, not connection strings or exception text. A failed dependency makes readiness return HTTP `503`.
+
 ## Database
 
 SQLite is acceptable for local development. Production should use PostgreSQL or another managed relational database.
@@ -69,6 +76,18 @@ DOWNLOAD_ASYNC_TASKS_ENABLED=False
 The in-memory background task implementation is intentionally local-only. With production async tasks disabled, the browser automatically uses the synchronous temporary ZIP response. Before re-enabling asynchronous progress in production, replace task state and execution with Redis plus Celery/RQ and store completed archives in a controlled temporary/object-storage location.
 
 Public download endpoints use shared-cache counters for per-IP frequency, per-IP concurrency, daily request count, and daily output bytes. Configure the limits from `.env.example.production`. `DOWNLOAD_TRUST_X_FORWARDED_FOR` must remain false unless a trusted reverse proxy overwrites that header; otherwise clients can spoof their limiter identity.
+
+The image preview proxy is also an outbound bandwidth path and has separate controls:
+
+```text
+PREVIEW_RATE_LIMIT_PER_MINUTE=60
+PREVIEW_DAILY_REQUEST_LIMIT_PER_IP=1000
+PREVIEW_GLOBAL_DAILY_REQUEST_LIMIT=10000
+PREVIEW_DAILY_BYTES_LIMIT_PER_IP=1073741824
+PREVIEW_GLOBAL_DAILY_BYTES_LIMIT=21474836480
+```
+
+These are initial safety defaults, not capacity guarantees. Tune them from observed traffic and server bandwidth. Redis failure makes protected preview requests fail closed with HTTP `503`.
 
 Ultra-HD access has two operator switches:
 

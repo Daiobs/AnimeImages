@@ -13,6 +13,8 @@ This version establishes the provider foundation for a universal media downloade
 - Douyin now has an optional ultra-HD provider path backed by TikHub.
 - TikHub is disabled by default, hidden behind settings, and protected by cache and daily-limit controls.
 - Download output defaults to original files, with ZIP progress for browser downloads.
+- Production readiness now checks both shared cache/Redis and the database.
+- The preview image proxy has independent request and byte limits.
 
 The version is suitable as a research checkpoint, but not yet as a final ultra-HD solution.
 
@@ -55,8 +57,8 @@ Current controls:
 
 Limitations:
 
-- Cache is process-local; it is not shared across multiple Django workers or restarts.
-- Daily limit is process-local; production needs shared storage if multiple workers are used.
+- Local development uses process-local `LocMemCache`; production requires shared Redis.
+- Redis availability, memory use, eviction rate, and persistence still need deployment monitoring.
 - There is no per-request visible cost indicator yet.
 
 ## Known Issues
@@ -97,38 +99,31 @@ Limitations:
 
    Browser ZIP progress remains appropriate for local/single-process use. Production disables it by default and falls back to synchronous ZIP responses. Restoring production progress still requires Redis/Celery/RQ or another shared execution/state mechanism.
 
-10. `.env` convenience loader is development-oriented.
+10. Health checks do not replace monitoring.
+
+   `/health/ready/` detects immediate cache/database availability, but production still needs uptime checks, error aggregation, Redis memory/eviction alerts, database capacity monitoring, and disk/bandwidth metrics.
+
+11. `.env` convenience loader is development-oriented.
 
     It improves PyCharm setup, but production deployments should use real environment variables or secret storage rather than local files.
 
-11. Download planning is duplicated.
+12. Download planning is duplicated.
 
     ZIP archive and server-folder save paths still separately handle image/video/cover output planning. Refactor to a shared `DownloadOutput` pipeline before adding single-file download, object storage, or conversion/transcoding features.
 
-12. DNS rebinding defense is not fully production-grade.
+13. DNS rebinding defense is not fully production-grade.
 
     Current SSRF checks validate host suffixes and literal private IPs plus redirect final hosts. This is acceptable for fixed major-platform CDN hosts, but future user-configurable/provider-configurable domains should add DNS resolution checks and reject private resolved addresses.
 
 ## Recommended Next Step
 
-Before adding another provider, improve structured timing diagnostics for Douyin ultra-HD so they are easy to inspect:
+Keep the current production async-task switch disabled and implement the shared download foundation:
 
-- total parse time
-- provider start/end time
-- TikHub API duration
-- TikHub candidate count
-- each probe duration and final content length
-- native fallback duration
-- selected source and fallback reason
-- cache hit/miss
-- daily-limit state
+- extract a common `DownloadOutput` planning pipeline
+- add Redis-backed task state
+- execute archive work through Celery/RQ
+- store completed ZIP files in a controlled temporary/object-storage location
+- issue expiring one-time download URLs
+- add retry, cancellation, queue-capacity, and cleanup policies
 
-Target: explain a 10+ second ultra-HD parse with a single log line or debug JSON block.
-
-After timing is visible, decide whether to:
-
-- reduce TikHub probe count further
-- cache successful source metadata more aggressively
-- skip native comparison for clearly huge TikHub sources
-- expose a "quick ultra" versus "safe ultra" setting
-- investigate a second provider or native signed-source generation
+Provider timing optimization can continue in parallel, but it should not delay replacing the local daemon-thread task model before production progress downloads are enabled.

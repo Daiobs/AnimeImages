@@ -209,6 +209,61 @@ def record_download_archive_bytes(identity, archive_file):
     return global_result.allowed
 
 
+def check_preview_request_limits(request):
+    identity = get_client_identity(request)
+    checks = (
+        lambda: consume_fixed_window(
+            "preview-minute-ip",
+            identity,
+            settings.PREVIEW_RATE_LIMIT_PER_MINUTE,
+            60,
+        ),
+        lambda: consume_daily(
+            "preview-requests-ip",
+            identity,
+            settings.PREVIEW_DAILY_REQUEST_LIMIT_PER_IP,
+        ),
+        lambda: consume_daily(
+            "preview-requests-global",
+            "all",
+            settings.PREVIEW_GLOBAL_DAILY_REQUEST_LIMIT,
+        ),
+        lambda: has_daily_capacity(
+            "preview-bytes-ip",
+            identity,
+            settings.PREVIEW_DAILY_BYTES_LIMIT_PER_IP,
+        ),
+        lambda: has_daily_capacity(
+            "preview-bytes-global",
+            "all",
+            settings.PREVIEW_GLOBAL_DAILY_BYTES_LIMIT,
+        ),
+    )
+    for check in checks:
+        result = check()
+        if not result.allowed:
+            return identity, result
+    return identity, None
+
+
+def record_preview_bytes(identity, size_bytes):
+    per_ip = consume_daily(
+        "preview-bytes-ip",
+        identity,
+        settings.PREVIEW_DAILY_BYTES_LIMIT_PER_IP,
+        amount=size_bytes,
+    )
+    if not per_ip.allowed:
+        return False
+    global_result = consume_daily(
+        "preview-bytes-global",
+        "all",
+        settings.PREVIEW_GLOBAL_DAILY_BYTES_LIMIT,
+        amount=size_bytes,
+    )
+    return global_result.allowed
+
+
 def get_platform_page_config(platform_key):
     return PLATFORM_PAGE_CONFIG.get(platform_key, PLATFORM_PAGE_CONFIG["home"])
 
@@ -341,7 +396,7 @@ def search_results_view(request, platform_key="home"):
     return render(request, "xhs_download.html", context)
 
 
-def placeholder_image_response():
+def placeholder_image_response(status=200, retry_after=0):
     svg = """
     <svg xmlns="http://www.w3.org/2000/svg" width="400" height="300">
         <rect width="100%" height="100%" fill="#f1f3f5"/>
@@ -355,13 +410,26 @@ def placeholder_image_response():
         </text>
     </svg>
     """
-    response = HttpResponse(svg, content_type="image/svg+xml")
+    response = HttpResponse(svg, content_type="image/svg+xml", status=status)
     response["Cache-Control"] = "no-store"
+    if retry_after:
+        response["Retry-After"] = str(retry_after)
     return response
 
 
 @require_GET
 def proxy_image_view(request):
+    try:
+        identity, limit = check_preview_request_limits(request)
+    except Exception:
+        logger.exception("Preview rate-limit cache failed")
+        return placeholder_image_response(status=503)
+    if limit:
+        return placeholder_image_response(
+            status=429,
+            retry_after=limit.retry_after,
+        )
+
     encoded_url = request.GET.get("u")
 
     if not encoded_url:
@@ -381,6 +449,14 @@ def proxy_image_view(request):
                 return placeholder_image_response()
 
             content = read_limited_response(response, max_bytes=PREVIEW_MAX_IMAGE_BYTES)
+
+        try:
+            within_limit = record_preview_bytes(identity, len(content))
+        except Exception:
+            logger.exception("Preview byte-limit cache failed")
+            return placeholder_image_response(status=503)
+        if not within_limit:
+            return placeholder_image_response(status=429)
 
         result = HttpResponse(content, content_type=content_type)
         result["Cache-Control"] = "private, max-age=300"

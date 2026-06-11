@@ -60,6 +60,7 @@ The current download module keeps the `/xhs_download/` route as a stable UI entr
 - `services/download_tasks.py`: lightweight in-memory download task state for local/single-process ZIP progress
 - `services/rate_limits.py`: Django-cache-backed request, concurrency, daily-count, and output-byte limits
 - `views.py`: render pages, proxy preview images, and return ZIP download responses
+- `djangoProject/health.py`: process liveness and dependency-backed readiness endpoints
 
 The intended extension path for Douyin and future platforms is:
 
@@ -80,7 +81,9 @@ The server no longer accepts arbitrary client-provided filesystem paths. This ke
 
 Ultra-HD provider settings are intentionally disabled by default. `ULTRA_HD_PROVIDER_ENABLED` controls provider availability, while `ULTRA_HD_PUBLIC_ACCESS_ENABLED` separately controls whether visitors may request the paid path. Local development settings can come from the project-root `.env`; deployment should use environment variables or secret storage. Production mode requires real secret/host values and a shared Redis cache. TikHub response caching and daily usage counters use Django cache keys, so Redis makes them consistent across workers and restarts. If the usage cache fails while a daily cap is configured, the paid call is rejected rather than bypassing the cost guard.
 
-The public download APIs are explicitly CSRF-protected and use shared-cache limits for per-IP frequency, per-IP concurrency, daily request count, and output bytes. In-memory asynchronous tasks are disabled by default outside development. Django only serves `MEDIA_ROOT` through `MEDIA_URL` while `DEBUG=True`; production media delivery belongs to Nginx or controlled object storage.
+The public download APIs are explicitly CSRF-protected and use shared-cache limits for per-IP frequency, per-IP concurrency, daily request count, and output bytes. The preview image proxy has an independent request/byte budget because it also fetches and serves external media. In-memory asynchronous tasks are disabled by default outside development. Django only serves `MEDIA_ROOT` through `MEDIA_URL` while `DEBUG=True`; production media delivery belongs to Nginx or controlled object storage.
+
+Runtime health is split into liveness and readiness. Liveness only proves the Django process can answer, while readiness performs cache and database round trips so a deployment platform can stop routing traffic when Redis or the database is unavailable.
 
 Current limitation: ultra-HD parsing can still exceed 10 seconds in manual browser testing. The code emits structured provider logs for failures, cache hits, TikHub response metadata, probe duration, selected provider, and fallback reason, but there is not yet a request-level diagnostics UI or persisted timing dashboard.
 

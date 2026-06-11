@@ -96,6 +96,8 @@ TIKHUB_DAILY_LIMIT=20
 
 生产环境建议以 `.env.example.production` 为清单配置真实环境变量。`DJANGO_ENV=production` 或 `DJANGO_DEBUG=False` 时，项目会强制要求显式 `DJANGO_SECRET_KEY`、`DJANGO_ALLOWED_HOSTS` 和共享 Redis `DJANGO_CACHE_URL`。生产默认关闭内存异步下载任务，由前端回退同步 ZIP，并启用下载频率、并发、每日请求量和每日流量限制。
 
+部署探针可使用 `/health/live/` 和 `/health/ready/`。后者会实际检查 Redis/cache 与数据库；图片预览代理也有独立的请求和流量限制，相关配置见 `.env.example.production`。
+
 抖音候选源诊断可以通过管理命令运行：
 
 ```bash
