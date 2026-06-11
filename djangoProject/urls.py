@@ -20,9 +20,12 @@ from django.urls import path, include
 from django.conf.urls.static import static
 from django.views.generic import RedirectView
 
+from djangoProject import health
 from xhs_download import views as download_views
 
 urlpatterns = [
+                  path("health/live/", health.liveness_view, name="health_live"),
+                  path("health/ready/", health.readiness_view, name="health_ready"),
                   path("", download_views.search_view, {"platform_key": "home"}, name="home"),
                   path("results/", download_views.search_results_view, {"platform_key": "home"}, name="home_results"),
                   path("xhs/", download_views.search_view, {"platform_key": "xhs"}, name="xhs_home"),

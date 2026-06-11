@@ -60,6 +60,7 @@ The current download module keeps the `/xhs_download/` route as a stable UI entr
 - `services/download_tasks.py`: lightweight in-memory download task state for local/single-process ZIP progress
 - `services/rate_limits.py`: Django-cache-backed request, concurrency, daily-count, and output-byte limits
 - `views.py`: render pages, proxy preview images, and return ZIP download responses
+- `djangoProject/health.py`: process liveness and dependency-backed readiness endpoints
 
 The intended extension path for Douyin and future platforms is:
 
@@ -68,7 +69,7 @@ The intended extension path for Douyin and future platforms is:
 3. Return `ParseResult` with platform-neutral `MediaAsset` objects.
 4. Reuse the existing preview proxy, original-file download, and ZIP archive pipeline.
 
-Douyin support is intentionally scoped to stable no-login parsing at this stage. It handles common embedded JSON shapes, mobile share router data, mobile feed candidate URLs, and public play URL variants. Douyin now has an internal provider flow: the adapter builds a parse context, then provider orchestration can call `native_enhanced` before the native fallback path when ultra-HD research is enabled. Candidate video URLs are ranked by known file size, resolution, bitrate, ratio preference, and source priority; the enhanced path additionally probes candidates and can select the largest reachable source by verified size. This keeps the future ultra-high path clean: a native app endpoint provider or optional external API provider can be added without growing view logic or replacing the adapter contract.
+Douyin support is intentionally scoped to stable no-login parsing at this stage. It handles common embedded JSON shapes, mobile share router data, mobile feed candidate URLs, and public play URL variants. Normal requests use the native provider. Ultra requests use a bounded orchestrator that runs fast native and TikHub concurrently, validates one preferred external candidate with a Range request, and returns native when the enhancement deadline expires. `native_enhanced` remains a diagnostic provider for deep multi-source comparison and is not part of the synchronous web path.
 
 Xiaohongshu does not currently need the same provider split because the stable path is still page HTML plus normalized media URLs. Keep it as a compact adapter until a second independent source, such as an app API or high-definition video provider, is introduced. Bilibili support currently uses the public view/playurl APIs for direct mp4 URLs; its `durl` values are treated as ordered source segments and only share candidate deduplication. DASH audio/video merge and higher-quality source selection should be added later as a separate provider layer that can enumerate candidate streams, probe size/bitrate, and fall back to the stable source without changing the adapter/view contract.
 
@@ -80,9 +81,13 @@ The server no longer accepts arbitrary client-provided filesystem paths. This ke
 
 Ultra-HD provider settings are intentionally disabled by default. `ULTRA_HD_PROVIDER_ENABLED` controls provider availability, while `ULTRA_HD_PUBLIC_ACCESS_ENABLED` separately controls whether visitors may request the paid path. Local development settings can come from the project-root `.env`; deployment should use environment variables or secret storage. Production mode requires real secret/host values and a shared Redis cache. TikHub response caching and daily usage counters use Django cache keys, so Redis makes them consistent across workers and restarts. If the usage cache fails while a daily cap is configured, the paid call is rejected rather than bypassing the cost guard.
 
-The public download APIs are explicitly CSRF-protected and use shared-cache limits for per-IP frequency, per-IP concurrency, daily request count, and output bytes. In-memory asynchronous tasks are disabled by default outside development. Django only serves `MEDIA_ROOT` through `MEDIA_URL` while `DEBUG=True`; production media delivery belongs to Nginx or controlled object storage.
+TikHub request routing is country-aware. Mainland traffic uses the China-accessible `api.tikhub.dev` domain with `region=CN`; other countries use `api.tikhub.io` with their ISO country code. Country input comes only from an explicitly trusted proxy header or an optional local GeoIP2 database. Validated media caches are isolated by API host and region. Mainland retries stay on `.dev` and use `region=HK` after transient HTTP/network failures or unusable HTML/tiny-file responses.
 
-Current limitation: ultra-HD parsing can still exceed 10 seconds in manual browser testing. The code emits structured provider logs for failures, cache hits, TikHub response metadata, probe duration, selected provider, and fallback reason, but there is not yet a request-level diagnostics UI or persisted timing dashboard.
+The public download APIs are explicitly CSRF-protected and use shared-cache limits for per-IP frequency, per-IP concurrency, daily request count, and output bytes. The preview image proxy has an independent request/byte budget because it also fetches and serves external media. In-memory asynchronous tasks are disabled by default outside development. Django only serves `MEDIA_ROOT` through `MEDIA_URL` while `DEBUG=True`; production media delivery belongs to Nginx or controlled object storage.
+
+Runtime health is split into liveness and readiness. Liveness only proves the Django process can answer, while readiness performs cache and database round trips so a deployment platform can stop routing traffic when Redis or the database is unavailable.
+
+Current limitation: TikHub and signed CDN URLs are external dependencies, so the fast path prioritizes bounded latency over proving the absolute largest source on every request. The code emits structured provider logs for failures, validated-cache hits, TikHub response metadata, probe duration, selected provider, and fallback reason, but there is not yet a persisted timing dashboard.
 
 SSRF protection validates URL schemes, host suffixes, localhost/private literal IPs, and redirect final hosts. This is acceptable for the current fixed major-platform CDN allowlist. If future providers allow operator-defined domains, add DNS resolution checks before requests, reject resolved private IPs, and repeat checks after redirects to reduce DNS rebinding risk.
 

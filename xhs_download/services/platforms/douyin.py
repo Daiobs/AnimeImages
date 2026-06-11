@@ -2,10 +2,12 @@ import json
 import logging
 import re
 from html import unescape
-from time import time
-from urllib.parse import parse_qsl, urlencode, unquote, urlparse, urlunparse
+from time import monotonic, time
+from urllib.parse import parse_qsl, urlencode, unquote, urljoin, urlparse, urlunparse
 
+import requests
 from bs4 import BeautifulSoup
+from django.conf import settings
 
 from ..assets import MediaAsset, ParseResult
 from ..candidates import MediaCandidate, rank_media_candidates
@@ -13,6 +15,7 @@ from ..common import (
     clean_filename,
     normalize_text,
     request_get_with_retry,
+    validate_external_url,
 )
 from ..diagnostics import select_best_media_candidate
 from .base import BasePlatformAdapter
@@ -158,6 +161,10 @@ def extract_aweme_id(value):
         if match:
             return match.group(1)
     return ""
+
+
+def is_douyin_short_url(url):
+    return (urlparse(url or "").hostname or "").lower() == "v.douyin.com"
 
 
 def first_url(value):
@@ -653,7 +660,7 @@ class DouyinAdapter(BasePlatformAdapter):
 
         return assets
 
-    def fetch_mobile_feed_aweme(self, aweme_id):
+    def fetch_mobile_feed_aweme(self, aweme_id, request_timeout=15, request_retries=2):
         feed_url = build_mobile_feed_url(aweme_id)
         if not feed_url:
             return {}
@@ -661,8 +668,8 @@ class DouyinAdapter(BasePlatformAdapter):
         response = request_get_with_retry(
             feed_url,
             headers=DOUYIN_APP_HEADERS,
-            timeout=15,
-            retries=2,
+            timeout=request_timeout,
+            retries=request_retries,
             allowed_final_host_suffixes=("snssdk.com",),
             final_url_message="抖音移动接口跳转到了不允许的域名",
         )
@@ -673,21 +680,36 @@ class DouyinAdapter(BasePlatformAdapter):
 
         return find_aweme_by_id(data, aweme_id)
 
-    def fetch_mobile_feed_result(self, aweme_id, probe_video_candidates=False):
-        aweme = self.fetch_mobile_feed_aweme(aweme_id)
+    def fetch_mobile_feed_result(
+        self,
+        aweme_id,
+        probe_video_candidates=False,
+        request_timeout=15,
+        request_retries=2,
+    ):
+        aweme = self.fetch_mobile_feed_aweme(
+            aweme_id,
+            request_timeout=request_timeout,
+            request_retries=request_retries,
+        )
         if not aweme:
             return None
         result = self.parse_aweme(aweme, probe_video_candidates=probe_video_candidates)
         return result if result.assets else None
 
-    def fetch_mobile_share_aweme(self, aweme_id):
+    def fetch_mobile_share_aweme(
+        self,
+        aweme_id,
+        request_timeout=15,
+        request_retries=2,
+    ):
         for share_url in build_mobile_share_urls(aweme_id):
             try:
                 response = request_get_with_retry(
                     share_url,
                     headers=DOUYIN_MOBILE_HEADERS,
-                    timeout=15,
-                    retries=2,
+                    timeout=request_timeout,
+                    retries=request_retries,
                     allowed_final_host_suffixes=self.page_host_suffixes,
                     final_url_message="抖音移动分享页跳转到了不允许的域名",
                 )
@@ -701,8 +723,18 @@ class DouyinAdapter(BasePlatformAdapter):
                 continue
         return {}
 
-    def fetch_mobile_share_result(self, aweme_id, probe_video_candidates=False):
-        aweme = self.fetch_mobile_share_aweme(aweme_id)
+    def fetch_mobile_share_result(
+        self,
+        aweme_id,
+        probe_video_candidates=False,
+        request_timeout=15,
+        request_retries=2,
+    ):
+        aweme = self.fetch_mobile_share_aweme(
+            aweme_id,
+            request_timeout=request_timeout,
+            request_retries=request_retries,
+        )
         if aweme:
             result = self.parse_aweme(aweme, probe_video_candidates=probe_video_candidates)
             if result.assets:
@@ -715,11 +747,89 @@ class DouyinAdapter(BasePlatformAdapter):
     def parse_mobile_share(self, aweme_id):
         return self.fetch_mobile_share_result(aweme_id)
 
-    def build_parse_context(self, url, fetch_direct_page=True):
-        context = DouyinParseContext(url=url)
-        context.aweme_id = extract_aweme_id(context.url)
+    def resolve_short_url(self, url, request_deadline=0):
+        current_url = url
+        short_link_deadline = monotonic() + max(
+            0.1,
+            float(getattr(settings, "DOUYIN_SHORT_LINK_TIMEOUT_SECONDS", 2.0) or 0),
+        )
+        deadline = (
+            min(short_link_deadline, request_deadline)
+            if request_deadline
+            else short_link_deadline
+        )
+        max_redirects = max(
+            1,
+            int(getattr(settings, "DOUYIN_SHORT_LINK_MAX_REDIRECTS", 4) or 1),
+        )
 
-        if fetch_direct_page or not context.aweme_id:
+        for _ in range(max_redirects + 1):
+            validate_external_url(
+                current_url,
+                self.page_host_suffixes,
+                "抖音短链接跳转到了不允许的域名",
+            )
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise requests.Timeout("抖音短链接解析超时")
+
+            response = requests.get(
+                current_url,
+                headers=self.headers,
+                timeout=max(0.1, remaining),
+                allow_redirects=False,
+                stream=True,
+            )
+            try:
+                if response.status_code not in {301, 302, 303, 307, 308}:
+                    return response.url or current_url
+                location = response.headers.get("Location")
+                if not location:
+                    return response.url or current_url
+                redirect_url = urljoin(current_url, location)
+                validate_external_url(
+                    redirect_url,
+                    self.page_host_suffixes,
+                    "抖音短链接跳转到了不允许的域名",
+                )
+                if extract_aweme_id(redirect_url):
+                    return redirect_url
+                current_url = redirect_url
+            finally:
+                response.close()
+
+        raise requests.TooManyRedirects("抖音短链接跳转次数过多")
+
+    def build_parse_context(
+        self,
+        url,
+        fetch_direct_page=True,
+        fast_short_link=False,
+        request_deadline=0,
+    ):
+        context = DouyinParseContext(
+            url=url,
+            deadline_monotonic=request_deadline,
+        )
+        context.aweme_id = extract_aweme_id(context.url)
+        short_url = is_douyin_short_url(url)
+
+        if short_url and not context.aweme_id:
+            try:
+                context.final_url = self.resolve_short_url(
+                    url,
+                    request_deadline=request_deadline,
+                )
+                context.aweme_id = extract_aweme_id(context.final_url)
+            except Exception as error:
+                context.direct_error = error
+
+        should_fetch_direct_page = (
+            (fetch_direct_page or not context.aweme_id)
+            and not context.aweme_id
+            and not (short_url and fast_short_link)
+        )
+        if should_fetch_direct_page:
             try:
                 response = request_get_with_retry(
                     url,
@@ -748,10 +858,27 @@ class DouyinAdapter(BasePlatformAdapter):
     def get_result_providers(self, prefer_ultra_hd=False):
         return build_douyin_result_providers(prefer_ultra_hd=prefer_ultra_hd)
 
-    def parse_url(self, url, prefer_ultra_hd=False):
+    def parse_url(
+        self,
+        url,
+        prefer_ultra_hd=False,
+        client_country_code="",
+    ):
         parse_started_at = time()
         self.require_supported_url(url)
-        context = self.build_parse_context(url, fetch_direct_page=not bool(extract_aweme_id(url)))
+        request_deadline = 0
+        if prefer_ultra_hd:
+            request_deadline = monotonic() + max(
+                0.1,
+                float(getattr(settings, "DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS", 15.0) or 0),
+            )
+        context = self.build_parse_context(
+            url,
+            fetch_direct_page=not bool(extract_aweme_id(url)),
+            fast_short_link=prefer_ultra_hd,
+            request_deadline=request_deadline,
+        )
+        context.client_country_code = client_country_code
 
         for provider in self.get_result_providers(prefer_ultra_hd=prefer_ultra_hd):
             provider_started_at = time()
