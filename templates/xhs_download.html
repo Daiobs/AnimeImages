@@ -16,6 +16,7 @@
             class="xhs-download-page {{ theme_class|default:'theme-home' }}"
             data-download-url="{{ download_url }}"
             data-download-task-url="{{ download_task_url }}"
+            data-download-async-enabled="{{ download_async_tasks_enabled|yesno:'true,false' }}"
             data-base-filename="{{ base_filename|default:'xhs_image' }}"
     >
         <div class="container-fluid px-4 px-md-5">

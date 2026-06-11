@@ -12,8 +12,11 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+LOCAL_DEV_SECRET_KEY = "django-insecure-local-dev-change-me"
 
 
 def load_local_env(path):
@@ -60,19 +63,53 @@ def env_int(name, default=0):
     return int(value)
 
 
+def require_env(name):
+    value = os.environ.get(name)
+    if value is None or value.strip() == "":
+        raise ImproperlyConfigured(f"{name} must be configured explicitly outside local development.")
+    return value
+
+
+def require_env_list(name):
+    values = env_list(name)
+    if not values:
+        raise ImproperlyConfigured(f"{name} must be configured explicitly outside local development.")
+    return values
+
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
+DJANGO_ENV = os.environ.get("DJANGO_ENV", "local").strip().lower()
+IS_PRODUCTION_ENV = DJANGO_ENV in {"prod", "production"}
+DEBUG = env_bool("DJANGO_DEBUG", not IS_PRODUCTION_ENV)
+REQUIRE_PRODUCTION_CONFIG = IS_PRODUCTION_ENV or not DEBUG
+
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ.get(
-    "DJANGO_SECRET_KEY",
-    "django-insecure-local-dev-change-me",
-)
+if REQUIRE_PRODUCTION_CONFIG:
+    SECRET_KEY = require_env("DJANGO_SECRET_KEY")
+    if SECRET_KEY == LOCAL_DEV_SECRET_KEY:
+        raise ImproperlyConfigured("DJANGO_SECRET_KEY must not use the local development default outside local development.")
+else:
+    SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", LOCAL_DEV_SECRET_KEY)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = env_bool("DJANGO_DEBUG", True)
+if IS_PRODUCTION_ENV and DEBUG:
+    raise ImproperlyConfigured("DJANGO_DEBUG must be False when DJANGO_ENV=production.")
 
-ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", ["127.0.0.1", "localhost"])
+ALLOWED_HOSTS = (
+    require_env_list("DJANGO_ALLOWED_HOSTS")
+    if REQUIRE_PRODUCTION_CONFIG
+    else env_list("DJANGO_ALLOWED_HOSTS", ["127.0.0.1", "localhost"])
+)
+
+DJANGO_CACHE_URL = os.environ.get("DJANGO_CACHE_URL", "").strip()
+if DJANGO_CACHE_URL and not DJANGO_CACHE_URL.startswith(("redis://", "rediss://")):
+    raise ImproperlyConfigured("DJANGO_CACHE_URL must use a redis:// or rediss:// URL.")
+if REQUIRE_PRODUCTION_CONFIG and not DJANGO_CACHE_URL:
+    raise ImproperlyConfigured(
+        "DJANGO_CACHE_URL must point to a shared Redis cache outside local development."
+    )
 
 
 # Application definition
@@ -179,11 +216,28 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+CACHES = {
+    "default": {
+        "BACKEND": (
+            "django.core.cache.backends.redis.RedisCache"
+            if DJANGO_CACHE_URL
+            else "django.core.cache.backends.locmem.LocMemCache"
+        ),
+        "LOCATION": DJANGO_CACHE_URL or "xhs-download-local-cache",
+        "KEY_PREFIX": os.environ.get("DJANGO_CACHE_KEY_PREFIX", "xhs_download"),
+    }
+}
+
 XHS_ALLOW_SERVER_SAVE = env_bool("XHS_ALLOW_SERVER_SAVE", DEBUG)
 XHS_ALLOW_ABSOLUTE_SAVE_PATH = env_bool("XHS_ALLOW_ABSOLUTE_SAVE_PATH", DEBUG)
 XHS_DEFAULT_SERVER_SAVE_DIR = os.environ.get("XHS_DEFAULT_SERVER_SAVE_DIR", "xhs")
 
 ULTRA_HD_PROVIDER_ENABLED = env_bool("ULTRA_HD_PROVIDER_ENABLED", False)
+ULTRA_HD_PUBLIC_ACCESS_ENABLED = env_bool("ULTRA_HD_PUBLIC_ACCESS_ENABLED", DEBUG)
+ULTRA_HD_RATE_LIMIT_PER_MINUTE = env_int(
+    "ULTRA_HD_RATE_LIMIT_PER_MINUTE",
+    0 if DEBUG else 2,
+)
 TIKHUB_API_KEY = os.environ.get("TIKHUB_API_KEY", "")
 TIKHUB_BASE_URL = os.environ.get("TIKHUB_BASE_URL", "")
 TIKHUB_REGION = os.environ.get("TIKHUB_REGION", "CN")
@@ -191,6 +245,37 @@ TIKHUB_CACHE_TTL_SECONDS = int(os.environ.get("TIKHUB_CACHE_TTL_SECONDS", "1800"
 TIKHUB_DAILY_LIMIT = int(os.environ.get("TIKHUB_DAILY_LIMIT", "0") or 0)
 DOUYIN_PROVIDER_ORDER = env_list("DOUYIN_PROVIDER_ORDER", ["tikhub", "native_enhanced", "native"])
 XHS_PROVIDER_ORDER = env_list("XHS_PROVIDER_ORDER", ["native"])
+
+DOWNLOAD_ASYNC_TASKS_ENABLED = env_bool("DOWNLOAD_ASYNC_TASKS_ENABLED", DEBUG)
+if REQUIRE_PRODUCTION_CONFIG and DOWNLOAD_ASYNC_TASKS_ENABLED:
+    raise ImproperlyConfigured(
+        "DOWNLOAD_ASYNC_TASKS_ENABLED must remain False until a shared production task queue is implemented."
+    )
+DOWNLOAD_TRUST_X_FORWARDED_FOR = env_bool("DOWNLOAD_TRUST_X_FORWARDED_FOR", False)
+DOWNLOAD_RATE_LIMIT_PER_MINUTE = env_int(
+    "DOWNLOAD_RATE_LIMIT_PER_MINUTE",
+    0 if DEBUG else 6,
+)
+DOWNLOAD_DAILY_REQUEST_LIMIT_PER_IP = env_int(
+    "DOWNLOAD_DAILY_REQUEST_LIMIT_PER_IP",
+    0 if DEBUG else 100,
+)
+DOWNLOAD_GLOBAL_DAILY_REQUEST_LIMIT = env_int(
+    "DOWNLOAD_GLOBAL_DAILY_REQUEST_LIMIT",
+    0 if DEBUG else 1000,
+)
+DOWNLOAD_MAX_CONCURRENT_PER_IP = env_int(
+    "DOWNLOAD_MAX_CONCURRENT_PER_IP",
+    0 if DEBUG else 1,
+)
+DOWNLOAD_DAILY_BYTES_LIMIT_PER_IP = env_int(
+    "DOWNLOAD_DAILY_BYTES_LIMIT_PER_IP",
+    0 if DEBUG else 5 * 1024 * 1024 * 1024,
+)
+DOWNLOAD_GLOBAL_DAILY_BYTES_LIMIT = env_int(
+    "DOWNLOAD_GLOBAL_DAILY_BYTES_LIMIT",
+    0 if DEBUG else 100 * 1024 * 1024 * 1024,
+)
 
 SECURE_SSL_REDIRECT = env_bool("DJANGO_SECURE_SSL_REDIRECT", not DEBUG)
 SESSION_COOKIE_SECURE = env_bool("DJANGO_SESSION_COOKIE_SECURE", not DEBUG)

@@ -41,4 +41,7 @@ urlpatterns = [
                   path("xhs_download/", RedirectView.as_view(url="/xhs/", permanent=False), name="legacy_xhs_redirect"),
                   path('xhs_download/', include('xhs_download.urls')),
                   path('submissions/', include('submissions.urls')),
-              ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+              ]
+
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

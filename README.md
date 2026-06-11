@@ -56,7 +56,7 @@ Run Configuration 可使用普通 Python 配置：
 - Script path: `manage.py`
 - Parameters: `runserver`
 - Working directory: 当前目录
-- 项目启动时会自动读取根目录 `.env`；`.env.example` 只作为模板，不要写入真实密钥。
+- 项目启动时会自动读取根目录 `.env`；配置模板拆分为 `.env.example.local` 和 `.env.example.production`，不要写入真实密钥。
 
 ## 小红书下载模式
 
@@ -82,6 +82,7 @@ XHS_DEFAULT_SERVER_SAVE_DIR=/Users/your-name/Downloads/xhs
 
 ```text
 ULTRA_HD_PROVIDER_ENABLED=False
+ULTRA_HD_PUBLIC_ACCESS_ENABLED=True
 DOUYIN_PROVIDER_ORDER=tikhub,native_enhanced,native
 XHS_PROVIDER_ORDER=native
 TIKHUB_API_KEY=
@@ -91,7 +92,9 @@ TIKHUB_CACHE_TTL_SECONDS=1800
 TIKHUB_DAILY_LIMIT=20
 ```
 
-`native` 是默认快路径，不打开“抖音超高清”时只走这一路，避免额外候选探测拖慢普通解析。`native_enhanced` 是本地增强探测 provider，只有明确开启 `ULTRA_HD_PROVIDER_ENABLED=True` 且请求打开超清时才会参与解析；`native` 会始终作为基础兜底。`tikhub` 是可选第三方 Provider，只有开启超高清开关、配置 `TIKHUB_API_KEY`，并且在右上角“设置”中开启“抖音超高清”后才会请求外部服务。开启后，TikHub 和本地 native 快路径会并发执行，TikHub 返回源再和本地结果按实际探测大小比较；TikHub 返回源小于本地 1080p 时会保留本地结果。Provider 失败、超限或返回不可用资源时也会自动回退本地解析。`TIKHUB_CACHE_TTL_SECONDS` 用于缓存同一作品的返回结果，`TIKHUB_DAILY_LIMIT` 可限制单个 Django 进程每天最多调用 TikHub 的次数；设置为 `0` 表示不限制。修改 `.env` 后需要重启 Django 服务。
+`native` 是默认快路径，不打开“抖音超高清”时只走这一路，避免额外候选探测拖慢普通解析。`native_enhanced` 是本地增强探测 provider，只有明确开启 `ULTRA_HD_PROVIDER_ENABLED=True` 且请求打开超清时才会参与解析；`native` 会始终作为基础兜底。`tikhub` 是可选第三方 Provider，只有同时开启 Provider、访客访问开关、配置 `TIKHUB_API_KEY`，并且用户在右上角“设置”中开启“抖音超高清”后才会请求外部服务。开启后，TikHub 和本地 native 快路径会并发执行，并按实际探测大小选择结果。TikHub 缓存和每日调用计数统一写入 Django cache；本地默认使用进程内缓存，生产环境强制要求 `DJANGO_CACHE_URL` 指向共享 Redis，从而让多 worker 共享成本上限。
+
+生产环境建议以 `.env.example.production` 为清单配置真实环境变量。`DJANGO_ENV=production` 或 `DJANGO_DEBUG=False` 时，项目会强制要求显式 `DJANGO_SECRET_KEY`、`DJANGO_ALLOWED_HOSTS` 和共享 Redis `DJANGO_CACHE_URL`。生产默认关闭内存异步下载任务，由前端回退同步 ZIP，并启用下载频率、并发、每日请求量和每日流量限制。
 
 抖音候选源诊断可以通过管理命令运行：
 

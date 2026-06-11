@@ -1,6 +1,8 @@
 import json
+import logging
 import re
 from html import unescape
+from time import time
 from urllib.parse import parse_qsl, urlencode, unquote, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
@@ -58,6 +60,7 @@ DOUYIN_APP_HEADERS = {
     "Accept": "application/json",
     "Referer": "https://www.douyin.com/",
 }
+logger = logging.getLogger(__name__)
 
 
 AWEME_ID_PATTERNS = (
@@ -597,6 +600,7 @@ class DouyinAdapter(BasePlatformAdapter):
                     video_candidates,
                     headers=self.headers,
                     allowed_final_host_suffixes=self.media_host_suffixes,
+                    expected_type="video",
                 )
                 video_candidate = selection.candidate or video_candidate
 
@@ -745,15 +749,41 @@ class DouyinAdapter(BasePlatformAdapter):
         return build_douyin_result_providers(prefer_ultra_hd=prefer_ultra_hd)
 
     def parse_url(self, url, prefer_ultra_hd=False):
+        parse_started_at = time()
         self.require_supported_url(url)
         context = self.build_parse_context(url, fetch_direct_page=not bool(extract_aweme_id(url)))
 
         for provider in self.get_result_providers(prefer_ultra_hd=prefer_ultra_hd):
+            provider_started_at = time()
             try:
                 result = provider.parse(self, context)
                 if result and result.assets:
+                    logger.info(
+                        "douyin_parse_selected",
+                        extra={
+                            "provider": getattr(provider, "name", type(provider).__name__),
+                            "selected_provider": (result.metadata or {}).get("selected_provider", getattr(provider, "name", "")),
+                            "fallback_reason": (result.metadata or {}).get("fallback_reason", ""),
+                            "aweme_id": context.aweme_id,
+                            "asset_count": len(result.assets),
+                            "duration_ms": int((time() - provider_started_at) * 1000),
+                            "total_duration_ms": int((time() - parse_started_at) * 1000),
+                            "prefer_ultra_hd": prefer_ultra_hd,
+                        },
+                    )
                     return result
-            except Exception:
+            except Exception as error:
+                logger.info(
+                    "douyin_provider_failed",
+                    extra={
+                        "provider": getattr(provider, "name", type(provider).__name__),
+                        "aweme_id": context.aweme_id,
+                        "error_type": type(error).__name__,
+                        "error": str(error),
+                        "duration_ms": int((time() - provider_started_at) * 1000),
+                        "prefer_ultra_hd": prefer_ultra_hd,
+                    },
+                )
                 continue
 
         if context.direct_result is not None and context.direct_result.assets:

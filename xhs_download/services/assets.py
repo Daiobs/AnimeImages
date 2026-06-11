@@ -32,6 +32,7 @@ class ParseResult:
     post_type: str
     base_filename: str
     assets: tuple[MediaAsset, ...] = field(default_factory=tuple)
+    metadata: dict = field(default_factory=dict)
 
     @property
     def image_assets(self):

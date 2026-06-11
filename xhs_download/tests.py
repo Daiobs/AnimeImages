@@ -6,6 +6,7 @@ from tempfile import NamedTemporaryFile, TemporaryDirectory
 from unittest.mock import Mock, patch
 from zipfile import ZipFile
 
+from django.core.cache import cache
 from django.test import Client, SimpleTestCase, override_settings
 from PIL import Image
 
@@ -36,6 +37,8 @@ from .services.provider_settings import (
     normalize_provider_order,
 )
 from .services.quality import QualityProbe, QualityProbeResult
+from .services.rate_limits import get_daily_total
+from .services.rate_limits import release_concurrency
 from .services.platforms import BilibiliAdapter, DouyinAdapter, XiaohongshuAdapter
 from .services.platforms.bilibili import BILIBILI_HEADERS
 from .services.platforms.douyin import DOUYIN_HEADERS, extract_aweme_id, get_video_candidates
@@ -44,9 +47,9 @@ from .services.platforms.douyin_providers import (
     DouyinNativeEnhancedProvider,
     DouyinNativeProvider,
     DouyinTikHubProvider,
-    TIKHUB_CACHE,
-    TIKHUB_USAGE,
+    build_tikhub_provider_response,
     build_douyin_result_providers,
+    context_log_fields,
 )
 from .services.parser import normalize_xhs_image_url, normalize_xhs_preview_image_url, parse_xhs_html
 from .services.registry import extract_url_from_text, get_adapter_for_url
@@ -221,11 +224,33 @@ class XhsUtilityTests(SimpleTestCase):
         head_response.close.assert_called_once()
         range_response.close.assert_called_once()
 
+    @patch("xhs_download.services.quality.requests.get")
+    @patch("xhs_download.services.quality.requests.head")
+    def test_quality_probe_rejects_html_when_video_expected(self, mock_head, mock_get):
+        head_response = Mock()
+        head_response.status_code = 200
+        head_response.url = "https://v3-web.douyinvod.com/video.mp4"
+        head_response.headers = {"Content-Length": "1234", "Content-Type": "text/html"}
+        head_response.close = Mock()
+        mock_head.return_value = head_response
+
+        range_response = Mock()
+        range_response.status_code = 200
+        range_response.url = "https://v3-web.douyinvod.com/video.mp4"
+        range_response.headers = {"Content-Length": "1234", "Content-Type": "text/html"}
+        range_response.close = Mock()
+        mock_get.return_value = range_response
+
+        result = QualityProbe().probe("https://v3-web.douyinvod.com/video.mp4", expected_type="video")
+
+        self.assertFalse(result.reachable)
+        self.assertIn("Unexpected content type", result.error)
+
     def test_select_best_media_candidate_prefers_probed_size(self):
         low = "https://v3-web.douyinvod.com/low.mp4"
         high = "https://v3-web.douyinvod.com/high.mp4"
         probe = Mock()
-        probe.probe.side_effect = lambda url, headers=None, timeout=6: QualityProbeResult(
+        probe.probe.side_effect = lambda url, headers=None, timeout=6, expected_type="": QualityProbeResult(
             url=url,
             final_url=url,
             reachable=True,
@@ -525,11 +550,57 @@ class DouyinAdapterTests(SimpleTestCase):
         self.assertEqual(len(providers), 1)
         self.assertIsInstance(providers[0], DouyinNativeProvider)
 
+    def test_tikhub_provider_response_schema_exposes_status_and_candidates(self):
+        response = build_tikhub_provider_response(
+            {
+                "code": 500,
+                "message": "provider failed",
+                "request_id": "req-1",
+                "data": {
+                    "original_video_url": "https://v11-default.365yg.com/video/tos/cn/path.mp4?qs=13",
+                },
+            }
+        )
+
+        self.assertFalse(response.ok)
+        self.assertEqual(response.code, "500")
+        self.assertEqual(response.message, "provider failed")
+        self.assertEqual(response.request_id, "req-1")
+        self.assertEqual(len(response.candidates), 1)
+
+    def test_native_provider_logs_fallback_failures(self):
+        class BrokenProvider:
+            name = "broken"
+
+            def parse(self, adapter, context):
+                raise RuntimeError("boom")
+
+        class FakeAdapter:
+            pass
+
+        with self.assertLogs("xhs_download.services.platforms.douyin_providers", level="INFO") as captured:
+            result = DouyinNativeProvider(fallback_providers=(BrokenProvider(),)).parse(
+                FakeAdapter(),
+                DouyinParseContext(url="https://www.douyin.com/video/123", aweme_id="123"),
+            )
+
+        self.assertIsNone(result)
+        self.assertTrue(any("douyin_provider_failed" in item for item in captured.output))
+
+    def test_provider_log_fields_exclude_query_parameters(self):
+        fields = context_log_fields(DouyinParseContext(
+            url="https://www.douyin.com/video/123?token=sensitive",
+            aweme_id="123",
+        ))
+
+        self.assertEqual(fields["source_host"], "www.douyin.com")
+        self.assertEqual(fields["source_path"], "/video/123")
+        self.assertNotIn("url", fields)
+
     @patch("xhs_download.services.diagnostics.QualityProbe.probe")
     @patch("xhs_download.services.platforms.douyin_providers.requests.get")
     def test_tikhub_provider_returns_validated_original_video_url(self, mock_get, mock_probe):
-        TIKHUB_CACHE.clear()
-        TIKHUB_USAGE.clear()
+        cache.clear()
 
         class FakeAdapter:
             platform_id = "douyin"
@@ -599,8 +670,7 @@ class DouyinAdapterTests(SimpleTestCase):
     @patch("xhs_download.services.diagnostics.QualityProbe.probe")
     @patch("xhs_download.services.platforms.douyin_providers.requests.get")
     def test_tikhub_provider_keeps_native_when_tikhub_video_is_smaller(self, mock_get, mock_probe):
-        TIKHUB_CACHE.clear()
-        TIKHUB_USAGE.clear()
+        cache.clear()
 
         class FakeAdapter:
             platform_id = "douyin"
@@ -677,8 +747,7 @@ class DouyinAdapterTests(SimpleTestCase):
 
     @patch("xhs_download.services.platforms.douyin_providers.requests.get")
     def test_tikhub_provider_caches_identical_requests(self, mock_get):
-        TIKHUB_CACHE.clear()
-        TIKHUB_USAGE.clear()
+        cache.clear()
         response = Mock()
         response.json.return_value = {"code": 200, "data": {"original_video_url": "https://v11-default.365yg.com/a.mp4"}}
         response.raise_for_status = Mock()
@@ -699,6 +768,39 @@ class DouyinAdapterTests(SimpleTestCase):
 
         self.assertEqual(provider.fetch_high_quality_data(context), response.json.return_value)
         self.assertEqual(provider.fetch_high_quality_data(context), response.json.return_value)
+
+        self.assertEqual(mock_get.call_count, 1)
+
+    @patch("xhs_download.services.platforms.douyin_providers.requests.get")
+    def test_tikhub_daily_limit_uses_shared_cache_counter(self, mock_get):
+        cache.clear()
+        response = Mock()
+        response.json.return_value = {
+            "code": 200,
+            "data": {"original_video_url": "https://v11-default.365yg.com/a.mp4"},
+        }
+        response.raise_for_status = Mock()
+        response.close = Mock()
+        mock_get.return_value = response
+        provider = DouyinTikHubProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tikhub",),
+                tikhub_api_key="secret",
+                tikhub_cache_ttl_seconds=0,
+                tikhub_daily_limit=1,
+            )
+        )
+
+        provider.fetch_high_quality_data(DouyinParseContext(
+            url="https://www.douyin.com/video/1",
+            aweme_id="1",
+        ))
+        with self.assertRaisesMessage(RuntimeError, "TikHub daily limit reached"):
+            provider.fetch_high_quality_data(DouyinParseContext(
+                url="https://www.douyin.com/video/2",
+                aweme_id="2",
+            ))
 
         self.assertEqual(mock_get.call_count, 1)
 
@@ -798,7 +900,7 @@ class DouyinAdapterTests(SimpleTestCase):
     def test_parse_aweme_enhanced_prefers_larger_probed_video(self, mock_probe):
         low = "https://v3-web.douyinvod.com/low.mp4"
         high = "https://v3-web.douyinvod.com/high.mp4"
-        mock_probe.side_effect = lambda url, headers=None, timeout=6: QualityProbeResult(
+        mock_probe.side_effect = lambda url, headers=None, timeout=6, expected_type="": QualityProbeResult(
             url=url,
             final_url=url,
             reachable=True,
@@ -1252,6 +1354,9 @@ class XhsDownloadArchiveTests(SimpleTestCase):
 
 
 class XhsDownloadViewTests(SimpleTestCase):
+    def setUp(self):
+        cache.clear()
+
     def test_home_route_renders_download_page(self):
         response = Client().get("/")
 
@@ -1315,6 +1420,40 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertContains(response, "抖音")
         self.assertContains(response, 'href="/bilibili/"')
         self.assertContains(response, "哔哩哔哩")
+
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        ULTRA_HD_PUBLIC_ACCESS_ENABLED=False,
+        TIKHUB_API_KEY="secret",
+    )
+    @patch("xhs_download.views.parse_media_page")
+    def test_results_ignore_ultra_hd_when_public_access_is_disabled(self, mock_parse):
+        mock_parse.return_value = ParseResult(
+            platform="douyin",
+            post_type="unknown",
+            base_filename="douyin",
+            assets=(),
+        )
+
+        response = Client().get(
+            "/results/",
+            {"q": "https://www.douyin.com/video/123", "ultra_hd": "1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_parse.assert_called_once_with(
+            "https://www.douyin.com/video/123",
+            prefer_ultra_hd=False,
+        )
+        self.assertContains(response, "当前环境未向访客开放超高清 Provider")
+
+    @override_settings(DOWNLOAD_ASYNC_TASKS_ENABLED=False)
+    def test_page_omits_async_task_url_when_tasks_are_disabled(self):
+        response = Client().get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-download-task-url=""')
+        self.assertContains(response, 'data-download-async-enabled="false"')
 
     def test_xhs_route_uses_xhs_results_action(self):
         response = Client().get("/xhs/")
@@ -1426,6 +1565,88 @@ class XhsDownloadViewTests(SimpleTestCase):
         )
 
         self.assertEqual(response.status_code, 400)
+
+    def test_download_endpoint_requires_csrf_when_checks_are_enabled(self):
+        client = Client(enforce_csrf_checks=True)
+
+        response = client.post(
+            "/media/download-images/",
+            data='{"media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a"}]}',
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    @override_settings(DOWNLOAD_MAX_CONCURRENT_PER_IP=1)
+    @patch("xhs_download.views.acquire_concurrency", side_effect=RuntimeError("redis unavailable"))
+    def test_download_endpoint_fails_closed_when_concurrency_cache_is_unavailable(self, _mock_acquire):
+        response = Client().post(
+            "/media/download-images/",
+            data='{"media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a"}]}',
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("下载保护服务暂时不可用", response.json()["message"])
+
+    @patch("xhs_download.services.rate_limits.cache.decr", side_effect=RuntimeError("redis unavailable"))
+    def test_concurrency_release_cache_failure_does_not_escape(self, _mock_decr):
+        with self.assertLogs("xhs_download.services.rate_limits", level="ERROR"):
+            release_concurrency("download-concurrent", "client")
+
+    @override_settings(
+        DOWNLOAD_RATE_LIMIT_PER_MINUTE=1,
+        DOWNLOAD_DAILY_REQUEST_LIMIT_PER_IP=0,
+        DOWNLOAD_GLOBAL_DAILY_REQUEST_LIMIT=1,
+        DOWNLOAD_MAX_CONCURRENT_PER_IP=0,
+        DOWNLOAD_DAILY_BYTES_LIMIT_PER_IP=0,
+        DOWNLOAD_GLOBAL_DAILY_BYTES_LIMIT=0,
+    )
+    @patch("xhs_download.views.build_download_archive_file")
+    def test_download_endpoint_applies_ip_rate_limit(self, mock_archive):
+        mock_archive.side_effect = [
+            {
+                "filename": "first.zip",
+                "file": BytesIO(b"first"),
+                "saved_count": 1,
+                "failed_count": 0,
+            },
+            {
+                "filename": "second.zip",
+                "file": BytesIO(b"second"),
+                "saved_count": 1,
+                "failed_count": 0,
+            },
+        ]
+        payload = '{"media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a"}]}'
+
+        first = Client().post(
+            "/media/download-images/",
+            data=payload,
+            content_type="application/json",
+        )
+        second = Client().post(
+            "/media/download-images/",
+            data=payload,
+            content_type="application/json",
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 429)
+        self.assertIn("Retry-After", second)
+        self.assertEqual(mock_archive.call_count, 1)
+        self.assertEqual(get_daily_total("download-requests-global", "all"), 1)
+
+    @override_settings(DOWNLOAD_ASYNC_TASKS_ENABLED=False)
+    def test_download_task_endpoint_is_disabled_in_production_mode(self):
+        response = Client().post(
+            "/media/download-tasks/",
+            data='{"media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a"}]}',
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("同步下载接口", response.json()["message"])
 
     def test_server_save_mode_is_forbidden_when_disabled(self):
         with override_settings(XHS_ALLOW_SERVER_SAVE=False):

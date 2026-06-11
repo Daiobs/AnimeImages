@@ -141,6 +141,7 @@ def diagnose_media_candidates(
     max_candidates=20,
     should_probe=True,
     quality_probe=None,
+    expected_type="",
 ):
     ranked_candidates = rank_media_candidates(tuple(candidates or ()))[:max_candidates]
     if not should_probe:
@@ -153,7 +154,7 @@ def diagnose_media_candidates(
     diagnostics = []
     for index, candidate in enumerate(ranked_candidates, start=1):
         try:
-            result = probe.probe(candidate.url, headers=headers, timeout=timeout)
+            result = probe.probe(candidate.url, headers=headers, timeout=timeout, expected_type=expected_type)
         except Exception as error:
             diagnostics.append(
                 CandidateDiagnostic(
@@ -188,6 +189,7 @@ def select_best_media_candidate(
     max_candidates=20,
     should_probe=True,
     quality_probe=None,
+    expected_type="",
 ):
     diagnostics = diagnose_media_candidates(
         candidates,
@@ -197,6 +199,7 @@ def select_best_media_candidate(
         max_candidates=max_candidates,
         should_probe=should_probe,
         quality_probe=quality_probe,
+        expected_type=expected_type,
     )
 
     reachable_candidates = [

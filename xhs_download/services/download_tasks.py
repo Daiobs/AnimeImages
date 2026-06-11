@@ -1,8 +1,12 @@
 import threading
 import time
 import uuid
+from pathlib import Path
+
+from django.conf import settings
 
 from .downloads import build_download_archive_file
+from .rate_limits import consume_daily, release_concurrency
 
 
 TASK_TTL_SECONDS = 30 * 60
@@ -67,7 +71,9 @@ def update_task(task_id, **changes):
         task["updated_at"] = _now()
 
 
-def run_download_task(task_id, payload):
+def run_download_task(task_id, payload, owner_identity):
+    archive = None
+
     def progress_callback(completed, total):
         if total <= 0:
             return
@@ -90,6 +96,28 @@ def run_download_task(task_id, payload):
             video_save_mode=payload.get("video_save_mode", "video"),
             progress_callback=progress_callback,
         )
+        archive_size = Path(archive["file"].name).stat().st_size
+        per_ip_bytes = consume_daily(
+            "download-bytes-ip",
+            owner_identity,
+            settings.DOWNLOAD_DAILY_BYTES_LIMIT_PER_IP,
+            amount=archive_size,
+        )
+        if not per_ip_bytes.allowed:
+            archive["file"].close()
+            archive = None
+            raise RuntimeError("今日下载流量已达到限制，请稍后再试")
+
+        global_bytes = consume_daily(
+            "download-bytes-global",
+            "all",
+            settings.DOWNLOAD_GLOBAL_DAILY_BYTES_LIMIT,
+            amount=archive_size,
+        )
+        if not global_bytes.allowed:
+            archive["file"].close()
+            archive = None
+            raise RuntimeError("今日下载流量已达到限制，请稍后再试")
         update_task(
             task_id,
             status="completed",
@@ -100,16 +128,21 @@ def run_download_task(task_id, payload):
             saved_count=archive["saved_count"],
             failed_count=archive["failed_count"],
         )
+        archive = None
     except Exception as error:
+        if archive and archive.get("file"):
+            archive["file"].close()
         update_task(
             task_id,
             status="failed",
             progress=100,
             message=str(error),
         )
+    finally:
+        release_concurrency("download-concurrent", owner_identity)
 
 
-def create_download_task(payload):
+def create_download_task(payload, owner_identity):
     cleanup_download_tasks()
     task_id = uuid.uuid4().hex
     task = {
@@ -129,7 +162,7 @@ def create_download_task(payload):
 
     worker = threading.Thread(
         target=run_download_task,
-        args=(task_id, payload),
+        args=(task_id, payload, owner_identity),
         daemon=True,
     )
     worker.start()

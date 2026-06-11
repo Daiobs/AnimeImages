@@ -39,6 +39,7 @@ Ultra-HD mode is optional and must be enabled in the settings modal:
 - Provider chain begins with TikHub, while the native fast path is used as fallback/comparison.
 - TikHub candidates are probed before selection.
 - A smaller TikHub result should not replace a larger native result.
+- Provider failures and selection decisions are logged with structured server-side fields.
 
 Current observed problem: ultra-HD parsing can still take more than 10 seconds in PyCharm/manual browser tests. The latest code avoids the heaviest serial path, but real-world latency remains unresolved.
 
@@ -46,8 +47,9 @@ Current observed problem: ultra-HD parsing can still take more than 10 seconds i
 
 Current controls:
 
-- `TIKHUB_CACHE_TTL_SECONDS`: in-process cache for identical TikHub lookups.
-- `TIKHUB_DAILY_LIMIT`: per-process daily call cap.
+- `TIKHUB_CACHE_TTL_SECONDS`: Django-cache-backed cache for identical TikHub lookups.
+- `TIKHUB_DAILY_LIMIT`: shared daily call cap when production uses Redis.
+- `ULTRA_HD_PUBLIC_ACCESS_ENABLED`: operator switch controlling visitor access to paid ultra-HD.
 - Settings-modal switch: normal parsing does not call TikHub.
 - `.env` is loaded locally but ignored by Git.
 
@@ -73,11 +75,11 @@ Limitations:
 
 4. Provider diagnostics are not visible in the UI.
 
-   The project has diagnostics services and a management command, but normal page parsing does not yet show provider timing, selected source, fallback reason, or cost/cached status.
+   The project has diagnostics services, structured provider logs, and a management command, but normal page parsing does not yet show provider timing, selected source, fallback reason, or cost/cached status.
 
-5. TikHub cache and limits are in-memory only.
+5. Shared Redis is now a production dependency.
 
-   They are fine for PyCharm/local testing, but not sufficient for multi-process production.
+   TikHub cost counters and download abuse controls use Django cache. Local development still uses LocMemCache, while production configuration now requires `DJANGO_CACHE_URL`.
 
 6. Xiaohongshu ultra-HD video research is not started.
 
@@ -93,15 +95,23 @@ Limitations:
 
 9. Download task state is in-memory.
 
-   Browser ZIP progress is appropriate for local/single-process use. Production should use Redis/Celery/RQ or another shared task state mechanism.
+   Browser ZIP progress remains appropriate for local/single-process use. Production disables it by default and falls back to synchronous ZIP responses. Restoring production progress still requires Redis/Celery/RQ or another shared execution/state mechanism.
 
 10. `.env` convenience loader is development-oriented.
 
     It improves PyCharm setup, but production deployments should use real environment variables or secret storage rather than local files.
 
+11. Download planning is duplicated.
+
+    ZIP archive and server-folder save paths still separately handle image/video/cover output planning. Refactor to a shared `DownloadOutput` pipeline before adding single-file download, object storage, or conversion/transcoding features.
+
+12. DNS rebinding defense is not fully production-grade.
+
+    Current SSRF checks validate host suffixes and literal private IPs plus redirect final hosts. This is acceptable for fixed major-platform CDN hosts, but future user-configurable/provider-configurable domains should add DNS resolution checks and reject private resolved addresses.
+
 ## Recommended Next Step
 
-Before adding another provider, add structured timing diagnostics for Douyin ultra-HD:
+Before adding another provider, improve structured timing diagnostics for Douyin ultra-HD so they are easy to inspect:
 
 - total parse time
 - provider start/end time

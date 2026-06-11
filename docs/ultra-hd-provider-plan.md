@@ -47,6 +47,7 @@ Suggested environment variables:
 
 ```text
 ULTRA_HD_PROVIDER_ENABLED=False
+ULTRA_HD_PUBLIC_ACCESS_ENABLED=False
 TIKHUB_API_KEY=
 TIKHUB_BASE_URL=
 TIKHUB_REGION=CN
@@ -62,11 +63,11 @@ Current local-enhanced default:
 DOUYIN_PROVIDER_ORDER=native_enhanced,native
 ```
 
-The default request path uses only `native` so ordinary parsing remains fast even when provider infrastructure is configured. `native_enhanced` is disabled unless `ULTRA_HD_PROVIDER_ENABLED=True` and the request asks for ultra-HD; `native` remains the fallback. TikHub integration uses the official Douyin highest-quality play URL endpoint and is disabled unless `ULTRA_HD_PROVIDER_ENABLED=True`, `TIKHUB_API_KEY` is configured, and the request asks for ultra-HD. When the request asks for ultra-HD, TikHub is promoted ahead of local providers so the switch has clear semantics; however, TikHub and the native fast path run concurrently, and the returned TikHub source is still compared with the native result by probed size, so a smaller TikHub 720p source cannot replace a larger native 1080p source. Provider failures or daily-limit rejections fall back to local parsing. `TIKHUB_CACHE_TTL_SECONDS` caches identical TikHub lookups inside the current Django process, while `TIKHUB_DAILY_LIMIT` can cap paid calls per process per day. A value of `0` means unlimited.
+The default request path uses only `native` so ordinary parsing remains fast even when provider infrastructure is configured. TikHub additionally requires `ULTRA_HD_PUBLIC_ACCESS_ENABLED=True` before a visitor request can reach the paid provider. TikHub and the native fast path run concurrently, and the returned source is compared with the native result by probed size. Provider failures or daily-limit rejections fall back to local parsing. `TIKHUB_CACHE_TTL_SECONDS` and `TIKHUB_DAILY_LIMIT` use Django cache; production requires shared Redis so workers enforce one cache and one paid-call counter. A value of `0` means unlimited.
 
-The Django settings module loads the project-root `.env` file before reading environment variables. Real provider keys should live in local `.env` or deployment secrets, not in committed files. The ultra-HD request switch is intentionally placed in the settings modal instead of the hero parser area so normal parsing remains clean and free by default.
+The Django settings module loads the project-root `.env` file before reading environment variables. Real provider keys should live in local `.env` or deployment secrets, not in committed files. Environment templates are split into `.env.example.local` and `.env.example.production`; production mode requires explicit secret, allowed hosts, and Redis cache URL. The ultra-HD request switch is intentionally placed in the settings modal instead of the hero parser area so normal parsing remains clean and free by default.
 
-Current status note: although the provider path now avoids default-mode slowdown and runs TikHub with the native fast path in parallel, manual PyCharm/browser testing still shows some Douyin ultra-HD parses taking more than 10 seconds. Treat ultra-HD as a research feature until provider timing diagnostics identify the slow segment.
+Current status note: although the provider path now avoids default-mode slowdown and runs TikHub with the native fast path in parallel, manual PyCharm/browser testing still shows some Douyin ultra-HD parses taking more than 10 seconds. Treat ultra-HD as a research feature until provider timing diagnostics are easy to inspect and identify the slow segment.
 
 ### Cookie Provider
 
@@ -196,7 +197,7 @@ Short-term plan:
 6. Manually compare Douyin baseline versus native-enhanced candidates with known links. Done for `modal_id=7618531038729648354`; 8K/4320p/native query variants did not find the 90 MiB source.
 7. Add disabled-by-default Douyin external provider if native-enhanced cannot find larger validated sources. Done as `DouyinTikHubProvider`.
 8. Add request-level ultra-HD switch plus basic TikHub cost controls. Done with the `ultra_hd` request flag, TikHub cache TTL, and optional daily limit.
-9. Add provider timing diagnostics for slow ultra-HD parses. Pending.
+9. Add provider timing diagnostics for slow ultra-HD parses. Partially done through structured server logs; UI/debug output is still pending.
 10. Repeat the model for Xiaohongshu video sources.
 
 ## Success Criteria

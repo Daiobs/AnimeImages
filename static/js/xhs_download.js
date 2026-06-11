@@ -521,7 +521,7 @@
                         video_save_mode: videoSaveModeInput ? videoSaveModeInput.value : "video",
                     };
 
-                    if (payload.download_mode === "browser") {
+                    if (payload.download_mode === "browser" && downloadTaskUrl) {
                         await downloadWithTask(payload);
                         return;
                     }

@@ -236,7 +236,7 @@ Failure:
 Near-term:
 
 - Add a Douyin diagnostics command or service. Done in `services/diagnostics.py` and `inspect_douyin_candidates`.
-- Add provider diagnostics logging. Partially done through candidate diagnostics; runtime logging can be added after sample comparison.
+- Add provider diagnostics logging. Partially done through candidate diagnostics and structured runtime provider logs; user-facing/debug summary output remains pending.
 - Add `NativeEnhancedProvider` before adding real external API calls. Done as disabled-by-default `DouyinNativeEnhancedProvider`.
 - Keep current result UI mostly unchanged except for download progress polish.
 
@@ -265,7 +265,7 @@ The project now has the TikHub provider path and cost controls, but competitor-l
 
 Recommended immediate experiment:
 
-1. Add structured server-side timing around TikHub API, candidate probing, native fast-path fallback, and final selection.
+1. Inspect and, if needed, extend structured server-side timing around TikHub API, candidate probing, native fast-path fallback, and final selection.
 2. Re-test the known slow links with the same `.env` and settings switch.
 3. Decide from measured data whether to reduce probe count, cache provider metadata more aggressively, add a "quick ultra" mode, or research a second provider.
 4. Fall back to native providers when TikHub is not configured, fails, or returns unvalidated media.
