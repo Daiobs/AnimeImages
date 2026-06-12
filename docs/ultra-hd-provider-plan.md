@@ -27,65 +27,49 @@ Purpose: keep the current stable no-login behavior.
 
 This provider must remain available even when external services fail.
 
-### External API Provider
+### Current KuKuTool Provider
 
-Purpose: optional higher-quality provider for sources that are hard to reproduce locally.
+Purpose: provide a temporary high-quality upstream while the self-owned 365yg/TOS source route is researched.
 
-Candidate examples:
+Current rules:
 
-- TikHub or similar API for Douyin video detail and source enumeration.
-- TikHub or similar API for Xiaohongshu app/web detail endpoints.
+- Disabled globally by default.
+- Only receives the extracted `aweme_id`, not arbitrary user input.
+- Is the only external upstream in the synchronous ultra-HD path.
+- Returns the same internal `MediaCandidate` and `MediaAsset` shapes as native providers.
+- Falls back to concurrent native parsing when unavailable.
 
-Rules:
-
-- Disabled by default.
-- Enabled only when environment variables are configured.
-- Must not send user URLs to third-party APIs unless the operator intentionally enables it.
-- Must return the same internal candidate shape as native providers.
-
-Suggested environment variables:
+Environment variables:
 
 ```text
 ULTRA_HD_PROVIDER_ENABLED=False
 ULTRA_HD_PUBLIC_ACCESS_ENABLED=False
-TIKHUB_API_KEY=
-TIKHUB_BASE_URL=https://api.tikhub.io
-TIKHUB_CHINA_BASE_URL=https://api.tikhub.dev
-TIKHUB_REGION=CN
-TIKHUB_DEFAULT_COUNTRY_CODE=CN
-TIKHUB_TRUST_COUNTRY_HEADER=False
-TIKHUB_COUNTRY_HEADER=HTTP_CF_IPCOUNTRY
-TIKHUB_GEOIP_DATABASE_PATH=
-TIKHUB_DAILY_LIMIT=20
 DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS=15.0
 DOUYIN_ULTRA_NATIVE_TIMEOUT_SECONDS=5.0
-TIKHUB_CONNECT_TIMEOUT_SECONDS=1.0
-TIKHUB_READ_TIMEOUT_SECONDS=6.5
-TIKHUB_MAX_ATTEMPTS=2
-TIKHUB_PROBE_TIMEOUT_SECONDS=1.8
-TIKHUB_MAX_PROBE_CANDIDATES=1
-TIKHUB_VALIDATED_CACHE_TTL_SECONDS=600
-DOUYIN_PROVIDER_ORDER=tikhub,native
-XHS_PROVIDER_ORDER=native,tikhub
+KUKUTOOL_PROVIDER_ENABLED=True
+KUKUTOOL_NODE_BINARY=
+KUKUTOOL_TIMEOUT_SECONDS=12.0
+KUKUTOOL_PROBE_TIMEOUT_SECONDS=2.0
+KUKUTOOL_MAX_PROBE_CANDIDATES=2
+KUKUTOOL_MAX_CONCURRENCY=2
+KUKUTOOL_VALIDATED_CACHE_TTL_SECONDS=300
+KUKUTOOL_REFERENCE_WAIT_SECONDS=0.5
+XHS_PROVIDER_ORDER=native
 ```
 
-The default request path uses only `native`. TikHub additionally requires `ULTRA_HD_PUBLIC_ACCESS_ENABLED=True` before a visitor request can reach the paid provider. In ultra mode, short-link resolution and one orchestrator share the same request deadline; the orchestrator runs TikHub and the native fast path concurrently. TikHub uses separate connect/read timeouts, validates only its first preferred candidate with a Range request, and returns native when the enhancement budget expires. The synchronous web path does not run `native_enhanced`; deep multi-source comparison remains available only for diagnostics.
+The default request path uses only `native`. Ultra mode runs native concurrently but waits for KuKuTool first. The upstream result is normalized from `video_fullinfo`, restricted to `365yg.com` and `douyinvod.com`, deduplicated by TOS object key, and ranked primarily by bitrate. Complete candidates with a positive declared size, stable object path, and unexpired signature are accepted directly; incomplete metadata uses Range-first validation. The result is authoritative and is not replaced by a larger or smaller native candidate.
 
-`TIKHUB_VALIDATED_CACHE_TTL_SECONDS` caches the selected URL, verified byte size, content type, and final CDN URL. A cache hit skips both the paid API call and CDN probe. Signed URLs can expire, so the default TTL is 600 seconds. `TIKHUB_DAILY_LIMIT` counts every outbound attempt, including retries, and uses the same Django cache; production requires shared Redis so workers enforce one cache and one paid-call counter.
-
-TikHub routing is request-aware. Mainland China uses `https://api.tikhub.dev` with `region=CN`; all other countries use `https://api.tikhub.io` with the visitor's normalized ISO country code. Validated candidate cache keys include both API host and region, so a CDN URL selected for one region cannot leak into another region's response. Country detection accepts a proxy header only when `TIKHUB_TRUST_COUNTRY_HEADER=True`; otherwise it uses the optional local GeoIP2 database and falls back to `TIKHUB_DEFAULT_COUNTRY_CODE`.
-
-The high-quality endpoint can occasionally return a temporary HTTP/provider `400`, a network timeout, or an unusable HTML/tiny-file payload. `TIKHUB_MAX_ATTEMPTS=2` retries those transient cases plus `429/5xx` responses. A mainland retry keeps the accelerated `api.tikhub.dev` domain but changes the second attempt to `region=HK`, which avoids repeatedly selecting a broken CN CDN response. The 15-second ultra budget is intentionally separate from normal parsing so one retry can finish without downgrading a known 170MB-class source to native 1080p.
+`KUKUTOOL_VALIDATED_CACHE_TTL_SECONDS` caches the selected signed URL and metadata through Django cache. Its effective TTL never extends beyond the CDN signature expiry minus a safety margin. Production Redis therefore shares hot results across workers, while local `LocMemCache` remains process-local.
 
 Short-link resolution stops as soon as any validated Douyin redirect URL exposes an `aweme_id`, including the common first-hop `iesdouyin.com/share/video/{id}` URL. It does not fetch the subsequent desktop video page before starting provider work.
 
-The Django settings module loads the project-root `.env` file before reading environment variables. Real provider keys should live in local `.env` or deployment secrets, not in committed files. Environment templates are split into `.env.example.local` and `.env.example.production`; production mode requires explicit secret, allowed hosts, and Redis cache URL. The ultra-HD request switch is intentionally placed in the settings modal instead of the hero parser area so normal parsing remains clean and free by default.
+The provider requires Node.js 18 or newer. `KUKUTOOL_NODE_BINARY` should be explicit in production; local development also checks the system `node` and the current Codex runtime. If no compatible runtime exists, the UI keeps ultra-HD unavailable. `KUKUTOOL_MAX_CONCURRENCY` bounds Node subprocesses per Django worker and falls back to native when capacity is exhausted. The ultra-HD request switch remains in the settings modal so normal parsing stays clean and independent of the external upstream.
 
-Current measured behavior: the paid API can take about 4-6 seconds. Ultra mode treats a valid TikHub candidate as authoritative and returns it immediately without comparing its size to native or waiting for an unfinished native request. When TikHub supplies a valid allowlisted video URL, positive `file_size`, and video content type, the request trusts that structured metadata and skips a redundant CDN Range probe. Cache hits skip native entirely. TikHub failure falls back first to the concurrent native result, then to the normal native provider.
+Local CLI measurement on 2026-06-12 for aweme `7647533902413173321` returned a 67.22MB KuKuTool candidate in 1.915 seconds on a cold request and 0.505 seconds from validated cache. The same test previously fell back to 3.82MB 1080p because a two-second Range probe narrowly timed out; direct acceptance of complete structured metadata removed that incorrect downgrade.
 
 ## Long-Term Cold-Latency Plan
 
-Cold ultra-HD requests still depend on a TikHub call that can exceed 7 seconds. This is not considered solved by the current timeout and retry work. The long-term target is:
+Cold ultra-HD requests now depend on the KuKuTool protocol exchange. The first local measurement is within two seconds, but this is not yet a production latency guarantee. The long-term target is:
 
 - validated-cache hit P50 below 1 second
 - cold-request P50 below 4 seconds
@@ -96,7 +80,7 @@ Implementation order:
 
 1. Persist provider stage timings by API host, region, endpoint, cache state, and outcome. Build P50/P95 dashboards from real traffic instead of one-off CLI tests.
 2. Reuse DNS/TLS connections with a bounded thread-local HTTP session or async client. Benchmark `.dev` and `.io` independently from the returned CDN download speed.
-3. Add Redis single-flight per `aweme_id + country route` so concurrent visitors share one paid TikHub request instead of producing duplicate calls.
+3. Add Redis single-flight per `aweme_id` so concurrent visitors share one KuKuTool request instead of producing duplicate calls.
 4. Keep validated results in Redis and implement stale-while-refresh near signed-URL expiry. Delete the cache entry and refresh once when a cached download URL fails.
 5. Maintain short-lived regional health scores. Route new cold requests through the fastest healthy API host/region combination permitted for that user, while retaining the mainland-accessible `.dev` domain.
 6. Move cold ultra-HD resolution to a shared background task. The page can render native metadata immediately, show provider progress, and replace the video source when the ultra candidate arrives without holding one Django request open.

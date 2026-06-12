@@ -83,36 +83,28 @@ XHS_DEFAULT_SERVER_SAVE_DIR=/Users/your-name/Downloads/xhs
 ```text
 ULTRA_HD_PROVIDER_ENABLED=False
 ULTRA_HD_PUBLIC_ACCESS_ENABLED=True
-DOUYIN_PROVIDER_ORDER=tikhub,native
 XHS_PROVIDER_ORDER=native
-TIKHUB_API_KEY=
-TIKHUB_BASE_URL=https://api.tikhub.io
-TIKHUB_CHINA_BASE_URL=https://api.tikhub.dev
-TIKHUB_REGION=CN
-TIKHUB_DEFAULT_COUNTRY_CODE=CN
-TIKHUB_TRUST_COUNTRY_HEADER=False
-TIKHUB_COUNTRY_HEADER=HTTP_CF_IPCOUNTRY
-TIKHUB_GEOIP_DATABASE_PATH=
-TIKHUB_DAILY_LIMIT=20
 DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS=15.0
 DOUYIN_ULTRA_NATIVE_TIMEOUT_SECONDS=5.0
 DOUYIN_SHORT_LINK_TIMEOUT_SECONDS=2.0
 DOUYIN_SHORT_LINK_MAX_REDIRECTS=4
-TIKHUB_CONNECT_TIMEOUT_SECONDS=1.0
-TIKHUB_READ_TIMEOUT_SECONDS=6.5
-TIKHUB_MAX_ATTEMPTS=2
-TIKHUB_PROBE_TIMEOUT_SECONDS=1.8
-TIKHUB_MAX_PROBE_CANDIDATES=1
-TIKHUB_VALIDATED_CACHE_TTL_SECONDS=600
+KUKUTOOL_PROVIDER_ENABLED=True
+KUKUTOOL_NODE_BINARY=
+KUKUTOOL_TIMEOUT_SECONDS=12.0
+KUKUTOOL_PROBE_TIMEOUT_SECONDS=2.0
+KUKUTOOL_MAX_PROBE_CANDIDATES=2
+KUKUTOOL_MAX_CONCURRENCY=2
+KUKUTOOL_VALIDATED_CACHE_TTL_SECONDS=300
+KUKUTOOL_REFERENCE_WAIT_SECONDS=0.5
 ```
 
-`native` 是默认快路径，不打开“抖音超高清”时只走这一路。打开超高清后，TikHub 是结果权威来源：一旦返回合法候选就立即使用，不再与本地 1080p 比较，也不会等待尚未完成的 native。TikHub 明确返回合法媒体 URL、文件大小和视频类型时会直接采用并缓存，避免重复 CDN 探测；只有元数据不完整时才执行 Range 验证。缓存命中不会启动 native。TikHub 失败或没有合法候选时，才使用并发 native 或普通 native 兜底。
+`native` 是默认快路径，不打开“抖音超高清”时只走这一路。当前阶段打开超高清后，只调用 KuKuTool 上游；TikHub 和 `native_enhanced` 不进入同步网页请求链路。KuKuTool 返回的 `video_fullinfo` 会按码率、大小和质量参数排序，并以稳定的 TOS 对象路径去重。具备合法字节 CDN 域名、正文件大小、稳定对象路径和未到期签名的最高档候选会直接采用；元数据不完整时才执行 `Range: bytes=0-0` 校验。结果不再与本地 1080p 比较。
 
-超高清请求会按访问者国家选择 TikHub 路由：中国大陆使用 `api.tikhub.dev` 和 `region=CN`，其他地区使用 `api.tikhub.io` 和对应 ISO 国家码。国家识别优先读取显式信任的反向代理国家头，其次使用本地 GeoIP2 Country 数据库，最后回退 `TIKHUB_DEFAULT_COUNTRY_CODE`。只有在 Cloudflare 或可信代理会覆盖并清理客户端同名请求头时，才能开启 `TIKHUB_TRUST_COUNTRY_HEADER=True`。直接部署可配置 `TIKHUB_GEOIP_DATABASE_PATH`；用户 IP 不会发送给 TikHub。
+KuKuTool 失败、超时或没有合法候选时，会使用并发执行的 native 结果回退；若并发结果尚未完成，则继续进入普通 native Provider。验证后的签名 URL 使用 Django cache 缓存，TTL 同时受 `KUKUTOOL_VALIDATED_CACHE_TTL_SECONDS` 和 CDN URL 自身到期时间约束。生产使用 Redis 时，多 worker 可以共享验证结果。
 
-TikHub 偶尔会返回明确要求重试且不扣费的临时 400、网络超时，或 `text/html`/极小文件等不可用结果。超高清模式默认最多请求两次，并使用 15 秒总预算容纳一次重试。大陆用户的第二次请求仍使用 `api.tikhub.dev`，但临时改用 `region=HK` 避开异常 CN CDN；每日限额按每次真实出站尝试计数。该预算只影响用户主动开启的超高清解析，不影响普通本地解析。
+该 Provider 需要 Node.js 18 或更高版本，因为上游请求使用 Node 内置的 `fetch` 和 `crypto`。程序会依次尝试 `KUKUTOOL_NODE_BINARY`、系统 `node`，以及当前开发机的 Codex runtime；找不到可用运行时时，页面不会开放超高清开关。生产环境应显式配置稳定的 Node 路径。`KUKUTOOL_MAX_CONCURRENCY` 会限制单个 Django 进程同时启动的上游子进程数量，容量不足时立即回退 native。KuKuTool 使用未公开的第三方协议，字段或鉴权 profile 可能变化，因此代码保留动态 profile 发现和结构化失败日志，但它不能视为长期稳定 SLA。
 
-抖音短链接采用受控重定向解析。任一跳转地址一旦出现 `aweme_id`，解析器会立即启动 native/TikHub 流程，不再请求后续桌面页面，以减少短链解析延迟和偶发 404/超时。
+抖音短链接采用受控重定向解析。任一跳转地址一旦出现 `aweme_id`，解析器会立即启动 native/KuKuTool 流程，不再请求后续桌面页面，以减少短链解析延迟和偶发 404/超时。
 
 生产环境建议以 `.env.example.production` 为清单配置真实环境变量。`DJANGO_ENV=production` 或 `DJANGO_DEBUG=False` 时，项目会强制要求显式 `DJANGO_SECRET_KEY`、`DJANGO_ALLOWED_HOSTS` 和共享 Redis `DJANGO_CACHE_URL`。生产默认关闭内存异步下载任务，由前端回退同步 ZIP，并启用下载频率、并发、每日请求量和每日流量限制。
 
