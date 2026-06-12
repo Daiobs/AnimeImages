@@ -7,6 +7,14 @@ from django.conf import settings
 class ProviderSettings:
     ultra_hd_enabled: bool
     provider_order: tuple[str, ...]
+    kukutool_enabled: bool = True
+    kukutool_node_binary: str = ""
+    kukutool_timeout_seconds: float = 12.0
+    kukutool_probe_timeout_seconds: float = 2.0
+    kukutool_max_probe_candidates: int = 2
+    kukutool_max_concurrency: int = 2
+    kukutool_validated_cache_ttl_seconds: int = 300
+    kukutool_reference_wait_seconds: float = 0.5
     tikhub_api_key: str = ""
     tikhub_base_url: str = ""
     tikhub_china_base_url: str = "https://api.tikhub.dev"
@@ -27,6 +35,8 @@ class ProviderSettings:
             return True
         if name == "native_enhanced":
             return self.ultra_hd_enabled
+        if name == "kukutool":
+            return self.ultra_hd_enabled and self.kukutool_enabled
         if name == "tikhub":
             return self.ultra_hd_enabled and bool(self.tikhub_api_key)
         return self.ultra_hd_enabled
@@ -61,7 +71,7 @@ def normalize_provider_order(value, default=("native",)):
 def get_platform_provider_settings(platform_id):
     platform_id = normalize_provider_name(platform_id)
     if platform_id == "douyin":
-        raw_order = getattr(settings, "DOUYIN_PROVIDER_ORDER", ("native",))
+        raw_order = ("kukutool", "native")
     elif platform_id in {"xiaohongshu", "xhs"}:
         raw_order = getattr(settings, "XHS_PROVIDER_ORDER", ("native",))
     else:
@@ -70,6 +80,26 @@ def get_platform_provider_settings(platform_id):
     return ProviderSettings(
         ultra_hd_enabled=bool(getattr(settings, "ULTRA_HD_PROVIDER_ENABLED", False)),
         provider_order=normalize_provider_order(raw_order),
+        kukutool_enabled=bool(getattr(settings, "KUKUTOOL_PROVIDER_ENABLED", True)),
+        kukutool_node_binary=getattr(settings, "KUKUTOOL_NODE_BINARY", "") or "",
+        kukutool_timeout_seconds=float(getattr(settings, "KUKUTOOL_TIMEOUT_SECONDS", 12.0) or 0),
+        kukutool_probe_timeout_seconds=float(
+            getattr(settings, "KUKUTOOL_PROBE_TIMEOUT_SECONDS", 2.0) or 0
+        ),
+        kukutool_max_probe_candidates=max(
+            1,
+            int(getattr(settings, "KUKUTOOL_MAX_PROBE_CANDIDATES", 2) or 1),
+        ),
+        kukutool_max_concurrency=max(
+            1,
+            int(getattr(settings, "KUKUTOOL_MAX_CONCURRENCY", 2) or 1),
+        ),
+        kukutool_validated_cache_ttl_seconds=int(
+            getattr(settings, "KUKUTOOL_VALIDATED_CACHE_TTL_SECONDS", 300) or 0
+        ),
+        kukutool_reference_wait_seconds=float(
+            getattr(settings, "KUKUTOOL_REFERENCE_WAIT_SECONDS", 0.5) or 0
+        ),
         tikhub_api_key=getattr(settings, "TIKHUB_API_KEY", "") or "",
         tikhub_base_url=getattr(settings, "TIKHUB_BASE_URL", "") or "",
         tikhub_china_base_url=(

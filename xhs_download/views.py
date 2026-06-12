@@ -30,6 +30,7 @@ from .services.downloads import (
     read_limited_response,
     save_media_items_to_server,
 )
+from .services.platforms.douyin_kukutool import find_node_runtime
 from .services.registry import parse_media_page
 from .services.rate_limits import (
     acquire_concurrency,
@@ -134,7 +135,8 @@ def ultra_hd_is_available():
     return (
         settings.ULTRA_HD_PROVIDER_ENABLED
         and settings.ULTRA_HD_PUBLIC_ACCESS_ENABLED
-        and bool(settings.TIKHUB_API_KEY)
+        and settings.KUKUTOOL_PROVIDER_ENABLED
+        and bool(find_node_runtime(settings.KUKUTOOL_NODE_BINARY))
     )
 
 
@@ -363,7 +365,7 @@ def search_results_view(request, platform_key="home"):
             context["platform_notice"] = f"你粘贴的是{context['platform_name']}链接，已自动使用对应解析器。"
         if prefer_ultra_hd:
             if result.platform == "douyin":
-                context["provider_notice"] = "本次已尝试使用抖音超高清 Provider；若不可用会自动回退本地解析。"
+                context["provider_notice"] = "本次优先使用 KuKuTool 超高清上游；若不可用会自动回退本地解析。"
             else:
                 context["provider_notice"] = "超高清 Provider 目前仅用于抖音视频，本次已按对应平台本地解析。"
         context["post_type"] = result.post_type

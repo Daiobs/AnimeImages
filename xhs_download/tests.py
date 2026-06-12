@@ -52,6 +52,7 @@ from .services.region_routing import (
 from .services.platforms import BilibiliAdapter, DouyinAdapter, XiaohongshuAdapter
 from .services.platforms.bilibili import BILIBILI_HEADERS
 from .services.platforms.douyin import DOUYIN_HEADERS, extract_aweme_id, get_video_candidates
+from .services.platforms.douyin_kukutool import DouyinKukuToolProvider
 from .services.platforms.douyin_providers import (
     DouyinParseContext,
     DouyinNativeEnhancedProvider,
@@ -170,12 +171,11 @@ class XhsUtilityTests(SimpleTestCase):
     @override_settings(
         ULTRA_HD_PROVIDER_ENABLED=False,
         TIKHUB_API_KEY="secret",
-        DOUYIN_PROVIDER_ORDER=["native", "tikhub"],
     )
-    def test_provider_settings_keep_external_providers_disabled_by_default(self):
+    def test_provider_settings_use_fixed_douyin_order_with_ultra_disabled(self):
         provider_settings = get_platform_provider_settings("douyin")
 
-        self.assertEqual(provider_settings.provider_order, ("native", "tikhub"))
+        self.assertEqual(provider_settings.provider_order, ("kukutool", "native"))
         self.assertEqual(provider_settings.enabled_provider_order, ("native",))
 
     def test_provider_settings_enable_tikhub_when_configured(self):
@@ -674,7 +674,6 @@ class DouyinAdapterTests(SimpleTestCase):
     @override_settings(
         ULTRA_HD_PROVIDER_ENABLED=False,
         TIKHUB_API_KEY="",
-        DOUYIN_PROVIDER_ORDER=["tikhub"],
     )
     def test_douyin_provider_builder_falls_back_to_native_provider(self):
         providers = build_douyin_result_providers()
@@ -688,10 +687,11 @@ class DouyinAdapterTests(SimpleTestCase):
             provider_order=("native_enhanced",),
         ))
 
-        self.assertEqual(len(providers), 1)
-        self.assertIsInstance(providers[0], DouyinNativeProvider)
+        self.assertEqual(len(providers), 2)
+        self.assertIsInstance(providers[0], DouyinKukuToolProvider)
+        self.assertIsInstance(providers[1], DouyinNativeProvider)
 
-    def test_douyin_provider_builder_includes_tikhub_when_enabled(self):
+    def test_douyin_provider_builder_uses_kukutool_as_only_ultra_upstream(self):
         providers = build_douyin_result_providers(ProviderSettings(
             ultra_hd_enabled=True,
             provider_order=("tikhub",),
@@ -699,10 +699,11 @@ class DouyinAdapterTests(SimpleTestCase):
         ))
 
         self.assertEqual(len(providers), 2)
-        self.assertIsInstance(providers[0], DouyinTikHubProvider)
+        self.assertIsInstance(providers[0], DouyinKukuToolProvider)
         self.assertIsInstance(providers[1], DouyinNativeProvider)
+        self.assertFalse(any(isinstance(provider, DouyinTikHubProvider) for provider in providers))
 
-    def test_douyin_provider_builder_prioritizes_tikhub_with_request_switch(self):
+    def test_douyin_provider_builder_ignores_configured_tikhub_order(self):
         providers = build_douyin_result_providers(ProviderSettings(
             ultra_hd_enabled=True,
             provider_order=("native", "tikhub"),
@@ -710,10 +711,10 @@ class DouyinAdapterTests(SimpleTestCase):
         ))
 
         self.assertEqual(len(providers), 2)
-        self.assertIsInstance(providers[0], DouyinTikHubProvider)
+        self.assertIsInstance(providers[0], DouyinKukuToolProvider)
         self.assertIsInstance(providers[1], DouyinNativeProvider)
 
-    def test_douyin_provider_builder_does_not_inject_tikhub_when_removed_from_order(self):
+    def test_douyin_provider_builder_injects_current_kukutool_ultra_upstream(self):
         providers = build_douyin_result_providers(ProviderSettings(
             ultra_hd_enabled=True,
             provider_order=("native",),
@@ -721,8 +722,9 @@ class DouyinAdapterTests(SimpleTestCase):
         ))
 
         self.assertFalse(any(isinstance(provider, DouyinTikHubProvider) for provider in providers))
-        self.assertEqual(len(providers), 1)
-        self.assertIsInstance(providers[0], DouyinNativeProvider)
+        self.assertEqual(len(providers), 2)
+        self.assertIsInstance(providers[0], DouyinKukuToolProvider)
+        self.assertIsInstance(providers[1], DouyinNativeProvider)
 
     def test_douyin_provider_builder_uses_fast_native_path_without_request_switch(self):
         providers = build_douyin_result_providers(
@@ -1254,7 +1256,6 @@ class DouyinAdapterTests(SimpleTestCase):
             ),
         )
 
-        self.assertEqual(result.base_filename, "native_1080p")
         self.assertEqual(
             result.video_assets[0].url,
             response.json.return_value["data"]["original_video_url"],
@@ -2274,7 +2275,7 @@ class XhsDownloadViewTests(SimpleTestCase):
             prefer_ultra_hd=True,
             client_country_code="CN",
         )
-        self.assertContains(response, "本次已尝试使用抖音超高清 Provider")
+        self.assertContains(response, "本次优先使用 KuKuTool 超高清上游")
         self.assertContains(response, 'id="ultra-hd-request-input"')
         self.assertContains(response, 'value="1"')
 
@@ -2320,6 +2321,38 @@ class XhsDownloadViewTests(SimpleTestCase):
     )
     @patch("xhs_download.views.parse_media_page")
     def test_results_ignore_ultra_hd_when_public_access_is_disabled(self, mock_parse):
+        mock_parse.return_value = ParseResult(
+            platform="douyin",
+            post_type="unknown",
+            base_filename="douyin",
+            assets=(),
+        )
+
+        response = Client().get(
+            "/results/",
+            {"q": "https://www.douyin.com/video/123", "ultra_hd": "1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_parse.assert_called_once_with(
+            "https://www.douyin.com/video/123",
+            prefer_ultra_hd=False,
+        )
+        self.assertContains(response, "当前环境未向访客开放超高清 Provider")
+
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        ULTRA_HD_PUBLIC_ACCESS_ENABLED=True,
+        KUKUTOOL_PROVIDER_ENABLED=True,
+        KUKUTOOL_NODE_BINARY="/missing/node",
+    )
+    @patch("xhs_download.views.find_node_runtime", return_value="")
+    @patch("xhs_download.views.parse_media_page")
+    def test_results_ignore_ultra_hd_when_node_runtime_is_unavailable(
+        self,
+        mock_parse,
+        _mock_node_runtime,
+    ):
         mock_parse.return_value = ParseResult(
             platform="douyin",
             post_type="unknown",

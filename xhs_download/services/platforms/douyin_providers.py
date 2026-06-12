@@ -16,6 +16,7 @@ from ..candidates import MediaCandidate
 from ..common import validate_external_url
 from ..diagnostics import select_best_media_candidate
 from ..provider_settings import get_platform_provider_settings
+from .douyin_kukutool import DouyinKukuToolProvider
 
 
 DEFAULT_TIKHUB_BASE_URL = "https://api.tikhub.io"
@@ -1055,36 +1056,19 @@ def build_douyin_result_providers(provider_settings=None, prefer_ultra_hd=True):
     if not prefer_ultra_hd:
         provider_settings = replace(
             provider_settings,
-            provider_order=tuple(
-                provider_name
-                for provider_name in provider_settings.provider_order
-                if provider_name == "native"
-            ),
+            provider_order=("native",),
         )
     else:
-        fast_provider_order = tuple(
-            provider_name
-            for provider_name in provider_settings.provider_order
-            if provider_name != "native_enhanced"
-        )
         provider_settings = replace(
             provider_settings,
-            provider_order=fast_provider_order,
+            # The current ultra-HD phase intentionally has one external
+            # upstream. TikHub and enhanced native remain available for
+            # diagnostics but do not enter the synchronous web request path.
+            provider_order=("kukutool", "native"),
         )
 
-    if "tikhub" in provider_settings.provider_order and provider_settings.provider_is_enabled("tikhub"):
-        provider_settings = replace(
-            provider_settings,
-            provider_order=(
-                "tikhub",
-                *(
-                    provider_name
-                    for provider_name in provider_settings.provider_order
-                    if provider_name != "tikhub"
-                ),
-            ),
-        )
     provider_map = {
+        "kukutool": lambda: DouyinKukuToolProvider(provider_settings=provider_settings),
         "tikhub": lambda: DouyinTikHubProvider(provider_settings=provider_settings),
         "native_enhanced": DouyinNativeEnhancedProvider,
         "native": DouyinNativeProvider,

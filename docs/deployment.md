@@ -11,7 +11,7 @@ Netlify can host a future static frontend, but it is not the right target for th
 - `DJANGO_SECRET_KEY`: long random production secret
 - `DJANGO_DEBUG=False`
 - `DJANGO_ALLOWED_HOSTS`: comma-separated hostnames
-- `DJANGO_CACHE_URL`: shared Redis URL used by rate limits, TikHub cache, and paid-call counters
+- `DJANGO_CACHE_URL`: shared Redis URL used by rate limits and validated provider caches
 - `DJANGO_SECURE_SSL_REDIRECT=True` when HTTPS is available
 - `DJANGO_SESSION_COOKIE_SECURE=True` when HTTPS is available
 - `DJANGO_CSRF_COOKIE_SECURE=True` when HTTPS is available
@@ -96,16 +96,9 @@ ULTRA_HD_PROVIDER_ENABLED=False
 ULTRA_HD_PUBLIC_ACCESS_ENABLED=False
 ```
 
-Keep public access disabled until TikHub cost and rate limits have been validated in staging.
+Keep public access disabled until KuKuTool latency, rate limits, and protocol stability have been validated in staging. The production runtime must provide Node.js 18 or newer through `KUKUTOOL_NODE_BINARY` or the system `PATH`.
 
-For country-aware TikHub routing, Cloudflare deployments may set:
-
-```text
-TIKHUB_TRUST_COUNTRY_HEADER=True
-TIKHUB_COUNTRY_HEADER=HTTP_CF_IPCOUNTRY
-```
-
-Only enable this when the origin accepts traffic through the trusted proxy and the proxy overwrites the country header. Direct deployments should keep header trust disabled and configure a GeoIP2 Country database with `TIKHUB_GEOIP_DATABASE_PATH`. Without either source, routing falls back to `TIKHUB_DEFAULT_COUNTRY_CODE=CN`.
+TikHub and country-aware API routing are retained only as dormant research code. They do not affect the current synchronous ultra-HD path.
 
 For local development only, these can be enabled to save files from the Django process to a server-side directory:
 
