@@ -12,6 +12,7 @@ from django.conf import settings
 from ..assets import MediaAsset, ParseResult
 from ..candidates import MediaCandidate, rank_media_candidates
 from ..common import (
+    XhsProviderTimeoutError,
     clean_filename,
     normalize_text,
     request_get_with_retry,
@@ -899,6 +900,8 @@ class DouyinAdapter(BasePlatformAdapter):
                         },
                     )
                     return result
+            except XhsProviderTimeoutError:
+                raise
             except Exception as error:
                 logger.info(
                     "douyin_provider_failed",

@@ -1,6 +1,6 @@
 # Current Version Status
 
-Date: 2026-06-12
+Date: 2026-06-13
 
 ## Summary
 
@@ -8,13 +8,14 @@ Date: 2026-06-12
 - Normal Douyin parsing remains native-only and does not call any external provider.
 - When the settings-modal ultra-HD switch is enabled, KuKuTool is the only external upstream.
 - TikHub and `native_enhanced` remain in the codebase for research and diagnostics, but are ignored by the synchronous ultra-HD request path.
-- KuKuTool failure or timeout falls back to concurrent native parsing.
+- The request waits at most three seconds for KuKuTool while native runs concurrently.
+- A slow KuKuTool task continues in a bounded background pool and fills Redis cache after native fallback.
 
 ## KuKuTool Path
 
 1. Extract `aweme_id` from the submitted Douyin URL or controlled short-link redirect.
-2. Start the native fast path concurrently for metadata and fallback.
-3. Invoke the bundled Node.js helper against KuKuTool.
+2. Start native and KuKuTool in separate bounded executors.
+3. Join or create a Redis single-flight task for the `aweme_id`.
 4. Read `videos[].video_fullinfo`.
 5. Allow only ByteDance CDN URLs on `365yg.com` or `douyinvod.com`.
 6. Deduplicate rotating signed URLs by stable TOS object path.
@@ -36,6 +37,8 @@ Local CLI verification on June 12, 2026 used aweme `7647533902413173321`:
 
 Before the metadata fast path, the same candidate could narrowly exceed the two-second Range budget and incorrectly fall through to a 3.82MB 1080p candidate. Complete KuKuTool metadata now avoids that probe and downgrade.
 
+After the bounded-executor, profile-cache, and same-origin redirect changes on June 13, 2026, a direct helper smoke test for the same aweme completed in 1.422 seconds and still returned four candidates with the 70,481,987-byte `超高清` source ranked first.
+
 ## Configuration
 
 ```text
@@ -47,8 +50,19 @@ KUKUTOOL_TIMEOUT_SECONDS=12.0
 KUKUTOOL_PROBE_TIMEOUT_SECONDS=2.0
 KUKUTOOL_MAX_PROBE_CANDIDATES=2
 KUKUTOOL_MAX_CONCURRENCY=2
+KUKUTOOL_EXECUTOR_WORKERS=2
+KUKUTOOL_MAX_PENDING_TASKS=4
+KUKUTOOL_GLOBAL_MAX_CONCURRENCY=4
+KUKUTOOL_SINGLE_FLIGHT_TTL_SECONDS=30
+KUKUTOOL_FAILURE_CACHE_TTL_SECONDS=15
+KUKUTOOL_CACHE_POLL_INTERVAL_SECONDS=0.1
+KUKUTOOL_PROFILE_CACHE_TTL_SECONDS=86400
 KUKUTOOL_VALIDATED_CACHE_TTL_SECONDS=300
 KUKUTOOL_REFERENCE_WAIT_SECONDS=0.5
+DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS=3.0
+DOUYIN_ULTRA_NATIVE_TIMEOUT_SECONDS=3.0
+DOUYIN_NATIVE_EXECUTOR_WORKERS=4
+DOUYIN_NATIVE_MAX_PENDING_TASKS=8
 ```
 
 Node.js 18 or newer is required. Production should use Redis-backed Django cache so validated results are shared across workers.
@@ -56,8 +70,8 @@ Node.js 18 or newer is required. Production should use Redis-backed Django cache
 ## Known Issues
 
 1. KuKuTool uses an undocumented third-party protocol. Upstream profile or encryption changes can break cold parsing.
-2. There is no Redis single-flight lock yet, so simultaneous cold requests for the same `aweme_id` can duplicate upstream work.
-3. Process concurrency is bounded per Django worker. A shared queue or global distributed concurrency limit is still desirable for public production.
+2. Background tasks remain process-local threads. A worker restart loses queued work, so production should move the helper to a Node sidecar or Celery/RQ.
+3. Redis single-flight and global concurrency protect normal operation, but they are coordination controls rather than a durable queue.
 4. Structured KuKuTool metadata is trusted when host, TOS path, size, and signature expiry are valid. The actual download path must continue validating redirect hosts and content type.
 5. A very fast KuKuTool result may arrive before native cover metadata. The provider waits briefly, then favors response latency.
 6. Xiaohongshu ultra-HD research is not part of this iteration.
@@ -66,7 +80,7 @@ Node.js 18 or newer is required. Production should use Redis-backed Django cache
 
 ## Next Priorities
 
-1. Add Redis single-flight and a short failure cache for KuKuTool cold requests.
+1. Replace per-request Node startup with a long-running internal Node sidecar.
 2. Persist provider stage timings and calculate P50/P95 from real use.
 3. Add a download-time cache invalidation/retry path when a signed CDN URL expires early.
 4. Continue the self-owned 365yg/TOS provider research so KuKuTool can eventually be replaced.

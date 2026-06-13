@@ -1,22 +1,27 @@
-from concurrent.futures import TimeoutError as FutureTimeoutError
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
 from functools import lru_cache
+import inspect
 import json
 import logging
+import math
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
-from threading import BoundedSemaphore, Lock
-from time import monotonic, time
+from threading import BoundedSemaphore, Lock, RLock
+from time import monotonic, sleep, time
 from urllib.parse import parse_qs, urlsplit
+from uuid import uuid4
 
 from django.core.cache import cache
 
 from ..candidates import MediaCandidate
-from ..common import validate_external_url
+from ..common import XhsProviderTimeoutError, validate_external_url
 from ..provider_settings import get_platform_provider_settings
 from ..quality import QualityProbe
+from ..rate_limits import acquire_concurrency, release_concurrency
 
 
 AWEME_ID_PATTERN = re.compile(r"^\d{15,22}$")
@@ -29,6 +34,56 @@ KUKUTOOL_BUNDLED_NODE = (
 logger = logging.getLogger(__name__)
 KUKUTOOL_SEMAPHORES = {}
 KUKUTOOL_SEMAPHORES_LOCK = Lock()
+PROVIDER_EXECUTORS = {}
+PROVIDER_EXECUTORS_LOCK = Lock()
+PROVIDER_CAPACITY = {}
+PROVIDER_CAPACITY_LOCK = Lock()
+LOCAL_KUKUTOOL_FUTURES = {}
+LOCAL_KUKUTOOL_FUTURES_LOCK = RLock()
+
+
+def get_provider_executor(name, max_workers):
+    max_workers = max(1, int(max_workers or 1))
+    key = (name, max_workers)
+    with PROVIDER_EXECUTORS_LOCK:
+        executor = PROVIDER_EXECUTORS.get(key)
+        if executor is None:
+            executor = ThreadPoolExecutor(
+                max_workers=max_workers,
+                thread_name_prefix=name,
+            )
+            PROVIDER_EXECUTORS[key] = executor
+        return executor
+
+
+def get_provider_capacity(name, max_pending_tasks):
+    max_pending_tasks = max(1, int(max_pending_tasks or 1))
+    key = (name, max_pending_tasks)
+    with PROVIDER_CAPACITY_LOCK:
+        capacity = PROVIDER_CAPACITY.get(key)
+        if capacity is None:
+            capacity = BoundedSemaphore(max_pending_tasks)
+            PROVIDER_CAPACITY[key] = capacity
+        return capacity
+
+
+def submit_provider_task(
+    name,
+    max_workers,
+    max_pending_tasks,
+    callback,
+    *args,
+):
+    capacity = get_provider_capacity(name, max_pending_tasks)
+    if not capacity.acquire(blocking=False):
+        return None
+    try:
+        future = get_provider_executor(name, max_workers).submit(callback, *args)
+    except Exception:
+        capacity.release()
+        raise
+    future.add_done_callback(lambda _future: capacity.release())
+    return future
 
 
 def log_kukutool_event(event, context, started_at=None, **extra_fields):
@@ -181,6 +236,37 @@ def build_kukutool_cache_key(aweme_id):
     return f"douyin:kukutool:validated:{aweme_id}"
 
 
+def build_kukutool_single_flight_key(aweme_id):
+    return f"douyin:kukutool:single-flight:{aweme_id}"
+
+
+def build_kukutool_failure_cache_key(aweme_id):
+    return f"douyin:kukutool:failure:{aweme_id}"
+
+
+def build_kukutool_profile_cache_key():
+    return "douyin:kukutool:active-profile"
+
+
+def valid_kukutool_profile(profile):
+    if not isinstance(profile, dict):
+        return False
+    auth_fields = profile.get("authResponseFields")
+    parse_fields = profile.get("parseRequestFields")
+    return bool(
+        profile.get("id")
+        and profile.get("authRoute")
+        and isinstance(auth_fields, dict)
+        and auth_fields.get("key")
+        and auth_fields.get("seed")
+        and isinstance(parse_fields, dict)
+        and parse_fields.get("key")
+        and parse_fields.get("payload")
+        and parse_fields.get("iv")
+        and parse_fields.get("version")
+    )
+
+
 def serialize_validated_candidate(validated):
     return {
         "url": validated.candidate.url,
@@ -288,7 +374,12 @@ def find_node_runtime(configured_binary=""):
     return ""
 
 
-def run_kukutool_helper(aweme_id, node_binary="", timeout_seconds=12.0):
+def run_kukutool_helper(
+    aweme_id,
+    node_binary="",
+    timeout_seconds=12.0,
+    profile_cache_ttl_seconds=86400,
+):
     if not AWEME_ID_PATTERN.fullmatch(str(aweme_id or "")):
         raise ValueError("invalid aweme_id")
 
@@ -298,19 +389,71 @@ def run_kukutool_helper(aweme_id, node_binary="", timeout_seconds=12.0):
     if not KUKUTOOL_HELPER.is_file():
         raise OSError("KuKuTool Provider helper script is missing")
 
+    process_env = os.environ.copy()
+    try:
+        cached_profile = cache.get(build_kukutool_profile_cache_key())
+    except Exception:
+        logger.exception(
+            "douyin_provider_profile_cache_read_failed",
+            extra={"provider": "kukutool", "aweme_id": aweme_id},
+        )
+        cached_profile = None
+    if valid_kukutool_profile(cached_profile):
+        process_env["KUKUTOOL_PROFILE_JSON"] = json.dumps(
+            cached_profile,
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+
     process = subprocess.run(
         [node_runtime, str(KUKUTOOL_HELPER), str(aweme_id)],
         capture_output=True,
         text=True,
         timeout=max(0.1, timeout_seconds),
         check=False,
+        env=process_env,
     )
     if process.returncode != 0:
         message = (process.stderr or process.stdout or "KuKuTool request failed").strip()
         raise OSError(message[:2000])
     if len(process.stdout) > 10 * 1024 * 1024:
         raise ValueError("KuKuTool response is too large")
-    return json.loads(process.stdout)
+    payload = json.loads(process.stdout)
+    if isinstance(payload, dict) and "result" in payload:
+        profile = payload.get("profile")
+        if valid_kukutool_profile(profile) and profile_cache_ttl_seconds > 0:
+            try:
+                cache.set(
+                    build_kukutool_profile_cache_key(),
+                    profile,
+                    timeout=int(profile_cache_ttl_seconds),
+                )
+            except Exception:
+                logger.exception(
+                    "douyin_provider_profile_cache_write_failed",
+                    extra={"provider": "kukutool", "aweme_id": aweme_id},
+                )
+        return payload["result"]
+    return payload
+
+
+def call_kukutool_runner(runner, aweme_id, **options):
+    try:
+        parameters = inspect.signature(runner).parameters.values()
+    except (TypeError, ValueError):
+        parameters = ()
+    supports_extra_options = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+    accepted_names = {parameter.name for parameter in parameters}
+    if not supports_extra_options:
+        options = {
+            key: value
+            for key, value in options.items()
+            if key in accepted_names
+        }
+    return runner(aweme_id, **options)
 
 
 class DouyinKukuToolProvider:
@@ -326,12 +469,24 @@ class DouyinKukuToolProvider:
             return max(0.1, fallback)
         return max(0.0, context.deadline_monotonic - monotonic())
 
+    def get_cached_candidate(self, adapter, context):
+        try:
+            return get_cached_validated_candidate(
+                build_kukutool_cache_key(context.aweme_id),
+                adapter.media_host_suffixes,
+            )
+        except Exception as error:
+            log_kukutool_event(
+                "douyin_provider_validated_cache_read_failed",
+                context,
+                error_type=type(error).__name__,
+                error=str(error),
+            )
+            return None
+
     def resolve_validated_candidate(self, adapter, context):
         cache_key = build_kukutool_cache_key(context.aweme_id)
-        cached = get_cached_validated_candidate(
-            cache_key,
-            adapter.media_host_suffixes,
-        )
+        cached = self.get_cached_candidate(adapter, context)
         if cached:
             log_kukutool_event(
                 "douyin_provider_validated_cache_hit",
@@ -362,10 +517,14 @@ class DouyinKukuToolProvider:
                 0.1,
                 timeout_seconds - (monotonic() - queue_started_at),
             )
-            payload = self.runner(
+            payload = call_kukutool_runner(
+                self.runner,
                 context.aweme_id,
                 node_binary=self.provider_settings.kukutool_node_binary,
                 timeout_seconds=runner_timeout,
+                profile_cache_ttl_seconds=(
+                    self.provider_settings.kukutool_profile_cache_ttl_seconds
+                ),
             )
         finally:
             semaphore.release()
@@ -403,11 +562,19 @@ class DouyinKukuToolProvider:
                 cache_hit=False,
                 candidate_count=len(resources),
             )
-            cache_validated_candidate(
-                cache_key,
-                validated,
-                self.provider_settings.kukutool_validated_cache_ttl_seconds,
-            )
+            try:
+                cache_validated_candidate(
+                    cache_key,
+                    validated,
+                    self.provider_settings.kukutool_validated_cache_ttl_seconds,
+                )
+            except Exception as error:
+                log_kukutool_event(
+                    "douyin_provider_validated_cache_write_failed",
+                    context,
+                    error_type=type(error).__name__,
+                    error=str(error),
+                )
             log_kukutool_event(
                 "douyin_provider_declared_candidate_accepted",
                 context,
@@ -477,11 +644,19 @@ class DouyinKukuToolProvider:
                 candidate_count=len(resources),
                 probe_duration_ms=int((time() - probe_started_at) * 1000),
             )
-            cache_validated_candidate(
-                cache_key,
-                validated,
-                self.provider_settings.kukutool_validated_cache_ttl_seconds,
-            )
+            try:
+                cache_validated_candidate(
+                    cache_key,
+                    validated,
+                    self.provider_settings.kukutool_validated_cache_ttl_seconds,
+                )
+            except Exception as error:
+                log_kukutool_event(
+                    "douyin_provider_validated_cache_write_failed",
+                    context,
+                    error_type=type(error).__name__,
+                    error=str(error),
+                )
             log_kukutool_event(
                 "douyin_provider_candidate_probe_accepted",
                 context,
@@ -501,6 +676,247 @@ class DouyinKukuToolProvider:
         )
         return None
 
+    def release_single_flight(self, lock_key, token, context):
+        try:
+            if cache.get(lock_key) == token:
+                cache.delete(lock_key)
+        except Exception as error:
+            log_kukutool_event(
+                "douyin_provider_single_flight_release_failed",
+                context,
+                error_type=type(error).__name__,
+                error=str(error),
+            )
+
+    def cache_failure(self, context, reason):
+        ttl_seconds = self.provider_settings.kukutool_failure_cache_ttl_seconds
+        if ttl_seconds <= 0:
+            return
+        try:
+            cache.set(
+                build_kukutool_failure_cache_key(context.aweme_id),
+                {"reason": str(reason or "unavailable"), "failed_at": int(time())},
+                timeout=ttl_seconds,
+            )
+        except Exception as error:
+            log_kukutool_event(
+                "douyin_provider_failure_cache_write_failed",
+                context,
+                error_type=type(error).__name__,
+                error=str(error),
+            )
+
+    def resolve_in_background(self, adapter, context, lock_key, lock_token):
+        from .douyin_providers import log_provider_failure
+
+        global_slot_acquired = False
+        try:
+            global_limit = self.provider_settings.kukutool_global_max_concurrency
+            if global_limit > 0:
+                try:
+                    capacity = acquire_concurrency(
+                        "kukutool-provider-global",
+                        "all",
+                        global_limit,
+                        ttl_seconds=max(
+                            30,
+                            int(self.provider_settings.kukutool_timeout_seconds) + 10,
+                        ),
+                    )
+                except Exception as error:
+                    self.cache_failure(context, "global_concurrency_cache_failed")
+                    log_provider_failure(
+                        self.name,
+                        context,
+                        error,
+                        coordination="global_concurrency",
+                    )
+                    return None
+                if not capacity.allowed:
+                    self.cache_failure(context, "global_concurrency_limit")
+                    log_kukutool_event(
+                        "douyin_provider_global_capacity_full",
+                        context,
+                        current=capacity.current,
+                        limit=capacity.limit,
+                    )
+                    return None
+                global_slot_acquired = True
+
+            validated = self.resolve_validated_candidate(adapter, context)
+            if validated:
+                try:
+                    cache.delete(build_kukutool_failure_cache_key(context.aweme_id))
+                except Exception as error:
+                    log_kukutool_event(
+                        "douyin_provider_failure_cache_delete_failed",
+                        context,
+                        error_type=type(error).__name__,
+                        error=str(error),
+                    )
+                return validated
+            self.cache_failure(context, "no_validated_candidate")
+            return None
+        except Exception as error:
+            self.cache_failure(context, type(error).__name__)
+            log_provider_failure(self.name, context, error)
+            return None
+        finally:
+            if global_slot_acquired:
+                release_concurrency("kukutool-provider-global", "all")
+            self.release_single_flight(lock_key, lock_token, context)
+
+    def get_or_start_kukutool_future(self, adapter, context):
+        failure_key = build_kukutool_failure_cache_key(context.aweme_id)
+        try:
+            if cache.get(failure_key):
+                log_kukutool_event(
+                    "douyin_provider_failure_cache_hit",
+                    context,
+                )
+                return None, "failure_cache_hit"
+        except Exception as error:
+            log_kukutool_event(
+                "douyin_provider_failure_cache_read_failed",
+                context,
+                error_type=type(error).__name__,
+                error=str(error),
+            )
+            return None, "coordination_unavailable"
+
+        with LOCAL_KUKUTOOL_FUTURES_LOCK:
+            current = LOCAL_KUKUTOOL_FUTURES.get(context.aweme_id)
+            if current is not None and not current.done():
+                return current, "local_single_flight"
+
+            lock_key = build_kukutool_single_flight_key(context.aweme_id)
+            lock_token = uuid4().hex
+            queue_waves = math.ceil(
+                self.provider_settings.kukutool_max_pending_tasks
+                / self.provider_settings.kukutool_executor_workers
+            )
+            lock_ttl_seconds = max(
+                self.provider_settings.kukutool_single_flight_ttl_seconds,
+                math.ceil(
+                    self.provider_settings.kukutool_timeout_seconds
+                    * max(1, queue_waves)
+                )
+                + 5,
+            )
+            try:
+                lock_acquired = cache.add(
+                    lock_key,
+                    lock_token,
+                    timeout=lock_ttl_seconds,
+                )
+            except Exception as error:
+                log_kukutool_event(
+                    "douyin_provider_single_flight_acquire_failed",
+                    context,
+                    error_type=type(error).__name__,
+                    error=str(error),
+                )
+                return None, "coordination_unavailable"
+            if not lock_acquired:
+                return None, "remote_single_flight"
+
+            background_context = replace(context, deadline_monotonic=0)
+            try:
+                future = submit_provider_task(
+                    "douyin-kukutool",
+                    self.provider_settings.kukutool_executor_workers,
+                    self.provider_settings.kukutool_max_pending_tasks,
+                    self.resolve_in_background,
+                    adapter,
+                    background_context,
+                    lock_key,
+                    lock_token,
+                )
+            except Exception as error:
+                self.release_single_flight(lock_key, lock_token, context)
+                log_kukutool_event(
+                    "douyin_provider_background_submit_failed",
+                    context,
+                    error_type=type(error).__name__,
+                    error=str(error),
+                )
+                return None, "coordination_unavailable"
+            if future is None:
+                self.release_single_flight(lock_key, lock_token, context)
+                return None, "local_capacity_full"
+            LOCAL_KUKUTOOL_FUTURES[context.aweme_id] = future
+
+            def clear_local_future(completed_future):
+                with LOCAL_KUKUTOOL_FUTURES_LOCK:
+                    if LOCAL_KUKUTOOL_FUTURES.get(context.aweme_id) is completed_future:
+                        LOCAL_KUKUTOOL_FUTURES.pop(context.aweme_id, None)
+
+            future.add_done_callback(clear_local_future)
+            return future, "started"
+
+    def build_result(self, adapter, context, validated, native_future, parse_started_at):
+        from .douyin_providers import (
+            build_external_parse_result,
+            log_provider_event,
+            log_provider_failure,
+            with_parse_metadata,
+        )
+
+        reference_result = None
+        reference_wait = min(
+            max(0.0, self.provider_settings.kukutool_reference_wait_seconds),
+            self.remaining_budget(context, 0),
+        )
+        try:
+            if native_future.done():
+                reference_result = native_future.result(timeout=0)
+            elif reference_wait > 0:
+                reference_result = native_future.result(timeout=reference_wait)
+        except FutureTimeoutError:
+            pass
+        except Exception as error:
+            log_provider_failure("native_reference", context, error)
+
+        result = build_external_parse_result(
+            adapter,
+            context,
+            validated.candidate,
+            reference_result,
+        )
+        result = with_parse_metadata(
+            result,
+            selected_provider=self.name,
+            fallback_reason="kukutool_validated",
+            kukutool_cache_hit=validated.cache_hit,
+            kukutool_candidate_count=validated.candidate_count,
+            kukutool_probe_duration_ms=validated.probe_duration_ms,
+            kukutool_object_key=validated.object_key,
+            kukutool_signed_url_expires_at=validated.signed_url_expires_at,
+        )
+        log_provider_event(
+            "douyin_provider_selected",
+            self.name,
+            context,
+            parse_started_at,
+            fallback_reason="kukutool_validated",
+            selected_size_bytes=validated.candidate.size_bytes,
+            candidate_count=validated.candidate_count,
+            cache_hit=validated.cache_hit,
+            probe_duration_ms=validated.probe_duration_ms,
+        )
+        return result
+
+    def get_finished_native_result(self, native_future, context):
+        from .douyin_providers import log_provider_failure
+
+        if not native_future.done():
+            return None
+        try:
+            return native_future.result(timeout=0)
+        except Exception as error:
+            log_provider_failure("native_fast", context, error)
+            return None
+
     def parse(self, adapter, context):
         if (
             not self.provider_settings.provider_is_enabled(self.name)
@@ -509,8 +925,6 @@ class DouyinKukuToolProvider:
             return None
 
         from .douyin_providers import (
-            DOUYIN_ULTRA_EXECUTOR,
-            build_external_parse_result,
             get_fast_native_result,
             log_provider_event,
             log_provider_failure,
@@ -518,88 +932,142 @@ class DouyinKukuToolProvider:
         )
 
         parse_started_at = time()
-        native_future = DOUYIN_ULTRA_EXECUTOR.submit(
+        deadline = context.deadline_monotonic or (
+            monotonic()
+            + max(0.1, self.provider_settings.ultra_total_timeout_seconds)
+        )
+        native_budget = min(
+            max(0.1, self.provider_settings.ultra_native_timeout_seconds),
+            max(0.1, deadline - monotonic()),
+        )
+        native_future = submit_provider_task(
+            "douyin-native",
+            self.provider_settings.native_executor_workers,
+            self.provider_settings.native_max_pending_tasks,
             get_fast_native_result,
             adapter,
             context,
-            min(
-                self.provider_settings.ultra_native_timeout_seconds,
-                self.remaining_budget(
-                    context,
-                    self.provider_settings.ultra_native_timeout_seconds,
-                ),
-            ),
+            native_budget,
         )
-
-        validated = None
-        try:
-            validated = self.resolve_validated_candidate(adapter, context)
-        except subprocess.TimeoutExpired as error:
-            log_provider_failure(self.name, context, error, parse_started_at)
-        except Exception as error:
-            log_provider_failure(self.name, context, error, parse_started_at)
-
-        if validated:
-            reference_result = None
-            reference_wait = min(
-                max(0.0, self.provider_settings.kukutool_reference_wait_seconds),
-                self.remaining_budget(context, 0),
+        if native_future is None:
+            native_future = Future()
+            native_future.set_result(None)
+            log_provider_event(
+                "douyin_native_local_capacity_full",
+                "native_fast",
+                context,
             )
-            try:
-                if native_future.done():
-                    reference_result = native_future.result(timeout=0)
-                elif reference_wait > 0:
-                    reference_result = native_future.result(timeout=reference_wait)
-            except FutureTimeoutError:
-                native_future.cancel()
-            except Exception as error:
-                log_provider_failure("native_reference", context, error)
 
-            result = build_external_parse_result(
+        cache_key = build_kukutool_cache_key(context.aweme_id)
+        cached = self.get_cached_candidate(adapter, context)
+        if cached:
+            return self.build_result(
                 adapter,
                 context,
-                validated.candidate,
-                reference_result,
+                cached,
+                native_future,
+                parse_started_at,
             )
-            result = with_parse_metadata(
-                result,
-                selected_provider=self.name,
-                fallback_reason="kukutool_validated",
-                kukutool_cache_hit=validated.cache_hit,
-                kukutool_candidate_count=validated.candidate_count,
-                kukutool_probe_duration_ms=validated.probe_duration_ms,
-                kukutool_object_key=validated.object_key,
-                kukutool_signed_url_expires_at=validated.signed_url_expires_at,
+
+        kukutool_future, flight_state = self.get_or_start_kukutool_future(
+            adapter,
+            context,
+        )
+        upstream_finished = flight_state in {
+            "failure_cache_hit",
+            "coordination_unavailable",
+            "local_capacity_full",
+        }
+        poll_interval = self.provider_settings.kukutool_cache_poll_interval_seconds
+
+        while monotonic() < deadline:
+            validated = None
+            if kukutool_future is not None and kukutool_future.done():
+                upstream_finished = True
+                try:
+                    validated = kukutool_future.result(timeout=0)
+                except Exception as error:
+                    log_provider_failure(
+                        "kukutool_background",
+                        context,
+                        error,
+                    )
+                    validated = None
+            elif flight_state == "remote_single_flight":
+                validated = self.get_cached_candidate(adapter, context)
+
+            if validated:
+                return self.build_result(
+                    adapter,
+                    context,
+                    validated,
+                    native_future,
+                    parse_started_at,
+                )
+
+            native_result = self.get_finished_native_result(native_future, context)
+            if upstream_finished and native_result:
+                return with_parse_metadata(
+                    native_result,
+                    selected_provider="native",
+                    fallback_reason="kukutool_unavailable",
+                )
+
+            sleep(min(poll_interval, max(0.0, deadline - monotonic())))
+
+        validated = None
+        if kukutool_future is not None and kukutool_future.done():
+            try:
+                validated = kukutool_future.result(timeout=0)
+            except Exception as error:
+                log_provider_failure(
+                    "kukutool_background",
+                    context,
+                    error,
+                )
+                validated = None
+        if validated:
+            return self.build_result(
+                adapter,
+                context,
+                validated,
+                native_future,
+                parse_started_at,
             )
+
+        native_result = self.get_finished_native_result(native_future, context)
+        if native_result:
             log_provider_event(
-                "douyin_provider_selected",
+                "douyin_provider_deadline_native_fallback",
                 self.name,
                 context,
                 parse_started_at,
-                fallback_reason="kukutool_validated",
-                selected_size_bytes=validated.candidate.size_bytes,
-                candidate_count=validated.candidate_count,
-                cache_hit=validated.cache_hit,
-                probe_duration_ms=validated.probe_duration_ms,
+                flight_state=flight_state,
+                background_refresh=bool(
+                    kukutool_future is not None and not kukutool_future.done()
+                ),
             )
-            return result
-
-        native_result = None
-        try:
-            remaining = self.remaining_budget(context, 0)
-            if native_future.done():
-                native_result = native_future.result(timeout=0)
-            elif remaining > 0:
-                native_result = native_future.result(timeout=remaining)
-        except FutureTimeoutError:
-            native_future.cancel()
-        except Exception as error:
-            log_provider_failure("native_fast", context, error)
-
-        if native_result:
             return with_parse_metadata(
                 native_result,
                 selected_provider="native",
-                fallback_reason="kukutool_unavailable",
+                fallback_reason="kukutool_deadline",
+                kukutool_background_refresh=bool(
+                    kukutool_future is not None and not kukutool_future.done()
+                ),
             )
-        return None
+
+        log_provider_event(
+            "douyin_provider_total_budget_exceeded",
+            self.name,
+            context,
+            parse_started_at,
+            flight_state=flight_state,
+            background_refresh=bool(
+                kukutool_future is not None and not kukutool_future.done()
+            ),
+        )
+        raise XhsProviderTimeoutError(
+            "超高清与本地解析均超过 "
+            f"{self.provider_settings.ultra_total_timeout_seconds:g} 秒，"
+            "请稍后重试。"
+        )

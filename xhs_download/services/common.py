@@ -56,6 +56,10 @@ class XhsParseError(XhsError):
     pass
 
 
+class XhsProviderTimeoutError(XhsParseError):
+    pass
+
+
 class XhsDownloadError(XhsError):
     pass
 

@@ -44,26 +44,35 @@ Environment variables:
 ```text
 ULTRA_HD_PROVIDER_ENABLED=False
 ULTRA_HD_PUBLIC_ACCESS_ENABLED=False
-DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS=15.0
-DOUYIN_ULTRA_NATIVE_TIMEOUT_SECONDS=5.0
+DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS=3.0
+DOUYIN_ULTRA_NATIVE_TIMEOUT_SECONDS=3.0
+DOUYIN_NATIVE_EXECUTOR_WORKERS=4
+DOUYIN_NATIVE_MAX_PENDING_TASKS=8
 KUKUTOOL_PROVIDER_ENABLED=True
 KUKUTOOL_NODE_BINARY=
 KUKUTOOL_TIMEOUT_SECONDS=12.0
 KUKUTOOL_PROBE_TIMEOUT_SECONDS=2.0
 KUKUTOOL_MAX_PROBE_CANDIDATES=2
 KUKUTOOL_MAX_CONCURRENCY=2
+KUKUTOOL_EXECUTOR_WORKERS=2
+KUKUTOOL_MAX_PENDING_TASKS=4
+KUKUTOOL_GLOBAL_MAX_CONCURRENCY=4
+KUKUTOOL_SINGLE_FLIGHT_TTL_SECONDS=30
+KUKUTOOL_FAILURE_CACHE_TTL_SECONDS=15
+KUKUTOOL_CACHE_POLL_INTERVAL_SECONDS=0.1
+KUKUTOOL_PROFILE_CACHE_TTL_SECONDS=86400
 KUKUTOOL_VALIDATED_CACHE_TTL_SECONDS=300
 KUKUTOOL_REFERENCE_WAIT_SECONDS=0.5
 XHS_PROVIDER_ORDER=native
 ```
 
-The default request path uses only `native`. Ultra mode runs native concurrently but waits for KuKuTool first. The upstream result is normalized from `video_fullinfo`, restricted to `365yg.com` and `douyinvod.com`, deduplicated by TOS object key, and ranked primarily by bitrate. Complete candidates with a positive declared size, stable object path, and unexpired signature are accepted directly; incomplete metadata uses Range-first validation. The result is authoritative and is not replaced by a larger or smaller native candidate.
+The default request path uses only `native`. Ultra mode starts native and KuKuTool in separate bounded executors and applies a three-second foreground deadline. An in-budget KuKuTool result wins. At the deadline, a completed native result is returned while KuKuTool continues in the bounded background pool and fills cache; if neither path is complete the request returns a retryable timeout. The upstream result is normalized from `video_fullinfo`, restricted to `365yg.com` and `douyinvod.com`, deduplicated by TOS object key, and ranked primarily by bitrate.
 
 `KUKUTOOL_VALIDATED_CACHE_TTL_SECONDS` caches the selected signed URL and metadata through Django cache. Its effective TTL never extends beyond the CDN signature expiry minus a safety margin. Production Redis therefore shares hot results across workers, while local `LocMemCache` remains process-local.
 
 Short-link resolution stops as soon as any validated Douyin redirect URL exposes an `aweme_id`, including the common first-hop `iesdouyin.com/share/video/{id}` URL. It does not fetch the subsequent desktop video page before starting provider work.
 
-The provider requires Node.js 18 or newer. `KUKUTOOL_NODE_BINARY` should be explicit in production; local development also checks the system `node` and the current Codex runtime. If no compatible runtime exists, the UI keeps ultra-HD unavailable. `KUKUTOOL_MAX_CONCURRENCY` bounds Node subprocesses per Django worker and falls back to native when capacity is exhausted. The ultra-HD request switch remains in the settings modal so normal parsing stays clean and independent of the external upstream.
+The provider requires Node.js 18 or newer. `KUKUTOOL_NODE_BINARY` should be explicit in production; local development also checks the system `node` and the current Codex runtime. Bounded executor queues prevent unbounded subprocess backlog. Redis single-flight deduplicates each `aweme_id`, while a global Redis concurrency counter limits total upstream work. Successful dynamic profiles are cached across helper processes. Discovery reads at most a bounded homepage and six bounded scripts, and all helper redirects remain on the exact KuKuTool origin.
 
 Local CLI measurement on 2026-06-12 for aweme `7647533902413173321` returned a 67.22MB KuKuTool candidate in 1.915 seconds on a cold request and 0.505 seconds from validated cache. The same test previously fell back to 3.82MB 1080p because a two-second Range probe narrowly timed out; direct acceptance of complete structured metadata removed that incorrect downgrade.
 
@@ -80,10 +89,10 @@ Implementation order:
 
 1. Persist provider stage timings by API host, region, endpoint, cache state, and outcome. Build P50/P95 dashboards from real traffic instead of one-off CLI tests.
 2. Reuse DNS/TLS connections with a bounded thread-local HTTP session or async client. Benchmark `.dev` and `.io` independently from the returned CDN download speed.
-3. Add Redis single-flight per `aweme_id` so concurrent visitors share one KuKuTool request instead of producing duplicate calls.
+3. Redis single-flight per `aweme_id` and global concurrency limit. Completed on 2026-06-13.
 4. Keep validated results in Redis and implement stale-while-refresh near signed-URL expiry. Delete the cache entry and refresh once when a cached download URL fails.
 5. Maintain short-lived regional health scores. Route new cold requests through the fastest healthy API host/region combination permitted for that user, while retaining the mainland-accessible `.dev` domain.
-6. Move cold ultra-HD resolution to a shared background task. The page can render native metadata immediately, show provider progress, and replace the video source when the ultra candidate arrives without holding one Django request open.
+6. Replace the interim bounded in-process background pool with a long-running Node sidecar or shared Celery/RQ task. The page can later poll and replace the native source when ultra becomes available.
 7. Research a second provider or self-hosted source acquisition path. A hard sub-3-second cold guarantee is not realistic while one external API consistently needs 4-7 seconds.
 
 The synchronous request path should remain as a fallback until Redis-backed tasks and browser polling are proven reliable.
