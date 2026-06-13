@@ -26,6 +26,8 @@ from xhs_download import views as download_views
 urlpatterns = [
                   path("health/live/", health.liveness_view, name="health_live"),
                   path("health/ready/", health.readiness_view, name="health_ready"),
+                  path("admin/provider-health/", download_views.provider_health_view, name="provider_health"),
+                  path("admin/provider-health/control/", download_views.provider_control_view, name="provider_control"),
                   path("", download_views.search_view, {"platform_key": "home"}, name="home"),
                   path("results/", download_views.search_results_view, {"platform_key": "home"}, name="home_results"),
                   path("xhs/", download_views.search_view, {"platform_key": "xhs"}, name="xhs_home"),

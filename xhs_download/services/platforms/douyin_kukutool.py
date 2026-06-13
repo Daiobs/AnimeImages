@@ -1,6 +1,5 @@
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
-from functools import lru_cache
 import inspect
 import json
 import logging
@@ -15,13 +14,18 @@ from time import monotonic, sleep, time
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
+from django.conf import settings
 from django.core.cache import cache
 
 from ..candidates import MediaCandidate
 from ..common import XhsProviderTimeoutError, validate_external_url
 from ..provider_settings import get_platform_provider_settings
 from ..quality import QualityProbe
-from ..rate_limits import acquire_concurrency, release_concurrency
+from ..rate_limits import (
+    acquire_concurrency,
+    consume_fixed_window,
+    release_concurrency,
+)
 
 
 AWEME_ID_PATTERN = re.compile(r"^\d{15,22}$")
@@ -40,6 +44,14 @@ PROVIDER_CAPACITY = {}
 PROVIDER_CAPACITY_LOCK = Lock()
 LOCAL_KUKUTOOL_FUTURES = {}
 LOCAL_KUKUTOOL_FUTURES_LOCK = RLock()
+KUKUTOOL_RUNTIME_LOCK = Lock()
+KUKUTOOL_RUNTIME_STATE = {
+    "checked": False,
+    "available": False,
+    "node_binary": "",
+    "error": "not checked",
+    "checked_at": 0,
+}
 
 
 def get_provider_executor(name, max_workers):
@@ -248,6 +260,116 @@ def build_kukutool_profile_cache_key():
     return "douyin:kukutool:active-profile"
 
 
+def build_kukutool_circuit_open_key():
+    return "douyin:kukutool:circuit:open"
+
+
+def build_kukutool_circuit_failure_key(window):
+    return f"douyin:kukutool:circuit:failures:{window}"
+
+
+def build_kukutool_admin_disabled_key():
+    return "douyin:kukutool:admin-disabled"
+
+
+def is_kukutool_admin_disabled():
+    try:
+        return bool(cache.get(build_kukutool_admin_disabled_key()))
+    except Exception:
+        logger.exception("kukutool_admin_state_read_failed")
+        return True
+
+
+def set_kukutool_admin_disabled(disabled):
+    key = build_kukutool_admin_disabled_key()
+    if disabled:
+        cache.set(key, True, timeout=None)
+    else:
+        cache.delete(key)
+
+
+def get_kukutool_circuit_status():
+    now = int(time())
+    try:
+        open_until = int(cache.get(build_kukutool_circuit_open_key(), 0) or 0)
+    except Exception:
+        logger.exception("kukutool_circuit_state_read_failed")
+        return {
+            "open": True,
+            "open_until": 0,
+            "reason": "cache unavailable",
+        }
+    if open_until and open_until <= now:
+        try:
+            cache.delete(build_kukutool_circuit_open_key())
+        except Exception:
+            logger.exception("kukutool_circuit_expiry_delete_failed")
+        open_until = 0
+    return {
+        "open": open_until > now,
+        "open_until": open_until,
+        "reason": "failure threshold reached" if open_until > now else "",
+    }
+
+
+def record_kukutool_success(provider_settings=None):
+    provider_settings = provider_settings or get_platform_provider_settings("douyin")
+    now = int(time())
+    window = now // provider_settings.kukutool_circuit_window_seconds
+    try:
+        cache.delete_many(
+            (
+                build_kukutool_circuit_open_key(),
+                build_kukutool_circuit_failure_key(window),
+            )
+        )
+    except Exception:
+        logger.exception("kukutool_circuit_success_reset_failed")
+
+
+def record_kukutool_failure(provider_settings=None):
+    provider_settings = provider_settings or get_platform_provider_settings("douyin")
+    now = int(time())
+    window_seconds = provider_settings.kukutool_circuit_window_seconds
+    window = now // window_seconds
+    key = build_kukutool_circuit_failure_key(window)
+    try:
+        cache.add(key, 0, timeout=window_seconds + 5)
+        count = cache.incr(key)
+        if count >= provider_settings.kukutool_circuit_failure_threshold:
+            cache.set(
+                build_kukutool_circuit_open_key(),
+                now + provider_settings.kukutool_circuit_open_seconds,
+                timeout=provider_settings.kukutool_circuit_open_seconds,
+            )
+        return count
+    except Exception:
+        logger.exception("kukutool_circuit_failure_record_failed")
+        return 0
+
+
+def get_kukutool_provider_health():
+    runtime = get_kukutool_runtime_status()
+    circuit = get_kukutool_circuit_status()
+    admin_disabled = is_kukutool_admin_disabled()
+    return {
+        "provider": "kukutool",
+        "enabled": bool(settings.KUKUTOOL_PROVIDER_ENABLED),
+        "ultra_hd_enabled": bool(settings.ULTRA_HD_PROVIDER_ENABLED),
+        "public_access_enabled": bool(settings.ULTRA_HD_PUBLIC_ACCESS_ENABLED),
+        "admin_disabled": admin_disabled,
+        "runtime": runtime,
+        "circuit": circuit,
+        "available": bool(
+            settings.KUKUTOOL_PROVIDER_ENABLED
+            and settings.ULTRA_HD_PROVIDER_ENABLED
+            and runtime["available"]
+            and not admin_disabled
+            and not circuit["open"]
+        ),
+    }
+
+
 def valid_kukutool_profile(profile):
     if not isinstance(profile, dict):
         return False
@@ -344,16 +466,28 @@ def cache_validated_candidate(cache_key, validated, ttl_seconds):
     )
 
 
-@lru_cache(maxsize=8)
-def find_node_runtime(configured_binary=""):
+def development_runtime_fallbacks_allowed():
+    return not bool(
+        getattr(
+            settings,
+            "REQUIRE_PRODUCTION_CONFIG",
+            not settings.DEBUG,
+        )
+    )
+
+
+def find_node_runtime(configured_binary="", allow_development_fallbacks=None):
+    if allow_development_fallbacks is None:
+        allow_development_fallbacks = development_runtime_fallbacks_allowed()
     candidates = []
     if configured_binary:
         candidates.append(configured_binary)
-    system_node = shutil.which("node")
-    if system_node:
-        candidates.append(system_node)
-    if KUKUTOOL_BUNDLED_NODE.is_file():
-        candidates.append(str(KUKUTOOL_BUNDLED_NODE))
+    elif allow_development_fallbacks:
+        system_node = shutil.which("node")
+        if system_node:
+            candidates.append(system_node)
+        if KUKUTOOL_BUNDLED_NODE.is_file():
+            candidates.append(str(KUKUTOOL_BUNDLED_NODE))
 
     for candidate in dict.fromkeys(candidates):
         try:
@@ -366,12 +500,81 @@ def find_node_runtime(configured_binary=""):
                 capture_output=True,
                 timeout=3,
                 check=False,
+                env=build_kukutool_safe_env(),
             )
         except (OSError, subprocess.TimeoutExpired):
             continue
         if check.returncode == 0:
             return candidate
     return ""
+
+
+def initialize_kukutool_runtime(force=False):
+    with KUKUTOOL_RUNTIME_LOCK:
+        if KUKUTOOL_RUNTIME_STATE["checked"] and not force:
+            return dict(KUKUTOOL_RUNTIME_STATE)
+
+        if not (
+            settings.ULTRA_HD_PROVIDER_ENABLED
+            and settings.KUKUTOOL_PROVIDER_ENABLED
+        ):
+            KUKUTOOL_RUNTIME_STATE.update(
+                checked=True,
+                available=False,
+                node_binary="",
+                error="provider disabled",
+                checked_at=int(time()),
+            )
+            return dict(KUKUTOOL_RUNTIME_STATE)
+
+        node_runtime = find_node_runtime(
+            settings.KUKUTOOL_NODE_BINARY,
+            allow_development_fallbacks=development_runtime_fallbacks_allowed(),
+        )
+        error = ""
+        if not node_runtime:
+            error = (
+                "KUKUTOOL_NODE_BINARY is required outside local development"
+                if (
+                    not development_runtime_fallbacks_allowed()
+                    and not settings.KUKUTOOL_NODE_BINARY
+                )
+                else "Node.js 18+ with fetch support was not found"
+            )
+        elif not KUKUTOOL_HELPER.is_file():
+            error = "KuKuTool helper script is missing"
+            node_runtime = ""
+
+        KUKUTOOL_RUNTIME_STATE.update(
+            checked=True,
+            available=bool(node_runtime),
+            node_binary=node_runtime,
+            error=error,
+            checked_at=int(time()),
+        )
+        return dict(KUKUTOOL_RUNTIME_STATE)
+
+
+def get_kukutool_runtime_status():
+    with KUKUTOOL_RUNTIME_LOCK:
+        return dict(KUKUTOOL_RUNTIME_STATE)
+
+
+def build_kukutool_safe_env(cached_profile=None):
+    safe_env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", ""),
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+    }
+    if os.environ.get("LC_ALL"):
+        safe_env["LC_ALL"] = os.environ["LC_ALL"]
+    if valid_kukutool_profile(cached_profile):
+        safe_env["KUKUTOOL_PROFILE_JSON"] = json.dumps(
+            cached_profile,
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+    return safe_env
 
 
 def run_kukutool_helper(
@@ -383,13 +586,17 @@ def run_kukutool_helper(
     if not AWEME_ID_PATTERN.fullmatch(str(aweme_id or "")):
         raise ValueError("invalid aweme_id")
 
-    node_runtime = find_node_runtime(node_binary)
+    runtime_status = get_kukutool_runtime_status()
+    if not runtime_status["checked"]:
+        runtime_status = initialize_kukutool_runtime()
+    node_runtime = runtime_status["node_binary"] if runtime_status["available"] else ""
+    if node_binary and node_runtime != node_binary:
+        node_runtime = ""
     if not node_runtime:
         raise OSError("KuKuTool Provider requires Node.js 18 or newer")
     if not KUKUTOOL_HELPER.is_file():
         raise OSError("KuKuTool Provider helper script is missing")
 
-    process_env = os.environ.copy()
     try:
         cached_profile = cache.get(build_kukutool_profile_cache_key())
     except Exception:
@@ -398,12 +605,7 @@ def run_kukutool_helper(
             extra={"provider": "kukutool", "aweme_id": aweme_id},
         )
         cached_profile = None
-    if valid_kukutool_profile(cached_profile):
-        process_env["KUKUTOOL_PROFILE_JSON"] = json.dumps(
-            cached_profile,
-            ensure_ascii=True,
-            separators=(",", ":"),
-        )
+    process_env = build_kukutool_safe_env(cached_profile)
 
     process = subprocess.run(
         [node_runtime, str(KUKUTOOL_HELPER), str(aweme_id)],
@@ -497,6 +699,20 @@ class DouyinKukuToolProvider:
             )
             return cached
 
+        if is_kukutool_admin_disabled():
+            raise RuntimeError("KuKuTool Provider is disabled by an administrator")
+        circuit = get_kukutool_circuit_status()
+        if circuit["open"]:
+            raise RuntimeError("KuKuTool Provider circuit is open")
+        request_limit = consume_fixed_window(
+            "kukutool-upstream-global",
+            "all",
+            self.provider_settings.kukutool_global_request_limit_per_minute,
+            60,
+        )
+        if not request_limit.allowed:
+            raise RuntimeError("KuKuTool Provider global request limit reached")
+
         timeout_seconds = min(
             max(0.1, self.provider_settings.kukutool_timeout_seconds),
             self.remaining_budget(
@@ -537,6 +753,12 @@ class DouyinKukuToolProvider:
             candidate_count=len(resources),
         )
         if not resources:
+            log_kukutool_event(
+                "douyin_provider_schema_unrecognized",
+                context,
+                payload_type=type(payload).__name__,
+            )
+            record_kukutool_failure(self.provider_settings)
             return None
 
         preferred = resources[0]
@@ -584,6 +806,7 @@ class DouyinKukuToolProvider:
                 selected_quality=preferred.quality_label,
                 object_key=preferred.object_key,
             )
+            record_kukutool_success(self.provider_settings)
             return validated
 
         probe = self.quality_probe or QualityProbe(
@@ -667,6 +890,7 @@ class DouyinKukuToolProvider:
                 probe_duration_ms=validated.probe_duration_ms,
                 object_key=validated.object_key,
             )
+            record_kukutool_success(self.provider_settings)
             return validated
         log_kukutool_event(
             "douyin_provider_no_validated_candidate",
@@ -674,6 +898,7 @@ class DouyinKukuToolProvider:
             candidate_count=len(resources),
             probe_duration_ms=int((time() - probe_started_at) * 1000),
         )
+        record_kukutool_failure(self.provider_settings)
         return None
 
     def release_single_flight(self, lock_key, token, context):
@@ -758,6 +983,7 @@ class DouyinKukuToolProvider:
             self.cache_failure(context, "no_validated_candidate")
             return None
         except Exception as error:
+            record_kukutool_failure(self.provider_settings)
             self.cache_failure(context, type(error).__name__)
             log_provider_failure(self.name, context, error)
             return None
@@ -854,6 +1080,39 @@ class DouyinKukuToolProvider:
             future.add_done_callback(clear_local_future)
             return future, "started"
 
+    def refresh_for_download(self, adapter, context):
+        from .douyin_providers import log_provider_failure
+
+        future, flight_state = self.get_or_start_kukutool_future(
+            adapter,
+            context,
+        )
+        if future is None and flight_state != "remote_single_flight":
+            return None
+
+        deadline = monotonic() + max(
+            0.1,
+            self.provider_settings.kukutool_timeout_seconds,
+        )
+        poll_interval = self.provider_settings.kukutool_cache_poll_interval_seconds
+        while monotonic() < deadline:
+            if future is not None and future.done():
+                try:
+                    return future.result(timeout=0)
+                except Exception as error:
+                    log_provider_failure(
+                        "kukutool_download_refresh",
+                        context,
+                        error,
+                    )
+                    return None
+
+            cached = self.get_cached_candidate(adapter, context)
+            if cached:
+                return cached
+            sleep(min(poll_interval, max(0.0, deadline - monotonic())))
+        return self.get_cached_candidate(adapter, context)
+
     def build_result(self, adapter, context, validated, native_future, parse_started_at):
         from .douyin_providers import (
             build_external_parse_result,
@@ -882,6 +1141,7 @@ class DouyinKukuToolProvider:
             context,
             validated.candidate,
             reference_result,
+            provider_name=self.name,
         )
         result = with_parse_metadata(
             result,
@@ -925,6 +1185,7 @@ class DouyinKukuToolProvider:
             return None
 
         from .douyin_providers import (
+            get_cached_douyin_metadata,
             get_fast_native_result,
             log_provider_event,
             log_provider_failure,
@@ -936,6 +1197,22 @@ class DouyinKukuToolProvider:
             monotonic()
             + max(0.1, self.provider_settings.ultra_total_timeout_seconds)
         )
+
+        cache_key = build_kukutool_cache_key(context.aweme_id)
+        cached = self.get_cached_candidate(adapter, context)
+        if cached:
+            cached_metadata = get_cached_douyin_metadata(context.aweme_id)
+            if cached_metadata:
+                metadata_future = Future()
+                metadata_future.set_result(cached_metadata)
+                return self.build_result(
+                    adapter,
+                    context,
+                    cached,
+                    metadata_future,
+                    parse_started_at,
+                )
+
         native_budget = min(
             max(0.1, self.provider_settings.ultra_native_timeout_seconds),
             max(0.1, deadline - monotonic()),
@@ -958,8 +1235,6 @@ class DouyinKukuToolProvider:
                 context,
             )
 
-        cache_key = build_kukutool_cache_key(context.aweme_id)
-        cached = self.get_cached_candidate(adapter, context)
         if cached:
             return self.build_result(
                 adapter,

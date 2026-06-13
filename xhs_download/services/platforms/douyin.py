@@ -361,6 +361,19 @@ def get_base_filename(aweme):
     return clean_filename(f"{author}_{title}") if author or title else "douyin"
 
 
+def get_aweme_metadata(aweme):
+    return {
+        "aweme_id": str(aweme.get("aweme_id") or ""),
+        "author": get_author_name(aweme),
+        "title": str(
+            aweme.get("desc")
+            or aweme.get("item_title")
+            or aweme.get("share_info", {}).get("share_title")
+            or ""
+        ),
+    }
+
+
 def get_image_url(image_item):
     for key in (
         "download_url_list",
@@ -590,6 +603,7 @@ class DouyinAdapter(BasePlatformAdapter):
 
     def parse_aweme(self, aweme, probe_video_candidates=False):
         base_filename = get_base_filename(aweme)
+        metadata = get_aweme_metadata(aweme)
         image_assets = self.build_image_assets(aweme)
         if image_assets:
             return ParseResult(
@@ -597,6 +611,7 @@ class DouyinAdapter(BasePlatformAdapter):
                 post_type="image",
                 base_filename=base_filename,
                 assets=tuple(image_assets),
+                metadata=metadata,
             )
 
         video = aweme.get("video") or {}
@@ -630,6 +645,7 @@ class DouyinAdapter(BasePlatformAdapter):
                         media_host_suffixes=self.media_host_suffixes,
                     ),
                 ),
+                metadata=metadata,
             )
 
         return ParseResult(
@@ -637,6 +653,7 @@ class DouyinAdapter(BasePlatformAdapter):
             post_type="unknown",
             base_filename=base_filename,
             assets=(),
+            metadata=metadata,
         )
 
     def build_image_assets(self, aweme):

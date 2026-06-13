@@ -19,6 +19,10 @@ class ProviderSettings:
     kukutool_single_flight_ttl_seconds: int = 30
     kukutool_failure_cache_ttl_seconds: int = 15
     kukutool_cache_poll_interval_seconds: float = 0.1
+    kukutool_global_request_limit_per_minute: int = 0
+    kukutool_circuit_failure_threshold: int = 5
+    kukutool_circuit_window_seconds: int = 60
+    kukutool_circuit_open_seconds: int = 120
     kukutool_profile_cache_ttl_seconds: int = 86400
     kukutool_validated_cache_ttl_seconds: int = 300
     kukutool_reference_wait_seconds: float = 0.5
@@ -89,7 +93,9 @@ def get_platform_provider_settings(platform_id):
     return ProviderSettings(
         ultra_hd_enabled=bool(getattr(settings, "ULTRA_HD_PROVIDER_ENABLED", False)),
         provider_order=normalize_provider_order(raw_order),
-        kukutool_enabled=bool(getattr(settings, "KUKUTOOL_PROVIDER_ENABLED", True)),
+        kukutool_enabled=bool(
+            getattr(settings, "KUKUTOOL_PROVIDER_ENABLED", settings.DEBUG)
+        ),
         kukutool_node_binary=getattr(settings, "KUKUTOOL_NODE_BINARY", "") or "",
         kukutool_timeout_seconds=float(getattr(settings, "KUKUTOOL_TIMEOUT_SECONDS", 12.0) or 0),
         kukutool_probe_timeout_seconds=float(
@@ -128,6 +134,38 @@ def get_platform_provider_settings(platform_id):
             float(
                 getattr(settings, "KUKUTOOL_CACHE_POLL_INTERVAL_SECONDS", 0.1)
                 or 0.1
+            ),
+        ),
+        kukutool_global_request_limit_per_minute=max(
+            0,
+            int(
+                getattr(
+                    settings,
+                    "KUKUTOOL_GLOBAL_REQUEST_LIMIT_PER_MINUTE",
+                    0,
+                )
+                or 0
+            ),
+        ),
+        kukutool_circuit_failure_threshold=max(
+            1,
+            int(
+                getattr(settings, "KUKUTOOL_CIRCUIT_FAILURE_THRESHOLD", 5)
+                or 1
+            ),
+        ),
+        kukutool_circuit_window_seconds=max(
+            1,
+            int(
+                getattr(settings, "KUKUTOOL_CIRCUIT_WINDOW_SECONDS", 60)
+                or 1
+            ),
+        ),
+        kukutool_circuit_open_seconds=max(
+            1,
+            int(
+                getattr(settings, "KUKUTOOL_CIRCUIT_OPEN_SECONDS", 120)
+                or 1
             ),
         ),
         kukutool_profile_cache_ttl_seconds=max(

@@ -102,16 +102,24 @@ KUKUTOOL_GLOBAL_MAX_CONCURRENCY=4
 KUKUTOOL_SINGLE_FLIGHT_TTL_SECONDS=30
 KUKUTOOL_FAILURE_CACHE_TTL_SECONDS=15
 KUKUTOOL_CACHE_POLL_INTERVAL_SECONDS=0.1
+KUKUTOOL_GLOBAL_REQUEST_LIMIT_PER_MINUTE=0
+KUKUTOOL_CIRCUIT_FAILURE_THRESHOLD=5
+KUKUTOOL_CIRCUIT_WINDOW_SECONDS=60
+KUKUTOOL_CIRCUIT_OPEN_SECONDS=120
 KUKUTOOL_PROFILE_CACHE_TTL_SECONDS=86400
 KUKUTOOL_VALIDATED_CACHE_TTL_SECONDS=300
 KUKUTOOL_REFERENCE_WAIT_SECONDS=0.5
+DOUYIN_METADATA_CACHE_TTL_SECONDS=1800
+PROVIDER_MANIFEST_MAX_AGE_SECONDS=3600
 ```
 
 `native` 是默认快路径，不打开“抖音超高清”时只走这一路。当前阶段打开超高清后，只调用 KuKuTool 上游；TikHub 和 `native_enhanced` 不进入同步网页请求链路。KuKuTool 返回的 `video_fullinfo` 会按码率、大小和质量参数排序，并以稳定的 TOS 对象路径去重。具备合法字节 CDN 域名、正文件大小、稳定对象路径和未到期签名的最高档候选会直接采用；元数据不完整时才执行 `Range: bytes=0-0` 校验。结果不再与本地 1080p 比较。
 
 超高清请求会在独立线程池中同时启动 KuKuTool 和 native，并只占用最多 `DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS` 的前台等待预算。KuKuTool 在预算内成功时返回超高清；到达 deadline 时若 native 已完成则立即返回 native，而 KuKuTool 在受控后台继续运行并回填缓存；两条路径都未完成时返回可重试的超时信息。验证后的签名 URL 使用 Django cache 缓存，TTL 同时受 `KUKUTOOL_VALIDATED_CACHE_TTL_SECONDS` 和 CDN URL 自身到期时间约束。
 
-该 Provider 需要 Node.js 18 或更高版本，因为上游请求使用 Node 内置的 `fetch` 和 `crypto`。程序会依次尝试 `KUKUTOOL_NODE_BINARY`、系统 `node`，以及当前开发机的 Codex runtime；找不到可用运行时时，页面不会开放超高清开关。生产环境应显式配置稳定的 Node 路径。线程池、待处理任务数、单进程子进程数和 Redis 全局并发分别受配置限制；Redis single-flight 让相同 `aweme_id` 的并发请求共享一次上游任务。动态发现的 profile 会跨 Node 子进程缓存，发现页面和脚本有严格大小/数量限制，所有 helper 重定向逐跳锁定在 `dy.kukutool.com` 同源。长驻 Node sidecar 仍是正式上线后的推荐形态。
+该 Provider 需要 Node.js 18 或更高版本，因为上游请求使用 Node 内置的 `fetch` 和 `crypto`。运行时只在 Django 进程启动阶段检查；生产环境必须显式配置 `KUKUTOOL_NODE_BINARY`，不会搜索用户 Home 下的 Codex runtime。本地 `DEBUG=True` 时才允许回退到系统 `node` 或开发机的 Codex runtime。找不到可用运行时时，页面不会开放超高清开关。线程池、待处理任务数、单进程子进程数、Redis 全局并发和每分钟上游请求量均受配置限制；Redis single-flight 让相同 `aweme_id` 的并发请求共享一次上游任务。连续失败会打开临时熔断，staff 可通过 `/admin/provider-health/` 查看状态，并通过 `/admin/provider-health/control/` 紧急停用或恢复。Node 子进程只继承最小化环境，不会获得 Django 密钥、数据库 URL 或其他 API key。长驻 Node sidecar 仍是正式上线后的推荐形态。
+
+验证后的 KuKuTool URL 和作品标题、作者、文件名、封面会分别缓存。完整热缓存命中时不再启动 native，因此不会固定等待 `KUKUTOOL_REFERENCE_WAIT_SECONDS`。下载清单保留 Provider、`aweme_id` 和缓存键，并带有短期 Django 签名；浏览器伪造的清单不能触发上游刷新。若缓存 URL 返回 403/404、HTML 风控页或错误 Content-Type，服务端会删除对应验证缓存，刷新 KuKuTool 一次，仍失败则自动回退 native。重定向后的域名和媒体类型在每次尝试中都会重新校验。
 
 抖音短链接采用受控重定向解析。任一跳转地址一旦出现 `aweme_id`，解析器会立即启动 native/KuKuTool 流程，不再请求后续桌面页面，以减少短链解析延迟和偶发 404/超时。
 

@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import requests
 from django.conf import settings
 from PIL import Image
 
@@ -20,7 +21,15 @@ from .common import (
 )
 from .platforms.bilibili import BILIBILI_HEADERS, BILIBILI_MEDIA_HOST_SUFFIXES
 from .platforms.douyin import DOUYIN_HEADERS, DOUYIN_MEDIA_HOST_SUFFIXES
-from .quality import QualityProbe, parse_content_length
+from .provider_recovery import (
+    get_kukutool_manifest_identity,
+    iter_kukutool_download_recovery_urls,
+)
+from .quality import (
+    QualityProbe,
+    content_type_matches_expected,
+    parse_content_length,
+)
 
 
 MAX_DOWNLOAD_ITEMS = 30
@@ -148,15 +157,41 @@ def validate_content_length(response, max_bytes):
         raise XhsDownloadError("资源超过允许的大小限制")
 
 
-def write_limited_response(response, target, max_bytes, progress_callback=None):
+def response_chunk_looks_like_html(chunk):
+    sample = bytes(chunk[:512]).lstrip().lower()
+    return sample.startswith(
+        (
+            b"<!doctype html",
+            b"<html",
+            b"<head",
+            b"<body",
+        )
+    )
+
+
+def write_limited_response(
+    response,
+    target,
+    max_bytes,
+    progress_callback=None,
+    expected_type="",
+):
     total = 0
     content_length = parse_content_length(response)
+    first_chunk = True
 
     validate_content_length(response, max_bytes)
 
     for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
         if not chunk:
             continue
+        if (
+            first_chunk
+            and expected_type in {"video", "image"}
+            and response_chunk_looks_like_html(chunk)
+        ):
+            raise XhsDownloadError("资源类型异常：HTML response body")
+        first_chunk = False
         total += len(chunk)
         if total > max_bytes:
             raise XhsDownloadError("资源超过允许的大小限制")
@@ -167,19 +202,45 @@ def write_limited_response(response, target, max_bytes, progress_callback=None):
     return total
 
 
-def read_limited_response(response, max_bytes):
+def read_limited_response(response, max_bytes, expected_type=""):
     buffer = BytesIO()
-    write_limited_response(response, buffer, max_bytes)
+    write_limited_response(
+        response,
+        buffer,
+        max_bytes,
+        expected_type=expected_type,
+    )
     return buffer.getvalue()
 
 
-def fetch_media_response(url, headers=None, timeout=30):
+def validate_response_content_type(content_type, expected_type):
+    if not expected_type:
+        return
+    if not content_type or not content_type_matches_expected(
+        content_type,
+        expected_type,
+    ):
+        raise XhsDownloadError(
+            f"资源类型异常：{content_type or 'missing Content-Type'}"
+        )
+
+
+def is_recoverable_provider_download_error(error):
+    if isinstance(error, requests.RequestException):
+        return True
+    if not isinstance(error, XhsDownloadError):
+        return False
+    message = str(error)
+    return message.startswith("HTTP ") or message.startswith("资源类型异常：")
+
+
+def fetch_media_response(url, headers=None, timeout=30, retries=3):
     validate_media_url(url)
     return request_get_with_retry(
         url,
         headers=headers or get_media_headers(url),
         timeout=timeout,
-        retries=3,
+        retries=max(1, int(retries or 1)),
         stream=True,
         allowed_final_host_suffixes=MEDIA_HOST_SUFFIXES,
         final_url_message="资源 URL 跳转到了不允许的下载域名",
@@ -191,8 +252,21 @@ def probe_media_size(url, headers=None, timeout=6):
     return result.size_bytes if result.reachable else 0
 
 
-def fetch_to_temp_path(url, headers=None, timeout=30, max_bytes=MAX_IMAGE_BYTES, progress_callback=None):
-    response = fetch_media_response(url, headers=headers, timeout=timeout)
+def fetch_to_temp_path(
+    url,
+    headers=None,
+    timeout=30,
+    max_bytes=MAX_IMAGE_BYTES,
+    progress_callback=None,
+    expected_type="",
+    retries=3,
+):
+    response = fetch_media_response(
+        url,
+        headers=headers,
+        timeout=timeout,
+        retries=retries,
+    )
     fd, temp_path = tempfile.mkstemp(prefix="xhs_media_")
 
     try:
@@ -200,12 +274,14 @@ def fetch_to_temp_path(url, headers=None, timeout=30, max_bytes=MAX_IMAGE_BYTES,
             fd = None
             with response:
                 content_type = response.headers.get("Content-Type", "")
+                validate_response_content_type(content_type, expected_type)
                 final_url = response.url
                 size = write_limited_response(
                     response,
                     temp_file,
                     max_bytes=max_bytes,
                     progress_callback=progress_callback,
+                    expected_type=expected_type,
                 )
         return {
             "path": temp_path,
@@ -224,10 +300,102 @@ def fetch_to_temp_path(url, headers=None, timeout=30, max_bytes=MAX_IMAGE_BYTES,
         raise
 
 
-def fetch_binary(url, headers=None, timeout=30, max_bytes=MAX_IMAGE_BYTES):
-    response = fetch_media_response(url, headers=headers, timeout=timeout)
+def fetch_item_to_temp_path(
+    item,
+    url=None,
+    headers=None,
+    timeout=30,
+    max_bytes=MAX_IMAGE_BYTES,
+    progress_callback=None,
+    expected_type="",
+):
+    initial_url = url or item.get("url")
+    recovery_enabled = bool(get_kukutool_manifest_identity(item))
+    attempted_urls = set()
+    candidates = [initial_url]
+    recovery_urls = None
+    last_error = None
+
+    while candidates or recovery_urls is not None:
+        if not candidates:
+            try:
+                candidates.append(next(recovery_urls))
+            except StopIteration:
+                recovery_urls = None
+                continue
+        candidate_url = candidates.pop(0)
+        if not candidate_url or candidate_url in attempted_urls:
+            continue
+        attempted_urls.add(candidate_url)
+        try:
+            return fetch_to_temp_path(
+                candidate_url,
+                headers=headers or get_media_headers(candidate_url),
+                timeout=timeout,
+                max_bytes=max_bytes,
+                progress_callback=progress_callback,
+                expected_type=expected_type,
+                retries=1 if recovery_enabled else 3,
+            )
+        except Exception as error:
+            last_error = error
+            if (
+                recovery_enabled
+                and recovery_urls is None
+                and len(attempted_urls) == 1
+                and is_recoverable_provider_download_error(error)
+            ):
+                recovery_urls = iter(
+                    iter_kukutool_download_recovery_urls(item) or ()
+                )
+
+    raise last_error or XhsDownloadError("资源下载失败")
+
+
+def fetch_binary(
+    url,
+    headers=None,
+    timeout=30,
+    max_bytes=MAX_IMAGE_BYTES,
+    expected_type="",
+    retries=3,
+):
+    response = fetch_media_response(
+        url,
+        headers=headers,
+        timeout=timeout,
+        retries=retries,
+    )
     with response:
-        return read_limited_response(response, max_bytes=max_bytes)
+        content_type = response.headers.get("Content-Type", "")
+        validate_response_content_type(content_type, expected_type)
+        return read_limited_response(
+            response,
+            max_bytes=max_bytes,
+            expected_type=expected_type,
+        )
+
+
+def fetch_item_binary(
+    item,
+    url=None,
+    headers=None,
+    timeout=30,
+    max_bytes=MAX_IMAGE_BYTES,
+    expected_type="",
+):
+    temp_result = fetch_item_to_temp_path(
+        item,
+        url=url,
+        headers=headers,
+        timeout=timeout,
+        max_bytes=max_bytes,
+        expected_type=expected_type,
+    )
+    try:
+        return Path(temp_result["path"]).read_bytes()
+    finally:
+        Path(temp_result["path"]).unlink(missing_ok=True)
 
 
 def iter_download_files(media_items, base_filename, save_format=ORIGINAL_FORMAT, quality=95, video_save_mode="video"):
@@ -247,7 +415,12 @@ def iter_download_files(media_items, base_filename, save_format=ORIGINAL_FORMAT,
 
             if media_type == "image":
                 if save_format == ORIGINAL_FORMAT:
-                    temp_result = fetch_to_temp_path(url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                    temp_result = fetch_item_to_temp_path(
+                        item,
+                        timeout=20,
+                        max_bytes=MAX_IMAGE_BYTES,
+                        expected_type="image",
+                    )
                     try:
                         ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
                         filename = clean_filename(f"{base_filename}_{index}.{ext}")
@@ -255,7 +428,12 @@ def iter_download_files(media_items, base_filename, save_format=ORIGINAL_FORMAT,
                     finally:
                         Path(temp_result["path"]).unlink(missing_ok=True)
                 else:
-                    content = fetch_binary(url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                    content = fetch_item_binary(
+                        item,
+                        timeout=20,
+                        max_bytes=MAX_IMAGE_BYTES,
+                        expected_type="image",
+                    )
                     with Image.open(BytesIO(content)) as image:
                         filename = clean_filename(f"{base_filename}_{index}.{save_format}")
                         yield filename, save_image_to_buffer(image, save_format, quality)
@@ -264,14 +442,24 @@ def iter_download_files(media_items, base_filename, save_format=ORIGINAL_FORMAT,
                 if video_save_mode in ["video", "both"]:
                     ext = guess_video_extension(url)
                     filename = clean_filename(f"{base_filename}_{index}.{ext}")
-                    yield filename, fetch_binary(url, timeout=60, max_bytes=MAX_VIDEO_BYTES)
+                    yield filename, fetch_item_binary(
+                        item,
+                        timeout=60,
+                        max_bytes=MAX_VIDEO_BYTES,
+                        expected_type="video",
+                    )
 
                 if video_save_mode in ["cover", "both"]:
                     cover_url = item.get("cover_url")
                     if not cover_url:
                         raise XhsDownloadError("当前视频没有解析到封面")
                     if save_format == ORIGINAL_FORMAT:
-                        temp_result = fetch_to_temp_path(cover_url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                        temp_result = fetch_to_temp_path(
+                            cover_url,
+                            timeout=20,
+                            max_bytes=MAX_IMAGE_BYTES,
+                            expected_type="image",
+                        )
                         try:
                             ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
                             filename = clean_filename(f"{base_filename}_{index}_cover.{ext}")
@@ -279,7 +467,12 @@ def iter_download_files(media_items, base_filename, save_format=ORIGINAL_FORMAT,
                         finally:
                             Path(temp_result["path"]).unlink(missing_ok=True)
                     else:
-                        content = fetch_binary(cover_url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                        content = fetch_binary(
+                            cover_url,
+                            timeout=20,
+                            max_bytes=MAX_IMAGE_BYTES,
+                            expected_type="image",
+                        )
                         with Image.open(BytesIO(content)) as image:
                             filename = clean_filename(f"{base_filename}_{index}_cover.{save_format}")
                             yield filename, save_image_to_buffer(image, save_format, quality)
@@ -357,10 +550,11 @@ def build_download_archive_file(
 
                     if media_type == "image":
                         if save_format == ORIGINAL_FORMAT:
-                            temp_result = fetch_to_temp_path(
-                                url,
+                            temp_result = fetch_item_to_temp_path(
+                                item,
                                 timeout=20,
                                 max_bytes=MAX_IMAGE_BYTES,
+                                expected_type="image",
                                 progress_callback=lambda done, total, item_index=index: report_item_progress(
                                     item_index,
                                     done,
@@ -380,7 +574,12 @@ def build_download_archive_file(
                             finally:
                                 Path(temp_result["path"]).unlink(missing_ok=True)
                         else:
-                            content = fetch_binary(url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                            content = fetch_item_binary(
+                                item,
+                                timeout=20,
+                                max_bytes=MAX_IMAGE_BYTES,
+                                expected_type="image",
+                            )
                             with Image.open(BytesIO(content)) as image:
                                 filename = clean_filename(f"{base_filename}_{index}.{save_format}")
                                 converted = save_image_to_buffer(image, save_format, quality)
@@ -389,10 +588,11 @@ def build_download_archive_file(
 
                     elif media_type == "video":
                         if video_save_mode in ["video", "both"]:
-                            temp_result = fetch_to_temp_path(
-                                url,
+                            temp_result = fetch_item_to_temp_path(
+                                item,
                                 timeout=60,
                                 max_bytes=MAX_VIDEO_BYTES,
+                                expected_type="video",
                                 progress_callback=lambda done, total, item_index=index: report_item_progress(
                                     item_index,
                                     done,
@@ -425,6 +625,7 @@ def build_download_archive_file(
                                     cover_url,
                                     timeout=20,
                                     max_bytes=MAX_IMAGE_BYTES,
+                                    expected_type="image",
                                     progress_callback=lambda done, total, item_index=index: report_item_progress(
                                         item_index,
                                         done,
@@ -444,7 +645,12 @@ def build_download_archive_file(
                                 finally:
                                     Path(temp_result["path"]).unlink(missing_ok=True)
                             else:
-                                content = fetch_binary(cover_url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                                content = fetch_binary(
+                                    cover_url,
+                                    timeout=20,
+                                    max_bytes=MAX_IMAGE_BYTES,
+                                    expected_type="image",
+                                )
                                 with Image.open(BytesIO(content)) as image:
                                     filename = clean_filename(f"{base_filename}_{index}_cover.{save_format}")
                                     converted = save_image_to_buffer(image, save_format, quality)
@@ -553,7 +759,12 @@ def save_media_items_to_server(
 
             if media_type == "image":
                 if save_format == ORIGINAL_FORMAT:
-                    temp_result = fetch_to_temp_path(url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                    temp_result = fetch_item_to_temp_path(
+                        item,
+                        timeout=20,
+                        max_bytes=MAX_IMAGE_BYTES,
+                        expected_type="image",
+                    )
                     try:
                         ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
                         filename = clean_filename(f"{base_filename}_{index}.{ext}")
@@ -563,7 +774,12 @@ def save_media_items_to_server(
                     finally:
                         Path(temp_result["path"]).unlink(missing_ok=True)
                 else:
-                    content = fetch_binary(url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                    content = fetch_item_binary(
+                        item,
+                        timeout=20,
+                        max_bytes=MAX_IMAGE_BYTES,
+                        expected_type="image",
+                    )
                     with Image.open(BytesIO(content)) as image:
                         filename = clean_filename(f"{base_filename}_{index}.{save_format}")
                         converted = save_image_to_buffer(image, save_format, quality)
@@ -573,7 +789,12 @@ def save_media_items_to_server(
 
             elif media_type == "video":
                 if video_save_mode in ["video", "both"]:
-                    temp_result = fetch_to_temp_path(url, timeout=60, max_bytes=MAX_VIDEO_BYTES)
+                    temp_result = fetch_item_to_temp_path(
+                        item,
+                        timeout=60,
+                        max_bytes=MAX_VIDEO_BYTES,
+                        expected_type="video",
+                    )
                     try:
                         ext = guess_video_extension_from_response(
                             temp_result["final_url"],
@@ -592,7 +813,12 @@ def save_media_items_to_server(
                         raise XhsDownloadError("当前视频没有解析到封面")
 
                     if save_format == ORIGINAL_FORMAT:
-                        temp_result = fetch_to_temp_path(cover_url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                        temp_result = fetch_to_temp_path(
+                            cover_url,
+                            timeout=20,
+                            max_bytes=MAX_IMAGE_BYTES,
+                            expected_type="image",
+                        )
                         try:
                             ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
                             filename = clean_filename(f"{base_filename}_{index}_cover.{ext}")
@@ -602,7 +828,12 @@ def save_media_items_to_server(
                         finally:
                             Path(temp_result["path"]).unlink(missing_ok=True)
                     else:
-                        content = fetch_binary(cover_url, timeout=20, max_bytes=MAX_IMAGE_BYTES)
+                        content = fetch_binary(
+                            cover_url,
+                            timeout=20,
+                            max_bytes=MAX_IMAGE_BYTES,
+                            expected_type="image",
+                        )
                         with Image.open(BytesIO(content)) as image:
                             filename = clean_filename(f"{base_filename}_{index}_cover.{save_format}")
                             converted = save_image_to_buffer(image, save_format, quality)

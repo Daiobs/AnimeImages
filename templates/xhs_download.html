@@ -155,7 +155,12 @@
                                     <div class="asset-card"
                                          data-type="video"
                                          data-url="{{ item.video_url }}"
-                                         data-cover-url="{{ item.cover_url|default:'' }}">
+                                         data-cover-url="{{ item.cover_url|default:'' }}"
+                                         data-asset-id="{{ item.asset_id|default:'' }}"
+                                         data-provider="{{ item.provider|default:'' }}"
+                                         data-provider-resource-id="{{ item.provider_resource_id|default:'' }}"
+                                         data-provider-cache-key="{{ item.provider_cache_key|default:'' }}"
+                                         data-provider-manifest-token="{{ item.provider_manifest_token|default:'' }}">
                         <span class="asset-check">
                             <i class="bi bi-check-lg"></i>
                         </span>
@@ -202,7 +207,12 @@
                                 {% for item in image_items %}
                                     <div class="asset-card"
                                          data-type="image"
-                                         data-url="{{ item.url }}">
+                                         data-url="{{ item.url }}"
+                                         data-asset-id="{{ item.asset_id|default:'' }}"
+                                         data-provider="{{ item.provider|default:'' }}"
+                                         data-provider-resource-id="{{ item.provider_resource_id|default:'' }}"
+                                         data-provider-cache-key="{{ item.provider_cache_key|default:'' }}"
+                                         data-provider-manifest-token="{{ item.provider_manifest_token|default:'' }}">
                         <span class="asset-check">
                             <i class="bi bi-check-lg"></i>
                         </span>
