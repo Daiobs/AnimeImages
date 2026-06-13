@@ -98,6 +98,8 @@ ULTRA_HD_PUBLIC_ACCESS_ENABLED=False
 
 Keep public access disabled until KuKuTool latency, rate limits, and protocol stability have been validated in staging. The production runtime must provide Node.js 18 or newer through `KUKUTOOL_NODE_BINARY` or the system `PATH`.
 
+Production Redis is also used for KuKuTool single-flight, short failure caching, validated results, and the global upstream concurrency counter. Keep `DJANGO_CACHE_SOCKET_CONNECT_TIMEOUT` and `DJANGO_CACHE_SOCKET_TIMEOUT` below the three-second foreground budget so a cache outage cannot pin a request. The current bounded thread pools are an interim deployment model. For sustained traffic, run the helper as a long-lived internal Node sidecar or move resolution to Celery/RQ so Django workers never own subprocess lifecycles.
+
 TikHub and country-aware API routing are retained only as dormant research code. They do not affect the current synchronous ultra-HD path.
 
 For local development only, these can be enabled to save files from the Django process to a server-side directory:

@@ -3,6 +3,7 @@
 const crypto = require("crypto");
 
 const BASE_URL = "https://dy.kukutool.com";
+const BASE_ORIGIN = new URL(BASE_URL).origin;
 const RESPONSE_KEY = "12345678901234567890123456789013";
 const STANDARD_B64 =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -12,7 +13,11 @@ const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
   "AppleWebKit/537.36 Chrome/149.0.0.0 Safari/537.36";
 const MAX_RESPONSE_CHARS = 10 * 1024 * 1024;
-const MAX_DISCOVERY_SCRIPTS = 24;
+const MAX_DISCOVERY_PAGE_CHARS = 1024 * 1024;
+const MAX_DISCOVERY_SCRIPT_CHARS = 2 * 1024 * 1024;
+const MAX_DISCOVERY_SCRIPTS = 6;
+const DISCOVERY_BATCH_SIZE = 2;
+const MAX_REDIRECTS = 3;
 const FALLBACK_PROFILES = [
   {
     id: "2026060303",
@@ -53,11 +58,16 @@ async function main() {
     "User-Agent": USER_AGENT,
   };
 
+  const configuredProfile = readConfiguredProfile();
+  const initialProfiles = uniqueProfiles([
+    ...(configuredProfile ? [configuredProfile] : []),
+    ...FALLBACK_PROFILES,
+  ]);
   let ticket;
   try {
     // The known profile avoids loading the homepage and every JS bundle on
     // each request. Discovery remains the recovery path when the profile rotates.
-    ticket = await requestAuthTicket(FALLBACK_PROFILES, headers, requestURL);
+    ticket = await requestAuthTicket(initialProfiles, headers, requestURL);
   } catch (fallbackError) {
     const profiles = await discoverProfiles(headers);
     try {
@@ -85,7 +95,7 @@ async function main() {
   };
   const envelope = encryptRequest(params, authKey, authSeed);
   const fields = profile.parseRequestFields;
-  const parseResponse = await fetch(`${BASE_URL}/api/parse`, {
+  const parseResponse = await fetchSameOrigin(`${BASE_URL}/api/parse`, {
     method: "POST",
     headers: { ...headers, Cookie: cookie },
     body: JSON.stringify({
@@ -105,24 +115,24 @@ async function main() {
   const result = parsed.encrypt
     ? decryptResponse(parsed.data, parsed.iv)
     : parsed.data;
-  process.stdout.write(JSON.stringify(result));
+  process.stdout.write(JSON.stringify({ result, profile }));
 }
 
 async function discoverProfiles(headers) {
   try {
-    const pageResponse = await fetch(`${BASE_URL}/`, {
+    const pageResponse = await fetchSameOrigin(`${BASE_URL}/`, {
       headers,
       signal: AbortSignal.timeout(5000),
     });
     if (!pageResponse.ok) {
       return FALLBACK_PROFILES;
     }
-    const html = await pageResponse.text();
+    const html = await readText(pageResponse, MAX_DISCOVERY_PAGE_CHARS);
     const scriptUrls = Array.from(
       html.matchAll(/src="([^"]+\.js[^"]*)"/g),
       (match) => new URL(match[1], BASE_URL).href
     )
-      .filter((url) => new URL(url).origin === BASE_URL)
+      .filter((url) => new URL(url).origin === BASE_ORIGIN)
       .filter((url, index, values) => values.indexOf(url) === index)
       .slice(0, MAX_DISCOVERY_SCRIPTS);
     const preferred = scriptUrls.filter((url) => /\/9802-[^/]+\.js/.test(url));
@@ -132,22 +142,27 @@ async function discoverProfiles(headers) {
       if (!urls.length) {
         continue;
       }
-      const scripts = await Promise.allSettled(
-        urls.map(async (url) => {
-          const response = await fetch(url, {
-            headers,
-            signal: AbortSignal.timeout(4000),
-          });
-          return response.ok ? readText(response) : "";
-        })
-      );
-      for (const script of scripts) {
-        if (script.status !== "fulfilled") {
-          continue;
-        }
-        const profiles = extractProfiles(script.value);
-        if (profiles.length) {
-          return profiles;
+      for (let index = 0; index < urls.length; index += DISCOVERY_BATCH_SIZE) {
+        const batch = urls.slice(index, index + DISCOVERY_BATCH_SIZE);
+        const scripts = await Promise.allSettled(
+          batch.map(async (url) => {
+            const response = await fetchSameOrigin(url, {
+              headers,
+              signal: AbortSignal.timeout(4000),
+            });
+            return response.ok
+              ? readText(response, MAX_DISCOVERY_SCRIPT_CHARS)
+              : "";
+          })
+        );
+        for (const script of scripts) {
+          if (script.status !== "fulfilled") {
+            continue;
+          }
+          const profiles = extractProfiles(script.value);
+          if (profiles.length) {
+            return profiles;
+          }
         }
       }
     }
@@ -261,12 +276,15 @@ async function requestAuthTicket(profiles, headers, requestURL) {
   let lastError = null;
   for (const profile of profiles) {
     try {
-      const response = await fetch(`${BASE_URL}/api/${profile.authRoute}`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ requestURL, pagePath: "", mode: "single" }),
-        signal: AbortSignal.timeout(6000),
-      });
+      const response = await fetchSameOrigin(
+        `${BASE_URL}/api/${profile.authRoute}`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ requestURL, pagePath: "", mode: "single" }),
+          signal: AbortSignal.timeout(6000),
+        }
+      );
       const auth = await readJson(response);
       const authKey = auth[profile.authResponseFields.key];
       const authSeed = auth[profile.authResponseFields.seed];
@@ -346,16 +364,100 @@ async function readJson(response) {
   }
 }
 
-async function readText(response) {
+async function readText(response, maxChars = MAX_RESPONSE_CHARS) {
   const declaredLength = Number(response.headers.get("content-length") || 0);
-  if (declaredLength > MAX_RESPONSE_CHARS) {
+  if (declaredLength > maxChars) {
     throw new Error(`upstream response is too large (${response.status})`);
   }
   const text = await response.text();
-  if (text.length > MAX_RESPONSE_CHARS) {
+  if (text.length > maxChars) {
     throw new Error(`upstream response is too large (${response.status})`);
   }
   return text;
+}
+
+function readConfiguredProfile() {
+  const source = String(process.env.KUKUTOOL_PROFILE_JSON || "").trim();
+  if (!source) {
+    return null;
+  }
+  try {
+    const profile = JSON.parse(source);
+    return isValidProfile(profile) ? profile : null;
+  } catch {
+    return null;
+  }
+}
+
+function isValidProfile(profile) {
+  return Boolean(
+    profile?.id &&
+      profile?.authRoute &&
+      profile?.authResponseFields?.key &&
+      profile?.authResponseFields?.seed &&
+      profile?.parseRequestFields?.key &&
+      profile?.parseRequestFields?.payload &&
+      profile?.parseRequestFields?.iv &&
+      profile?.parseRequestFields?.version
+  );
+}
+
+function uniqueProfiles(profiles) {
+  const seen = new Set();
+  return profiles.filter((profile) => {
+    if (!isValidProfile(profile)) {
+      return false;
+    }
+    const identity = `${profile.id}:${profile.authRoute}`;
+    if (seen.has(identity)) {
+      return false;
+    }
+    seen.add(identity);
+    return true;
+  });
+}
+
+async function fetchSameOrigin(input, options = {}) {
+  let currentURL = new URL(input, BASE_URL);
+  let requestOptions = { ...options, redirect: "manual" };
+
+  for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount += 1) {
+    if (currentURL.protocol !== "https:" || currentURL.origin !== BASE_ORIGIN) {
+      throw new Error("upstream redirect left the allowed origin");
+    }
+
+    const response = await fetch(currentURL, requestOptions);
+    if (response.status < 300 || response.status >= 400) {
+      return response;
+    }
+
+    const location = response.headers.get("location");
+    if (!location || redirectCount === MAX_REDIRECTS) {
+      throw new Error(`upstream redirect rejected (${response.status})`);
+    }
+    if (response.body) {
+      await response.body.cancel();
+    }
+    currentURL = new URL(location, currentURL);
+
+    if (
+      response.status === 303 ||
+      ((response.status === 301 || response.status === 302) &&
+        String(requestOptions.method || "GET").toUpperCase() === "POST")
+    ) {
+      const nextHeaders = { ...(requestOptions.headers || {}) };
+      delete nextHeaders["Content-Type"];
+      delete nextHeaders["content-type"];
+      requestOptions = {
+        ...requestOptions,
+        method: "GET",
+        body: undefined,
+        headers: nextHeaders,
+      };
+    }
+  }
+
+  throw new Error("upstream redirect limit exceeded");
 }
 
 function upstreamError(stage, status, payload) {
