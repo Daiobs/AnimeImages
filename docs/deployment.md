@@ -96,7 +96,7 @@ ULTRA_HD_PROVIDER_ENABLED=False
 ULTRA_HD_PUBLIC_ACCESS_ENABLED=False
 ```
 
-Keep public access disabled until KuKuTool latency, rate limits, and protocol stability have been validated in staging. The production runtime must provide Node.js 18 or newer through `KUKUTOOL_NODE_BINARY` or the system `PATH`.
+Keep both `ULTRA_HD_PUBLIC_ACCESS_ENABLED` and `KUKUTOOL_PROVIDER_ENABLED` disabled until KuKuTool latency, limits, download recovery, and protocol stability have been validated in staging. Production must provide Node.js 18 or newer through an explicit `KUKUTOOL_NODE_BINARY`; it does not search the system `PATH` or a user's Codex runtime.
 
 Production Redis is also used for KuKuTool single-flight, short failure caching, validated results, and the global upstream concurrency counter. Keep `DJANGO_CACHE_SOCKET_CONNECT_TIMEOUT` and `DJANGO_CACHE_SOCKET_TIMEOUT` below the three-second foreground budget so a cache outage cannot pin a request. The current bounded thread pools are an interim deployment model. For sustained traffic, run the helper as a long-lived internal Node sidecar or move resolution to Celery/RQ so Django workers never own subprocess lifecycles.
 

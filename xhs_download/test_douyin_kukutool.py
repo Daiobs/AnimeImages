@@ -15,13 +15,21 @@ from .services.platforms.douyin_kukutool import (
     build_kukutool_cache_key,
     build_kukutool_profile_cache_key,
     build_kukutool_single_flight_key,
+    build_kukutool_safe_env,
     cache_validated_candidate,
+    find_node_runtime,
     get_cached_validated_candidate,
+    get_kukutool_circuit_status,
     normalize_kukutool_payload,
     parse_byte_cdn_url,
+    record_kukutool_failure,
+    record_kukutool_success,
     run_kukutool_helper,
 )
-from .services.platforms.douyin_providers import DouyinParseContext
+from .services.platforms.douyin_providers import (
+    DouyinParseContext,
+    cache_douyin_metadata,
+)
 from .services.provider_settings import ProviderSettings
 from .services.quality import QualityProbeResult
 
@@ -199,6 +207,13 @@ class DouyinKukuToolTests(SimpleTestCase):
         self.assertEqual(result.video_assets[0].url, ULTRA_URL)
         self.assertEqual(result.video_assets[0].size_bytes, 7_000_000)
         self.assertEqual(result.video_assets[0].cover_url, "https://p3-sign.douyinpic.com/cover.jpeg")
+        self.assertEqual(result.video_assets[0].provider, "kukutool")
+        self.assertEqual(result.video_assets[0].provider_resource_id, AWEME_ID)
+        self.assertEqual(
+            result.video_assets[0].provider_cache_key,
+            build_kukutool_cache_key(AWEME_ID),
+        )
+        self.assertTrue(result.video_assets[0].provider_manifest_token)
         self.assertEqual(result.metadata["selected_provider"], "kukutool")
         runner.assert_called_once()
         probe.probe.assert_not_called()
@@ -573,12 +588,247 @@ class DouyinKukuToolTests(SimpleTestCase):
         self.assertEqual(state, "remote_single_flight")
         runner.assert_not_called()
 
-    @patch("xhs_download.services.platforms.douyin_kukutool.find_node_runtime")
+    def test_hot_candidate_and_metadata_cache_skip_native_reference_wait(self):
+        cache_douyin_metadata(
+            AWEME_ID,
+            ParseResult(
+                platform="douyin",
+                post_type="video",
+                base_filename="cached-title",
+                assets=(
+                    MediaAsset(
+                        media_type="video",
+                        url="https://v3-web.douyinvod.com/native.mp4",
+                        platform="douyin",
+                        cover_url="https://p3-sign.douyinpic.com/cover.jpeg",
+                    ),
+                ),
+            ),
+        )
+        cache_validated_candidate(
+            build_kukutool_cache_key(AWEME_ID),
+            ValidatedKukuToolCandidate(
+                candidate=normalize_kukutool_payload({
+                    "videos": [{
+                        "video_fullinfo": [{
+                            "type": "超高清",
+                            "size": 70_481_987,
+                            "url": ULTRA_URL,
+                        }],
+                    }],
+                })[0].to_candidate(),
+                final_url=ULTRA_URL,
+                content_type="video/mp4",
+                object_key="video/tos/cn/bucket/source",
+                signed_url_expires_at=int(time()) + 3600,
+            ),
+            300,
+        )
+        adapter = Mock()
+        adapter.platform_id = "douyin"
+        adapter.headers = DOUYIN_HEADERS
+        adapter.media_host_suffixes = ("365yg.com", "douyinvod.com")
+        adapter.fetch_mobile_feed_result.side_effect = AssertionError(
+            "native should not start on a complete hot cache hit"
+        )
+        runner = Mock()
+        provider = DouyinKukuToolProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("kukutool", "native"),
+                kukutool_reference_wait_seconds=0.5,
+            ),
+            runner=runner,
+        )
+
+        started_at = monotonic()
+        result = provider.parse(
+            adapter,
+            DouyinParseContext(
+                url=f"https://www.douyin.com/video/{AWEME_ID}",
+                aweme_id=AWEME_ID,
+            ),
+        )
+
+        self.assertLess(monotonic() - started_at, 0.2)
+        self.assertEqual(result.base_filename, "cached-title")
+        self.assertEqual(
+            result.video_assets[0].cover_url,
+            "https://p3-sign.douyinpic.com/cover.jpeg",
+        )
+        adapter.fetch_mobile_feed_result.assert_not_called()
+        runner.assert_not_called()
+
+    def test_native_metadata_cache_keeps_title_and_author(self):
+        adapter = Mock()
+        adapter.fetch_mobile_feed_result.return_value = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="作者_标题",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url="https://v3-web.douyinvod.com/native.mp4",
+                    platform="douyin",
+                    cover_url="https://p3-sign.douyinpic.com/cover.jpeg",
+                ),
+            ),
+            metadata={
+                "aweme_id": AWEME_ID,
+                "author": "作者",
+                "title": "标题",
+            },
+        )
+        context = DouyinParseContext(
+            url=f"https://www.douyin.com/video/{AWEME_ID}",
+            aweme_id=AWEME_ID,
+        )
+
+        from .services.platforms.douyin_providers import (
+            get_cached_douyin_metadata,
+            get_fast_native_result,
+        )
+
+        get_fast_native_result(adapter, context)
+        cached = get_cached_douyin_metadata(AWEME_ID)
+
+        self.assertEqual(cached.metadata["author"], "作者")
+        self.assertEqual(cached.metadata["title"], "标题")
+
+    def test_safe_child_environment_excludes_django_secrets(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "PATH": "/usr/bin",
+                "HOME": "/tmp/home",
+                "LANG": "C.UTF-8",
+                "DJANGO_SECRET_KEY": "do-not-forward",
+                "DATABASE_URL": "postgres://secret",
+            },
+            clear=True,
+        ):
+            child_env = build_kukutool_safe_env()
+
+        self.assertEqual(
+            child_env,
+            {
+                "PATH": "/usr/bin",
+                "HOME": "/tmp/home",
+                "LANG": "C.UTF-8",
+            },
+        )
+
+    def test_circuit_opens_after_threshold_and_success_resets_it(self):
+        provider_settings = ProviderSettings(
+            ultra_hd_enabled=True,
+            provider_order=("kukutool", "native"),
+            kukutool_circuit_failure_threshold=2,
+            kukutool_circuit_window_seconds=60,
+            kukutool_circuit_open_seconds=120,
+        )
+
+        record_kukutool_failure(provider_settings)
+        self.assertFalse(get_kukutool_circuit_status()["open"])
+        record_kukutool_failure(provider_settings)
+        self.assertTrue(get_kukutool_circuit_status()["open"])
+
+        record_kukutool_success(provider_settings)
+        self.assertFalse(get_kukutool_circuit_status()["open"])
+
+    def test_global_request_limit_blocks_second_cold_upstream_call(self):
+        runner = Mock(return_value={
+            "videos": [{
+                "video_fullinfo": [{
+                    "type": "超高清",
+                    "size": 70_481_987,
+                    "url": ULTRA_URL,
+                }],
+            }],
+        })
+        adapter = Mock()
+        adapter.headers = DOUYIN_HEADERS
+        adapter.media_host_suffixes = ("365yg.com",)
+        provider = DouyinKukuToolProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("kukutool", "native"),
+                kukutool_global_request_limit_per_minute=1,
+            ),
+            runner=runner,
+        )
+
+        first = provider.resolve_validated_candidate(
+            adapter,
+            DouyinParseContext(
+                url=f"https://www.douyin.com/video/{AWEME_ID}",
+                aweme_id=AWEME_ID,
+            ),
+        )
+
+        self.assertIsNotNone(first)
+        with self.assertRaisesRegex(RuntimeError, "global request limit"):
+            provider.resolve_validated_candidate(
+                adapter,
+                DouyinParseContext(
+                    url="https://www.douyin.com/video/7647533902413173399",
+                    aweme_id="7647533902413173399",
+                ),
+            )
+        runner.assert_called_once()
+
+    @patch("xhs_download.services.platforms.douyin_kukutool.subprocess.run")
+    @patch("xhs_download.services.platforms.douyin_kukutool.shutil.which")
+    def test_production_runtime_discovery_does_not_search_local_fallbacks(
+        self,
+        mock_which,
+        mock_run,
+    ):
+        self.assertEqual(
+            find_node_runtime("", allow_development_fallbacks=False),
+            "",
+        )
+        mock_which.assert_not_called()
+        mock_run.assert_not_called()
+
+    @patch("xhs_download.services.platforms.douyin_kukutool.subprocess.run")
+    def test_runtime_probe_uses_minimal_child_environment(self, mock_run):
+        mock_run.return_value = Mock(returncode=0)
+
+        with patch.dict(
+            "os.environ",
+            {
+                "PATH": "/usr/bin",
+                "HOME": "/tmp/home",
+                "LANG": "C.UTF-8",
+                "DJANGO_SECRET_KEY": "do-not-forward",
+            },
+            clear=True,
+        ):
+            selected = find_node_runtime(
+                "/usr/bin/node",
+                allow_development_fallbacks=False,
+            )
+
+        self.assertEqual(selected, "/usr/bin/node")
+        child_env = mock_run.call_args.kwargs["env"]
+        self.assertNotIn("DJANGO_SECRET_KEY", child_env)
+        self.assertEqual(child_env["PATH"], "/usr/bin")
+
+    @patch(
+        "xhs_download.services.platforms.douyin_kukutool.get_kukutool_runtime_status",
+        return_value={
+            "checked": True,
+            "available": True,
+            "node_binary": "/usr/bin/node",
+            "error": "",
+            "checked_at": 1,
+        },
+    )
     @patch("xhs_download.services.platforms.douyin_kukutool.subprocess.run")
     def test_helper_caches_successful_profile_for_future_node_processes(
         self,
         mock_run,
-        mock_find_node,
+        _mock_runtime,
     ):
         profile = {
             "id": "profile-1",
@@ -591,7 +841,6 @@ class DouyinKukuToolTests(SimpleTestCase):
                 "version": "request-version",
             },
         }
-        mock_find_node.return_value = "/usr/bin/node"
         mock_run.return_value = Mock(
             returncode=0,
             stdout=json.dumps({"result": {"videos": []}, "profile": profile}),

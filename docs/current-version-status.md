@@ -44,7 +44,7 @@ After the bounded-executor, profile-cache, and same-origin redirect changes on J
 ```text
 ULTRA_HD_PROVIDER_ENABLED=False
 ULTRA_HD_PUBLIC_ACCESS_ENABLED=False
-KUKUTOOL_PROVIDER_ENABLED=True
+KUKUTOOL_PROVIDER_ENABLED=False
 KUKUTOOL_NODE_BINARY=/path/to/node
 KUKUTOOL_TIMEOUT_SECONDS=12.0
 KUKUTOOL_PROBE_TIMEOUT_SECONDS=2.0
@@ -56,24 +56,30 @@ KUKUTOOL_GLOBAL_MAX_CONCURRENCY=4
 KUKUTOOL_SINGLE_FLIGHT_TTL_SECONDS=30
 KUKUTOOL_FAILURE_CACHE_TTL_SECONDS=15
 KUKUTOOL_CACHE_POLL_INTERVAL_SECONDS=0.1
+KUKUTOOL_GLOBAL_REQUEST_LIMIT_PER_MINUTE=30
+KUKUTOOL_CIRCUIT_FAILURE_THRESHOLD=5
+KUKUTOOL_CIRCUIT_WINDOW_SECONDS=60
+KUKUTOOL_CIRCUIT_OPEN_SECONDS=120
 KUKUTOOL_PROFILE_CACHE_TTL_SECONDS=86400
 KUKUTOOL_VALIDATED_CACHE_TTL_SECONDS=300
 KUKUTOOL_REFERENCE_WAIT_SECONDS=0.5
+DOUYIN_METADATA_CACHE_TTL_SECONDS=1800
+PROVIDER_MANIFEST_MAX_AGE_SECONDS=3600
 DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS=3.0
 DOUYIN_ULTRA_NATIVE_TIMEOUT_SECONDS=3.0
 DOUYIN_NATIVE_EXECUTOR_WORKERS=4
 DOUYIN_NATIVE_MAX_PENDING_TASKS=8
 ```
 
-Node.js 18 or newer is required. Production should use Redis-backed Django cache so validated results are shared across workers.
+Node.js 18 or newer is required. Production defaults KuKuTool to disabled and requires an explicit `KUKUTOOL_NODE_BINARY` before staging enables it. Runtime discovery happens at process startup, not during page rendering. Production should use Redis-backed Django cache so validated results, metadata, single-flight, limits, the circuit breaker, and the administrator kill switch are shared across workers.
 
 ## Known Issues
 
 1. KuKuTool uses an undocumented third-party protocol. Upstream profile or encryption changes can break cold parsing.
 2. Background tasks remain process-local threads. A worker restart loses queued work, so production should move the helper to a Node sidecar or Celery/RQ.
 3. Redis single-flight and global concurrency protect normal operation, but they are coordination controls rather than a durable queue.
-4. Structured KuKuTool metadata is trusted when host, TOS path, size, and signature expiry are valid. The actual download path must continue validating redirect hosts and content type.
-5. A very fast KuKuTool result may arrive before native cover metadata. The provider waits briefly, then favors response latency.
+4. Structured KuKuTool metadata is trusted when host, TOS path, size, and signature expiry are valid. Download validates the final host and content type; on 403/404/HTML/type mismatch it invalidates the exact cache entry, refreshes KuKuTool once, then falls back to native.
+5. A cold KuKuTool result may arrive before native cover metadata. Native metadata is cached separately; once both caches are warm, requests skip the fixed reference wait.
 6. Xiaohongshu ultra-HD research is not part of this iteration.
 7. Bilibili remains baseline-only because higher qualities commonly require cookies, DASH merge, and entitlement.
 8. Production ZIP progress still requires a shared task queue; local in-memory tasks are not multi-worker safe.
@@ -82,5 +88,5 @@ Node.js 18 or newer is required. Production should use Redis-backed Django cache
 
 1. Replace per-request Node startup with a long-running internal Node sidecar.
 2. Persist provider stage timings and calculate P50/P95 from real use.
-3. Add a download-time cache invalidation/retry path when a signed CDN URL expires early.
+3. Move the interim staff-only provider health/control JSON endpoints into a small administrator UI with alert history.
 4. Continue the self-owned 365yg/TOS provider research so KuKuTool can eventually be replaced.

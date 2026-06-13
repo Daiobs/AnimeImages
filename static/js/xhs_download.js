@@ -66,18 +66,27 @@
 
     function getCardItem(card) {
         const type = card.dataset.type || "image";
+        const providerFields = {
+            asset_id: card.dataset.assetId || "",
+            provider: card.dataset.provider || "",
+            provider_resource_id: card.dataset.providerResourceId || "",
+            provider_cache_key: card.dataset.providerCacheKey || "",
+            provider_manifest_token: card.dataset.providerManifestToken || "",
+        };
 
         if (type === "video") {
             return {
                 type: "video",
                 url: card.dataset.url,
                 cover_url: card.dataset.coverUrl || "",
+                ...providerFields,
             };
         }
 
         return {
             type: "image",
             url: card.dataset.url,
+            ...providerFields,
         };
     }
 

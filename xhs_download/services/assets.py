@@ -15,6 +15,11 @@ class MediaAsset:
     size_bytes: int = 0
     headers: dict = field(default_factory=dict)
     media_host_suffixes: tuple[str, ...] = field(default_factory=tuple)
+    asset_id: str = ""
+    provider: str = ""
+    provider_resource_id: str = ""
+    provider_cache_key: str = ""
+    provider_manifest_token: str = ""
 
     def to_download_item(self):
         item = {
@@ -23,6 +28,16 @@ class MediaAsset:
         }
         if self.cover_url:
             item["cover_url"] = self.cover_url
+        for key in (
+            "asset_id",
+            "provider",
+            "provider_resource_id",
+            "provider_cache_key",
+            "provider_manifest_token",
+        ):
+            value = getattr(self, key, "")
+            if value:
+                item[key] = value
         return item
 
 

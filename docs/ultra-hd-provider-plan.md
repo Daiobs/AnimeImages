@@ -48,7 +48,7 @@ DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS=3.0
 DOUYIN_ULTRA_NATIVE_TIMEOUT_SECONDS=3.0
 DOUYIN_NATIVE_EXECUTOR_WORKERS=4
 DOUYIN_NATIVE_MAX_PENDING_TASKS=8
-KUKUTOOL_PROVIDER_ENABLED=True
+KUKUTOOL_PROVIDER_ENABLED=False
 KUKUTOOL_NODE_BINARY=
 KUKUTOOL_TIMEOUT_SECONDS=12.0
 KUKUTOOL_PROBE_TIMEOUT_SECONDS=2.0
@@ -60,9 +60,15 @@ KUKUTOOL_GLOBAL_MAX_CONCURRENCY=4
 KUKUTOOL_SINGLE_FLIGHT_TTL_SECONDS=30
 KUKUTOOL_FAILURE_CACHE_TTL_SECONDS=15
 KUKUTOOL_CACHE_POLL_INTERVAL_SECONDS=0.1
+KUKUTOOL_GLOBAL_REQUEST_LIMIT_PER_MINUTE=30
+KUKUTOOL_CIRCUIT_FAILURE_THRESHOLD=5
+KUKUTOOL_CIRCUIT_WINDOW_SECONDS=60
+KUKUTOOL_CIRCUIT_OPEN_SECONDS=120
 KUKUTOOL_PROFILE_CACHE_TTL_SECONDS=86400
 KUKUTOOL_VALIDATED_CACHE_TTL_SECONDS=300
 KUKUTOOL_REFERENCE_WAIT_SECONDS=0.5
+DOUYIN_METADATA_CACHE_TTL_SECONDS=1800
+PROVIDER_MANIFEST_MAX_AGE_SECONDS=3600
 XHS_PROVIDER_ORDER=native
 ```
 
@@ -72,7 +78,7 @@ The default request path uses only `native`. Ultra mode starts native and KuKuTo
 
 Short-link resolution stops as soon as any validated Douyin redirect URL exposes an `aweme_id`, including the common first-hop `iesdouyin.com/share/video/{id}` URL. It does not fetch the subsequent desktop video page before starting provider work.
 
-The provider requires Node.js 18 or newer. `KUKUTOOL_NODE_BINARY` should be explicit in production; local development also checks the system `node` and the current Codex runtime. Bounded executor queues prevent unbounded subprocess backlog. Redis single-flight deduplicates each `aweme_id`, while a global Redis concurrency counter limits total upstream work. Successful dynamic profiles are cached across helper processes. Discovery reads at most a bounded homepage and six bounded scripts, and all helper redirects remain on the exact KuKuTool origin.
+The provider requires Node.js 18 or newer. Production defaults the provider to disabled and requires an explicit `KUKUTOOL_NODE_BINARY`; system Node and the Codex runtime are development-only fallbacks under `DEBUG=True`. Runtime validation happens during Django startup, never while rendering a user page. Bounded executor queues prevent unbounded subprocess backlog. Redis single-flight deduplicates each `aweme_id`, while global concurrency, request-rate limits, a circuit breaker, and a staff kill switch constrain total upstream work. Child processes receive a minimal environment. Successful dynamic profiles are cached across helper processes. Discovery reads at most a bounded homepage and six bounded scripts, and all helper redirects remain on the exact KuKuTool origin.
 
 Local CLI measurement on 2026-06-12 for aweme `7647533902413173321` returned a 67.22MB KuKuTool candidate in 1.915 seconds on a cold request and 0.505 seconds from validated cache. The same test previously fell back to 3.82MB 1080p because a two-second Range probe narrowly timed out; direct acceptance of complete structured metadata removed that incorrect downgrade.
 
@@ -90,7 +96,7 @@ Implementation order:
 1. Persist provider stage timings by API host, region, endpoint, cache state, and outcome. Build P50/P95 dashboards from real traffic instead of one-off CLI tests.
 2. Reuse DNS/TLS connections with a bounded thread-local HTTP session or async client. Benchmark `.dev` and `.io` independently from the returned CDN download speed.
 3. Redis single-flight per `aweme_id` and global concurrency limit. Completed on 2026-06-13.
-4. Keep validated results in Redis and implement stale-while-refresh near signed-URL expiry. Delete the cache entry and refresh once when a cached download URL fails.
+4. Validated results and native metadata are cached separately. On a cached download failure, delete the exact validated entry, refresh once, validate the new response, and fall back to native if the refreshed source also fails. Stale-while-refresh near signature expiry remains future work.
 5. Maintain short-lived regional health scores. Route new cold requests through the fastest healthy API host/region combination permitted for that user, while retaining the mainland-accessible `.dev` domain.
 6. Replace the interim bounded in-process background pool with a long-running Node sidecar or shared Celery/RQ task. The page can later poll and replace the native source when ultra becomes available.
 7. Research a second provider or self-hosted source acquisition path. A hard sub-3-second cold guarantee is not realistic while one external API consistently needs 4-7 seconds.

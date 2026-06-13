@@ -13,6 +13,7 @@ from PIL import Image
 
 from .services.common import (
     MEDIA_HOST_SUFFIXES,
+    XhsDownloadError,
     XhsSecurityError,
     clean_filename,
     encode_url,
@@ -23,6 +24,8 @@ from .services.common import (
 from .services.downloads import (
     build_download_archive,
     build_download_archive_file,
+    fetch_item_to_temp_path,
+    fetch_to_temp_path,
     get_media_headers,
     normalize_quality,
     normalize_save_format,
@@ -38,6 +41,7 @@ from .services.provider_settings import (
     get_platform_provider_settings,
     normalize_provider_order,
 )
+from .services.provider_manifest import build_provider_manifest_token
 from .services.quality import QualityProbe, QualityProbeResult
 from .services.rate_limits import (
     get_client_identity,
@@ -52,7 +56,11 @@ from .services.region_routing import (
 from .services.platforms import BilibiliAdapter, DouyinAdapter, XiaohongshuAdapter
 from .services.platforms.bilibili import BILIBILI_HEADERS
 from .services.platforms.douyin import DOUYIN_HEADERS, extract_aweme_id, get_video_candidates
-from .services.platforms.douyin_kukutool import DouyinKukuToolProvider
+from .services.platforms.douyin_kukutool import (
+    DouyinKukuToolProvider,
+    build_kukutool_cache_key,
+)
+from .services.provider_recovery import iter_kukutool_download_recovery_urls
 from .services.platforms.douyin_providers import (
     DouyinParseContext,
     DouyinNativeEnhancedProvider,
@@ -72,6 +80,27 @@ def make_image_bytes():
     buffer = BytesIO()
     Image.new("RGB", (10, 8), (255, 0, 0)).save(buffer, "JPEG")
     return buffer.getvalue()
+
+
+def make_kukutool_download_item(url, aweme_id="7647533902413173321"):
+    asset_id = f"douyin:{aweme_id}:video:kukutool"
+    cache_key = build_kukutool_cache_key(aweme_id)
+    item = {
+        "type": "video",
+        "url": url,
+        "asset_id": asset_id,
+        "provider": "kukutool",
+        "provider_resource_id": aweme_id,
+        "provider_cache_key": cache_key,
+    }
+    item["provider_manifest_token"] = build_provider_manifest_token(
+        asset_id=asset_id,
+        provider="kukutool",
+        provider_resource_id=aweme_id,
+        provider_cache_key=cache_key,
+        url=url,
+    )
+    return item
 
 
 class FakeStreamingResponse:
@@ -2101,6 +2130,196 @@ class BilibiliAdapterTests(SimpleTestCase):
 
 
 class XhsDownloadArchiveTests(SimpleTestCase):
+    def test_kukutool_download_failure_refreshes_once_then_uses_new_url(self):
+        item = make_kukutool_download_item(
+            "https://v26-default.365yg.com/a/7fffffff/video/tos/cn/source"
+        )
+        refreshed_url = (
+            "https://v9-default.365yg.com/b/7fffffff/video/tos/cn/source"
+        )
+        temp_file = NamedTemporaryFile(delete=False)
+        temp_file.close()
+        result = {
+            "path": temp_file.name,
+            "content_type": "video/mp4",
+            "final_url": refreshed_url,
+            "size": 1,
+        }
+
+        with (
+            patch(
+                "xhs_download.services.downloads.fetch_to_temp_path",
+                side_effect=[XhsDownloadError("HTTP 403"), result],
+            ) as mock_fetch,
+            patch(
+                "xhs_download.services.downloads.iter_kukutool_download_recovery_urls",
+                return_value=[refreshed_url],
+            ),
+        ):
+            selected = fetch_item_to_temp_path(
+                item,
+                expected_type="video",
+            )
+
+        Path(temp_file.name).unlink(missing_ok=True)
+        self.assertEqual(selected["final_url"], refreshed_url)
+        self.assertEqual(mock_fetch.call_count, 2)
+        self.assertEqual(mock_fetch.call_args_list[0].kwargs["retries"], 1)
+        self.assertEqual(mock_fetch.call_args_list[1].kwargs["retries"], 1)
+
+    def test_kukutool_refresh_failure_falls_back_to_native_once(self):
+        item = make_kukutool_download_item(
+            "https://v26-default.365yg.com/a/7fffffff/video/tos/cn/source"
+        )
+        refreshed_url = (
+            "https://v9-default.365yg.com/b/7fffffff/video/tos/cn/source"
+        )
+        native_url = "https://v3-web.douyinvod.com/native.mp4"
+        temp_file = NamedTemporaryFile(delete=False)
+        temp_file.close()
+        result = {
+            "path": temp_file.name,
+            "content_type": "video/mp4",
+            "final_url": native_url,
+            "size": 1,
+        }
+
+        with (
+            patch(
+                "xhs_download.services.downloads.fetch_to_temp_path",
+                side_effect=[
+                    XhsDownloadError("HTTP 403"),
+                    XhsDownloadError("HTTP 404"),
+                    result,
+                ],
+            ) as mock_fetch,
+            patch(
+                "xhs_download.services.downloads.iter_kukutool_download_recovery_urls",
+                return_value=[refreshed_url, native_url],
+            ),
+        ):
+            selected = fetch_item_to_temp_path(
+                item,
+                expected_type="video",
+            )
+
+        Path(temp_file.name).unlink(missing_ok=True)
+        self.assertEqual(selected["final_url"], native_url)
+        self.assertEqual(mock_fetch.call_count, 3)
+
+    def test_local_download_limit_error_does_not_refresh_provider(self):
+        item = make_kukutool_download_item(
+            "https://v26-default.365yg.com/a/7fffffff/video/tos/cn/source"
+        )
+
+        with (
+            patch(
+                "xhs_download.services.downloads.fetch_to_temp_path",
+                side_effect=XhsDownloadError("资源超过允许的大小限制"),
+            ),
+            patch(
+                "xhs_download.services.downloads.iter_kukutool_download_recovery_urls"
+            ) as mock_recovery,
+        ):
+            with self.assertRaisesRegex(XhsDownloadError, "大小限制"):
+                fetch_item_to_temp_path(item, expected_type="video")
+
+        mock_recovery.assert_not_called()
+
+    @patch("xhs_download.services.downloads.request_get_with_retry")
+    def test_video_download_rejects_html_error_page(self, mock_get):
+        response = FakeStreamingResponse(
+            b"<html>blocked</html>",
+            url="https://v26-default.365yg.com/error",
+            content_type="text/html",
+        )
+        mock_get.return_value = response
+
+        with self.assertRaisesRegex(XhsDownloadError, "资源类型异常"):
+            fetch_to_temp_path(
+                "https://v26-default.365yg.com/error",
+                expected_type="video",
+            )
+
+    @patch("xhs_download.services.downloads.request_get_with_retry")
+    def test_video_download_rejects_missing_content_type(self, mock_get):
+        response = FakeStreamingResponse(
+            b"not-a-video",
+            url="https://v26-default.365yg.com/error",
+            content_type="",
+        )
+        mock_get.return_value = response
+
+        with self.assertRaisesRegex(XhsDownloadError, "missing Content-Type"):
+            fetch_to_temp_path(
+                "https://v26-default.365yg.com/error",
+                expected_type="video",
+            )
+
+    @patch("xhs_download.services.downloads.request_get_with_retry")
+    def test_video_download_rejects_html_body_with_binary_content_type(
+        self,
+        mock_get,
+    ):
+        response = FakeStreamingResponse(
+            b"<!doctype html><html>blocked</html>",
+            url="https://v26-default.365yg.com/error",
+            content_type="application/octet-stream",
+        )
+        mock_get.return_value = response
+
+        with self.assertRaisesRegex(XhsDownloadError, "HTML response body"):
+            fetch_to_temp_path(
+                "https://v26-default.365yg.com/error",
+                expected_type="video",
+            )
+
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        KUKUTOOL_PROVIDER_ENABLED=True,
+    )
+    def test_kukutool_recovery_invalidates_exact_cache_before_refresh(self):
+        aweme_id = "7647533902413173321"
+        cache_key = build_kukutool_cache_key(aweme_id)
+        cache.set(cache_key, {"url": "stale"}, timeout=300)
+        refreshed_url = (
+            "https://v9-default.365yg.com/b/7fffffff/video/tos/cn/source"
+        )
+
+        def assert_invalidated(*_args, **_kwargs):
+            self.assertIsNone(cache.get(cache_key))
+            return Mock(candidate=Mock(url=refreshed_url))
+
+        item = make_kukutool_download_item(
+            "https://v26-default.365yg.com/a/7fffffff/video/tos/cn/source",
+            aweme_id=aweme_id,
+        )
+        with (
+            patch(
+                "xhs_download.services.provider_recovery."
+                "DouyinKukuToolProvider.refresh_for_download",
+                side_effect=assert_invalidated,
+            ),
+            patch(
+                "xhs_download.services.provider_recovery.get_fast_native_result"
+            ) as mock_native,
+        ):
+            recovery = iter_kukutool_download_recovery_urls(item)
+            self.assertEqual(next(recovery), refreshed_url)
+
+        mock_native.assert_not_called()
+
+    def test_tampered_kukutool_manifest_cannot_trigger_provider_refresh(self):
+        item = make_kukutool_download_item(
+            "https://v26-default.365yg.com/a/7fffffff/video/tos/cn/source"
+        )
+        item["provider_resource_id"] = "7647533902413173399"
+
+        self.assertEqual(
+            list(iter_kukutool_download_recovery_urls(item) or ()),
+            [],
+        )
+
     @patch("xhs_download.services.downloads.request_get_with_retry")
     def test_build_download_archive_keeps_original_image_bytes_by_default(self, mock_get):
         raw_content = b"raw-webp-content"
@@ -2258,8 +2477,12 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertEqual(response.status_code, 503)
 
     @override_settings(ULTRA_HD_PROVIDER_ENABLED=True, TIKHUB_API_KEY="secret")
+    @patch(
+        "xhs_download.views.get_kukutool_provider_health",
+        return_value={"available": True},
+    )
     @patch("xhs_download.views.parse_media_page")
-    def test_results_passes_ultra_hd_request_flag(self, mock_parse):
+    def test_results_passes_ultra_hd_request_flag(self, mock_parse, _mock_health):
         mock_parse.return_value = ParseResult(
             platform="douyin",
             post_type="unknown",
@@ -2346,12 +2569,15 @@ class XhsDownloadViewTests(SimpleTestCase):
         KUKUTOOL_PROVIDER_ENABLED=True,
         KUKUTOOL_NODE_BINARY="/missing/node",
     )
-    @patch("xhs_download.views.find_node_runtime", return_value="")
+    @patch(
+        "xhs_download.views.get_kukutool_provider_health",
+        return_value={"available": False},
+    )
     @patch("xhs_download.views.parse_media_page")
     def test_results_ignore_ultra_hd_when_node_runtime_is_unavailable(
         self,
         mock_parse,
-        _mock_node_runtime,
+        _mock_health,
     ):
         mock_parse.return_value = ParseResult(
             platform="douyin",
@@ -2653,6 +2879,11 @@ class RuntimeHealthViewTests(SimpleTestCase):
         self.assertEqual(response.json(), {"status": "ok"})
         self.assertEqual(response["Cache-Control"], "no-store")
 
+    def test_provider_health_is_hidden_from_anonymous_users(self):
+        response = Client().get("/admin/provider-health/")
+
+        self.assertEqual(response.status_code, 404)
+
     @patch("djangoProject.health.get_runtime_readiness")
     def test_readiness_reports_available_components(self, mock_readiness):
         mock_readiness.return_value = {
@@ -2694,3 +2925,47 @@ class RuntimeHealthCheckTests(TestCase):
             readiness["components"],
             {"cache": True, "database": True},
         )
+
+
+class ProviderControlViewTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+
+        cache.clear()
+        self.user = get_user_model().objects.create_user(
+            username="provider-admin",
+            password="test-password",
+            is_staff=True,
+        )
+        self.client.force_login(self.user)
+
+    def test_staff_can_disable_and_enable_kukutool(self):
+        disabled = self.client.post(
+            "/admin/provider-health/control/",
+            data=json.dumps({"action": "disable"}),
+            content_type="application/json",
+        )
+        health = self.client.get("/admin/provider-health/")
+        enabled = self.client.post(
+            "/admin/provider-health/control/",
+            data=json.dumps({"action": "enable"}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(disabled.status_code, 200)
+        self.assertTrue(disabled.json()["admin_disabled"])
+        self.assertTrue(health.json()["admin_disabled"])
+        self.assertEqual(enabled.status_code, 200)
+        self.assertFalse(enabled.json()["admin_disabled"])
+
+    def test_provider_control_requires_csrf(self):
+        client = Client(enforce_csrf_checks=True)
+        client.force_login(self.user)
+
+        response = client.post(
+            "/admin/provider-health/control/",
+            data=json.dumps({"action": "disable"}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 403)

@@ -30,7 +30,10 @@ from .services.downloads import (
     read_limited_response,
     save_media_items_to_server,
 )
-from .services.platforms.douyin_kukutool import find_node_runtime
+from .services.platforms.douyin_kukutool import (
+    get_kukutool_provider_health,
+    set_kukutool_admin_disabled,
+)
 from .services.registry import parse_media_page
 from .services.rate_limits import (
     acquire_concurrency,
@@ -132,12 +135,41 @@ def request_flag(value):
 
 
 def ultra_hd_is_available():
-    return (
-        settings.ULTRA_HD_PROVIDER_ENABLED
-        and settings.ULTRA_HD_PUBLIC_ACCESS_ENABLED
-        and settings.KUKUTOOL_PROVIDER_ENABLED
-        and bool(find_node_runtime(settings.KUKUTOOL_NODE_BINARY))
-    )
+    if not settings.ULTRA_HD_PUBLIC_ACCESS_ENABLED:
+        return False
+    health = get_kukutool_provider_health()
+    return health["available"]
+
+
+@require_GET
+def provider_health_view(request):
+    if not request.user.is_active or not request.user.is_staff:
+        return JsonResponse({"detail": "Not found."}, status=404)
+    response = JsonResponse(get_kukutool_provider_health())
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+@require_POST
+@csrf_protect
+def provider_control_view(request):
+    if not request.user.is_active or not request.user.is_staff:
+        return JsonResponse({"detail": "Not found."}, status=404)
+    try:
+        payload = json.loads(request.body or "{}")
+    except (TypeError, ValueError):
+        return JsonResponse({"detail": "Invalid JSON."}, status=400)
+
+    action = str(payload.get("action") or "").strip().lower()
+    if action not in {"disable", "enable"}:
+        return JsonResponse(
+            {"detail": "action must be enable or disable."},
+            status=400,
+        )
+    set_kukutool_admin_disabled(action == "disable")
+    response = JsonResponse(get_kukutool_provider_health())
+    response["Cache-Control"] = "no-store"
+    return response
 
 
 def limit_error_response(message, retry_after=0):
@@ -372,6 +404,7 @@ def search_results_view(request, platform_key="home"):
         context["base_filename"] = result.base_filename
         context["image_items"] = [
             {
+                **asset.to_download_item(),
                 "type": "image",
                 "url": asset.url,
                 "encoded_url": encode_url(asset.url),
@@ -381,6 +414,7 @@ def search_results_view(request, platform_key="home"):
         ]
         context["video_items"] = [
             {
+                **asset.to_download_item(),
                 "type": "video",
                 "video_url": asset.url,
                 "cover_url": asset.cover_url,

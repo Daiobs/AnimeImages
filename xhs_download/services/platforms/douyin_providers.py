@@ -8,6 +8,7 @@ from time import monotonic, time
 from urllib.parse import urljoin, urlsplit
 
 import requests
+from django.conf import settings
 from django.core.cache import cache
 from django.utils import timezone
 
@@ -16,6 +17,7 @@ from ..candidates import MediaCandidate
 from ..common import validate_external_url
 from ..diagnostics import select_best_media_candidate
 from ..provider_settings import get_platform_provider_settings
+from ..provider_manifest import build_provider_manifest_token
 from .douyin_kukutool import DouyinKukuToolProvider
 
 
@@ -38,6 +40,88 @@ DOUYIN_ULTRA_EXECUTOR = ThreadPoolExecutor(
     thread_name_prefix="douyin-ultra",
 )
 logger = logging.getLogger(__name__)
+
+
+def build_douyin_metadata_cache_key(aweme_id):
+    return f"douyin:metadata:{aweme_id}"
+
+
+def serialize_douyin_metadata(result):
+    if not result or not result.assets:
+        return None
+    reference_asset = get_reference_video_asset(result)
+    return {
+        "platform": result.platform,
+        "post_type": result.post_type,
+        "base_filename": result.base_filename,
+        "cover_url": getattr(reference_asset, "cover_url", "") if reference_asset else "",
+        "cover_preview_url": (
+            getattr(reference_asset, "cover_preview_url", "")
+            if reference_asset
+            else ""
+        ),
+        "reference_url": getattr(reference_asset, "url", "") if reference_asset else "",
+        "metadata": result.metadata or {},
+    }
+
+
+def cache_douyin_metadata(aweme_id, result):
+    if not aweme_id:
+        return
+    data = serialize_douyin_metadata(result)
+    if not data:
+        return
+    ttl_seconds = int(
+        getattr(settings, "DOUYIN_METADATA_CACHE_TTL_SECONDS", 1800) or 0
+    )
+    if ttl_seconds <= 0:
+        return
+    try:
+        cache.set(
+            build_douyin_metadata_cache_key(aweme_id),
+            data,
+            timeout=ttl_seconds,
+        )
+    except Exception:
+        logger.exception(
+            "douyin_metadata_cache_write_failed",
+            extra={"aweme_id": aweme_id},
+        )
+
+
+def get_cached_douyin_metadata(aweme_id):
+    if not aweme_id:
+        return None
+    try:
+        data = cache.get(build_douyin_metadata_cache_key(aweme_id))
+    except Exception:
+        logger.exception(
+            "douyin_metadata_cache_read_failed",
+            extra={"aweme_id": aweme_id},
+        )
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    reference_url = str(data.get("reference_url") or "")
+    cover_url = str(data.get("cover_url") or "")
+    if not reference_url and not cover_url:
+        return None
+    return ParseResult(
+        platform=str(data.get("platform") or "douyin"),
+        post_type=str(data.get("post_type") or "video"),
+        base_filename=str(data.get("base_filename") or f"douyin_{aweme_id}"),
+        assets=(
+            MediaAsset(
+                media_type="video",
+                url=reference_url,
+                platform="douyin",
+                cover_url=cover_url,
+                cover_preview_url=str(data.get("cover_preview_url") or cover_url),
+            ),
+        ),
+        metadata=data.get("metadata") if isinstance(data.get("metadata"), dict) else {},
+    )
 
 
 def duration_ms(started_at):
@@ -475,7 +559,13 @@ def get_fast_native_result(adapter, context, timeout_seconds=5.0):
         else:
             result = None
         if result and result.assets:
-            return with_parse_metadata(result, selected_provider="native", fallback_reason="fast_native")
+            result = with_parse_metadata(
+                result,
+                selected_provider="native",
+                fallback_reason="fast_native",
+            )
+            cache_douyin_metadata(context.aweme_id, result)
+            return result
     except Exception as error:
         log_provider_failure("native_fast", context, error, started_at)
         return None
@@ -488,11 +578,33 @@ def get_reference_video_asset(result):
     return result.video_assets[0] if result.video_assets else None
 
 
-def build_external_parse_result(adapter, context, candidate, reference_result=None):
+def build_external_parse_result(
+    adapter,
+    context,
+    candidate,
+    reference_result=None,
+    provider_name="",
+):
     reference_asset = get_reference_video_asset(reference_result)
     base_filename = getattr(reference_result, "base_filename", "")
     if not base_filename:
         base_filename = f"douyin_{context.aweme_id}" if context.aweme_id else "douyin"
+    provider_fields = {"provider": provider_name}
+    if provider_name == "kukutool":
+        asset_id = f"douyin:{context.aweme_id}:video:kukutool"
+        provider_cache_key = f"douyin:kukutool:validated:{context.aweme_id}"
+        provider_fields.update(
+            asset_id=asset_id,
+            provider_resource_id=context.aweme_id,
+            provider_cache_key=provider_cache_key,
+            provider_manifest_token=build_provider_manifest_token(
+                asset_id=asset_id,
+                provider="kukutool",
+                provider_resource_id=context.aweme_id,
+                provider_cache_key=provider_cache_key,
+                url=candidate.url,
+            ),
+        )
     return ParseResult(
         platform=adapter.platform_id,
         post_type="video",
@@ -508,6 +620,7 @@ def build_external_parse_result(adapter, context, candidate, reference_result=No
                 size_bytes=candidate.size_bytes,
                 headers=adapter.headers,
                 media_host_suffixes=adapter.media_host_suffixes,
+                **provider_fields,
             ),
         ),
     )
@@ -931,7 +1044,13 @@ class DouyinTikHubProvider(DouyinResultProvider):
 
         candidate = validated.candidate
         native_size = get_largest_video_size(native_result)
-        result = build_external_parse_result(adapter, context, candidate, native_result)
+        result = build_external_parse_result(
+            adapter,
+            context,
+            candidate,
+            native_result,
+            provider_name=self.name,
+        )
         result = with_parse_metadata(
             result,
             selected_provider=self.name,
