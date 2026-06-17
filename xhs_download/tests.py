@@ -203,6 +203,10 @@ class XhsUtilityTests(SimpleTestCase):
         with self.assertRaises(XhsSecurityError):
             validate_public_download_url("https://cdn.example.com:8080/a.jpg")
 
+    def test_validate_public_download_url_rejects_invalid_port(self):
+        with self.assertRaises(XhsSecurityError):
+            validate_public_download_url("https://cdn.example.com:notaport/a.jpg")
+
     def test_dedupe_candidates_preserves_first_occurrence(self):
         candidates = dedupe_candidates([
             MediaCandidate(url="https://example.com/a.mp4", size_bytes=100),

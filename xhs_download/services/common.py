@@ -157,7 +157,10 @@ def validate_public_url(url, message="不允许请求该 URL"):
 def validate_public_download_url(url, message="不允许请求该 URL"):
     parsed = urlparse(url or "")
     validate_public_url(url, message)
-    port = parsed.port
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise XhsSecurityError(message) from error
     if port is not None and port not in {80, 443}:
         raise XhsSecurityError(message)
 

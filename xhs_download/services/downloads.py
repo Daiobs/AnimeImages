@@ -273,10 +273,14 @@ def request_public_provider_get_with_retry(
                     current_url = urljoin(current_url, location)
                     continue
                 if response.status_code == 200:
-                    validate_public_download_url(
-                        response.url,
-                        "Provider URL 跳转到了不允许的地址",
-                    )
+                    try:
+                        validate_public_download_url(
+                            response.url,
+                            "Provider URL 跳转到了不允许的地址",
+                        )
+                    except Exception:
+                        response.close()
+                        raise
                     return response
                 last_error = XhsDownloadError(f"HTTP {response.status_code}")
                 response.close()
