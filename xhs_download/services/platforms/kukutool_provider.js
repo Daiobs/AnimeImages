@@ -44,12 +44,7 @@ const FALLBACK_PROFILES = [
 ];
 
 async function main() {
-  const awemeId = String(process.argv[2] || "");
-  if (!/^\d{15,22}$/.test(awemeId)) {
-    throw new Error("invalid aweme_id");
-  }
-
-  const requestURL = `https://www.douyin.com/video/${awemeId}`;
+  const requestURL = normalizeRequestURL(process.argv[2]);
   const headers = {
     Accept: "application/json",
     "Content-Type": "application/json",
@@ -116,6 +111,32 @@ async function main() {
     ? decryptResponse(parsed.data, parsed.iv)
     : parsed.data;
   process.stdout.write(JSON.stringify({ result, profile }));
+}
+
+function normalizeRequestURL(value) {
+  const input = String(value || "").trim();
+  if (/^\d{15,22}$/.test(input)) {
+    return `https://www.douyin.com/video/${input}`;
+  }
+  let parsed;
+  try {
+    parsed = new URL(input);
+  } catch {
+    throw new Error("invalid request_url");
+  }
+  if (!["http:", "https:"].includes(parsed.protocol) || !parsed.hostname) {
+    throw new Error("invalid request_url");
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  if (
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    /^127\./.test(hostname) ||
+    hostname === "::1"
+  ) {
+    throw new Error("invalid request_url");
+  }
+  return parsed.href;
 }
 
 async function discoverProfiles(headers) {

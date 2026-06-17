@@ -18,7 +18,7 @@ from django.conf import settings
 from django.core.cache import cache
 
 from ..candidates import MediaCandidate
-from ..common import XhsProviderTimeoutError, validate_external_url
+from ..common import XhsProviderTimeoutError, validate_external_url, validate_public_url
 from ..provider_settings import get_platform_provider_settings
 from ..quality import QualityProbe
 from ..rate_limits import (
@@ -566,6 +566,10 @@ def build_kukutool_safe_env(cached_profile=None):
         "HOME": os.environ.get("HOME", ""),
         "LANG": os.environ.get("LANG", "C.UTF-8"),
     }
+    for key in ("SystemRoot", "WINDIR"):
+        value = os.environ.get(key)
+        if value:
+            safe_env[key] = value
     if os.environ.get("LC_ALL"):
         safe_env["LC_ALL"] = os.environ["LC_ALL"]
     if valid_kukutool_profile(cached_profile):
@@ -611,6 +615,8 @@ def run_kukutool_helper(
         [node_runtime, str(KUKUTOOL_HELPER), str(aweme_id)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=max(0.1, timeout_seconds),
         check=False,
         env=process_env,
@@ -634,6 +640,74 @@ def run_kukutool_helper(
                 logger.exception(
                     "douyin_provider_profile_cache_write_failed",
                     extra={"provider": "kukutool", "aweme_id": aweme_id},
+                )
+        return payload["result"]
+    return payload
+
+
+def run_kukutool_url_helper(
+    request_url,
+    node_binary="",
+    timeout_seconds=12.0,
+    profile_cache_ttl_seconds=86400,
+    profile_cache_key=None,
+):
+    request_url = str(request_url or "").strip()
+    if len(request_url) > 2048:
+        raise ValueError("request_url is too long")
+    validate_public_url(request_url, "invalid request_url")
+
+    runtime_status = get_kukutool_runtime_status()
+    if not runtime_status["checked"]:
+        runtime_status = initialize_kukutool_runtime()
+    node_runtime = runtime_status["node_binary"] if runtime_status["available"] else ""
+    if node_binary and node_runtime != node_binary:
+        node_runtime = ""
+    if not node_runtime:
+        raise OSError("KuKuTool Provider requires Node.js 18 or newer")
+    if not KUKUTOOL_HELPER.is_file():
+        raise OSError("KuKuTool Provider helper script is missing")
+
+    try:
+        cache_key = profile_cache_key or build_kukutool_profile_cache_key()
+        cached_profile = cache.get(cache_key)
+    except Exception:
+        logger.exception(
+            "kukutool_generic_profile_cache_read_failed",
+            extra={"provider": "kukutool_generic"},
+        )
+        cached_profile = None
+    process_env = build_kukutool_safe_env(cached_profile)
+
+    process = subprocess.run(
+        [node_runtime, str(KUKUTOOL_HELPER), request_url],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=max(0.1, timeout_seconds),
+        check=False,
+        env=process_env,
+    )
+    if process.returncode != 0:
+        message = (process.stderr or process.stdout or "KuKuTool request failed").strip()
+        raise OSError(message[:2000])
+    if len(process.stdout) > 10 * 1024 * 1024:
+        raise ValueError("KuKuTool response is too large")
+    payload = json.loads(process.stdout)
+    if isinstance(payload, dict) and "result" in payload:
+        profile = payload.get("profile")
+        if valid_kukutool_profile(profile) and profile_cache_ttl_seconds > 0:
+            try:
+                cache.set(
+                    cache_key,
+                    profile,
+                    timeout=int(profile_cache_ttl_seconds),
+                )
+            except Exception:
+                logger.exception(
+                    "kukutool_generic_profile_cache_write_failed",
+                    extra={"provider": "kukutool_generic"},
                 )
         return payload["result"]
     return payload

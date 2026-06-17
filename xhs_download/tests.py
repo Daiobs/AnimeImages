@@ -14,14 +14,17 @@ from PIL import Image
 from .services.common import (
     MEDIA_HOST_SUFFIXES,
     XhsDownloadError,
+    XhsParseError,
     XhsSecurityError,
     clean_filename,
     encode_url,
     request_get_with_retry,
     validate_media_url,
     validate_page_url,
+    validate_public_download_url,
 )
 from .services.downloads import (
+    MAX_IMAGE_BYTES,
     build_download_archive,
     build_download_archive_file,
     fetch_item_to_temp_path,
@@ -53,7 +56,15 @@ from .services.region_routing import (
     get_request_country_code,
     normalize_country_code,
 )
-from .services.platforms import BilibiliAdapter, DouyinAdapter, XiaohongshuAdapter
+from .services.platforms import (
+    BasePlatformAdapter,
+    BilibiliAdapter,
+    DouyinAdapter,
+    GenericThirdPartyAdapter,
+    KukutoolGenericProvider,
+    KukutoolResultNormalizer,
+    XiaohongshuAdapter,
+)
 from .services.platforms.bilibili import BILIBILI_HEADERS
 from .services.platforms.douyin import DOUYIN_HEADERS, extract_aweme_id, get_video_candidates
 from .services.platforms.douyin_kukutool import (
@@ -73,7 +84,14 @@ from .services.platforms.douyin_providers import (
     context_log_fields,
 )
 from .services.parser import normalize_xhs_image_url, normalize_xhs_preview_image_url, parse_xhs_html
-from .services.registry import extract_url_from_text, get_adapter_for_url
+from .services.registry import (
+    PlatformRegistry,
+    extract_url_from_text,
+    get_adapter_for_platform,
+    get_adapter_for_url,
+    list_platforms,
+    parse_media_page,
+)
 
 
 def make_image_bytes():
@@ -172,6 +190,18 @@ class XhsUtilityTests(SimpleTestCase):
     def test_validate_media_url_allows_bilibili_media_hosts(self):
         validate_media_url("https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/video.mp4")
         validate_media_url("https://i0.hdslb.com/bfs/archive/cover.jpg")
+
+    @patch(
+        "xhs_download.services.common.socket.getaddrinfo",
+        return_value=[(None, None, None, "", ("10.0.0.5", 443))],
+    )
+    def test_validate_public_download_url_rejects_private_dns_result(self, _mock_dns):
+        with self.assertRaises(XhsSecurityError):
+            validate_public_download_url("https://cdn.example.com/a.jpg")
+
+    def test_validate_public_download_url_rejects_unexpected_port(self):
+        with self.assertRaises(XhsSecurityError):
+            validate_public_download_url("https://cdn.example.com:8080/a.jpg")
 
     def test_dedupe_candidates_preserves_first_occurrence(self):
         candidates = dedupe_candidates([
@@ -459,6 +489,9 @@ class RegionRoutingTests(SimpleTestCase):
 
 
 class XhsParserTests(SimpleTestCase):
+    def setUp(self):
+        cache.clear()
+
     def test_registry_resolves_xiaohongshu_adapter(self):
         adapter = get_adapter_for_url("https://www.xiaohongshu.com/explore/abc123")
 
@@ -488,6 +521,255 @@ class XhsParserTests(SimpleTestCase):
         adapter = get_adapter_for_url("https://b23.tv/abc123")
 
         self.assertIsInstance(adapter, BilibiliAdapter)
+
+    def test_registry_resolves_generic_third_party_adapter(self):
+        adapter = get_adapter_for_url("https://www.instagram.com/p/example/")
+
+        self.assertIsInstance(adapter, GenericThirdPartyAdapter)
+
+    def test_registry_resolves_third_party_share_text(self):
+        adapter = get_adapter_for_url(
+            "Open this TikTok https://www.tiktok.com/@demo/video/1234567890"
+        )
+
+        self.assertIsInstance(adapter, GenericThirdPartyAdapter)
+
+    def test_registry_resolves_adapter_by_platform_id(self):
+        adapter = get_adapter_for_platform("douyin")
+
+        self.assertIsInstance(adapter, DouyinAdapter)
+
+    def test_registry_resolves_third_party_rule_by_platform_id(self):
+        adapter = get_adapter_for_platform("tiktok")
+
+        self.assertIsInstance(adapter, GenericThirdPartyAdapter)
+
+    def test_registry_lists_normalized_platform_metadata(self):
+        platforms = {item["platform_id"]: item for item in list_platforms()}
+
+        self.assertEqual(
+            set(platforms),
+            {"xiaohongshu", "douyin", "bilibili", "third_party"},
+        )
+        self.assertEqual(
+            platforms["douyin"]["capabilities"]["media_types"],
+            ("image", "video"),
+        )
+        self.assertTrue(platforms["douyin"]["capabilities"]["ultra_hd"])
+        self.assertEqual(
+            platforms["douyin"]["provider_policy"]["primary_provider"],
+            "native",
+        )
+        self.assertEqual(
+            platforms["douyin"]["provider_policy"]["fallback_providers"],
+            ("kukutool", "tikhub"),
+        )
+        self.assertEqual(
+            platforms["bilibili"]["provider_policy"]["provider_ids"],
+            ("native",),
+        )
+        third_party_rules = {
+            rule["platform_id"]
+            for rule in platforms["third_party"]["platform_rules"]
+        }
+        self.assertIn("tiktok", third_party_rules)
+        self.assertIn("instagram", third_party_rules)
+        self.assertEqual(
+            platforms["third_party"]["provider_policy"]["third_party_providers"],
+            ("kukutool_generic",),
+        )
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=False)
+    def test_generic_third_party_parse_reports_provider_disabled(self):
+        with self.assertRaisesRegex(XhsParseError, "Provider"):
+            parse_media_page("https://www.instagram.com/p/example/")
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+    )
+    def test_generic_third_party_parse_returns_signed_video_asset(self):
+        runner = Mock(return_value={
+            "title": "demo post",
+            "cover": "https://scontent.cdninstagram.com/cover.jpg",
+            "videos": [
+                {
+                    "video_fullinfo": [
+                        {
+                            "url": "https://scontent.cdninstagram.com/low.mp4",
+                            "size": 100,
+                            "type": "540p",
+                        },
+                        {
+                            "url": "https://scontent.cdninstagram.com/high.mp4",
+                            "size": 200,
+                            "type": "1080p",
+                        },
+                    ],
+                }
+            ],
+        })
+
+        result = GenericThirdPartyAdapter(runner=runner).parse_url(
+            "https://www.instagram.com/p/example/"
+        )
+
+        self.assertEqual(result.platform, "third_party")
+        self.assertEqual(result.post_type, "video")
+        self.assertEqual(result.metadata["source_platform"], "instagram")
+        self.assertEqual(result.video_assets[0].url, "https://scontent.cdninstagram.com/high.mp4")
+        self.assertEqual(result.video_assets[0].provider, "kukutool_generic")
+        self.assertTrue(result.video_assets[0].provider_manifest_token)
+        runner.assert_called_once()
+
+    def test_kukutool_normalizer_returns_standard_video_result(self):
+        rule = GenericThirdPartyAdapter().get_rule_for_url(
+            "https://www.kuaishou.com/short-video/3xvxtmcc2r22c6i"
+        )
+        payload = {
+            "title": "kuaishou post",
+            "cover": "https://p1.a.yximgs.com/cover.jpg",
+            "videos": ["https://hwmov.a.kwimgs.com/demo.mp4"],
+            "pics": ["https://p1.a.yximgs.com/cover.jpg"],
+        }
+
+        result = KukutoolResultNormalizer().normalize(
+            rule=rule,
+            platform_name="快手",
+            source_url="https://www.kuaishou.com/short-video/3xvxtmcc2r22c6i",
+            payload=payload,
+        )
+
+        self.assertEqual(result.platform, "third_party")
+        self.assertEqual(result.post_type, "video")
+        self.assertEqual(result.metadata["source_provider"], "kukutool_generic")
+        self.assertEqual(result.video_assets[0].url, payload["videos"][0])
+        self.assertEqual(result.video_assets[0].cover_url, payload["cover"])
+        self.assertTrue(result.video_assets[0].provider_manifest_token)
+
+    def test_kukutool_normalizer_returns_standard_image_result(self):
+        rule = GenericThirdPartyAdapter().get_rule_for_url(
+            "https://www.instagram.com/p/example/"
+        )
+        payload = {
+            "title": "image post",
+            "pics": [
+                "https://scontent.cdninstagram.com/image-1.jpg",
+                "https://scontent.cdninstagram.com/image-2.jpg",
+            ],
+        }
+
+        result = KukutoolResultNormalizer().normalize(
+            rule=rule,
+            platform_name="Instagram",
+            source_url="https://www.instagram.com/p/example/",
+            payload=payload,
+        )
+
+        self.assertEqual(result.post_type, "image")
+        self.assertEqual(len(result.image_assets), 2)
+        self.assertEqual(result.image_assets[0].provider, "kukutool_generic")
+        self.assertTrue(result.image_assets[0].provider_manifest_token)
+
+    def test_kukutool_normalizer_rejects_unlisted_media_host(self):
+        rule = GenericThirdPartyAdapter().get_rule_for_url(
+            "https://www.instagram.com/p/example/"
+        )
+
+        with self.assertRaisesRegex(ValueError, "media assets"):
+            KukutoolResultNormalizer().normalize(
+                rule=rule,
+                platform_name="Instagram",
+                source_url="https://www.instagram.com/p/example/",
+                payload={"videos": ["https://evil.example.com/video.mp4"]},
+            )
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+    )
+    def test_generic_third_party_parse_accepts_string_video_entries(self):
+        media_url = "https://hwmov.a.kwimgs.com/demo.mp4"
+        runner = Mock(return_value={
+            "title": "kuaishou post",
+            "cover": "https://p1.a.yximgs.com/cover.jpg",
+            "videos": [media_url],
+            "pics": ["https://p1.a.yximgs.com/cover.jpg"],
+        })
+
+        result = GenericThirdPartyAdapter(runner=runner).parse_url(
+            "https://www.kuaishou.com/short-video/3xvxtmcc2r22c6i"
+        )
+
+        self.assertEqual(result.post_type, "video")
+        self.assertEqual(result.metadata["source_platform"], "kuaishou")
+        self.assertEqual(result.video_assets[0].url, media_url)
+        self.assertEqual(result.video_assets[0].quality_label, "video")
+        self.assertEqual(result.video_assets[0].provider, "kukutool_generic")
+        self.assertTrue(result.video_assets[0].provider_manifest_token)
+
+    @override_settings(THIRD_PARTY_KUKUTOOL_RETRIES=2)
+    def test_kukutool_generic_provider_retries_transient_failure(self):
+        runner = Mock(side_effect=[
+            OSError("parse failed (500): retry"),
+            {
+                "title": "retry post",
+                "videos": ["https://scontent.cdninstagram.com/video.mp4"],
+            },
+        ])
+
+        payload = KukutoolGenericProvider(runner=runner).parse(
+            "https://www.instagram.com/p/example/"
+        )
+
+        self.assertEqual(payload["title"], "retry post")
+        self.assertEqual(runner.call_count, 2)
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+    )
+    def test_generic_third_party_adapter_delegates_to_provider_and_normalizer(self):
+        provider = Mock()
+        provider.parse.return_value = {
+            "title": "delegated post",
+            "videos": ["https://scontent.cdninstagram.com/video.mp4"],
+        }
+        normalizer = KukutoolResultNormalizer()
+        adapter = GenericThirdPartyAdapter(provider=provider, normalizer=normalizer)
+
+        result = adapter.parse_url("https://www.instagram.com/p/example/")
+
+        self.assertEqual(result.post_type, "video")
+        provider.parse.assert_called_once_with("https://www.instagram.com/p/example/")
+
+    def test_registry_uses_adapter_parse_entrypoint(self):
+        class FakeAdapter(BasePlatformAdapter):
+            platform_id = "fake"
+            page_host_suffixes = ("example.com",)
+            parse_option_names = ("prefer_ultra_hd",)
+
+            def __init__(self):
+                self.received_prefer_ultra_hd = None
+
+            def parse_url(self, url, prefer_ultra_hd=False):
+                self.received_prefer_ultra_hd = prefer_ultra_hd
+                return ParseResult(
+                    platform=self.platform_id,
+                    post_type="image",
+                    base_filename="fake",
+                    assets=(),
+                )
+
+        adapter = FakeAdapter()
+        result = PlatformRegistry(adapters=(adapter,)).parse_url(
+            "https://example.com/post/1",
+            prefer_ultra_hd=True,
+            client_country_code="US",
+        )
+
+        self.assertEqual(result.platform, "fake")
+        self.assertTrue(adapter.received_prefer_ultra_hd)
 
     def test_extract_url_from_share_text_strips_trailing_punctuation(self):
         self.assertEqual(
@@ -2364,15 +2646,60 @@ class XhsDownloadArchiveTests(SimpleTestCase):
         self.assertEqual(archive["failed_count"], 0)
 
     def test_resolve_server_save_folder_rejects_absolute_when_disabled(self):
+        absolute_path = Path(Path.cwd().anchor) / "tmp" / "xhs"
         with self.assertRaisesMessage(Exception, "当前环境不允许保存到绝对路径"):
-            resolve_server_save_folder("/tmp/xhs", allow_absolute=False)
+            resolve_server_save_folder(str(absolute_path), allow_absolute=False)
 
     def test_resolve_server_save_folder_keeps_relative_inside_media_root(self):
         with TemporaryDirectory() as tmp_dir:
             with override_settings(MEDIA_ROOT=Path(tmp_dir) / "media", XHS_DEFAULT_SERVER_SAVE_DIR="xhs"):
                 folder = resolve_server_save_folder("xhs", allow_absolute=False)
 
-        self.assertTrue(str(folder).endswith("media/xhs"))
+        self.assertEqual(folder, (Path(tmp_dir) / "media" / "xhs").resolve())
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+    )
+    @patch(
+        "xhs_download.services.common.socket.getaddrinfo",
+        return_value=[(None, None, None, "", ("93.184.216.34", 443))],
+    )
+    @patch("xhs_download.services.downloads.requests.get")
+    def test_signed_generic_provider_download_allows_public_url(
+        self,
+        mock_get,
+        _mock_getaddrinfo,
+    ):
+        content = make_image_bytes()
+        media_url = "https://scontent.cdninstagram.com/image.jpg"
+        response = FakeStreamingResponse(
+            content,
+            url=media_url,
+            content_type="image/jpeg",
+        )
+        response.status_code = 200
+        mock_get.return_value = response
+        result = GenericThirdPartyAdapter(
+            runner=Mock(return_value={
+                "title": "image post",
+                "pics": [media_url],
+            })
+        ).parse_url("https://www.instagram.com/p/example/")
+        item = result.image_assets[0].to_download_item()
+
+        temp_result = fetch_item_to_temp_path(
+            item,
+            timeout=1,
+            max_bytes=MAX_IMAGE_BYTES,
+            expected_type="image",
+        )
+
+        try:
+            self.assertEqual(Path(temp_result["path"]).read_bytes(), content)
+            self.assertEqual(temp_result["final_url"], media_url)
+        finally:
+            Path(temp_result["path"]).unlink(missing_ok=True)
 
     def test_resolve_server_save_folder_rejects_relative_escape(self):
         with TemporaryDirectory() as tmp_dir:
@@ -2463,6 +2790,181 @@ class XhsDownloadViewTests(SimpleTestCase):
             ),
             len(make_image_bytes()),
         )
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_allows_signed_generic_provider_public_url(self, mock_fetch):
+        media_url = "https://p1.a.yximgs.com/cover.jpg"
+        asset_id = "third_party:kuaishou:abc123:video:1:cover"
+        provider_cache_key = "third_party:kukutool_generic:abc123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="kukutool_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+        )
+        mock_fetch.return_value = FakeStreamingResponse(
+            make_image_bytes(),
+            url=media_url,
+            content_type="image/jpeg",
+        )
+
+        response = Client().get(
+            "/media/proxy-image/",
+            {
+                "u": encode_url(media_url),
+                "asset_id": asset_id,
+                "provider": "kukutool_generic",
+                "provider_resource_id": provider_resource_id,
+                "provider_cache_key": provider_cache_key,
+                "provider_manifest_token": token,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/jpeg")
+        self.assertTrue(mock_fetch.call_args.kwargs["provider_signed"])
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+    )
+    @patch("xhs_download.views.probe_media_size")
+    @patch("xhs_download.views.parse_media_page")
+    def test_results_does_not_probe_signed_third_party_video_size(
+        self,
+        mock_parse,
+        mock_probe_size,
+    ):
+        media_url = "https://hwmov.a.kwimgs.com/demo.mp4"
+        cover_url = "https://p1.a.yximgs.com/cover.jpg"
+        asset_id = "third_party:kuaishou:abc123:video:1"
+        provider_cache_key = "third_party:kukutool_generic:abc123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="kukutool_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+        )
+        mock_parse.return_value = ParseResult(
+            platform="third_party",
+            post_type="video",
+            base_filename="kuaishou",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url=media_url,
+                    platform="third_party",
+                    cover_url=cover_url,
+                    cover_preview_url=cover_url,
+                    provider="kukutool_generic",
+                    asset_id=asset_id,
+                    provider_resource_id=provider_resource_id,
+                    provider_cache_key=provider_cache_key,
+                    provider_manifest_token=token,
+                ),
+            ),
+            metadata={"source_platform": "kuaishou"},
+        )
+
+        response = Client().get(
+            "/results/",
+            {"q": "https://www.kuaishou.com/short-video/3xvxtmcc2r22c6i"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_probe_size.assert_not_called()
+        self.assertContains(response, 'data-provider="kukutool_generic"')
+        self.assertContains(response, "provider_manifest_token")
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+    )
+    @patch("xhs_download.views.parse_media_page")
+    def test_results_uses_third_party_source_platform_notice(self, mock_parse):
+        mock_parse.return_value = ParseResult(
+            platform="third_party",
+            post_type="video",
+            base_filename="kuaishou",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url="https://hwmov.a.kwimgs.com/demo.mp4",
+                    platform="third_party",
+                    provider="kukutool_generic",
+                ),
+            ),
+            metadata={
+                "source_platform": "kuaishou",
+                "source_platform_name": "快手",
+                "provider_label": "KuKuTool",
+            },
+        )
+
+        response = Client().get(
+            "/results/",
+            {"q": "https://www.kuaishou.com/short-video/3xvxtmcc2r22c6i"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "快手")
+        self.assertContains(response, "KuKuTool 第三方解析")
+        self.assertNotContains(response, ">third_party<")
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=False,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=False,
+    )
+    @patch("xhs_download.views.parse_media_page")
+    def test_results_blocks_third_party_when_public_access_disabled(self, mock_parse):
+        response = Client().get(
+            "/results/",
+            {"q": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        mock_parse.assert_not_called()
+        self.assertContains(response, "第三方通用解析暂未开放", status_code=403)
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+        THIRD_PARTY_RATE_LIMIT_PER_MINUTE=1,
+    )
+    @patch("xhs_download.views.parse_media_page")
+    def test_results_rate_limits_third_party_provider_requests(self, mock_parse):
+        mock_parse.return_value = ParseResult(
+            platform="third_party",
+            post_type="video",
+            base_filename="kuaishou",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url="https://hwmov.a.kwimgs.com/demo.mp4",
+                    platform="third_party",
+                    provider="kukutool_generic",
+                ),
+            ),
+            metadata={"source_platform": "kuaishou", "source_platform_name": "快手"},
+        )
+
+        first = Client().get(
+            "/results/",
+            {"q": "https://www.kuaishou.com/short-video/3xvxtmcc2r22c6i"},
+        )
+        second = Client().get(
+            "/results/",
+            {"q": "https://www.kuaishou.com/short-video/3xvxtmcc2r22c6i"},
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 429)
+        self.assertIn("Retry-After", second)
+        self.assertEqual(mock_parse.call_count, 1)
 
     @patch(
         "xhs_download.views.check_preview_request_limits",

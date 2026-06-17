@@ -1,6 +1,7 @@
 import base64
 import ipaddress
 import re
+import socket
 import time
 from urllib.parse import urlparse
 
@@ -117,6 +118,22 @@ def is_blocked_hostname(hostname):
     )
 
 
+def is_blocked_ip_address(address):
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return True
+
+    return (
+        parsed.is_loopback
+        or parsed.is_private
+        or parsed.is_link_local
+        or parsed.is_multicast
+        or parsed.is_reserved
+        or parsed.is_unspecified
+    )
+
+
 def validate_external_url(url, allowed_suffixes, message="不允许请求该 URL"):
     parsed = urlparse(url or "")
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -124,6 +141,37 @@ def validate_external_url(url, allowed_suffixes, message="不允许请求该 URL
     if is_blocked_hostname(parsed.hostname):
         raise XhsSecurityError(message)
     if not host_matches(parsed.hostname, allowed_suffixes):
+        raise XhsSecurityError(message)
+    return url
+
+
+def validate_public_url(url, message="不允许请求该 URL"):
+    parsed = urlparse(url or "")
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise XhsSecurityError(message)
+    if is_blocked_hostname(parsed.hostname):
+        raise XhsSecurityError(message)
+    return url
+
+
+def validate_public_download_url(url, message="不允许请求该 URL"):
+    parsed = urlparse(url or "")
+    validate_public_url(url, message)
+    port = parsed.port
+    if port is not None and port not in {80, 443}:
+        raise XhsSecurityError(message)
+
+    try:
+        results = socket.getaddrinfo(
+            parsed.hostname,
+            port or (443 if parsed.scheme == "https" else 80),
+            type=socket.SOCK_STREAM,
+        )
+    except OSError as error:
+        raise XhsSecurityError(message) from error
+
+    addresses = {item[4][0] for item in results if item and item[4]}
+    if not addresses or any(is_blocked_ip_address(address) for address in addresses):
         raise XhsSecurityError(message)
     return url
 

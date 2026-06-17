@@ -9,7 +9,7 @@ from ..common import (
     normalize_text,
     request_get_with_retry,
 )
-from .base import BasePlatformAdapter
+from .base import BasePlatformAdapter, PlatformCapabilities, ProviderPolicy
 
 
 BILIBILI_PAGE_HOST_SUFFIXES = ("bilibili.com", "b23.tv")
@@ -166,6 +166,12 @@ class BilibiliAdapter(BasePlatformAdapter):
     page_host_suffixes = BILIBILI_PAGE_HOST_SUFFIXES
     media_host_suffixes = BILIBILI_MEDIA_HOST_SUFFIXES
     headers = BILIBILI_HEADERS
+    capabilities = PlatformCapabilities(
+        media_types=("video",),
+        batch_download=True,
+        cover=True,
+    )
+    provider_policy = ProviderPolicy(primary_provider="native")
 
     def parse_url(self, url):
         self.require_supported_url(url)

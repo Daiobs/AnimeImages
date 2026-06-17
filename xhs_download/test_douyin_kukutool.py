@@ -25,6 +25,7 @@ from .services.platforms.douyin_kukutool import (
     record_kukutool_failure,
     record_kukutool_success,
     run_kukutool_helper,
+    run_kukutool_url_helper,
 )
 from .services.platforms.douyin_providers import (
     DouyinParseContext,
@@ -718,6 +719,25 @@ class DouyinKukuToolTests(SimpleTestCase):
             },
         )
 
+    def test_safe_child_environment_keeps_windows_runtime_vars(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "PATH": "/usr/bin",
+                "HOME": "/tmp/home",
+                "LANG": "C.UTF-8",
+                "SystemRoot": "C:\\Windows",
+                "WINDIR": "C:\\Windows",
+                "DJANGO_SECRET_KEY": "do-not-forward",
+            },
+            clear=True,
+        ):
+            child_env = build_kukutool_safe_env()
+
+        self.assertEqual(child_env["SystemRoot"], "C:\\Windows")
+        self.assertEqual(child_env["WINDIR"], "C:\\Windows")
+        self.assertNotIn("DJANGO_SECRET_KEY", child_env)
+
     def test_circuit_opens_after_threshold_and_success_resets_it(self):
         provider_settings = ProviderSettings(
             ultra_hd_enabled=True,
@@ -854,7 +874,42 @@ class DouyinKukuToolTests(SimpleTestCase):
         )
 
         self.assertEqual(result, {"videos": []})
+        self.assertEqual(mock_run.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(mock_run.call_args.kwargs["errors"], "replace")
         self.assertEqual(
             cache.get(build_kukutool_profile_cache_key()),
             profile,
+        )
+
+    @patch(
+        "xhs_download.services.platforms.douyin_kukutool.get_kukutool_runtime_status",
+        return_value={
+            "checked": True,
+            "available": True,
+            "node_binary": "/usr/bin/node",
+            "error": "",
+            "checked_at": 1,
+        },
+    )
+    @patch("xhs_download.services.platforms.douyin_kukutool.subprocess.run")
+    def test_url_helper_passes_public_url_to_node_process(
+        self,
+        mock_run,
+        _mock_runtime,
+    ):
+        mock_run.return_value = Mock(
+            returncode=0,
+            stdout=json.dumps({"result": {"pics": ["https://cdn.example.com/a.jpg"]}}),
+            stderr="",
+        )
+
+        result = run_kukutool_url_helper(
+            "https://www.instagram.com/p/example/",
+            timeout_seconds=1,
+        )
+
+        self.assertEqual(result, {"pics": ["https://cdn.example.com/a.jpg"]})
+        self.assertEqual(
+            mock_run.call_args.args[0][2],
+            "https://www.instagram.com/p/example/",
         )

@@ -1,8 +1,12 @@
-.env
 .venv/
 .venv-*/
+.env
+.env.*
+!.env.example.local
+!.env.example.production
 __pycache__/
 *.py[cod]
+runserver*.log
 .DS_Store
 staticfiles/
 .idea/

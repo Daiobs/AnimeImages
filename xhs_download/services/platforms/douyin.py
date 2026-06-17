@@ -19,7 +19,7 @@ from ..common import (
     validate_external_url,
 )
 from ..diagnostics import select_best_media_candidate
-from .base import BasePlatformAdapter
+from .base import BasePlatformAdapter, PlatformCapabilities, ProviderPolicy
 from .douyin_providers import DouyinParseContext, build_douyin_result_providers
 
 
@@ -588,6 +588,18 @@ class DouyinAdapter(BasePlatformAdapter):
     page_host_suffixes = DOUYIN_PAGE_HOST_SUFFIXES
     media_host_suffixes = DOUYIN_MEDIA_HOST_SUFFIXES
     headers = DOUYIN_HEADERS
+    capabilities = PlatformCapabilities(
+        media_types=("image", "video"),
+        batch_download=True,
+        cover=True,
+        ultra_hd=True,
+    )
+    provider_policy = ProviderPolicy(
+        primary_provider="native",
+        fallback_providers=("kukutool", "tikhub"),
+        enhanced_provider_enabled_by="ULTRA_HD_PROVIDER_ENABLED",
+    )
+    parse_option_names = ("prefer_ultra_hd", "client_country_code")
 
     def parse_html(self, html, source_url=None, probe_video_candidates=False):
         aweme = find_aweme_in_html(html)

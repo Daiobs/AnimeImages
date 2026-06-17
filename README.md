@@ -56,7 +56,7 @@ Run Configuration 可使用普通 Python 配置：
 - Script path: `manage.py`
 - Parameters: `runserver`
 - Working directory: 当前目录
-- 项目启动时会自动读取根目录 `.env`；配置模板拆分为 `.env.example.local` 和 `.env.example.production`，不要写入真实密钥。
+- 项目启动时会自动读取根目录 `.env`；本项目统一使用这一份 `.env` 作为本地和生产环境配置来源，不再维护拆分的本地/生产模板文件。
 
 ## 小红书下载模式
 
@@ -123,9 +123,9 @@ PROVIDER_MANIFEST_MAX_AGE_SECONDS=3600
 
 抖音短链接采用受控重定向解析。任一跳转地址一旦出现 `aweme_id`，解析器会立即启动 native/KuKuTool 流程，不再请求后续桌面页面，以减少短链解析延迟和偶发 404/超时。
 
-生产环境建议以 `.env.example.production` 为清单配置真实环境变量。`DJANGO_ENV=production` 或 `DJANGO_DEBUG=False` 时，项目会强制要求显式 `DJANGO_SECRET_KEY`、`DJANGO_ALLOWED_HOSTS` 和共享 Redis `DJANGO_CACHE_URL`。生产默认关闭内存异步下载任务，由前端回退同步 ZIP，并启用下载频率、并发、每日请求量和每日流量限制。
+生产环境请基于根目录 `.env` 配置真实环境变量。`DJANGO_ENV=production` 或 `DJANGO_DEBUG=False` 时，项目会强制要求显式 `DJANGO_SECRET_KEY`、`DJANGO_ALLOWED_HOSTS` 和共享 Redis `DJANGO_CACHE_URL`。生产默认关闭内存异步下载任务，由前端回退同步 ZIP，并启用下载频率、并发、每日请求量和每日流量限制。
 
-部署探针可使用 `/health/live/` 和 `/health/ready/`。后者会实际检查 Redis/cache 与数据库；图片预览代理也有独立的请求和流量限制，相关配置见 `.env.example.production`。
+部署探针可使用 `/health/live/` 和 `/health/ready/`。后者会实际检查 Redis/cache 与数据库；图片预览代理也有独立的请求和流量限制，相关配置见根目录 `.env` 或部署环境变量。
 
 抖音候选源诊断可以通过管理命令运行：
 

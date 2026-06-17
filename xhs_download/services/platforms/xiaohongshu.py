@@ -9,7 +9,7 @@ from ..common import (
     normalize_text,
     request_get_with_retry,
 )
-from .base import BasePlatformAdapter
+from .base import BasePlatformAdapter, PlatformCapabilities, ProviderPolicy
 
 
 XHS_PAGE_HOST_SUFFIXES = ("xiaohongshu.com", "xhslink.com")
@@ -104,6 +104,12 @@ class XiaohongshuAdapter(BasePlatformAdapter):
     page_host_suffixes = XHS_PAGE_HOST_SUFFIXES
     media_host_suffixes = XHS_MEDIA_HOST_SUFFIXES
     headers = HEADERS
+    capabilities = PlatformCapabilities(
+        media_types=("image", "video"),
+        batch_download=True,
+        cover=True,
+    )
+    provider_policy = ProviderPolicy(primary_provider="native")
 
     def parse_html(self, html, source_url=None):
         soup = BeautifulSoup(html, "html.parser")

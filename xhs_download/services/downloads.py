@@ -3,7 +3,7 @@ import shutil
 import tempfile
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import requests
@@ -18,6 +18,7 @@ from .common import (
     host_matches,
     request_get_with_retry,
     validate_media_url,
+    validate_public_download_url,
 )
 from .platforms.bilibili import BILIBILI_HEADERS, BILIBILI_MEDIA_HOST_SUFFIXES
 from .platforms.douyin import DOUYIN_HEADERS, DOUYIN_MEDIA_HOST_SUFFIXES
@@ -25,6 +26,7 @@ from .provider_recovery import (
     get_kukutool_manifest_identity,
     iter_kukutool_download_recovery_urls,
 )
+from .provider_manifest import provider_manifest_is_valid
 from .quality import (
     QualityProbe,
     content_type_matches_expected,
@@ -234,7 +236,68 @@ def is_recoverable_provider_download_error(error):
     return message.startswith("HTTP ") or message.startswith("资源类型异常：")
 
 
-def fetch_media_response(url, headers=None, timeout=30, retries=3):
+def provider_manifest_allows_public_download(item):
+    return (
+        isinstance(item, dict)
+        and item.get("provider") == "kukutool_generic"
+        and provider_manifest_is_valid(item)
+    )
+
+
+def request_public_provider_get_with_retry(
+    url,
+    headers=None,
+    timeout=30,
+    retries=3,
+    stream=True,
+    max_redirects=5,
+):
+    last_error = None
+    for _ in range(max(1, int(retries or 1))):
+        current_url = url
+        try:
+            for _ in range(max_redirects + 1):
+                validate_public_download_url(current_url, "Provider URL 不允许请求")
+                response = requests.get(
+                    current_url,
+                    headers=headers or get_media_headers(current_url),
+                    timeout=timeout,
+                    allow_redirects=False,
+                    stream=stream,
+                )
+                if response.status_code in {301, 302, 303, 307, 308}:
+                    location = response.headers.get("Location")
+                    response.close()
+                    if not location:
+                        raise XhsDownloadError(f"HTTP {response.status_code}")
+                    current_url = urljoin(current_url, location)
+                    continue
+                if response.status_code == 200:
+                    validate_public_download_url(
+                        response.url,
+                        "Provider URL 跳转到了不允许的地址",
+                    )
+                    return response
+                last_error = XhsDownloadError(f"HTTP {response.status_code}")
+                response.close()
+                break
+            else:
+                last_error = XhsDownloadError("Provider URL 重定向次数过多")
+        except Exception as error:
+            last_error = error
+
+    raise last_error
+
+
+def fetch_media_response(url, headers=None, timeout=30, retries=3, provider_signed=False):
+    if provider_signed:
+        return request_public_provider_get_with_retry(
+            url,
+            headers=headers,
+            timeout=timeout,
+            retries=retries,
+            stream=True,
+        )
     validate_media_url(url)
     return request_get_with_retry(
         url,
@@ -260,12 +323,14 @@ def fetch_to_temp_path(
     progress_callback=None,
     expected_type="",
     retries=3,
+    provider_signed=False,
 ):
     response = fetch_media_response(
         url,
         headers=headers,
         timeout=timeout,
         retries=retries,
+        provider_signed=provider_signed,
     )
     fd, temp_path = tempfile.mkstemp(prefix="xhs_media_")
 
@@ -311,6 +376,7 @@ def fetch_item_to_temp_path(
 ):
     initial_url = url or item.get("url")
     recovery_enabled = bool(get_kukutool_manifest_identity(item))
+    provider_signed = provider_manifest_allows_public_download(item)
     attempted_urls = set()
     candidates = [initial_url]
     recovery_urls = None
@@ -336,6 +402,7 @@ def fetch_item_to_temp_path(
                 progress_callback=progress_callback,
                 expected_type=expected_type,
                 retries=1 if recovery_enabled else 3,
+                provider_signed=provider_signed,
             )
         except Exception as error:
             last_error = error

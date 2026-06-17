@@ -1,6 +1,7 @@
 import json
 import logging
 from pathlib import Path
+from urllib.parse import urlencode
 
 import requests
 from django.conf import settings
@@ -26,6 +27,7 @@ from .services.download_tasks import (
 from .services.downloads import (
     build_download_archive_file,
     fetch_media_response,
+    provider_manifest_allows_public_download,
     probe_media_size,
     read_limited_response,
     save_media_items_to_server,
@@ -34,7 +36,8 @@ from .services.platforms.douyin_kukutool import (
     get_kukutool_provider_health,
     set_kukutool_admin_disabled,
 )
-from .services.registry import parse_media_page
+from .services.registry import get_adapter_for_url, parse_media_page
+from .services.provider_manifest import build_provider_manifest_token
 from .services.rate_limits import (
     acquire_concurrency,
     consume_daily,
@@ -73,7 +76,48 @@ def format_file_size(size_bytes):
 def get_video_size_bytes(asset):
     if asset.size_bytes:
         return asset.size_bytes
+    if asset.provider == "kukutool_generic":
+        return 0
     return probe_media_size(asset.url)
+
+
+def build_provider_preview_query(asset, preview_url, asset_id_suffix=""):
+    if asset.provider != "kukutool_generic" or not preview_url:
+        return ""
+    if not asset.asset_id or not asset.provider_resource_id or not asset.provider_cache_key:
+        return ""
+
+    asset_id = asset.asset_id
+    if asset_id_suffix:
+        asset_id = f"{asset_id}:{asset_id_suffix}"
+    token = build_provider_manifest_token(
+        asset_id=asset_id,
+        provider=asset.provider,
+        provider_resource_id=asset.provider_resource_id,
+        provider_cache_key=asset.provider_cache_key,
+        url=preview_url,
+    )
+    return urlencode(
+        {
+            "asset_id": asset_id,
+            "provider": asset.provider,
+            "provider_resource_id": asset.provider_resource_id,
+            "provider_cache_key": asset.provider_cache_key,
+            "provider_manifest_token": token,
+        }
+    )
+
+
+def build_provider_preview_item(request, url):
+    item = {
+        "url": url,
+        "asset_id": request.GET.get("asset_id", ""),
+        "provider": request.GET.get("provider", ""),
+        "provider_resource_id": request.GET.get("provider_resource_id", ""),
+        "provider_cache_key": request.GET.get("provider_cache_key", ""),
+        "provider_manifest_token": request.GET.get("provider_manifest_token", ""),
+    }
+    return item if provider_manifest_allows_public_download(item) else None
 
 
 PLATFORM_PAGE_CONFIG = {
@@ -303,6 +347,13 @@ def get_platform_page_config(platform_key):
     return PLATFORM_PAGE_CONFIG.get(platform_key, PLATFORM_PAGE_CONFIG["home"])
 
 
+def query_uses_third_party_provider(query):
+    try:
+        return getattr(get_adapter_for_url(query), "platform_id", "") == "third_party"
+    except XhsError:
+        return False
+
+
 def search_view(request, platform_key="home"):
     return render(request, "xhs_download.html", get_download_settings_context(platform_key))
 
@@ -359,6 +410,30 @@ def search_results_view(request, platform_key="home"):
     if not query:
         return render(request, "xhs_download.html", context)
 
+    if query_uses_third_party_provider(query):
+        if not (
+            settings.THIRD_PARTY_PROVIDER_ENABLED
+            and settings.THIRD_PARTY_PUBLIC_ACCESS_ENABLED
+        ):
+            context["error_message"] = "第三方通用解析暂未开放。"
+            return render(request, "xhs_download.html", context, status=403)
+        try:
+            limit = consume_fixed_window(
+                "third-party-provider-minute-ip",
+                get_client_identity(request),
+                settings.THIRD_PARTY_RATE_LIMIT_PER_MINUTE,
+                60,
+            )
+        except Exception:
+            logger.exception("Third-party provider rate-limit cache failed")
+            context["error_message"] = "第三方解析保护服务暂时不可用，请稍后再试。"
+            return render(request, "xhs_download.html", context, status=503)
+        if not limit.allowed:
+            context["error_message"] = "第三方解析请求过于频繁，请稍后再试。"
+            response = render(request, "xhs_download.html", context, status=429)
+            response["Retry-After"] = str(limit.retry_after)
+            return response
+
     if prefer_ultra_hd:
         try:
             limit = consume_fixed_window(
@@ -391,10 +466,17 @@ def search_results_view(request, platform_key="home"):
         if client_country_code:
             parse_options["client_country_code"] = client_country_code
         result = parse_media_page(query, **parse_options)
+        result_metadata = result.metadata or {}
         context["platform"] = result.platform
-        context["platform_name"] = PLATFORM_DISPLAY_NAMES.get(result.platform, result.platform or "未知平台")
+        context["platform_name"] = (
+            result_metadata.get("source_platform_name")
+            or PLATFORM_DISPLAY_NAMES.get(result.platform, result.platform or "未知平台")
+        )
         if context["page_platform_id"] and context["page_platform_id"] != result.platform:
             context["platform_notice"] = f"你粘贴的是{context['platform_name']}链接，已自动使用对应解析器。"
+        if result.platform == "third_party":
+            provider_label = result_metadata.get("provider_label") or "第三方 Provider"
+            context["provider_notice"] = f"本次由 {provider_label} 第三方解析，资源可用性取决于上游平台。"
         if prefer_ultra_hd:
             if result.platform == "douyin":
                 context["provider_notice"] = "本次优先使用 KuKuTool 超高清上游；若不可用会自动回退本地解析。"
@@ -409,6 +491,10 @@ def search_results_view(request, platform_key="home"):
                 "url": asset.url,
                 "encoded_url": encode_url(asset.url),
                 "encoded_preview_url": encode_url(asset.preview_url or asset.url),
+                "preview_provider_query": build_provider_preview_query(
+                    asset,
+                    asset.preview_url or asset.url,
+                ),
             }
             for asset in result.image_assets
         ]
@@ -425,6 +511,11 @@ def search_results_view(request, platform_key="home"):
                     encode_url(asset.cover_preview_url or asset.cover_url)
                     if asset.cover_url
                     else ""
+                ),
+                "cover_preview_provider_query": build_provider_preview_query(
+                    asset,
+                    asset.cover_preview_url or asset.cover_url,
+                    "cover",
                 ),
             }
             for asset in result.video_assets
@@ -482,10 +573,14 @@ def proxy_image_view(request):
 
     try:
         image_url = decode_url(encoded_url)
-        validate_media_url(image_url)
+        provider_item = build_provider_preview_item(request, image_url)
+        provider_signed = provider_item is not None
+        if not provider_signed:
+            validate_media_url(image_url)
         response = fetch_media_response(
             image_url,
             timeout=15,
+            provider_signed=provider_signed,
         )
 
         with response:

@@ -167,7 +167,7 @@
 
                                         {% if item.cover_url %}
                                         <img
-    src="{{ proxy_image_url }}?u={{ item.encoded_preview_cover_url|default:item.encoded_cover_url }}"
+    src="{{ proxy_image_url }}?u={{ item.encoded_preview_cover_url|default:item.encoded_cover_url }}{% if item.cover_preview_provider_query %}&{{ item.cover_preview_provider_query }}{% endif %}"
     alt="视频封面"
     loading="lazy"
     decoding="async"
@@ -217,7 +217,7 @@
                             <i class="bi bi-check-lg"></i>
                         </span>
 <img
-    src="{{ proxy_image_url }}?u={{ item.encoded_preview_url|default:item.encoded_url }}"
+    src="{{ proxy_image_url }}?u={{ item.encoded_preview_url|default:item.encoded_url }}{% if item.preview_provider_query %}&{{ item.preview_provider_query }}{% endif %}"
     alt="素材图片"
     loading="lazy"
     decoding="async"
