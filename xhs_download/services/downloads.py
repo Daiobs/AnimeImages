@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 import tempfile
@@ -27,6 +28,7 @@ from .provider_recovery import (
     iter_kukutool_download_recovery_urls,
 )
 from .provider_manifest import provider_manifest_is_valid
+from .platforms.third_party import third_party_manifest_item_is_allowed
 from .quality import (
     QualityProbe,
     content_type_matches_expected,
@@ -34,6 +36,7 @@ from .quality import (
 )
 
 
+logger = logging.getLogger(__name__)
 MAX_DOWNLOAD_ITEMS = 30
 MAX_IMAGE_BYTES = 50 * 1024 * 1024
 MAX_VIDEO_BYTES = 500 * 1024 * 1024
@@ -237,11 +240,20 @@ def is_recoverable_provider_download_error(error):
 
 
 def provider_manifest_allows_public_download(item):
-    return (
-        isinstance(item, dict)
-        and item.get("provider") == "kukutool_generic"
-        and provider_manifest_is_valid(item)
+    if not isinstance(item, dict):
+        return False
+    if item.get("provider") != "kukutool_generic":
+        return False
+    if not provider_manifest_is_valid(item):
+        return False
+    if third_party_manifest_item_is_allowed(item):
+        return True
+    logger.warning(
+        "third_party_provider_manifest_rejected asset_id=%s provider_resource_id=%s",
+        item.get("asset_id", ""),
+        item.get("provider_resource_id", ""),
     )
+    return False
 
 
 def request_public_provider_get_with_retry(

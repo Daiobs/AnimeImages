@@ -3,7 +3,12 @@ from urllib.parse import urlparse
 
 from django.conf import settings
 
-from ..common import XhsParseError, host_matches, is_blocked_hostname
+from ..common import (
+    XhsParseError,
+    XhsProviderTimeoutError,
+    host_matches,
+    is_blocked_hostname,
+)
 from .base import BasePlatformAdapter, PlatformCapabilities, ProviderPolicy
 from .kukutool_generic import KukutoolGenericProvider, KukutoolResultNormalizer
 
@@ -48,7 +53,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         platform_id="kuaishou",
         display_name="快手",
         host_suffixes=("kuaishou.com", "kuaishouapp.com", "kwai.com"),
-        media_host_suffixes=("kwimgs.com", "yximgs.com", "kuaishou.com", "kwai.com"),
+        media_host_suffixes=("kwimgs.com", "yximgs.com"),
     ),
     ThirdPartyPlatformRule(
         platform_id="instagram",
@@ -60,21 +65,79 @@ THIRD_PARTY_PLATFORM_RULES = (
         platform_id="facebook",
         display_name="Facebook",
         host_suffixes=("facebook.com", "fb.watch"),
-        media_host_suffixes=("fbcdn.net", "facebook.com"),
+        media_host_suffixes=("fbcdn.net",),
     ),
     ThirdPartyPlatformRule(
         platform_id="youtube",
         display_name="YouTube",
         host_suffixes=("youtube.com", "youtu.be"),
-        media_host_suffixes=("googlevideo.com", "ytimg.com", "youtube.com"),
+        media_host_suffixes=("googlevideo.com", "ytimg.com"),
     ),
     ThirdPartyPlatformRule(
         platform_id="x",
         display_name="X / Twitter",
         host_suffixes=("x.com", "twitter.com"),
-        media_host_suffixes=("twimg.com", "twitter.com", "x.com"),
+        media_host_suffixes=("twimg.com",),
     ),
 )
+
+
+def get_third_party_rule(platform_id):
+    platform_id = (platform_id or "").strip().lower()
+    for rule in THIRD_PARTY_PLATFORM_RULES:
+        if rule.platform_id == platform_id:
+            return rule
+    return None
+
+
+def parse_third_party_asset_id(asset_id):
+    parts = str(asset_id or "").split(":")
+    if len(parts) < 5 or parts[0] != "third_party":
+        return None
+    platform_id = parts[1]
+    source_key = parts[2]
+    media_type = parts[3]
+    index = parts[4]
+    if not get_third_party_rule(platform_id):
+        return None
+    if not source_key or len(source_key) > 64:
+        return None
+    if media_type not in {"image", "video"}:
+        return None
+    if not index.isdigit():
+        return None
+    return {
+        "platform_id": platform_id,
+        "source_key": source_key,
+        "media_type": media_type,
+        "index": index,
+    }
+
+
+def third_party_media_url_is_allowed(platform_id, url):
+    rule = get_third_party_rule(platform_id)
+    if not rule:
+        return False
+    parsed = urlparse(url or "")
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    if is_blocked_hostname(parsed.hostname):
+        return False
+    return host_matches(parsed.hostname, rule.media_host_suffixes)
+
+
+def third_party_manifest_item_is_allowed(item):
+    if not isinstance(item, dict):
+        return False
+    parsed_asset = parse_third_party_asset_id(item.get("asset_id"))
+    if not parsed_asset:
+        return False
+    if item.get("provider_resource_id") != parsed_asset["source_key"]:
+        return False
+    expected_cache_key = f"third_party:kukutool_generic:{parsed_asset['source_key']}"
+    if item.get("provider_cache_key") != expected_cache_key:
+        return False
+    return third_party_media_url_is_allowed(parsed_asset["platform_id"], item.get("url"))
 
 
 class GenericThirdPartyAdapter(BasePlatformAdapter):
@@ -133,6 +196,8 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
             raise XhsParseError("第三方通用解析暂未开放。")
         try:
             payload = self.provider.parse(url)
+        except XhsProviderTimeoutError:
+            raise
         except Exception as error:
             raise XhsParseError(f"{platform_name} 第三方解析失败：{error}") from error
 

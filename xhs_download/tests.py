@@ -15,6 +15,7 @@ from .services.common import (
     MEDIA_HOST_SUFFIXES,
     XhsDownloadError,
     XhsParseError,
+    XhsProviderTimeoutError,
     XhsSecurityError,
     clean_filename,
     encode_url,
@@ -33,6 +34,7 @@ from .services.downloads import (
     normalize_quality,
     normalize_save_format,
     normalize_video_save_mode,
+    provider_manifest_allows_public_download,
     resolve_server_save_folder,
     save_media_items_to_server,
 )
@@ -65,6 +67,7 @@ from .services.platforms import (
     KukutoolResultNormalizer,
     XiaohongshuAdapter,
 )
+from .services.platforms.kukutool_generic import source_key_for_url
 from .services.platforms.bilibili import BILIBILI_HEADERS
 from .services.platforms.douyin import DOUYIN_HEADERS, extract_aweme_id, get_video_candidates
 from .services.platforms.douyin_kukutool import (
@@ -687,6 +690,46 @@ class XhsParserTests(SimpleTestCase):
                 source_url="https://www.instagram.com/p/example/",
                 payload={"videos": ["https://evil.example.com/video.mp4"]},
             )
+
+    def test_kukutool_normalizer_logs_rejected_host_without_query(self):
+        rule = GenericThirdPartyAdapter().get_rule_for_url(
+            "https://www.instagram.com/p/example/"
+        )
+
+        with self.assertLogs(
+            "xhs_download.services.platforms.kukutool_generic",
+            level="WARNING",
+        ) as logs:
+            with self.assertRaisesRegex(ValueError, "media assets"):
+                KukutoolResultNormalizer().normalize(
+                    rule=rule,
+                    platform_name="Instagram",
+                    source_url="https://www.instagram.com/p/example/",
+                    payload={
+                        "videos": [
+                            "https://evil.example.com/video.mp4?token=secret"
+                        ]
+                    },
+                )
+
+        output = "\n".join(logs.output)
+        self.assertIn("third_party_provider_url_rejected", output)
+        self.assertIn("platform=instagram", output)
+        self.assertIn("host=evil.example.com", output)
+        self.assertIn("reason=host_not_allowed", output)
+        self.assertNotIn("token=secret", output)
+
+    def test_third_party_source_key_ignores_common_tracking_query(self):
+        first = source_key_for_url(
+            "https://www.kuaishou.com/short-video/3xvxtmcc2r22c6i"
+            "?authorId=1&streamSource=find&area=home&utm_source=share"
+        )
+        second = source_key_for_url(
+            "https://www.kuaishou.com/short-video/3xvxtmcc2r22c6i"
+            "?authorId=2&streamSource=profile&area=detail&utm_source=copy"
+        )
+
+        self.assertEqual(first, second)
 
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,
@@ -2830,6 +2873,32 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertEqual(response["Content-Type"], "image/jpeg")
         self.assertTrue(mock_fetch.call_args.kwargs["provider_signed"])
 
+    def test_provider_manifest_rechecks_third_party_media_host(self):
+        media_url = "https://evil.example.com/image.jpg"
+        asset_id = "third_party:instagram:abc123:image:1"
+        provider_cache_key = "third_party:kukutool_generic:abc123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="kukutool_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+        )
+
+        self.assertFalse(
+            provider_manifest_allows_public_download(
+                {
+                    "url": media_url,
+                    "asset_id": asset_id,
+                    "provider": "kukutool_generic",
+                    "provider_resource_id": provider_resource_id,
+                    "provider_cache_key": provider_cache_key,
+                    "provider_manifest_token": token,
+                }
+            )
+        )
+
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,
         THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
@@ -2969,6 +3038,30 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertEqual(second.status_code, 429)
         self.assertIn("Retry-After", second)
         self.assertEqual(mock_parse.call_count, 1)
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+    )
+    @patch(
+        "xhs_download.views.parse_media_page",
+        side_effect=XhsProviderTimeoutError(
+            "第三方解析正在后台处理中，请 3-5 秒后重试同一链接。"
+        ),
+    )
+    def test_results_shows_third_party_background_processing_without_failure_prefix(
+        self,
+        mock_parse,
+    ):
+        response = Client().get(
+            "/results/",
+            {"q": "https://www.kuaishou.com/short-video/3xvxtmcc2r22c6i"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "第三方解析正在后台处理中")
+        self.assertNotContains(response, "解析失败：第三方解析正在后台处理中")
+        mock_parse.assert_called_once()
 
     @patch(
         "xhs_download.views.check_preview_request_limits",
@@ -3463,6 +3556,24 @@ class ProviderControlViewTests(TestCase):
         self.assertTrue(health.json()["admin_disabled"])
         self.assertEqual(enabled.status_code, 200)
         self.assertFalse(enabled.json()["admin_disabled"])
+
+    def test_provider_health_includes_third_party_diagnostics(self):
+        source_key = "abc123"
+        cache.set(f"third-party:kukutool:failure:{source_key}", "TimeoutError")
+
+        response = self.client.get(
+            "/admin/provider-health/",
+            {"source_key": source_key},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        third_party = response.json()["third_party"]
+        self.assertEqual(third_party["provider"], "kukutool_generic")
+        self.assertEqual(third_party["failure_cache"]["source_key"], source_key)
+        self.assertTrue(third_party["failure_cache"]["hit"])
+        self.assertEqual(third_party["failure_cache"]["reason"], "TimeoutError")
+        self.assertIn("circuit", third_party)
+        self.assertIn("single_flight", third_party)
 
     def test_provider_control_requires_csrf(self):
         client = Client(enforce_csrf_checks=True)

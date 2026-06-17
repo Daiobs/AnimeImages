@@ -3,6 +3,7 @@ import time
 from concurrent.futures import TimeoutError
 from hashlib import sha256
 from threading import RLock
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from uuid import uuid4
 
 from django.conf import settings
@@ -20,6 +21,25 @@ PROVIDER_ID = "kukutool_generic"
 PROVIDER_LABEL = "KuKuTool"
 LOCAL_PROVIDER_FUTURES = {}
 LOCAL_PROVIDER_FUTURES_LOCK = RLock()
+TRACKING_QUERY_NAMES = {
+    "area",
+    "authorid",
+    "fbclid",
+    "gclid",
+    "igshid",
+    "is_copy_url",
+    "is_from_webapp",
+    "msclkid",
+    "referer_video_id",
+    "share_app_id",
+    "share_iid",
+    "sender_device",
+    "sender_web_id",
+    "streamsource",
+    "timestamp",
+    "ts",
+}
+TRACKING_QUERY_PREFIXES = ("utm_",)
 
 
 def integer_value(value):
@@ -29,8 +49,44 @@ def integer_value(value):
         return 0
 
 
+def canonicalize_source_url(url):
+    url = str(url or "").strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return url
+
+    hostname = parsed.hostname.lower()
+    netloc = hostname
+    try:
+        port = parsed.port
+    except ValueError:
+        return url
+    if port:
+        netloc = f"{hostname}:{port}"
+
+    query_items = []
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        key_lower = key.lower()
+        if key_lower in TRACKING_QUERY_NAMES:
+            continue
+        if any(key_lower.startswith(prefix) for prefix in TRACKING_QUERY_PREFIXES):
+            continue
+        query_items.append((key, value))
+
+    return urlunparse(
+        (
+            parsed.scheme.lower(),
+            netloc,
+            parsed.path or "/",
+            "",
+            urlencode(sorted(query_items), doseq=True),
+            "",
+        )
+    )
+
+
 def source_key_for_url(url):
-    return sha256(str(url or "").encode("utf-8")).hexdigest()[:16]
+    return sha256(canonicalize_source_url(url).encode("utf-8")).hexdigest()[:16]
 
 
 def build_payload_cache_key(source_key):
@@ -45,6 +101,10 @@ def build_failure_cache_key(source_key):
     return f"third-party:kukutool:failure:{source_key}"
 
 
+def build_failure_hit_count_key():
+    return "third-party:kukutool:failure-hit-count"
+
+
 def build_profile_cache_key():
     return "third-party:kukutool:active-profile"
 
@@ -57,30 +117,42 @@ def build_circuit_failure_key(window):
     return f"third-party:kukutool:circuit:failures:{window}"
 
 
-def public_url_or_empty(value, allowed_suffixes=()):
+def log_rejected_provider_url(platform_id, url, reason, field_name=""):
+    parsed = urlparse(str(url or ""))
+    logger.warning(
+        "third_party_provider_url_rejected platform=%s host=%s reason=%s field=%s",
+        platform_id or "unknown",
+        (parsed.hostname or "").lower(),
+        reason,
+        field_name or "unknown",
+    )
+
+
+def public_url_or_empty(value, allowed_suffixes=(), platform_id="", field_name=""):
     if not isinstance(value, str) or not value.strip():
         return ""
     url = value.strip()
     try:
         validate_public_url(url, "Provider URL is not allowed")
     except Exception:
+        log_rejected_provider_url(platform_id, url, "invalid_public_url", field_name)
         return ""
     if allowed_suffixes:
-        from urllib.parse import urlparse
-
-        if not host_matches(urlparse(url).hostname, allowed_suffixes):
+        hostname = urlparse(url).hostname
+        if not host_matches(hostname, allowed_suffixes):
+            log_rejected_provider_url(platform_id, url, "host_not_allowed", field_name)
             return ""
     return url
 
 
-def iter_payload_urls(value, allowed_suffixes=()):
+def iter_payload_urls(value, allowed_suffixes=(), platform_id="", field_name=""):
     if isinstance(value, str):
-        url = public_url_or_empty(value, allowed_suffixes)
+        url = public_url_or_empty(value, allowed_suffixes, platform_id, field_name)
         if url:
             yield url
     elif isinstance(value, (list, tuple)):
         for item in value:
-            yield from iter_payload_urls(item, allowed_suffixes)
+            yield from iter_payload_urls(item, allowed_suffixes, platform_id, field_name)
     elif isinstance(value, dict):
         for key in (
             "url",
@@ -90,24 +162,34 @@ def iter_payload_urls(value, allowed_suffixes=()):
             "play_url",
             "playUrl",
         ):
-            yield from iter_payload_urls(value.get(key), allowed_suffixes)
+            yield from iter_payload_urls(
+                value.get(key),
+                allowed_suffixes,
+                platform_id,
+                key,
+            )
 
 
-def collect_picture_urls(payload, allowed_suffixes=()):
+def collect_picture_urls(payload, allowed_suffixes=(), platform_id=""):
     seen = set()
     for key in ("pics", "images", "image_urls", "imageUrls"):
-        for url in iter_payload_urls(payload.get(key), allowed_suffixes):
+        for url in iter_payload_urls(
+            payload.get(key),
+            allowed_suffixes,
+            platform_id,
+            key,
+        ):
             if url not in seen:
                 seen.add(url)
                 yield url
 
 
-def collect_video_resources(payload, allowed_suffixes=()):
+def collect_video_resources(payload, allowed_suffixes=(), platform_id=""):
     resources = []
 
     def add_resource(raw):
         if isinstance(raw, str):
-            url = public_url_or_empty(raw, allowed_suffixes)
+            url = public_url_or_empty(raw, allowed_suffixes, platform_id, "videos")
             if not url:
                 return
             resources.append(
@@ -123,6 +205,8 @@ def collect_video_resources(payload, allowed_suffixes=()):
         url = public_url_or_empty(
             raw.get("url") or raw.get("download_url") or raw.get("play_url"),
             allowed_suffixes,
+            platform_id,
+            "videos",
         )
         if not url:
             return
@@ -208,10 +292,21 @@ class KukutoolGenericProvider:
 
     def failure_cache_hit(self, source_key):
         try:
-            return bool(cache.get(build_failure_cache_key(source_key)))
+            hit = bool(cache.get(build_failure_cache_key(source_key)))
         except Exception:
             logger.exception("third_party_provider_failure_cache_read_failed")
             return True
+        if hit:
+            logger.warning(
+                "third_party_provider_failure_cache_hit source_key=%s",
+                source_key,
+            )
+            try:
+                cache.add(build_failure_hit_count_key(), 0, timeout=24 * 60 * 60)
+                cache.incr(build_failure_hit_count_key())
+            except Exception:
+                logger.exception("third_party_provider_failure_hit_count_failed")
+        return hit
 
     def cache_failure(self, source_key, reason):
         ttl_seconds = int(
@@ -443,12 +538,64 @@ class KukutoolGenericProvider:
             cached = self.wait_for_cached_payload(source_key, timeout_seconds)
             if cached:
                 return cached
-            raise XhsProviderTimeoutError(f"第三方通用解析排队中：{state}")
+            raise XhsProviderTimeoutError(
+                f"第三方解析正在排队（{state}），请 3-5 秒后重试同一链接。"
+            )
 
         try:
             return future.result(timeout=max(0.1, timeout_seconds))
         except TimeoutError as error:
-            raise XhsProviderTimeoutError("第三方通用解析仍在后台处理中，请稍后重试") from error
+            raise XhsProviderTimeoutError("第三方解析正在后台处理中，请 3-5 秒后重试同一链接。") from error
+
+    def health(self, source_key=""):
+        now = int(time.time())
+        window_seconds = max(
+            1,
+            int(getattr(settings, "THIRD_PARTY_KUKUTOOL_CIRCUIT_WINDOW_SECONDS", 60) or 60),
+        )
+        window = now // window_seconds
+        circuit_open_until = 0
+        circuit_failure_count = 0
+        failure_cache_reason = ""
+        failure_hit_count = 0
+        single_flight_active = False
+        try:
+            circuit_open_until = int(cache.get(build_circuit_open_key(), 0) or 0)
+            circuit_failure_count = int(cache.get(build_circuit_failure_key(window), 0) or 0)
+            failure_hit_count = int(cache.get(build_failure_hit_count_key(), 0) or 0)
+            if source_key:
+                failure_cache_reason = str(cache.get(build_failure_cache_key(source_key)) or "")
+                single_flight_active = bool(cache.get(build_single_flight_key(source_key)))
+        except Exception:
+            logger.exception("third_party_provider_health_cache_read_failed")
+        if source_key:
+            with LOCAL_PROVIDER_FUTURES_LOCK:
+                local_future = LOCAL_PROVIDER_FUTURES.get(source_key)
+                single_flight_active = single_flight_active or bool(
+                    local_future is not None and not local_future.done()
+                )
+        return {
+            "provider": PROVIDER_ID,
+            "enabled": bool(getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False)),
+            "public_access_enabled": bool(
+                getattr(settings, "THIRD_PARTY_PUBLIC_ACCESS_ENABLED", False)
+            ),
+            "circuit": {
+                "open": circuit_open_until > now,
+                "open_until": circuit_open_until,
+                "failure_count": circuit_failure_count,
+            },
+            "failure_cache": {
+                "source_key": source_key,
+                "hit": bool(failure_cache_reason),
+                "reason": failure_cache_reason,
+                "hit_count": failure_hit_count,
+            },
+            "single_flight": {
+                "source_key": source_key,
+                "active": single_flight_active,
+            },
+        }
 
 
 class KukutoolResultNormalizer:
@@ -456,7 +603,7 @@ class KukutoolResultNormalizer:
         self.platform_id = platform_id
 
     def build_provider_asset_fields(self, rule, source_url, media_type, index, url):
-        source_key = sha256(source_url.encode("utf-8")).hexdigest()[:16]
+        source_key = source_key_for_url(source_url)
         asset_id = f"third_party:{rule.platform_id}:{source_key}:{media_type}:{index}"
         provider_cache_key = f"third_party:{PROVIDER_ID}:{source_key}"
         return {
@@ -473,13 +620,14 @@ class KukutoolResultNormalizer:
             ),
         }
 
-    def build_metadata(self, rule, platform_name, candidate_count):
+    def build_metadata(self, rule, platform_name, candidate_count, source_url):
         return {
             "source_platform": rule.platform_id,
             "source_platform_name": platform_name,
             "source_provider": PROVIDER_ID,
             "provider_label": PROVIDER_LABEL,
             "candidate_count": candidate_count,
+            "canonical_source_url": canonicalize_source_url(source_url),
         }
 
     def normalize(self, *, rule, platform_name, source_url, payload):
@@ -488,8 +636,14 @@ class KukutoolResultNormalizer:
 
         title = clean_filename(str(payload.get("title") or platform_name))
         allowed_suffixes = getattr(rule, "media_host_suffixes", ())
-        cover_url = public_url_or_empty(payload.get("cover"), allowed_suffixes)
-        video_resources = collect_video_resources(payload, allowed_suffixes)
+        platform_id = getattr(rule, "platform_id", "")
+        cover_url = public_url_or_empty(
+            payload.get("cover"),
+            allowed_suffixes,
+            platform_id,
+            "cover",
+        )
+        video_resources = collect_video_resources(payload, allowed_suffixes, platform_id)
         if video_resources:
             assets = tuple(
                 MediaAsset(
@@ -519,10 +673,11 @@ class KukutoolResultNormalizer:
                     rule,
                     platform_name,
                     len(video_resources),
+                    source_url,
                 ),
             )
 
-        image_urls = tuple(collect_picture_urls(payload, allowed_suffixes))
+        image_urls = tuple(collect_picture_urls(payload, allowed_suffixes, platform_id))
         if image_urls:
             assets = tuple(
                 MediaAsset(
@@ -545,7 +700,12 @@ class KukutoolResultNormalizer:
                 post_type="image",
                 base_filename=title or "third_party",
                 assets=assets,
-                metadata=self.build_metadata(rule, platform_name, len(image_urls)),
+                metadata=self.build_metadata(
+                    rule,
+                    platform_name,
+                    len(image_urls),
+                    source_url,
+                ),
             )
 
         raise ValueError("KuKuTool result does not contain media assets")

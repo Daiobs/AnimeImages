@@ -14,6 +14,7 @@ from django.views.decorators.http import require_GET, require_POST
 from .services.common import (
     XhsDownloadError,
     XhsError,
+    XhsProviderTimeoutError,
     decode_url,
     encode_url,
     validate_media_url,
@@ -36,6 +37,7 @@ from .services.platforms.douyin_kukutool import (
     get_kukutool_provider_health,
     set_kukutool_admin_disabled,
 )
+from .services.platforms.kukutool_generic import KukutoolGenericProvider
 from .services.registry import get_adapter_for_url, parse_media_page
 from .services.provider_manifest import build_provider_manifest_token
 from .services.rate_limits import (
@@ -189,7 +191,11 @@ def ultra_hd_is_available():
 def provider_health_view(request):
     if not request.user.is_active or not request.user.is_staff:
         return JsonResponse({"detail": "Not found."}, status=404)
-    response = JsonResponse(get_kukutool_provider_health())
+    health = get_kukutool_provider_health()
+    health["third_party"] = KukutoolGenericProvider().health(
+        source_key=request.GET.get("source_key", "")
+    )
+    response = JsonResponse(health)
     response["Cache-Control"] = "no-store"
     return response
 
@@ -211,7 +217,9 @@ def provider_control_view(request):
             status=400,
         )
     set_kukutool_admin_disabled(action == "disable")
-    response = JsonResponse(get_kukutool_provider_health())
+    health = get_kukutool_provider_health()
+    health["third_party"] = KukutoolGenericProvider().health()
+    response = JsonResponse(health)
     response["Cache-Control"] = "no-store"
     return response
 
@@ -524,6 +532,8 @@ def search_results_view(request, platform_key="home"):
         if not context["image_items"] and not context["video_items"]:
             context["error_message"] = "没有解析到图片或视频。"
 
+    except XhsProviderTimeoutError as error:
+        context["error_message"] = str(error)
     except XhsError as error:
         context["error_message"] = f"解析失败：{error}"
     except requests.RequestException as error:
