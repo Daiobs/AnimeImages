@@ -27,7 +27,7 @@ from .provider_recovery import (
     get_kukutool_manifest_identity,
     iter_kukutool_download_recovery_urls,
 )
-from .provider_manifest import provider_manifest_is_valid
+from .provider_manifest import build_provider_manifest_token, provider_manifest_is_valid
 from .platforms.third_party import third_party_manifest_item_is_allowed
 from .quality import (
     QualityProbe,
@@ -256,6 +256,31 @@ def provider_manifest_allows_public_download(item):
     return False
 
 
+def build_provider_signed_cover_item(item, cover_url):
+    if not cover_url or not provider_manifest_allows_public_download(item):
+        return {"type": "image", "url": cover_url}
+
+    cover_item = {
+        "type": "image",
+        "url": cover_url,
+        "asset_id": f"{item.get('asset_id', '')}:cover",
+        "provider": item.get("provider", ""),
+        "provider_resource_id": item.get("provider_resource_id", ""),
+        "provider_cache_key": item.get("provider_cache_key", ""),
+    }
+    if not third_party_manifest_item_is_allowed(cover_item):
+        return {"type": "image", "url": cover_url}
+
+    cover_item["provider_manifest_token"] = build_provider_manifest_token(
+        asset_id=cover_item["asset_id"],
+        provider=cover_item["provider"],
+        provider_resource_id=cover_item["provider_resource_id"],
+        provider_cache_key=cover_item["provider_cache_key"],
+        url=cover_url,
+    )
+    return cover_item
+
+
 def request_public_provider_get_with_retry(
     url,
     headers=None,
@@ -392,7 +417,10 @@ def fetch_item_to_temp_path(
 ):
     initial_url = url or item.get("url")
     recovery_enabled = bool(get_kukutool_manifest_identity(item))
-    provider_signed = provider_manifest_allows_public_download(item)
+    provider_signed = provider_manifest_allows_public_download({
+        **item,
+        "url": initial_url,
+    })
     attempted_urls = set()
     candidates = [initial_url]
     recovery_urls = None
@@ -433,6 +461,22 @@ def fetch_item_to_temp_path(
                 )
 
     raise last_error or XhsDownloadError("资源下载失败")
+
+
+def fetch_cover_to_temp_path(
+    item,
+    cover_url,
+    timeout=30,
+    max_bytes=MAX_IMAGE_BYTES,
+    progress_callback=None,
+):
+    return fetch_item_to_temp_path(
+        build_provider_signed_cover_item(item, cover_url),
+        timeout=timeout,
+        max_bytes=max_bytes,
+        progress_callback=progress_callback,
+        expected_type="image",
+    )
 
 
 def fetch_binary(
@@ -479,6 +523,15 @@ def fetch_item_binary(
         return Path(temp_result["path"]).read_bytes()
     finally:
         Path(temp_result["path"]).unlink(missing_ok=True)
+
+
+def fetch_cover_binary(item, cover_url, timeout=30, max_bytes=MAX_IMAGE_BYTES):
+    return fetch_item_binary(
+        build_provider_signed_cover_item(item, cover_url),
+        timeout=timeout,
+        max_bytes=max_bytes,
+        expected_type="image",
+    )
 
 
 def iter_download_files(media_items, base_filename, save_format=ORIGINAL_FORMAT, quality=95, video_save_mode="video"):
@@ -537,11 +590,11 @@ def iter_download_files(media_items, base_filename, save_format=ORIGINAL_FORMAT,
                     if not cover_url:
                         raise XhsDownloadError("当前视频没有解析到封面")
                     if save_format == ORIGINAL_FORMAT:
-                        temp_result = fetch_to_temp_path(
+                        temp_result = fetch_cover_to_temp_path(
+                            item,
                             cover_url,
                             timeout=20,
                             max_bytes=MAX_IMAGE_BYTES,
-                            expected_type="image",
                         )
                         try:
                             ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
@@ -550,11 +603,11 @@ def iter_download_files(media_items, base_filename, save_format=ORIGINAL_FORMAT,
                         finally:
                             Path(temp_result["path"]).unlink(missing_ok=True)
                     else:
-                        content = fetch_binary(
+                        content = fetch_cover_binary(
+                            item,
                             cover_url,
                             timeout=20,
                             max_bytes=MAX_IMAGE_BYTES,
-                            expected_type="image",
                         )
                         with Image.open(BytesIO(content)) as image:
                             filename = clean_filename(f"{base_filename}_{index}_cover.{save_format}")
@@ -704,11 +757,11 @@ def build_download_archive_file(
                                 raise XhsDownloadError("当前视频没有解析到封面")
 
                             if save_format == ORIGINAL_FORMAT:
-                                temp_result = fetch_to_temp_path(
+                                temp_result = fetch_cover_to_temp_path(
+                                    item,
                                     cover_url,
                                     timeout=20,
                                     max_bytes=MAX_IMAGE_BYTES,
-                                    expected_type="image",
                                     progress_callback=lambda done, total, item_index=index: report_item_progress(
                                         item_index,
                                         done,
@@ -728,11 +781,11 @@ def build_download_archive_file(
                                 finally:
                                     Path(temp_result["path"]).unlink(missing_ok=True)
                             else:
-                                content = fetch_binary(
+                                content = fetch_cover_binary(
+                                    item,
                                     cover_url,
                                     timeout=20,
                                     max_bytes=MAX_IMAGE_BYTES,
-                                    expected_type="image",
                                 )
                                 with Image.open(BytesIO(content)) as image:
                                     filename = clean_filename(f"{base_filename}_{index}_cover.{save_format}")
@@ -896,11 +949,11 @@ def save_media_items_to_server(
                         raise XhsDownloadError("当前视频没有解析到封面")
 
                     if save_format == ORIGINAL_FORMAT:
-                        temp_result = fetch_to_temp_path(
+                        temp_result = fetch_cover_to_temp_path(
+                            item,
                             cover_url,
                             timeout=20,
                             max_bytes=MAX_IMAGE_BYTES,
-                            expected_type="image",
                         )
                         try:
                             ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
@@ -911,11 +964,11 @@ def save_media_items_to_server(
                         finally:
                             Path(temp_result["path"]).unlink(missing_ok=True)
                     else:
-                        content = fetch_binary(
+                        content = fetch_cover_binary(
+                            item,
                             cover_url,
                             timeout=20,
                             max_bytes=MAX_IMAGE_BYTES,
-                            expected_type="image",
                         )
                         with Image.open(BytesIO(content)) as image:
                             filename = clean_filename(f"{base_filename}_{index}_cover.{save_format}")

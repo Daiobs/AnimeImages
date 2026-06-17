@@ -2748,6 +2748,77 @@ class XhsDownloadArchiveTests(SimpleTestCase):
         finally:
             Path(temp_result["path"]).unlink(missing_ok=True)
 
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+    )
+    @patch(
+        "xhs_download.services.common.socket.getaddrinfo",
+        return_value=[(None, None, None, "", ("93.184.216.34", 443))],
+    )
+    @patch("xhs_download.services.downloads.requests.get")
+    def test_signed_generic_provider_video_cover_download_allows_public_url(
+        self,
+        mock_get,
+        _mock_getaddrinfo,
+    ):
+        cover_bytes = make_image_bytes()
+        video_url = "https://scontent.cdninstagram.com/video.mp4"
+        cover_url = "https://scontent.cdninstagram.com/cover.jpg"
+        response = FakeStreamingResponse(
+            cover_bytes,
+            url=cover_url,
+            content_type="image/jpeg",
+        )
+        response.status_code = 200
+        mock_get.return_value = response
+        result = GenericThirdPartyAdapter(
+            runner=Mock(return_value={
+                "title": "video post",
+                "cover": cover_url,
+                "videos": [video_url],
+            })
+        ).parse_url("https://www.instagram.com/p/video-cover-example/")
+        item = result.video_assets[0].to_download_item()
+
+        archive = build_download_archive_file(
+            [item],
+            base_filename="base",
+            video_save_mode="cover",
+        )
+
+        try:
+            with ZipFile(archive["file"]) as zip_file:
+                self.assertEqual(zip_file.read("base_1_cover.jpg"), cover_bytes)
+            self.assertEqual(archive["saved_count"], 1)
+            mock_get.assert_called_once()
+            self.assertEqual(mock_get.call_args.args[0], cover_url)
+        finally:
+            archive["file"].close()
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+    )
+    def test_signed_generic_provider_url_override_does_not_reuse_original_manifest(self):
+        media_url = "https://scontent.cdninstagram.com/image.jpg"
+        result = GenericThirdPartyAdapter(
+            runner=Mock(return_value={
+                "title": "image post",
+                "pics": [media_url],
+            })
+        ).parse_url("https://www.instagram.com/p/example/")
+        item = result.image_assets[0].to_download_item()
+
+        with self.assertRaises(XhsSecurityError):
+            fetch_item_to_temp_path(
+                item,
+                url="https://evil.example.com/image.jpg",
+                timeout=1,
+                max_bytes=MAX_IMAGE_BYTES,
+                expected_type="image",
+            )
+
     def test_resolve_server_save_folder_rejects_relative_escape(self):
         with TemporaryDirectory() as tmp_dir:
             with override_settings(MEDIA_ROOT=Path(tmp_dir) / "media", XHS_DEFAULT_SERVER_SAVE_DIR="xhs"):
