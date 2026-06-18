@@ -7,6 +7,7 @@ import requests
 from django.conf import settings
 from django.http import FileResponse, HttpResponse, JsonResponse
 from django.shortcuts import render
+from django.template.loader import render_to_string
 from django.urls import reverse
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_POST
@@ -132,6 +133,7 @@ PLATFORM_PAGE_CONFIG = {
         "description": "无需登录解析去水印，支持视频、图片、批量无水印保存",
         "label": "素材链接",
         "placeholder": "请将复制的链接粘贴到这里",
+        "home_route": "home",
         "results_route": "home_results",
     },
     "xhs": {
@@ -143,6 +145,7 @@ PLATFORM_PAGE_CONFIG = {
         "description": "粘贴小红书链接，解析图片/视频内容，保存原始素材文件。",
         "label": "小红书链接",
         "placeholder": "粘贴小红书链接...",
+        "home_route": "xhs_home",
         "results_route": "xhs_results",
     },
     "tiktok": {
@@ -154,6 +157,7 @@ PLATFORM_PAGE_CONFIG = {
         "description": "粘贴抖音链接，解析图文图片或视频内容，保存原始素材文件。",
         "label": "抖音链接",
         "placeholder": "粘贴抖音链接或分享文案...",
+        "home_route": "tiktok_home",
         "results_route": "tiktok_results",
     },
     "bilibili": {
@@ -165,6 +169,7 @@ PLATFORM_PAGE_CONFIG = {
         "description": "粘贴哔哩哔哩视频链接，解析视频内容和封面素材，保存原始文件。",
         "label": "哔哩哔哩链接",
         "placeholder": "粘贴哔哩哔哩链接...",
+        "home_route": "bilibili_home",
         "results_route": "bilibili_results",
     },
 }
@@ -173,6 +178,20 @@ PLATFORM_DISPLAY_NAMES = {
     "xiaohongshu": "小红书",
     "douyin": "抖音",
     "bilibili": "哔哩哔哩",
+}
+RESULT_THEME_BY_PLATFORM = {
+    "xiaohongshu": "xhs",
+    "rednote": "xhs",
+    "douyin": "tiktok",
+    "tiktok": "tiktok",
+    "bilibili": "bilibili",
+}
+PLATFORM_KEY_BY_PLATFORM = {
+    "xiaohongshu": "xhs",
+    "rednote": "xhs",
+    "douyin": "tiktok",
+    "tiktok": "tiktok",
+    "bilibili": "bilibili",
 }
 
 
@@ -355,6 +374,38 @@ def get_platform_page_config(platform_key):
     return PLATFORM_PAGE_CONFIG.get(platform_key, PLATFORM_PAGE_CONFIG["home"])
 
 
+def get_result_theme(platform_key, result_platform="", result_metadata=None):
+    page_theme = get_platform_page_config(platform_key)["theme"]
+    if platform_key == "home":
+        return page_theme
+
+    source_platform = (result_metadata or {}).get("source_platform") or result_platform
+    return RESULT_THEME_BY_PLATFORM.get(source_platform, page_theme)
+
+
+def get_platform_key_for_result(result_platform="", result_metadata=None):
+    source_platform = (result_metadata or {}).get("source_platform") or result_platform
+    return PLATFORM_KEY_BY_PLATFORM.get(source_platform, "")
+
+
+def get_page_payload(platform_key):
+    page_config = get_platform_page_config(platform_key)
+    return {
+        "key": platform_key,
+        "theme": page_config["theme"],
+        "theme_class": f"theme-{page_config['theme']}",
+        "title": page_config["title"],
+        "heading": page_config["heading"],
+        "description": page_config["description"],
+        "label": page_config["label"],
+        "placeholder": page_config["placeholder"],
+        "home_url": reverse(page_config["home_route"]),
+        "parse_action_url": reverse(page_config["results_route"]),
+        "platform_id": page_config["platform_id"],
+        "display_name": page_config["display_name"],
+    }
+
+
 def query_uses_third_party_provider(query):
     try:
         return getattr(get_adapter_for_url(query), "platform_id", "") == "third_party"
@@ -379,6 +430,7 @@ def get_download_settings_context(platform_key="home"):
         "page_description": page_config["description"],
         "link_label": page_config["label"],
         "link_placeholder": page_config["placeholder"],
+        "page_home_url": reverse(page_config["home_route"]),
         "parse_action_url": reverse(page_config["results_route"]),
         "proxy_image_url": reverse("media_proxy_image"),
         "download_url": reverse("media_download_images_api"),
@@ -395,7 +447,7 @@ def get_download_settings_context(platform_key="home"):
     }
 
 
-def search_results_view(request, platform_key="home"):
+def build_search_results_context(request, platform_key="home"):
     query = request.GET.get("q", "").strip()
     requested_ultra_hd = request_flag(request.GET.get("ultra_hd"))
     prefer_ultra_hd = requested_ultra_hd and ultra_hd_is_available()
@@ -416,7 +468,7 @@ def search_results_view(request, platform_key="home"):
     }
 
     if not query:
-        return render(request, "xhs_download.html", context)
+        return context, 200
 
     if query_uses_third_party_provider(query):
         if not (
@@ -424,7 +476,7 @@ def search_results_view(request, platform_key="home"):
             and settings.THIRD_PARTY_PUBLIC_ACCESS_ENABLED
         ):
             context["error_message"] = "第三方通用解析暂未开放。"
-            return render(request, "xhs_download.html", context, status=403)
+            return context, 403
         try:
             limit = consume_fixed_window(
                 "third-party-provider-minute-ip",
@@ -435,12 +487,11 @@ def search_results_view(request, platform_key="home"):
         except Exception:
             logger.exception("Third-party provider rate-limit cache failed")
             context["error_message"] = "第三方解析保护服务暂时不可用，请稍后再试。"
-            return render(request, "xhs_download.html", context, status=503)
+            return context, 503
         if not limit.allowed:
             context["error_message"] = "第三方解析请求过于频繁，请稍后再试。"
-            response = render(request, "xhs_download.html", context, status=429)
-            response["Retry-After"] = str(limit.retry_after)
-            return response
+            context["retry_after"] = limit.retry_after
+            return context, 429
 
     if prefer_ultra_hd:
         try:
@@ -458,9 +509,8 @@ def search_results_view(request, platform_key="home"):
             limit = None
         if limit is not None and not limit.allowed:
             context["error_message"] = "超高清解析请求过于频繁，请稍后再试。"
-            response = render(request, "xhs_download.html", context, status=429)
-            response["Retry-After"] = str(limit.retry_after)
-            return response
+            context["retry_after"] = limit.retry_after
+            return context, 429
     elif requested_ultra_hd:
         context["provider_notice"] = "当前环境未向访客开放超高清 Provider，本次使用本地解析。"
 
@@ -476,6 +526,18 @@ def search_results_view(request, platform_key="home"):
         result = parse_media_page(query, **parse_options)
         result_metadata = result.metadata or {}
         context["platform"] = result.platform
+        target_platform_key = get_platform_key_for_result(result.platform, result_metadata)
+        if (
+            platform_key != "home"
+            and target_platform_key
+            and target_platform_key != platform_key
+        ):
+            context["target_page"] = get_page_payload(target_platform_key)
+        context["result_theme"] = get_result_theme(
+            platform_key,
+            result.platform,
+            result_metadata,
+        )
         context["platform_name"] = (
             result_metadata.get("source_platform_name")
             or PLATFORM_DISPLAY_NAMES.get(result.platform, result.platform or "未知平台")
@@ -539,7 +601,56 @@ def search_results_view(request, platform_key="home"):
     except requests.RequestException as error:
         context["error_message"] = f"请求页面失败：{error}"
 
-    return render(request, "xhs_download.html", context)
+    return context, 200
+
+
+def request_wants_results_partial(request):
+    return (
+        request.headers.get("x-requested-with") == "XMLHttpRequest"
+        or request.GET.get("_partial") == "1"
+    )
+
+
+def render_results_partial_response(request, context, status_code=200):
+    has_results = bool(context.get("image_items") or context.get("video_items"))
+    has_content = has_results or bool(
+        context.get("error_message")
+        or context.get("platform_notice")
+        or context.get("provider_notice")
+    )
+    html = render_to_string(
+        "partials/xhs_results_region.html",
+        context,
+        request=request,
+    )
+    response = JsonResponse(
+        {
+            "status": "success" if status_code < 400 else "error",
+            "html": html,
+            "has_results": has_results,
+            "has_content": has_content,
+            "base_filename": context.get("base_filename") or "xhs_image",
+            "result_theme": context.get("result_theme") or "home",
+            "target_page": context.get("target_page") or None,
+            "message": context.get("error_message") or "",
+        },
+        status=status_code,
+    )
+    if context.get("retry_after"):
+        response["Retry-After"] = str(context["retry_after"])
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+def search_results_view(request, platform_key="home"):
+    context, status_code = build_search_results_context(request, platform_key)
+    if request_wants_results_partial(request):
+        return render_results_partial_response(request, context, status_code)
+
+    response = render(request, "xhs_download.html", context, status=status_code)
+    if context.get("retry_after"):
+        response["Retry-After"] = str(context["retry_after"])
+    return response
 
 
 def placeholder_image_response(status=200, retry_after=0):

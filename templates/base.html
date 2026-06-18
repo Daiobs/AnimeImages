@@ -28,18 +28,22 @@
 
             <div class="site-nav d-none d-lg-flex align-items-center gap-4">
                 <a class="site-nav-link {% if request.resolver_match.url_name == 'home' or request.resolver_match.url_name == 'home_results' %}active{% endif %}"
+                   data-nav-platform-key="home"
                    href="{% url 'home' %}">
                     首页
                 </a>
                 <a class="site-nav-link {% if request.resolver_match.url_name == 'xhs_home' or request.resolver_match.url_name == 'xhs_results' %}active{% endif %}"
+                   data-nav-platform-key="xhs"
                    href="{% url 'xhs_home' %}">
                     小红书
                 </a>
                 <a class="site-nav-link {% if request.resolver_match.url_name == 'tiktok_home' or request.resolver_match.url_name == 'tiktok_results' %}active{% endif %}"
+                   data-nav-platform-key="tiktok"
                    href="{% url 'tiktok_home' %}">
                     抖音
                 </a>
                 <a class="site-nav-link {% if request.resolver_match.url_name == 'bilibili_home' or request.resolver_match.url_name == 'bilibili_results' %}active{% endif %}"
+                   data-nav-platform-key="bilibili"
                    href="{% url 'bilibili_home' %}">
                     哔哩哔哩
                 </a>

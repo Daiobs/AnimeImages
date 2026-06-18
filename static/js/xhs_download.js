@@ -155,8 +155,27 @@
         }
     }
 
+    async function parseSearchResponse(response) {
+        const contentType = response.headers.get("Content-Type") || "";
+        if (contentType.includes("application/json")) {
+            return response.json();
+        }
+
+        await response.text();
+        if (response.ok) {
+            throw new Error("解析响应格式异常，请稍后再试。");
+        }
+        throw new Error(`解析失败（${response.status}），请稍后再试。`);
+    }
+
     function sleep(ms) {
         return new Promise((resolve) => window.setTimeout(resolve, ms));
+    }
+
+    function escapeHtml(value) {
+        const element = document.createElement("div");
+        element.innerText = value || "";
+        return element.innerHTML;
     }
 
     document.addEventListener("DOMContentLoaded", () => {
@@ -166,10 +185,11 @@
             return;
         }
 
-        const cards = document.querySelectorAll(".asset-card");
-        const downloadBtn = document.getElementById("download-btn");
-        const selectAllBtn = document.getElementById("select-all-btn");
-        const status = document.getElementById("status");
+        const searchForm = document.getElementById("hero-search-form");
+        const resultsRegion = document.getElementById("parse-results-region");
+        const pageHeading = document.getElementById("page-heading");
+        const pageDescription = document.getElementById("page-description");
+        const linkLabel = document.getElementById("media-link-label");
         const linkInput = document.getElementById("media-link-input");
         const pasteLinkIconBtn = document.getElementById("paste-link-icon-btn");
         const clearLinkBtn = document.getElementById("clear-link-btn");
@@ -186,18 +206,45 @@
         const qualityInput = document.getElementById("quality");
         const saveSettingsBtn = document.getElementById("save-settings-btn");
         const videoSaveModeInput = document.getElementById("video-save-mode");
-        const baseFilename = page.dataset.baseFilename || "xhs_image";
         const downloadUrl = page.dataset.downloadUrl;
         const downloadTaskUrl = page.dataset.downloadTaskUrl;
-        const progressWrap = document.getElementById("download-progress-wrap");
-        const progressTrack = progressWrap ? progressWrap.querySelector("[role='progressbar']") : null;
-        const progressBar = document.getElementById("download-progress-bar");
-        const progressPercent = document.getElementById("download-progress-percent");
         const savedSettings = loadSettings();
 
         let selected = [];
         let useFilePicker = Boolean(savedSettings.use_file_picker);
         let downloadMode = savedSettings.download_mode || "browser";
+        let activeParseController = null;
+        let parseRequestId = 0;
+
+        function getBaseFilename() {
+            return page.dataset.baseFilename || "xhs_image";
+        }
+
+        function getCards() {
+            return Array.from(resultsRegion ? resultsRegion.querySelectorAll(".asset-card") : []);
+        }
+
+        function getStatusElement() {
+            return resultsRegion ? resultsRegion.querySelector("#status") : null;
+        }
+
+        function getDownloadButton() {
+            return resultsRegion ? resultsRegion.querySelector("#download-btn") : null;
+        }
+
+        function getSelectAllButton() {
+            return resultsRegion ? resultsRegion.querySelector("#select-all-btn") : null;
+        }
+
+        function getProgressElements() {
+            const progressWrap = resultsRegion ? resultsRegion.querySelector("#download-progress-wrap") : null;
+            return {
+                progressWrap,
+                progressTrack: progressWrap ? progressWrap.querySelector("[role='progressbar']") : null,
+                progressBar: resultsRegion ? resultsRegion.querySelector("#download-progress-bar") : null,
+                progressPercent: resultsRegion ? resultsRegion.querySelector("#download-progress-percent") : null,
+            };
+        }
 
         function isUltraHdEnabled() {
             return Boolean(ultraHdSettingInput && ultraHdSettingInput.checked && !ultraHdSettingInput.disabled);
@@ -211,41 +258,66 @@
             ultraHdRequestInput.value = isUltraHdEnabled() ? "1" : "0";
         }
 
-        if (ultraHdSettingInput) {
-            ultraHdSettingInput.checked = Boolean(savedSettings.ultra_hd_enabled) && !ultraHdSettingInput.disabled;
-            updateUltraHdRequestValue();
+        function setPageHasResults(value) {
+            page.classList.toggle("has-results", Boolean(value));
         }
 
-        if (optionExists(downloadModeInput, downloadMode)) {
-            downloadModeInput.value = downloadMode;
-        } else {
-            downloadMode = "browser";
-            if (downloadModeInput) {
-                downloadModeInput.value = "browser";
+        function replaceThemeClass(element, themeClass) {
+            if (!element || !themeClass) {
+                return;
+            }
+            Array.from(element.classList)
+                .filter((className) => className.startsWith("theme-"))
+                .forEach((className) => element.classList.remove(className));
+            element.classList.add(themeClass);
+        }
+
+        function updateNavActive(platformKey) {
+            document.querySelectorAll(".site-nav-link[data-nav-platform-key]").forEach((link) => {
+                link.classList.toggle("active", link.dataset.navPlatformKey === platformKey);
+            });
+        }
+
+        function applyTargetPage(targetPage) {
+            if (!targetPage || !targetPage.key || targetPage.key === page.dataset.platformKey) {
+                return;
+            }
+
+            page.dataset.platformKey = targetPage.key;
+            replaceThemeClass(document.body, targetPage.theme_class);
+            replaceThemeClass(page, targetPage.theme_class);
+            updateNavActive(targetPage.key);
+
+            if (targetPage.title) {
+                document.title = targetPage.title;
+            }
+            if (pageHeading && targetPage.heading) {
+                pageHeading.innerText = targetPage.heading;
+            }
+            if (pageDescription && targetPage.description) {
+                pageDescription.innerText = targetPage.description;
+            }
+            if (linkLabel && targetPage.label) {
+                linkLabel.innerText = targetPage.label;
+            }
+            if (linkInput && targetPage.placeholder) {
+                linkInput.placeholder = targetPage.placeholder;
+            }
+            if (searchForm && targetPage.parse_action_url) {
+                searchForm.action = targetPage.parse_action_url;
+            }
+            if (targetPage.home_url && window.location.pathname !== targetPage.home_url) {
+                window.history.replaceState({}, "", targetPage.home_url);
             }
         }
 
-        if (savedSettings.save_format && saveFormatInput) {
-            saveFormatInput.value = savedSettings.save_format;
-        }
-
-        if (savedSettings.quality && qualityInput) {
-            qualityInput.value = savedSettings.quality;
-        }
-
-        if (savedSettings.video_save_mode && videoSaveModeInput) {
-            videoSaveModeInput.value = savedSettings.video_save_mode;
-        }
-
-        if (savedSettings.save_dir && saveDirInput) {
-            saveDirInput.value = savedSettings.save_dir;
-        }
-
         function updateSelectedStatus() {
-            setStatus(status, `已选择 ${selected.length} 个资源`);
+            setStatus(getStatusElement(), `已选择 ${selected.length} 个资源`);
         }
 
         function updateSelectAllButton() {
+            const selectAllBtn = getSelectAllButton();
+            const cards = getCards();
             if (!selectAllBtn) {
                 return;
             }
@@ -301,6 +373,7 @@
 
         function setProgress(percent) {
             const value = Math.max(0, Math.min(100, Math.round(percent || 0)));
+            const {progressWrap, progressTrack, progressBar, progressPercent} = getProgressElements();
             if (progressWrap) {
                 progressWrap.hidden = false;
             }
@@ -313,6 +386,104 @@
             if (progressPercent) {
                 progressPercent.innerText = `${value}%`;
             }
+        }
+
+        function setParseLoading(isLoading) {
+            const submitBtn = document.getElementById("parse-submit-btn");
+            const idleIcon = submitBtn ? submitBtn.querySelector(".hero-submit-idle") : null;
+            const spinner = submitBtn ? submitBtn.querySelector(".hero-submit-spinner") : null;
+            const label = submitBtn ? submitBtn.querySelector(".hero-submit-label") : null;
+
+            if (submitBtn) {
+                submitBtn.disabled = isLoading;
+                submitBtn.classList.toggle("is-loading", isLoading);
+            }
+            if (idleIcon) {
+                idleIcon.hidden = isLoading;
+            }
+            if (spinner) {
+                spinner.hidden = !isLoading;
+            }
+            if (label) {
+                label.innerText = isLoading ? "解析中" : "获取素材";
+            }
+        }
+
+        function showParseLoading() {
+            if (!resultsRegion) {
+                return;
+            }
+            selected = [];
+            setPageHasResults(true);
+            resultsRegion.innerHTML = `
+                <div class="parse-loading-card">
+                    <div class="spinner-border" role="status" aria-hidden="true"></div>
+                    <div>
+                        <div class="parse-loading-title">正在解析素材</div>
+                        <div class="parse-loading-subtitle">结果会直接显示在当前页面</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function showParseError(message) {
+            if (!resultsRegion) {
+                return;
+            }
+            selected = [];
+            setPageHasResults(true);
+            page.dataset.baseFilename = "xhs_image";
+            resultsRegion.innerHTML = `
+                <div class="alert alert-danger parse-inline-alert">
+                    <i class="bi bi-exclamation-triangle me-1"></i>
+                    ${escapeHtml(message || "解析失败，请稍后再试。")}
+                </div>
+            `;
+        }
+
+        function scrollResultsIntoView() {
+            if (!resultsRegion || !resultsRegion.innerHTML.trim()) {
+                return;
+            }
+
+            window.requestAnimationFrame(() => {
+                const target = (
+                    resultsRegion.querySelector(".results-scroll-anchor")
+                    || resultsRegion.querySelector(".result-card")
+                    || resultsRegion
+                );
+                target.scrollIntoView({behavior: "smooth", block: "start"});
+            });
+        }
+
+        function applyParsePayload(payload) {
+            if (!resultsRegion) {
+                return;
+            }
+            applyTargetPage(payload.target_page);
+            selected = [];
+            resultsRegion.innerHTML = payload.html || "";
+            page.dataset.baseFilename = payload.base_filename || "xhs_image";
+            setPageHasResults(Boolean(payload.has_content || payload.has_results));
+            updateSelectAllButton();
+            if (payload.has_results) {
+                scrollResultsIntoView();
+            }
+        }
+
+        function resetResults() {
+            if (activeParseController) {
+                activeParseController.abort();
+                activeParseController = null;
+            }
+            selected = [];
+            parseRequestId += 1;
+            setParseLoading(false);
+            page.dataset.baseFilename = "xhs_image";
+            if (resultsRegion) {
+                resultsRegion.innerHTML = "";
+            }
+            setPageHasResults(false);
         }
 
         async function readResponseBlobWithProgress(response, startPercent, endPercent) {
@@ -370,7 +541,7 @@
             }
 
             setProgress(0);
-            setStatus(status, "正在准备下载...");
+            setStatus(getStatusElement(), "正在准备下载...");
 
             const createResponse = await fetch(downloadTaskUrl, {
                 method: "POST",
@@ -390,14 +561,14 @@
             const fileUrl = completed.file_url || created.file_url;
 
             setProgress(95);
-            setStatus(status, "正在接收文件...");
+            setStatus(getStatusElement(), "正在接收文件...");
 
             const fileResponse = await fetch(fileUrl, {cache: "no-store"});
             if (!fileResponse.ok) {
                 throw new Error(await parseErrorResponse(fileResponse));
             }
 
-            const filename = getDownloadFilename(fileResponse, baseFilename);
+            const filename = getDownloadFilename(fileResponse, getBaseFilename());
             const blob = await readResponseBlobWithProgress(fileResponse, 95, 100);
             const savedMessage = await saveZipBlob(blob, filename, useFilePicker);
             const savedCount = fileResponse.headers.get("X-Saved-Count") || completed.saved_count || "?";
@@ -405,44 +576,227 @@
             const variant = String(failedCount) === "0" ? "text-success" : "text-muted";
 
             setProgress(100);
-            setStatus(status, `${savedMessage}：${filename}，成功 ${savedCount} 个，失败 ${failedCount} 个`, variant);
+            setStatus(getStatusElement(), `${savedMessage}：${filename}，成功 ${savedCount} 个，失败 ${failedCount} 个`, variant);
         }
 
-        cards.forEach((card) => {
-            card.addEventListener("click", () => {
-                const item = getCardItem(card);
-                const key = getItemKey(item);
-                const exists = selected.some((selectedItem) => getItemKey(selectedItem) === key);
+        async function handleDownloadClick(downloadBtn) {
+            if (selected.length === 0) {
+                window.alert("请先选择需要保存的资源");
+                return;
+            }
 
-                if (exists) {
-                    selected = selected.filter((selectedItem) => getItemKey(selectedItem) !== key);
-                    card.classList.remove("selected");
-                } else {
-                    selected.push(item);
-                    card.classList.add("selected");
+            setStatus(getStatusElement(), "正在保存，请稍候...");
+            downloadBtn.disabled = true;
+
+            try {
+                const payload = {
+                    media_items: selected,
+                    base_filename: getBaseFilename(),
+                    download_mode: downloadModeInput ? downloadModeInput.value : "browser",
+                    save_dir: saveDirInput ? saveDirInput.value.trim() : "xhs",
+                    save_format: saveFormatInput ? saveFormatInput.value : "original",
+                    quality: qualityInput ? qualityInput.value || 95 : 95,
+                    video_save_mode: videoSaveModeInput ? videoSaveModeInput.value : "video",
+                };
+
+                if (payload.download_mode === "browser" && downloadTaskUrl) {
+                    await downloadWithTask(payload);
+                    return;
                 }
 
-                updateSelectedStatus();
-                updateSelectAllButton();
-            });
-        });
-
-        if (selectAllBtn) {
-            selectAllBtn.addEventListener("click", () => {
-                const allSelected = selected.length === cards.length;
-                selected = [];
-
-                cards.forEach((card) => {
-                    if (allSelected) {
-                        card.classList.remove("selected");
-                    } else {
-                        card.classList.add("selected");
-                        selected.push(getCardItem(card));
-                    }
+                setProgress(0);
+                const response = await fetch(downloadUrl, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "X-CSRFToken": getCookie("csrftoken"),
+                    },
+                    body: JSON.stringify(payload),
                 });
 
-                updateSelectedStatus();
-                updateSelectAllButton();
+                if (!response.ok) {
+                    throw new Error(await parseErrorResponse(response));
+                }
+
+                const contentType = response.headers.get("Content-Type") || "";
+                if (contentType.includes("application/json")) {
+                    const data = await response.json();
+                    setProgress(100);
+                    setStatus(getStatusElement(), data.message || "服务端保存完成", "text-success");
+                    return;
+                }
+
+                const filename = getDownloadFilename(response, getBaseFilename());
+                const blob = await readResponseBlobWithProgress(response, 0, 100);
+                const savedMessage = await saveZipBlob(blob, filename, useFilePicker);
+                const savedCount = response.headers.get("X-Saved-Count") || "?";
+                const failedCount = response.headers.get("X-Failed-Count") || "0";
+                const variant = failedCount === "0" ? "text-success" : "text-muted";
+                setStatus(getStatusElement(), `${savedMessage}：${filename}，成功 ${savedCount} 个，失败 ${failedCount} 个`, variant);
+            } catch (error) {
+                if (error && error.name === "AbortError") {
+                    setStatus(getStatusElement(), "已取消保存位置选择");
+                } else {
+                    console.error(error);
+                    setStatus(getStatusElement(), error.message || "保存失败，请查看浏览器控制台或 Django 后台日志", "text-danger");
+                }
+            } finally {
+                if (downloadBtn.isConnected) {
+                    downloadBtn.disabled = false;
+                }
+            }
+        }
+
+        function toggleAssetCard(card) {
+            const item = getCardItem(card);
+            const key = getItemKey(item);
+            const exists = selected.some((selectedItem) => getItemKey(selectedItem) === key);
+
+            if (exists) {
+                selected = selected.filter((selectedItem) => getItemKey(selectedItem) !== key);
+                card.classList.remove("selected");
+            } else {
+                selected.push(item);
+                card.classList.add("selected");
+            }
+
+            updateSelectedStatus();
+            updateSelectAllButton();
+        }
+
+        function toggleSelectAll() {
+            const cards = getCards();
+            const allSelected = selected.length === cards.length;
+            selected = [];
+
+            cards.forEach((card) => {
+                if (allSelected) {
+                    card.classList.remove("selected");
+                } else {
+                    card.classList.add("selected");
+                    selected.push(getCardItem(card));
+                }
+            });
+
+            updateSelectedStatus();
+            updateSelectAllButton();
+        }
+
+        async function handleSearchSubmit(event) {
+            if (!window.fetch || !window.AbortController || !resultsRegion) {
+                return;
+            }
+
+            event.preventDefault();
+            updateUltraHdRequestValue();
+
+            if (!linkInput || !linkInput.value.trim()) {
+                linkInput && linkInput.focus();
+                return;
+            }
+
+            if (activeParseController) {
+                activeParseController.abort();
+            }
+
+            const currentRequestId = parseRequestId + 1;
+            parseRequestId = currentRequestId;
+            activeParseController = new AbortController();
+            const formData = new FormData(searchForm);
+            const params = new URLSearchParams(formData);
+            params.delete("csrfmiddlewaretoken");
+            const requestUrl = `${searchForm.action}?${params.toString()}`;
+
+            setParseLoading(true);
+            showParseLoading();
+
+            try {
+                const response = await fetch(requestUrl, {
+                    headers: {
+                        "Accept": "application/json",
+                        "X-Requested-With": "XMLHttpRequest",
+                    },
+                    cache: "no-store",
+                    signal: activeParseController.signal,
+                });
+                const payload = await parseSearchResponse(response);
+
+                if (currentRequestId !== parseRequestId) {
+                    return;
+                }
+                if (!payload.html) {
+                    throw new Error(payload.message || "解析失败，请稍后再试。");
+                }
+
+                applyParsePayload(payload);
+            } catch (error) {
+                if (error && error.name === "AbortError") {
+                    return;
+                }
+                console.error(error);
+                if (currentRequestId === parseRequestId) {
+                    showParseError(error.message || "解析失败，请稍后再试。");
+                }
+            } finally {
+                if (currentRequestId === parseRequestId) {
+                    activeParseController = null;
+                    setParseLoading(false);
+                }
+            }
+        }
+
+        if (ultraHdSettingInput) {
+            ultraHdSettingInput.checked = Boolean(savedSettings.ultra_hd_enabled) && !ultraHdSettingInput.disabled;
+            updateUltraHdRequestValue();
+        }
+
+        if (optionExists(downloadModeInput, downloadMode)) {
+            downloadModeInput.value = downloadMode;
+        } else {
+            downloadMode = "browser";
+            if (downloadModeInput) {
+                downloadModeInput.value = "browser";
+            }
+        }
+
+        if (savedSettings.save_format && saveFormatInput) {
+            saveFormatInput.value = savedSettings.save_format;
+        }
+
+        if (savedSettings.quality && qualityInput) {
+            qualityInput.value = savedSettings.quality;
+        }
+
+        if (savedSettings.video_save_mode && videoSaveModeInput) {
+            videoSaveModeInput.value = savedSettings.video_save_mode;
+        }
+
+        if (savedSettings.save_dir && saveDirInput) {
+            saveDirInput.value = savedSettings.save_dir;
+        }
+
+        if (searchForm) {
+            searchForm.addEventListener("submit", handleSearchSubmit);
+        }
+
+        if (resultsRegion) {
+            resultsRegion.addEventListener("click", (event) => {
+                const selectAllBtn = event.target.closest("#select-all-btn");
+                if (selectAllBtn && resultsRegion.contains(selectAllBtn)) {
+                    toggleSelectAll();
+                    return;
+                }
+
+                const downloadBtn = event.target.closest("#download-btn");
+                if (downloadBtn && resultsRegion.contains(downloadBtn)) {
+                    handleDownloadClick(downloadBtn);
+                    return;
+                }
+
+                const card = event.target.closest(".asset-card");
+                if (card && resultsRegion.contains(card)) {
+                    toggleAssetCard(card);
+                }
             });
         }
 
@@ -450,6 +804,7 @@
             clearLinkBtn.addEventListener("click", () => {
                 linkInput.value = "";
                 linkInput.focus();
+                resetResults();
             });
         }
 
@@ -505,75 +860,7 @@
                 });
                 updateUltraHdRequestValue();
 
-                setStatus(status, "设置已保存", "text-success");
-            });
-        }
-
-        if (downloadBtn) {
-            downloadBtn.addEventListener("click", async () => {
-                if (selected.length === 0) {
-                    window.alert("请先选择需要保存的资源");
-                    return;
-                }
-
-                setStatus(status, "正在保存，请稍候...");
-                downloadBtn.disabled = true;
-
-                try {
-                    const payload = {
-                        media_items: selected,
-                        base_filename: baseFilename,
-                        download_mode: downloadModeInput ? downloadModeInput.value : "browser",
-                        save_dir: saveDirInput ? saveDirInput.value.trim() : "xhs",
-                        save_format: saveFormatInput ? saveFormatInput.value : "original",
-                        quality: qualityInput ? qualityInput.value || 95 : 95,
-                        video_save_mode: videoSaveModeInput ? videoSaveModeInput.value : "video",
-                    };
-
-                    if (payload.download_mode === "browser" && downloadTaskUrl) {
-                        await downloadWithTask(payload);
-                        return;
-                    }
-
-                    setProgress(0);
-                    const response = await fetch(downloadUrl, {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json",
-                            "X-CSRFToken": getCookie("csrftoken"),
-                        },
-                        body: JSON.stringify(payload),
-                    });
-
-                    if (!response.ok) {
-                        throw new Error(await parseErrorResponse(response));
-                    }
-
-                    const contentType = response.headers.get("Content-Type") || "";
-                    if (contentType.includes("application/json")) {
-                        const data = await response.json();
-                        setProgress(100);
-                        setStatus(status, data.message || "服务端保存完成", "text-success");
-                        return;
-                    }
-
-                    const filename = getDownloadFilename(response, baseFilename);
-                    const blob = await readResponseBlobWithProgress(response, 0, 100);
-                    const savedMessage = await saveZipBlob(blob, filename, useFilePicker);
-                    const savedCount = response.headers.get("X-Saved-Count") || "?";
-                    const failedCount = response.headers.get("X-Failed-Count") || "0";
-                    const variant = failedCount === "0" ? "text-success" : "text-muted";
-                    setStatus(status, `${savedMessage}：${filename}，成功 ${savedCount} 个，失败 ${failedCount} 个`, variant);
-                } catch (error) {
-                    if (error && error.name === "AbortError") {
-                        setStatus(status, "已取消保存位置选择");
-                    } else {
-                        console.error(error);
-                        setStatus(status, error.message || "保存失败，请查看浏览器控制台或 Django 后台日志", "text-danger");
-                    }
-                } finally {
-                    downloadBtn.disabled = false;
-                }
+                setStatus(getStatusElement(), "设置已保存", "text-success");
             });
         }
 

@@ -3406,8 +3406,70 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "你粘贴的是抖音链接，已自动使用对应解析器。")
         self.assertContains(response, "抖音")
-        self.assertContains(response, "result-theme-xhs")
+        self.assertContains(response, "result-theme-tiktok")
         mock_parse.assert_called_once_with("https://v.douyin.com/abc123/", prefer_ultra_hd=False)
+
+    @patch("xhs_download.views.parse_media_page")
+    def test_results_ajax_returns_partial_html_without_full_page_navigation(self, mock_parse):
+        mock_parse.return_value = DouyinAdapter().parse_aweme({
+            "aweme_id": "123",
+            "desc": "标题",
+            "author": {"nickname": "作者"},
+            "images": [{"url_list": ["https://p3-sign.douyinpic.com/image.webp"]}],
+        })
+
+        response = Client().get(
+            "/tiktok/results/",
+            {"q": "https://v.douyin.com/abc123/"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        payload = response.json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["has_results"])
+        self.assertEqual(payload["base_filename"], "作者_标题")
+        self.assertIn("result-theme-tiktok", payload["html"])
+        self.assertNotIn("<!DOCTYPE html>", payload["html"])
+        mock_parse.assert_called_once_with("https://v.douyin.com/abc123/", prefer_ultra_hd=False)
+
+    @patch("xhs_download.views.parse_media_page")
+    def test_results_ajax_separates_error_content_from_media_results(self, mock_parse):
+        mock_parse.side_effect = XhsParseError("没有解析到图片或视频")
+
+        response = Client().get(
+            "/tiktok/results/",
+            {"q": "https://v.douyin.com/abc123/"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        payload = response.json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(payload["has_results"])
+        self.assertTrue(payload["has_content"])
+        self.assertIn("解析失败：没有解析到图片或视频", payload["message"])
+        self.assertIn("alert-danger", payload["html"])
+
+    @patch("xhs_download.views.parse_media_page")
+    def test_results_ajax_returns_target_page_for_cross_platform_link(self, mock_parse):
+        mock_parse.return_value = DouyinAdapter().parse_aweme({
+            "aweme_id": "123",
+            "desc": "标题",
+            "author": {"nickname": "作者"},
+            "images": [{"url_list": ["https://p3-sign.douyinpic.com/image.webp"]}],
+        })
+
+        response = Client().get(
+            "/xhs/results/",
+            {"q": "https://v.douyin.com/abc123/"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        payload = response.json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["target_page"]["key"], "tiktok")
+        self.assertEqual(payload["target_page"]["home_url"], "/tiktok/")
+        self.assertEqual(payload["target_page"]["theme_class"], "theme-tiktok")
+        self.assertEqual(payload["target_page"]["parse_action_url"], "/tiktok/results/")
 
     @patch("xhs_download.views.parse_media_page")
     def test_bilibili_results_render_video_asset(self, mock_parse):

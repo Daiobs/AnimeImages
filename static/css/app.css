@@ -144,30 +144,34 @@ body {
 }
 
 .hero-section {
-    padding: 74px 0 84px;
+    padding: 58px 0 58px;
+    transition: padding .2s ease;
 }
 
 .hero-search-form {
     max-width: 680px;
-    margin: 72px auto 0;
+    margin: 46px auto 0;
+    transition: margin .2s ease;
 }
 
 .hero-title {
     margin: 0;
     color: var(--text-main);
-    font-size: 4rem;
+    font-size: 3.6rem;
     font-weight: 900;
     line-height: 1.12;
     letter-spacing: 0;
+    transition: font-size .2s ease;
 }
 
 .hero-subtitle {
     max-width: 980px;
-    margin: 26px auto 0;
+    margin: 18px auto 0;
     color: var(--text-muted);
-    font-size: 1.35rem;
+    font-size: 1.18rem;
     font-weight: 500;
     line-height: 1.7;
+    transition: margin .2s ease, font-size .2s ease;
 }
 
 .theme-xhs .hero-title,
@@ -185,6 +189,7 @@ body {
     background: #fff;
     box-shadow: 0 4px 12px rgba(17, 24, 39, 0.06);
     overflow: hidden;
+    transition: min-height .2s ease, box-shadow .2s ease;
 }
 
 .hero-input-shell:focus-within {
@@ -204,6 +209,7 @@ body {
     background: #fff;
     color: var(--brand);
     font-size: 1.25rem;
+    transition: min-height .2s ease, background .18s ease;
 }
 
 .hero-paste-icon-btn:hover {
@@ -219,6 +225,7 @@ body {
     box-shadow: none;
     color: var(--text-main);
     font-size: 1.08rem;
+    transition: min-height .2s ease, font-size .2s ease;
 }
 
 .hero-link-input:focus {
@@ -231,6 +238,7 @@ body {
     grid-template-columns: 2fr 1fr;
     gap: 14px;
     margin-top: 18px;
+    transition: margin .2s ease;
 }
 
 .hero-action-row .btn {
@@ -238,6 +246,53 @@ body {
     border-radius: 8px;
     font-size: 1.05rem;
     font-weight: 700;
+    transition: min-height .2s ease, font-size .2s ease, opacity .18s ease;
+}
+
+.hero-primary-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.hero-primary-action:disabled {
+    opacity: .82;
+}
+
+.xhs-download-page.has-results .hero-section {
+    padding: 14px 0 14px;
+}
+
+.xhs-download-page.has-results .hero-title {
+    font-size: 1.8rem;
+    line-height: 1.2;
+}
+
+.xhs-download-page.has-results .hero-subtitle {
+    display: none;
+}
+
+.xhs-download-page.has-results .hero-search-form {
+    margin-top: 12px;
+}
+
+.xhs-download-page.has-results .hero-input-shell,
+.xhs-download-page.has-results .hero-paste-icon-btn,
+.xhs-download-page.has-results .hero-link-input {
+    min-height: 46px;
+}
+
+.xhs-download-page.has-results .hero-link-input {
+    font-size: 1rem;
+}
+
+.xhs-download-page.has-results .hero-action-row {
+    margin-top: 10px;
+}
+
+.xhs-download-page.has-results .hero-action-row .btn {
+    min-height: 44px;
+    font-size: .94rem;
 }
 
 .btn-brand {
@@ -254,6 +309,47 @@ body {
 .result-card {
     border-radius: 20px;
     overflow: hidden;
+    scroll-margin-top: 86px;
+}
+
+.parse-results-region,
+.results-scroll-anchor {
+    scroll-margin-top: 86px;
+}
+
+.parse-loading-card {
+    display: flex;
+    min-height: 132px;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    margin-bottom: 24px;
+    border: 1px solid rgba(var(--brand-rgb), .16);
+    border-radius: 8px;
+    background: linear-gradient(180deg, #fff 0%, var(--brand-light) 100%);
+    color: var(--text-main);
+    box-shadow: 0 3px 12px rgba(17, 24, 39, 0.05);
+}
+
+.parse-loading-card .spinner-border {
+    color: var(--brand);
+}
+
+.parse-loading-title {
+    font-size: 1.02rem;
+    font-weight: 800;
+}
+
+.parse-loading-subtitle {
+    margin-top: 4px;
+    color: var(--text-muted);
+    font-size: .92rem;
+}
+
+.parse-inline-alert {
+    max-width: 960px;
+    margin-right: auto;
+    margin-left: auto;
 }
 
 .result-icon {

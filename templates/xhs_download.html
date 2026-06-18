@@ -13,11 +13,12 @@
 
 {% block content %}
     <section
-            class="xhs-download-page {{ theme_class|default:'theme-home' }}"
+            class="xhs-download-page {{ theme_class|default:'theme-home' }}{% if image_items or video_items or error_message %} has-results{% endif %}"
             data-download-url="{{ download_url }}"
             data-download-task-url="{{ download_task_url }}"
             data-download-async-enabled="{{ download_async_tasks_enabled|yesno:'true,false' }}"
             data-base-filename="{{ base_filename|default:'xhs_image' }}"
+            data-platform-key="{{ platform_key|default:'home' }}"
     >
         <div class="container-fluid px-4 px-md-5">
 
@@ -25,16 +26,16 @@
             <div class="hero-section">
                 <div class="row justify-content-center g-4">
                     <div class="col-lg-10 col-xl-8 text-center">
-                        <h1 class="hero-title">
+                        <h1 class="hero-title" id="page-heading">
                             {{ page_heading|default:"高清素材解析下载" }}
                         </h1>
-                        <p class="hero-subtitle">
+                        <p class="hero-subtitle" id="page-description">
                             {{ page_description|default:"粘贴小红书或抖音链接，解析图片/视频内容，选择需要的素材保存到本地。" }}
                         </p>
                     </div>
 
                     <div class="col-lg-7 col-xl-6">
-                        <form method="get" action="{{ parse_action_url }}" class="hero-search-form">
+                        <form method="get" action="{{ parse_action_url }}" class="hero-search-form" id="hero-search-form">
                             {% csrf_token %}
                             <input
                                     type="hidden"
@@ -43,7 +44,7 @@
                                     value="{% if prefer_ultra_hd and ultra_hd_available %}1{% else %}0{% endif %}"
                             >
 
-                            <label class="visually-hidden" for="media-link-input">{{ link_label|default:"素材链接" }}</label>
+                            <label class="visually-hidden" id="media-link-label" for="media-link-input">{{ link_label|default:"素材链接" }}</label>
 
                             <div class="hero-input-shell">
                                 <button
@@ -67,9 +68,12 @@
                             </div>
 
                             <div class="hero-action-row">
-                                <button type="submit" class="btn btn-brand hero-primary-action">
-                                    <i class="bi bi-magic me-1"></i>
-                                    获取素材
+                                <button type="submit" class="btn btn-brand hero-primary-action" id="parse-submit-btn">
+                                    <span class="hero-submit-idle">
+                                        <i class="bi bi-magic me-1"></i>
+                                    </span>
+                                    <span class="spinner-border spinner-border-sm hero-submit-spinner me-1" aria-hidden="true" hidden></span>
+                                    <span class="hero-submit-label">获取素材</span>
                                 </button>
                                 <button type="button" class="btn btn-outline-secondary hero-clear-action" id="clear-link-btn">
                                     清除
@@ -80,170 +84,10 @@
                 </div>
             </div>
 
-            {% if error_message %}
-                <div class="alert alert-danger">
-                    <i class="bi bi-exclamation-triangle me-1"></i>
-                    {{ error_message }}
-                </div>
-            {% endif %}
-
-            {% if platform_notice %}
-                <div class="alert alert-info">
-                    <i class="bi bi-info-circle me-1"></i>
-                    {{ platform_notice }}
-                </div>
-            {% endif %}
-
-            {% if provider_notice %}
-                <div class="alert alert-info">
-                    <i class="bi bi-speedometer2 me-1"></i>
-                    {{ provider_notice }}
-                </div>
-            {% endif %}
-
             <!-- 解析结果区 -->
-            {% if image_items or video_items %}
-                <div class="card result-card result-theme-{{ result_theme|default:'home' }} border-0 shadow-sm mb-4">
-                    <div class="card-header bg-white d-flex flex-wrap justify-content-between align-items-center gap-2 py-3">
-                        <div>
-                            <div class="fw-bold">
-                                {% if post_type == "video" %}
-                                    <i class="bi bi-play-circle result-icon me-1"></i>
-                                    视频笔记
-                                {% else %}
-                                    <i class="bi bi-images result-icon me-1"></i>
-                                    图片笔记
-                                {% endif %}
-                                {{ base_filename|default:"xhs_image" }}
-                            </div>
-
-                            <div class="text-muted small">
-                                {% if platform_name %}
-                                    <span class="platform-pill">{{ platform_name }}</span>
-                                {% endif %}
-                                {% if post_type == "video" %}
-                                    已解析到 {{ video_items|length }} 个视频资源
-                                {% else %}
-                                    共解析到 {{ image_items|length }} 张图片
-                                {% endif %}
-                            </div>
-                        </div>
-
-                        <div class="d-flex gap-2">
-                            <button type="button" class="btn btn-outline-secondary btn-sm" id="select-all-btn">
-                                <i class="bi bi-check2-square me-1"></i>
-                                全选
-                            </button>
-
-                            <button type="button" class="btn btn-brand btn-sm" id="download-btn">
-                                <i class="bi bi-download me-1"></i>
-                                保存选中资源
-                            </button>
-                        </div>
-                    </div>
-
-                    <div class="card-body note-preview-bg">
-
-                        {% if video_items %}
-                            <h5 class="fw-bold mb-3">
-                                <i class="bi bi-play-circle result-icon me-1"></i>
-                                视频资源
-                            </h5>
-
-                            <div class="asset-grid">
-                                {% for item in video_items %}
-                                    <div class="asset-card"
-                                         data-type="video"
-                                         data-url="{{ item.video_url }}"
-                                         data-cover-url="{{ item.cover_url|default:'' }}"
-                                         data-asset-id="{{ item.asset_id|default:'' }}"
-                                         data-provider="{{ item.provider|default:'' }}"
-                                         data-provider-resource-id="{{ item.provider_resource_id|default:'' }}"
-                                         data-provider-cache-key="{{ item.provider_cache_key|default:'' }}"
-                                         data-provider-manifest-token="{{ item.provider_manifest_token|default:'' }}">
-                        <span class="asset-check">
-                            <i class="bi bi-check-lg"></i>
-                        </span>
-
-                                        {% if item.cover_url %}
-                                        <img
-    src="{{ proxy_image_url }}?u={{ item.encoded_preview_cover_url|default:item.encoded_cover_url }}{% if item.cover_preview_provider_query %}&{{ item.cover_preview_provider_query }}{% endif %}"
-    alt="视频封面"
-    loading="lazy"
-    decoding="async"
-    data-retry="0"
-    onerror="retryImage(this)"
->
-                                        {% else %}
-                                            <div class="p-5 text-center bg-white">
-                                                <div class="display-4 result-icon">
-                                                    <i class="bi bi-play-btn"></i>
-                                                </div>
-                                            </div>
-                                        {% endif %}
-
-                                        <div class="position-absolute top-50 start-50 translate-middle">
-                                            <div class="bg-dark bg-opacity-75 text-white rounded-circle d-flex align-items-center justify-content-center"
-                                                 style="width:56px;height:56px;">
-                                                <i class="bi bi-play-fill fs-3"></i>
-                                            </div>
-                                        </div>
-
-                                        <div class="position-absolute bottom-0 start-0 end-0 p-2 bg-dark bg-opacity-50 text-white small">
-                                            视频资源 · {{ item.size_label|default:"大小未知" }}
-                                        </div>
-                                    </div>
-                                {% endfor %}
-                            </div>
-                        {% endif %}
-
-                        {% if image_items %}
-                            <h5 class="fw-bold mb-3">
-                                <i class="bi bi-images result-icon me-1"></i>
-                                图片资源
-                            </h5>
-
-                            <div class="asset-grid">
-                                {% for item in image_items %}
-                                    <div class="asset-card"
-                                         data-type="image"
-                                         data-url="{{ item.url }}"
-                                         data-asset-id="{{ item.asset_id|default:'' }}"
-                                         data-provider="{{ item.provider|default:'' }}"
-                                         data-provider-resource-id="{{ item.provider_resource_id|default:'' }}"
-                                         data-provider-cache-key="{{ item.provider_cache_key|default:'' }}"
-                                         data-provider-manifest-token="{{ item.provider_manifest_token|default:'' }}">
-                        <span class="asset-check">
-                            <i class="bi bi-check-lg"></i>
-                        </span>
-<img
-    src="{{ proxy_image_url }}?u={{ item.encoded_preview_url|default:item.encoded_url }}{% if item.preview_provider_query %}&{{ item.preview_provider_query }}{% endif %}"
-    alt="素材图片"
-    loading="lazy"
-    decoding="async"
-    data-retry="0"
-    onerror="retryImage(this)"
->
-                                    </div>
-                                {% endfor %}
-                            </div>
-                        {% endif %}
-
-                    </div>
-
-                    <div class="card-footer bg-white">
-                        <div class="download-progress-wrap mb-2" id="download-progress-wrap" hidden>
-                            <div class="download-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-                                <div class="download-progress-bar" id="download-progress-bar" style="width: 0%;"></div>
-                            </div>
-                            <div class="download-progress-percent" id="download-progress-percent">0%</div>
-                        </div>
-                        <div id="status" class="small text-muted">
-                            点击资源卡片可选择，支持批量保存。
-                        </div>
-                    </div>
-                </div>
-            {% endif %}
+            <div id="parse-results-region" class="parse-results-region" aria-live="polite">
+                {% include "partials/xhs_results_region.html" %}
+            </div>
 
             <section class="feature-section">
                 <div class="row g-4">
