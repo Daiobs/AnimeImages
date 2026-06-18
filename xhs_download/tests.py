@@ -35,6 +35,7 @@ from .services.downloads import (
     normalize_save_format,
     normalize_video_save_mode,
     provider_manifest_allows_public_download,
+    request_public_provider_get_with_retry,
     resolve_server_save_folder,
     save_media_items_to_server,
 )
@@ -118,6 +119,27 @@ def make_kukutool_download_item(url, aweme_id="7647533902413173321"):
         asset_id=asset_id,
         provider="kukutool",
         provider_resource_id=aweme_id,
+        provider_cache_key=cache_key,
+        url=url,
+    )
+    return item
+
+
+def make_third_party_download_item(url, platform="kuaishou", source_key="abc123", media_type="image"):
+    asset_id = f"third_party:{platform}:{source_key}:{media_type}:1"
+    cache_key = f"third_party:kukutool_generic:{source_key}"
+    item = {
+        "type": media_type,
+        "url": url,
+        "asset_id": asset_id,
+        "provider": "kukutool_generic",
+        "provider_resource_id": source_key,
+        "provider_cache_key": cache_key,
+    }
+    item["provider_manifest_token"] = build_provider_manifest_token(
+        asset_id=asset_id,
+        provider="kukutool_generic",
+        provider_resource_id=source_key,
         provider_cache_key=cache_key,
         url=url,
     )
@@ -209,6 +231,62 @@ class XhsUtilityTests(SimpleTestCase):
     def test_validate_public_download_url_rejects_invalid_port(self):
         with self.assertRaises(XhsSecurityError):
             validate_public_download_url("https://cdn.example.com:notaport/a.jpg")
+
+    @patch(
+        "xhs_download.services.common.socket.getaddrinfo",
+        return_value=[(None, None, None, "", ("93.184.216.34", 443))],
+    )
+    @patch("xhs_download.services.downloads.requests.get")
+    def test_signed_third_party_download_allows_same_platform_redirect(self, mock_get, _mock_dns):
+        initial_url = "https://p1.a.yximgs.com/cover.jpg"
+        final_url = "https://tx2.a.yximgs.com/cover.jpg"
+        provider_item = make_third_party_download_item(initial_url)
+        redirect_response = Mock(
+            status_code=302,
+            headers={"Location": final_url},
+        )
+        redirect_response.close = Mock()
+        final_response = Mock(
+            status_code=200,
+            headers={},
+            url=final_url,
+        )
+        mock_get.side_effect = [redirect_response, final_response]
+
+        response = request_public_provider_get_with_retry(
+            initial_url,
+            retries=1,
+            provider_item=provider_item,
+        )
+
+        self.assertIs(response, final_response)
+        self.assertEqual(mock_get.call_count, 2)
+        redirect_response.close.assert_called_once()
+
+    @patch(
+        "xhs_download.services.common.socket.getaddrinfo",
+        return_value=[(None, None, None, "", ("93.184.216.34", 443))],
+    )
+    @patch("xhs_download.services.downloads.requests.get")
+    def test_signed_third_party_download_rejects_cross_platform_redirect(self, mock_get, _mock_dns):
+        initial_url = "https://p1.a.yximgs.com/cover.jpg"
+        provider_item = make_third_party_download_item(initial_url)
+        redirect_response = Mock(
+            status_code=302,
+            headers={"Location": "https://cdn.example.com/cover.jpg"},
+        )
+        redirect_response.close = Mock()
+        mock_get.return_value = redirect_response
+
+        with self.assertRaises(XhsDownloadError):
+            request_public_provider_get_with_retry(
+                initial_url,
+                retries=1,
+                provider_item=provider_item,
+            )
+
+        self.assertEqual(mock_get.call_count, 1)
+        redirect_response.close.assert_called_once()
 
     def test_dedupe_candidates_preserves_first_occurrence(self):
         candidates = dedupe_candidates([

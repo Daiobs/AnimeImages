@@ -584,13 +584,12 @@ def proxy_image_view(request):
     try:
         image_url = decode_url(encoded_url)
         provider_item = build_provider_preview_item(request, image_url)
-        provider_signed = provider_item is not None
-        if not provider_signed:
+        if provider_item is None:
             validate_media_url(image_url)
         response = fetch_media_response(
             image_url,
             timeout=15,
-            provider_signed=provider_signed,
+            provider_signed=provider_item,
         )
 
         with response:

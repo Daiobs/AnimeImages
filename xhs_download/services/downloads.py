@@ -256,6 +256,16 @@ def provider_manifest_allows_public_download(item):
     return False
 
 
+def validate_provider_signed_download_url(provider_item, url, message):
+    validate_public_download_url(url, message)
+    if provider_item is not None and not third_party_manifest_item_is_allowed({
+        **provider_item,
+        "url": url,
+    }):
+        raise XhsDownloadError(message)
+    return url
+
+
 def build_provider_signed_cover_item(item, cover_url):
     if not cover_url or not provider_manifest_allows_public_download(item):
         return {"type": "image", "url": cover_url}
@@ -288,13 +298,21 @@ def request_public_provider_get_with_retry(
     retries=3,
     stream=True,
     max_redirects=5,
+    provider_item=None,
 ):
+    if provider_item is not None and not provider_manifest_allows_public_download(provider_item):
+        raise XhsDownloadError("Provider 签名资源未通过校验")
+
     last_error = None
     for _ in range(max(1, int(retries or 1))):
         current_url = url
         try:
             for _ in range(max_redirects + 1):
-                validate_public_download_url(current_url, "Provider URL 不允许请求")
+                validate_provider_signed_download_url(
+                    provider_item,
+                    current_url,
+                    "Provider URL 不允许请求",
+                )
                 response = requests.get(
                     current_url,
                     headers=headers or get_media_headers(current_url),
@@ -307,13 +325,20 @@ def request_public_provider_get_with_retry(
                     response.close()
                     if not location:
                         raise XhsDownloadError(f"HTTP {response.status_code}")
-                    current_url = urljoin(current_url, location)
+                    next_url = urljoin(current_url, location)
+                    validate_provider_signed_download_url(
+                        provider_item,
+                        next_url,
+                        "Provider URL 跳转到了不允许的媒体域名",
+                    )
+                    current_url = next_url
                     continue
                 if response.status_code == 200:
                     try:
-                        validate_public_download_url(
+                        validate_provider_signed_download_url(
+                            provider_item,
                             response.url,
-                            "Provider URL 跳转到了不允许的地址",
+                            "Provider URL 跳转到了不允许的媒体域名",
                         )
                     except Exception:
                         response.close()
@@ -332,12 +357,15 @@ def request_public_provider_get_with_retry(
 
 def fetch_media_response(url, headers=None, timeout=30, retries=3, provider_signed=False):
     if provider_signed:
+        if not isinstance(provider_signed, dict):
+            raise XhsDownloadError("Provider signed request is missing manifest context")
         return request_public_provider_get_with_retry(
             url,
             headers=headers,
             timeout=timeout,
             retries=retries,
             stream=True,
+            provider_item=provider_signed,
         )
     validate_media_url(url)
     return request_get_with_retry(
@@ -417,10 +445,15 @@ def fetch_item_to_temp_path(
 ):
     initial_url = url or item.get("url")
     recovery_enabled = bool(get_kukutool_manifest_identity(item))
-    provider_signed = provider_manifest_allows_public_download({
+    provider_item = {
         **item,
         "url": initial_url,
-    })
+    }
+    provider_signed = (
+        provider_item
+        if provider_manifest_allows_public_download(provider_item)
+        else None
+    )
     attempted_urls = set()
     candidates = [initial_url]
     recovery_urls = None
