@@ -1,6 +1,6 @@
 # Provider Next Stage Report
 
-Date: 2026-06-26
+Date: 2026-06-27
 
 Branch: `codex/provider-next-planning`
 
@@ -38,6 +38,8 @@ The command also supports `--download-smoke`, which runs the real yt-dlp plus ff
 - `download_smoke.queue.sync_acceptable`
 
 This separates "planning is fast enough" from "real download/merge should move to a queue".
+
+On 2026-06-27, a real smoke pass also fixed one command-level mismatch: `inspect_youtube_merge` now defaults planning to `YTDLP_MERGE_DEFAULT_MAX_HEIGHT=1080`. Before this fix, the command could plan with the older `YOUTUBE_MERGE_MAX_HEIGHT=4320` default and select 2160p/4320p even when the normal YouTube mode was meant to validate 1080p.
 
 ### Staff-Only Gates
 
@@ -79,7 +81,7 @@ Successful parses use `staff_only` or `hold`; provider-attempt failures also inc
 
 ## Verification
 
-Last full verification run:
+Last full verification run on 2026-06-27:
 
 ```bash
 .venv/bin/python manage.py check
@@ -95,6 +97,54 @@ Result:
 - Test suite: `390 tests OK`.
 - Third-party health: `ok=true`.
 - Current local rollout: `staff_only` because the generic third-party entrypoint now defaults to `THIRD_PARTY_STAFF_ONLY=True` even when a provider is technically ready.
+
+Runtime versions from `inspect_youtube_merge --health --json`:
+
+- yt-dlp: `2026.03.17`
+- ffmpeg: `8.1.2`
+
+Health note:
+
+- `inspect_third_party_provider --health --json` reports the generic third-party rollout as `staff_only`.
+- `inspect_youtube_merge --health --json` currently reports `youtube_merge.staff_only=false` and `youtube_merge.public_ready=true` in this local environment. This means command-line YouTube merge is technically ready, but product rollout should still be governed by the staff-only generic entrypoint and UI gate before public exposure.
+
+## YouTube Staff Smoke Results
+
+Planning smoke commands:
+
+```bash
+.venv/bin/python manage.py inspect_youtube_merge "https://www.youtube.com/watch?v=dt-m5GT2rSc" --json
+.venv/bin/python manage.py inspect_youtube_merge "https://www.youtube.com/watch?v=sxVqcCslnAE" --max-height 4320 --json
+.venv/bin/python manage.py inspect_youtube_merge "https://www.youtube.com/watch?v=jNQXAC9IVRw" --json
+.venv/bin/python manage.py inspect_youtube_merge "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --json
+```
+
+Results:
+
+| Scenario | URL | planning_duration_ms | max_height | selected_height | estimated_size_bytes | smoke recommendation | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | --- | --- |
+| Normal 1080p split audio/video | `https://www.youtube.com/watch?v=dt-m5GT2rSc` | 1951 | 1080 | 1080 | 188344856 | `staff_only` | Complete single-file candidate was only 360p, so 1080p requires merge. |
+| Highest quality candidate | `https://www.youtube.com/watch?v=sxVqcCslnAE` | 1809 | 4320 | 4320 | 80232125 | `staff_only` | Explicit high-quality planning selected 4320p format `571`. |
+| Low quality / no 1080p | `https://www.youtube.com/watch?v=jNQXAC9IVRw` | 2242 | 1080 | 240 | 742369 | `hold` | Smoke issues: `single_file_is_sufficient`, `selected_height_below_1080p`. |
+| Cover fallback probe | `https://www.youtube.com/watch?v=dQw4w9WgXcQ` | 2177 | 1080 | 1080 | 84361446 | `staff_only` | Planning path is healthy; use this class of URL to keep validating signed cover fallback behavior in UI smoke. |
+
+Download smoke command:
+
+```bash
+.venv/bin/python manage.py inspect_youtube_merge "https://www.youtube.com/watch?v=sxVqcCslnAE" --max-height 4320 --download-smoke --json
+```
+
+Download smoke result:
+
+| URL | selected_height | estimated_size_bytes | download_smoke.duration_ms | download_smoke.size_bytes | content_type | queue_recommended |
+| --- | ---: | ---: | ---: | ---: | --- | --- |
+| `https://www.youtube.com/watch?v=sxVqcCslnAE` | 4320 | 80232125 | 48183 | 80231323 | `video/mp4` | `true` |
+
+Interpretation:
+
+- Planning is fast enough for staff-only synchronous validation: all planning runs completed in about 1.8-2.3 seconds.
+- Real download plus merge is not suitable for synchronous page requests. The successful 4320p smoke took about 48 seconds, so YouTube merge downloads should move to a queue before public exposure.
+- Staff-only UI gray release is reasonable for planning and manifest validation, but not for public synchronous download/merge.
 
 ## Current Recommendation
 

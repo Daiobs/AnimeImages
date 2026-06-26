@@ -289,6 +289,26 @@ class YouTubeMergePlannerTests(SimpleTestCase):
         self.assertFalse(payload["urls_redacted"])
         self.assertIn("itag=137", payload["plan"]["video_format"]["url"])
 
+    @override_settings(YTDLP_MERGE_DEFAULT_MAX_HEIGHT=1080)
+    @patch("xhs_download.management.commands.inspect_youtube_merge.run_ytdlp_json")
+    def test_inspect_youtube_merge_defaults_to_1080p_planning(self, mock_run):
+        mock_run.return_value = ytdlp_merge_demo_payload()
+        output = StringIO()
+
+        call_command(
+            "inspect_youtube_merge",
+            "https://www.youtube.com/watch?v=demo",
+            binary=f"{sys.executable} -m yt_dlp",
+            timeout=2,
+            as_json=True,
+            stdout=output,
+        )
+        payload = json.loads(output.getvalue())
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["plan"]["max_height"], 1080)
+        self.assertEqual(payload["plan"]["video_format"]["height"], 1080)
+
     @patch("xhs_download.management.commands.inspect_youtube_merge.run_ytdlp_json")
     def test_inspect_youtube_merge_smoke_holds_when_estimated_size_exceeds_limit(
         self,

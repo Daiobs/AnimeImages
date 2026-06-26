@@ -14,6 +14,7 @@ from ...services.youtube_merge import (
     download_youtube_merge_to_temp_path,
     get_youtube_merge_health,
 )
+from ...services.platforms.ytdlp_merge import default_max_height
 
 
 SOURCE_URL_KEYS = {"webpage_url"}
@@ -217,9 +218,10 @@ class Command(BaseCommand):
                 binary=getattr(settings, "YTDLP_BINARY", "") or "",
                 timeout_seconds=timeout_seconds,
             )
+            effective_max_height = int(options["max_height"] or default_max_height())
             plan = build_youtube_merge_plan(
                 payload,
-                max_height=options["max_height"] or None,
+                max_height=effective_max_height,
                 max_file_size_bytes=options["max_size"] or None,
             )
             planning_duration_ms = int((time.monotonic() - started_at) * 1000)
@@ -237,8 +239,7 @@ class Command(BaseCommand):
                     500 * 1024 * 1024,
                 )
                 try:
-                    if options["max_height"]:
-                        settings.YOUTUBE_MERGE_MAX_HEIGHT = options["max_height"]
+                    settings.YOUTUBE_MERGE_MAX_HEIGHT = effective_max_height
                     if options["max_size"]:
                         settings.YOUTUBE_MERGE_MAX_FILE_SIZE_BYTES = options["max_size"]
                     parse_result = build_youtube_merge_parse_result(url, payload)
