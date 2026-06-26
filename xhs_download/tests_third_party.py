@@ -645,6 +645,53 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,
         THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+        YOUTUBE_MERGE_PROVIDER_ENABLED=True,
+        YOUTUBE_MERGE_PUBLIC_ACCESS_ENABLED=True,
+        YOUTUBE_MERGE_STAFF_ONLY=True,
+        YTDLP_BINARY="python -m yt_dlp",
+        YOUTUBE_MERGE_FFMPEG_BINARY="/usr/bin/ffmpeg",
+    )
+    @patch(
+        "xhs_download.services.youtube_merge.probe_external_command_version",
+        return_value={
+            "version_probe_ok": True,
+            "version_output": "ffmpeg version 8.1",
+            "error": "",
+        },
+    )
+    @patch(
+        "xhs_download.services.platforms.ytdlp_generic.probe_external_command_version",
+        return_value={
+            "version_probe_ok": True,
+            "version_output": "2026.03.17",
+            "error": "",
+        },
+    )
+    @patch("xhs_download.services.platforms.external_tools.os.path.exists", return_value=True)
+    @patch("xhs_download.services.platforms.external_tools.os.access", return_value=True)
+    def test_generic_third_party_prefers_youtube_merge_when_staff_only_was_allowed_by_view(
+        self,
+        _mock_access,
+        _mock_exists,
+        _mock_ytdlp_probe,
+        _mock_ffmpeg_probe,
+    ):
+        ytdlp_provider = Mock()
+        ytdlp_provider.parse.return_value = ytdlp_merge_demo_payload()
+        adapter = GenericThirdPartyAdapter(ytdlp_provider=ytdlp_provider)
+
+        result = adapter.parse_url(
+            "https://www.youtube.com/watch?v=demo",
+            prefer_youtube_merge=True,
+        )
+
+        self.assertEqual(result.metadata["selected_provider"], "youtube_merge")
+        self.assertEqual(result.video_assets[0].provider, "youtube_merge")
+        ytdlp_provider.parse.assert_called_once()
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
         YTDLP_PROVIDER_ENABLED=True,
         YTDLP_MERGE_PROVIDER_ENABLED=True,
         YTDLP_MERGE_DEFAULT_MAX_HEIGHT=1080,

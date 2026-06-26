@@ -436,7 +436,11 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         deadline = time.monotonic() + frontend_budget_seconds(rule)
         if prefer_youtube_merge and getattr(rule, "platform_id", "") == "youtube":
             health = get_youtube_merge_health()
-            if health.get("public_ready") and health.get("implemented"):
+            if (
+                health.get("ready")
+                and health.get("public_access_enabled")
+                and health.get("implemented")
+            ):
                 started_at = time.monotonic()
                 provider_timeout_seconds = remaining_budget_seconds(deadline)
                 try:
@@ -502,6 +506,9 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
                         "platform": getattr(rule, "platform_id", ""),
                         "enabled": health.get("enabled"),
                         "public_ready": health.get("public_ready"),
+                        "public_access_enabled": health.get("public_access_enabled"),
+                        "ready": health.get("ready"),
+                        "implemented": health.get("implemented"),
                     },
                 )
         if not providers:

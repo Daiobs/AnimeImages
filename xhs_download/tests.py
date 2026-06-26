@@ -53,7 +53,11 @@ from .services.provider_settings import (
     normalize_provider_order,
 )
 from .services.provider_manifest import build_provider_manifest_token
-from .views import build_provider_preview_query, youtube_merge_mode_is_available
+from .views import (
+    build_provider_preview_query,
+    build_search_results_context,
+    youtube_merge_mode_is_available,
+)
 from .services.quality import QualityProbe, QualityProbeResult
 from .services.rate_limits import (
     get_client_identity,
@@ -4603,6 +4607,144 @@ class XhsDownloadViewTests(SimpleTestCase):
         )
         self.assertContains(response, 'id="youtube-merge-request-input"')
         self.assertContains(response, 'value="1"')
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+    )
+    @patch("xhs_download.views.parse_media_page")
+    @patch("xhs_download.views.get_youtube_merge_health")
+    def test_results_passes_youtube_merge_for_staff_when_staff_only_enabled(
+        self,
+        mock_health,
+        mock_parse,
+    ):
+        mock_health.return_value = {
+            "implemented": True,
+            "ready": True,
+            "public_access_enabled": True,
+            "staff_only": True,
+        }
+        mock_parse.return_value = ParseResult(
+            platform="third_party",
+            post_type="video",
+            base_filename="youtube",
+            assets=(),
+            metadata={
+                "source_platform": "youtube",
+                "selected_provider": "youtube_merge",
+            },
+        )
+        request = RequestFactory().get(
+            "/results/",
+            {
+                "q": "https://www.youtube.com/watch?v=demo",
+                "youtube_merge": "1",
+            },
+        )
+        request.user = Mock(is_active=True, is_staff=True)
+
+        context, status_code = build_search_results_context(request, "home")
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(context["prefer_youtube_merge"])
+        self.assertEqual(context["provider_notice"], "本次使用 YouTube 最高画质任务；下载时将在服务端合并音频和视频，文件可能更大。")
+        mock_parse.assert_called_once_with(
+            "https://www.youtube.com/watch?v=demo",
+            prefer_ultra_hd=False,
+            prefer_youtube_merge=True,
+        )
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+    )
+    @patch("xhs_download.views.parse_media_page")
+    @patch("xhs_download.views.get_youtube_merge_health")
+    def test_results_does_not_pass_youtube_merge_for_anonymous_when_staff_only_enabled(
+        self,
+        mock_health,
+        mock_parse,
+    ):
+        mock_health.return_value = {
+            "implemented": True,
+            "ready": True,
+            "public_access_enabled": True,
+            "staff_only": True,
+        }
+        mock_parse.return_value = ParseResult(
+            platform="third_party",
+            post_type="video",
+            base_filename="youtube",
+            assets=(),
+            metadata={
+                "source_platform": "youtube",
+                "selected_provider": "yt_dlp_merge",
+            },
+        )
+        request = RequestFactory().get(
+            "/results/",
+            {
+                "q": "https://www.youtube.com/watch?v=demo",
+                "youtube_merge": "1",
+            },
+        )
+        request.user = Mock(is_active=False, is_staff=False)
+
+        context, status_code = build_search_results_context(request, "home")
+
+        self.assertEqual(status_code, 200)
+        self.assertFalse(context["prefer_youtube_merge"])
+        self.assertEqual(context["provider_notice"], "本次使用 yt-dlp 高清合并；默认优先 1080p，下载时将在服务端合并音频和视频。")
+        mock_parse.assert_called_once_with(
+            "https://www.youtube.com/watch?v=demo",
+            prefer_ultra_hd=False,
+        )
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+    )
+    @patch("xhs_download.views.parse_media_page")
+    @patch("xhs_download.views.get_youtube_merge_health")
+    def test_results_does_not_pass_youtube_merge_for_staff_when_public_access_disabled(
+        self,
+        mock_health,
+        mock_parse,
+    ):
+        mock_health.return_value = {
+            "implemented": True,
+            "ready": True,
+            "public_access_enabled": False,
+            "staff_only": True,
+        }
+        mock_parse.return_value = ParseResult(
+            platform="third_party",
+            post_type="video",
+            base_filename="youtube",
+            assets=(),
+            metadata={
+                "source_platform": "youtube",
+                "selected_provider": "yt_dlp_merge",
+            },
+        )
+        request = RequestFactory().get(
+            "/results/",
+            {
+                "q": "https://www.youtube.com/watch?v=demo",
+                "youtube_merge": "1",
+            },
+        )
+        request.user = Mock(is_active=True, is_staff=True)
+
+        context, status_code = build_search_results_context(request, "home")
+
+        self.assertEqual(status_code, 200)
+        self.assertFalse(context["prefer_youtube_merge"])
+        mock_parse.assert_called_once_with(
+            "https://www.youtube.com/watch?v=demo",
+            prefer_ultra_hd=False,
+        )
 
     @patch("xhs_download.views.get_youtube_merge_health")
     def test_youtube_merge_mode_respects_staff_only(self, mock_health):
