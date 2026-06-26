@@ -38,6 +38,19 @@ from .provider_recovery import (
 )
 from .provider_manifest import build_provider_manifest_token, provider_manifest_is_valid
 from .platforms.third_party import third_party_manifest_item_is_allowed
+from .platforms.ytdlp_merge import (
+    PROVIDER_ID as YTDLP_MERGE_PROVIDER_ID,
+    download_to_temp_path as download_ytdlp_merge_to_temp_path,
+    manifest_item_is_allowed as ytdlp_merge_manifest_item_is_allowed,
+    provider_manifest_allows_download as provider_manifest_allows_ytdlp_merge,
+)
+from .youtube_merge import (
+    PROVIDER_ID as YOUTUBE_MERGE_PROVIDER_ID,
+    download_youtube_merge_to_temp_path,
+    provider_manifest_allows_youtube_merge,
+    youtube_merge_manifest_identity,
+    youtube_merge_manifest_item_is_allowed,
+)
 from .quality import (
     QualityProbe,
     content_type_matches_expected,
@@ -260,8 +273,14 @@ def provider_manifest_allows_public_download(item):
         "kukutool_generic",
         "gallery_dl_generic",
         "yt_dlp_generic",
+        YOUTUBE_MERGE_PROVIDER_ID,
+        YTDLP_MERGE_PROVIDER_ID,
     }:
         return False
+    if item.get("provider") == YOUTUBE_MERGE_PROVIDER_ID:
+        return provider_manifest_allows_youtube_merge(item)
+    if item.get("provider") == YTDLP_MERGE_PROVIDER_ID:
+        return provider_manifest_allows_ytdlp_merge(item)
     if not provider_manifest_is_valid(item):
         return False
     if third_party_manifest_item_is_allowed(item):
@@ -341,10 +360,20 @@ def invalidate_external_provider_caches(item):
 
 def validate_provider_signed_download_url(provider_item, url, message):
     validate_public_download_url(url, message)
-    if provider_item is not None and not third_party_manifest_item_is_allowed({
+    if provider_item is None:
+        return url
+    provider = str(provider_item.get("provider") or "")
+    signed_url_item = {
         **provider_item,
         "url": url,
-    }):
+    }
+    if provider == YOUTUBE_MERGE_PROVIDER_ID:
+        allowed = youtube_merge_manifest_item_is_allowed(signed_url_item)
+    elif provider == YTDLP_MERGE_PROVIDER_ID:
+        allowed = ytdlp_merge_manifest_item_is_allowed(signed_url_item)
+    else:
+        allowed = third_party_manifest_item_is_allowed(signed_url_item)
+    if not allowed:
         raise XhsDownloadError(message)
     return url
 
@@ -527,6 +556,17 @@ def fetch_item_to_temp_path(
     progress_callback=None,
     expected_type="",
 ):
+    if (
+        str(item.get("provider") or "") == YOUTUBE_MERGE_PROVIDER_ID
+        and str(item.get("type") or "") == "video"
+    ):
+        return download_youtube_merge_to_temp_path(item)
+    if (
+        str(item.get("provider") or "") == YTDLP_MERGE_PROVIDER_ID
+        and str(item.get("type") or "") == "video"
+    ):
+        return download_ytdlp_merge_to_temp_path(item)
+
     initial_url = url or item.get("url")
     recovery_enabled = bool(get_kukutool_manifest_identity(item))
     provider_item = {
@@ -592,6 +632,30 @@ def fetch_cover_to_temp_path(
     max_bytes=MAX_IMAGE_BYTES,
     progress_callback=None,
 ):
+    if youtube_merge_manifest_identity(item):
+        cover_item = {
+            "type": "image",
+            "url": cover_url,
+            "asset_id": f"{item.get('asset_id', '')}:cover",
+            "provider": item.get("provider", ""),
+            "provider_resource_id": item.get("provider_resource_id", ""),
+            "provider_cache_key": item.get("provider_cache_key", ""),
+        }
+        cover_item["provider_manifest_token"] = build_provider_manifest_token(
+            asset_id=cover_item["asset_id"],
+            provider=cover_item["provider"],
+            provider_resource_id=cover_item["provider_resource_id"],
+            provider_cache_key=cover_item["provider_cache_key"],
+            url=cover_url,
+            media_type="image",
+        )
+        return fetch_item_to_temp_path(
+            cover_item,
+            timeout=timeout,
+            max_bytes=max_bytes,
+            progress_callback=progress_callback,
+            expected_type="image",
+        )
     return fetch_item_to_temp_path(
         build_provider_signed_cover_item(item, cover_url),
         timeout=timeout,

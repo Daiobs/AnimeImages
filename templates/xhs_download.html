@@ -43,6 +43,12 @@
                                     id="ultra-hd-request-input"
                                     value="{% if prefer_ultra_hd and ultra_hd_available %}1{% else %}0{% endif %}"
                             >
+                            <input
+                                    type="hidden"
+                                    name="youtube_merge"
+                                    id="youtube-merge-request-input"
+                                    value="{% if prefer_youtube_merge and youtube_merge_mode_available %}1{% else %}0{% endif %}"
+                            >
 
                             <label class="visually-hidden" id="media-link-label" for="media-link-input">{{ link_label|default:"素材链接" }}</label>
 
@@ -275,6 +281,28 @@
 
                         <div class="form-text">
                             默认关闭，关闭时只使用本地解析；开启后仅对抖音视频尝试 KuKuTool，失败或超限会自动回退。
+                        </div>
+
+                        <label class="settings-toggle{% if not youtube_merge_mode_available %} is-disabled{% endif %}">
+                            <input
+                                    type="checkbox"
+                                    id="youtube-merge-setting"
+                                    {% if not youtube_merge_mode_available %}disabled{% endif %}
+                            >
+                            <span class="settings-switch-control" aria-hidden="true"></span>
+                            <span>
+                                <strong>YouTube 高清合并</strong>
+                                <small>
+                                    {% if youtube_merge_mode_available %}
+                                        YouTube 1080p+ 将通过服务端任务合并音频和视频。
+                                    {% else %}
+                                        当前环境未启用 YouTube 高清合并任务。
+                                    {% endif %}
+                                </small>
+                            </span>
+                        </label>
+                        <div class="form-text">
+                            YouTube 高画质通常是音视频分离流；开启后解析结果会生成服务端合并任务资源。
                         </div>
                     </section>
 

@@ -17,6 +17,15 @@ from .base import BasePlatformAdapter, PlatformCapabilities, ProviderPolicy
 from .gallerydl_generic import GalleryDlGenericProvider, GalleryDlResultNormalizer
 from .kukutool_generic import KukutoolGenericProvider, KukutoolResultNormalizer
 from .ytdlp_generic import YtDlpGenericProvider, YtDlpResultNormalizer
+from .ytdlp_merge import (
+    PROVIDER_ID as YTDLP_MERGE_PROVIDER_ID,
+    build_parse_result as build_ytdlp_merge_parse_result,
+)
+from ..youtube_merge import (
+    PROVIDER_ID as YOUTUBE_MERGE_PROVIDER_ID,
+    build_youtube_merge_parse_result,
+    get_youtube_merge_health,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -327,9 +336,11 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
             "kukutool_generic",
             "gallery_dl_generic",
             "yt_dlp_generic",
+            YOUTUBE_MERGE_PROVIDER_ID,
         ),
     )
     platform_rules = THIRD_PARTY_PLATFORM_RULES
+    parse_option_names = ("prefer_youtube_merge",)
 
     def __init__(
         self,
@@ -403,7 +414,7 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
             rule.platform_id == platform_id for rule in self.platform_rules
         )
 
-    def parse_url(self, url):
+    def parse_url(self, url, prefer_youtube_merge=False):
         source_url = self.normalize_source_url(url)
         self.require_supported_url(source_url)
         rule = self.get_rule_for_url(source_url)
@@ -413,6 +424,79 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         if not getattr(settings, "THIRD_PARTY_PUBLIC_ACCESS_ENABLED", False):
             raise XhsParseError("第三方通用解析暂未开放。")
         providers = list(self.iter_provider_specs(rule, respect_enabled=True))
+        failures = []
+        attempts = []
+        deadline = time.monotonic() + frontend_budget_seconds()
+        if prefer_youtube_merge and getattr(rule, "platform_id", "") == "youtube":
+            health = get_youtube_merge_health()
+            if health.get("public_ready") and health.get("implemented"):
+                started_at = time.monotonic()
+                provider_timeout_seconds = remaining_budget_seconds(deadline)
+                try:
+                    payload = self.ytdlp_provider.parse(
+                        source_url,
+                        timeout_seconds=provider_timeout_seconds,
+                    )
+                    result = build_youtube_merge_parse_result(source_url, payload)
+                    duration_ms = elapsed_ms(started_at)
+                    attempts.append(
+                        provider_attempt_record(
+                            YOUTUBE_MERGE_PROVIDER_ID,
+                            "success",
+                            duration_ms,
+                        )
+                    )
+                    logger.info(
+                        "third_party_provider_selected",
+                        extra={
+                            "provider": YOUTUBE_MERGE_PROVIDER_ID,
+                            "platform": getattr(rule, "platform_id", ""),
+                            "duration_ms": duration_ms,
+                            "attempt_count": len(attempts),
+                            "asset_count": len(result.assets),
+                        },
+                    )
+                    return result_with_provider_diagnostics(
+                        result,
+                        YOUTUBE_MERGE_PROVIDER_ID,
+                        duration_ms,
+                        attempts,
+                    )
+                except Exception as error:
+                    duration_ms = elapsed_ms(started_at)
+                    status = (
+                        "timeout"
+                        if isinstance(error, XhsProviderTimeoutError)
+                        else "failed"
+                    )
+                    attempts.append(
+                        provider_attempt_record(
+                            YOUTUBE_MERGE_PROVIDER_ID,
+                            status,
+                            duration_ms,
+                            error,
+                        )
+                    )
+                    failures.append((YOUTUBE_MERGE_PROVIDER_ID, error))
+                    logger.info(
+                        "third_party_provider_failed",
+                        extra={
+                            "provider": YOUTUBE_MERGE_PROVIDER_ID,
+                            "platform": getattr(rule, "platform_id", ""),
+                            "duration_ms": duration_ms,
+                            "error_type": type(error).__name__,
+                            "error": str(error)[:300],
+                        },
+                    )
+            else:
+                logger.info(
+                    "youtube_merge_provider_unavailable",
+                    extra={
+                        "platform": getattr(rule, "platform_id", ""),
+                        "enabled": health.get("enabled"),
+                        "public_ready": health.get("public_ready"),
+                    },
+                )
         if not providers:
             logger.info(
                 "third_party_provider_unavailable",
@@ -422,10 +506,6 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
                 },
             )
             raise XhsParseError(f"{platform_name} 第三方解析没有启用可用 Provider。")
-
-        failures = []
-        attempts = []
-        deadline = time.monotonic() + frontend_budget_seconds()
         for provider_id, provider, normalizer in providers:
             if provider_deadline_exceeded(
                 deadline,
@@ -441,20 +521,45 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
                     source_url,
                     timeout_seconds=provider_timeout_seconds,
                 )
-                result = normalizer.normalize(
-                    rule=rule,
-                    platform_name=platform_name,
-                    source_url=source_url,
-                    payload=payload,
-                )
+                selected_provider_id = provider_id
+                if (
+                    provider_id == "yt_dlp_generic"
+                    and getattr(settings, "YTDLP_MERGE_PROVIDER_ENABLED", True)
+                ):
+                    try:
+                        result = build_ytdlp_merge_parse_result(
+                            rule,
+                            platform_name,
+                            source_url,
+                            payload,
+                        )
+                        selected_provider_id = YTDLP_MERGE_PROVIDER_ID
+                    except Exception:
+                        result = normalizer.normalize(
+                            rule=rule,
+                            platform_name=platform_name,
+                            source_url=source_url,
+                            payload=payload,
+                        )
+                else:
+                    result = normalizer.normalize(
+                        rule=rule,
+                        platform_name=platform_name,
+                        source_url=source_url,
+                        payload=payload,
+                    )
                 duration_ms = elapsed_ms(started_at)
                 attempts.append(
-                    provider_attempt_record(provider_id, "success", duration_ms)
+                    provider_attempt_record(
+                        selected_provider_id,
+                        "success",
+                        duration_ms,
+                    )
                 )
                 logger.info(
                     "third_party_provider_selected",
                     extra={
-                        "provider": provider_id,
+                        "provider": selected_provider_id,
                         "platform": getattr(rule, "platform_id", ""),
                         "duration_ms": duration_ms,
                         "attempt_count": len(attempts),
@@ -463,7 +568,7 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
                 )
                 return result_with_provider_diagnostics(
                     result,
-                    provider_id,
+                    selected_provider_id,
                     duration_ms,
                     attempts,
                 )

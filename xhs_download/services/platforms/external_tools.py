@@ -154,12 +154,20 @@ def external_command_health(binary, default_command):
     }
 
 
-def external_version_probe_cache_key(command):
-    digest = sha256(repr(tuple(command or ())).encode("utf-8")).hexdigest()[:24]
+def external_version_probe_cache_key(command, version_args=("--version",)):
+    digest = sha256(
+        repr((tuple(command or ()), tuple(version_args or ())))
+        .encode("utf-8")
+    ).hexdigest()[:24]
     return f"third-party:external-command:version:{digest}"
 
 
-def probe_external_command_version(command, timeout_seconds=3.0, cache_seconds=60):
+def probe_external_command_version(
+    command,
+    timeout_seconds=3.0,
+    cache_seconds=60,
+    version_args=("--version",),
+):
     command = tuple(command or ())
     if not command:
         return {
@@ -167,8 +175,9 @@ def probe_external_command_version(command, timeout_seconds=3.0, cache_seconds=6
             "version_output": "",
             "error": "empty command",
         }
+    version_args = tuple(version_args or ("--version",))
     cache_seconds = int(cache_seconds or 0)
-    cache_key = external_version_probe_cache_key(command)
+    cache_key = external_version_probe_cache_key(command, version_args)
     if cache_seconds > 0:
         try:
             cached = cache.get(cache_key)
@@ -183,7 +192,7 @@ def probe_external_command_version(command, timeout_seconds=3.0, cache_seconds=6
 
     try:
         completed = run_external_command(
-            [*command, "--version"],
+            [*command, *version_args],
             timeout_seconds=max(0.5, float(timeout_seconds or 3.0)),
         )
     except subprocess.TimeoutExpired:

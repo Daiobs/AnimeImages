@@ -1,5 +1,6 @@
 from io import StringIO
 import json
+from pathlib import Path
 import sys
 from unittest.mock import ANY, Mock, patch
 
@@ -24,6 +25,16 @@ from .services.platforms.gallerydl_generic import run_gallerydl_json
 from .services.platforms.kukutool_generic import source_key_for_url
 from .services.platforms.ytdlp_generic import run_ytdlp_json
 from .services.registry import parse_media_page
+from .services.youtube_merge import (
+    build_youtube_merge_parse_result,
+    build_youtube_merge_plan,
+    download_youtube_merge_to_temp_path,
+    provider_manifest_allows_youtube_merge,
+)
+from .services.platforms.ytdlp_merge import (
+    build_parse_result as build_ytdlp_merge_parse_result,
+    download_to_temp_path as download_ytdlp_merge_to_temp_path,
+)
 
 
 def assert_external_command_env_isolated(testcase, mock_run):
@@ -38,6 +49,229 @@ def assert_external_command_env_isolated(testcase, mock_run):
     testcase.assertIn("xhs_external_tool_", cwd)
     testcase.assertNotEqual(env["HOME"], base_env["HOME"])
     testcase.assertNotIn("DJANGO_SECRET_KEY", env)
+
+
+def youtube_merge_demo_payload():
+    return {
+        "id": "demo",
+        "title": "merge candidate demo",
+        "webpage_url": "https://www.youtube.com/watch?v=demo",
+        "formats": [
+            {
+                "format_id": "18",
+                "url": "https://rr1---sn.googlevideo.com/videoplayback?itag=18",
+                "protocol": "https",
+                "ext": "mp4",
+                "height": 360,
+                "width": 640,
+                "tbr": 500,
+                "vcodec": "avc1.42001E",
+                "acodec": "mp4a.40.2",
+                "filesize": 10_000_000,
+                "format_note": "360p",
+            },
+            {
+                "format_id": "137",
+                "url": "https://rr1---sn.googlevideo.com/videoplayback?itag=137",
+                "protocol": "https",
+                "ext": "mp4",
+                "height": 1080,
+                "width": 1920,
+                "tbr": 3500,
+                "vcodec": "avc1.640028",
+                "acodec": "none",
+                "filesize": 80_000_000,
+                "format_note": "1080p",
+            },
+            {
+                "format_id": "140",
+                "url": "https://rr1---sn.googlevideo.com/videoplayback?itag=140",
+                "protocol": "https",
+                "ext": "m4a",
+                "tbr": 128,
+                "abr": 128,
+                "vcodec": "none",
+                "acodec": "mp4a.40.2",
+                "filesize": 5_000_000,
+                "format_note": "audio",
+            },
+        ],
+    }
+
+
+def ytdlp_merge_demo_payload():
+    payload = youtube_merge_demo_payload()
+    payload["formats"].append({
+        "format_id": "571",
+        "url": "https://rr1---sn.googlevideo.com/videoplayback?itag=571",
+        "protocol": "https",
+        "ext": "mp4",
+        "height": 4320,
+        "width": 7680,
+        "tbr": 45000,
+        "vcodec": "av01.0.16M.08",
+        "acodec": "none",
+        "filesize": 80_000_000,
+        "format_note": "4320p",
+    })
+    return payload
+
+
+class YouTubeMergePlannerTests(SimpleTestCase):
+    def test_planner_detects_video_audio_merge_candidate(self):
+        plan = build_youtube_merge_plan(
+            youtube_merge_demo_payload(),
+            max_height=1080,
+            max_file_size_bytes=100_000_000,
+        )
+
+        self.assertTrue(plan["available"])
+        self.assertTrue(plan["requires_merge"])
+        self.assertTrue(plan["implemented"])
+        self.assertEqual(plan["reason"], "merge_candidate_available")
+        self.assertEqual(plan["complete_format"]["height"], 360)
+        self.assertEqual(plan["video_format"]["format_id"], "137")
+        self.assertEqual(plan["audio_format"]["format_id"], "140")
+        self.assertEqual(plan["estimated_size_bytes"], 85_000_000)
+        self.assertEqual(
+            plan["merge_format_selector"],
+            "bv*[height<=1080]+ba/b[height<=1080]/b",
+        )
+
+    def test_planner_rejects_candidate_over_size_limit(self):
+        plan = build_youtube_merge_plan(
+            youtube_merge_demo_payload(),
+            max_height=1080,
+            max_file_size_bytes=50_000_000,
+        )
+
+        self.assertFalse(plan["available"])
+        self.assertTrue(plan["requires_merge"])
+        self.assertFalse(plan["estimated_size_within_limit"])
+        self.assertEqual(plan["reason"], "estimated_size_exceeds_limit")
+
+    def test_planner_reports_missing_audio_stream(self):
+        payload = youtube_merge_demo_payload()
+        payload["formats"] = [
+            item for item in payload["formats"] if item["format_id"] != "140"
+        ]
+
+        plan = build_youtube_merge_plan(payload, max_height=1080)
+
+        self.assertFalse(plan["available"])
+        self.assertFalse(plan["requires_merge"])
+        self.assertEqual(plan["reason"], "no_merge_candidate")
+
+    def test_build_parse_result_returns_signed_youtube_merge_asset(self):
+        result = build_youtube_merge_parse_result(
+            "https://www.youtube.com/watch?v=demo",
+            {
+                **youtube_merge_demo_payload(),
+                "thumbnail": "https://i.ytimg.com/vi/demo/maxresdefault.jpg",
+            },
+        )
+
+        self.assertEqual(result.platform, "third_party")
+        self.assertEqual(result.metadata["selected_provider"], "youtube_merge")
+        self.assertEqual(result.metadata["source_platform"], "youtube")
+        self.assertEqual(result.video_assets[0].provider, "youtube_merge")
+        self.assertEqual(
+            result.video_assets[0].url,
+            "https://www.youtube.com/watch?v=demo",
+        )
+        self.assertTrue(result.video_assets[0].provider_manifest_token)
+        self.assertEqual(
+            result.video_assets[0].cover_url,
+            "https://i.ytimg.com/vi/demo/maxresdefault.jpg",
+        )
+
+    def test_youtube_merge_manifest_rejects_tampered_source_url(self):
+        asset = build_youtube_merge_parse_result(
+            "https://www.youtube.com/watch?v=demo",
+            youtube_merge_demo_payload(),
+        ).video_assets[0]
+        item = asset.to_download_item()
+        item["url"] = "https://example.com/watch?v=demo"
+
+        self.assertFalse(provider_manifest_allows_youtube_merge(item))
+
+    @override_settings(
+        YTDLP_BINARY="python -m yt_dlp",
+        YOUTUBE_MERGE_FFMPEG_BINARY="/usr/bin/ffmpeg",
+        YOUTUBE_MERGE_TIMEOUT_SECONDS=5,
+        YOUTUBE_MERGE_MAX_FILE_SIZE_BYTES=100_000_000,
+    )
+    @patch("xhs_download.services.youtube_merge.run_external_command")
+    def test_download_youtube_merge_invokes_ytdlp_merge_command(self, mock_run):
+        asset = build_youtube_merge_parse_result(
+            "https://www.youtube.com/watch?v=demo",
+            youtube_merge_demo_payload(),
+        ).video_assets[0]
+
+        def fake_run(args, **_kwargs):
+            output_template = args[args.index("-o") + 1]
+            output_path = Path(str(output_template).replace("%(ext)s", "mp4"))
+            output_path.write_bytes(b"merged-video")
+            return Mock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
+
+        temp_result = download_youtube_merge_to_temp_path(asset.to_download_item())
+
+        try:
+            self.assertEqual(temp_result["content_type"], "video/mp4")
+            self.assertEqual(Path(temp_result["path"]).read_bytes(), b"merged-video")
+            args = mock_run.call_args.args[0]
+            self.assertIn("-f", args)
+            self.assertIn("bv*[height<=4320]+ba/b[height<=4320]/b", args)
+            self.assertIn("--merge-output-format", args)
+            self.assertIn("mp4", args)
+            self.assertIn("--ffmpeg-location", args)
+        finally:
+            Path(temp_result["path"]).unlink(missing_ok=True)
+
+    @patch("xhs_download.management.commands.inspect_youtube_merge.run_ytdlp_json")
+    def test_inspect_youtube_merge_redacts_stream_urls_by_default(self, mock_run):
+        mock_run.return_value = youtube_merge_demo_payload()
+        output = StringIO()
+
+        call_command(
+            "inspect_youtube_merge",
+            "https://www.youtube.com/watch?v=demo",
+            binary=f"{sys.executable} -m yt_dlp",
+            timeout=2,
+            as_json=True,
+            stdout=output,
+        )
+        payload = json.loads(output.getvalue())
+
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["urls_redacted"])
+        self.assertEqual(
+            payload["plan"]["video_format"]["url"],
+            "https://rr1---sn.googlevideo.com/[redacted]",
+        )
+        self.assertNotIn("itag=137", json.dumps(payload, ensure_ascii=False))
+        mock_run.assert_called_once()
+
+    @patch("xhs_download.management.commands.inspect_youtube_merge.run_ytdlp_json")
+    def test_inspect_youtube_merge_can_show_stream_urls(self, mock_run):
+        mock_run.return_value = youtube_merge_demo_payload()
+        output = StringIO()
+
+        call_command(
+            "inspect_youtube_merge",
+            "https://www.youtube.com/watch?v=demo",
+            binary=f"{sys.executable} -m yt_dlp",
+            timeout=2,
+            show_urls=True,
+            as_json=True,
+            stdout=output,
+        )
+        payload = json.loads(output.getvalue())
+
+        self.assertFalse(payload["urls_redacted"])
+        self.assertIn("itag=137", payload["plan"]["video_format"]["url"])
 
 
 class GenericThirdPartyProviderTests(SimpleTestCase):
@@ -341,6 +575,107 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         )
         provider.parse.assert_not_called()
         ytdlp_provider.parse.assert_called_once()
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+        YOUTUBE_MERGE_PROVIDER_ENABLED=True,
+        YOUTUBE_MERGE_PUBLIC_ACCESS_ENABLED=True,
+        YOUTUBE_MERGE_STAFF_ONLY=False,
+        YTDLP_BINARY="python -m yt_dlp",
+        YOUTUBE_MERGE_FFMPEG_BINARY="/usr/bin/ffmpeg",
+    )
+    @patch(
+        "xhs_download.services.youtube_merge.probe_external_command_version",
+        return_value={
+            "version_probe_ok": True,
+            "version_output": "ffmpeg version 8.1",
+            "error": "",
+        },
+    )
+    @patch(
+        "xhs_download.services.platforms.ytdlp_generic.probe_external_command_version",
+        return_value={
+            "version_probe_ok": True,
+            "version_output": "2026.03.17",
+            "error": "",
+        },
+    )
+    @patch("xhs_download.services.platforms.external_tools.os.path.exists", return_value=True)
+    @patch("xhs_download.services.platforms.external_tools.os.access", return_value=True)
+    def test_generic_third_party_prefers_youtube_merge_when_requested(
+        self,
+        _mock_access,
+        _mock_exists,
+        _mock_ytdlp_probe,
+        _mock_ffmpeg_probe,
+    ):
+        ytdlp_provider = Mock()
+        ytdlp_provider.parse.return_value = youtube_merge_demo_payload()
+        adapter = GenericThirdPartyAdapter(ytdlp_provider=ytdlp_provider)
+
+        result = adapter.parse_url(
+            "https://www.youtube.com/watch?v=demo",
+            prefer_youtube_merge=True,
+        )
+
+        self.assertEqual(result.metadata["selected_provider"], "youtube_merge")
+        self.assertEqual(result.video_assets[0].provider, "youtube_merge")
+        self.assertEqual(result.video_assets[0].quality_label, "1080p 高清合并")
+        ytdlp_provider.parse.assert_called_once()
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+        YTDLP_PROVIDER_ENABLED=True,
+        YTDLP_MERGE_PROVIDER_ENABLED=True,
+        YTDLP_MERGE_MAX_HEIGHT=4320,
+        YTDLP_MERGE_MAX_FILE_SIZE_BYTES=100_000_000,
+    )
+    def test_generic_third_party_ytdlp_defaults_to_highest_merge_candidate(self):
+        ytdlp_provider = Mock()
+        ytdlp_provider.parse.return_value = ytdlp_merge_demo_payload()
+        adapter = GenericThirdPartyAdapter(ytdlp_provider=ytdlp_provider)
+
+        result = adapter.parse_url("https://www.youtube.com/watch?v=demo")
+
+        self.assertEqual(result.metadata["selected_provider"], "yt_dlp_merge")
+        self.assertEqual(result.video_assets[0].provider, "yt_dlp_merge")
+        self.assertEqual(result.video_assets[0].quality_label, "4320p 高清合并")
+
+    @override_settings(
+        YTDLP_BINARY="python -m yt_dlp",
+        YTDLP_MERGE_FFMPEG_BINARY="/usr/bin/ffmpeg",
+        YTDLP_MERGE_MAX_HEIGHT=4320,
+        YTDLP_MERGE_MAX_FILE_SIZE_BYTES=100_000_000,
+    )
+    @patch("xhs_download.services.platforms.ytdlp_merge.run_external_command")
+    def test_download_ytdlp_merge_uses_4320_selector(self, mock_run):
+        rule = GenericThirdPartyAdapter().get_rule_for_url(
+            "https://www.youtube.com/watch?v=demo"
+        )
+        asset = build_ytdlp_merge_parse_result(
+            rule,
+            "YouTube",
+            "https://www.youtube.com/watch?v=demo",
+            ytdlp_merge_demo_payload(),
+        ).video_assets[0]
+
+        def fake_run(args, **_kwargs):
+            output_template = args[args.index("-o") + 1]
+            output_path = Path(str(output_template).replace("%(ext)s", "mp4"))
+            output_path.write_bytes(b"merged-video")
+            return Mock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
+        temp_result = download_ytdlp_merge_to_temp_path(asset.to_download_item())
+
+        try:
+            args = mock_run.call_args.args[0]
+            self.assertIn("bv*[height<=4320]+ba/b[height<=4320]/b", args)
+            self.assertEqual(Path(temp_result["path"]).read_bytes(), b"merged-video")
+        finally:
+            Path(temp_result["path"]).unlink(missing_ok=True)
 
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,
@@ -1535,6 +1870,11 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         self.assertEqual(settings.THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS, 8)
         self.assertEqual(settings.GALLERYDL_TIMEOUT_SECONDS, 8)
 
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=False,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=False,
+        YOUTUBE_MERGE_PROVIDER_ENABLED=False,
+    )
     def test_inspect_third_party_provider_health_json_does_not_require_url(self):
         output = StringIO()
 
@@ -1575,7 +1915,11 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
             1024,
         )
 
-    @override_settings(YTDLP_BINARY="")
+    @override_settings(
+        YTDLP_BINARY="",
+        YTDLP_PROVIDER_ENABLED=False,
+        YOUTUBE_MERGE_PROVIDER_ENABLED=False,
+    )
     @patch("xhs_download.services.platforms.ytdlp_generic.probe_external_command_version")
     def test_inspect_third_party_provider_health_accepts_explicit_binary(self, mock_probe):
         mock_probe.return_value = {

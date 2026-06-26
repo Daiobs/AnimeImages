@@ -20,6 +20,11 @@ from ...services.platforms.third_party import (
     result_with_provider_diagnostics,
 )
 from ...services.platforms.ytdlp_generic import YtDlpGenericProvider
+from ...services.platforms.ytdlp_merge import (
+    PROVIDER_ID as YTDLP_MERGE_PROVIDER_ID,
+    build_parse_result as build_ytdlp_merge_parse_result,
+)
+from ...services.youtube_merge import get_youtube_merge_health
 
 
 PROVIDER_OPTION_IDS = {
@@ -233,6 +238,7 @@ def build_health_report(adapter, force_probe_provider_id=""):
         "enabled_provider_ids": enabled_providers,
         "ready_provider_ids": ready_providers,
         "providers": health_by_id,
+        "youtube_merge": get_youtube_merge_health(),
         "platform_rules": rules,
         "issues": tuple(issues),
     }
@@ -483,25 +489,50 @@ class Command(BaseCommand):
                     source_url,
                     timeout_seconds=provider_timeout_seconds,
                 )
-                result = normalizer.normalize(
-                    rule=rule,
-                    platform_name=rule.display_name,
-                    source_url=source_url,
-                    payload=payload,
-                )
+                selected_provider_id = provider_id
+                if (
+                    provider_id == "yt_dlp_generic"
+                    and getattr(settings, "YTDLP_MERGE_PROVIDER_ENABLED", True)
+                ):
+                    try:
+                        result = build_ytdlp_merge_parse_result(
+                            rule,
+                            rule.display_name,
+                            source_url,
+                            payload,
+                        )
+                        selected_provider_id = YTDLP_MERGE_PROVIDER_ID
+                    except Exception:
+                        result = normalizer.normalize(
+                            rule=rule,
+                            platform_name=rule.display_name,
+                            source_url=source_url,
+                            payload=payload,
+                        )
+                else:
+                    result = normalizer.normalize(
+                        rule=rule,
+                        platform_name=rule.display_name,
+                        source_url=source_url,
+                        payload=payload,
+                    )
                 duration_ms = elapsed_ms(started_at)
                 attempts.append(
-                    provider_attempt_record(provider_id, "success", duration_ms)
+                    provider_attempt_record(
+                        selected_provider_id,
+                        "success",
+                        duration_ms,
+                    )
                 )
                 result = result_with_provider_diagnostics(
                     result,
-                    provider_id,
+                    selected_provider_id,
                     duration_ms,
                     attempts,
                 )
                 data = {
                     "ok": True,
-                    "provider": provider_id,
+                    "provider": selected_provider_id,
                     "source_url": source_url,
                     "platform_id": rule.platform_id,
                     "rule": rule.to_dict(),
