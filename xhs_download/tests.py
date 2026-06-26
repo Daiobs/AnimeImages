@@ -32,6 +32,7 @@ from .services.downloads import (
     MAX_IMAGE_BYTES,
     build_download_archive,
     build_download_archive_file,
+    fetch_media_response,
     fetch_item_to_temp_path,
     fetch_to_temp_path,
     get_media_headers,
@@ -239,6 +240,38 @@ class XhsUtilityTests(SimpleTestCase):
     def test_validate_media_url_allows_bilibili_media_hosts(self):
         validate_media_url("https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/video.mp4")
         validate_media_url("https://i0.hdslb.com/bfs/archive/cover.jpg")
+
+    def test_get_media_headers_uses_youtube_referer_for_ytimg(self):
+        headers = get_media_headers("https://i.ytimg.com/vi/demo/maxresdefault.jpg")
+
+        self.assertEqual(headers["Referer"], "https://www.youtube.com/")
+        self.assertEqual(headers["Origin"], "https://www.youtube.com")
+
+    @patch("xhs_download.services.downloads.request_public_provider_get_with_retry")
+    def test_provider_signed_fetch_uses_youtube_headers_by_default(self, mock_get):
+        media_url = "https://i.ytimg.com/vi/demo/maxresdefault.jpg"
+        item = {
+            "type": "image",
+            "url": media_url,
+            "asset_id": "third_party:youtube:abc123:video:1:cover",
+            "provider": "yt_dlp_generic",
+            "provider_resource_id": "abc123",
+            "provider_cache_key": "third_party:yt_dlp_generic:abc123",
+        }
+        item["provider_manifest_token"] = build_provider_manifest_token(
+            asset_id=item["asset_id"],
+            provider=item["provider"],
+            provider_resource_id=item["provider_resource_id"],
+            provider_cache_key=item["provider_cache_key"],
+            url=media_url,
+            media_type="image",
+        )
+
+        fetch_media_response(media_url, provider_signed=item)
+
+        headers = mock_get.call_args.kwargs["headers"]
+        self.assertEqual(headers["Referer"], "https://www.youtube.com/")
+        self.assertEqual(headers["Origin"], "https://www.youtube.com")
 
     def test_third_party_media_hosts_are_allowed_only_for_signed_provider_paths(self):
         allowed_cases = (
@@ -503,6 +536,91 @@ class XhsUtilityTests(SimpleTestCase):
 
         self.assertEqual(mock_get.call_count, 1)
         redirect_response.close.assert_called_once()
+
+    @patch(
+        "xhs_download.services.common.socket.getaddrinfo",
+        return_value=[(None, None, None, "", ("198.18.0.100", 443))],
+    )
+    @patch("xhs_download.services.downloads.requests.get")
+    def test_signed_youtube_cover_allows_provider_host_when_dns_is_reserved(
+        self,
+        mock_get,
+        _mock_dns,
+    ):
+        media_url = "https://i.ytimg.com/vi/demo/maxresdefault.jpg"
+        provider_item = {
+            "type": "image",
+            "url": media_url,
+            "asset_id": "yt_dlp_merge:youtube:abc123:video:1:h1080:cover",
+            "provider": "yt_dlp_merge",
+            "provider_resource_id": "abc123",
+            "provider_cache_key": "yt_dlp_merge:abc123:h1080",
+        }
+        provider_item["provider_manifest_token"] = build_provider_manifest_token(
+            asset_id=provider_item["asset_id"],
+            provider=provider_item["provider"],
+            provider_resource_id=provider_item["provider_resource_id"],
+            provider_cache_key=provider_item["provider_cache_key"],
+            url=media_url,
+            media_type="image",
+        )
+        response = Mock(status_code=200, headers={}, url=media_url)
+        mock_get.return_value = response
+
+        result = request_public_provider_get_with_retry(
+            media_url,
+            retries=1,
+            provider_item=provider_item,
+        )
+
+        self.assertIs(result, response)
+
+    @patch(
+        "xhs_download.services.common.socket.getaddrinfo",
+        return_value=[(None, None, None, "", ("93.184.216.34", 443))],
+    )
+    @patch("xhs_download.services.downloads.requests.get")
+    def test_signed_youtube_cover_falls_back_when_maxres_is_missing(
+        self,
+        mock_get,
+        _mock_dns,
+    ):
+        media_url = "https://i.ytimg.com/vi/demo/maxresdefault.jpg"
+        provider_item = {
+            "type": "image",
+            "url": media_url,
+            "asset_id": "yt_dlp_merge:youtube:abc123:video:1:h1080:cover",
+            "provider": "yt_dlp_merge",
+            "provider_resource_id": "abc123",
+            "provider_cache_key": "yt_dlp_merge:abc123:h1080",
+        }
+        provider_item["provider_manifest_token"] = build_provider_manifest_token(
+            asset_id=provider_item["asset_id"],
+            provider=provider_item["provider"],
+            provider_resource_id=provider_item["provider_resource_id"],
+            provider_cache_key=provider_item["provider_cache_key"],
+            url=media_url,
+            media_type="image",
+        )
+        missing_response = Mock(
+            status_code=404,
+            headers={},
+            url=media_url,
+        )
+        missing_response.close = Mock()
+        fallback_url = "https://i.ytimg.com/vi/demo/sddefault.jpg"
+        fallback_response = Mock(status_code=200, headers={}, url=fallback_url)
+        mock_get.side_effect = [missing_response, fallback_response]
+
+        result = request_public_provider_get_with_retry(
+            media_url,
+            retries=1,
+            provider_item=provider_item,
+        )
+
+        self.assertIs(result, fallback_response)
+        self.assertEqual(mock_get.call_args_list[1].args[0], fallback_url)
+        missing_response.close.assert_called_once()
 
     @patch(
         "xhs_download.services.common.socket.getaddrinfo",

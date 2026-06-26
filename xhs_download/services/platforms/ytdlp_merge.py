@@ -54,19 +54,36 @@ def format_size_bytes(item):
 
 def video_stream_score(item):
     ext = str(item.get("ext") or "").lower()
+    vcodec = str(item.get("vcodec") or "").lower()
+    if vcodec.startswith("av01"):
+        codec_score = 3
+    elif vcodec.startswith("vp9"):
+        codec_score = 2
+    elif vcodec.startswith(("avc", "h264")):
+        codec_score = 1
+    else:
+        codec_score = 0
     return (
         integer_value(item.get("height")),
         integer_value(item.get("width")),
-        float_value(item.get("tbr")),
+        integer_value(item.get("fps")),
+        codec_score,
         1 if ext == "mp4" else 0,
+        float_value(item.get("tbr")),
         format_size_bytes(item),
     )
 
 
 def audio_stream_score(item):
-    ext = str(item.get("ext") or "").lower()
+    acodec = str(item.get("acodec") or "").lower()
+    if acodec.startswith("opus"):
+        codec_score = 2
+    elif acodec.startswith(("mp4a", "aac")):
+        codec_score = 1
+    else:
+        codec_score = 0
     return (
-        1 if ext in {"m4a", "mp4"} else 0,
+        codec_score,
         float_value(item.get("abr") or item.get("tbr")),
         format_size_bytes(item),
     )
@@ -130,6 +147,7 @@ def summarize_format(item):
         "ext": str(item.get("ext") or ""),
         "height": integer_value(item.get("height")),
         "width": integer_value(item.get("width")),
+        "fps": integer_value(item.get("fps")),
         "tbr": float_value(item.get("tbr")),
         "abr": float_value(item.get("abr")),
         "vcodec": str(item.get("vcodec") or ""),
@@ -254,7 +272,13 @@ def build_parse_result(rule, platform_name, source_url, payload, *, max_height=N
         raise XhsDownloadError("yt-dlp merge candidate is not available")
     title = clean_filename(plan["title"] or platform_name or "yt_dlp")
     video_height = int((plan.get("video_format") or {}).get("height") or 0)
-    quality_label = f"{video_height}p 高清合并" if video_height else "高清合并"
+    video_fps = int((plan.get("video_format") or {}).get("fps") or 0)
+    if video_height and video_fps:
+        quality_label = f"{video_height}p{video_fps} 高清合并"
+    elif video_height:
+        quality_label = f"{video_height}p 高清合并"
+    else:
+        quality_label = "高清合并"
     cover_url = pick_cover_url(rule, payload)
     asset = MediaAsset(
         media_type="video",

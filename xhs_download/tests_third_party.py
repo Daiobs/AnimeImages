@@ -23,6 +23,7 @@ from .services.platforms import (
 from .services.platforms.external_tools import safe_subprocess_env
 from .services.platforms.gallerydl_generic import run_gallerydl_json
 from .services.platforms.kukutool_generic import source_key_for_url
+from .services.platforms.third_party import frontend_budget_seconds, get_third_party_rule
 from .services.platforms.ytdlp_generic import run_ytdlp_json
 from .services.provider_manifest import build_provider_manifest_token
 from .services.registry import parse_media_page
@@ -67,6 +68,7 @@ def youtube_merge_demo_payload():
                 "ext": "mp4",
                 "height": 360,
                 "width": 640,
+                "fps": 30,
                 "tbr": 500,
                 "vcodec": "avc1.42001E",
                 "acodec": "mp4a.40.2",
@@ -80,6 +82,7 @@ def youtube_merge_demo_payload():
                 "ext": "mp4",
                 "height": 1080,
                 "width": 1920,
+                "fps": 60,
                 "tbr": 3500,
                 "vcodec": "avc1.640028",
                 "acodec": "none",
@@ -111,6 +114,7 @@ def ytdlp_merge_demo_payload():
         "ext": "mp4",
         "height": 4320,
         "width": 7680,
+        "fps": 60,
         "tbr": 45000,
         "vcodec": "av01.0.16M.08",
         "acodec": "none",
@@ -280,6 +284,17 @@ class YouTubeMergePlannerTests(SimpleTestCase):
 class GenericThirdPartyProviderTests(SimpleTestCase):
     def setUp(self):
         cache.clear()
+
+    @override_settings(
+        THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS=3.0,
+        YOUTUBE_FRONTEND_TIMEOUT_SECONDS=8.0,
+    )
+    def test_youtube_frontend_budget_is_platform_specific(self):
+        youtube_rule = get_third_party_rule("youtube")
+        imgur_rule = get_third_party_rule("imgur")
+
+        self.assertEqual(frontend_budget_seconds(youtube_rule), 8.0)
+        self.assertEqual(frontend_budget_seconds(imgur_rule), 3.0)
 
     @override_settings(THIRD_PARTY_PROVIDER_ENABLED=False)
     def test_generic_third_party_parse_reports_provider_disabled(self):
@@ -645,7 +660,7 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
 
         self.assertEqual(result.metadata["selected_provider"], "yt_dlp_merge")
         self.assertEqual(result.video_assets[0].provider, "yt_dlp_merge")
-        self.assertEqual(result.video_assets[0].quality_label, "1080p 高清合并")
+        self.assertEqual(result.video_assets[0].quality_label, "1080p60 高清合并")
         self.assertIn(":h1080", result.video_assets[0].asset_id)
 
     @override_settings(
@@ -671,7 +686,7 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         )
 
         self.assertEqual(result.metadata["selected_provider"], "yt_dlp_merge")
-        self.assertEqual(result.video_assets[0].quality_label, "4320p 高清合并")
+        self.assertEqual(result.video_assets[0].quality_label, "4320p60 高清合并")
         self.assertIn(":h4320", result.video_assets[0].asset_id)
 
     @override_settings(
@@ -1440,6 +1455,28 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         )
 
         self.assertEqual(runner.call_args.kwargs["timeout_seconds"], 1.25)
+
+    @override_settings(
+        YTDLP_TIMEOUT_SECONDS=15.0,
+        THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS=1.25,
+    )
+    def test_ytdlp_provider_honors_platform_budget_when_supplied(self):
+        runner = Mock(return_value={
+            "title": "platform budget video",
+            "formats": [
+                {
+                    "url": "https://rr1---sn.googlevideo.com/videoplayback?budget=8",
+                    "protocol": "https",
+                }
+            ],
+        })
+
+        YtDlpGenericProvider(runner=runner).parse(
+            "https://www.youtube.com/watch?v=platform-budget",
+            timeout_seconds=8.0,
+        )
+
+        self.assertEqual(runner.call_args.kwargs["timeout_seconds"], 8.0)
 
     @override_settings(
         YTDLP_PAYLOAD_CACHE_TTL_SECONDS=60,

@@ -472,7 +472,7 @@ class Command(BaseCommand):
 
         errors = []
         attempts = []
-        deadline = time.monotonic() + frontend_budget_seconds()
+        deadline = time.monotonic() + frontend_budget_seconds(rule)
         for provider_id, provider, normalizer in providers:
             provider_timeout_seconds = remaining_budget_seconds(deadline)
             if provider_timeout_seconds <= 0:

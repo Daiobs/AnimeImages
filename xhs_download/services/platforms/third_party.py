@@ -262,11 +262,17 @@ def provider_attempt_record(provider_id, status, duration_ms, error=None):
     return record
 
 
-def frontend_budget_seconds():
-    return max(
+def frontend_budget_seconds(rule=None):
+    base_budget = max(
         0.1,
         float(getattr(settings, "THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS", 3.0) or 3.0),
     )
+    if getattr(rule, "platform_id", "") == "youtube":
+        return max(
+            base_budget,
+            float(getattr(settings, "YOUTUBE_FRONTEND_TIMEOUT_SECONDS", 8.0) or 8.0),
+        )
+    return base_budget
 
 
 def remaining_budget_seconds(deadline):
@@ -427,7 +433,7 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         providers = list(self.iter_provider_specs(rule, respect_enabled=True))
         failures = []
         attempts = []
-        deadline = time.monotonic() + frontend_budget_seconds()
+        deadline = time.monotonic() + frontend_budget_seconds(rule)
         if prefer_youtube_merge and getattr(rule, "platform_id", "") == "youtube":
             health = get_youtube_merge_health()
             if health.get("public_ready") and health.get("implemented"):
