@@ -27,6 +27,21 @@ PROVIDER_LABEL = "yt-dlp 高清合并"
 MERGE_FORMAT_SELECTOR_TEMPLATE = "bv*[height<={height}]+ba/b[height<={height}]/b"
 
 
+def default_max_height():
+    return int(getattr(settings, "YTDLP_MERGE_DEFAULT_MAX_HEIGHT", 1080) or 1080)
+
+
+def high_quality_max_height():
+    return int(
+        getattr(
+            settings,
+            "YTDLP_MERGE_HIGH_QUALITY_MAX_HEIGHT",
+            getattr(settings, "YTDLP_MERGE_MAX_HEIGHT", 4320),
+        )
+        or 4320
+    )
+
+
 def source_key_for_url(source_url):
     return sha256(str(source_url or "").strip().encode("utf-8")).hexdigest()[:24]
 
@@ -127,7 +142,7 @@ def build_ytdlp_merge_plan(payload, *, max_height=None, max_file_size_bytes=None
     max_height = int(
         max_height
         if max_height is not None
-        else getattr(settings, "YTDLP_MERGE_MAX_HEIGHT", 4320) or 4320
+        else default_max_height()
     )
     max_file_size_bytes = int(
         max_file_size_bytes
@@ -209,10 +224,11 @@ def pick_cover_url(rule, payload):
     return ""
 
 
-def build_asset_fields(rule, source_url, *, media_type="video", index=1, url=""):
+def build_asset_fields(rule, source_url, *, media_type="video", index=1, url="", max_height=None):
     source_key = source_key_for_url(source_url)
-    asset_id = f"{PROVIDER_ID}:{rule.platform_id}:{source_key}:{media_type}:{index}"
-    provider_cache_key = f"{PROVIDER_ID}:{source_key}"
+    max_height = int(max_height or default_max_height())
+    asset_id = f"{PROVIDER_ID}:{rule.platform_id}:{source_key}:{media_type}:{index}:h{max_height}"
+    provider_cache_key = f"{PROVIDER_ID}:{source_key}:h{max_height}"
     signed_url = url or source_url
     return {
         "asset_id": asset_id,
@@ -230,10 +246,10 @@ def build_asset_fields(rule, source_url, *, media_type="video", index=1, url="")
     }
 
 
-def build_parse_result(rule, platform_name, source_url, payload):
+def build_parse_result(rule, platform_name, source_url, payload, *, max_height=None):
     if not source_url_is_allowed(rule, source_url):
         raise XhsDownloadError("yt-dlp merge source URL is not allowed")
-    plan = build_ytdlp_merge_plan(payload)
+    plan = build_ytdlp_merge_plan(payload, max_height=max_height)
     if not plan["available"] or not plan["requires_merge"]:
         raise XhsDownloadError("yt-dlp merge candidate is not available")
     title = clean_filename(plan["title"] or platform_name or "yt_dlp")
@@ -248,7 +264,11 @@ def build_parse_result(rule, platform_name, source_url, payload):
         cover_preview_url=cover_url,
         quality_label=quality_label,
         size_bytes=int(plan.get("estimated_size_bytes") or 0),
-        **build_asset_fields(rule, source_url),
+        **build_asset_fields(
+            rule,
+            source_url,
+            max_height=int(plan.get("max_height") or default_max_height()),
+        ),
     )
     return ParseResult(
         platform="third_party",
@@ -277,8 +297,20 @@ def parse_asset_id(asset_id):
     parts = str(asset_id or "").split(":")
     if len(parts) < 5 or parts[0] != PROVIDER_ID:
         return None
-    extra_parts = parts[5:]
-    if extra_parts and extra_parts != ["cover"]:
+    extra_parts = list(parts[5:])
+    is_cover = False
+    if extra_parts and extra_parts[-1] == "cover":
+        is_cover = True
+        extra_parts = extra_parts[:-1]
+    max_height = default_max_height()
+    if extra_parts:
+        if len(extra_parts) != 1 or not extra_parts[0].startswith("h"):
+            return None
+        value = extra_parts[0][1:]
+        if not value.isdigit():
+            return None
+        max_height = int(value)
+    if extra_parts and max_height <= 0:
         return None
     platform_id, source_key, media_type, index = parts[1:5]
     if not source_key or len(source_key) > 64:
@@ -290,7 +322,8 @@ def parse_asset_id(asset_id):
         "source_key": source_key,
         "media_type": media_type,
         "index": index,
-        "is_cover": bool(extra_parts),
+        "max_height": max_height,
+        "is_cover": is_cover,
     }
 
 
@@ -306,7 +339,9 @@ def manifest_item_is_allowed(item):
         return False
     if item.get("provider_resource_id") != parsed_asset["source_key"]:
         return False
-    if item.get("provider_cache_key") != f"{PROVIDER_ID}:{parsed_asset['source_key']}":
+    if item.get("provider_cache_key") != (
+        f"{PROVIDER_ID}:{parsed_asset['source_key']}:h{parsed_asset['max_height']}"
+    ):
         return False
     item_type = str(item.get("type") or "").lower()
     if parsed_asset["is_cover"]:
@@ -333,9 +368,9 @@ def provider_manifest_allows_download(item):
     )
 
 
-def build_command(source_url, output_template):
+def build_command(source_url, output_template, *, max_height=None):
     command = split_external_command(getattr(settings, "YTDLP_BINARY", "") or "", "yt-dlp")
-    max_height = int(getattr(settings, "YTDLP_MERGE_MAX_HEIGHT", 4320) or 4320)
+    max_height = int(max_height or default_max_height())
     args = [
         *command,
         "--ignore-config",
@@ -363,6 +398,9 @@ def build_command(source_url, output_template):
 def download_to_temp_path(item):
     if not provider_manifest_allows_download(item):
         raise XhsDownloadError("yt-dlp 合并资源签名未通过校验")
+    parsed_asset = parse_asset_id(item.get("asset_id"))
+    if not parsed_asset:
+        raise XhsDownloadError("yt-dlp 合并资源 ID 无效")
     source_url = str(item.get("url") or "")
     timeout_seconds = float(getattr(settings, "YTDLP_MERGE_TIMEOUT_SECONDS", 300.0) or 300.0)
     max_bytes = int(
@@ -373,7 +411,11 @@ def download_to_temp_path(item):
     output_template = Path(work_dir) / "merged.%(ext)s"
     try:
         completed = run_external_command(
-            build_command(source_url, output_template),
+            build_command(
+                source_url,
+                output_template,
+                max_height=parsed_asset["max_height"],
+            ),
             timeout_seconds=timeout_seconds,
         )
         if completed.returncode != 0:

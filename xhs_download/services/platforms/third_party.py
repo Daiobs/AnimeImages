@@ -20,6 +20,7 @@ from .ytdlp_generic import YtDlpGenericProvider, YtDlpResultNormalizer
 from .ytdlp_merge import (
     PROVIDER_ID as YTDLP_MERGE_PROVIDER_ID,
     build_parse_result as build_ytdlp_merge_parse_result,
+    default_max_height as ytdlp_merge_default_max_height,
 )
 from ..youtube_merge import (
     PROVIDER_ID as YOUTUBE_MERGE_PROVIDER_ID,
@@ -532,6 +533,7 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
                             platform_name,
                             source_url,
                             payload,
+                            max_height=ytdlp_merge_default_max_height(),
                         )
                         selected_provider_id = YTDLP_MERGE_PROVIDER_ID
                     except Exception:

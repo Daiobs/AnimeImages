@@ -382,6 +382,7 @@ def build_provider_signed_cover_item(item, cover_url):
     if not cover_url or not provider_manifest_allows_public_download(item):
         return {"type": "image", "url": cover_url}
 
+    provider = str(item.get("provider") or "")
     cover_item = {
         "type": "image",
         "url": cover_url,
@@ -390,7 +391,13 @@ def build_provider_signed_cover_item(item, cover_url):
         "provider_resource_id": item.get("provider_resource_id", ""),
         "provider_cache_key": item.get("provider_cache_key", ""),
     }
-    if not third_party_manifest_item_is_allowed(cover_item):
+    if provider == YOUTUBE_MERGE_PROVIDER_ID:
+        allowed = youtube_merge_manifest_item_is_allowed(cover_item)
+    elif provider == YTDLP_MERGE_PROVIDER_ID:
+        allowed = ytdlp_merge_manifest_item_is_allowed(cover_item)
+    else:
+        allowed = third_party_manifest_item_is_allowed(cover_item)
+    if not allowed:
         return {"type": "image", "url": cover_url}
 
     cover_item["provider_manifest_token"] = build_provider_manifest_token(

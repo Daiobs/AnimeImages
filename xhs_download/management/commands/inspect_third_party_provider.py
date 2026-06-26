@@ -23,6 +23,7 @@ from ...services.platforms.ytdlp_generic import YtDlpGenericProvider
 from ...services.platforms.ytdlp_merge import (
     PROVIDER_ID as YTDLP_MERGE_PROVIDER_ID,
     build_parse_result as build_ytdlp_merge_parse_result,
+    default_max_height as ytdlp_merge_default_max_height,
 )
 from ...services.youtube_merge import get_youtube_merge_health
 
@@ -500,6 +501,7 @@ class Command(BaseCommand):
                             rule.display_name,
                             source_url,
                             payload,
+                            max_height=ytdlp_merge_default_max_height(),
                         )
                         selected_provider_id = YTDLP_MERGE_PROVIDER_ID
                     except Exception:

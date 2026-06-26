@@ -52,7 +52,7 @@ from .services.provider_settings import (
     normalize_provider_order,
 )
 from .services.provider_manifest import build_provider_manifest_token
-from .views import build_provider_preview_query
+from .views import build_provider_preview_query, youtube_merge_mode_is_available
 from .services.quality import QualityProbe, QualityProbeResult
 from .services.rate_limits import (
     get_client_identity,
@@ -3434,6 +3434,41 @@ class XhsDownloadViewTests(SimpleTestCase):
             })
         )
 
+    def test_provider_preview_query_supports_signed_ytdlp_merge_cover(self):
+        media_url = "https://i.ytimg.com/vi/demo/maxresdefault.jpg"
+        asset = MediaAsset(
+            media_type="video",
+            url="https://www.youtube.com/watch?v=demo",
+            platform="third_party",
+            cover_url=media_url,
+            provider="yt_dlp_merge",
+            asset_id="yt_dlp_merge:youtube:abc123:video:1:h1080",
+            provider_resource_id="abc123",
+            provider_cache_key="yt_dlp_merge:abc123:h1080",
+        )
+
+        query = build_provider_preview_query(asset, media_url, "cover")
+        params = {key: values[0] for key, values in parse_qs(query).items()}
+
+        self.assertEqual(params["provider"], "yt_dlp_merge")
+        self.assertEqual(params["type"], "image")
+        self.assertEqual(
+            params["asset_id"],
+            "yt_dlp_merge:youtube:abc123:video:1:h1080:cover",
+        )
+        self.assertTrue(
+            provider_manifest_allows_public_download({
+                **params,
+                "url": media_url,
+            })
+        )
+        self.assertFalse(
+            provider_manifest_allows_public_download({
+                **params,
+                "url": "https://evil.example.com/cover.jpg",
+            })
+        )
+
     def test_provider_preview_query_marks_image_asset_type(self):
         media_url = "https://i.imgur.com/demo.jpg"
         asset = MediaAsset(
@@ -4450,6 +4485,35 @@ class XhsDownloadViewTests(SimpleTestCase):
         )
         self.assertContains(response, 'id="youtube-merge-request-input"')
         self.assertContains(response, 'value="1"')
+
+    @patch("xhs_download.views.get_youtube_merge_health")
+    def test_youtube_merge_mode_respects_staff_only(self, mock_health):
+        mock_health.return_value = {
+            "implemented": True,
+            "ready": True,
+            "public_access_enabled": True,
+            "staff_only": True,
+        }
+        request = RequestFactory().get("/")
+
+        request.user = Mock(is_active=True, is_staff=False)
+        self.assertFalse(youtube_merge_mode_is_available(request))
+
+        request.user = Mock(is_active=True, is_staff=True)
+        self.assertTrue(youtube_merge_mode_is_available(request))
+
+    @patch("xhs_download.views.get_youtube_merge_health")
+    def test_youtube_merge_mode_requires_public_access(self, mock_health):
+        mock_health.return_value = {
+            "implemented": True,
+            "ready": True,
+            "public_access_enabled": False,
+            "staff_only": False,
+        }
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=True, is_staff=True)
+
+        self.assertFalse(youtube_merge_mode_is_available(request))
 
     @override_settings(
         ULTRA_HD_PROVIDER_ENABLED=True,

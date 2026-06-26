@@ -238,9 +238,19 @@ def ultra_hd_is_available():
     return health["available"]
 
 
-def youtube_merge_mode_is_available():
+def youtube_merge_mode_is_available(request):
     health = get_youtube_merge_health()
-    return bool(health.get("public_ready") and health.get("implemented"))
+    if not health.get("implemented") or not health.get("ready"):
+        return False
+    if not health.get("public_access_enabled"):
+        return False
+    if health.get("staff_only"):
+        user = getattr(request, "user", None)
+        return bool(
+            getattr(user, "is_active", False)
+            and getattr(user, "is_staff", False)
+        )
+    return True
 
 
 def build_third_party_provider_summary(kukutool_health, gallerydl_health, ytdlp_health):
@@ -534,10 +544,14 @@ def query_uses_third_party_provider(query):
 
 
 def search_view(request, platform_key="home"):
-    return render(request, "xhs_download.html", get_download_settings_context(platform_key))
+    return render(
+        request,
+        "xhs_download.html",
+        get_download_settings_context(platform_key, request),
+    )
 
 
-def get_download_settings_context(platform_key="home"):
+def get_download_settings_context(platform_key="home", request=None):
     page_config = get_platform_page_config(platform_key)
     return {
         "platform_key": platform_key,
@@ -564,7 +578,9 @@ def get_download_settings_context(platform_key="home"):
         "xhs_allow_absolute_save_path": settings.XHS_ALLOW_ABSOLUTE_SAVE_PATH,
         "xhs_default_server_save_dir": settings.XHS_DEFAULT_SERVER_SAVE_DIR,
         "ultra_hd_available": ultra_hd_is_available(),
-        "youtube_merge_mode_available": youtube_merge_mode_is_available(),
+        "youtube_merge_mode_available": (
+            youtube_merge_mode_is_available(request) if request is not None else False
+        ),
     }
 
 
@@ -573,10 +589,12 @@ def build_search_results_context(request, platform_key="home"):
     requested_ultra_hd = request_flag(request.GET.get("ultra_hd"))
     prefer_ultra_hd = requested_ultra_hd and ultra_hd_is_available()
     requested_youtube_merge = request_flag(request.GET.get("youtube_merge"))
-    prefer_youtube_merge = requested_youtube_merge and youtube_merge_mode_is_available()
+    prefer_youtube_merge = (
+        requested_youtube_merge and youtube_merge_mode_is_available(request)
+    )
 
     context = {
-        **get_download_settings_context(platform_key),
+        **get_download_settings_context(platform_key, request),
         "query": query,
         "prefer_ultra_hd": prefer_ultra_hd,
         "prefer_youtube_merge": prefer_youtube_merge,
@@ -654,7 +672,7 @@ def build_search_results_context(request, platform_key="home"):
         context["provider_notice"] = "当前环境未向访客开放超高清 Provider，本次使用本地解析。"
 
     if requested_youtube_merge and not prefer_youtube_merge:
-        context["provider_notice"] = "当前环境未向访客开放 YouTube 高清合并，本次使用普通解析。"
+        context["provider_notice"] = "当前环境未向该用户开放 YouTube 最高画质，本次默认优先 1080p。"
 
     try:
         client_country_code = (
@@ -692,7 +710,9 @@ def build_search_results_context(request, platform_key="home"):
             provider_label = result_metadata.get("provider_label") or "第三方 Provider"
             context["provider_notice"] = f"本次由 {provider_label} 第三方解析，资源可用性取决于上游平台。"
             if result_metadata.get("selected_provider") == "youtube_merge":
-                context["provider_notice"] = "本次使用 YouTube 高清合并任务；下载时将在服务端合并音频和视频。"
+                context["provider_notice"] = "本次使用 YouTube 最高画质任务；下载时将在服务端合并音频和视频，文件可能更大。"
+            elif result_metadata.get("selected_provider") == "yt_dlp_merge":
+                context["provider_notice"] = "本次使用 yt-dlp 高清合并；默认优先 1080p，下载时将在服务端合并音频和视频。"
         if prefer_ultra_hd:
             if result.platform == "douyin":
                 context["provider_notice"] = "本次优先使用 KuKuTool 超高清上游；若不可用会自动回退本地解析。"

@@ -24,6 +24,7 @@ from .services.platforms.external_tools import safe_subprocess_env
 from .services.platforms.gallerydl_generic import run_gallerydl_json
 from .services.platforms.kukutool_generic import source_key_for_url
 from .services.platforms.ytdlp_generic import run_ytdlp_json
+from .services.provider_manifest import build_provider_manifest_token
 from .services.registry import parse_media_page
 from .services.youtube_merge import (
     build_youtube_merge_parse_result,
@@ -34,6 +35,7 @@ from .services.youtube_merge import (
 from .services.platforms.ytdlp_merge import (
     build_parse_result as build_ytdlp_merge_parse_result,
     download_to_temp_path as download_ytdlp_merge_to_temp_path,
+    provider_manifest_allows_download as provider_manifest_allows_ytdlp_merge,
 )
 
 
@@ -56,6 +58,7 @@ def youtube_merge_demo_payload():
         "id": "demo",
         "title": "merge candidate demo",
         "webpage_url": "https://www.youtube.com/watch?v=demo",
+        "thumbnail": "https://i.ytimg.com/vi/demo/maxresdefault.jpg",
         "formats": [
             {
                 "format_id": "18",
@@ -611,7 +614,7 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         _mock_ffmpeg_probe,
     ):
         ytdlp_provider = Mock()
-        ytdlp_provider.parse.return_value = youtube_merge_demo_payload()
+        ytdlp_provider.parse.return_value = ytdlp_merge_demo_payload()
         adapter = GenericThirdPartyAdapter(ytdlp_provider=ytdlp_provider)
 
         result = adapter.parse_url(
@@ -621,7 +624,7 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
 
         self.assertEqual(result.metadata["selected_provider"], "youtube_merge")
         self.assertEqual(result.video_assets[0].provider, "youtube_merge")
-        self.assertEqual(result.video_assets[0].quality_label, "1080p 高清合并")
+        self.assertEqual(result.video_assets[0].quality_label, "4320p 高清合并")
         ytdlp_provider.parse.assert_called_once()
 
     @override_settings(
@@ -629,10 +632,11 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
         YTDLP_PROVIDER_ENABLED=True,
         YTDLP_MERGE_PROVIDER_ENABLED=True,
-        YTDLP_MERGE_MAX_HEIGHT=4320,
+        YTDLP_MERGE_DEFAULT_MAX_HEIGHT=1080,
+        YTDLP_MERGE_HIGH_QUALITY_MAX_HEIGHT=4320,
         YTDLP_MERGE_MAX_FILE_SIZE_BYTES=100_000_000,
     )
-    def test_generic_third_party_ytdlp_defaults_to_highest_merge_candidate(self):
+    def test_generic_third_party_ytdlp_defaults_to_1080p_merge_candidate(self):
         ytdlp_provider = Mock()
         ytdlp_provider.parse.return_value = ytdlp_merge_demo_payload()
         adapter = GenericThirdPartyAdapter(ytdlp_provider=ytdlp_provider)
@@ -641,16 +645,44 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
 
         self.assertEqual(result.metadata["selected_provider"], "yt_dlp_merge")
         self.assertEqual(result.video_assets[0].provider, "yt_dlp_merge")
+        self.assertEqual(result.video_assets[0].quality_label, "1080p 高清合并")
+        self.assertIn(":h1080", result.video_assets[0].asset_id)
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+        YTDLP_PROVIDER_ENABLED=True,
+        YTDLP_MERGE_PROVIDER_ENABLED=True,
+        YTDLP_MERGE_DEFAULT_MAX_HEIGHT=1080,
+        YTDLP_MERGE_HIGH_QUALITY_MAX_HEIGHT=4320,
+        YTDLP_MERGE_MAX_FILE_SIZE_BYTES=100_000_000,
+    )
+    def test_ytdlp_merge_can_use_high_quality_max_height_when_requested(self):
+        rule = GenericThirdPartyAdapter().get_rule_for_url(
+            "https://www.youtube.com/watch?v=demo"
+        )
+
+        result = build_ytdlp_merge_parse_result(
+            rule,
+            "YouTube",
+            "https://www.youtube.com/watch?v=demo",
+            ytdlp_merge_demo_payload(),
+            max_height=4320,
+        )
+
+        self.assertEqual(result.metadata["selected_provider"], "yt_dlp_merge")
         self.assertEqual(result.video_assets[0].quality_label, "4320p 高清合并")
+        self.assertIn(":h4320", result.video_assets[0].asset_id)
 
     @override_settings(
         YTDLP_BINARY="python -m yt_dlp",
         YTDLP_MERGE_FFMPEG_BINARY="/usr/bin/ffmpeg",
-        YTDLP_MERGE_MAX_HEIGHT=4320,
+        YTDLP_MERGE_DEFAULT_MAX_HEIGHT=1080,
+        YTDLP_MERGE_HIGH_QUALITY_MAX_HEIGHT=4320,
         YTDLP_MERGE_MAX_FILE_SIZE_BYTES=100_000_000,
     )
     @patch("xhs_download.services.platforms.ytdlp_merge.run_external_command")
-    def test_download_ytdlp_merge_uses_4320_selector(self, mock_run):
+    def test_download_ytdlp_merge_uses_asset_height_selector(self, mock_run):
         rule = GenericThirdPartyAdapter().get_rule_for_url(
             "https://www.youtube.com/watch?v=demo"
         )
@@ -672,10 +704,41 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
 
         try:
             args = mock_run.call_args.args[0]
-            self.assertIn("bv*[height<=4320]+ba/b[height<=4320]/b", args)
+            self.assertIn("bv*[height<=1080]+ba/b[height<=1080]/b", args)
             self.assertEqual(Path(temp_result["path"]).read_bytes(), b"merged-video")
         finally:
             Path(temp_result["path"]).unlink(missing_ok=True)
+
+    def test_ytdlp_merge_cover_manifest_rejects_tampered_cover_url(self):
+        rule = GenericThirdPartyAdapter().get_rule_for_url(
+            "https://www.youtube.com/watch?v=demo"
+        )
+        asset = build_ytdlp_merge_parse_result(
+            rule,
+            "YouTube",
+            "https://www.youtube.com/watch?v=demo",
+            ytdlp_merge_demo_payload(),
+        ).video_assets[0]
+        cover_item = {
+            **asset.to_download_item(),
+            "type": "image",
+            "url": asset.cover_url,
+            "asset_id": f"{asset.asset_id}:cover",
+        }
+        cover_item["provider_manifest_token"] = build_provider_manifest_token(
+            asset_id=cover_item["asset_id"],
+            provider=cover_item["provider"],
+            provider_resource_id=cover_item["provider_resource_id"],
+            provider_cache_key=cover_item["provider_cache_key"],
+            url=cover_item["url"],
+            media_type="image",
+        )
+
+        self.assertTrue(provider_manifest_allows_ytdlp_merge(cover_item))
+        self.assertFalse(provider_manifest_allows_ytdlp_merge({
+            **cover_item,
+            "url": "https://evil.example.com/cover.jpg",
+        }))
 
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,

@@ -291,18 +291,18 @@
                             >
                             <span class="settings-switch-control" aria-hidden="true"></span>
                             <span>
-                                <strong>YouTube 高清合并</strong>
+                                <strong>YouTube 最高画质</strong>
                                 <small>
                                     {% if youtube_merge_mode_available %}
-                                        YouTube 1080p+ 将通过服务端任务合并音频和视频。
+                                        开启后优先选择 2K/4K/8K 等最高可用画质。
                                     {% else %}
-                                        当前环境未启用 YouTube 高清合并任务。
+                                        当前环境未开放 YouTube 最高画质任务。
                                     {% endif %}
                                 </small>
                             </span>
                         </label>
                         <div class="form-text">
-                            YouTube 高画质通常是音视频分离流；开启后解析结果会生成服务端合并任务资源。
+                            关闭时默认优先 1080p；开启时优先最高画质。YouTube 1080p 及以上通常需要服务端合并音频和视频。
                         </div>
                     </section>
 
