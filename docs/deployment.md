@@ -8,6 +8,8 @@ Netlify can host a future static frontend, but it is not the right target for th
 
 ## Required Environment Variables
 
+Start from `.env.example.production` if you keep configuration in the project root. Runtime reads the project-root `.env` plus deployment environment variables; the example files are templates only.
+
 - `DJANGO_SECRET_KEY`: long random production secret
 - `DJANGO_DEBUG=False`
 - `DJANGO_ALLOWED_HOSTS`: comma-separated hostnames
@@ -27,6 +29,28 @@ python manage.py migrate
 python manage.py collectstatic --noinput
 python manage.py check --deploy
 ```
+
+When running `check --deploy` from a local machine that also has a development `.env`, explicitly override disabled provider flags unless the provider runtime is part of the deployment being verified:
+
+```bash
+DJANGO_DEBUG=False \
+DJANGO_SECRET_KEY=local-production-check-7f4e2d9c8b1a6e5d3c0f9a8b7e6d5c4b3a2f1e0d9c8b7a6f5e4d3c2b1a0f9e8 \
+DJANGO_ALLOWED_HOSTS=example.com \
+DJANGO_CACHE_URL=redis://localhost:6379/0 \
+ULTRA_HD_PROVIDER_ENABLED=False \
+KUKUTOOL_PROVIDER_ENABLED=False \
+THIRD_PARTY_PROVIDER_ENABLED=False \
+THIRD_PARTY_PUBLIC_ACCESS_ENABLED=False \
+DJANGO_SECURE_SSL_REDIRECT=True \
+DJANGO_SESSION_COOKIE_SECURE=True \
+DJANGO_CSRF_COOKIE_SECURE=True \
+DJANGO_SECURE_HSTS_SECONDS=31536000 \
+DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS=True \
+DJANGO_SECURE_HSTS_PRELOAD=True \
+python manage.py check --deploy
+```
+
+If KuKuTool ultra-HD is enabled in production, keep `KUKUTOOL_PROVIDER_ENABLED=True` and configure either `KUKUTOOL_NODE_BINARY` or `KUKUTOOL_SIDECAR_BASE_URL` before running the same check.
 
 ## Runtime
 
@@ -96,9 +120,9 @@ ULTRA_HD_PROVIDER_ENABLED=False
 ULTRA_HD_PUBLIC_ACCESS_ENABLED=False
 ```
 
-Keep both `ULTRA_HD_PUBLIC_ACCESS_ENABLED` and `KUKUTOOL_PROVIDER_ENABLED` disabled until KuKuTool latency, limits, download recovery, and protocol stability have been validated in staging. Production must provide Node.js 18 or newer through an explicit `KUKUTOOL_NODE_BINARY`; it does not search the system `PATH` or a user's Codex runtime.
+Keep both `ULTRA_HD_PUBLIC_ACCESS_ENABLED` and `KUKUTOOL_PROVIDER_ENABLED` disabled until KuKuTool latency, limits, download recovery, and protocol stability have been validated in staging. Production must provide either Node.js 18 or newer through an explicit `KUKUTOOL_NODE_BINARY`, or an internal `douyin-source-resolver` endpoint through `KUKUTOOL_SIDECAR_BASE_URL`; it does not search the system `PATH` or a user's Codex runtime.
 
-Production Redis is also used for KuKuTool single-flight, short failure caching, validated results, and the global upstream concurrency counter. Keep `DJANGO_CACHE_SOCKET_CONNECT_TIMEOUT` and `DJANGO_CACHE_SOCKET_TIMEOUT` below the three-second foreground budget so a cache outage cannot pin a request. The current bounded thread pools are an interim deployment model. For sustained traffic, run the helper as a long-lived internal Node sidecar or move resolution to Celery/RQ so Django workers never own subprocess lifecycles.
+Production Redis is also used for KuKuTool single-flight, short failure caching, validated results, and the global upstream concurrency counter. Keep `DJANGO_CACHE_SOCKET_CONNECT_TIMEOUT` and `DJANGO_CACHE_SOCKET_TIMEOUT` below the three-second foreground budget so a cache outage cannot pin a request. The current bounded thread pools remain available as an interim deployment model. For sustained traffic, run the helper as the long-lived internal `douyin-source-resolver` sidecar or move resolution to Celery/RQ so Django workers never own subprocess lifecycles.
 
 TikHub and country-aware API routing are retained only as dormant research code. They do not affect the current synchronous ultra-HD path.
 

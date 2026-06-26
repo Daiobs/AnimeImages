@@ -3,12 +3,14 @@ import json
 from django.core.management.base import BaseCommand, CommandError
 
 from ...services.diagnostics import select_best_media_candidate
+from ...services.platforms.douyin_kukutool import get_kukutool_provider_health
 from ...services.platforms.douyin import (
     DouyinAdapter,
     find_aweme_in_html,
     get_base_filename,
     get_video_media_candidates,
 )
+from ...services.provider_settings import get_platform_provider_settings
 
 
 def format_quality_params(candidate):
@@ -22,13 +24,40 @@ class Command(BaseCommand):
     help = "Inspect Douyin video candidates from native parser sources."
 
     def add_arguments(self, parser):
-        parser.add_argument("url", help="Douyin URL or share text")
+        parser.add_argument("url", nargs="?", default="", help="Douyin URL or share text")
         parser.add_argument("--timeout", type=int, default=6, help="Probe timeout in seconds")
         parser.add_argument("--max-candidates", type=int, default=20, help="Maximum candidates to probe per source")
         parser.add_argument("--no-probe", action="store_true", help="Only list declared metadata without HEAD/Range probing")
+        parser.add_argument(
+            "--health",
+            action="store_true",
+            help="Print Douyin ultra-HD provider health without parsing a URL",
+        )
         parser.add_argument("--json", action="store_true", dest="as_json", help="Output JSON")
 
     def handle(self, *args, **options):
+        if options["health"]:
+            payload = build_provider_health_payload()
+            if options["as_json"]:
+                self.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2))
+                return
+            self.stdout.write(f"ok: {payload['ok']}")
+            self.stdout.write(f"ultra_hd_enabled: {payload['settings']['ultra_hd_enabled']}")
+            self.stdout.write(f"kukutool_enabled: {payload['settings']['kukutool_enabled']}")
+            self.stdout.write(f"provider_available: {payload['provider']['available']}")
+            runtime = payload["provider"].get("runtime") or {}
+            sidecar = payload["provider"].get("sidecar") or {}
+            self.stdout.write(
+                f"runtime: available={runtime.get('available')} error={runtime.get('error') or '-'}"
+            )
+            self.stdout.write(
+                f"sidecar: configured={sidecar.get('configured')} available={sidecar.get('available')} base_url={sidecar.get('base_url') or '-'} error={sidecar.get('error') or '-'}"
+            )
+            return
+
+        if not options["url"]:
+            raise CommandError("URL is required unless --health is used.")
+
         adapter = DouyinAdapter()
         context = adapter.build_parse_context(options["url"])
         sources = []
@@ -123,3 +152,51 @@ class Command(BaseCommand):
                         error=candidate["error"] or "-",
                     )
                 )
+
+
+def build_provider_health_payload():
+    provider_settings = get_platform_provider_settings("douyin")
+    health = get_kukutool_provider_health()
+    issues = []
+    if provider_settings.ultra_hd_enabled and not health.get("available"):
+        issues.append({
+            "code": "kukutool_not_available",
+            "message": "Ultra-HD is enabled but KuKuTool is not available.",
+        })
+    if (
+        provider_settings.kukutool_enabled
+        and not provider_settings.kukutool_node_binary
+        and not provider_settings.kukutool_sidecar_base_url
+        and not health.get("available")
+    ):
+        issues.append({
+            "code": "no_kukutool_runtime_configured",
+            "message": "No KUKUTOOL_NODE_BINARY or KUKUTOOL_SIDECAR_BASE_URL is configured.",
+        })
+    return {
+        "ok": not issues,
+        "settings": {
+            "ultra_hd_enabled": provider_settings.ultra_hd_enabled,
+            "kukutool_enabled": provider_settings.kukutool_enabled,
+            "provider_order": provider_settings.provider_order,
+            "enabled_provider_order": provider_settings.enabled_provider_order,
+            "kukutool_sidecar_configured": bool(
+                provider_settings.kukutool_sidecar_base_url
+            ),
+            "kukutool_sidecar_base_url": (
+                provider_settings.kukutool_sidecar_base_url
+            ),
+            "kukutool_node_binary_configured": bool(
+                provider_settings.kukutool_node_binary
+            ),
+            "ultra_total_timeout_seconds": (
+                provider_settings.ultra_total_timeout_seconds
+            ),
+            "kukutool_timeout_seconds": provider_settings.kukutool_timeout_seconds,
+            "kukutool_sidecar_timeout_seconds": (
+                provider_settings.kukutool_sidecar_timeout_seconds
+            ),
+        },
+        "provider": health,
+        "issues": issues,
+    }

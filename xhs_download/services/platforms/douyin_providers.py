@@ -603,6 +603,7 @@ def build_external_parse_result(
                 provider_resource_id=context.aweme_id,
                 provider_cache_key=provider_cache_key,
                 url=candidate.url,
+                media_type="video",
             ),
         )
     return ParseResult(

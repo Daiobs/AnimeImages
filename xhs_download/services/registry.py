@@ -1,7 +1,4 @@
-import re
-from urllib.parse import urlparse
-
-from .common import XhsParseError
+from .common import XhsParseError, extract_url_from_text
 from .platforms import (
     BilibiliAdapter,
     DouyinAdapter,
@@ -16,20 +13,6 @@ DEFAULT_ADAPTERS = (
     BilibiliAdapter(),
     GenericThirdPartyAdapter(),
 )
-
-
-URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+")
-TRAILING_URL_CHARS = "，,。；;！!？?）)]】》"
-
-
-def extract_url_from_text(value):
-    value = (value or "").strip()
-    match = URL_PATTERN.search(value)
-    candidate = match.group(0).rstrip(TRAILING_URL_CHARS) if match else value
-    parsed = urlparse(candidate)
-    if parsed.scheme in {"http", "https"} and parsed.hostname:
-        return candidate
-    return value
 
 
 class PlatformRegistry:

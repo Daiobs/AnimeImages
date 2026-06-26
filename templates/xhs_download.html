@@ -13,7 +13,7 @@
 
 {% block content %}
     <section
-            class="xhs-download-page {{ theme_class|default:'theme-home' }}{% if image_items or video_items or error_message %} has-results{% endif %}"
+            class="xhs-download-page {{ theme_class|default:'theme-home' }}{% if image_items or video_items or error_message or platform_notice or provider_notice %} has-results{% endif %}"
             data-download-url="{{ download_url }}"
             data-download-task-url="{{ download_task_url }}"
             data-download-async-enabled="{{ download_async_tasks_enabled|yesno:'true,false' }}"

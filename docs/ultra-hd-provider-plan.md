@@ -50,6 +50,9 @@ DOUYIN_NATIVE_EXECUTOR_WORKERS=4
 DOUYIN_NATIVE_MAX_PENDING_TASKS=8
 KUKUTOOL_PROVIDER_ENABLED=False
 KUKUTOOL_NODE_BINARY=
+KUKUTOOL_SIDECAR_BASE_URL=
+KUKUTOOL_SIDECAR_TIMEOUT_SECONDS=3.0
+KUKUTOOL_SIDECAR_HEALTH_TIMEOUT_SECONDS=0.5
 KUKUTOOL_TIMEOUT_SECONDS=12.0
 KUKUTOOL_PROBE_TIMEOUT_SECONDS=2.0
 KUKUTOOL_MAX_PROBE_CANDIDATES=2
@@ -78,7 +81,7 @@ The default request path uses only `native`. Ultra mode starts native and KuKuTo
 
 Short-link resolution stops as soon as any validated Douyin redirect URL exposes an `aweme_id`, including the common first-hop `iesdouyin.com/share/video/{id}` URL. It does not fetch the subsequent desktop video page before starting provider work.
 
-The provider requires Node.js 18 or newer. Production defaults the provider to disabled and requires an explicit `KUKUTOOL_NODE_BINARY`; system Node and the Codex runtime are development-only fallbacks under `DEBUG=True`. Runtime validation happens during Django startup, never while rendering a user page. Bounded executor queues prevent unbounded subprocess backlog. Redis single-flight deduplicates each `aweme_id`, while global concurrency, request-rate limits, a circuit breaker, and a staff kill switch constrain total upstream work. Child processes receive a minimal environment. Successful dynamic profiles are cached across helper processes. Discovery reads at most a bounded homepage and six bounded scripts, and all helper redirects remain on the exact KuKuTool origin.
+The provider can use a direct Node helper or an internal `douyin-source-resolver` sidecar. Direct helper mode requires Node.js 18 or newer. Production defaults the provider to disabled and requires either an explicit `KUKUTOOL_NODE_BINARY` or `KUKUTOOL_SIDECAR_BASE_URL`; system Node and the Codex runtime are development-only fallbacks under `DEBUG=True`. Runtime validation happens during Django startup, while sidecar health is checked through a short cached `/health` probe. If the sidecar fails inside the active request budget, direct-helper fallback receives only the remaining budget so the foreground parse deadline remains bounded. Bounded executor queues prevent unbounded subprocess backlog. Redis single-flight deduplicates each `aweme_id`, while global concurrency, request-rate limits, a circuit breaker, and a staff kill switch constrain total upstream work. Child processes receive a minimal environment. Successful dynamic profiles are cached across helper processes. Discovery reads at most a bounded homepage and six bounded scripts, and all helper redirects remain on the exact KuKuTool origin.
 
 Local CLI measurement on 2026-06-12 for aweme `7647533902413173321` returned a 67.22MB KuKuTool candidate in 1.915 seconds on a cold request and 0.505 seconds from validated cache. The same test previously fell back to 3.82MB 1080p because a two-second Range probe narrowly timed out; direct acceptance of complete structured metadata removed that incorrect downgrade.
 

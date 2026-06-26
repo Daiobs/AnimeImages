@@ -1,13 +1,17 @@
 from io import BytesIO
 import json
+import os
 import time
 from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
+from urllib.parse import parse_qs
 from unittest.mock import Mock, patch
 from zipfile import ZipFile
 
 import requests
 from django.core.cache import cache
+from django.core.checks import run_checks
+from django.template.loader import render_to_string
 from django.test import Client, RequestFactory, SimpleTestCase, TestCase, override_settings
 from PIL import Image
 
@@ -48,6 +52,7 @@ from .services.provider_settings import (
     normalize_provider_order,
 )
 from .services.provider_manifest import build_provider_manifest_token
+from .views import build_provider_preview_query
 from .services.quality import QualityProbe, QualityProbeResult
 from .services.rate_limits import (
     get_client_identity,
@@ -63,17 +68,30 @@ from .services.platforms import (
     BasePlatformAdapter,
     BilibiliAdapter,
     DouyinAdapter,
+    GalleryDlGenericProvider,
     GenericThirdPartyAdapter,
-    KukutoolGenericProvider,
-    KukutoolResultNormalizer,
     XiaohongshuAdapter,
+    YtDlpGenericProvider,
 )
-from .services.platforms.kukutool_generic import source_key_for_url
+from .services.platforms.external_tools import (
+    effective_external_timeout_seconds,
+    external_command_health,
+    external_failure_cache_key,
+    external_payload_cache_key,
+    probe_external_command_version,
+    run_external_command,
+    safe_subprocess_env,
+)
+from .services.platforms.third_party import third_party_media_url_is_allowed
 from .services.platforms.bilibili import BILIBILI_HEADERS
 from .services.platforms.douyin import DOUYIN_HEADERS, extract_aweme_id, get_video_candidates
 from .services.platforms.douyin_kukutool import (
     DouyinKukuToolProvider,
     build_kukutool_cache_key,
+)
+from .services.platforms.kukutool_generic import (
+    build_failure_cache_key as build_generic_kukutool_failure_cache_key,
+    build_payload_cache_key as build_generic_kukutool_payload_cache_key,
 )
 from .services.provider_recovery import iter_kukutool_download_recovery_urls
 from .services.platforms.douyin_providers import (
@@ -125,20 +143,26 @@ def make_kukutool_download_item(url, aweme_id="7647533902413173321"):
     return item
 
 
-def make_third_party_download_item(url, platform="kuaishou", source_key="abc123", media_type="image"):
+def make_third_party_download_item(
+    url,
+    platform="kuaishou",
+    source_key="abc123",
+    media_type="image",
+    provider="kukutool_generic",
+):
     asset_id = f"third_party:{platform}:{source_key}:{media_type}:1"
-    cache_key = f"third_party:kukutool_generic:{source_key}"
+    cache_key = f"third_party:{provider}:{source_key}"
     item = {
         "type": media_type,
         "url": url,
         "asset_id": asset_id,
-        "provider": "kukutool_generic",
+        "provider": provider,
         "provider_resource_id": source_key,
         "provider_cache_key": cache_key,
     }
     item["provider_manifest_token"] = build_provider_manifest_token(
         asset_id=asset_id,
-        provider="kukutool_generic",
+        provider=provider,
         provider_resource_id=source_key,
         provider_cache_key=cache_key,
         url=url,
@@ -216,6 +240,43 @@ class XhsUtilityTests(SimpleTestCase):
         validate_media_url("https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/video.mp4")
         validate_media_url("https://i0.hdslb.com/bfs/archive/cover.jpg")
 
+    def test_third_party_media_hosts_are_allowed_only_for_signed_provider_paths(self):
+        allowed_cases = (
+            ("youtube", "https://rr1---sn.googlevideo.com/videoplayback?itag=22"),
+            ("youtube", "https://i.ytimg.com/vi/demo/maxresdefault.jpg"),
+            ("x", "https://video.twimg.com/ext_tw_video/demo/pu/vid/720x720/video.mp4"),
+            ("imgur", "https://i.imgur.com/demo.jpg"),
+            ("reddit", "https://preview.redd.it/demo.jpg"),
+            ("flickr", "https://live.staticflickr.com/65535/demo_o.jpg"),
+            ("deviantart", "https://images-wixmp.example.wixmp.com/f/demo.jpg"),
+        )
+
+        for platform_id, media_url in allowed_cases:
+            with self.subTest(platform_id=platform_id, media_url=media_url):
+                self.assertTrue(third_party_media_url_is_allowed(platform_id, media_url))
+                with self.assertRaises(XhsSecurityError):
+                    validate_media_url(media_url)
+
+    def test_third_party_media_host_allowlist_is_platform_scoped(self):
+        self.assertFalse(
+            third_party_media_url_is_allowed(
+                "youtube",
+                "https://i.imgur.com/demo.jpg",
+            )
+        )
+        self.assertFalse(
+            third_party_media_url_is_allowed(
+                "imgur",
+                "https://rr1---sn.googlevideo.com/videoplayback?itag=22",
+            )
+        )
+        self.assertFalse(
+            third_party_media_url_is_allowed(
+                "reddit",
+                "https://evil.example.com/demo.jpg",
+            )
+        )
+
     @patch(
         "xhs_download.services.common.socket.getaddrinfo",
         return_value=[(None, None, None, "", ("10.0.0.5", 443))],
@@ -231,6 +292,134 @@ class XhsUtilityTests(SimpleTestCase):
     def test_validate_public_download_url_rejects_invalid_port(self):
         with self.assertRaises(XhsSecurityError):
             validate_public_download_url("https://cdn.example.com:notaport/a.jpg")
+
+    @patch("xhs_download.services.platforms.external_tools.subprocess.run")
+    def test_external_command_version_probe_uses_short_cache(self, mock_run):
+        cache.clear()
+
+        def fake_run(_args, **kwargs):
+            kwargs["stdout"].write(b"tool 1.0\n")
+            return Mock(returncode=0)
+
+        mock_run.side_effect = fake_run
+        command = ("python", "-m", "demo_tool")
+
+        first = probe_external_command_version(command, cache_seconds=60)
+        second = probe_external_command_version(command, cache_seconds=60)
+
+        self.assertTrue(first["version_probe_ok"])
+        self.assertEqual(second, first)
+        mock_run.assert_called_once()
+
+    @override_settings(THIRD_PARTY_EXTERNAL_OUTPUT_MAX_BYTES=8)
+    @patch("xhs_download.services.platforms.external_tools.subprocess.run")
+    def test_external_command_version_probe_rejects_oversized_output(self, mock_run):
+        cache.clear()
+
+        def fake_run(_args, **kwargs):
+            kwargs["stdout"].write(b"x" * 2048)
+            return Mock(returncode=0)
+
+        mock_run.side_effect = fake_run
+
+        result = probe_external_command_version(
+            ("python", "-m", "demo_tool"),
+            cache_seconds=0,
+        )
+
+        self.assertFalse(result["version_probe_ok"])
+        self.assertIn("output exceeded", result["error"])
+
+    @patch("xhs_download.services.platforms.external_tools.os.path.exists", return_value=True)
+    @patch("xhs_download.services.platforms.external_tools.subprocess.run")
+    def test_external_command_runs_in_isolated_workdir(
+        self,
+        mock_run,
+        _mock_exists,
+    ):
+        def fake_run(_args, **kwargs):
+            kwargs["stdout"].write(b"ok")
+            return Mock(returncode=0)
+
+        mock_run.side_effect = fake_run
+
+        result = run_external_command(
+            [".venv/bin/python", "-m", "demo_tool"],
+            timeout_seconds=1,
+        )
+
+        args = mock_run.call_args.args[0]
+        kwargs = mock_run.call_args.kwargs
+        env = kwargs["env"]
+        self.assertEqual(result.stdout, "ok")
+        self.assertTrue(os.path.isabs(args[0]))
+        self.assertEqual(kwargs["cwd"], env["HOME"])
+        self.assertIn("xhs_external_tool_", env["HOME"])
+        self.assertNotEqual(env["HOME"], safe_subprocess_env()["HOME"])
+        self.assertNotIn("DJANGO_SECRET_KEY", env)
+        self.assertEqual(env["YTDLP_NO_PLUGINS"], "1")
+        self.assertEqual(env["PYTHONNOUSERSITE"], "1")
+
+    @patch("xhs_download.services.platforms.external_tools.os.access", return_value=True)
+    def test_external_command_health_resolves_relative_path_to_absolute(
+        self,
+        _mock_access,
+    ):
+        with TemporaryDirectory() as temp_dir:
+            binary_path = Path(temp_dir) / "bin" / "demo-tool"
+            binary_path.parent.mkdir()
+            binary_path.write_text("#!/bin/sh\n", encoding="utf-8")
+            relative_binary = os.path.relpath(binary_path, Path.cwd())
+
+            health = external_command_health(
+                f"{relative_binary} --json",
+                "demo-tool",
+            )
+
+        self.assertTrue(health["binary_configured"])
+        self.assertEqual(health["executable"], relative_binary)
+        self.assertEqual(health["resolved_executable"], str(binary_path))
+        self.assertTrue(health["executable_found"])
+
+    def test_safe_subprocess_env_does_not_inherit_application_secrets(self):
+        with patch.dict(
+            os.environ,
+            {
+                "PATH": "/usr/local/bin:/usr/bin",
+                "HOME": "/Users/tester",
+                "LANG": "zh_CN.UTF-8",
+                "DJANGO_SECRET_KEY": "django-secret",
+                "TIKHUB_API_KEY": "tikhub-secret",
+                "DATABASE_URL": "postgres://secret",
+                "DJANGO_CACHE_URL": "redis://secret",
+            },
+            clear=False,
+        ):
+            env = safe_subprocess_env()
+
+        self.assertEqual(
+            env,
+            {
+                "PATH": "/usr/local/bin:/usr/bin",
+                "HOME": "/Users/tester",
+                "LANG": "zh_CN.UTF-8",
+                "PYTHONNOUSERSITE": "1",
+                "YTDLP_NO_PLUGINS": "1",
+            },
+        )
+        self.assertNotIn("DJANGO_SECRET_KEY", env)
+        self.assertNotIn("TIKHUB_API_KEY", env)
+        self.assertNotIn("DATABASE_URL", env)
+        self.assertNotIn("DJANGO_CACHE_URL", env)
+
+    @override_settings(THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS=3.0)
+    def test_effective_external_timeout_caps_provider_timeout(self):
+        self.assertEqual(effective_external_timeout_seconds(15.0), 3.0)
+        self.assertEqual(effective_external_timeout_seconds(2.0), 2.0)
+
+    @override_settings(THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS=0)
+    def test_effective_external_timeout_uses_default_for_zero_frontend_budget(self):
+        self.assertEqual(effective_external_timeout_seconds(15.0), 3.0)
 
     @patch(
         "xhs_download.services.common.socket.getaddrinfo",
@@ -263,6 +452,11 @@ class XhsUtilityTests(SimpleTestCase):
         self.assertEqual(mock_get.call_count, 2)
         redirect_response.close.assert_called_once()
 
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+        YTDLP_PROVIDER_ENABLED=True,
+    )
     @patch(
         "xhs_download.services.common.socket.getaddrinfo",
         return_value=[(None, None, None, "", ("93.184.216.34", 443))],
@@ -287,6 +481,89 @@ class XhsUtilityTests(SimpleTestCase):
 
         self.assertEqual(mock_get.call_count, 1)
         redirect_response.close.assert_called_once()
+
+    @patch(
+        "xhs_download.services.common.socket.getaddrinfo",
+        return_value=[(None, None, None, "", ("93.184.216.34", 443))],
+    )
+    @patch("xhs_download.services.downloads.requests.get")
+    def test_signed_external_provider_download_invalidates_payload_cache_on_http_error(
+        self,
+        mock_get,
+        _mock_dns,
+    ):
+        source_key = "imgur-source"
+        media_url = "https://i.imgur.com/demo.jpg"
+        provider_item = make_third_party_download_item(
+            media_url,
+            platform="imgur",
+            source_key=source_key,
+            media_type="image",
+            provider="gallery_dl_generic",
+        )
+        cache_key = external_payload_cache_key("gallery_dl_generic", source_key)
+        cache.set(cache_key, {"title": "stale gallery payload"}, timeout=60)
+        failed_response = Mock(
+            status_code=403,
+            headers={},
+            url=media_url,
+        )
+        failed_response.close = Mock()
+        mock_get.return_value = failed_response
+
+        with self.assertRaises(XhsDownloadError):
+            fetch_item_to_temp_path(
+                provider_item,
+                timeout=1,
+                expected_type="image",
+            )
+
+        self.assertIsNone(cache.get(cache_key))
+        self.assertEqual(mock_get.call_count, 3)
+        self.assertEqual(failed_response.close.call_count, 3)
+
+    @patch(
+        "xhs_download.services.common.socket.getaddrinfo",
+        return_value=[(None, None, None, "", ("93.184.216.34", 443))],
+    )
+    @patch("xhs_download.services.downloads.requests.get")
+    def test_signed_kukutool_generic_download_invalidates_payload_cache_on_http_error(
+        self,
+        mock_get,
+        _mock_dns,
+    ):
+        source_key = "tiktok-source"
+        media_url = "https://v16.tiktokcdn.com/video/demo.mp4"
+        provider_item = make_third_party_download_item(
+            media_url,
+            platform="tiktok",
+            source_key=source_key,
+            media_type="video",
+            provider="kukutool_generic",
+        )
+        payload_cache_key = build_generic_kukutool_payload_cache_key(source_key)
+        failure_cache_key = build_generic_kukutool_failure_cache_key(source_key)
+        cache.set(payload_cache_key, {"title": "stale kukutool payload"}, timeout=60)
+        cache.set(failure_cache_key, "TimeoutError", timeout=60)
+        failed_response = Mock(
+            status_code=403,
+            headers={},
+            url=media_url,
+        )
+        failed_response.close = Mock()
+        mock_get.return_value = failed_response
+
+        with self.assertRaises(XhsDownloadError):
+            fetch_item_to_temp_path(
+                provider_item,
+                timeout=1,
+                expected_type="video",
+            )
+
+        self.assertIsNone(cache.get(payload_cache_key))
+        self.assertIsNone(cache.get(failure_cache_key))
+        self.assertEqual(mock_get.call_count, 3)
+        self.assertEqual(failed_response.close.call_count, 3)
 
     def test_dedupe_candidates_preserves_first_occurrence(self):
         candidates = dedupe_candidates([
@@ -659,214 +936,27 @@ class XhsParserTests(SimpleTestCase):
         }
         self.assertIn("tiktok", third_party_rules)
         self.assertIn("instagram", third_party_rules)
+        self.assertIn("imgur", third_party_rules)
+        third_party_rules_by_id = {
+            rule["platform_id"]: rule
+            for rule in platforms["third_party"]["platform_rules"]
+        }
+        self.assertEqual(
+            third_party_rules_by_id["youtube"]["provider_ids"],
+            ("yt_dlp_generic", "kukutool_generic"),
+        )
+        self.assertEqual(
+            third_party_rules_by_id["tiktok"]["provider_ids"],
+            ("kukutool_generic", "yt_dlp_generic", "gallery_dl_generic"),
+        )
+        self.assertEqual(
+            third_party_rules_by_id["imgur"]["provider_ids"],
+            ("kukutool_generic", "gallery_dl_generic"),
+        )
         self.assertEqual(
             platforms["third_party"]["provider_policy"]["third_party_providers"],
-            ("kukutool_generic",),
+            ("kukutool_generic", "gallery_dl_generic", "yt_dlp_generic"),
         )
-
-    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=False)
-    def test_generic_third_party_parse_reports_provider_disabled(self):
-        with self.assertRaisesRegex(XhsParseError, "Provider"):
-            parse_media_page("https://www.instagram.com/p/example/")
-
-    @override_settings(
-        THIRD_PARTY_PROVIDER_ENABLED=True,
-        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
-    )
-    def test_generic_third_party_parse_returns_signed_video_asset(self):
-        runner = Mock(return_value={
-            "title": "demo post",
-            "cover": "https://scontent.cdninstagram.com/cover.jpg",
-            "videos": [
-                {
-                    "video_fullinfo": [
-                        {
-                            "url": "https://scontent.cdninstagram.com/low.mp4",
-                            "size": 100,
-                            "type": "540p",
-                        },
-                        {
-                            "url": "https://scontent.cdninstagram.com/high.mp4",
-                            "size": 200,
-                            "type": "1080p",
-                        },
-                    ],
-                }
-            ],
-        })
-
-        result = GenericThirdPartyAdapter(runner=runner).parse_url(
-            "https://www.instagram.com/p/example/"
-        )
-
-        self.assertEqual(result.platform, "third_party")
-        self.assertEqual(result.post_type, "video")
-        self.assertEqual(result.metadata["source_platform"], "instagram")
-        self.assertEqual(result.video_assets[0].url, "https://scontent.cdninstagram.com/high.mp4")
-        self.assertEqual(result.video_assets[0].provider, "kukutool_generic")
-        self.assertTrue(result.video_assets[0].provider_manifest_token)
-        runner.assert_called_once()
-
-    def test_kukutool_normalizer_returns_standard_video_result(self):
-        rule = GenericThirdPartyAdapter().get_rule_for_url(
-            "https://www.kuaishou.com/short-video/3xvxtmcc2r22c6i"
-        )
-        payload = {
-            "title": "kuaishou post",
-            "cover": "https://p1.a.yximgs.com/cover.jpg",
-            "videos": ["https://hwmov.a.kwimgs.com/demo.mp4"],
-            "pics": ["https://p1.a.yximgs.com/cover.jpg"],
-        }
-
-        result = KukutoolResultNormalizer().normalize(
-            rule=rule,
-            platform_name="快手",
-            source_url="https://www.kuaishou.com/short-video/3xvxtmcc2r22c6i",
-            payload=payload,
-        )
-
-        self.assertEqual(result.platform, "third_party")
-        self.assertEqual(result.post_type, "video")
-        self.assertEqual(result.metadata["source_provider"], "kukutool_generic")
-        self.assertEqual(result.video_assets[0].url, payload["videos"][0])
-        self.assertEqual(result.video_assets[0].cover_url, payload["cover"])
-        self.assertTrue(result.video_assets[0].provider_manifest_token)
-
-    def test_kukutool_normalizer_returns_standard_image_result(self):
-        rule = GenericThirdPartyAdapter().get_rule_for_url(
-            "https://www.instagram.com/p/example/"
-        )
-        payload = {
-            "title": "image post",
-            "pics": [
-                "https://scontent.cdninstagram.com/image-1.jpg",
-                "https://scontent.cdninstagram.com/image-2.jpg",
-            ],
-        }
-
-        result = KukutoolResultNormalizer().normalize(
-            rule=rule,
-            platform_name="Instagram",
-            source_url="https://www.instagram.com/p/example/",
-            payload=payload,
-        )
-
-        self.assertEqual(result.post_type, "image")
-        self.assertEqual(len(result.image_assets), 2)
-        self.assertEqual(result.image_assets[0].provider, "kukutool_generic")
-        self.assertTrue(result.image_assets[0].provider_manifest_token)
-
-    def test_kukutool_normalizer_rejects_unlisted_media_host(self):
-        rule = GenericThirdPartyAdapter().get_rule_for_url(
-            "https://www.instagram.com/p/example/"
-        )
-
-        with self.assertRaisesRegex(ValueError, "media assets"):
-            KukutoolResultNormalizer().normalize(
-                rule=rule,
-                platform_name="Instagram",
-                source_url="https://www.instagram.com/p/example/",
-                payload={"videos": ["https://evil.example.com/video.mp4"]},
-            )
-
-    def test_kukutool_normalizer_logs_rejected_host_without_query(self):
-        rule = GenericThirdPartyAdapter().get_rule_for_url(
-            "https://www.instagram.com/p/example/"
-        )
-
-        with self.assertLogs(
-            "xhs_download.services.platforms.kukutool_generic",
-            level="WARNING",
-        ) as logs:
-            with self.assertRaisesRegex(ValueError, "media assets"):
-                KukutoolResultNormalizer().normalize(
-                    rule=rule,
-                    platform_name="Instagram",
-                    source_url="https://www.instagram.com/p/example/",
-                    payload={
-                        "videos": [
-                            "https://evil.example.com/video.mp4?token=secret"
-                        ]
-                    },
-                )
-
-        output = "\n".join(logs.output)
-        self.assertIn("third_party_provider_url_rejected", output)
-        self.assertIn("platform=instagram", output)
-        self.assertIn("host=evil.example.com", output)
-        self.assertIn("reason=host_not_allowed", output)
-        self.assertNotIn("token=secret", output)
-
-    def test_third_party_source_key_ignores_common_tracking_query(self):
-        first = source_key_for_url(
-            "https://www.kuaishou.com/short-video/3xvxtmcc2r22c6i"
-            "?authorId=1&streamSource=find&area=home&utm_source=share"
-        )
-        second = source_key_for_url(
-            "https://www.kuaishou.com/short-video/3xvxtmcc2r22c6i"
-            "?authorId=2&streamSource=profile&area=detail&utm_source=copy"
-        )
-
-        self.assertEqual(first, second)
-
-    @override_settings(
-        THIRD_PARTY_PROVIDER_ENABLED=True,
-        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
-    )
-    def test_generic_third_party_parse_accepts_string_video_entries(self):
-        media_url = "https://hwmov.a.kwimgs.com/demo.mp4"
-        runner = Mock(return_value={
-            "title": "kuaishou post",
-            "cover": "https://p1.a.yximgs.com/cover.jpg",
-            "videos": [media_url],
-            "pics": ["https://p1.a.yximgs.com/cover.jpg"],
-        })
-
-        result = GenericThirdPartyAdapter(runner=runner).parse_url(
-            "https://www.kuaishou.com/short-video/3xvxtmcc2r22c6i"
-        )
-
-        self.assertEqual(result.post_type, "video")
-        self.assertEqual(result.metadata["source_platform"], "kuaishou")
-        self.assertEqual(result.video_assets[0].url, media_url)
-        self.assertEqual(result.video_assets[0].quality_label, "video")
-        self.assertEqual(result.video_assets[0].provider, "kukutool_generic")
-        self.assertTrue(result.video_assets[0].provider_manifest_token)
-
-    @override_settings(THIRD_PARTY_KUKUTOOL_RETRIES=2)
-    def test_kukutool_generic_provider_retries_transient_failure(self):
-        runner = Mock(side_effect=[
-            OSError("parse failed (500): retry"),
-            {
-                "title": "retry post",
-                "videos": ["https://scontent.cdninstagram.com/video.mp4"],
-            },
-        ])
-
-        payload = KukutoolGenericProvider(runner=runner).parse(
-            "https://www.instagram.com/p/example/"
-        )
-
-        self.assertEqual(payload["title"], "retry post")
-        self.assertEqual(runner.call_count, 2)
-
-    @override_settings(
-        THIRD_PARTY_PROVIDER_ENABLED=True,
-        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
-    )
-    def test_generic_third_party_adapter_delegates_to_provider_and_normalizer(self):
-        provider = Mock()
-        provider.parse.return_value = {
-            "title": "delegated post",
-            "videos": ["https://scontent.cdninstagram.com/video.mp4"],
-        }
-        normalizer = KukutoolResultNormalizer()
-        adapter = GenericThirdPartyAdapter(provider=provider, normalizer=normalizer)
-
-        result = adapter.parse_url("https://www.instagram.com/p/example/")
-
-        self.assertEqual(result.post_type, "video")
-        provider.parse.assert_called_once_with("https://www.instagram.com/p/example/")
 
     def test_registry_uses_adapter_parse_entrypoint(self):
         class FakeAdapter(BasePlatformAdapter):
@@ -2681,6 +2771,51 @@ class XhsDownloadArchiveTests(SimpleTestCase):
                 expected_type="video",
             )
 
+    @patch("xhs_download.services.downloads.fetch_to_temp_path")
+    def test_signed_external_video_download_failure_clears_payload_and_failure_cache(
+        self,
+        mock_fetch,
+    ):
+        media_url = "https://rr1---sn.googlevideo.com/videoplayback?itag=22"
+        asset_id = "third_party:youtube:abc123:video:1"
+        provider_cache_key = "third_party:yt_dlp_generic:abc123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="yt_dlp_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+            media_type="video",
+        )
+        item = {
+            "type": "video",
+            "url": media_url,
+            "asset_id": asset_id,
+            "provider": "yt_dlp_generic",
+            "provider_resource_id": provider_resource_id,
+            "provider_cache_key": provider_cache_key,
+            "provider_manifest_token": token,
+        }
+        payload_cache_key = external_payload_cache_key(
+            "yt_dlp_generic",
+            provider_resource_id,
+        )
+        failure_cache_key = external_failure_cache_key(
+            "yt_dlp_generic",
+            provider_resource_id,
+        )
+        cache.set(payload_cache_key, {"title": "stale ytdlp payload"}, timeout=60)
+        cache.set(failure_cache_key, "TimeoutError", timeout=60)
+        mock_fetch.side_effect = XhsDownloadError("HTTP 403")
+
+        with self.assertRaisesRegex(XhsDownloadError, "HTTP 403"):
+            fetch_item_to_temp_path(item, expected_type="video")
+
+        self.assertIsNone(cache.get(payload_cache_key))
+        self.assertIsNone(cache.get(failure_cache_key))
+        self.assertTrue(mock_fetch.call_args.kwargs["provider_signed"])
+
     @override_settings(
         ULTRA_HD_PROVIDER_ENABLED=True,
         KUKUTOOL_PROVIDER_ENABLED=True,
@@ -2770,6 +2905,59 @@ class XhsDownloadArchiveTests(SimpleTestCase):
         self.assertEqual(archive["saved_count"], 1)
         self.assertEqual(archive["failed_count"], 0)
 
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+        YTDLP_PROVIDER_ENABLED=True,
+    )
+    @patch(
+        "xhs_download.services.common.socket.getaddrinfo",
+        return_value=[(None, None, None, "", ("93.184.216.34", 443))],
+    )
+    @patch("xhs_download.services.downloads.requests.get")
+    def test_build_download_archive_accepts_signed_ytdlp_video_url(
+        self,
+        mock_get,
+        _mock_getaddrinfo,
+    ):
+        media_url = "https://rr1---sn.googlevideo.com/videoplayback?itag=18"
+        content = b"video-bytes"
+        response = FakeStreamingResponse(
+            content,
+            url=media_url,
+            content_type="video/mp4",
+        )
+        response.status_code = 200
+        mock_get.return_value = response
+        result = GenericThirdPartyAdapter(
+            provider=Mock(parse=Mock(side_effect=RuntimeError("kukutool failed"))),
+            ytdlp_provider=Mock(parse=Mock(return_value={
+                "title": "yt archive demo",
+                "formats": [
+                    {
+                        "url": media_url,
+                        "protocol": "https",
+                        "ext": "mp4",
+                        "vcodec": "avc1.4d401f",
+                        "acodec": "mp4a.40.2",
+                        "height": 360,
+                        "filesize": len(content),
+                    }
+                ],
+            })),
+        ).parse_url("https://www.youtube.com/watch?v=demo")
+        item = result.video_assets[0].to_download_item()
+
+        archive = build_download_archive(
+            media_items=[item],
+            base_filename=result.base_filename,
+        )
+
+        with ZipFile(BytesIO(archive["content"])) as zip_file:
+            self.assertEqual(zip_file.read("yt archive demo_1.mp4"), content)
+        self.assertEqual(archive["saved_count"], 1)
+        self.assertEqual(archive["failed_count"], 0)
+
     def test_resolve_server_save_folder_rejects_absolute_when_disabled(self):
         absolute_path = Path(Path.cwd().anchor) / "tmp" / "xhs"
         with self.assertRaisesMessage(Exception, "当前环境不允许保存到绝对路径"):
@@ -2785,6 +2973,7 @@ class XhsDownloadArchiveTests(SimpleTestCase):
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,
         THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+        THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=True,
     )
     @patch(
         "xhs_download.services.common.socket.getaddrinfo",
@@ -2829,6 +3018,7 @@ class XhsDownloadArchiveTests(SimpleTestCase):
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,
         THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+        THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=True,
     )
     @patch(
         "xhs_download.services.common.socket.getaddrinfo",
@@ -2877,6 +3067,7 @@ class XhsDownloadArchiveTests(SimpleTestCase):
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,
         THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+        THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=True,
     )
     def test_signed_generic_provider_url_override_does_not_reuse_original_manifest(self):
         media_url = "https://scontent.cdninstagram.com/image.jpg"
@@ -2939,6 +3130,21 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertContains(response, "css/app.css?v=")
         self.assertContains(response, "js/xhs_download.js?v=")
         self.assertContains(response, "data-download-task-url")
+
+    def test_download_page_marks_provider_notice_as_result_content(self):
+        html = render_to_string(
+            "xhs_download.html",
+            {
+                "theme_class": "theme-home",
+                "provider_notice": "本次由 yt-dlp 第三方解析。",
+                "image_items": [],
+                "video_items": [],
+                "download_async_tasks_enabled": False,
+            },
+        )
+
+        self.assertIn("xhs-download-page theme-home has-results", html)
+        self.assertIn("本次由 yt-dlp 第三方解析。", html)
 
     @override_settings(
         PREVIEW_RATE_LIMIT_PER_MINUTE=1,
@@ -3022,6 +3228,245 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertEqual(response["Content-Type"], "image/jpeg")
         self.assertTrue(mock_fetch.call_args.kwargs["provider_signed"])
 
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_allows_signed_ytdlp_youtube_cover_url(self, mock_fetch):
+        media_url = "https://i.ytimg.com/vi/demo/maxresdefault.jpg"
+        asset_id = "third_party:youtube:abc123:video:1:cover"
+        provider_cache_key = "third_party:yt_dlp_generic:abc123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="yt_dlp_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+        )
+        mock_fetch.return_value = FakeStreamingResponse(
+            make_image_bytes(),
+            url=media_url,
+            content_type="image/jpeg",
+        )
+
+        response = Client().get(
+            "/media/proxy-image/",
+            {
+                "u": encode_url(media_url),
+                "asset_id": asset_id,
+                "provider": "yt_dlp_generic",
+                "provider_resource_id": provider_resource_id,
+                "provider_cache_key": provider_cache_key,
+                "provider_manifest_token": token,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/jpeg")
+        self.assertTrue(mock_fetch.call_args.kwargs["provider_signed"])
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_rejects_tampered_signed_provider_url(self, mock_fetch):
+        media_url = "https://i.ytimg.com/vi/demo/maxresdefault.jpg"
+        asset_id = "third_party:youtube:abc123:video:1:cover"
+        provider_cache_key = "third_party:yt_dlp_generic:abc123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="yt_dlp_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+        )
+
+        response = Client().get(
+            "/media/proxy-image/",
+            {
+                "u": encode_url("https://evil.example.com/cover.jpg"),
+                "asset_id": asset_id,
+                "provider": "yt_dlp_generic",
+                "provider_resource_id": provider_resource_id,
+                "provider_cache_key": provider_cache_key,
+                "provider_manifest_token": token,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/svg+xml")
+        mock_fetch.assert_not_called()
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_invalidates_signed_external_payload_cache_on_non_image_response(
+        self,
+        mock_fetch,
+    ):
+        media_url = "https://i.ytimg.com/vi/demo/maxresdefault.jpg"
+        asset_id = "third_party:youtube:abc123:video:1:cover"
+        provider_cache_key = "third_party:yt_dlp_generic:abc123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="yt_dlp_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+        )
+        cache_key = external_payload_cache_key("yt_dlp_generic", provider_resource_id)
+        failure_cache_key = external_failure_cache_key(
+            "yt_dlp_generic",
+            provider_resource_id,
+        )
+        cache.set(cache_key, {"title": "stale ytdlp payload"}, timeout=60)
+        cache.set(failure_cache_key, "TimeoutError", timeout=60)
+        mock_fetch.return_value = FakeStreamingResponse(
+            b"<html>blocked</html>",
+            url=media_url,
+            content_type="text/html",
+        )
+
+        response = Client().get(
+            "/media/proxy-image/",
+            {
+                "u": encode_url(media_url),
+                "asset_id": asset_id,
+                "provider": "yt_dlp_generic",
+                "provider_resource_id": provider_resource_id,
+                "provider_cache_key": provider_cache_key,
+                "provider_manifest_token": token,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/svg+xml")
+        self.assertIsNone(cache.get(cache_key))
+        self.assertIsNone(cache.get(failure_cache_key))
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_invalidates_signed_external_payload_cache_on_fetch_error(
+        self,
+        mock_fetch,
+    ):
+        media_url = "https://i.ytimg.com/vi/demo/maxresdefault.jpg"
+        asset_id = "third_party:youtube:abc123:video:1:cover"
+        provider_cache_key = "third_party:yt_dlp_generic:abc123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="yt_dlp_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+        )
+        cache_key = external_payload_cache_key("yt_dlp_generic", provider_resource_id)
+        failure_cache_key = external_failure_cache_key(
+            "yt_dlp_generic",
+            provider_resource_id,
+        )
+        cache.set(cache_key, {"title": "stale ytdlp payload"}, timeout=60)
+        cache.set(failure_cache_key, "TimeoutError", timeout=60)
+        mock_fetch.side_effect = XhsDownloadError("HTTP 403")
+
+        response = Client().get(
+            "/media/proxy-image/",
+            {
+                "u": encode_url(media_url),
+                "asset_id": asset_id,
+                "provider": "yt_dlp_generic",
+                "provider_resource_id": provider_resource_id,
+                "provider_cache_key": provider_cache_key,
+                "provider_manifest_token": token,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/svg+xml")
+        self.assertIsNone(cache.get(cache_key))
+        self.assertIsNone(cache.get(failure_cache_key))
+
+    def test_provider_preview_query_supports_signed_ytdlp_cover(self):
+        media_url = "https://i.ytimg.com/vi/demo/maxresdefault.jpg"
+        asset = MediaAsset(
+            media_type="video",
+            url="https://rr1---sn.googlevideo.com/videoplayback?itag=22",
+            platform="third_party",
+            cover_url=media_url,
+            provider="yt_dlp_generic",
+            asset_id="third_party:youtube:abc123:video:1",
+            provider_resource_id="abc123",
+            provider_cache_key="third_party:yt_dlp_generic:abc123",
+        )
+
+        query = build_provider_preview_query(asset, media_url, "cover")
+        params = {key: values[0] for key, values in parse_qs(query).items()}
+
+        self.assertEqual(params["provider"], "yt_dlp_generic")
+        self.assertEqual(params["type"], "image")
+        self.assertEqual(params["asset_id"], "third_party:youtube:abc123:video:1:cover")
+        self.assertTrue(
+            provider_manifest_allows_public_download({
+                **params,
+                "url": media_url,
+            })
+        )
+
+    def test_provider_preview_query_marks_image_asset_type(self):
+        media_url = "https://i.imgur.com/demo.jpg"
+        asset = MediaAsset(
+            media_type="image",
+            url=media_url,
+            platform="third_party",
+            provider="gallery_dl_generic",
+            asset_id="third_party:imgur:abc123:image:1",
+            provider_resource_id="abc123",
+            provider_cache_key="third_party:gallery_dl_generic:abc123",
+        )
+
+        query = build_provider_preview_query(asset, media_url)
+        params = {key: values[0] for key, values in parse_qs(query).items()}
+
+        self.assertEqual(params["type"], "image")
+        self.assertEqual(params["asset_id"], "third_party:imgur:abc123:image:1")
+        self.assertTrue(
+            provider_manifest_allows_public_download({
+                **params,
+                "url": media_url,
+            })
+        )
+
+    def test_provider_preview_query_rejects_disallowed_provider_cover_host(self):
+        asset = MediaAsset(
+            media_type="video",
+            url="https://rr1---sn.googlevideo.com/videoplayback?itag=22",
+            platform="third_party",
+            provider="yt_dlp_generic",
+            asset_id="third_party:youtube:abc123:video:1",
+            provider_resource_id="abc123",
+            provider_cache_key="third_party:yt_dlp_generic:abc123",
+        )
+
+        with patch("xhs_download.services.downloads.logger.warning") as mock_warning:
+            query = build_provider_preview_query(
+                asset,
+                "https://evil.example.com/cover.jpg",
+                "cover",
+            )
+
+        self.assertEqual(query, "")
+        mock_warning.assert_called_once()
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_does_not_allow_unsigned_youtube_cover_url(self, mock_fetch):
+        response = Client().get(
+            "/media/proxy-image/",
+            {
+                "u": encode_url(
+                    "https://i.ytimg.com/vi/demo/maxresdefault.jpg"
+                ),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/svg+xml")
+        mock_fetch.assert_not_called()
+
     def test_provider_manifest_rechecks_third_party_media_host(self):
         media_url = "https://evil.example.com/image.jpg"
         asset_id = "third_party:instagram:abc123:image:1"
@@ -3035,18 +3480,467 @@ class XhsDownloadViewTests(SimpleTestCase):
             url=media_url,
         )
 
-        self.assertFalse(
+        with patch("xhs_download.services.downloads.logger.warning") as mock_warning:
+            self.assertFalse(
+                provider_manifest_allows_public_download(
+                    {
+                        "url": media_url,
+                        "asset_id": asset_id,
+                        "provider": "kukutool_generic",
+                        "provider_resource_id": provider_resource_id,
+                        "provider_cache_key": provider_cache_key,
+                        "provider_manifest_token": token,
+                    }
+                )
+            )
+
+        mock_warning.assert_called_once()
+
+    def test_provider_manifest_allows_signed_ytdlp_public_url(self):
+        media_url = "https://rr1---sn.googlevideo.com/videoplayback?itag=22"
+        asset_id = "third_party:youtube:abc123:video:1"
+        provider_cache_key = "third_party:yt_dlp_generic:abc123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="yt_dlp_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+        )
+
+        self.assertTrue(
             provider_manifest_allows_public_download(
                 {
                     "url": media_url,
                     "asset_id": asset_id,
-                    "provider": "kukutool_generic",
+                    "provider": "yt_dlp_generic",
                     "provider_resource_id": provider_resource_id,
                     "provider_cache_key": provider_cache_key,
                     "provider_manifest_token": token,
                 }
             )
         )
+
+    def test_provider_manifest_rejects_youtube_video_asset_on_cover_host(self):
+        media_url = "https://i.ytimg.com/vi/demo/maxresdefault.jpg"
+        asset_id = "third_party:youtube:abc123:video:1"
+        provider_cache_key = "third_party:yt_dlp_generic:abc123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="yt_dlp_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+            media_type="video",
+        )
+
+        with patch("xhs_download.services.downloads.logger.warning") as mock_warning:
+            self.assertFalse(
+                provider_manifest_allows_public_download(
+                    {
+                        "type": "video",
+                        "url": media_url,
+                        "asset_id": asset_id,
+                        "provider": "yt_dlp_generic",
+                        "provider_resource_id": provider_resource_id,
+                        "provider_cache_key": provider_cache_key,
+                        "provider_manifest_token": token,
+                    }
+                )
+            )
+
+        mock_warning.assert_called_once()
+
+    def test_provider_manifest_allows_signed_gallerydl_public_url(self):
+        media_url = "https://i.imgur.com/demo.jpg"
+        asset_id = "third_party:imgur:abc123:image:1"
+        provider_cache_key = "third_party:gallery_dl_generic:abc123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="gallery_dl_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+        )
+
+        self.assertTrue(
+            provider_manifest_allows_public_download(
+                {
+                    "url": media_url,
+                    "asset_id": asset_id,
+                    "provider": "gallery_dl_generic",
+                    "provider_resource_id": provider_resource_id,
+                    "provider_cache_key": provider_cache_key,
+                    "provider_manifest_token": token,
+                }
+            )
+        )
+
+    def test_provider_manifest_allows_signed_gallerydl_video_url(self):
+        media_url = "https://i.imgur.com/demo.mp4"
+        asset_id = "third_party:imgur:abc123:video:1"
+        provider_cache_key = "third_party:gallery_dl_generic:abc123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="gallery_dl_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+        )
+
+        self.assertTrue(
+            provider_manifest_allows_public_download(
+                {
+                    "url": media_url,
+                    "asset_id": asset_id,
+                    "provider": "gallery_dl_generic",
+                    "provider_resource_id": provider_resource_id,
+                    "provider_cache_key": provider_cache_key,
+                    "provider_manifest_token": token,
+                }
+            )
+        )
+
+    def test_provider_manifest_rejects_third_party_type_mismatch(self):
+        media_url = "https://i.imgur.com/demo.mp4"
+        asset_id = "third_party:imgur:abc123:video:1"
+        provider_cache_key = "third_party:gallery_dl_generic:abc123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="gallery_dl_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+        )
+
+        with patch("xhs_download.services.downloads.logger.warning") as mock_warning:
+            self.assertFalse(
+                provider_manifest_allows_public_download(
+                    {
+                        "type": "image",
+                        "url": media_url,
+                        "asset_id": asset_id,
+                        "provider": "gallery_dl_generic",
+                        "provider_resource_id": provider_resource_id,
+                        "provider_cache_key": provider_cache_key,
+                        "provider_manifest_token": token,
+                    }
+                )
+            )
+
+        mock_warning.assert_called_once()
+
+    def test_provider_manifest_rejects_third_party_resource_id_mismatch(self):
+        media_url = "https://i.imgur.com/demo.jpg"
+        asset_id = "third_party:imgur:abc123:image:1"
+        provider_cache_key = "third_party:gallery_dl_generic:other123"
+        provider_resource_id = "other123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="gallery_dl_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+        )
+
+        with patch("xhs_download.services.downloads.logger.warning") as mock_warning:
+            self.assertFalse(
+                provider_manifest_allows_public_download(
+                    {
+                        "type": "image",
+                        "url": media_url,
+                        "asset_id": asset_id,
+                        "provider": "gallery_dl_generic",
+                        "provider_resource_id": provider_resource_id,
+                        "provider_cache_key": provider_cache_key,
+                        "provider_manifest_token": token,
+                    }
+                )
+            )
+
+        mock_warning.assert_called_once()
+
+    def test_provider_manifest_rejects_third_party_cache_key_mismatch(self):
+        media_url = "https://i.imgur.com/demo.jpg"
+        asset_id = "third_party:imgur:abc123:image:1"
+        provider_cache_key = "third_party:gallery_dl_generic:other123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="gallery_dl_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+        )
+
+        with patch("xhs_download.services.downloads.logger.warning") as mock_warning:
+            self.assertFalse(
+                provider_manifest_allows_public_download(
+                    {
+                        "type": "image",
+                        "url": media_url,
+                        "asset_id": asset_id,
+                        "provider": "gallery_dl_generic",
+                        "provider_resource_id": provider_resource_id,
+                        "provider_cache_key": provider_cache_key,
+                        "provider_manifest_token": token,
+                    }
+                )
+            )
+
+        mock_warning.assert_called_once()
+
+    def test_provider_manifest_binds_type_when_token_declares_it(self):
+        media_url = "https://i.imgur.com/demo.jpg"
+        asset_id = "third_party:imgur:abc123:image:1"
+        provider_cache_key = "third_party:gallery_dl_generic:abc123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="gallery_dl_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+            media_type="image",
+        )
+        base_item = {
+            "url": media_url,
+            "asset_id": asset_id,
+            "provider": "gallery_dl_generic",
+            "provider_resource_id": provider_resource_id,
+            "provider_cache_key": provider_cache_key,
+            "provider_manifest_token": token,
+        }
+
+        self.assertTrue(
+            provider_manifest_allows_public_download({
+                **base_item,
+                "type": "image",
+            })
+        )
+        self.assertFalse(provider_manifest_allows_public_download(base_item))
+        self.assertFalse(
+            provider_manifest_allows_public_download({
+                **base_item,
+                "type": "video",
+            })
+        )
+
+    def test_provider_manifest_allows_third_party_video_cover_as_image(self):
+        media_url = "https://i.ytimg.com/vi/demo/maxresdefault.jpg"
+        asset_id = "third_party:youtube:abc123:video:1:cover"
+        provider_cache_key = "third_party:yt_dlp_generic:abc123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="yt_dlp_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+        )
+
+        self.assertTrue(
+            provider_manifest_allows_public_download(
+                {
+                    "type": "image",
+                    "url": media_url,
+                    "asset_id": asset_id,
+                    "provider": "yt_dlp_generic",
+                    "provider_resource_id": provider_resource_id,
+                    "provider_cache_key": provider_cache_key,
+                    "provider_manifest_token": token,
+                }
+            )
+        )
+
+    def test_provider_manifest_rejects_unknown_third_party_asset_suffix(self):
+        media_url = "https://i.imgur.com/demo.jpg"
+        asset_id = "third_party:imgur:abc123:image:1:original"
+        provider_cache_key = "third_party:gallery_dl_generic:abc123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="gallery_dl_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+        )
+
+        with patch("xhs_download.services.downloads.logger.warning") as mock_warning:
+            self.assertFalse(
+                provider_manifest_allows_public_download(
+                    {
+                        "type": "image",
+                        "url": media_url,
+                        "asset_id": asset_id,
+                        "provider": "gallery_dl_generic",
+                        "provider_resource_id": provider_resource_id,
+                        "provider_cache_key": provider_cache_key,
+                        "provider_manifest_token": token,
+                    }
+                )
+            )
+
+        mock_warning.assert_called_once()
+
+    def test_provider_manifest_rejects_disallowed_provider_for_platform(self):
+        media_url = "https://i.ytimg.com/vi/demo/maxresdefault.jpg"
+        asset_id = "third_party:youtube:abc123:image:1"
+        provider_cache_key = "third_party:gallery_dl_generic:abc123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="gallery_dl_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+        )
+
+        with patch("xhs_download.services.downloads.logger.warning") as mock_warning:
+            self.assertFalse(
+                provider_manifest_allows_public_download(
+                    {
+                        "url": media_url,
+                        "asset_id": asset_id,
+                        "provider": "gallery_dl_generic",
+                        "provider_resource_id": provider_resource_id,
+                        "provider_cache_key": provider_cache_key,
+                        "provider_manifest_token": token,
+                    }
+                )
+            )
+
+        mock_warning.assert_called_once()
+
+    def test_provider_manifest_rejects_disallowed_media_type_for_platform(self):
+        media_url = "https://live.staticflickr.com/demo.mp4"
+        asset_id = "third_party:flickr:abc123:video:1"
+        provider_cache_key = "third_party:gallery_dl_generic:abc123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="gallery_dl_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+        )
+
+        with patch("xhs_download.services.downloads.logger.warning") as mock_warning:
+            self.assertFalse(
+                provider_manifest_allows_public_download(
+                    {
+                        "url": media_url,
+                        "asset_id": asset_id,
+                        "provider": "gallery_dl_generic",
+                        "provider_resource_id": provider_resource_id,
+                        "provider_cache_key": provider_cache_key,
+                        "provider_manifest_token": token,
+                    }
+                )
+            )
+
+        mock_warning.assert_called_once()
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+        THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=True,
+        YTDLP_PROVIDER_ENABLED=True,
+    )
+    @patch(
+        "xhs_download.services.platforms.ytdlp_generic."
+        "YtDlpGenericProvider.parse"
+    )
+    @patch(
+        "xhs_download.services.platforms.kukutool_generic."
+        "KukutoolGenericProvider.parse"
+    )
+    def test_results_ajax_uses_ytdlp_fallback_for_generic_video(
+        self,
+        mock_kukutool_parse,
+        mock_ytdlp_parse,
+    ):
+        mock_kukutool_parse.side_effect = RuntimeError("kukutool failed")
+        mock_ytdlp_parse.return_value = {
+            "title": "tiktok page demo",
+            "thumbnail": "https://p16.tiktokcdn.com/cover.jpg",
+            "formats": [
+                {
+                    "url": "https://v16.tiktokcdn.com/video/demo.mp4",
+                    "protocol": "https",
+                    "ext": "mp4",
+                    "vcodec": "avc1.4d401f",
+                    "acodec": "mp4a.40.2",
+                    "height": 720,
+                    "filesize": 300,
+                    "format_note": "720p",
+                }
+            ],
+        }
+
+        response = Client().get(
+            "/results/",
+            {"q": "https://www.tiktok.com/@demo/video/123"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        payload = response.json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["has_results"])
+        self.assertIn("result-card", payload["html"])
+        self.assertIn("TikTok", payload["html"])
+        self.assertIn("yt-dlp", payload["html"])
+        self.assertIn('data-provider="yt_dlp_generic"', payload["html"])
+        mock_kukutool_parse.assert_called_once()
+        mock_ytdlp_parse.assert_called_once()
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+        THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=False,
+        GALLERYDL_PROVIDER_ENABLED=True,
+    )
+    @patch(
+        "xhs_download.services.platforms.gallerydl_generic."
+        "GalleryDlGenericProvider.parse"
+    )
+    def test_results_ajax_uses_gallerydl_for_generic_image_platform(
+        self,
+        mock_gallerydl_parse,
+    ):
+        mock_gallerydl_parse.return_value = [
+            [
+                2,
+                "https://live.staticflickr.com/demo/photo.jpg",
+                {
+                    "title": "flickr page demo",
+                    "filename": "photo",
+                    "extension": "jpg",
+                    "filesize": 1234,
+                },
+            ]
+        ]
+
+        response = Client().get(
+            "/results/",
+            {"q": "https://www.flickr.com/photos/nasa2explore/53566933692"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        payload = response.json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["has_results"])
+        self.assertIn("result-card", payload["html"])
+        self.assertIn("Flickr", payload["html"])
+        self.assertIn("gallery-dl", payload["html"])
+        self.assertIn('data-provider="gallery_dl_generic"', payload["html"])
+        self.assertIn("provider_manifest_token", payload["html"])
+        mock_gallerydl_parse.assert_called_once()
 
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,
@@ -3101,6 +3995,108 @@ class XhsDownloadViewTests(SimpleTestCase):
         mock_probe_size.assert_not_called()
         self.assertContains(response, 'data-provider="kukutool_generic"')
         self.assertContains(response, "provider_manifest_token")
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+    )
+    @patch("xhs_download.views.probe_media_size")
+    @patch("xhs_download.views.parse_media_page")
+    def test_results_does_not_probe_signed_ytdlp_video_size(
+        self,
+        mock_parse,
+        mock_probe_size,
+    ):
+        media_url = "https://rr1---sn.googlevideo.com/videoplayback?itag=22"
+        asset_id = "third_party:youtube:abc123:video:1"
+        provider_cache_key = "third_party:yt_dlp_generic:abc123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="yt_dlp_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+        )
+        mock_parse.return_value = ParseResult(
+            platform="third_party",
+            post_type="video",
+            base_filename="youtube",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url=media_url,
+                    platform="third_party",
+                    provider="yt_dlp_generic",
+                    asset_id=asset_id,
+                    provider_resource_id=provider_resource_id,
+                    provider_cache_key=provider_cache_key,
+                    provider_manifest_token=token,
+                ),
+            ),
+            metadata={"source_platform": "youtube"},
+        )
+
+        response = Client().get(
+            "/results/",
+            {"q": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_probe_size.assert_not_called()
+        self.assertContains(response, 'data-provider="yt_dlp_generic"')
+        self.assertContains(response, "data-provider-manifest-token")
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+    )
+    @patch("xhs_download.views.probe_media_size")
+    @patch("xhs_download.views.parse_media_page")
+    def test_results_does_not_probe_signed_gallerydl_video_size(
+        self,
+        mock_parse,
+        mock_probe_size,
+    ):
+        media_url = "https://i.imgur.com/demo.mp4"
+        asset_id = "third_party:imgur:abc123:video:1"
+        provider_cache_key = "third_party:gallery_dl_generic:abc123"
+        provider_resource_id = "abc123"
+        token = build_provider_manifest_token(
+            asset_id=asset_id,
+            provider="gallery_dl_generic",
+            provider_resource_id=provider_resource_id,
+            provider_cache_key=provider_cache_key,
+            url=media_url,
+        )
+        mock_parse.return_value = ParseResult(
+            platform="third_party",
+            post_type="video",
+            base_filename="imgur",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url=media_url,
+                    platform="third_party",
+                    provider="gallery_dl_generic",
+                    asset_id=asset_id,
+                    provider_resource_id=provider_resource_id,
+                    provider_cache_key=provider_cache_key,
+                    provider_manifest_token=token,
+                ),
+            ),
+            metadata={"source_platform": "imgur"},
+        )
+
+        response = Client().get(
+            "/results/",
+            {"q": "https://imgur.com/gallery/demo"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_probe_size.assert_not_called()
+        self.assertContains(response, 'data-provider="gallery_dl_generic"')
+        self.assertContains(response, "data-provider-manifest-token")
 
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,
@@ -3191,6 +4187,44 @@ class XhsDownloadViewTests(SimpleTestCase):
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,
         THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+        THIRD_PARTY_RATE_LIMIT_PER_MINUTE=0,
+        THIRD_PARTY_GLOBAL_REQUEST_LIMIT_PER_MINUTE=1,
+    )
+    @patch("xhs_download.views.parse_media_page")
+    def test_results_global_rate_limits_third_party_provider_requests(self, mock_parse):
+        mock_parse.return_value = ParseResult(
+            platform="third_party",
+            post_type="video",
+            base_filename="youtube",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url="https://rr1---sn.googlevideo.com/videoplayback?demo=1",
+                    platform="third_party",
+                    provider="yt_dlp_generic",
+                ),
+            ),
+            metadata={"source_platform": "youtube", "source_platform_name": "YouTube"},
+        )
+
+        first = Client(REMOTE_ADDR="192.0.2.10").get(
+            "/results/",
+            {"q": "https://www.youtube.com/watch?v=demo"},
+        )
+        second = Client(REMOTE_ADDR="192.0.2.11").get(
+            "/results/",
+            {"q": "https://www.youtube.com/watch?v=demo"},
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 429)
+        self.assertContains(second, "第三方解析当前排队请求较多", status_code=429)
+        self.assertIn("Retry-After", second)
+        self.assertEqual(mock_parse.call_count, 1)
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
     )
     @patch(
         "xhs_download.views.parse_media_page",
@@ -3217,14 +4251,20 @@ class XhsDownloadViewTests(SimpleTestCase):
         side_effect=RuntimeError("redis unavailable"),
     )
     def test_preview_proxy_fails_closed_when_cache_is_unavailable(self, _mock_limits):
-        response = Client().get(
-            "/media/proxy-image/",
-            {"u": encode_url("https://ci.xiaohongshu.com/spectrum/a.jpg")},
-        )
+        with patch("xhs_download.views.logger.exception") as mock_log_exception:
+            response = Client().get(
+                "/media/proxy-image/",
+                {"u": encode_url("https://ci.xiaohongshu.com/spectrum/a.jpg")},
+            )
 
         self.assertEqual(response.status_code, 503)
+        mock_log_exception.assert_called_once_with("Preview rate-limit cache failed")
 
-    @override_settings(ULTRA_HD_PROVIDER_ENABLED=True, TIKHUB_API_KEY="secret")
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        KUKUTOOL_PROVIDER_ENABLED=True,
+        TIKHUB_API_KEY="secret",
+    )
     @patch(
         "xhs_download.views.get_kukutool_provider_health",
         return_value={"available": True},
@@ -3250,7 +4290,45 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertContains(response, 'id="ultra-hd-request-input"')
         self.assertContains(response, 'value="1"')
 
-    @override_settings(ULTRA_HD_PROVIDER_ENABLED=True, TIKHUB_API_KEY="secret")
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=False,
+        ULTRA_HD_PUBLIC_ACCESS_ENABLED=True,
+        KUKUTOOL_PROVIDER_ENABLED=True,
+    )
+    @patch("xhs_download.views.get_kukutool_provider_health")
+    def test_page_does_not_probe_ultra_hd_health_when_provider_is_disabled(
+        self,
+        mock_health,
+    ):
+        response = Client().get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="ultra-hd-setting"')
+        self.assertContains(response, "当前环境未启用 KuKuTool 超高清上游")
+        mock_health.assert_not_called()
+
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        ULTRA_HD_PUBLIC_ACCESS_ENABLED=True,
+        KUKUTOOL_PROVIDER_ENABLED=False,
+    )
+    @patch("xhs_download.views.get_kukutool_provider_health")
+    def test_page_does_not_probe_ultra_hd_health_when_kukutool_is_disabled(
+        self,
+        mock_health,
+    ):
+        response = Client().get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="ultra-hd-setting"')
+        self.assertContains(response, "当前环境未启用 KuKuTool 超高清上游")
+        mock_health.assert_not_called()
+
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        KUKUTOOL_PROVIDER_ENABLED=True,
+        TIKHUB_API_KEY="secret",
+    )
     @patch("xhs_download.views.parse_media_page")
     def test_results_defaults_to_local_provider_without_ultra_hd_flag(self, mock_parse):
         mock_parse.return_value = ParseResult(
@@ -3541,14 +4619,16 @@ class XhsDownloadViewTests(SimpleTestCase):
     @override_settings(DOWNLOAD_MAX_CONCURRENT_PER_IP=1)
     @patch("xhs_download.views.acquire_concurrency", side_effect=RuntimeError("redis unavailable"))
     def test_download_endpoint_fails_closed_when_concurrency_cache_is_unavailable(self, _mock_acquire):
-        response = Client().post(
-            "/media/download-images/",
-            data='{"media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a"}]}',
-            content_type="application/json",
-        )
+        with patch("xhs_download.views.logger.exception") as mock_log_exception:
+            response = Client().post(
+                "/media/download-images/",
+                data='{"media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a"}]}',
+                content_type="application/json",
+            )
 
         self.assertEqual(response.status_code, 503)
         self.assertIn("下载保护服务暂时不可用", response.json()["message"])
+        mock_log_exception.assert_called_once_with("Download concurrency cache failed")
 
     @patch("xhs_download.services.rate_limits.cache.decr", side_effect=RuntimeError("redis unavailable"))
     def test_concurrency_release_cache_failure_does_not_escape(self, _mock_decr):
@@ -3736,6 +4816,236 @@ class RuntimeHealthCheckTests(TestCase):
             {"cache": True, "database": True},
         )
 
+    @override_settings(DJANGO_CACHE_URL="")
+    @patch("xhs_download.checks.importlib.util.find_spec")
+    def test_system_check_does_not_require_redis_package_without_redis_cache(
+        self,
+        mock_find_spec,
+    ):
+        issue_ids = {issue.id for issue in run_checks()}
+
+        self.assertNotIn("xhs_download.E008", issue_ids)
+        mock_find_spec.assert_not_called()
+
+    @override_settings(DJANGO_CACHE_URL="redis://127.0.0.1:6379/0")
+    @patch("xhs_download.checks.importlib.util.find_spec", return_value=None)
+    def test_system_check_reports_missing_redis_package_for_redis_cache(
+        self,
+        mock_find_spec,
+    ):
+        issue_ids = {issue.id for issue in run_checks()}
+
+        self.assertIn("xhs_download.E008", issue_ids)
+        mock_find_spec.assert_called_once_with("redis")
+
+    @override_settings(DJANGO_CACHE_URL="redis://127.0.0.1:6379/0")
+    @patch("xhs_download.checks.importlib.util.find_spec", return_value=object())
+    def test_system_check_accepts_installed_redis_package_for_redis_cache(
+        self,
+        mock_find_spec,
+    ):
+        issue_ids = {issue.id for issue in run_checks()}
+
+        self.assertNotIn("xhs_download.E008", issue_ids)
+        mock_find_spec.assert_called_once_with("redis")
+
+    @override_settings(REQUIRE_PRODUCTION_CONFIG=True, DEBUG=False)
+    @patch("xhs_download.services.platforms.douyin_kukutool.shutil.which")
+    @patch("xhs_download.services.platforms.douyin_kukutool.subprocess.run")
+    def test_find_node_runtime_skips_development_fallbacks_in_production(
+        self,
+        mock_run,
+        mock_which,
+    ):
+        from .services.platforms.douyin_kukutool import find_node_runtime
+
+        self.assertEqual(find_node_runtime(""), "")
+        mock_which.assert_not_called()
+        mock_run.assert_not_called()
+
+    @override_settings(
+        YTDLP_PROVIDER_ENABLED=True,
+        YTDLP_BINARY="/path/that/does/not/exist/yt-dlp",
+        REQUIRE_PRODUCTION_CONFIG=False,
+    )
+    def test_system_check_reports_missing_ytdlp_executable(self):
+        issue_ids = {issue.id for issue in run_checks()}
+
+        self.assertIn("xhs_download.E004", issue_ids)
+
+    @override_settings(
+        YTDLP_PROVIDER_ENABLED=True,
+        YTDLP_BINARY="/usr/bin/python -m missing_yt_dlp_module",
+        REQUIRE_PRODUCTION_CONFIG=False,
+    )
+    @patch("xhs_download.services.platforms.external_tools.os.path.exists", return_value=True)
+    @patch("xhs_download.services.platforms.external_tools.os.access", return_value=True)
+    @patch(
+        "xhs_download.services.platforms.ytdlp_generic.probe_external_command_version",
+        return_value={
+            "version_probe_ok": False,
+            "version_output": "",
+            "error": "No module named missing_yt_dlp_module",
+        },
+    )
+    def test_system_check_reports_ytdlp_version_probe_failure(
+        self,
+        mock_probe,
+        _mock_access,
+        _mock_exists,
+    ):
+        issue_ids = {issue.id for issue in run_checks()}
+
+        self.assertIn("xhs_download.E004", issue_ids)
+        mock_probe.assert_called_once()
+
+    @override_settings(
+        YTDLP_PROVIDER_ENABLED=True,
+        YTDLP_BINARY="/usr/bin/python -m yt_dlp",
+        REQUIRE_PRODUCTION_CONFIG=False,
+    )
+    @patch("xhs_download.services.platforms.external_tools.os.path.exists", return_value=True)
+    @patch("xhs_download.services.platforms.external_tools.os.access", return_value=True)
+    @patch(
+        "xhs_download.services.platforms.ytdlp_generic.probe_external_command_version",
+        return_value={
+            "version_probe_ok": True,
+            "version_output": "2026.03.17",
+            "error": "",
+        },
+    )
+    def test_system_check_accepts_ytdlp_version_probe_success(
+        self,
+        mock_probe,
+        _mock_access,
+        _mock_exists,
+    ):
+        issue_ids = {issue.id for issue in run_checks()}
+
+        self.assertNotIn("xhs_download.E004", issue_ids)
+        mock_probe.assert_called_once()
+
+    @override_settings(
+        YTDLP_PROVIDER_ENABLED=False,
+        YTDLP_BINARY="/usr/bin/python -m yt_dlp",
+    )
+    @patch("xhs_download.services.platforms.external_tools.os.path.exists", return_value=True)
+    @patch("xhs_download.services.platforms.external_tools.os.access", return_value=True)
+    @patch("xhs_download.services.platforms.ytdlp_generic.probe_external_command_version")
+    def test_ytdlp_health_does_not_probe_when_provider_is_disabled(
+        self,
+        mock_probe,
+        _mock_access,
+        _mock_exists,
+    ):
+        health = YtDlpGenericProvider().health()
+
+        self.assertFalse(health["enabled"])
+        self.assertTrue(health["ready"])
+        self.assertIsNone(health["version_probe_ok"])
+        mock_probe.assert_not_called()
+
+    @override_settings(
+        YTDLP_PROVIDER_ENABLED=False,
+        YTDLP_BINARY="",
+    )
+    @patch("xhs_download.services.platforms.external_tools.shutil.which", return_value=None)
+    @patch("xhs_download.services.platforms.ytdlp_generic.probe_external_command_version")
+    def test_ytdlp_health_not_ready_when_disabled_binary_is_missing(
+        self,
+        mock_probe,
+        _mock_which,
+    ):
+        health = YtDlpGenericProvider().health()
+
+        self.assertFalse(health["enabled"])
+        self.assertFalse(health["ready"])
+        self.assertFalse(health["executable_found"])
+        self.assertIsNone(health["version_probe_ok"])
+        mock_probe.assert_not_called()
+
+    @override_settings(
+        GALLERYDL_PROVIDER_ENABLED=True,
+        GALLERYDL_BINARY="/usr/bin/python -m gallery_dl",
+    )
+    @patch("xhs_download.services.platforms.external_tools.os.path.exists", return_value=True)
+    @patch("xhs_download.services.platforms.external_tools.os.access", return_value=True)
+    @patch(
+        "xhs_download.services.platforms.gallerydl_generic.probe_external_command_version",
+        return_value={
+            "version_probe_ok": False,
+            "version_output": "",
+            "error": "No module named gallery_dl",
+        },
+    )
+    def test_gallerydl_health_reports_not_ready_when_version_probe_fails(
+        self,
+        mock_probe,
+        _mock_access,
+        _mock_exists,
+    ):
+        health = GalleryDlGenericProvider().health()
+
+        self.assertTrue(health["enabled"])
+        self.assertFalse(health["ready"])
+        self.assertFalse(health["version_probe_ok"])
+        self.assertEqual(health["version_probe_error"], "No module named gallery_dl")
+        mock_probe.assert_called_once()
+
+    @override_settings(
+        YTDLP_PROVIDER_ENABLED=True,
+        YTDLP_BINARY="",
+        REQUIRE_PRODUCTION_CONFIG=True,
+    )
+    def test_system_check_requires_explicit_ytdlp_binary_in_production(self):
+        issue_ids = {issue.id for issue in run_checks()}
+
+        self.assertIn("xhs_download.E003", issue_ids)
+
+    @override_settings(
+        GALLERYDL_PROVIDER_ENABLED=True,
+        GALLERYDL_BINARY="",
+        REQUIRE_PRODUCTION_CONFIG=True,
+    )
+    def test_system_check_requires_explicit_gallerydl_binary_in_production(self):
+        issue_ids = {issue.id for issue in run_checks()}
+
+        self.assertIn("xhs_download.E005", issue_ids)
+
+    @override_settings(
+        GALLERYDL_PROVIDER_ENABLED=True,
+        GALLERYDL_BINARY="/path/that/does/not/exist/gallery-dl",
+        REQUIRE_PRODUCTION_CONFIG=False,
+    )
+    def test_system_check_reports_missing_gallerydl_executable(self):
+        issue_ids = {issue.id for issue in run_checks()}
+
+        self.assertIn("xhs_download.E006", issue_ids)
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+        THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=False,
+        YTDLP_PROVIDER_ENABLED=False,
+        GALLERYDL_PROVIDER_ENABLED=False,
+    )
+    def test_system_check_reports_public_third_party_without_enabled_provider(self):
+        issue_ids = {issue.id for issue in run_checks()}
+
+        self.assertIn("xhs_download.E007", issue_ids)
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=False,
+        THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=False,
+        YTDLP_PROVIDER_ENABLED=False,
+        GALLERYDL_PROVIDER_ENABLED=False,
+    )
+    def test_system_check_allows_private_third_party_without_enabled_provider(self):
+        issue_ids = {issue.id for issue in run_checks()}
+
+        self.assertNotIn("xhs_download.E007", issue_ids)
+
 
 class ProviderControlViewTests(TestCase):
     def setUp(self):
@@ -3767,6 +5077,8 @@ class ProviderControlViewTests(TestCase):
         self.assertTrue(health.json()["admin_disabled"])
         self.assertEqual(enabled.status_code, 200)
         self.assertFalse(enabled.json()["admin_disabled"])
+        self.assertIn("third_party_summary", disabled.json())
+        self.assertIn("third_party_summary", enabled.json())
 
     def test_provider_health_includes_third_party_diagnostics(self):
         source_key = "abc123"
@@ -3785,6 +5097,93 @@ class ProviderControlViewTests(TestCase):
         self.assertEqual(third_party["failure_cache"]["reason"], "TimeoutError")
         self.assertIn("circuit", third_party)
         self.assertIn("single_flight", third_party)
+        gallerydl = response.json()["third_party_gallerydl"]
+        self.assertEqual(gallerydl["provider"], "gallery_dl_generic")
+        self.assertIn("max_items", gallerydl)
+        self.assertIn("output_max_bytes", gallerydl)
+        self.assertIn("max_pending_tasks", gallerydl)
+        self.assertIn("payload_cache_ttl_seconds", gallerydl)
+        self.assertIn("failure_cache_ttl_seconds", gallerydl)
+        self.assertIn("executable_found", gallerydl)
+        self.assertIn("ready", gallerydl)
+        self.assertIn("version_probe_ok", gallerydl)
+        self.assertIn("version_output", gallerydl)
+        self.assertIn("version_probe_error", gallerydl)
+        ytdlp = response.json()["third_party_ytdlp"]
+        self.assertEqual(ytdlp["provider"], "yt_dlp_generic")
+        self.assertIn("output_max_bytes", ytdlp)
+        self.assertIn("max_pending_tasks", ytdlp)
+        self.assertIn("executor_workers", ytdlp)
+        self.assertIn("payload_cache_ttl_seconds", ytdlp)
+        self.assertIn("failure_cache_ttl_seconds", ytdlp)
+        self.assertIn("executable_found", ytdlp)
+        self.assertIn("ready", ytdlp)
+        self.assertIn("version_probe_ok", ytdlp)
+        self.assertIn("version_output", ytdlp)
+        self.assertIn("version_probe_error", ytdlp)
+        summary = response.json()["third_party_summary"]
+        self.assertFalse(summary["enabled"])
+        self.assertFalse(summary["public_access_enabled"])
+        self.assertFalse(summary["configured"])
+        self.assertFalse(summary["public_ready"])
+        self.assertEqual(summary["enabled_provider_ids"], [])
+        self.assertEqual(summary["ready_provider_ids"], [])
+        self.assertIn("provider_states", summary)
+        self.assertIn("kukutool_generic", summary["provider_states"])
+        self.assertEqual(summary["issue"], "")
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=False,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=False,
+        THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=True,
+        YTDLP_PROVIDER_ENABLED=False,
+        GALLERYDL_PROVIDER_ENABLED=False,
+    )
+    def test_provider_health_summary_keeps_provider_readiness_when_entry_is_disabled(self):
+        response = self.client.get("/admin/provider-health/")
+
+        self.assertEqual(response.status_code, 200)
+        summary = response.json()["third_party_summary"]
+        self.assertFalse(summary["enabled"])
+        self.assertFalse(summary["configured"])
+        self.assertFalse(summary["public_ready"])
+        self.assertEqual(summary["enabled_provider_ids"], ["kukutool_generic"])
+        self.assertEqual(summary["ready_provider_ids"], ["kukutool_generic"])
+        self.assertTrue(summary["provider_states"]["kukutool_generic"]["enabled"])
+        self.assertTrue(summary["provider_states"]["kukutool_generic"]["ready"])
+        self.assertEqual(summary["issue"], "")
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=False,
+    )
+    def test_provider_health_reports_disabled_third_party_kukutool_provider(self):
+        response = self.client.get("/admin/provider-health/")
+
+        self.assertEqual(response.status_code, 200)
+        third_party = response.json()["third_party"]
+        self.assertFalse(third_party["enabled"])
+        self.assertFalse(third_party["provider_enabled"])
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+        THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=False,
+        YTDLP_PROVIDER_ENABLED=False,
+        GALLERYDL_PROVIDER_ENABLED=False,
+    )
+    def test_provider_health_reports_third_party_summary_issue(self):
+        response = self.client.get("/admin/provider-health/")
+
+        self.assertEqual(response.status_code, 200)
+        summary = response.json()["third_party_summary"]
+        self.assertTrue(summary["enabled"])
+        self.assertTrue(summary["public_access_enabled"])
+        self.assertFalse(summary["configured"])
+        self.assertFalse(summary["public_ready"])
+        self.assertEqual(summary["enabled_provider_ids"], [])
+        self.assertEqual(summary["ready_provider_ids"], [])
+        self.assertEqual(summary["issue"], "no_provider_enabled")
 
     def test_provider_control_requires_csrf(self):
         client = Client(enforce_csrf_checks=True)

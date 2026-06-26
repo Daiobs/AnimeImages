@@ -1,5 +1,6 @@
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
+from hashlib import sha256
 import inspect
 import json
 import logging
@@ -11,9 +12,10 @@ import shutil
 import subprocess
 from threading import BoundedSemaphore, Lock, RLock
 from time import monotonic, sleep, time
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 from uuid import uuid4
 
+import requests
 from django.conf import settings
 from django.core.cache import cache
 
@@ -35,6 +37,8 @@ KUKUTOOL_BUNDLED_NODE = (
     Path.home()
     / ".cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
 )
+KUKUTOOL_SIDECAR_CONTRACT_VERSION = "douyin-source-resolver.v1"
+KUKUTOOL_SIDECAR_HEALTH_CACHE_SECONDS = 15
 logger = logging.getLogger(__name__)
 KUKUTOOL_SEMAPHORES = {}
 KUKUTOOL_SEMAPHORES_LOCK = Lock()
@@ -221,12 +225,28 @@ def normalize_kukutool_payload(payload):
             parsed_url = urlsplit(url)
             query = parse_qs(parsed_url.query)
             metadata = parse_byte_cdn_url(url)
+            raw_bit_rate = (
+                raw_resource.get("bit_rate")
+                or raw_resource.get("bitrate")
+                or raw_resource.get("bitRate")
+            )
+            raw_quality_score = (
+                raw_resource.get("quality_score")
+                or raw_resource.get("quality_type")
+                or raw_resource.get("qualityType")
+            )
             resource = KukuToolResource(
                 url=url,
                 quality_label=str(raw_resource.get("type") or "超高清源"),
                 size_bytes=integer_value(raw_resource.get("size")),
-                bit_rate=integer_value((query.get("br") or (0,))[0]) * 1000,
-                quality_score=integer_value((query.get("qs") or (0,))[0]),
+                bit_rate=(
+                    integer_value((query.get("br") or (0,))[0]) * 1000
+                    or integer_value(raw_bit_rate)
+                ),
+                quality_score=(
+                    integer_value((query.get("qs") or (0,))[0])
+                    or integer_value(raw_quality_score)
+                ),
                 object_key=metadata["object_key"],
                 signed_url_expires_at=metadata["expires_at"],
             )
@@ -258,6 +278,11 @@ def build_kukutool_failure_cache_key(aweme_id):
 
 def build_kukutool_profile_cache_key():
     return "douyin:kukutool:active-profile"
+
+
+def build_kukutool_sidecar_health_cache_key(base_url):
+    digest = sha256(str(base_url or "").encode("utf-8")).hexdigest()[:16]
+    return f"douyin:kukutool:sidecar:health:{digest}"
 
 
 def build_kukutool_circuit_open_key():
@@ -312,6 +337,111 @@ def get_kukutool_circuit_status():
     }
 
 
+def normalized_sidecar_base_url(base_url):
+    base_url = str(base_url or "").strip().rstrip("/")
+    if not base_url:
+        return ""
+    parsed = urlsplit(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("KUKUTOOL_SIDECAR_BASE_URL must be an http(s) URL")
+    return base_url
+
+
+def build_sidecar_url(base_url, path):
+    base_url = normalized_sidecar_base_url(base_url)
+    if not base_url:
+        return ""
+    return urljoin(f"{base_url}/", path.lstrip("/"))
+
+
+def get_kukutool_sidecar_status(provider_settings=None, force=False):
+    provider_settings = provider_settings or get_platform_provider_settings("douyin")
+    base_url = str(provider_settings.kukutool_sidecar_base_url or "").strip()
+    if not base_url:
+        return {
+            "configured": False,
+            "available": False,
+            "base_url": "",
+            "error": "not configured",
+        }
+
+    try:
+        base_url = normalized_sidecar_base_url(base_url)
+    except ValueError as error:
+        return {
+            "configured": True,
+            "available": False,
+            "base_url": str(provider_settings.kukutool_sidecar_base_url or ""),
+            "error": str(error),
+        }
+
+    cache_key = build_kukutool_sidecar_health_cache_key(base_url)
+    if not force:
+        try:
+            cached = cache.get(cache_key)
+            if isinstance(cached, dict):
+                return cached
+        except Exception:
+            logger.exception("kukutool_sidecar_health_cache_read_failed")
+
+    health_url = build_sidecar_url(base_url, "/health")
+    started_at = time()
+    try:
+        response = requests.get(
+            health_url,
+            headers={"Accept": "application/json"},
+            timeout=max(0.1, provider_settings.kukutool_sidecar_health_timeout_seconds),
+            allow_redirects=False,
+        )
+        if len(response.content) > 256 * 1024:
+            raise ValueError("sidecar health response is too large")
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("sidecar health response is not an object")
+        contract_version = str(payload.get("contract_version") or "")
+        if contract_version != KUKUTOOL_SIDECAR_CONTRACT_VERSION:
+            raise ValueError("sidecar contract version is unsupported")
+        ultra_provider = (
+            payload.get("ultra_provider")
+            if isinstance(payload.get("ultra_provider"), dict)
+            else {}
+        )
+        available = (
+            response.ok
+            and payload.get("status") == "ok"
+            and ultra_provider.get("status") == "ok"
+        )
+        result = {
+            "configured": True,
+            "available": bool(available),
+            "base_url": base_url,
+            "contract_version": contract_version,
+            "status": payload.get("status"),
+            "ultra_provider": ultra_provider,
+            "duration_ms": int((time() - started_at) * 1000),
+            "error": "" if available else "sidecar ultra provider unavailable",
+        }
+    except Exception as error:
+        result = {
+            "configured": True,
+            "available": False,
+            "base_url": base_url,
+            "duration_ms": int((time() - started_at) * 1000),
+            "error_type": type(error).__name__,
+            "error": str(error)[:500],
+        }
+
+    try:
+        cache.set(
+            cache_key,
+            result,
+            timeout=KUKUTOOL_SIDECAR_HEALTH_CACHE_SECONDS,
+        )
+    except Exception:
+        logger.exception("kukutool_sidecar_health_cache_write_failed")
+    return result
+
+
 def record_kukutool_success(provider_settings=None):
     provider_settings = provider_settings or get_platform_provider_settings("douyin")
     now = int(time())
@@ -349,7 +479,9 @@ def record_kukutool_failure(provider_settings=None):
 
 
 def get_kukutool_provider_health():
+    provider_settings = get_platform_provider_settings("douyin")
     runtime = get_kukutool_runtime_status()
+    sidecar = get_kukutool_sidecar_status(provider_settings)
     circuit = get_kukutool_circuit_status()
     admin_disabled = is_kukutool_admin_disabled()
     return {
@@ -359,11 +491,12 @@ def get_kukutool_provider_health():
         "public_access_enabled": bool(settings.ULTRA_HD_PUBLIC_ACCESS_ENABLED),
         "admin_disabled": admin_disabled,
         "runtime": runtime,
+        "sidecar": sidecar,
         "circuit": circuit,
         "available": bool(
             settings.KUKUTOOL_PROVIDER_ENABLED
             and settings.ULTRA_HD_PROVIDER_ENABLED
-            and runtime["available"]
+            and (runtime["available"] or sidecar["available"])
             and not admin_disabled
             and not circuit["open"]
         ),
@@ -645,6 +778,161 @@ def run_kukutool_helper(
     return payload
 
 
+def sidecar_resource_to_video_fullinfo(resource):
+    if not isinstance(resource, dict):
+        return None
+    url = resource.get("final_url") or resource.get("url")
+    if not isinstance(url, str) or not is_byte_cdn_url(url):
+        return None
+    size = (
+        resource.get("size")
+        or resource.get("size_bytes")
+        or resource.get("verified_size")
+        or 0
+    )
+    return {
+        "type": str(
+            resource.get("type")
+            or resource.get("quality_label")
+            or "超高清源"
+        ),
+        "size": integer_value(size),
+        "url": url,
+        "bit_rate": integer_value(
+            resource.get("bit_rate")
+            or resource.get("bitrate")
+            or resource.get("bitRate")
+        ),
+        "quality_score": integer_value(
+            resource.get("quality_score")
+            or resource.get("quality_type")
+            or resource.get("qualityType")
+        ),
+    }
+
+
+def convert_sidecar_payload_to_kukutool_payload(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("sidecar response is not an object")
+    if payload.get("contract_version") != KUKUTOOL_SIDECAR_CONTRACT_VERSION:
+        raise ValueError("sidecar contract version is unsupported")
+    if payload.get("status") != "ok":
+        raise ValueError(
+            str(payload.get("message") or payload.get("reason") or "sidecar failed")
+        )
+
+    raw_resources = []
+    if isinstance(payload.get("best"), dict):
+        raw_resources.append(payload["best"])
+    raw_resources.extend(
+        resource
+        for resource in (payload.get("resources") or ())
+        if isinstance(resource, dict)
+    )
+
+    seen = set()
+    video_fullinfo = []
+    for resource in raw_resources:
+        item = sidecar_resource_to_video_fullinfo(resource)
+        if not item or item["url"] in seen:
+            continue
+        seen.add(item["url"])
+        video_fullinfo.append(item)
+
+    if not video_fullinfo:
+        raise ValueError("sidecar returned no trusted CDN resource")
+
+    return {
+        "title": payload.get("title"),
+        "videos": [{"video_fullinfo": video_fullinfo}],
+        "_sidecar": {
+            "contract_version": payload.get("contract_version"),
+            "cached": bool(payload.get("cached")),
+            "cache": payload.get("cache") if isinstance(payload.get("cache"), dict) else {},
+            "timing": payload.get("timing") if isinstance(payload.get("timing"), dict) else {},
+        },
+    }
+
+
+def run_kukutool_sidecar(
+    aweme_id,
+    base_url="",
+    timeout_seconds=3.0,
+):
+    if not AWEME_ID_PATTERN.fullmatch(str(aweme_id or "")):
+        raise ValueError("invalid aweme_id")
+    endpoint = build_sidecar_url(base_url, "/v1/ultra/resolve")
+    if not endpoint:
+        raise ValueError("KUKUTOOL_SIDECAR_BASE_URL is not configured")
+    response = requests.post(
+        endpoint,
+        json={"aweme_id": str(aweme_id)},
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        timeout=max(0.1, timeout_seconds),
+        allow_redirects=False,
+    )
+    if len(response.content) > 10 * 1024 * 1024:
+        raise ValueError("sidecar response is too large")
+    try:
+        payload = response.json()
+    except ValueError as error:
+        raise ValueError("sidecar returned invalid JSON") from error
+    if not response.ok:
+        message = ""
+        if isinstance(payload, dict):
+            message = str(payload.get("message") or payload.get("reason") or "")
+        raise OSError(message or f"sidecar returned HTTP {response.status_code}")
+    return convert_sidecar_payload_to_kukutool_payload(payload)
+
+
+def run_kukutool_upstream(
+    aweme_id,
+    node_binary="",
+    timeout_seconds=12.0,
+    profile_cache_ttl_seconds=86400,
+    sidecar_base_url="",
+    sidecar_timeout_seconds=3.0,
+):
+    sidecar_base_url = str(sidecar_base_url or "").strip()
+    started_at = monotonic()
+    timeout_seconds = max(0.1, timeout_seconds)
+    if sidecar_base_url:
+        sidecar_timeout = min(
+            timeout_seconds,
+            max(0.1, sidecar_timeout_seconds),
+        )
+        try:
+            return run_kukutool_sidecar(
+                aweme_id,
+                base_url=sidecar_base_url,
+                timeout_seconds=sidecar_timeout,
+            )
+        except Exception as error:
+            logger.info(
+                "douyin_provider_sidecar_failed",
+                extra={
+                    "provider": "kukutool",
+                    "aweme_id": aweme_id,
+                    "error_type": type(error).__name__,
+                    "error": str(error),
+                    "duration_ms": int((monotonic() - started_at) * 1000),
+                },
+            )
+            remaining = timeout_seconds - (monotonic() - started_at)
+            if remaining <= 0:
+                raise
+            timeout_seconds = remaining
+    return run_kukutool_helper(
+        aweme_id,
+        node_binary=node_binary,
+        timeout_seconds=timeout_seconds,
+        profile_cache_ttl_seconds=profile_cache_ttl_seconds,
+    )
+
+
 def run_kukutool_url_helper(
     request_url,
     node_binary="",
@@ -737,7 +1025,7 @@ class DouyinKukuToolProvider:
 
     def __init__(self, provider_settings=None, runner=None, quality_probe=None):
         self.provider_settings = provider_settings or get_platform_provider_settings("douyin")
-        self.runner = runner or run_kukutool_helper
+        self.runner = runner or run_kukutool_upstream
         self.quality_probe = quality_probe
 
     def remaining_budget(self, context, fallback):
@@ -815,9 +1103,24 @@ class DouyinKukuToolProvider:
                 profile_cache_ttl_seconds=(
                     self.provider_settings.kukutool_profile_cache_ttl_seconds
                 ),
+                sidecar_base_url=self.provider_settings.kukutool_sidecar_base_url,
+                sidecar_timeout_seconds=(
+                    self.provider_settings.kukutool_sidecar_timeout_seconds
+                ),
             )
         finally:
             semaphore.release()
+        sidecar_metadata = payload.get("_sidecar") if isinstance(payload, dict) else None
+        if isinstance(sidecar_metadata, dict):
+            log_kukutool_event(
+                "douyin_provider_sidecar_response",
+                context,
+                upstream_started_at,
+                contract_version=sidecar_metadata.get("contract_version"),
+                sidecar_cached=bool(sidecar_metadata.get("cached")),
+                sidecar_stage=(sidecar_metadata.get("timing") or {}).get("stage"),
+                sidecar_total_ms=(sidecar_metadata.get("timing") or {}).get("total_ms"),
+            )
         resources = normalize_kukutool_payload(payload)
         log_kukutool_event(
             "douyin_provider_response",

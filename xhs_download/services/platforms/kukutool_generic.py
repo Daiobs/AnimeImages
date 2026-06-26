@@ -520,7 +520,7 @@ class KukutoolGenericProvider:
             future.add_done_callback(clear_local_future)
             return future, "started"
 
-    def parse(self, url):
+    def parse(self, url, timeout_seconds=None):
         source_key = source_key_for_url(url)
         cached = self.get_cached_payload(source_key)
         if cached:
@@ -532,7 +532,9 @@ class KukutoolGenericProvider:
 
         future, state = self.get_or_start_future(url, source_key)
         timeout_seconds = float(
-            getattr(settings, "THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS", 3.0) or 3.0
+            timeout_seconds
+            if timeout_seconds is not None
+            else getattr(settings, "THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS", 3.0) or 3.0
         )
         if future is None:
             cached = self.wait_for_cached_payload(source_key, timeout_seconds)
@@ -559,6 +561,7 @@ class KukutoolGenericProvider:
         failure_cache_reason = ""
         failure_hit_count = 0
         single_flight_active = False
+        cache_error = ""
         try:
             circuit_open_until = int(cache.get(build_circuit_open_key(), 0) or 0)
             circuit_failure_count = int(cache.get(build_circuit_failure_key(window), 0) or 0)
@@ -566,8 +569,13 @@ class KukutoolGenericProvider:
             if source_key:
                 failure_cache_reason = str(cache.get(build_failure_cache_key(source_key)) or "")
                 single_flight_active = bool(cache.get(build_single_flight_key(source_key)))
-        except Exception:
-            logger.exception("third_party_provider_health_cache_read_failed")
+        except Exception as error:
+            cache_error = type(error).__name__
+            logger.debug(
+                "third_party_provider_health_cache_read_failed",
+                extra={"error_type": cache_error},
+                exc_info=True,
+            )
         if source_key:
             with LOCAL_PROVIDER_FUTURES_LOCK:
                 local_future = LOCAL_PROVIDER_FUTURES.get(source_key)
@@ -576,7 +584,13 @@ class KukutoolGenericProvider:
                 )
         return {
             "provider": PROVIDER_ID,
-            "enabled": bool(getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False)),
+            "enabled": bool(
+                getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False)
+                and getattr(settings, "THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED", False)
+            ),
+            "provider_enabled": bool(
+                getattr(settings, "THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED", False)
+            ),
             "public_access_enabled": bool(
                 getattr(settings, "THIRD_PARTY_PUBLIC_ACCESS_ENABLED", False)
             ),
@@ -595,6 +609,7 @@ class KukutoolGenericProvider:
                 "source_key": source_key,
                 "active": single_flight_active,
             },
+            "cache_error": cache_error,
         }
 
 
@@ -617,6 +632,7 @@ class KukutoolResultNormalizer:
                 provider_resource_id=source_key,
                 provider_cache_key=provider_cache_key,
                 url=url,
+                media_type=media_type,
             ),
         }
 

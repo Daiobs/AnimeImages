@@ -9,6 +9,9 @@ class ProviderSettings:
     provider_order: tuple[str, ...]
     kukutool_enabled: bool = True
     kukutool_node_binary: str = ""
+    kukutool_sidecar_base_url: str = ""
+    kukutool_sidecar_timeout_seconds: float = 3.0
+    kukutool_sidecar_health_timeout_seconds: float = 0.5
     kukutool_timeout_seconds: float = 12.0
     kukutool_probe_timeout_seconds: float = 2.0
     kukutool_max_probe_candidates: int = 2
@@ -97,6 +100,15 @@ def get_platform_provider_settings(platform_id):
             getattr(settings, "KUKUTOOL_PROVIDER_ENABLED", settings.DEBUG)
         ),
         kukutool_node_binary=getattr(settings, "KUKUTOOL_NODE_BINARY", "") or "",
+        kukutool_sidecar_base_url=(
+            getattr(settings, "KUKUTOOL_SIDECAR_BASE_URL", "") or ""
+        ),
+        kukutool_sidecar_timeout_seconds=float(
+            getattr(settings, "KUKUTOOL_SIDECAR_TIMEOUT_SECONDS", 3.0) or 0
+        ),
+        kukutool_sidecar_health_timeout_seconds=float(
+            getattr(settings, "KUKUTOOL_SIDECAR_HEALTH_TIMEOUT_SECONDS", 0.5) or 0
+        ),
         kukutool_timeout_seconds=float(getattr(settings, "KUKUTOOL_TIMEOUT_SECONDS", 12.0) or 0),
         kukutool_probe_timeout_seconds=float(
             getattr(settings, "KUKUTOOL_PROBE_TIMEOUT_SECONDS", 2.0) or 0

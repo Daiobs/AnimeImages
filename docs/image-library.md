@@ -37,25 +37,25 @@ Do not manually edit generated `padded` images unless you intentionally want to 
 Preview what would be generated:
 
 ```bash
-python manage.py init_image_library --dry-run
+.venv/bin/python manage.py init_image_library --dry-run
 ```
 
 Generate missing padded images:
 
 ```bash
-python manage.py init_image_library
+.venv/bin/python manage.py init_image_library
 ```
 
 Regenerate existing padded images:
 
 ```bash
-python manage.py init_image_library --force
+.venv/bin/python manage.py init_image_library --force
 ```
 
 Process one character directory:
 
 ```bash
-python manage.py init_image_library --character-dir "static/images/原神/纳西妲"
+.venv/bin/python manage.py init_image_library --character-dir "static/images/原神/纳西妲"
 ```
 
 ## Rules
