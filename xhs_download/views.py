@@ -29,6 +29,8 @@ from .services.download_tasks import (
 from .services.downloads import (
     build_download_archive_file,
     fetch_media_response,
+    invalidate_external_provider_caches,
+    is_recoverable_provider_download_error,
     provider_manifest_allows_public_download,
     probe_media_size,
     read_limited_response,
@@ -38,7 +40,9 @@ from .services.platforms.douyin_kukutool import (
     get_kukutool_provider_health,
     set_kukutool_admin_disabled,
 )
+from .services.platforms.gallerydl_generic import GalleryDlGenericProvider
 from .services.platforms.kukutool_generic import KukutoolGenericProvider
+from .services.platforms.ytdlp_generic import YtDlpGenericProvider
 from .services.registry import get_adapter_for_url, parse_media_page
 from .services.provider_manifest import build_provider_manifest_token
 from .services.rate_limits import (
@@ -54,6 +58,11 @@ from .services.region_routing import get_request_country_code
 
 logger = logging.getLogger(__name__)
 PREVIEW_MAX_IMAGE_BYTES = 8 * 1024 * 1024
+SIGNED_THIRD_PARTY_VIDEO_PROVIDERS = {
+    "kukutool_generic",
+    "gallery_dl_generic",
+    "yt_dlp_generic",
+}
 
 
 def format_file_size(size_bytes):
@@ -79,29 +88,44 @@ def format_file_size(size_bytes):
 def get_video_size_bytes(asset):
     if asset.size_bytes:
         return asset.size_bytes
-    if asset.provider == "kukutool_generic":
+    if asset.provider in SIGNED_THIRD_PARTY_VIDEO_PROVIDERS:
         return 0
     return probe_media_size(asset.url)
 
 
 def build_provider_preview_query(asset, preview_url, asset_id_suffix=""):
-    if asset.provider != "kukutool_generic" or not preview_url:
+    if not asset.provider or not preview_url:
         return ""
     if not asset.asset_id or not asset.provider_resource_id or not asset.provider_cache_key:
         return ""
 
     asset_id = asset.asset_id
+    media_type = asset.media_type
     if asset_id_suffix:
         asset_id = f"{asset_id}:{asset_id_suffix}"
+        media_type = "image"
+    item = {
+        "type": media_type,
+        "url": preview_url,
+        "asset_id": asset_id,
+        "provider": asset.provider,
+        "provider_resource_id": asset.provider_resource_id,
+        "provider_cache_key": asset.provider_cache_key,
+    }
     token = build_provider_manifest_token(
         asset_id=asset_id,
         provider=asset.provider,
         provider_resource_id=asset.provider_resource_id,
         provider_cache_key=asset.provider_cache_key,
         url=preview_url,
+        media_type=media_type,
     )
+    item["provider_manifest_token"] = token
+    if not provider_manifest_allows_public_download(item):
+        return ""
     return urlencode(
         {
+            "type": media_type,
             "asset_id": asset_id,
             "provider": asset.provider,
             "provider_resource_id": asset.provider_resource_id,
@@ -113,6 +137,7 @@ def build_provider_preview_query(asset, preview_url, asset_id_suffix=""):
 
 def build_provider_preview_item(request, url):
     item = {
+        "type": request.GET.get("type", ""),
         "url": url,
         "asset_id": request.GET.get("asset_id", ""),
         "provider": request.GET.get("provider", ""),
@@ -200,10 +225,75 @@ def request_flag(value):
 
 
 def ultra_hd_is_available():
-    if not settings.ULTRA_HD_PUBLIC_ACCESS_ENABLED:
+    if not (
+        settings.ULTRA_HD_PUBLIC_ACCESS_ENABLED
+        and settings.ULTRA_HD_PROVIDER_ENABLED
+        and settings.KUKUTOOL_PROVIDER_ENABLED
+    ):
         return False
     health = get_kukutool_provider_health()
     return health["available"]
+
+
+def build_third_party_provider_summary(kukutool_health, gallerydl_health, ytdlp_health):
+    kukutool_enabled = bool(kukutool_health.get("provider_enabled"))
+    kukutool_circuit_open = bool((kukutool_health.get("circuit") or {}).get("open"))
+    provider_states = {
+        "kukutool_generic": {
+            "enabled": kukutool_enabled,
+            "ready": bool(kukutool_enabled and not kukutool_circuit_open),
+            "issue": "circuit_open" if kukutool_circuit_open else "",
+        },
+        "gallery_dl_generic": {
+            "enabled": bool(gallerydl_health.get("enabled")),
+            "ready": bool(gallerydl_health.get("enabled") and gallerydl_health.get("ready")),
+            "issue": (
+                gallerydl_health.get("version_probe_error")
+                or gallerydl_health.get("error")
+                or ""
+            ),
+        },
+        "yt_dlp_generic": {
+            "enabled": bool(ytdlp_health.get("enabled")),
+            "ready": bool(ytdlp_health.get("enabled") and ytdlp_health.get("ready")),
+            "issue": (
+                ytdlp_health.get("version_probe_error")
+                or ytdlp_health.get("error")
+                or ""
+            ),
+        },
+    }
+    enabled_provider_ids = tuple(
+        provider_id
+        for provider_id, state in provider_states.items()
+        if state["enabled"]
+    )
+    ready_provider_ids = tuple(
+        provider_id
+        for provider_id, state in provider_states.items()
+        if state["ready"]
+    )
+    global_enabled = bool(getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False))
+    public_access_enabled = bool(
+        getattr(settings, "THIRD_PARTY_PUBLIC_ACCESS_ENABLED", False)
+    )
+    issue = ""
+    if global_enabled and public_access_enabled and not enabled_provider_ids:
+        issue = "no_provider_enabled"
+    elif global_enabled and public_access_enabled and not ready_provider_ids:
+        issue = "no_ready_provider"
+    return {
+        "enabled": global_enabled,
+        "public_access_enabled": public_access_enabled,
+        "configured": bool(global_enabled and enabled_provider_ids),
+        "public_ready": bool(
+            global_enabled and public_access_enabled and ready_provider_ids
+        ),
+        "enabled_provider_ids": enabled_provider_ids,
+        "ready_provider_ids": ready_provider_ids,
+        "provider_states": provider_states,
+        "issue": issue,
+    }
 
 
 @require_GET
@@ -211,8 +301,18 @@ def provider_health_view(request):
     if not request.user.is_active or not request.user.is_staff:
         return JsonResponse({"detail": "Not found."}, status=404)
     health = get_kukutool_provider_health()
-    health["third_party"] = KukutoolGenericProvider().health(
+    third_party_health = KukutoolGenericProvider().health(
         source_key=request.GET.get("source_key", "")
+    )
+    gallerydl_health = GalleryDlGenericProvider().health()
+    ytdlp_health = YtDlpGenericProvider().health()
+    health["third_party"] = third_party_health
+    health["third_party_gallerydl"] = gallerydl_health
+    health["third_party_ytdlp"] = ytdlp_health
+    health["third_party_summary"] = build_third_party_provider_summary(
+        third_party_health,
+        gallerydl_health,
+        ytdlp_health,
     )
     response = JsonResponse(health)
     response["Cache-Control"] = "no-store"
@@ -237,7 +337,17 @@ def provider_control_view(request):
         )
     set_kukutool_admin_disabled(action == "disable")
     health = get_kukutool_provider_health()
-    health["third_party"] = KukutoolGenericProvider().health()
+    third_party_health = KukutoolGenericProvider().health()
+    gallerydl_health = GalleryDlGenericProvider().health()
+    ytdlp_health = YtDlpGenericProvider().health()
+    health["third_party"] = third_party_health
+    health["third_party_gallerydl"] = gallerydl_health
+    health["third_party_ytdlp"] = ytdlp_health
+    health["third_party_summary"] = build_third_party_provider_summary(
+        third_party_health,
+        gallerydl_health,
+        ytdlp_health,
+    )
     response = JsonResponse(health)
     response["Cache-Control"] = "no-store"
     return response
@@ -492,6 +602,21 @@ def build_search_results_context(request, platform_key="home"):
             context["error_message"] = "第三方解析请求过于频繁，请稍后再试。"
             context["retry_after"] = limit.retry_after
             return context, 429
+        try:
+            global_limit = consume_fixed_window(
+                "third-party-provider-minute-global",
+                "all",
+                settings.THIRD_PARTY_GLOBAL_REQUEST_LIMIT_PER_MINUTE,
+                60,
+            )
+        except Exception:
+            logger.exception("Third-party provider global rate-limit cache failed")
+            context["error_message"] = "第三方解析保护服务暂时不可用，请稍后再试。"
+            return context, 503
+        if not global_limit.allowed:
+            context["error_message"] = "第三方解析当前排队请求较多，请稍后再试。"
+            context["retry_after"] = global_limit.retry_after
+            return context, 429
 
     if prefer_ultra_hd:
         try:
@@ -692,6 +817,7 @@ def proxy_image_view(request):
     if not encoded_url:
         return placeholder_image_response()
 
+    provider_item = None
     try:
         image_url = decode_url(encoded_url)
         provider_item = build_provider_preview_item(request, image_url)
@@ -706,6 +832,7 @@ def proxy_image_view(request):
         with response:
             content_type = response.headers.get("Content-Type", "image/jpeg")
             if "image" not in content_type.lower():
+                invalidate_external_provider_caches(provider_item)
                 return placeholder_image_response()
 
             content = read_limited_response(response, max_bytes=PREVIEW_MAX_IMAGE_BYTES)
@@ -723,6 +850,8 @@ def proxy_image_view(request):
         return result
 
     except Exception as error:
+        if provider_item and is_recoverable_provider_download_error(error):
+            invalidate_external_provider_caches(provider_item)
         logger.warning("XHS preview proxy failed: %s", error)
         return placeholder_image_response()
 

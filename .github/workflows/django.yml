@@ -13,14 +13,14 @@ jobs:
     env:
       DJANGO_SECRET_KEY: ci-secret-key-not-for-production-9f7b6c4d2a1e8f0b5c3d6e7a8f9b0c1d
       DJANGO_DEBUG: "False"
-      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,testserver
       DJANGO_CACHE_URL: redis://localhost:6379/0
-      DJANGO_SECURE_SSL_REDIRECT: "True"
-      DJANGO_SESSION_COOKIE_SECURE: "True"
-      DJANGO_CSRF_COOKIE_SECURE: "True"
-      DJANGO_SECURE_HSTS_SECONDS: "31536000"
-      DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS: "True"
-      DJANGO_SECURE_HSTS_PRELOAD: "True"
+      DJANGO_SECURE_SSL_REDIRECT: "False"
+      DJANGO_SESSION_COOKIE_SECURE: "False"
+      DJANGO_CSRF_COOKIE_SECURE: "False"
+      DJANGO_SECURE_HSTS_SECONDS: "0"
+      DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS: "False"
+      DJANGO_SECURE_HSTS_PRELOAD: "False"
       KUKUTOOL_PROVIDER_ENABLED: "False"
       ULTRA_HD_PROVIDER_ENABLED: "False"
       THIRD_PARTY_PROVIDER_ENABLED: "False"
@@ -40,7 +40,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version-file: ".python-version"
           cache: pip
 
       - uses: actions/setup-node@v4
@@ -53,10 +53,18 @@ jobs:
       - name: Django checks
         run: |
           python manage.py check
+          DJANGO_SECURE_SSL_REDIRECT=True \
+          DJANGO_SESSION_COOKIE_SECURE=True \
+          DJANGO_CSRF_COOKIE_SECURE=True \
+          DJANGO_SECURE_HSTS_SECONDS=31536000 \
+          DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS=True \
+          DJANGO_SECURE_HSTS_PRELOAD=True \
           python manage.py check --deploy
+          python manage.py makemigrations --check --dry-run
+          python manage.py inspect_third_party_provider --health --json
 
       - name: Django tests
-        run: python manage.py test xhs_download --noinput
+        run: python manage.py test --noinput
 
       - name: Node syntax check
         run: node --check xhs_download/services/platforms/kukutool_provider.js

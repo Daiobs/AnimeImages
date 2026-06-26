@@ -1,9 +1,12 @@
 import json
+from io import StringIO
 from threading import Event
 from time import monotonic, sleep, time
 from unittest.mock import Mock, patch
 
 from django.core.cache import cache
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import SimpleTestCase
 
 from .services.assets import MediaAsset, ParseResult
@@ -17,6 +20,7 @@ from .services.platforms.douyin_kukutool import (
     build_kukutool_single_flight_key,
     build_kukutool_safe_env,
     cache_validated_candidate,
+    convert_sidecar_payload_to_kukutool_payload,
     find_node_runtime,
     get_cached_validated_candidate,
     get_kukutool_circuit_status,
@@ -25,6 +29,8 @@ from .services.platforms.douyin_kukutool import (
     record_kukutool_failure,
     record_kukutool_success,
     run_kukutool_helper,
+    run_kukutool_sidecar,
+    run_kukutool_upstream,
     run_kukutool_url_helper,
 )
 from .services.platforms.douyin_providers import (
@@ -76,6 +82,203 @@ class DouyinKukuToolTests(SimpleTestCase):
         })
 
         self.assertEqual(resources, ())
+
+    def test_sidecar_payload_converts_to_existing_kukutool_shape(self):
+        final_url = (
+            "https://v26-default.365yg.com/final/7fffffff/"
+            "video/tos/cn/bucket/source-final/"
+        )
+        payload = convert_sidecar_payload_to_kukutool_payload({
+            "contract_version": "douyin-source-resolver.v1",
+            "status": "ok",
+            "cached": True,
+            "cache": {"hit": True, "coalesced": False},
+            "timing": {"stage": "cache_hit", "total_ms": 12},
+            "best": {
+                "type": "超高清",
+                "size": 70_481_987,
+                "url": ULTRA_URL,
+                "final_url": final_url,
+                "bitrate": 53_031_000,
+                "quality_score": 13,
+                "object_key": "video/tos/cn/bucket/source",
+            },
+        })
+
+        resources = normalize_kukutool_payload(payload)
+
+        self.assertEqual(resources[0].url, final_url)
+        self.assertEqual(resources[0].size_bytes, 70_481_987)
+        self.assertEqual(resources[0].bit_rate, 53_031_000)
+        self.assertEqual(resources[0].quality_score, 13)
+        self.assertEqual(payload["_sidecar"]["timing"]["stage"], "cache_hit")
+
+    @patch("xhs_download.services.platforms.douyin_kukutool.requests.post")
+    def test_run_kukutool_sidecar_uses_stable_contract(self, mock_post):
+        response = Mock(
+            ok=True,
+            status_code=200,
+            content=b"{}",
+        )
+        response.json.return_value = {
+            "contract_version": "douyin-source-resolver.v1",
+            "status": "ok",
+            "best": {
+                "type": "超高清",
+                "size": 70_481_987,
+                "url": ULTRA_URL,
+            },
+        }
+        mock_post.return_value = response
+
+        payload = run_kukutool_sidecar(
+            AWEME_ID,
+            base_url="http://127.0.0.1:8787",
+            timeout_seconds=1,
+        )
+
+        self.assertEqual(normalize_kukutool_payload(payload)[0].url, ULTRA_URL)
+        self.assertEqual(
+            mock_post.call_args.args[0],
+            "http://127.0.0.1:8787/v1/ultra/resolve",
+        )
+        self.assertFalse(mock_post.call_args.kwargs["allow_redirects"])
+
+    @patch("xhs_download.services.platforms.douyin_kukutool.run_kukutool_helper")
+    @patch("xhs_download.services.platforms.douyin_kukutool.requests.post")
+    def test_run_kukutool_upstream_prefers_sidecar(self, mock_post, mock_helper):
+        response = Mock(
+            ok=True,
+            status_code=200,
+            content=b"{}",
+        )
+        response.json.return_value = {
+            "contract_version": "douyin-source-resolver.v1",
+            "status": "ok",
+            "best": {
+                "type": "超高清",
+                "size": 70_481_987,
+                "url": ULTRA_URL,
+            },
+        }
+        mock_post.return_value = response
+
+        payload = run_kukutool_upstream(
+            AWEME_ID,
+            sidecar_base_url="http://127.0.0.1:8787",
+            sidecar_timeout_seconds=1,
+            timeout_seconds=5,
+        )
+
+        self.assertEqual(normalize_kukutool_payload(payload)[0].url, ULTRA_URL)
+        mock_helper.assert_not_called()
+
+    @patch("xhs_download.services.platforms.douyin_kukutool.requests.get")
+    def test_sidecar_health_does_not_follow_redirects(self, mock_get):
+        from .services.platforms.douyin_kukutool import get_kukutool_sidecar_status
+
+        response = Mock(
+            ok=True,
+            status_code=200,
+            content=b"{}",
+        )
+        response.json.return_value = {
+            "contract_version": "douyin-source-resolver.v1",
+            "status": "ok",
+            "ultra_provider": {"status": "ok"},
+        }
+        mock_get.return_value = response
+
+        status = get_kukutool_sidecar_status(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("kukutool", "native"),
+                kukutool_sidecar_base_url="http://127.0.0.1:8787",
+            ),
+            force=True,
+        )
+
+        self.assertTrue(status["available"])
+        self.assertFalse(mock_get.call_args.kwargs["allow_redirects"])
+
+    @patch("xhs_download.management.commands.inspect_douyin_candidates.get_kukutool_provider_health")
+    def test_inspect_douyin_candidates_health_outputs_json(self, mock_health):
+        mock_health.return_value = {
+            "provider": "kukutool",
+            "available": True,
+            "runtime": {"available": False, "error": "provider disabled"},
+            "sidecar": {
+                "configured": True,
+                "available": True,
+                "base_url": "http://127.0.0.1:8787",
+                "error": "",
+            },
+            "circuit": {"open": False},
+        }
+        output = StringIO()
+
+        call_command("inspect_douyin_candidates", "--health", "--json", stdout=output)
+        payload = json.loads(output.getvalue())
+
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["provider"]["available"])
+        self.assertIn("settings", payload)
+        self.assertIn("issues", payload)
+
+    def test_inspect_douyin_candidates_requires_url_without_health(self):
+        with self.assertRaisesRegex(CommandError, "URL is required"):
+            call_command("inspect_douyin_candidates")
+
+    @patch("xhs_download.services.platforms.douyin_kukutool.run_kukutool_helper")
+    @patch("xhs_download.services.platforms.douyin_kukutool.run_kukutool_sidecar")
+    def test_run_kukutool_upstream_fallback_uses_remaining_budget(
+        self,
+        mock_sidecar,
+        mock_helper,
+    ):
+        mock_sidecar.side_effect = OSError("sidecar unavailable")
+        mock_helper.return_value = {
+            "videos": [{
+                "video_fullinfo": [{
+                    "type": "超高清",
+                    "size": 70_481_987,
+                    "url": ULTRA_URL,
+                }],
+            }],
+        }
+
+        payload = run_kukutool_upstream(
+            AWEME_ID,
+            sidecar_base_url="http://127.0.0.1:8787",
+            sidecar_timeout_seconds=0.2,
+            timeout_seconds=1.0,
+        )
+
+        self.assertEqual(normalize_kukutool_payload(payload)[0].url, ULTRA_URL)
+        self.assertLessEqual(mock_helper.call_args.kwargs["timeout_seconds"], 1.0)
+        self.assertGreater(mock_helper.call_args.kwargs["timeout_seconds"], 0)
+
+    @patch("xhs_download.services.platforms.douyin_kukutool.run_kukutool_helper")
+    @patch("xhs_download.services.platforms.douyin_kukutool.run_kukutool_sidecar")
+    @patch("xhs_download.services.platforms.douyin_kukutool.monotonic")
+    def test_run_kukutool_upstream_does_not_exceed_budget_after_sidecar_timeout(
+        self,
+        mock_monotonic,
+        mock_sidecar,
+        mock_helper,
+    ):
+        mock_monotonic.side_effect = [10.0, 11.1, 11.1]
+        mock_sidecar.side_effect = OSError("sidecar timed out")
+
+        with self.assertRaisesRegex(OSError, "sidecar timed out"):
+            run_kukutool_upstream(
+                AWEME_ID,
+                sidecar_base_url="http://127.0.0.1:8787",
+                sidecar_timeout_seconds=1.0,
+                timeout_seconds=1.0,
+            )
+
+        mock_helper.assert_not_called()
 
     def test_payload_deduplicates_rotating_urls_by_tos_object_key(self):
         second_url = (
@@ -218,6 +421,69 @@ class DouyinKukuToolTests(SimpleTestCase):
         self.assertEqual(result.metadata["selected_provider"], "kukutool")
         runner.assert_called_once()
         probe.probe.assert_not_called()
+
+    @patch("xhs_download.services.platforms.douyin_kukutool.requests.post")
+    def test_provider_can_use_sidecar_without_node_helper(self, mock_post):
+        response = Mock(
+            ok=True,
+            status_code=200,
+            content=b"{}",
+        )
+        response.json.return_value = {
+            "contract_version": "douyin-source-resolver.v1",
+            "status": "ok",
+            "cached": False,
+            "timing": {"stage": "verified", "total_ms": 100},
+            "best": {
+                "type": "超高清",
+                "size": 70_481_987,
+                "url": ULTRA_URL,
+            },
+        }
+        mock_post.return_value = response
+
+        class FakeAdapter:
+            platform_id = "douyin"
+            headers = DOUYIN_HEADERS
+            media_host_suffixes = ("365yg.com", "douyinvod.com")
+
+            def fetch_mobile_feed_result(self, _aweme_id, **_options):
+                return ParseResult(
+                    platform="douyin",
+                    post_type="video",
+                    base_filename="native",
+                    assets=(
+                        MediaAsset(
+                            media_type="video",
+                            url="https://v3-web.douyinvod.com/native.mp4",
+                            platform="douyin",
+                            cover_url="https://p3-sign.douyinpic.com/cover.jpeg",
+                        ),
+                    ),
+                )
+
+        provider = DouyinKukuToolProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("kukutool", "native"),
+                kukutool_sidecar_base_url="http://127.0.0.1:8787",
+            ),
+        )
+        result = provider.parse(
+            FakeAdapter(),
+            DouyinParseContext(
+                url=f"https://www.douyin.com/video/{AWEME_ID}",
+                aweme_id=AWEME_ID,
+            ),
+        )
+
+        self.assertEqual(result.video_assets[0].url, ULTRA_URL)
+        self.assertEqual(result.metadata["selected_provider"], "kukutool")
+        self.assertEqual(
+            result.metadata["fallback_reason"],
+            "kukutool_validated",
+        )
+        mock_post.assert_called()
 
     def test_provider_probes_when_preferred_resource_has_no_declared_size(self):
         payload = {

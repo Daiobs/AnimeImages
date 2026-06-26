@@ -15,18 +15,18 @@ def build_provider_manifest_token(
     provider_resource_id,
     provider_cache_key,
     url,
+    media_type="",
 ):
-    return signing.dumps(
-        {
-            "asset_id": str(asset_id or ""),
-            "provider": str(provider or ""),
-            "provider_resource_id": str(provider_resource_id or ""),
-            "provider_cache_key": str(provider_cache_key or ""),
-            "url": str(url or ""),
-        },
-        salt=PROVIDER_MANIFEST_SALT,
-        compress=True,
-    )
+    payload = {
+        "asset_id": str(asset_id or ""),
+        "provider": str(provider or ""),
+        "provider_resource_id": str(provider_resource_id or ""),
+        "provider_cache_key": str(provider_cache_key or ""),
+        "url": str(url or ""),
+    }
+    if media_type:
+        payload["type"] = str(media_type or "")
+    return signing.dumps(payload, salt=PROVIDER_MANIFEST_SALT, compress=True)
 
 
 def provider_manifest_is_valid(item):
@@ -60,4 +60,6 @@ def provider_manifest_is_valid(item):
         "provider_cache_key": str(item.get("provider_cache_key") or ""),
         "url": str(item.get("url") or ""),
     }
+    if "type" in payload:
+        expected["type"] = str(item.get("type") or "")
     return payload == expected

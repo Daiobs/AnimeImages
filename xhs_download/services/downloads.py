@@ -9,6 +9,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import requests
 from django.conf import settings
+from django.core.cache import cache
 from PIL import Image
 
 from .common import (
@@ -23,6 +24,14 @@ from .common import (
 )
 from .platforms.bilibili import BILIBILI_HEADERS, BILIBILI_MEDIA_HOST_SUFFIXES
 from .platforms.douyin import DOUYIN_HEADERS, DOUYIN_MEDIA_HOST_SUFFIXES
+from .platforms.external_tools import (
+    clear_cached_external_failure,
+    clear_cached_external_payload,
+)
+from .platforms.kukutool_generic import (
+    build_failure_cache_key as build_generic_kukutool_failure_cache_key,
+    build_payload_cache_key as build_generic_kukutool_payload_cache_key,
+)
 from .provider_recovery import (
     get_kukutool_manifest_identity,
     iter_kukutool_download_recovery_urls,
@@ -43,6 +52,11 @@ MAX_VIDEO_BYTES = 500 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
 CHUNK_SIZE = 1024 * 256
 ORIGINAL_FORMAT = "original"
+EXTERNAL_PAYLOAD_CACHE_PROVIDERS = {
+    "gallery_dl_generic",
+    "yt_dlp_generic",
+}
+GENERIC_KUKUTOOL_CACHE_PROVIDER = "kukutool_generic"
 
 
 def get_media_headers(url, platform=None):
@@ -242,7 +256,11 @@ def is_recoverable_provider_download_error(error):
 def provider_manifest_allows_public_download(item):
     if not isinstance(item, dict):
         return False
-    if item.get("provider") != "kukutool_generic":
+    if item.get("provider") not in {
+        "kukutool_generic",
+        "gallery_dl_generic",
+        "yt_dlp_generic",
+    }:
         return False
     if not provider_manifest_is_valid(item):
         return False
@@ -254,6 +272,71 @@ def provider_manifest_allows_public_download(item):
         item.get("provider_resource_id", ""),
     )
     return False
+
+
+def get_external_payload_manifest_identity(item):
+    if not isinstance(item, dict):
+        return None
+    provider = str(item.get("provider") or "")
+    if provider not in EXTERNAL_PAYLOAD_CACHE_PROVIDERS:
+        return None
+    if not provider_manifest_allows_public_download(item):
+        return None
+    source_key = str(item.get("provider_resource_id") or "")
+    expected_cache_key = f"third_party:{provider}:{source_key}"
+    if item.get("provider_cache_key") != expected_cache_key:
+        return None
+    return provider, source_key
+
+
+def get_generic_kukutool_manifest_identity(item):
+    if not isinstance(item, dict):
+        return None
+    if str(item.get("provider") or "") != GENERIC_KUKUTOOL_CACHE_PROVIDER:
+        return None
+    if not provider_manifest_allows_public_download(item):
+        return None
+    source_key = str(item.get("provider_resource_id") or "")
+    expected_cache_key = f"third_party:{GENERIC_KUKUTOOL_CACHE_PROVIDER}:{source_key}"
+    if item.get("provider_cache_key") != expected_cache_key:
+        return None
+    return source_key
+
+
+def invalidate_external_provider_caches(item):
+    identity = get_external_payload_manifest_identity(item)
+    if identity:
+        provider, source_key = identity
+        clear_cached_external_payload(provider, source_key)
+        clear_cached_external_failure(provider, source_key)
+        logger.info(
+            "external_provider_cache_invalidated",
+            extra={"provider": provider, "source_key": source_key},
+        )
+        return
+
+    source_key = get_generic_kukutool_manifest_identity(item)
+    if not source_key:
+        return
+    for cache_key in (
+        build_generic_kukutool_payload_cache_key(source_key),
+        build_generic_kukutool_failure_cache_key(source_key),
+    ):
+        try:
+            cache.delete(cache_key)
+        except Exception:
+            logger.exception(
+                "external_provider_cache_delete_failed",
+                extra={
+                    "provider": GENERIC_KUKUTOOL_CACHE_PROVIDER,
+                    "source_key": source_key,
+                    "cache_key": cache_key,
+                },
+            )
+    logger.info(
+        "external_provider_cache_invalidated",
+        extra={"provider": GENERIC_KUKUTOOL_CACHE_PROVIDER, "source_key": source_key},
+    )
 
 
 def validate_provider_signed_download_url(provider_item, url, message):
@@ -287,6 +370,7 @@ def build_provider_signed_cover_item(item, cover_url):
         provider_resource_id=cover_item["provider_resource_id"],
         provider_cache_key=cover_item["provider_cache_key"],
         url=cover_url,
+        media_type="image",
     )
     return cover_item
 
@@ -483,6 +567,11 @@ def fetch_item_to_temp_path(
             )
         except Exception as error:
             last_error = error
+            if (
+                provider_signed
+                and is_recoverable_provider_download_error(error)
+            ):
+                invalidate_external_provider_caches(provider_item)
             if (
                 recovery_enabled
                 and recovery_urls is None

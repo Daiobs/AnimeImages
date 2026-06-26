@@ -43,6 +43,8 @@ MEDIA_HOST_SUFFIXES = (
     "bilivideo.com",
     "hdslb.com",
 )
+URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+")
+TRAILING_URL_CHARS = "，,。；;！!？?）)]】》"
 
 
 class XhsError(ValueError):
@@ -89,6 +91,16 @@ def normalize_text(text):
         .replace("\\/", "/")
         .replace("&amp;", "&")
     )
+
+
+def extract_url_from_text(value):
+    value = (value or "").strip()
+    match = URL_PATTERN.search(value)
+    candidate = match.group(0).rstrip(TRAILING_URL_CHARS) if match else value
+    parsed = urlparse(candidate)
+    if parsed.scheme in {"http", "https"} and parsed.hostname:
+        return candidate
+    return value
 
 
 def host_matches(hostname, allowed_suffixes):

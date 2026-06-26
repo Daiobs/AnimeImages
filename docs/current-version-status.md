@@ -1,12 +1,13 @@
 # Current Version Status
 
-Date: 2026-06-13
+Date: 2026-06-26
 
 ## Summary
 
 - The universal input still routes Xiaohongshu, Douyin, and Bilibili through platform adapters.
 - Normal Douyin parsing remains native-only and does not call any external provider.
 - When the settings-modal ultra-HD switch is enabled, KuKuTool is the only external upstream.
+- Generic third-party parsing can optionally use disabled-by-default yt-dlp and gallery-dl providers; KuKuTool generic can be disabled independently for staged rollout.
 - TikHub and `native_enhanced` remain in the codebase for research and diagnostics, but are ignored by the synchronous ultra-HD request path.
 - The request waits at most three seconds for KuKuTool while native runs concurrently.
 - A slow KuKuTool task continues in a bounded background pool and fills Redis cache after native fallback.
@@ -46,6 +47,24 @@ ULTRA_HD_PROVIDER_ENABLED=False
 ULTRA_HD_PUBLIC_ACCESS_ENABLED=False
 KUKUTOOL_PROVIDER_ENABLED=False
 KUKUTOOL_NODE_BINARY=/path/to/node
+KUKUTOOL_SIDECAR_BASE_URL=
+KUKUTOOL_SIDECAR_TIMEOUT_SECONDS=3.0
+KUKUTOOL_SIDECAR_HEALTH_TIMEOUT_SECONDS=0.5
+TIKHUB_API_KEY=
+TIKHUB_BASE_URL=https://api.tikhub.io
+TIKHUB_CHINA_BASE_URL=https://api.tikhub.dev
+TIKHUB_REGION=CN
+TIKHUB_DEFAULT_COUNTRY_CODE=CN
+TIKHUB_TRUST_COUNTRY_HEADER=False
+TIKHUB_COUNTRY_HEADER=HTTP_CF_IPCOUNTRY
+TIKHUB_GEOIP_DATABASE_PATH=
+TIKHUB_DAILY_LIMIT=0
+TIKHUB_CONNECT_TIMEOUT_SECONDS=1.0
+TIKHUB_READ_TIMEOUT_SECONDS=6.5
+TIKHUB_MAX_ATTEMPTS=2
+TIKHUB_PROBE_TIMEOUT_SECONDS=1.8
+TIKHUB_MAX_PROBE_CANDIDATES=1
+TIKHUB_VALIDATED_CACHE_TTL_SECONDS=600
 KUKUTOOL_TIMEOUT_SECONDS=12.0
 KUKUTOOL_PROBE_TIMEOUT_SECONDS=2.0
 KUKUTOOL_MAX_PROBE_CANDIDATES=2
@@ -69,9 +88,73 @@ DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS=3.0
 DOUYIN_ULTRA_NATIVE_TIMEOUT_SECONDS=3.0
 DOUYIN_NATIVE_EXECUTOR_WORKERS=4
 DOUYIN_NATIVE_MAX_PENDING_TASKS=8
+THIRD_PARTY_PROVIDER_ENABLED=False
+THIRD_PARTY_PUBLIC_ACCESS_ENABLED=False
+THIRD_PARTY_RATE_LIMIT_PER_MINUTE=2
+THIRD_PARTY_GLOBAL_REQUEST_LIMIT_PER_MINUTE=30
+THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS=3.0
+THIRD_PARTY_EXTERNAL_OUTPUT_MAX_BYTES=8388608
+THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=False
+THIRD_PARTY_KUKUTOOL_TIMEOUT_SECONDS=12.0
+THIRD_PARTY_KUKUTOOL_RETRIES=2
+THIRD_PARTY_KUKUTOOL_EXECUTOR_WORKERS=2
+THIRD_PARTY_KUKUTOOL_MAX_PENDING_TASKS=4
+THIRD_PARTY_KUKUTOOL_GLOBAL_MAX_CONCURRENCY=4
+THIRD_PARTY_KUKUTOOL_SINGLE_FLIGHT_TTL_SECONDS=30
+THIRD_PARTY_KUKUTOOL_FAILURE_CACHE_TTL_SECONDS=15
+THIRD_PARTY_KUKUTOOL_CACHE_POLL_INTERVAL_SECONDS=0.1
+THIRD_PARTY_KUKUTOOL_CIRCUIT_FAILURE_THRESHOLD=5
+THIRD_PARTY_KUKUTOOL_CIRCUIT_WINDOW_SECONDS=60
+THIRD_PARTY_KUKUTOOL_CIRCUIT_OPEN_SECONDS=120
+THIRD_PARTY_KUKUTOOL_PROFILE_CACHE_TTL_SECONDS=86400
+THIRD_PARTY_KUKUTOOL_PAYLOAD_CACHE_TTL_SECONDS=120
+YTDLP_PROVIDER_ENABLED=False
+YTDLP_BINARY=/path/to/yt-dlp
+YTDLP_TIMEOUT_SECONDS=15.0
+YTDLP_EXECUTOR_WORKERS=1
+YTDLP_MAX_PENDING_TASKS=2
+YTDLP_PAYLOAD_CACHE_TTL_SECONDS=300
+YTDLP_FAILURE_CACHE_TTL_SECONDS=30
+GALLERYDL_PROVIDER_ENABLED=False
+GALLERYDL_BINARY=/path/to/gallery-dl
+GALLERYDL_TIMEOUT_SECONDS=15.0
+GALLERYDL_EXECUTOR_WORKERS=1
+GALLERYDL_MAX_PENDING_TASKS=2
+GALLERYDL_MAX_ITEMS=30
+GALLERYDL_PAYLOAD_CACHE_TTL_SECONDS=300
+GALLERYDL_FAILURE_CACHE_TTL_SECONDS=30
 ```
 
-Node.js 18 or newer is required. Production defaults KuKuTool to disabled and requires an explicit `KUKUTOOL_NODE_BINARY` before staging enables it. Runtime discovery happens at process startup, not during page rendering. Production should use Redis-backed Django cache so validated results, metadata, single-flight, limits, the circuit breaker, and the administrator kill switch are shared across workers.
+KuKuTool can run through the in-process Node helper or an internal `douyin-source-resolver` sidecar. Direct helper mode requires Node.js 18 or newer. Production defaults KuKuTool to disabled and requires either an explicit `KUKUTOOL_NODE_BINARY` or `KUKUTOOL_SIDECAR_BASE_URL` before staging enables it. Runtime discovery happens at process startup, and sidecar health is cached through a short `/health` probe. Sidecar-to-helper fallback is budget-aware: after a sidecar failure, the helper can only use the remaining request budget. Production should use Redis-backed Django cache so validated results, metadata, single-flight, limits, the circuit breaker, and the administrator kill switch are shared across workers.
+
+Production Redis cache configuration now has an explicit dependency check. If `DJANGO_CACHE_URL` points at `redis://` or `rediss://` but the Python `redis` package is missing, `manage.py check` reports `xhs_download.E008` before deployment. Actual Redis connectivity is still checked by `/health/ready/`, not by `manage.py check`.
+
+The generic third-party provider layer is independent from Douyin ultra-HD. `THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED` controls only the generic KuKuTool path and is separate from the Douyin ultra-HD `KUKUTOOL_PROVIDER_ENABLED` switch, so the app can gray-release `yt-dlp` or `gallery-dl` without invoking the KuKuTool Node helper. KuKuTool generic is disabled by default in both local and production settings and must be explicitly enabled. The yt-dlp fallback is intended to broaden generic video platform coverage, not to replace the self-owned 365yg/TOS research path. The gallery-dl fallback is the matching image/gallery breadth layer for allowlisted public media platforms; static images stay image assets, while animated `.mp4/.webm` resources are surfaced as video assets. Gallery-dl low-quality field filtering is scoped per gallery item: an original candidate suppresses only that item's thumbnail/preview duplicate, while thumbnail-only items elsewhere in the same gallery remain downloadable. Keep all generic third-party providers disabled in production until executable paths, platform allowlists, rate limits, and worker isolation have been verified.
+
+Provider order is platform-specific. YouTube uses `yt_dlp_generic` before KuKuTool generic, video-oriented generic platforms prefer KuKuTool then yt-dlp, and image/gallery platforms prefer KuKuTool then gallery-dl. This keeps the long-tail layer extensible without forcing every platform through the same global order.
+
+Generic provider attempts now include structured timing diagnostics in logs and `ParseResult.metadata`. This is the minimum observability needed before adding more long-tail platforms because a user-visible “没有解析到” can now be traced to a specific provider, duration, error type, and fallback path.
+
+The optional `yt-dlp` and `gallery-dl` providers now have preflight binary checks. Health output reports `executable_found`, `resolved_executable`, `version_probe_ok`, and `ready`; enabled providers run a short cached `--version` probe in health and Django system checks. Checks fail when an enabled provider points to a missing executable, fails the probe, or when production enables it without an explicit binary command. The yt-dlp runner uses `--ignore-config`, and the external command environment sets `YTDLP_NO_PLUGINS=1` plus `PYTHONNOUSERSITE=1`; each command also runs from a temporary cwd with temporary `HOME`, so user-level yt-dlp configuration, plugins, caches, and user-site Python packages cannot silently change provider behavior.
+
+KuKuTool generic and the optional external command providers now use best-effort short-lived payload and failure caches. Repeated requests for the same source URL can reuse parsed JSON, while repeated failures are quickly short-circuited for a small window to protect local worker pools. Cache read/write failures are logged and the provider still attempts a real parse. If a signed KuKuTool generic, `yt-dlp`, or `gallery-dl` direct URL later fails during preview or download with a recoverable HTTP/type error, the matching payload and failure caches are deleted so the next parse can refresh provider output instead of being blocked by stale state. External command subprocess timeout is capped by `THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS` when that frontend budget is lower than the provider-specific timeout, and stdout/stderr is read back from temporary files only after enforcing `THIRD_PARTY_EXTERNAL_OUTPUT_MAX_BYTES`. Those subprocesses also run in isolated temporary cwd/`HOME` directories. The generic adapter stops serial fallback once that shared frontend budget is exhausted, so gray-release requests do not block the page for multiple full external tool timeouts or buffer unbounded extractor output in memory.
+
+These tools are intentionally not part of the base `requirements.txt`. Local tests can install them into `.venv` and point `YTDLP_BINARY` / `GALLERYDL_BINARY` at `".venv/bin/python -m yt_dlp"` and `".venv/bin/python -m gallery_dl"`, while production should use pinned system or container binary commands. Because the process `HOME` is temporary, provider behavior must not depend on user-home config files or cache state.
+
+Do not vendor upstream yt-dlp, gallery-dl, or MeTube source code into this repository. The current integration boundary is an external command plus signed provider manifest. Before distributing a deployment image, pin exact tool versions and review the active upstream licenses and release channels; as of this review, yt-dlp source is Unlicense while packaged builds can include extra third-party notices, gallery-dl is GPL-2.0 and its GitHub project points active development toward Codeberg, and MeTube is AGPL-3.0. MeTube remains a product/queue reference only.
+
+Before opening the generic third-party web entrypoint, run `.venv/bin/python manage.py inspect_third_party_provider --health --json`. The health mode does not require a URL and reports provider readiness, platform coverage, and configuration issues. KuKuTool generic cache reads are best effort in this diagnostic path: Redis failures are surfaced as `cache_error` in the JSON payload instead of printing tracebacks before the JSON body. Normal parse diagnostics redact provider media URLs and URLs embedded in error text by default so copied JSON does not leak short-lived CDN links; use `--show-urls` only for local manual verification. It is the quickest preflight check for local PyCharm validation and staged production rollout.
+
+For the dedicated Douyin ultra-HD path, run `.venv/bin/python manage.py inspect_douyin_candidates --health --json`. This command reports the KuKuTool runtime, optional `douyin-source-resolver` sidecar health, circuit state, and whether `KUKUTOOL_NODE_BINARY` or `KUKUTOOL_SIDECAR_BASE_URL` is configured.
+
+Local smoke results on June 26, 2026:
+
+- `yt-dlp` 2026.03.17 successfully parsed `https://www.youtube.com/watch?v=dQw4w9WgXcQ` through `inspect_third_party_provider` with `.venv/bin/python -m yt_dlp` and `--timeout 10` in about 2.7 seconds, returning one signed `googlevideo.com` direct mp4 asset plus an `i.ytimg.com` cover. The selected file was 360p and about 11.8 MB because the current generic provider only accepts complete single-file direct HTTP media. Higher YouTube qualities usually require separate audio/video stream merging; known video-only, audio-only, and codec-ambiguous URL candidates are filtered out to avoid silent downloads, and merge/transcode remains intentionally out of scope for this synchronous fallback path.
+- `gallery-dl` 1.32.4 successfully parsed `https://imgur.com/a/4ai9c` through `inspect_third_party_provider` with `.venv/bin/python -m gallery_dl` and `--timeout 10` in about 1.9 seconds, returning one signed `i.imgur.com` direct image asset. A real payload check caught an album metadata pitfall where nested `album.url` could inherit the parent image extension and be misclassified as media; the normalizer now determines a nested URL's media type from its own node plus URL suffix, so page URLs such as `https://imgur.com/a/...` are filtered out.
+- `gallery-dl` 1.32.4 successfully parsed `https://www.flickr.com/photos/nasa2explore/53566933692` through `inspect_third_party_provider` with `.venv/bin/python -m gallery_dl` and `--timeout 8` in about 6.5 seconds, returning one allowlisted `live.staticflickr.com` direct image asset. This confirms that gallery-dl image/gallery rollout may need a higher `THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS` than the default 3 seconds, or should be routed through a sidecar/job queue before broad public exposure.
+- With `THIRD_PARTY_PROVIDER_ENABLED=True`, `THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True`, `YTDLP_PROVIDER_ENABLED=True`, `YTDLP_BINARY=".venv/bin/python -m yt_dlp"`, `GALLERYDL_PROVIDER_ENABLED=True`, and `GALLERYDL_BINARY=".venv/bin/python -m gallery_dl"`, `manage.py check` passes and `inspect_third_party_provider --health --json` reports both external command providers as enabled and ready. The health report separates rule coverage from runtime state: `provider_ids` shows the platform allowlist and fallback order, while `enabled_provider_ids` / `ready_provider_ids` show the currently active subset. In that configuration YouTube has `yt_dlp_generic` ready, and image/gallery platforms such as Imgur, Reddit, Tumblr, Flickr, and DeviantArt have `gallery_dl_generic` ready.
+- The same YouTube and Flickr links were also smoke-tested through the `/results/` AJAX path with third-party public parsing enabled locally; the gallery-dl path used a raised generic timeout. The rendered result regions included the expected `yt_dlp_generic` / `gallery_dl_generic` data attributes, provider notices, and signed provider manifest tokens.
+- A first Flickr smoke attempt with `https://www.flickr.com/photos/nasacommons/9457855730/` returned `NotFoundError` from gallery-dl, so it should not be used as this project's smoke fixture.
 
 ## Known Issues
 
@@ -86,7 +169,8 @@ Node.js 18 or newer is required. Production defaults KuKuTool to disabled and re
 
 ## Next Priorities
 
-1. Replace per-request Node startup with a long-running internal Node sidecar.
-2. Persist provider stage timings and calculate P50/P95 from real use.
-3. Move the interim staff-only provider health/control JSON endpoints into a small administrator UI with alert history.
-4. Continue the self-owned 365yg/TOS provider research so KuKuTool can eventually be replaced.
+1. Prefer the long-running `douyin-source-resolver` sidecar for staging and production, keeping direct Node startup as a local/development fallback.
+2. Design the production download queue along MeTube-like lines: bounded concurrency, durable task state, progress events, and isolated worker processes, but keep it inside this project's own Django/Celery or sidecar architecture.
+3. Persist provider stage timings and calculate P50/P95 from real use.
+4. Move the interim staff-only provider health/control JSON endpoints into a small administrator UI with alert history.
+5. Continue the self-owned 365yg/TOS provider research so KuKuTool can eventually be replaced.
