@@ -275,6 +275,34 @@ def frontend_budget_seconds(rule=None):
     return base_budget
 
 
+def build_third_party_rollout_status(
+    *,
+    enabled,
+    public_access_enabled,
+    staff_only,
+    issue="",
+):
+    if not enabled or not public_access_enabled:
+        return {
+            "status": "disabled",
+            "reason": "third_party_entrypoint_disabled",
+        }
+    if issue:
+        return {
+            "status": "hold",
+            "reason": issue,
+        }
+    if staff_only:
+        return {
+            "status": "staff_only",
+            "reason": "staff_only_gate_enabled",
+        }
+    return {
+        "status": "public_candidate",
+        "reason": "ready_but_requires_manual_public_approval",
+    }
+
+
 def remaining_budget_seconds(deadline):
     return max(0.0, deadline - time.monotonic())
 
@@ -293,11 +321,23 @@ def provider_deadline_exceeded(deadline, *, provider_id, rule, attempts):
     return True
 
 
-def result_with_provider_diagnostics(result, provider_id, duration_ms, attempts):
+def result_with_provider_diagnostics(
+    result,
+    provider_id,
+    duration_ms,
+    attempts,
+    *,
+    total_duration_ms=None,
+):
     metadata = dict(result.metadata or {})
     metadata.update({
         "selected_provider": provider_id,
         "selected_provider_duration_ms": duration_ms,
+        "provider_total_duration_ms": (
+            int(total_duration_ms)
+            if total_duration_ms is not None
+            else int(duration_ms)
+        ),
         "provider_attempts": tuple(attempts),
         "provider_fallback_count": sum(
             1 for attempt in attempts if attempt.get("status") != "success"
@@ -433,7 +473,8 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         providers = list(self.iter_provider_specs(rule, respect_enabled=True))
         failures = []
         attempts = []
-        deadline = time.monotonic() + frontend_budget_seconds(rule)
+        parse_started_at = time.monotonic()
+        deadline = parse_started_at + frontend_budget_seconds(rule)
         if prefer_youtube_merge and getattr(rule, "platform_id", "") == "youtube":
             health = get_youtube_merge_health()
             if (
@@ -463,6 +504,7 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
                             "provider": YOUTUBE_MERGE_PROVIDER_ID,
                             "platform": getattr(rule, "platform_id", ""),
                             "duration_ms": duration_ms,
+                            "total_duration_ms": elapsed_ms(parse_started_at),
                             "attempt_count": len(attempts),
                             "asset_count": len(result.assets),
                         },
@@ -472,6 +514,7 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
                         YOUTUBE_MERGE_PROVIDER_ID,
                         duration_ms,
                         attempts,
+                        total_duration_ms=elapsed_ms(parse_started_at),
                     )
                 except Exception as error:
                     duration_ms = elapsed_ms(started_at)
@@ -577,6 +620,7 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
                         "provider": selected_provider_id,
                         "platform": getattr(rule, "platform_id", ""),
                         "duration_ms": duration_ms,
+                        "total_duration_ms": elapsed_ms(parse_started_at),
                         "attempt_count": len(attempts),
                         "asset_count": len(result.assets),
                     },
@@ -586,6 +630,7 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
                     selected_provider_id,
                     duration_ms,
                     attempts,
+                    total_duration_ms=elapsed_ms(parse_started_at),
                 )
             except XhsProviderTimeoutError as error:
                 duration_ms = elapsed_ms(started_at)
@@ -646,9 +691,18 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
             "third_party_provider_all_failed",
             extra={
                 "platform": getattr(rule, "platform_id", ""),
+                "duration_ms": elapsed_ms(parse_started_at),
                 "attempt_count": len(attempts),
                 "failure_count": len(failures),
                 "failed_providers": tuple(provider_id for provider_id, _error in failures),
+                "attempt_statuses": tuple(
+                    (
+                        attempt.get("provider", ""),
+                        attempt.get("status", ""),
+                        attempt.get("duration_ms", 0),
+                    )
+                    for attempt in attempts
+                ),
                 "failure_summary": summary[:500],
             },
         )

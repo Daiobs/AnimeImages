@@ -1,7 +1,8 @@
 import json
 import logging
+import time
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import requests
 from django.conf import settings
@@ -42,6 +43,7 @@ from .services.platforms.douyin_kukutool import (
 )
 from .services.platforms.gallerydl_generic import GalleryDlGenericProvider
 from .services.platforms.kukutool_generic import KukutoolGenericProvider
+from .services.platforms.third_party import build_third_party_rollout_status
 from .services.platforms.ytdlp_generic import YtDlpGenericProvider
 from .services.registry import get_adapter_for_url, parse_media_page
 from .services.provider_manifest import build_provider_manifest_token
@@ -253,6 +255,25 @@ def youtube_merge_mode_is_available(request):
     return True
 
 
+def request_user_is_staff(request):
+    user = getattr(request, "user", None)
+    return bool(
+        getattr(user, "is_active", False)
+        and getattr(user, "is_staff", False)
+    )
+
+
+def third_party_provider_is_available(request):
+    if not (
+        settings.THIRD_PARTY_PROVIDER_ENABLED
+        and settings.THIRD_PARTY_PUBLIC_ACCESS_ENABLED
+    ):
+        return False
+    if getattr(settings, "THIRD_PARTY_STAFF_ONLY", False):
+        return request_user_is_staff(request)
+    return True
+
+
 def build_third_party_provider_summary(kukutool_health, gallerydl_health, ytdlp_health):
     kukutool_enabled = bool(kukutool_health.get("provider_enabled"))
     kukutool_circuit_open = bool((kukutool_health.get("circuit") or {}).get("open"))
@@ -295,22 +316,37 @@ def build_third_party_provider_summary(kukutool_health, gallerydl_health, ytdlp_
     public_access_enabled = bool(
         getattr(settings, "THIRD_PARTY_PUBLIC_ACCESS_ENABLED", False)
     )
+    staff_only = bool(getattr(settings, "THIRD_PARTY_STAFF_ONLY", False))
     issue = ""
     if global_enabled and public_access_enabled and not enabled_provider_ids:
         issue = "no_provider_enabled"
     elif global_enabled and public_access_enabled and not ready_provider_ids:
         issue = "no_ready_provider"
+    rollout = build_third_party_rollout_status(
+        enabled=global_enabled,
+        public_access_enabled=public_access_enabled,
+        staff_only=staff_only,
+        issue=issue,
+    )
     return {
         "enabled": global_enabled,
         "public_access_enabled": public_access_enabled,
+        "staff_only": staff_only,
         "configured": bool(global_enabled and enabled_provider_ids),
         "public_ready": bool(
+            global_enabled
+            and public_access_enabled
+            and not staff_only
+            and ready_provider_ids
+        ),
+        "staff_ready": bool(
             global_enabled and public_access_enabled and ready_provider_ids
         ),
         "enabled_provider_ids": enabled_provider_ids,
         "ready_provider_ids": ready_provider_ids,
         "provider_states": provider_states,
         "issue": issue,
+        "rollout": rollout,
     }
 
 
@@ -543,6 +579,54 @@ def query_uses_third_party_provider(query):
         return False
 
 
+def log_parse_request_event(
+    event,
+    *,
+    query,
+    platform_key,
+    requested_ultra_hd,
+    prefer_ultra_hd,
+    requested_youtube_merge,
+    prefer_youtube_merge,
+    duration_ms,
+    result=None,
+    context=None,
+    error=None,
+):
+    parsed = urlparse(str(query or ""))
+    metadata = getattr(result, "metadata", None) or {}
+    image_count = len(context.get("image_items", ())) if context else 0
+    video_count = len(context.get("video_items", ())) if context else 0
+    extra = {
+        "page_platform": platform_key,
+        "query_host": parsed.hostname or "",
+        "requested_ultra_hd": bool(requested_ultra_hd),
+        "prefer_ultra_hd": bool(prefer_ultra_hd),
+        "requested_youtube_merge": bool(requested_youtube_merge),
+        "prefer_youtube_merge": bool(prefer_youtube_merge),
+        "duration_ms": int(duration_ms),
+        "platform": getattr(result, "platform", "") if result else "",
+        "post_type": getattr(result, "post_type", "") if result else "",
+        "source_platform": metadata.get("source_platform", ""),
+        "selected_provider": metadata.get("selected_provider", ""),
+        "selected_provider_duration_ms": metadata.get(
+            "selected_provider_duration_ms",
+            0,
+        ),
+        "provider_total_duration_ms": metadata.get(
+            "provider_total_duration_ms",
+            0,
+        ),
+        "provider_fallback_count": metadata.get("provider_fallback_count", 0),
+        "image_count": image_count,
+        "video_count": video_count,
+    }
+    if error is not None:
+        extra["error_type"] = type(error).__name__
+        extra["error"] = str(error)[:300]
+    logger.info(event, extra=extra)
+
+
 def search_view(request, platform_key="home"):
     return render(
         request,
@@ -613,10 +697,14 @@ def build_search_results_context(request, platform_key="home"):
         return context, 200
 
     if query_uses_third_party_provider(query):
-        if not (
-            settings.THIRD_PARTY_PROVIDER_ENABLED
-            and settings.THIRD_PARTY_PUBLIC_ACCESS_ENABLED
-        ):
+        if not third_party_provider_is_available(request):
+            if (
+                settings.THIRD_PARTY_PROVIDER_ENABLED
+                and settings.THIRD_PARTY_PUBLIC_ACCESS_ENABLED
+                and getattr(settings, "THIRD_PARTY_STAFF_ONLY", False)
+            ):
+                context["error_message"] = "第三方通用解析暂未向该用户开放。"
+                return context, 403
             context["error_message"] = "第三方通用解析暂未开放。"
             return context, 403
         try:
@@ -674,6 +762,7 @@ def build_search_results_context(request, platform_key="home"):
     if requested_youtube_merge and not prefer_youtube_merge:
         context["provider_notice"] = "当前环境未向该用户开放 YouTube 最高画质，本次默认优先 1080p。"
 
+    parse_started_at = time.monotonic()
     try:
         client_country_code = (
             get_request_country_code(request)
@@ -759,13 +848,58 @@ def build_search_results_context(request, platform_key="home"):
 
         if not context["image_items"] and not context["video_items"]:
             context["error_message"] = "没有解析到图片或视频。"
+        log_parse_request_event(
+            "media_parse_completed",
+            query=query,
+            platform_key=platform_key,
+            requested_ultra_hd=requested_ultra_hd,
+            prefer_ultra_hd=prefer_ultra_hd,
+            requested_youtube_merge=requested_youtube_merge,
+            prefer_youtube_merge=prefer_youtube_merge,
+            duration_ms=(time.monotonic() - parse_started_at) * 1000,
+            result=result,
+            context=context,
+        )
 
     except XhsProviderTimeoutError as error:
         context["error_message"] = str(error)
+        log_parse_request_event(
+            "media_parse_failed",
+            query=query,
+            platform_key=platform_key,
+            requested_ultra_hd=requested_ultra_hd,
+            prefer_ultra_hd=prefer_ultra_hd,
+            requested_youtube_merge=requested_youtube_merge,
+            prefer_youtube_merge=prefer_youtube_merge,
+            duration_ms=(time.monotonic() - parse_started_at) * 1000,
+            error=error,
+        )
     except XhsError as error:
         context["error_message"] = f"解析失败：{error}"
+        log_parse_request_event(
+            "media_parse_failed",
+            query=query,
+            platform_key=platform_key,
+            requested_ultra_hd=requested_ultra_hd,
+            prefer_ultra_hd=prefer_ultra_hd,
+            requested_youtube_merge=requested_youtube_merge,
+            prefer_youtube_merge=prefer_youtube_merge,
+            duration_ms=(time.monotonic() - parse_started_at) * 1000,
+            error=error,
+        )
     except requests.RequestException as error:
         context["error_message"] = f"请求页面失败：{error}"
+        log_parse_request_event(
+            "media_parse_failed",
+            query=query,
+            platform_key=platform_key,
+            requested_ultra_hd=requested_ultra_hd,
+            prefer_ultra_hd=prefer_ultra_hd,
+            requested_youtube_merge=requested_youtube_merge,
+            prefer_youtube_merge=prefer_youtube_merge,
+            duration_ms=(time.monotonic() - parse_started_at) * 1000,
+            error=error,
+        )
 
     return context, 200
 

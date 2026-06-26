@@ -12,6 +12,7 @@ from ...services.platforms.kukutool_generic import KukutoolGenericProvider
 from ...services.platforms.external_tools import external_command_output_max_bytes
 from ...services.platforms.third_party import (
     GenericThirdPartyAdapter,
+    build_third_party_rollout_status,
     elapsed_ms,
     frontend_budget_seconds,
     provider_is_enabled,
@@ -108,6 +109,67 @@ def summarize_result(result, *, show_urls=False):
             summarize_asset(asset, show_urls=show_urls)
             for asset in result.assets
         ],
+    }
+
+
+def build_provider_smoke_summary(result, *, rule, attempts):
+    metadata = result.metadata or {}
+    total_duration_ms = int(metadata.get("provider_total_duration_ms") or 0)
+    frontend_budget_ms = int(frontend_budget_seconds(rule) * 1000)
+    asset_count = len(result.assets)
+    media_types = tuple(sorted({asset.media_type for asset in result.assets}))
+    fallback_count = int(metadata.get("provider_fallback_count") or 0)
+    issues = []
+    if asset_count <= 0:
+        issues.append("no_assets")
+    if total_duration_ms > frontend_budget_ms:
+        issues.append("parse_exceeds_frontend_budget")
+    if not media_types:
+        issues.append("no_media_types")
+
+    return {
+        "parse_duration_ms": total_duration_ms,
+        "frontend_budget_ms": frontend_budget_ms,
+        "within_frontend_budget": total_duration_ms <= frontend_budget_ms,
+        "asset_count": asset_count,
+        "media_types": media_types,
+        "selected_provider": metadata.get("selected_provider", ""),
+        "source_platform": metadata.get("source_platform", ""),
+        "fallback_count": fallback_count,
+        "attempt_count": len(attempts),
+        "issues": tuple(issues),
+        "recommended_rollout": "staff_only" if not issues else "hold",
+    }
+
+
+def build_provider_failure_smoke_summary(*, rule, attempts, errors, duration_ms):
+    frontend_budget_ms = int(frontend_budget_seconds(rule) * 1000)
+    issue_codes = []
+    for error in errors:
+        status = error.get("status") or "failed"
+        if status == "timeout":
+            issue_codes.append("provider_timeout")
+        elif status == "rejected":
+            issue_codes.append("provider_rejected")
+        else:
+            issue_codes.append("provider_failed")
+    if not issue_codes:
+        issue_codes.append("no_provider_attempted")
+
+    return {
+        "parse_duration_ms": int(duration_ms),
+        "frontend_budget_ms": frontend_budget_ms,
+        "within_frontend_budget": int(duration_ms) <= frontend_budget_ms,
+        "asset_count": 0,
+        "media_types": (),
+        "selected_provider": "",
+        "source_platform": getattr(rule, "platform_id", ""),
+        "fallback_count": sum(
+            1 for attempt in attempts if attempt.get("status") != "success"
+        ),
+        "attempt_count": len(attempts),
+        "issues": tuple(dict.fromkeys(issue_codes)),
+        "recommended_rollout": "hold",
     }
 
 
@@ -220,15 +282,25 @@ def build_health_report(adapter, force_probe_provider_id=""):
                 "provider": provider_id,
                 "message": health.get("version_probe_error") or health.get("error") or "provider is not ready",
             })
+    third_party_enabled = bool(
+        getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False)
+    )
+    public_access_enabled = bool(
+        getattr(settings, "THIRD_PARTY_PUBLIC_ACCESS_ENABLED", False)
+    )
+    staff_only = bool(getattr(settings, "THIRD_PARTY_STAFF_ONLY", False))
+    rollout = build_third_party_rollout_status(
+        enabled=third_party_enabled,
+        public_access_enabled=public_access_enabled,
+        staff_only=staff_only,
+        issue=issues[0]["code"] if issues else "",
+    )
     return {
         "ok": not issues,
         "settings": {
-            "third_party_provider_enabled": bool(
-                getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False)
-            ),
-            "third_party_public_access_enabled": bool(
-                getattr(settings, "THIRD_PARTY_PUBLIC_ACCESS_ENABLED", False)
-            ),
+            "third_party_provider_enabled": third_party_enabled,
+            "third_party_public_access_enabled": public_access_enabled,
+            "third_party_staff_only": staff_only,
             "third_party_frontend_timeout_seconds": float(
                 getattr(settings, "THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS", 3.0) or 3.0
             ),
@@ -241,6 +313,7 @@ def build_health_report(adapter, force_probe_provider_id=""):
         "providers": health_by_id,
         "youtube_merge": get_youtube_merge_health(),
         "platform_rules": rules,
+        "rollout": rollout,
         "issues": tuple(issues),
     }
 
@@ -345,9 +418,10 @@ class Command(BaseCommand):
                 self.stdout.write(json.dumps(report, ensure_ascii=False, indent=2))
                 return
             self.stdout.write(
-                "third-party enabled: {enabled}, public access: {public}".format(
+                "third-party enabled: {enabled}, public access: {public}, staff only: {staff_only}".format(
                     enabled=report["settings"]["third_party_provider_enabled"],
                     public=report["settings"]["third_party_public_access_enabled"],
+                    staff_only=report["settings"]["third_party_staff_only"],
                 )
             )
             self.stdout.write(
@@ -358,6 +432,12 @@ class Command(BaseCommand):
             self.stdout.write(
                 "ready providers: {providers}".format(
                     providers=", ".join(report["ready_provider_ids"]) or "-"
+                )
+            )
+            self.stdout.write(
+                "rollout: {status} ({reason})".format(
+                    status=report["rollout"]["status"],
+                    reason=report["rollout"]["reason"],
                 )
             )
             for issue in report["issues"]:
@@ -472,7 +552,8 @@ class Command(BaseCommand):
 
         errors = []
         attempts = []
-        deadline = time.monotonic() + frontend_budget_seconds(rule)
+        started_at_total = time.monotonic()
+        deadline = started_at_total + frontend_budget_seconds(rule)
         for provider_id, provider, normalizer in providers:
             provider_timeout_seconds = remaining_budget_seconds(deadline)
             if provider_timeout_seconds <= 0:
@@ -531,6 +612,7 @@ class Command(BaseCommand):
                     selected_provider_id,
                     duration_ms,
                     attempts,
+                    total_duration_ms=elapsed_ms(started_at_total),
                 )
                 data = {
                     "ok": True,
@@ -538,6 +620,11 @@ class Command(BaseCommand):
                     "source_url": source_url,
                     "platform_id": rule.platform_id,
                     "rule": rule.to_dict(),
+                    "smoke": build_provider_smoke_summary(
+                        result,
+                        rule=rule,
+                        attempts=attempts,
+                    ),
                     "attempts": summarize_diagnostic_value(
                         attempts,
                         show_urls=bool(options["show_urls"]),
@@ -557,6 +644,12 @@ class Command(BaseCommand):
                 self.stdout.write(f"post_type: {result.post_type}")
                 self.stdout.write(f"base_filename: {result.base_filename}")
                 self.stdout.write(f"candidate_count: {result.metadata.get('candidate_count', 0)}")
+                self.stdout.write(
+                    f"smoke_rollout: {data['smoke']['recommended_rollout']}"
+                )
+                self.stdout.write(
+                    f"smoke_issues: {', '.join(data['smoke']['issues']) or '-'}"
+                )
                 self.stdout.write("attempts:")
                 for attempt in attempts:
                     self.stdout.write(
@@ -592,11 +685,18 @@ class Command(BaseCommand):
                 })
 
         if options["as_json"]:
+            duration_ms = elapsed_ms(started_at_total)
             self.stdout.write(json.dumps(
                 {
                     "ok": False,
                     "source_url": source_url,
                     "platform_id": rule.platform_id,
+                    "smoke": build_provider_failure_smoke_summary(
+                        rule=rule,
+                        attempts=attempts,
+                        errors=errors,
+                        duration_ms=duration_ms,
+                    ),
                     "errors": summarize_diagnostic_value(
                         errors,
                         show_urls=bool(options["show_urls"]),
