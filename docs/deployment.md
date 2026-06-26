@@ -123,7 +123,7 @@ ULTRA_HD_PUBLIC_ACCESS_ENABLED=False
 
 Keep both `ULTRA_HD_PUBLIC_ACCESS_ENABLED` and `KUKUTOOL_PROVIDER_ENABLED` disabled until KuKuTool latency, limits, download recovery, and protocol stability have been validated in staging. Production must provide either Node.js 18 or newer through an explicit `KUKUTOOL_NODE_BINARY`, or an internal `douyin-source-resolver` endpoint through `KUKUTOOL_SIDECAR_BASE_URL`; it does not search the system `PATH` or a user's Codex runtime.
 
-Production Redis is also used for KuKuTool single-flight, short failure caching, validated results, and the global upstream concurrency counter. Keep `DJANGO_CACHE_SOCKET_CONNECT_TIMEOUT` and `DJANGO_CACHE_SOCKET_TIMEOUT` below the three-second foreground budget so a cache outage cannot pin a request. The current bounded thread pools remain available as an interim deployment model. For sustained traffic, run the helper as the long-lived internal `douyin-source-resolver` sidecar or move resolution to Celery/RQ so Django workers never own subprocess lifecycles.
+Production Redis is also used for KuKuTool single-flight, short failure caching, validated results, and the global upstream concurrency counter. Keep `DJANGO_CACHE_SOCKET_CONNECT_TIMEOUT` and `DJANGO_CACHE_SOCKET_TIMEOUT` below the four-second foreground budget so a cache outage cannot pin a request. The current bounded thread pools remain available as an interim deployment model. For sustained traffic, run the helper as the long-lived internal `douyin-source-resolver` sidecar or move resolution to Celery/RQ so Django workers never own subprocess lifecycles.
 
 TikHub and country-aware API routing are retained only as dormant research code. They do not affect the current synchronous ultra-HD path.
 

@@ -900,7 +900,7 @@ class DouyinAdapter(BasePlatformAdapter):
         if prefer_ultra_hd:
             request_deadline = monotonic() + max(
                 0.1,
-                float(getattr(settings, "DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS", 15.0) or 0),
+                float(getattr(settings, "DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS", 4.0) or 0),
             )
         context = self.build_parse_context(
             url,
