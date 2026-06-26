@@ -195,6 +195,8 @@
         const clearLinkBtn = document.getElementById("clear-link-btn");
         const ultraHdRequestInput = document.getElementById("ultra-hd-request-input");
         const ultraHdSettingInput = document.getElementById("ultra-hd-setting");
+        const youtubeMergeRequestInput = document.getElementById("youtube-merge-request-input");
+        const youtubeMergeSettingInput = document.getElementById("youtube-merge-setting");
         const downloadModeInput = document.getElementById("download-mode");
         const browserDownloadSettings = document.getElementById("browser-download-settings");
         const serverSaveSettings = document.getElementById("server-save-settings");
@@ -256,6 +258,22 @@
             }
 
             ultraHdRequestInput.value = isUltraHdEnabled() ? "1" : "0";
+        }
+
+        function isYoutubeMergeEnabled() {
+            return Boolean(
+                youtubeMergeSettingInput
+                && youtubeMergeSettingInput.checked
+                && !youtubeMergeSettingInput.disabled
+            );
+        }
+
+        function updateYoutubeMergeRequestValue() {
+            if (!youtubeMergeRequestInput) {
+                return;
+            }
+
+            youtubeMergeRequestInput.value = isYoutubeMergeEnabled() ? "1" : "0";
         }
 
         function setPageHasResults(value) {
@@ -689,6 +707,7 @@
 
             event.preventDefault();
             updateUltraHdRequestValue();
+            updateYoutubeMergeRequestValue();
 
             if (!linkInput || !linkInput.value.trim()) {
                 linkInput && linkInput.focus();
@@ -748,6 +767,12 @@
         if (ultraHdSettingInput) {
             ultraHdSettingInput.checked = Boolean(savedSettings.ultra_hd_enabled) && !ultraHdSettingInput.disabled;
             updateUltraHdRequestValue();
+        }
+
+        if (youtubeMergeSettingInput) {
+            youtubeMergeSettingInput.checked = Boolean(savedSettings.youtube_merge_enabled)
+                && !youtubeMergeSettingInput.disabled;
+            updateYoutubeMergeRequestValue();
         }
 
         if (optionExists(downloadModeInput, downloadMode)) {
@@ -857,8 +882,10 @@
                     video_save_mode: videoSaveModeInput ? videoSaveModeInput.value : "video",
                     use_file_picker: useFilePicker,
                     ultra_hd_enabled: isUltraHdEnabled(),
+                    youtube_merge_enabled: isYoutubeMergeEnabled(),
                 });
                 updateUltraHdRequestValue();
+                updateYoutubeMergeRequestValue();
 
                 setStatus(getStatusElement(), "设置已保存", "text-success");
             });

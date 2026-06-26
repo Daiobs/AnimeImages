@@ -178,12 +178,15 @@ class YtDlpGenericProvider:
     def __init__(self, runner=None):
         self.runner = runner or run_ytdlp_json
 
-    def run(self, url, timeout_seconds=None):
-        timeout_seconds = effective_external_timeout_seconds(
-            timeout_seconds
-            if timeout_seconds is not None
-            else getattr(settings, "YTDLP_TIMEOUT_SECONDS", 15.0)
+    def normalize_timeout(self, timeout_seconds=None):
+        if timeout_seconds is not None:
+            return max(0.1, float(timeout_seconds or 0.1))
+        return effective_external_timeout_seconds(
+            getattr(settings, "YTDLP_TIMEOUT_SECONDS", 15.0)
         )
+
+    def run(self, url, timeout_seconds=None):
+        timeout_seconds = self.normalize_timeout(timeout_seconds)
         return self.runner(
             url,
             binary=getattr(settings, "YTDLP_BINARY", "") or "",
@@ -199,11 +202,7 @@ class YtDlpGenericProvider:
         if failure:
             raise XhsProviderTimeoutError("yt-dlp 最近解析失败，请稍后再试")
 
-        timeout_seconds = effective_external_timeout_seconds(
-            timeout_seconds
-            if timeout_seconds is not None
-            else getattr(settings, "YTDLP_TIMEOUT_SECONDS", 15.0)
-        )
+        timeout_seconds = self.normalize_timeout(timeout_seconds)
         future = submit_provider_task(
             "third-party-ytdlp",
             getattr(settings, "YTDLP_EXECUTOR_WORKERS", 1),

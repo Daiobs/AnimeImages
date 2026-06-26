@@ -9,6 +9,7 @@ from .services.platforms.douyin_kukutool import (
 )
 from .services.platforms.gallerydl_generic import GalleryDlGenericProvider
 from .services.platforms.ytdlp_generic import YtDlpGenericProvider
+from .services.youtube_merge import get_youtube_merge_health
 
 
 def third_party_specific_provider_enabled():
@@ -16,6 +17,7 @@ def third_party_specific_provider_enabled():
         getattr(settings, "THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED", False)
         or getattr(settings, "YTDLP_PROVIDER_ENABLED", False)
         or getattr(settings, "GALLERYDL_PROVIDER_ENABLED", False)
+        or getattr(settings, "YOUTUBE_MERGE_PROVIDER_ENABLED", False)
     )
 
 
@@ -141,4 +143,70 @@ def check_generic_external_provider_runtimes(app_configs, **kwargs):
             unavailable_error_id="xhs_download.E006",
         )
     )
+    return issues
+
+
+@register()
+def check_youtube_merge_provider_runtime(app_configs, **kwargs):
+    if not getattr(settings, "YOUTUBE_MERGE_PROVIDER_ENABLED", False):
+        return []
+
+    issues = []
+    production = getattr(settings, "REQUIRE_PRODUCTION_CONFIG", not settings.DEBUG)
+    if production and not getattr(settings, "YTDLP_BINARY", ""):
+        issues.append(
+            Error(
+                "Production YouTube merge mode requires an explicit YTDLP_BINARY.",
+                id="xhs_download.E009",
+            )
+        )
+    if (
+        production
+        and getattr(settings, "YOUTUBE_MERGE_REQUIRE_FFMPEG", True)
+        and not getattr(settings, "YOUTUBE_MERGE_FFMPEG_BINARY", "")
+    ):
+        issues.append(
+            Error(
+                "Production YouTube merge mode requires an explicit YOUTUBE_MERGE_FFMPEG_BINARY.",
+                id="xhs_download.E011",
+            )
+        )
+
+    health = get_youtube_merge_health(force_version_probe=True)
+    ytdlp_health = health.get("ytdlp") or {}
+    if not ytdlp_health.get("executable_found"):
+        issues.append(
+            Error(
+                "YouTube merge yt-dlp executable is unavailable: "
+                f"{ytdlp_health.get('error') or 'unknown error'}",
+                id="xhs_download.E010",
+            )
+        )
+    elif not ytdlp_health.get("version_probe_ok"):
+        issues.append(
+            Error(
+                "YouTube merge yt-dlp executable failed version probe: "
+                f"{ytdlp_health.get('version_probe_error') or 'unknown error'}",
+                id="xhs_download.E010",
+            )
+        )
+
+    if getattr(settings, "YOUTUBE_MERGE_REQUIRE_FFMPEG", True):
+        ffmpeg_health = health.get("ffmpeg") or {}
+        if not ffmpeg_health.get("executable_found"):
+            issues.append(
+                Error(
+                    "YouTube merge ffmpeg executable is unavailable: "
+                    f"{ffmpeg_health.get('error') or 'unknown error'}",
+                    id="xhs_download.E012",
+                )
+            )
+        elif not ffmpeg_health.get("version_probe_ok"):
+            issues.append(
+                Error(
+                    "YouTube merge ffmpeg executable failed version probe: "
+                    f"{ffmpeg_health.get('version_probe_error') or 'unknown error'}",
+                    id="xhs_download.E012",
+                )
+            )
     return issues

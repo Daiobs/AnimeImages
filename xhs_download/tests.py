@@ -32,6 +32,7 @@ from .services.downloads import (
     MAX_IMAGE_BYTES,
     build_download_archive,
     build_download_archive_file,
+    fetch_media_response,
     fetch_item_to_temp_path,
     fetch_to_temp_path,
     get_media_headers,
@@ -52,7 +53,11 @@ from .services.provider_settings import (
     normalize_provider_order,
 )
 from .services.provider_manifest import build_provider_manifest_token
-from .views import build_provider_preview_query
+from .views import (
+    build_provider_preview_query,
+    build_search_results_context,
+    youtube_merge_mode_is_available,
+)
 from .services.quality import QualityProbe, QualityProbeResult
 from .services.rate_limits import (
     get_client_identity,
@@ -240,6 +245,38 @@ class XhsUtilityTests(SimpleTestCase):
         validate_media_url("https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/video.mp4")
         validate_media_url("https://i0.hdslb.com/bfs/archive/cover.jpg")
 
+    def test_get_media_headers_uses_youtube_referer_for_ytimg(self):
+        headers = get_media_headers("https://i.ytimg.com/vi/demo/maxresdefault.jpg")
+
+        self.assertEqual(headers["Referer"], "https://www.youtube.com/")
+        self.assertEqual(headers["Origin"], "https://www.youtube.com")
+
+    @patch("xhs_download.services.downloads.request_public_provider_get_with_retry")
+    def test_provider_signed_fetch_uses_youtube_headers_by_default(self, mock_get):
+        media_url = "https://i.ytimg.com/vi/demo/maxresdefault.jpg"
+        item = {
+            "type": "image",
+            "url": media_url,
+            "asset_id": "third_party:youtube:abc123:video:1:cover",
+            "provider": "yt_dlp_generic",
+            "provider_resource_id": "abc123",
+            "provider_cache_key": "third_party:yt_dlp_generic:abc123",
+        }
+        item["provider_manifest_token"] = build_provider_manifest_token(
+            asset_id=item["asset_id"],
+            provider=item["provider"],
+            provider_resource_id=item["provider_resource_id"],
+            provider_cache_key=item["provider_cache_key"],
+            url=media_url,
+            media_type="image",
+        )
+
+        fetch_media_response(media_url, provider_signed=item)
+
+        headers = mock_get.call_args.kwargs["headers"]
+        self.assertEqual(headers["Referer"], "https://www.youtube.com/")
+        self.assertEqual(headers["Origin"], "https://www.youtube.com")
+
     def test_third_party_media_hosts_are_allowed_only_for_signed_provider_paths(self):
         allowed_cases = (
             ("youtube", "https://rr1---sn.googlevideo.com/videoplayback?itag=22"),
@@ -310,6 +347,28 @@ class XhsUtilityTests(SimpleTestCase):
         self.assertTrue(first["version_probe_ok"])
         self.assertEqual(second, first)
         mock_run.assert_called_once()
+
+    @patch("xhs_download.services.platforms.external_tools.subprocess.run")
+    def test_external_command_version_probe_accepts_custom_version_args(self, mock_run):
+        cache.clear()
+
+        def fake_run(_args, **kwargs):
+            kwargs["stdout"].write(b"ffmpeg version 8.1\n")
+            return Mock(returncode=0)
+
+        mock_run.side_effect = fake_run
+
+        result = probe_external_command_version(
+            ("ffmpeg",),
+            version_args=("-version",),
+            cache_seconds=0,
+        )
+
+        self.assertTrue(result["version_probe_ok"])
+        self.assertEqual(
+            mock_run.call_args.args[0],
+            ["ffmpeg", "-version"],
+        )
 
     @override_settings(THIRD_PARTY_EXTERNAL_OUTPUT_MAX_BYTES=8)
     @patch("xhs_download.services.platforms.external_tools.subprocess.run")
@@ -481,6 +540,91 @@ class XhsUtilityTests(SimpleTestCase):
 
         self.assertEqual(mock_get.call_count, 1)
         redirect_response.close.assert_called_once()
+
+    @patch(
+        "xhs_download.services.common.socket.getaddrinfo",
+        return_value=[(None, None, None, "", ("198.18.0.100", 443))],
+    )
+    @patch("xhs_download.services.downloads.requests.get")
+    def test_signed_youtube_cover_allows_provider_host_when_dns_is_reserved(
+        self,
+        mock_get,
+        _mock_dns,
+    ):
+        media_url = "https://i.ytimg.com/vi/demo/maxresdefault.jpg"
+        provider_item = {
+            "type": "image",
+            "url": media_url,
+            "asset_id": "yt_dlp_merge:youtube:abc123:video:1:h1080:cover",
+            "provider": "yt_dlp_merge",
+            "provider_resource_id": "abc123",
+            "provider_cache_key": "yt_dlp_merge:abc123:h1080",
+        }
+        provider_item["provider_manifest_token"] = build_provider_manifest_token(
+            asset_id=provider_item["asset_id"],
+            provider=provider_item["provider"],
+            provider_resource_id=provider_item["provider_resource_id"],
+            provider_cache_key=provider_item["provider_cache_key"],
+            url=media_url,
+            media_type="image",
+        )
+        response = Mock(status_code=200, headers={}, url=media_url)
+        mock_get.return_value = response
+
+        result = request_public_provider_get_with_retry(
+            media_url,
+            retries=1,
+            provider_item=provider_item,
+        )
+
+        self.assertIs(result, response)
+
+    @patch(
+        "xhs_download.services.common.socket.getaddrinfo",
+        return_value=[(None, None, None, "", ("93.184.216.34", 443))],
+    )
+    @patch("xhs_download.services.downloads.requests.get")
+    def test_signed_youtube_cover_falls_back_when_maxres_is_missing(
+        self,
+        mock_get,
+        _mock_dns,
+    ):
+        media_url = "https://i.ytimg.com/vi/demo/maxresdefault.jpg"
+        provider_item = {
+            "type": "image",
+            "url": media_url,
+            "asset_id": "yt_dlp_merge:youtube:abc123:video:1:h1080:cover",
+            "provider": "yt_dlp_merge",
+            "provider_resource_id": "abc123",
+            "provider_cache_key": "yt_dlp_merge:abc123:h1080",
+        }
+        provider_item["provider_manifest_token"] = build_provider_manifest_token(
+            asset_id=provider_item["asset_id"],
+            provider=provider_item["provider"],
+            provider_resource_id=provider_item["provider_resource_id"],
+            provider_cache_key=provider_item["provider_cache_key"],
+            url=media_url,
+            media_type="image",
+        )
+        missing_response = Mock(
+            status_code=404,
+            headers={},
+            url=media_url,
+        )
+        missing_response.close = Mock()
+        fallback_url = "https://i.ytimg.com/vi/demo/sddefault.jpg"
+        fallback_response = Mock(status_code=200, headers={}, url=fallback_url)
+        mock_get.side_effect = [missing_response, fallback_response]
+
+        result = request_public_provider_get_with_retry(
+            media_url,
+            retries=1,
+            provider_item=provider_item,
+        )
+
+        self.assertIs(result, fallback_response)
+        self.assertEqual(mock_get.call_args_list[1].args[0], fallback_url)
+        missing_response.close.assert_called_once()
 
     @patch(
         "xhs_download.services.common.socket.getaddrinfo",
@@ -955,7 +1099,12 @@ class XhsParserTests(SimpleTestCase):
         )
         self.assertEqual(
             platforms["third_party"]["provider_policy"]["third_party_providers"],
-            ("kukutool_generic", "gallery_dl_generic", "yt_dlp_generic"),
+            (
+                "kukutool_generic",
+                "gallery_dl_generic",
+                "yt_dlp_generic",
+                "youtube_merge",
+            ),
         )
 
     def test_registry_uses_adapter_parse_entrypoint(self):
@@ -3407,6 +3556,41 @@ class XhsDownloadViewTests(SimpleTestCase):
             })
         )
 
+    def test_provider_preview_query_supports_signed_ytdlp_merge_cover(self):
+        media_url = "https://i.ytimg.com/vi/demo/maxresdefault.jpg"
+        asset = MediaAsset(
+            media_type="video",
+            url="https://www.youtube.com/watch?v=demo",
+            platform="third_party",
+            cover_url=media_url,
+            provider="yt_dlp_merge",
+            asset_id="yt_dlp_merge:youtube:abc123:video:1:h1080",
+            provider_resource_id="abc123",
+            provider_cache_key="yt_dlp_merge:abc123:h1080",
+        )
+
+        query = build_provider_preview_query(asset, media_url, "cover")
+        params = {key: values[0] for key, values in parse_qs(query).items()}
+
+        self.assertEqual(params["provider"], "yt_dlp_merge")
+        self.assertEqual(params["type"], "image")
+        self.assertEqual(
+            params["asset_id"],
+            "yt_dlp_merge:youtube:abc123:video:1:h1080:cover",
+        )
+        self.assertTrue(
+            provider_manifest_allows_public_download({
+                **params,
+                "url": media_url,
+            })
+        )
+        self.assertFalse(
+            provider_manifest_allows_public_download({
+                **params,
+                "url": "https://evil.example.com/cover.jpg",
+            })
+        )
+
     def test_provider_preview_query_marks_image_asset_type(self):
         media_url = "https://i.imgur.com/demo.jpg"
         asset = MediaAsset(
@@ -4364,6 +4548,234 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertContains(response, "哔哩哔哩")
 
     @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+        YOUTUBE_MERGE_PROVIDER_ENABLED=True,
+        YOUTUBE_MERGE_PUBLIC_ACCESS_ENABLED=True,
+        YOUTUBE_MERGE_STAFF_ONLY=False,
+        YTDLP_BINARY="/usr/bin/python -m yt_dlp",
+        YOUTUBE_MERGE_FFMPEG_BINARY="/usr/bin/ffmpeg",
+    )
+    @patch(
+        "xhs_download.services.youtube_merge.probe_external_command_version",
+        return_value={
+            "version_probe_ok": True,
+            "version_output": "ok",
+            "error": "",
+        },
+    )
+    @patch(
+        "xhs_download.services.platforms.ytdlp_generic.probe_external_command_version",
+        return_value={
+            "version_probe_ok": True,
+            "version_output": "2026.03.17",
+            "error": "",
+        },
+    )
+    @patch("xhs_download.services.platforms.external_tools.os.path.exists", return_value=True)
+    @patch("xhs_download.services.platforms.external_tools.os.access", return_value=True)
+    @patch("xhs_download.views.parse_media_page")
+    def test_results_passes_youtube_merge_request_flag(
+        self,
+        mock_parse,
+        _mock_access,
+        _mock_exists,
+        _mock_ytdlp_probe,
+        _mock_ffmpeg_probe,
+    ):
+        mock_parse.return_value = ParseResult(
+            platform="third_party",
+            post_type="video",
+            base_filename="youtube",
+            assets=(),
+            metadata={"source_platform": "youtube"},
+        )
+
+        response = Client().get(
+            "/results/",
+            {
+                "q": "https://www.youtube.com/watch?v=demo",
+                "youtube_merge": "1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_parse.assert_called_once_with(
+            "https://www.youtube.com/watch?v=demo",
+            prefer_ultra_hd=False,
+            prefer_youtube_merge=True,
+        )
+        self.assertContains(response, 'id="youtube-merge-request-input"')
+        self.assertContains(response, 'value="1"')
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+    )
+    @patch("xhs_download.views.parse_media_page")
+    @patch("xhs_download.views.get_youtube_merge_health")
+    def test_results_passes_youtube_merge_for_staff_when_staff_only_enabled(
+        self,
+        mock_health,
+        mock_parse,
+    ):
+        mock_health.return_value = {
+            "implemented": True,
+            "ready": True,
+            "public_access_enabled": True,
+            "staff_only": True,
+        }
+        mock_parse.return_value = ParseResult(
+            platform="third_party",
+            post_type="video",
+            base_filename="youtube",
+            assets=(),
+            metadata={
+                "source_platform": "youtube",
+                "selected_provider": "youtube_merge",
+            },
+        )
+        request = RequestFactory().get(
+            "/results/",
+            {
+                "q": "https://www.youtube.com/watch?v=demo",
+                "youtube_merge": "1",
+            },
+        )
+        request.user = Mock(is_active=True, is_staff=True)
+
+        context, status_code = build_search_results_context(request, "home")
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(context["prefer_youtube_merge"])
+        self.assertEqual(context["provider_notice"], "本次使用 YouTube 最高画质任务；下载时将在服务端合并音频和视频，文件可能更大。")
+        mock_parse.assert_called_once_with(
+            "https://www.youtube.com/watch?v=demo",
+            prefer_ultra_hd=False,
+            prefer_youtube_merge=True,
+        )
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+    )
+    @patch("xhs_download.views.parse_media_page")
+    @patch("xhs_download.views.get_youtube_merge_health")
+    def test_results_does_not_pass_youtube_merge_for_anonymous_when_staff_only_enabled(
+        self,
+        mock_health,
+        mock_parse,
+    ):
+        mock_health.return_value = {
+            "implemented": True,
+            "ready": True,
+            "public_access_enabled": True,
+            "staff_only": True,
+        }
+        mock_parse.return_value = ParseResult(
+            platform="third_party",
+            post_type="video",
+            base_filename="youtube",
+            assets=(),
+            metadata={
+                "source_platform": "youtube",
+                "selected_provider": "yt_dlp_merge",
+            },
+        )
+        request = RequestFactory().get(
+            "/results/",
+            {
+                "q": "https://www.youtube.com/watch?v=demo",
+                "youtube_merge": "1",
+            },
+        )
+        request.user = Mock(is_active=False, is_staff=False)
+
+        context, status_code = build_search_results_context(request, "home")
+
+        self.assertEqual(status_code, 200)
+        self.assertFalse(context["prefer_youtube_merge"])
+        self.assertEqual(context["provider_notice"], "本次使用 yt-dlp 高清合并；默认优先 1080p，下载时将在服务端合并音频和视频。")
+        mock_parse.assert_called_once_with(
+            "https://www.youtube.com/watch?v=demo",
+            prefer_ultra_hd=False,
+        )
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+    )
+    @patch("xhs_download.views.parse_media_page")
+    @patch("xhs_download.views.get_youtube_merge_health")
+    def test_results_does_not_pass_youtube_merge_for_staff_when_public_access_disabled(
+        self,
+        mock_health,
+        mock_parse,
+    ):
+        mock_health.return_value = {
+            "implemented": True,
+            "ready": True,
+            "public_access_enabled": False,
+            "staff_only": True,
+        }
+        mock_parse.return_value = ParseResult(
+            platform="third_party",
+            post_type="video",
+            base_filename="youtube",
+            assets=(),
+            metadata={
+                "source_platform": "youtube",
+                "selected_provider": "yt_dlp_merge",
+            },
+        )
+        request = RequestFactory().get(
+            "/results/",
+            {
+                "q": "https://www.youtube.com/watch?v=demo",
+                "youtube_merge": "1",
+            },
+        )
+        request.user = Mock(is_active=True, is_staff=True)
+
+        context, status_code = build_search_results_context(request, "home")
+
+        self.assertEqual(status_code, 200)
+        self.assertFalse(context["prefer_youtube_merge"])
+        mock_parse.assert_called_once_with(
+            "https://www.youtube.com/watch?v=demo",
+            prefer_ultra_hd=False,
+        )
+
+    @patch("xhs_download.views.get_youtube_merge_health")
+    def test_youtube_merge_mode_respects_staff_only(self, mock_health):
+        mock_health.return_value = {
+            "implemented": True,
+            "ready": True,
+            "public_access_enabled": True,
+            "staff_only": True,
+        }
+        request = RequestFactory().get("/")
+
+        request.user = Mock(is_active=True, is_staff=False)
+        self.assertFalse(youtube_merge_mode_is_available(request))
+
+        request.user = Mock(is_active=True, is_staff=True)
+        self.assertTrue(youtube_merge_mode_is_available(request))
+
+    @patch("xhs_download.views.get_youtube_merge_health")
+    def test_youtube_merge_mode_requires_public_access(self, mock_health):
+        mock_health.return_value = {
+            "implemented": True,
+            "ready": True,
+            "public_access_enabled": False,
+            "staff_only": False,
+        }
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=True, is_staff=True)
+
+        self.assertFalse(youtube_merge_mode_is_available(request))
+
+    @override_settings(
         ULTRA_HD_PROVIDER_ENABLED=True,
         ULTRA_HD_PUBLIC_ACCESS_ENABLED=False,
         TIKHUB_API_KEY="secret",
@@ -4876,6 +5288,7 @@ class RuntimeHealthCheckTests(TestCase):
     @override_settings(
         YTDLP_PROVIDER_ENABLED=True,
         YTDLP_BINARY="/usr/bin/python -m missing_yt_dlp_module",
+        YOUTUBE_MERGE_PROVIDER_ENABLED=False,
         REQUIRE_PRODUCTION_CONFIG=False,
     )
     @patch("xhs_download.services.platforms.external_tools.os.path.exists", return_value=True)
@@ -4902,6 +5315,7 @@ class RuntimeHealthCheckTests(TestCase):
     @override_settings(
         YTDLP_PROVIDER_ENABLED=True,
         YTDLP_BINARY="/usr/bin/python -m yt_dlp",
+        YOUTUBE_MERGE_PROVIDER_ENABLED=False,
         REQUIRE_PRODUCTION_CONFIG=False,
     )
     @patch("xhs_download.services.platforms.external_tools.os.path.exists", return_value=True)
@@ -5028,6 +5442,7 @@ class RuntimeHealthCheckTests(TestCase):
         THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=False,
         YTDLP_PROVIDER_ENABLED=False,
         GALLERYDL_PROVIDER_ENABLED=False,
+        YOUTUBE_MERGE_PROVIDER_ENABLED=False,
     )
     def test_system_check_reports_public_third_party_without_enabled_provider(self):
         issue_ids = {issue.id for issue in run_checks()}
@@ -5045,6 +5460,58 @@ class RuntimeHealthCheckTests(TestCase):
         issue_ids = {issue.id for issue in run_checks()}
 
         self.assertNotIn("xhs_download.E007", issue_ids)
+
+    @override_settings(
+        YOUTUBE_MERGE_PROVIDER_ENABLED=True,
+        YOUTUBE_MERGE_PUBLIC_ACCESS_ENABLED=True,
+        YTDLP_BINARY="/usr/bin/python -m yt_dlp",
+        YOUTUBE_MERGE_FFMPEG_BINARY="/usr/bin/ffmpeg",
+        REQUIRE_PRODUCTION_CONFIG=False,
+    )
+    @patch(
+        "xhs_download.services.youtube_merge.probe_external_command_version",
+        return_value={
+            "version_probe_ok": True,
+            "version_output": "ok",
+            "error": "",
+        },
+    )
+    @patch(
+        "xhs_download.services.platforms.ytdlp_generic.probe_external_command_version",
+        return_value={
+            "version_probe_ok": True,
+            "version_output": "2026.03.17",
+            "error": "",
+        },
+    )
+    @patch("xhs_download.services.platforms.external_tools.os.path.exists", return_value=True)
+    @patch("xhs_download.services.platforms.external_tools.os.access", return_value=True)
+    def test_system_check_allows_public_youtube_merge_when_runtime_is_ready(
+        self,
+        _mock_access,
+        _mock_exists,
+        _mock_ytdlp_probe,
+        _mock_ffmpeg_probe,
+    ):
+        issue_ids = {issue.id for issue in run_checks()}
+
+        self.assertNotIn("xhs_download.E013", issue_ids)
+        self.assertNotIn("xhs_download.E010", issue_ids)
+        self.assertNotIn("xhs_download.E012", issue_ids)
+
+    @override_settings(
+        YOUTUBE_MERGE_PROVIDER_ENABLED=True,
+        YOUTUBE_MERGE_PUBLIC_ACCESS_ENABLED=False,
+        YOUTUBE_MERGE_REQUIRE_FFMPEG=True,
+        YTDLP_BINARY="",
+        YOUTUBE_MERGE_FFMPEG_BINARY="",
+        REQUIRE_PRODUCTION_CONFIG=True,
+    )
+    def test_system_check_requires_explicit_youtube_merge_binaries_in_production(self):
+        issue_ids = {issue.id for issue in run_checks()}
+
+        self.assertIn("xhs_download.E009", issue_ids)
+        self.assertIn("xhs_download.E011", issue_ids)
 
 
 class ProviderControlViewTests(TestCase):
@@ -5080,6 +5547,15 @@ class ProviderControlViewTests(TestCase):
         self.assertIn("third_party_summary", disabled.json())
         self.assertIn("third_party_summary", enabled.json())
 
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=False,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=False,
+        THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=False,
+        YTDLP_PROVIDER_ENABLED=False,
+        GALLERYDL_PROVIDER_ENABLED=False,
+        YOUTUBE_MERGE_PROVIDER_ENABLED=False,
+        YOUTUBE_MERGE_PUBLIC_ACCESS_ENABLED=False,
+    )
     def test_provider_health_includes_third_party_diagnostics(self):
         source_key = "abc123"
         cache.set(f"third-party:kukutool:failure:{source_key}", "TimeoutError")
@@ -5121,6 +5597,13 @@ class ProviderControlViewTests(TestCase):
         self.assertIn("version_probe_ok", ytdlp)
         self.assertIn("version_output", ytdlp)
         self.assertIn("version_probe_error", ytdlp)
+        youtube_merge = response.json()["youtube_merge"]
+        self.assertEqual(youtube_merge["provider"], "youtube_merge")
+        self.assertTrue(youtube_merge["implemented"])
+        self.assertFalse(youtube_merge["enabled"])
+        self.assertFalse(youtube_merge["public_ready"])
+        self.assertIn("ffmpeg", youtube_merge)
+        self.assertIn("ytdlp", youtube_merge)
         summary = response.json()["third_party_summary"]
         self.assertFalse(summary["enabled"])
         self.assertFalse(summary["public_access_enabled"])

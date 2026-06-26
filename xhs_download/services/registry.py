@@ -41,6 +41,7 @@ class PlatformRegistry:
         url,
         prefer_ultra_hd=False,
         client_country_code="",
+        prefer_youtube_merge=False,
     ):
         url = extract_url_from_text(url)
         adapter = self.get_adapter_for_url(url)
@@ -48,6 +49,7 @@ class PlatformRegistry:
             url,
             prefer_ultra_hd=prefer_ultra_hd,
             client_country_code=client_country_code,
+            prefer_youtube_merge=prefer_youtube_merge,
         )
 
 
@@ -70,9 +72,11 @@ def parse_media_page(
     url,
     prefer_ultra_hd=False,
     client_country_code="",
+    prefer_youtube_merge=False,
 ):
     return default_registry.parse_url(
         url,
         prefer_ultra_hd=prefer_ultra_hd,
         client_country_code=client_country_code,
+        prefer_youtube_merge=prefer_youtube_merge,
     )
