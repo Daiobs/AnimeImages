@@ -36,7 +36,7 @@ class ProviderSettings:
     tikhub_china_base_url: str = "https://api.tikhub.dev"
     tikhub_region: str = "CN"
     tikhub_daily_limit: int = 0
-    ultra_total_timeout_seconds: float = 3.0
+    ultra_total_timeout_seconds: float = 4.0
     ultra_native_timeout_seconds: float = 3.0
     tikhub_connect_timeout_seconds: float = 1.0
     tikhub_read_timeout_seconds: float = 6.5
@@ -210,7 +210,7 @@ def get_platform_provider_settings(platform_id):
         ),
         tikhub_region=getattr(settings, "TIKHUB_REGION", "CN") or "CN",
         tikhub_daily_limit=int(getattr(settings, "TIKHUB_DAILY_LIMIT", 0) or 0),
-        ultra_total_timeout_seconds=float(getattr(settings, "DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS", 3.0) or 0),
+        ultra_total_timeout_seconds=float(getattr(settings, "DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS", 4.0) or 0),
         ultra_native_timeout_seconds=float(getattr(settings, "DOUYIN_ULTRA_NATIVE_TIMEOUT_SECONDS", 3.0) or 0),
         tikhub_connect_timeout_seconds=float(getattr(settings, "TIKHUB_CONNECT_TIMEOUT_SECONDS", 1.0) or 0),
         tikhub_read_timeout_seconds=float(getattr(settings, "TIKHUB_READ_TIMEOUT_SECONDS", 6.5) or 0),

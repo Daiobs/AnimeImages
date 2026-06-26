@@ -44,7 +44,7 @@ Environment variables:
 ```text
 ULTRA_HD_PROVIDER_ENABLED=False
 ULTRA_HD_PUBLIC_ACCESS_ENABLED=False
-DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS=3.0
+DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS=4.0
 DOUYIN_ULTRA_NATIVE_TIMEOUT_SECONDS=3.0
 DOUYIN_NATIVE_EXECUTOR_WORKERS=4
 DOUYIN_NATIVE_MAX_PENDING_TASKS=8
@@ -75,7 +75,7 @@ PROVIDER_MANIFEST_MAX_AGE_SECONDS=3600
 XHS_PROVIDER_ORDER=native
 ```
 
-The default request path uses only `native`. Ultra mode starts native and KuKuTool in separate bounded executors and applies a three-second foreground deadline. An in-budget KuKuTool result wins. At the deadline, a completed native result is returned while KuKuTool continues in the bounded background pool and fills cache; if neither path is complete the request returns a retryable timeout. The upstream result is normalized from `video_fullinfo`, restricted to `365yg.com` and `douyinvod.com`, deduplicated by TOS object key, and ranked primarily by bitrate.
+The default request path uses only `native`. Ultra mode starts native and KuKuTool in separate bounded executors and applies a four-second foreground deadline. An in-budget KuKuTool result wins. At the deadline, a completed native result is returned while KuKuTool continues in the bounded background pool and fills cache; if neither path is complete the request returns a retryable timeout. The upstream result is normalized from `video_fullinfo`, restricted to `365yg.com` and `douyinvod.com`, deduplicated by TOS object key, and ranked primarily by bitrate.
 
 `KUKUTOOL_VALIDATED_CACHE_TTL_SECONDS` caches the selected signed URL and metadata through Django cache. Its effective TTL never extends beyond the CDN signature expiry minus a safety margin. Production Redis therefore shares hot results across workers, while local `LocMemCache` remains process-local.
 
