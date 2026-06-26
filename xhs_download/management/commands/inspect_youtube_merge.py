@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import time
 from urllib.parse import urlparse
 
@@ -9,8 +10,11 @@ from ...services.common import XhsProviderTimeoutError
 from ...services.platforms.ytdlp_generic import run_ytdlp_json
 from ...services.youtube_merge import (
     build_youtube_merge_plan,
+    build_youtube_merge_parse_result,
+    download_youtube_merge_to_temp_path,
     get_youtube_merge_health,
 )
+from ...services.platforms.ytdlp_merge import default_max_height
 
 
 SOURCE_URL_KEYS = {"webpage_url"}
@@ -45,6 +49,66 @@ def redact_plan_urls(value, *, show_urls=False, key=""):
     if isinstance(value, str) and key not in SOURCE_URL_KEYS and value.startswith(("http://", "https://")):
         return redacted_url(value)
     return value
+
+
+def build_smoke_summary(plan, *, duration_ms):
+    frontend_budget_seconds = float(
+        getattr(settings, "YOUTUBE_FRONTEND_TIMEOUT_SECONDS", 8.0) or 8.0
+    )
+    frontend_budget_ms = int(frontend_budget_seconds * 1000)
+    selected_height = int((plan.get("video_format") or {}).get("height") or 0)
+    complete_height = int((plan.get("complete_format") or {}).get("height") or 0)
+    merge_candidate_available = bool(plan.get("available") and plan.get("requires_merge"))
+    issues = []
+
+    if not merge_candidate_available:
+        issues.append(plan.get("reason") or "merge_candidate_unavailable")
+    if duration_ms > frontend_budget_ms:
+        issues.append("parse_exceeds_frontend_budget")
+    if not plan.get("estimated_size_within_limit"):
+        issues.append("estimated_size_exceeds_limit")
+    if selected_height < 1080:
+        issues.append("selected_height_below_1080p")
+
+    return {
+        "parse_duration_ms": duration_ms,
+        "frontend_budget_ms": frontend_budget_ms,
+        "within_frontend_budget": duration_ms <= frontend_budget_ms,
+        "merge_candidate_available": merge_candidate_available,
+        "selected_height": selected_height,
+        "single_file_height": complete_height,
+        "estimated_size_bytes": int(plan.get("estimated_size_bytes") or 0),
+        "estimated_size_within_limit": bool(plan.get("estimated_size_within_limit")),
+        "issues": tuple(issues),
+        "recommended_rollout": "staff_only" if not issues else "hold",
+    }
+
+
+def build_download_queue_recommendation(*, duration_ms):
+    frontend_budget_seconds = float(
+        getattr(settings, "YOUTUBE_FRONTEND_TIMEOUT_SECONDS", 8.0) or 8.0
+    )
+    frontend_budget_ms = int(frontend_budget_seconds * 1000)
+    queue_recommended = duration_ms > frontend_budget_ms
+    return {
+        "frontend_budget_ms": frontend_budget_ms,
+        "sync_acceptable": not queue_recommended,
+        "queue_recommended": queue_recommended,
+        "reason": (
+            "download_exceeds_frontend_budget"
+            if queue_recommended
+            else "download_within_frontend_budget"
+        ),
+    }
+
+
+def remove_temp_download(path):
+    if not path:
+        return
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 class Command(BaseCommand):
@@ -84,6 +148,19 @@ class Command(BaseCommand):
             "--health",
             action="store_true",
             help="Print YouTube merge runtime health without parsing a URL.",
+        )
+        parser.add_argument(
+            "--download-smoke",
+            action="store_true",
+            help=(
+                "Run the actual yt-dlp + ffmpeg merge download after planning. "
+                "This can download large files and is intended for local/staff smoke tests."
+            ),
+        )
+        parser.add_argument(
+            "--keep-file",
+            action="store_true",
+            help="Keep the merged smoke-test file and include its path in output.",
         )
         parser.add_argument(
             "--show-urls",
@@ -141,11 +218,51 @@ class Command(BaseCommand):
                 binary=getattr(settings, "YTDLP_BINARY", "") or "",
                 timeout_seconds=timeout_seconds,
             )
+            effective_max_height = int(options["max_height"] or default_max_height())
             plan = build_youtube_merge_plan(
                 payload,
-                max_height=options["max_height"] or None,
+                max_height=effective_max_height,
                 max_file_size_bytes=options["max_size"] or None,
             )
+            planning_duration_ms = int((time.monotonic() - started_at) * 1000)
+            download_smoke = None
+            if options["download_smoke"]:
+                if not plan.get("available") or not plan.get("requires_merge"):
+                    raise CommandError(
+                        f"YouTube merge candidate is not available: {plan.get('reason')}"
+                    )
+                download_started_at = time.monotonic()
+                original_max_height = getattr(settings, "YOUTUBE_MERGE_MAX_HEIGHT", 4320)
+                original_max_size = getattr(
+                    settings,
+                    "YOUTUBE_MERGE_MAX_FILE_SIZE_BYTES",
+                    500 * 1024 * 1024,
+                )
+                try:
+                    settings.YOUTUBE_MERGE_MAX_HEIGHT = effective_max_height
+                    if options["max_size"]:
+                        settings.YOUTUBE_MERGE_MAX_FILE_SIZE_BYTES = options["max_size"]
+                    parse_result = build_youtube_merge_parse_result(url, payload)
+                    asset = parse_result.video_assets[0]
+                    temp_result = download_youtube_merge_to_temp_path(asset.to_download_item())
+                finally:
+                    settings.YOUTUBE_MERGE_MAX_HEIGHT = original_max_height
+                    settings.YOUTUBE_MERGE_MAX_FILE_SIZE_BYTES = original_max_size
+                download_duration_ms = int((time.monotonic() - download_started_at) * 1000)
+                download_smoke = {
+                    "ok": True,
+                    "duration_ms": download_duration_ms,
+                    "size_bytes": int(temp_result.get("size") or 0),
+                    "content_type": temp_result.get("content_type") or "",
+                    "kept": bool(options["keep_file"]),
+                    "queue": build_download_queue_recommendation(
+                        duration_ms=download_duration_ms,
+                    ),
+                }
+                if options["keep_file"]:
+                    download_smoke["path"] = temp_result.get("path") or ""
+                else:
+                    remove_temp_download(temp_result.get("path"))
         except Exception as error:
             status = "timeout" if isinstance(error, XhsProviderTimeoutError) else "failed"
             data = {
@@ -164,12 +281,16 @@ class Command(BaseCommand):
             "ok": True,
             "source_url": url,
             "duration_ms": int((time.monotonic() - started_at) * 1000),
-            "plan": redact_plan_urls(
-                plan,
-                show_urls=bool(options["show_urls"]),
-            ),
+            "planning_duration_ms": planning_duration_ms,
             "urls_redacted": not bool(options["show_urls"]),
         }
+        data["smoke"] = build_smoke_summary(plan, duration_ms=planning_duration_ms)
+        data["plan"] = redact_plan_urls(
+            plan,
+            show_urls=bool(options["show_urls"]),
+        )
+        if download_smoke is not None:
+            data["download_smoke"] = download_smoke
         if options["as_json"]:
             self.stdout.write(json.dumps(data, ensure_ascii=False, indent=2))
             return
@@ -183,3 +304,21 @@ class Command(BaseCommand):
         self.stdout.write(f"video_height: {plan['video_format'].get('height', 0)}")
         self.stdout.write(f"audio_format: {plan['audio_format'].get('format_id', '') or '-'}")
         self.stdout.write(f"estimated_size_bytes: {plan['estimated_size_bytes']}")
+        self.stdout.write(f"smoke_rollout: {data['smoke']['recommended_rollout']}")
+        self.stdout.write(f"smoke_issues: {', '.join(data['smoke']['issues']) or '-'}")
+        if download_smoke is not None:
+            self.stdout.write(f"download_smoke_ok: {download_smoke['ok']}")
+            self.stdout.write(f"download_smoke_duration_ms: {download_smoke['duration_ms']}")
+            self.stdout.write(f"download_smoke_size_bytes: {download_smoke['size_bytes']}")
+            self.stdout.write(
+                "download_smoke_queue_recommended: {recommended}".format(
+                    recommended=download_smoke["queue"]["queue_recommended"],
+                )
+            )
+            self.stdout.write(
+                "download_smoke_queue_reason: {reason}".format(
+                    reason=download_smoke["queue"]["reason"],
+                )
+            )
+            if download_smoke.get("path"):
+                self.stdout.write(f"download_smoke_path: {download_smoke['path']}")

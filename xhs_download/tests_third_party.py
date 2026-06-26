@@ -23,7 +23,11 @@ from .services.platforms import (
 from .services.platforms.external_tools import safe_subprocess_env
 from .services.platforms.gallerydl_generic import run_gallerydl_json
 from .services.platforms.kukutool_generic import source_key_for_url
-from .services.platforms.third_party import frontend_budget_seconds, get_third_party_rule
+from .services.platforms.third_party import (
+    build_third_party_rollout_status,
+    frontend_budget_seconds,
+    get_third_party_rule,
+)
 from .services.platforms.ytdlp_generic import run_ytdlp_json
 from .services.provider_manifest import build_provider_manifest_token
 from .services.registry import parse_media_page
@@ -254,6 +258,11 @@ class YouTubeMergePlannerTests(SimpleTestCase):
 
         self.assertTrue(payload["ok"])
         self.assertTrue(payload["urls_redacted"])
+        self.assertEqual(payload["smoke"]["parse_duration_ms"], payload["planning_duration_ms"])
+        self.assertEqual(payload["smoke"]["recommended_rollout"], "staff_only")
+        self.assertTrue(payload["smoke"]["merge_candidate_available"])
+        self.assertTrue(payload["smoke"]["within_frontend_budget"])
+        self.assertGreaterEqual(payload["smoke"]["selected_height"], 1080)
         self.assertEqual(
             payload["plan"]["video_format"]["url"],
             "https://rr1---sn.googlevideo.com/[redacted]",
@@ -280,10 +289,305 @@ class YouTubeMergePlannerTests(SimpleTestCase):
         self.assertFalse(payload["urls_redacted"])
         self.assertIn("itag=137", payload["plan"]["video_format"]["url"])
 
+    @override_settings(YTDLP_MERGE_DEFAULT_MAX_HEIGHT=1080)
+    @patch("xhs_download.management.commands.inspect_youtube_merge.run_ytdlp_json")
+    def test_inspect_youtube_merge_defaults_to_1080p_planning(self, mock_run):
+        mock_run.return_value = ytdlp_merge_demo_payload()
+        output = StringIO()
+
+        call_command(
+            "inspect_youtube_merge",
+            "https://www.youtube.com/watch?v=demo",
+            binary=f"{sys.executable} -m yt_dlp",
+            timeout=2,
+            as_json=True,
+            stdout=output,
+        )
+        payload = json.loads(output.getvalue())
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["plan"]["max_height"], 1080)
+        self.assertEqual(payload["plan"]["video_format"]["height"], 1080)
+
+    @patch("xhs_download.management.commands.inspect_youtube_merge.run_ytdlp_json")
+    def test_inspect_youtube_merge_smoke_holds_when_estimated_size_exceeds_limit(
+        self,
+        mock_run,
+    ):
+        mock_run.return_value = youtube_merge_demo_payload()
+        output = StringIO()
+
+        call_command(
+            "inspect_youtube_merge",
+            "https://www.youtube.com/watch?v=demo",
+            binary=f"{sys.executable} -m yt_dlp",
+            timeout=2,
+            max_size=50_000_000,
+            as_json=True,
+            stdout=output,
+        )
+        payload = json.loads(output.getvalue())
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["smoke"]["recommended_rollout"], "hold")
+        self.assertIn(
+            "estimated_size_exceeds_limit",
+            payload["smoke"]["issues"],
+        )
+
+    @patch("xhs_download.management.commands.inspect_youtube_merge.remove_temp_download")
+    @patch(
+        "xhs_download.management.commands.inspect_youtube_merge."
+        "download_youtube_merge_to_temp_path"
+    )
+    @patch("xhs_download.management.commands.inspect_youtube_merge.run_ytdlp_json")
+    def test_inspect_youtube_merge_download_smoke_reports_merged_file(
+        self,
+        mock_run,
+        mock_download,
+        mock_remove,
+    ):
+        mock_run.return_value = youtube_merge_demo_payload()
+        mock_download.return_value = {
+            "path": "/tmp/youtube-merge-smoke.mp4",
+            "content_type": "video/mp4",
+            "size": 85_000_000,
+        }
+        output = StringIO()
+
+        call_command(
+            "inspect_youtube_merge",
+            "https://www.youtube.com/watch?v=demo",
+            binary=f"{sys.executable} -m yt_dlp",
+            timeout=2,
+            download_smoke=True,
+            as_json=True,
+            stdout=output,
+        )
+        payload = json.loads(output.getvalue())
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["smoke"]["parse_duration_ms"], payload["planning_duration_ms"])
+        self.assertTrue(payload["download_smoke"]["ok"])
+        self.assertFalse(payload["download_smoke"]["kept"])
+        self.assertEqual(payload["download_smoke"]["content_type"], "video/mp4")
+        self.assertEqual(payload["download_smoke"]["size_bytes"], 85_000_000)
+        self.assertFalse(payload["download_smoke"]["queue"]["queue_recommended"])
+        self.assertTrue(payload["download_smoke"]["queue"]["sync_acceptable"])
+        self.assertNotIn("path", payload["download_smoke"])
+        mock_download.assert_called_once()
+        mock_remove.assert_called_once_with("/tmp/youtube-merge-smoke.mp4")
+
+    @override_settings(YOUTUBE_FRONTEND_TIMEOUT_SECONDS=8.0)
+    @patch(
+        "xhs_download.management.commands.inspect_youtube_merge.time.monotonic",
+        side_effect=(0.0, 1.0, 1.0, 31.0, 31.0),
+    )
+    @patch("xhs_download.management.commands.inspect_youtube_merge.remove_temp_download")
+    @patch(
+        "xhs_download.management.commands.inspect_youtube_merge."
+        "download_youtube_merge_to_temp_path"
+    )
+    @patch("xhs_download.management.commands.inspect_youtube_merge.run_ytdlp_json")
+    def test_inspect_youtube_merge_download_smoke_recommends_queue_when_slow(
+        self,
+        mock_run,
+        mock_download,
+        mock_remove,
+        _mock_monotonic,
+    ):
+        mock_run.return_value = youtube_merge_demo_payload()
+        mock_download.return_value = {
+            "path": "/tmp/youtube-merge-smoke.mp4",
+            "content_type": "video/mp4",
+            "size": 85_000_000,
+        }
+        output = StringIO()
+
+        call_command(
+            "inspect_youtube_merge",
+            "https://www.youtube.com/watch?v=demo",
+            binary=f"{sys.executable} -m yt_dlp",
+            timeout=2,
+            download_smoke=True,
+            as_json=True,
+            stdout=output,
+        )
+        payload = json.loads(output.getvalue())
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["download_smoke"]["duration_ms"], 30_000)
+        self.assertEqual(payload["download_smoke"]["queue"]["frontend_budget_ms"], 8_000)
+        self.assertTrue(payload["download_smoke"]["queue"]["queue_recommended"])
+        self.assertFalse(payload["download_smoke"]["queue"]["sync_acceptable"])
+        self.assertEqual(
+            payload["download_smoke"]["queue"]["reason"],
+            "download_exceeds_frontend_budget",
+        )
+        mock_remove.assert_called_once_with("/tmp/youtube-merge-smoke.mp4")
+
+    @override_settings(YOUTUBE_FRONTEND_TIMEOUT_SECONDS=8.0)
+    @patch(
+        "xhs_download.management.commands.inspect_youtube_merge.time.monotonic",
+        side_effect=(0.0, 1.0, 1.0, 31.0, 31.0),
+    )
+    @patch("xhs_download.management.commands.inspect_youtube_merge.remove_temp_download")
+    @patch(
+        "xhs_download.management.commands.inspect_youtube_merge."
+        "download_youtube_merge_to_temp_path"
+    )
+    @patch("xhs_download.management.commands.inspect_youtube_merge.run_ytdlp_json")
+    def test_inspect_youtube_merge_text_output_shows_queue_recommendation(
+        self,
+        mock_run,
+        mock_download,
+        mock_remove,
+        _mock_monotonic,
+    ):
+        mock_run.return_value = youtube_merge_demo_payload()
+        mock_download.return_value = {
+            "path": "/tmp/youtube-merge-smoke.mp4",
+            "content_type": "video/mp4",
+            "size": 85_000_000,
+        }
+        output = StringIO()
+
+        call_command(
+            "inspect_youtube_merge",
+            "https://www.youtube.com/watch?v=demo",
+            binary=f"{sys.executable} -m yt_dlp",
+            timeout=2,
+            download_smoke=True,
+            stdout=output,
+        )
+        text = output.getvalue()
+
+        self.assertIn("download_smoke_queue_recommended: True", text)
+        self.assertIn("download_smoke_queue_reason: download_exceeds_frontend_budget", text)
+        mock_download.assert_called_once()
+        mock_remove.assert_called_once_with("/tmp/youtube-merge-smoke.mp4")
+
+    @patch("xhs_download.management.commands.inspect_youtube_merge.remove_temp_download")
+    @patch(
+        "xhs_download.management.commands.inspect_youtube_merge."
+        "download_youtube_merge_to_temp_path"
+    )
+    @patch("xhs_download.management.commands.inspect_youtube_merge.run_ytdlp_json")
+    def test_inspect_youtube_merge_download_smoke_can_keep_file(
+        self,
+        mock_run,
+        mock_download,
+        mock_remove,
+    ):
+        mock_run.return_value = youtube_merge_demo_payload()
+        mock_download.return_value = {
+            "path": "/tmp/youtube-merge-smoke.mp4",
+            "content_type": "video/mp4",
+            "size": 85_000_000,
+        }
+        output = StringIO()
+
+        call_command(
+            "inspect_youtube_merge",
+            "https://www.youtube.com/watch?v=demo",
+            binary=f"{sys.executable} -m yt_dlp",
+            timeout=2,
+            download_smoke=True,
+            keep_file=True,
+            as_json=True,
+            stdout=output,
+        )
+        payload = json.loads(output.getvalue())
+
+        self.assertTrue(payload["download_smoke"]["kept"])
+        self.assertEqual(
+            payload["download_smoke"]["path"],
+            "/tmp/youtube-merge-smoke.mp4",
+        )
+        mock_download.assert_called_once()
+        mock_remove.assert_not_called()
+
+    @patch(
+        "xhs_download.management.commands.inspect_youtube_merge."
+        "download_youtube_merge_to_temp_path"
+    )
+    @patch("xhs_download.management.commands.inspect_youtube_merge.run_ytdlp_json")
+    def test_inspect_youtube_merge_download_smoke_does_not_run_when_plan_holds(
+        self,
+        mock_run,
+        mock_download,
+    ):
+        mock_run.return_value = youtube_merge_demo_payload()
+        output = StringIO()
+
+        call_command(
+            "inspect_youtube_merge",
+            "https://www.youtube.com/watch?v=demo",
+            binary=f"{sys.executable} -m yt_dlp",
+            timeout=2,
+            max_size=50_000_000,
+            download_smoke=True,
+            as_json=True,
+            stdout=output,
+        )
+        payload = json.loads(output.getvalue())
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error_type"], "CommandError")
+        self.assertIn("estimated_size_exceeds_limit", payload["error"])
+        mock_download.assert_not_called()
+
 
 class GenericThirdPartyProviderTests(SimpleTestCase):
     def setUp(self):
         cache.clear()
+
+    def test_third_party_rollout_status_contract(self):
+        self.assertEqual(
+            build_third_party_rollout_status(
+                enabled=False,
+                public_access_enabled=True,
+                staff_only=True,
+            ),
+            {
+                "status": "disabled",
+                "reason": "third_party_entrypoint_disabled",
+            },
+        )
+        self.assertEqual(
+            build_third_party_rollout_status(
+                enabled=True,
+                public_access_enabled=True,
+                staff_only=True,
+                issue="no_ready_provider",
+            ),
+            {
+                "status": "hold",
+                "reason": "no_ready_provider",
+            },
+        )
+        self.assertEqual(
+            build_third_party_rollout_status(
+                enabled=True,
+                public_access_enabled=True,
+                staff_only=True,
+            ),
+            {
+                "status": "staff_only",
+                "reason": "staff_only_gate_enabled",
+            },
+        )
+        self.assertEqual(
+            build_third_party_rollout_status(
+                enabled=True,
+                public_access_enabled=True,
+                staff_only=False,
+            ),
+            {
+                "status": "public_candidate",
+                "reason": "ready_but_requires_manual_public_approval",
+            },
+        )
 
     @override_settings(
         THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS=3.0,
@@ -425,6 +729,12 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         self.assertEqual(result.metadata["source_provider"], "yt_dlp_generic")
         self.assertEqual(result.metadata["selected_provider"], "yt_dlp_generic")
         self.assertEqual(result.metadata["source_platform"], "tiktok")
+        self.assertIn("selected_provider_duration_ms", result.metadata)
+        self.assertIn("provider_total_duration_ms", result.metadata)
+        self.assertGreaterEqual(
+            result.metadata["provider_total_duration_ms"],
+            result.metadata["selected_provider_duration_ms"],
+        )
         self.assertEqual(result.metadata["provider_fallback_count"], 1)
         self.assertEqual(
             tuple(attempt["provider"] for attempt in result.metadata["provider_attempts"]),
@@ -1627,6 +1937,13 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         self.assertEqual(payload["provider"], "yt_dlp_generic")
         self.assertEqual(payload["source_url"], "https://www.youtube.com/watch?v=demo")
         self.assertEqual(payload["platform_id"], "youtube")
+        self.assertEqual(payload["smoke"]["recommended_rollout"], "staff_only")
+        self.assertEqual(payload["smoke"]["selected_provider"], "yt_dlp_generic")
+        self.assertEqual(payload["smoke"]["source_platform"], "youtube")
+        self.assertEqual(payload["smoke"]["asset_count"], 1)
+        self.assertEqual(payload["smoke"]["media_types"], ["video"])
+        self.assertTrue(payload["smoke"]["within_frontend_budget"])
+        self.assertEqual(payload["smoke"]["issues"], [])
         self.assertEqual(payload["attempts"][0]["provider"], "yt_dlp_generic")
         self.assertEqual(payload["attempts"][0]["status"], "success")
         self.assertEqual(payload["result"]["metadata"]["source_platform"], "youtube")
@@ -1971,6 +2288,9 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
 
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["provider"], "gallery_dl_generic")
+        self.assertEqual(payload["smoke"]["recommended_rollout"], "staff_only")
+        self.assertEqual(payload["smoke"]["asset_count"], 1)
+        self.assertEqual(payload["smoke"]["media_types"], ["image"])
         self.assertEqual(payload["result"]["metadata"]["source_platform"], "imgur")
         self.assertEqual(payload["result"]["metadata"]["selected_provider"], "gallery_dl_generic")
         self.assertEqual(payload["result"]["metadata"]["provider_fallback_count"], 0)
@@ -1982,6 +2302,47 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         self.assertTrue(payload["result"]["assets"][0]["url_redacted"])
         self.assertNotIn("provider_manifest_token", output.getvalue())
         self.assertNotIn("demo.jpg", output.getvalue())
+
+    @override_settings(THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS=3.0)
+    @patch(
+        "xhs_download.management.commands.inspect_third_party_provider.time.monotonic",
+        side_effect=(0.0, 0.0, 0.0, 4.0, 4.0),
+    )
+    @patch(
+        "xhs_download.services.platforms.gallerydl_generic."
+        "GalleryDlGenericProvider.parse"
+    )
+    def test_inspect_third_party_provider_smoke_holds_when_parse_exceeds_budget(
+        self,
+        mock_parse,
+        _mock_monotonic,
+    ):
+        mock_parse.return_value = [
+            [
+                2,
+                "https://i.imgur.com/demo.jpg",
+                {
+                    "title": "slow gallery command demo",
+                    "filename": "demo",
+                    "extension": "jpg",
+                },
+            ]
+        ]
+        output = StringIO()
+
+        call_command(
+            "inspect_third_party_provider",
+            "https://imgur.com/gallery/demo",
+            provider="gallerydl",
+            as_json=True,
+            stdout=output,
+        )
+        payload = json.loads(output.getvalue())
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["smoke"]["recommended_rollout"], "hold")
+        self.assertFalse(payload["smoke"]["within_frontend_budget"])
+        self.assertIn("parse_exceeds_frontend_budget", payload["smoke"]["issues"])
 
     @patch(
         "xhs_download.services.platforms.gallerydl_generic."
@@ -2035,6 +2396,12 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
 
         self.assertTrue(payload["ok"])
         self.assertFalse(payload["settings"]["third_party_provider_enabled"])
+        self.assertTrue(payload["settings"]["third_party_staff_only"])
+        self.assertEqual(payload["rollout"]["status"], "disabled")
+        self.assertEqual(
+            payload["rollout"]["reason"],
+            "third_party_entrypoint_disabled",
+        )
         self.assertEqual(
             payload["settings"]["third_party_external_output_max_bytes"],
             settings.THIRD_PARTY_EXTERNAL_OUTPUT_MAX_BYTES,
@@ -2171,6 +2538,7 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         text = output.getvalue()
 
         self.assertIn("platform coverage:", text)
+        self.assertIn("rollout:", text)
         self.assertIn("- YouTube (youtube):", text)
         self.assertIn("providers=yt_dlp_generic, kukutool_generic", text)
         self.assertIn("- Flickr (flickr):", text)
@@ -2196,6 +2564,8 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
 
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["issues"][0]["code"], "no_provider_enabled")
+        self.assertEqual(payload["rollout"]["status"], "hold")
+        self.assertEqual(payload["rollout"]["reason"], "no_provider_enabled")
         self.assertEqual(payload["enabled_provider_ids"], [])
         self.assertEqual(payload["ready_provider_ids"], [])
 
@@ -2221,6 +2591,59 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["enabled_provider_ids"], ["kukutool_generic"])
         self.assertEqual(payload["ready_provider_ids"], ["kukutool_generic"])
+        self.assertEqual(payload["rollout"]["status"], "staff_only")
+        self.assertEqual(payload["rollout"]["reason"], "staff_only_gate_enabled")
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+        THIRD_PARTY_STAFF_ONLY=False,
+        THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=True,
+        YTDLP_PROVIDER_ENABLED=False,
+        GALLERYDL_PROVIDER_ENABLED=False,
+    )
+    def test_inspect_third_party_provider_health_reports_public_candidate_rollout(self):
+        cache.clear()
+        output = StringIO()
+
+        call_command(
+            "inspect_third_party_provider",
+            health=True,
+            as_json=True,
+            stdout=output,
+        )
+        payload = json.loads(output.getvalue())
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["rollout"]["status"], "public_candidate")
+        self.assertEqual(
+            payload["rollout"]["reason"],
+            "ready_but_requires_manual_public_approval",
+        )
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+        THIRD_PARTY_STAFF_ONLY=True,
+        THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=True,
+        YTDLP_PROVIDER_ENABLED=False,
+        GALLERYDL_PROVIDER_ENABLED=False,
+    )
+    def test_inspect_third_party_provider_health_reports_staff_only_rollout(self):
+        cache.clear()
+        output = StringIO()
+
+        call_command(
+            "inspect_third_party_provider",
+            health=True,
+            as_json=True,
+            stdout=output,
+        )
+        payload = json.loads(output.getvalue())
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["rollout"]["status"], "staff_only")
+        self.assertEqual(payload["rollout"]["reason"], "staff_only_gate_enabled")
 
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,
@@ -2426,6 +2849,11 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         self.assertEqual(payload["errors"][0]["provider"], "yt_dlp_generic")
         self.assertEqual(payload["errors"][0]["status"], "timeout")
         self.assertEqual(payload["errors"][0]["error_type"], "XhsProviderTimeoutError")
+        self.assertEqual(payload["smoke"]["recommended_rollout"], "hold")
+        self.assertEqual(payload["smoke"]["asset_count"], 0)
+        self.assertEqual(payload["smoke"]["media_types"], [])
+        self.assertEqual(payload["smoke"]["source_platform"], "youtube")
+        self.assertEqual(payload["smoke"]["issues"], ["provider_timeout"])
         self.assertEqual(payload["attempts"][0]["provider"], "yt_dlp_generic")
         self.assertEqual(payload["attempts"][0]["status"], "timeout")
         mock_ytdlp_parse.assert_called_once_with(
