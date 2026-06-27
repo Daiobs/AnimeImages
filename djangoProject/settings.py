@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 import os
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from django.core.exceptions import ImproperlyConfigured
 
@@ -82,6 +83,38 @@ def require_env_list(name):
     if not values:
         raise ImproperlyConfigured(f"{name} must be configured explicitly outside local development.")
     return values
+
+
+def database_config_from_url(value, *, require_postgresql=False):
+    parsed = urlparse(value)
+    scheme = parsed.scheme.lower()
+    if scheme in {"postgres", "postgresql"}:
+        database_name = parsed.path.lstrip("/")
+        if not database_name:
+            raise ImproperlyConfigured("DJANGO_DATABASE_URL must include a database name.")
+        config = {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": unquote(database_name),
+            "USER": unquote(parsed.username or ""),
+            "PASSWORD": unquote(parsed.password or ""),
+            "HOST": parsed.hostname or "",
+            "PORT": str(parsed.port or ""),
+        }
+        return config
+    if scheme == "sqlite":
+        if require_postgresql:
+            raise ImproperlyConfigured(
+                "DJANGO_DATABASE_URL must use PostgreSQL outside local development."
+            )
+        if parsed.netloc and parsed.netloc != "localhost":
+            raise ImproperlyConfigured("sqlite DJANGO_DATABASE_URL must not include a remote host.")
+        return {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": unquote(parsed.path),
+        }
+    raise ImproperlyConfigured(
+        "DJANGO_DATABASE_URL must use postgresql://, postgres://, or sqlite://."
+    )
 
 
 # Quick-start development settings - unsuitable for production
@@ -177,11 +210,24 @@ WSGI_APPLICATION = "djangoProject.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 
+DJANGO_DATABASE_URL = os.environ.get("DJANGO_DATABASE_URL", "").strip()
+if REQUIRE_PRODUCTION_CONFIG and not DJANGO_DATABASE_URL:
+    raise ImproperlyConfigured(
+        "DJANGO_DATABASE_URL must point to PostgreSQL outside local development."
+    )
+
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-    }
+    "default": (
+        database_config_from_url(
+            DJANGO_DATABASE_URL,
+            require_postgresql=REQUIRE_PRODUCTION_CONFIG,
+        )
+        if DJANGO_DATABASE_URL
+        else {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    )
 }
 
 

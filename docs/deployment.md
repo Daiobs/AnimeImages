@@ -6,6 +6,8 @@ This is a Django backend project. Deploy it to a Python WSGI/ASGI host such as R
 
 Netlify can host a future static frontend, but it is not the right target for the full Django backend.
 
+For the Hong Kong VPS first-launch baseline, use `docs/production-deploy-baseline.md` and `docs/production-deploy-checklist.md` as the operator runbook.
+
 ## Required Environment Variables
 
 Start from `.env.example.production` if you keep configuration in the project root. Runtime reads the project-root `.env` plus deployment environment variables; the example files are templates only.
@@ -13,6 +15,7 @@ Start from `.env.example.production` if you keep configuration in the project ro
 - `DJANGO_SECRET_KEY`: long random production secret
 - `DJANGO_DEBUG=False`
 - `DJANGO_ALLOWED_HOSTS`: comma-separated hostnames
+- `DJANGO_DATABASE_URL`: PostgreSQL connection URL, for example `postgresql://user:password@127.0.0.1:5432/animeimages`
 - `DJANGO_CACHE_URL`: shared Redis URL used by rate limits and validated provider caches
 - `DJANGO_SECURE_SSL_REDIRECT=True` when HTTPS is available
 - `DJANGO_SESSION_COOKIE_SECURE=True` when HTTPS is available
@@ -36,6 +39,7 @@ When running `check --deploy` from a local machine that also has a development `
 DJANGO_DEBUG=False \
 DJANGO_SECRET_KEY=local-production-check-7f4e2d9c8b1a6e5d3c0f9a8b7e6d5c4b3a2f1e0d9c8b7a6f5e4d3c2b1a0f9e8 \
 DJANGO_ALLOWED_HOSTS=example.com \
+DJANGO_DATABASE_URL=postgresql://animeimages:password@127.0.0.1:5432/animeimages \
 DJANGO_CACHE_URL=redis://localhost:6379/0 \
 ULTRA_HD_PROVIDER_ENABLED=False \
 KUKUTOOL_PROVIDER_ENABLED=False \
@@ -78,7 +82,7 @@ SQLite is acceptable for local development. Production should use PostgreSQL or 
 
 Before switching databases:
 
-1. Add database configuration via environment variables.
+1. Add database configuration through `DJANGO_DATABASE_URL`.
 2. Run migrations on a staging database.
 3. Verify upload and media paths.
 
