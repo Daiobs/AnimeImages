@@ -267,12 +267,11 @@ def build_health_report(adapter, force_probe_provider_id=""):
     issues = []
     if (
         getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False)
-        and getattr(settings, "THIRD_PARTY_PUBLIC_ACCESS_ENABLED", False)
         and not enabled_providers
     ):
         issues.append({
             "code": "no_provider_enabled",
-            "message": "Public third-party parsing is enabled but no concrete provider is enabled.",
+            "message": "Third-party provider capability is enabled but no concrete provider is enabled.",
         })
     for provider_id in enabled_providers:
         if provider_id not in ready_providers:
@@ -285,10 +284,8 @@ def build_health_report(adapter, force_probe_provider_id=""):
     third_party_enabled = bool(
         getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False)
     )
-    public_access_enabled = bool(
-        getattr(settings, "THIRD_PARTY_PUBLIC_ACCESS_ENABLED", False)
-    )
-    staff_only = bool(getattr(settings, "THIRD_PARTY_STAFF_ONLY", False))
+    public_access_enabled = third_party_enabled
+    staff_only = False
     rollout = build_third_party_rollout_status(
         enabled=third_party_enabled,
         public_access_enabled=public_access_enabled,

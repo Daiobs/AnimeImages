@@ -51,11 +51,8 @@ from .services.provider_access import (
     PROVIDER_DOUYIN_ULTRA,
     PROVIDER_THIRD_PARTY,
     PROVIDER_YOUTUBE_MERGE,
-    configured_mode_for_provider,
-    load_runtime_setting,
     provider_access_summary,
     provider_is_allowed_for_request,
-    request_user_is_staff,
 )
 from .services.registry import get_adapter_for_url, parse_media_page
 from .services.provider_manifest import build_provider_manifest_token
@@ -252,16 +249,6 @@ def youtube_merge_mode_is_available(request):
     health = get_youtube_merge_health()
     if not health.get("implemented") or not health.get("ready"):
         return False
-    runtime_setting = load_runtime_setting()
-    if (
-        configured_mode_for_provider(PROVIDER_YOUTUBE_MERGE, runtime_setting)
-        == ProviderAccessMode.DEFAULT
-    ):
-        if not health.get("public_access_enabled"):
-            return False
-        if health.get("staff_only"):
-            return request_user_is_staff(request)
-        return True
     return provider_is_allowed_for_request(PROVIDER_YOUTUBE_MERGE, request)
 
 
@@ -308,14 +295,12 @@ def build_third_party_provider_summary(kukutool_health, gallerydl_health, ytdlp_
         if state["ready"]
     )
     global_enabled = bool(getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False))
-    public_access_enabled = bool(
-        getattr(settings, "THIRD_PARTY_PUBLIC_ACCESS_ENABLED", False)
-    )
-    staff_only = bool(getattr(settings, "THIRD_PARTY_STAFF_ONLY", False))
+    public_access_enabled = global_enabled
+    staff_only = False
     issue = ""
-    if global_enabled and public_access_enabled and not enabled_provider_ids:
+    if global_enabled and not enabled_provider_ids:
         issue = "no_provider_enabled"
-    elif global_enabled and public_access_enabled and not ready_provider_ids:
+    elif global_enabled and not ready_provider_ids:
         issue = "no_ready_provider"
     rollout = build_third_party_rollout_status(
         enabled=global_enabled,
@@ -330,12 +315,10 @@ def build_third_party_provider_summary(kukutool_health, gallerydl_health, ytdlp_
         "configured": bool(global_enabled and enabled_provider_ids),
         "public_ready": bool(
             global_enabled
-            and public_access_enabled
-            and not staff_only
             and ready_provider_ids
         ),
         "staff_ready": bool(
-            global_enabled and public_access_enabled and ready_provider_ids
+            global_enabled and ready_provider_ids
         ),
         "enabled_provider_ids": enabled_provider_ids,
         "ready_provider_ids": ready_provider_ids,
@@ -447,16 +430,22 @@ def provider_settings_view(request):
             "youtube_merge_mode",
             "third_party_mode",
         ):
-            value = request.POST.get(field_name, ProviderAccessMode.DEFAULT)
+            value = request.POST.get(field_name, ProviderAccessMode.DISABLED)
             if value not in valid_modes:
-                value = ProviderAccessMode.DEFAULT
+                value = ProviderAccessMode.DISABLED
             setattr(runtime_setting, field_name, value)
+        try:
+            rollout_percent = int(request.POST.get("rollout_percent", "0") or 0)
+        except (TypeError, ValueError):
+            rollout_percent = 0
+        runtime_setting.rollout_percent = min(100, max(0, rollout_percent))
         runtime_setting.kukutool_disabled = request.POST.get("kukutool_disabled") == "1"
         runtime_setting.save(
             update_fields=[
                 "douyin_ultra_mode",
                 "youtube_merge_mode",
                 "third_party_mode",
+                "rollout_percent",
                 "kukutool_disabled",
                 "updated_at",
             ]
@@ -862,11 +851,11 @@ def build_search_results_context(request, platform_key="home"):
 
     if query_uses_third_party_provider(query):
         if not third_party_provider_is_available(request):
-            if (
-                settings.THIRD_PARTY_PROVIDER_ENABLED
-                and settings.THIRD_PARTY_PUBLIC_ACCESS_ENABLED
-                and getattr(settings, "THIRD_PARTY_STAFF_ONLY", False)
-            ):
+            access = provider_access_summary(PROVIDER_THIRD_PARTY, request)
+            if access["hard_enabled"] and access["effective_mode"] in {
+                ProviderAccessMode.STAFF,
+                ProviderAccessMode.PUBLIC_GRAY,
+            }:
                 context["error_message"] = "第三方通用解析暂未向该用户开放。"
                 return context, 403
             context["error_message"] = "第三方通用解析暂未开放。"

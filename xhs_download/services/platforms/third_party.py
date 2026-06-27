@@ -468,8 +468,6 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         platform_name = rule.display_name if rule else self.display_name
         if not getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False):
             raise XhsParseError("第三方通用解析 Provider 当前未启用。")
-        if not getattr(settings, "THIRD_PARTY_PUBLIC_ACCESS_ENABLED", False):
-            raise XhsParseError("第三方通用解析暂未开放。")
         providers = list(self.iter_provider_specs(rule, respect_enabled=True))
         failures = []
         attempts = []
@@ -479,7 +477,6 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
             health = get_youtube_merge_health()
             if (
                 health.get("ready")
-                and health.get("public_access_enabled")
                 and health.get("implemented")
             ):
                 started_at = time.monotonic()

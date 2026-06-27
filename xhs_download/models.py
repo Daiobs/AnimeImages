@@ -1,10 +1,11 @@
 from django.db import models
+from django.core.validators import MaxValueValidator, MinValueValidator
 
 
 class ProviderAccessMode(models.TextChoices):
-    DEFAULT = "default", "跟随环境配置"
     DISABLED = "disabled", "关闭"
     STAFF = "staff", "仅管理员"
+    PUBLIC_GRAY = "public_gray", "公开灰度"
     PUBLIC = "public", "全站开放"
 
 
@@ -18,20 +19,26 @@ class ProviderRuntimeSetting(models.Model):
     douyin_ultra_mode = models.CharField(
         max_length=16,
         choices=ProviderAccessMode.choices,
-        default=ProviderAccessMode.DEFAULT,
+        default=ProviderAccessMode.DISABLED,
         verbose_name="抖音超高清",
     )
     youtube_merge_mode = models.CharField(
         max_length=16,
         choices=ProviderAccessMode.choices,
-        default=ProviderAccessMode.DEFAULT,
+        default=ProviderAccessMode.DISABLED,
         verbose_name="YouTube 高清合并",
     )
     third_party_mode = models.CharField(
         max_length=16,
         choices=ProviderAccessMode.choices,
-        default=ProviderAccessMode.DEFAULT,
+        default=ProviderAccessMode.DISABLED,
         verbose_name="通用第三方 Provider",
+    )
+    rollout_percent = models.PositiveSmallIntegerField(
+        default=0,
+        validators=(MinValueValidator(0), MaxValueValidator(100)),
+        verbose_name="公开灰度比例",
+        help_text="仅在 Provider 设置为公开灰度时生效，0 表示不向访客开放，100 表示全部访客开放。",
     )
     kukutool_disabled = models.BooleanField(
         default=False,

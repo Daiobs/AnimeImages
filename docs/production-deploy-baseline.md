@@ -1,6 +1,6 @@
 # Production Deploy Baseline
 
-This document defines the first production baseline for deploying AnimeImages to a Hong Kong VPS. The goal is a small, stable launch that serves the existing dedicated adapters and keeps all third-party provider expansion disabled by default.
+This document defines the first production baseline for deploying AnimeImages to a Hong Kong VPS. The goal is a small, stable launch that serves the existing dedicated adapters and keeps Provider exposure controlled through the admin runtime gate.
 
 ## Target Architecture
 
@@ -28,7 +28,7 @@ First launch should expose only the stable dedicated adapter paths:
 - Image preview proxy with production limits.
 - `/health/live/` and `/health/ready/`.
 
-Do not open public third-party provider entrypoints for the first launch. Provider smoke remains a staging/staff task after the VPS baseline is healthy.
+Do not open public third-party provider entrypoints for the first launch. Provider smoke remains a staging/staff task after the VPS baseline is healthy. `.env` Provider values should describe capability and dependencies; `/admin/provider-settings/` decides whether a capability is disabled, staff-only, gray, or public.
 
 ## Development vs Production
 
@@ -36,27 +36,24 @@ Local development can keep convenience defaults such as SQLite, `DEBUG=True`, se
 
 Production must use explicit infrastructure configuration. The production process should read a server-side environment file such as `/srv/animeimages/.env.production` or systemd `EnvironmentFile`, not a committed secret file.
 
-Important production defaults:
+Important production posture:
 
 ```text
 DJANGO_DEBUG=False
 XHS_ALLOW_SERVER_SAVE=False
 XHS_ALLOW_ABSOLUTE_SAVE_PATH=False
 DOWNLOAD_ASYNC_TASKS_ENABLED=False
-THIRD_PARTY_PROVIDER_ENABLED=False
-THIRD_PARTY_PUBLIC_ACCESS_ENABLED=False
-THIRD_PARTY_STAFF_ONLY=True
 ULTRA_HD_PROVIDER_ENABLED=False
 ULTRA_HD_PUBLIC_ACCESS_ENABLED=False
 KUKUTOOL_PROVIDER_ENABLED=False
-YTDLP_PROVIDER_ENABLED=False
-YTDLP_MERGE_PROVIDER_ENABLED=False
-GALLERYDL_PROVIDER_ENABLED=False
-YOUTUBE_MERGE_PROVIDER_ENABLED=False
-YOUTUBE_MERGE_PUBLIC_ACCESS_ENABLED=False
+THIRD_PARTY_PROVIDER_ENABLED=True
+YTDLP_PROVIDER_ENABLED=True
+YTDLP_MERGE_PROVIDER_ENABLED=True
+GALLERYDL_PROVIDER_ENABLED=True
+YOUTUBE_MERGE_PROVIDER_ENABLED=True
 ```
 
-The provider layer can be enabled only after staging or staff-only smoke proves the exact runtime, timeout, output-size, final-host validation, and recovery behavior. A health result of `public_candidate` is technical evidence only; it is not approval to expose anonymous public traffic.
+The regular Provider capability gates can be enabled after dependencies are installed, but the initial `ProviderRuntimeSetting` database values stay conservative: all modes are `disabled` and `rollout_percent=0`. Move them through `staff`, `public_gray`, and `public` from the admin console only after smoke proves the exact runtime, timeout, output-size, final-host validation, and recovery behavior. See `docs/provider-runtime-gates.md`.
 
 ## Required Production Environment
 
@@ -198,29 +195,27 @@ Long-running background work is a later phase. Celery/RQ plus Redis can be intro
 
 ## Provider Policy
 
-Production first launch must keep these disabled:
+Production first launch separates Provider capability from Provider exposure:
 
 ```text
-THIRD_PARTY_PROVIDER_ENABLED=False
-THIRD_PARTY_PUBLIC_ACCESS_ENABLED=False
+THIRD_PARTY_PROVIDER_ENABLED=True
 THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=False
-YTDLP_PROVIDER_ENABLED=False
-YTDLP_MERGE_PROVIDER_ENABLED=False
-GALLERYDL_PROVIDER_ENABLED=False
-YOUTUBE_MERGE_PROVIDER_ENABLED=False
-YOUTUBE_MERGE_PUBLIC_ACCESS_ENABLED=False
+YTDLP_PROVIDER_ENABLED=True
+YTDLP_MERGE_PROVIDER_ENABLED=True
+GALLERYDL_PROVIDER_ENABLED=True
+YOUTUBE_MERGE_PROVIDER_ENABLED=True
 ULTRA_HD_PROVIDER_ENABLED=False
 ULTRA_HD_PUBLIC_ACCESS_ENABLED=False
 KUKUTOOL_PROVIDER_ENABLED=False
 ```
 
-After launch, provider work can continue in staging or staff-only smoke:
+The database runtime defaults remain closed: `third_party_mode=disabled`, `youtube_merge_mode=disabled`, `douyin_ultra_mode=disabled`, and `rollout_percent=0`. After launch, provider work can continue in staging or staff-only smoke:
 
-1. Enable one provider at a time.
+1. Install and verify one provider capability at a time.
 2. Verify `inspect_third_party_provider --health --json`.
 3. Verify parse, preview, signed manifest download, content type, final host, output size, and failure recovery.
-4. Keep `THIRD_PARTY_STAFF_ONLY=True`.
-5. Promote only after logs show stable latency and failure behavior.
+4. Move the admin runtime mode from `disabled` to `staff`.
+5. Promote through `public_gray` and `public` only after logs show stable latency and failure behavior.
 
 ## Launch Smoke Test
 

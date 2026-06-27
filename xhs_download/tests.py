@@ -2833,6 +2833,48 @@ class BilibiliAdapterTests(SimpleTestCase):
         self.assertEqual(result.video_assets[0].cover_url, "https://i0.hdslb.com/bfs/archive/cover.jpg")
         self.assertEqual(mock_get.call_args_list[0].args[0], "https://b23.tv/abc123")
 
+    @patch("xhs_download.services.platforms.bilibili.request_get_with_retry")
+    def test_parse_url_encodes_unicode_referer_for_api_headers(self, mock_get):
+        view_response = Mock()
+        view_response.json.return_value = {
+            "code": 0,
+            "data": {
+                "bvid": "BV1REjd6xEZf",
+                "aid": 2,
+                "title": "智能体副业还能做吗",
+                "pic": "https://i0.hdslb.com/bfs/archive/cover.jpg",
+                "owner": {"name": "作者"},
+                "pages": [{"cid": 62131, "page": 1, "part": "P1"}],
+            },
+        }
+        view_response.close = Mock()
+
+        play_response = Mock()
+        play_response.json.return_value = {
+            "code": 0,
+            "data": {
+                "quality": 80,
+                "durl": [
+                    {
+                        "size": 100,
+                        "url": "https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/video.mp4",
+                    }
+                ],
+            },
+        }
+        play_response.close = Mock()
+        mock_get.side_effect = [view_response, play_response]
+
+        BilibiliAdapter().parse_url(
+            "https://www.bilibili.com/video/BV1REjd6xEZf/?title_encode=智能体副业还能做吗？2026 年真实情况"
+        )
+
+        for call in mock_get.call_args_list:
+            referer = call.kwargs["headers"]["Referer"]
+            self.assertNotIn("智能体", referer)
+            referer.encode("latin-1")
+        self.assertIn("%E6%99%BA%E8%83%BD%E4%BD%93", mock_get.call_args_list[0].kwargs["headers"]["Referer"])
+
     def test_get_media_headers_uses_bilibili_headers_for_bilibili_media(self):
         self.assertIs(
             get_media_headers("https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/video.mp4"),
@@ -3330,9 +3372,19 @@ class XhsDownloadArchiveTests(SimpleTestCase):
             self.assertTrue(Path(result["saved_files"][0]).exists())
 
 
-class XhsDownloadViewTests(SimpleTestCase):
+class XhsDownloadViewTests(TestCase):
     def setUp(self):
         cache.clear()
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC
+        setting.youtube_merge_mode = ProviderAccessMode.PUBLIC
+        setting.save(
+            update_fields=[
+                "third_party_mode",
+                "youtube_merge_mode",
+                "updated_at",
+            ]
+        )
 
     def test_home_route_renders_download_page(self):
         response = Client().get("/")
@@ -4413,6 +4465,9 @@ class XhsDownloadViewTests(SimpleTestCase):
         self,
         mock_parse,
     ):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["third_party_mode", "updated_at"])
         request = RequestFactory().get(
             "/results/",
             {"q": "https://www.youtube.com/watch?v=demo"},
@@ -4436,6 +4491,9 @@ class XhsDownloadViewTests(SimpleTestCase):
         self,
         mock_parse,
     ):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["third_party_mode", "updated_at"])
         mock_parse.return_value = ParseResult(
             platform="third_party",
             post_type="image",
@@ -4584,6 +4642,9 @@ class XhsDownloadViewTests(SimpleTestCase):
     )
     @patch("xhs_download.views.parse_media_page")
     def test_results_passes_ultra_hd_request_flag(self, mock_parse, _mock_health):
+        setting = ProviderRuntimeSetting.load()
+        setting.douyin_ultra_mode = ProviderAccessMode.PUBLIC
+        setting.save(update_fields=["douyin_ultra_mode", "updated_at"])
         mock_parse.return_value = ParseResult(
             platform="douyin",
             post_type="unknown",
@@ -4750,6 +4811,9 @@ class XhsDownloadViewTests(SimpleTestCase):
         mock_health,
         mock_parse,
     ):
+        setting = ProviderRuntimeSetting.load()
+        setting.youtube_merge_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["youtube_merge_mode", "updated_at"])
         mock_health.return_value = {
             "implemented": True,
             "ready": True,
@@ -4798,6 +4862,9 @@ class XhsDownloadViewTests(SimpleTestCase):
         mock_health,
         mock_parse,
     ):
+        setting = ProviderRuntimeSetting.load()
+        setting.youtube_merge_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["youtube_merge_mode", "updated_at"])
         mock_health.return_value = {
             "implemented": True,
             "ready": True,
@@ -4837,6 +4904,7 @@ class XhsDownloadViewTests(SimpleTestCase):
         THIRD_PARTY_PROVIDER_ENABLED=True,
         THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
         THIRD_PARTY_STAFF_ONLY=False,
+        YOUTUBE_MERGE_PROVIDER_ENABLED=False,
     )
     @patch("xhs_download.views.parse_media_page")
     @patch("xhs_download.views.get_youtube_merge_health")
@@ -4960,6 +5028,9 @@ class XhsDownloadViewTests(SimpleTestCase):
         mock_parse,
         mock_log_info,
     ):
+        setting = ProviderRuntimeSetting.load()
+        setting.youtube_merge_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["youtube_merge_mode", "updated_at"])
         mock_health.return_value = {
             "implemented": True,
             "ready": True,
@@ -4992,6 +5063,9 @@ class XhsDownloadViewTests(SimpleTestCase):
 
     @patch("xhs_download.views.get_youtube_merge_health")
     def test_youtube_merge_mode_respects_staff_only(self, mock_health):
+        setting = ProviderRuntimeSetting.load()
+        setting.youtube_merge_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["youtube_merge_mode", "updated_at"])
         mock_health.return_value = {
             "implemented": True,
             "ready": True,
@@ -5006,8 +5080,12 @@ class XhsDownloadViewTests(SimpleTestCase):
         request.user = Mock(is_active=True, is_staff=True)
         self.assertTrue(youtube_merge_mode_is_available(request))
 
+    @override_settings(YOUTUBE_MERGE_PROVIDER_ENABLED=False)
     @patch("xhs_download.views.get_youtube_merge_health")
-    def test_youtube_merge_mode_requires_public_access(self, mock_health):
+    def test_youtube_merge_mode_requires_provider_capability(self, mock_health):
+        setting = ProviderRuntimeSetting.load()
+        setting.youtube_merge_mode = ProviderAccessMode.PUBLIC
+        setting.save(update_fields=["youtube_merge_mode", "updated_at"])
         mock_health.return_value = {
             "implemented": True,
             "ready": True,
@@ -5699,11 +5777,12 @@ class RuntimeHealthCheckTests(TestCase):
         THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=False,
         YTDLP_PROVIDER_ENABLED=False,
         GALLERYDL_PROVIDER_ENABLED=False,
+        YOUTUBE_MERGE_PROVIDER_ENABLED=False,
     )
-    def test_system_check_allows_private_third_party_without_enabled_provider(self):
+    def test_system_check_requires_concrete_provider_when_capability_is_enabled(self):
         issue_ids = {issue.id for issue in run_checks()}
 
-        self.assertNotIn("xhs_download.E007", issue_ids)
+        self.assertIn("xhs_download.E007", issue_ids)
 
     @override_settings(
         YOUTUBE_MERGE_PROVIDER_ENABLED=True,
@@ -5851,7 +5930,7 @@ class ProviderControlViewTests(TestCase):
         summary = response.json()["third_party_summary"]
         self.assertFalse(summary["enabled"])
         self.assertFalse(summary["public_access_enabled"])
-        self.assertTrue(summary["staff_only"])
+        self.assertFalse(summary["staff_only"])
         self.assertFalse(summary["configured"])
         self.assertFalse(summary["public_ready"])
         self.assertFalse(summary["staff_ready"])
@@ -5935,20 +6014,23 @@ class ProviderControlViewTests(TestCase):
         YTDLP_PROVIDER_ENABLED=False,
         GALLERYDL_PROVIDER_ENABLED=False,
     )
-    def test_provider_health_summary_marks_staff_only_as_not_public_ready(self):
+    def test_provider_health_summary_ignores_legacy_staff_only_env_gate(self):
         response = self.client.get("/admin/provider-health/")
 
         self.assertEqual(response.status_code, 200)
         summary = response.json()["third_party_summary"]
         self.assertTrue(summary["enabled"])
         self.assertTrue(summary["public_access_enabled"])
-        self.assertTrue(summary["staff_only"])
-        self.assertFalse(summary["public_ready"])
+        self.assertFalse(summary["staff_only"])
+        self.assertTrue(summary["public_ready"])
         self.assertTrue(summary["staff_ready"])
         self.assertEqual(summary["enabled_provider_ids"], ["kukutool_generic"])
         self.assertEqual(summary["ready_provider_ids"], ["kukutool_generic"])
-        self.assertEqual(summary["rollout"]["status"], "staff_only")
-        self.assertEqual(summary["rollout"]["reason"], "staff_only_gate_enabled")
+        self.assertEqual(summary["rollout"]["status"], "public_candidate")
+        self.assertEqual(
+            summary["rollout"]["reason"],
+            "ready_but_requires_manual_public_approval",
+        )
 
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,
@@ -6016,6 +6098,7 @@ class ProviderSettingsAdminViewTests(TestCase):
                 "douyin_ultra_mode": ProviderAccessMode.STAFF,
                 "youtube_merge_mode": ProviderAccessMode.DISABLED,
                 "third_party_mode": ProviderAccessMode.PUBLIC,
+                "rollout_percent": "42",
                 "kukutool_disabled": "1",
             },
         )
@@ -6025,7 +6108,85 @@ class ProviderSettingsAdminViewTests(TestCase):
         self.assertEqual(setting.douyin_ultra_mode, ProviderAccessMode.STAFF)
         self.assertEqual(setting.youtube_merge_mode, ProviderAccessMode.DISABLED)
         self.assertEqual(setting.third_party_mode, ProviderAccessMode.PUBLIC)
+        self.assertEqual(setting.rollout_percent, 42)
         self.assertTrue(setting.kukutool_disabled)
+
+    def test_provider_runtime_defaults_are_conservative(self):
+        setting = ProviderRuntimeSetting.load()
+
+        self.assertEqual(setting.douyin_ultra_mode, ProviderAccessMode.DISABLED)
+        self.assertEqual(setting.youtube_merge_mode, ProviderAccessMode.DISABLED)
+        self.assertEqual(setting.third_party_mode, ProviderAccessMode.DISABLED)
+        self.assertEqual(setting.rollout_percent, 0)
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_capability_enabled_admin_disabled_is_not_available(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.DISABLED
+        setting.save(update_fields=["third_party_mode", "updated_at"])
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=False, is_staff=False)
+
+        self.assertFalse(third_party_provider_is_available(request))
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_capability_enabled_admin_staff_allows_staff_only(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["third_party_mode", "updated_at"])
+        request = RequestFactory().get("/")
+
+        request.user = Mock(is_active=False, is_staff=False)
+        self.assertFalse(third_party_provider_is_available(request))
+
+        request.user = Mock(is_active=True, is_staff=True)
+        self.assertTrue(third_party_provider_is_available(request))
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_capability_enabled_public_gray_zero_blocks_visitor(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC_GRAY
+        setting.rollout_percent = 0
+        setting.save(
+            update_fields=["third_party_mode", "rollout_percent", "updated_at"]
+        )
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=False, is_staff=False)
+
+        self.assertFalse(third_party_provider_is_available(request))
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_capability_enabled_public_gray_hundred_allows_visitor(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC_GRAY
+        setting.rollout_percent = 100
+        setting.save(
+            update_fields=["third_party_mode", "rollout_percent", "updated_at"]
+        )
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=False, is_staff=False)
+
+        self.assertTrue(third_party_provider_is_available(request))
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_capability_enabled_admin_public_allows_visitor(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC
+        setting.save(update_fields=["third_party_mode", "updated_at"])
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=False, is_staff=False)
+
+        self.assertTrue(third_party_provider_is_available(request))
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=False)
+    def test_capability_disabled_admin_public_is_still_unavailable(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC
+        setting.save(update_fields=["third_party_mode", "updated_at"])
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=True, is_staff=True)
+
+        self.assertFalse(third_party_provider_is_available(request))
 
     @override_settings(
         ULTRA_HD_PROVIDER_ENABLED=True,

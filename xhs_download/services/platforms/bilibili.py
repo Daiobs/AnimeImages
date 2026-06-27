@@ -1,6 +1,8 @@
 import re
 from urllib.parse import parse_qs, urlencode, urlparse
 
+from requests.utils import requote_uri
+
 from ..assets import MediaAsset, ParseResult
 from ..candidates import MediaCandidate, dedupe_candidates
 from ..common import (
@@ -70,7 +72,7 @@ def api_get_json(url, params, referer="https://www.bilibili.com/"):
     request_url = f"{url}?{query}" if query else url
     response = request_get_with_retry(
         request_url,
-        headers={**BILIBILI_HEADERS, "Referer": referer},
+        headers={**BILIBILI_HEADERS, "Referer": requote_uri(referer)},
         timeout=15,
         retries=2,
         allowed_final_host_suffixes=("bilibili.com",),

@@ -366,6 +366,23 @@
         font-size: 13px;
     }
 
+    .provider-rollout-input {
+        display: grid;
+        grid-template-columns: 96px minmax(0, 1fr);
+        gap: 10px;
+        align-items: center;
+        min-width: min(100%, 320px);
+    }
+
+    .provider-rollout-input input {
+        min-height: 38px;
+        border: 1px solid var(--provider-line);
+        border-radius: 8px;
+        padding: 0 12px;
+        color: var(--provider-text);
+        font-weight: 800;
+    }
+
     .provider-actions {
         display: flex;
         flex-wrap: wrap;
@@ -437,8 +454,8 @@
 
         <div class="provider-warning">
             <span class="provider-warning-icon">!</span>
-            <span>
-                Provider 未安装、未启用或健康检查失败时，即使选择全站开放，也不会进入解析链路。生产环境建议先使用“仅管理员”完成 smoke test。
+                <span>
+                .env 只表示服务器具备对应 Provider 能力；实际开放状态由这里的 disabled / staff / public_gray / public 控制。抖音超高清依赖 KuKuTool 上游，可单独保持关闭。
             </span>
         </div>
 
@@ -495,6 +512,14 @@
                                     <span>默认策略</span>
                                     <strong>{{ row.access.default_label }}</strong>
                                 </div>
+                                <div class="provider-fact">
+                                    <span>公开灰度</span>
+                                    <strong>{{ row.access.rollout_percent }}%</strong>
+                                </div>
+                                <div class="provider-fact">
+                                    <span>灰度命中</span>
+                                    <strong>{{ row.access.rollout_allowed|yesno:"是,否" }}</strong>
+                                </div>
                             </div>
                             {% if row.issue %}
                                 <div class="provider-issue">问题：{{ row.issue }}</div>
@@ -522,6 +547,24 @@
                     </article>
                 {% endfor %}
             </div>
+
+            <section class="provider-emergency">
+                <div>
+                    <div class="provider-emergency-title">公开灰度比例</div>
+                    <div class="provider-emergency-help">仅对设置为 public_gray 的 Provider 生效；staff 用户不受灰度比例限制。</div>
+                </div>
+                <label class="provider-rollout-input">
+                    <span>比例</span>
+                    <input
+                        type="number"
+                        name="rollout_percent"
+                        min="0"
+                        max="100"
+                        step="1"
+                        value="{{ runtime_setting.rollout_percent }}"
+                    >
+                </label>
+            </section>
 
             <section class="provider-emergency">
                 <div>

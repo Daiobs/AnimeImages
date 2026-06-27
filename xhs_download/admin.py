@@ -11,6 +11,7 @@ class ProviderRuntimeSettingAdmin(admin.ModelAdmin):
         "douyin_ultra_mode",
         "youtube_merge_mode",
         "third_party_mode",
+        "rollout_percent",
         "kukutool_disabled",
         "updated_at",
     )
@@ -20,6 +21,7 @@ class ProviderRuntimeSettingAdmin(admin.ModelAdmin):
         "douyin_ultra_mode",
         "youtube_merge_mode",
         "third_party_mode",
+        "rollout_percent",
         "kukutool_disabled",
         "updated_at",
     )

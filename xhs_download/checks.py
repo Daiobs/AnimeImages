@@ -114,12 +114,11 @@ def check_generic_external_provider_runtimes(app_configs, **kwargs):
     issues = []
     if (
         getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False)
-        and getattr(settings, "THIRD_PARTY_PUBLIC_ACCESS_ENABLED", False)
         and not third_party_specific_provider_enabled()
     ):
         issues.append(
             Error(
-                "Third-party public parsing is enabled but no third-party provider is enabled.",
+                "Third-party provider capability is enabled but no concrete provider is enabled.",
                 id="xhs_download.E007",
             )
         )

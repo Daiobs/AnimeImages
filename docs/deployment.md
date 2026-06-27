@@ -33,7 +33,7 @@ python manage.py collectstatic --noinput
 python manage.py check --deploy
 ```
 
-When running `check --deploy` from a local machine that also has a development `.env`, explicitly override disabled provider flags unless the provider runtime is part of the deployment being verified:
+When running `check --deploy` from a local machine that also has a development `.env`, explicitly set provider capability flags to match the deployment being verified. Runtime exposure is controlled later in `/admin/provider-settings/`:
 
 ```bash
 DJANGO_DEBUG=False \
@@ -43,9 +43,13 @@ DJANGO_DATABASE_URL=postgresql://animeimages:password@127.0.0.1:5432/animeimages
 DJANGO_CACHE_URL=redis://localhost:6379/0 \
 ULTRA_HD_PROVIDER_ENABLED=False \
 KUKUTOOL_PROVIDER_ENABLED=False \
-THIRD_PARTY_PROVIDER_ENABLED=False \
-THIRD_PARTY_PUBLIC_ACCESS_ENABLED=False \
-THIRD_PARTY_STAFF_ONLY=True \
+THIRD_PARTY_PROVIDER_ENABLED=True \
+YTDLP_PROVIDER_ENABLED=True \
+YTDLP_BINARY="/srv/animeimages/.venv/bin/python -m yt_dlp" \
+GALLERYDL_PROVIDER_ENABLED=True \
+GALLERYDL_BINARY="/srv/animeimages/.venv/bin/python -m gallery_dl" \
+YOUTUBE_MERGE_PROVIDER_ENABLED=True \
+YOUTUBE_MERGE_FFMPEG_BINARY=/usr/bin/ffmpeg \
 DJANGO_SECURE_SSL_REDIRECT=True \
 DJANGO_SESSION_COOKIE_SECURE=True \
 DJANGO_CSRF_COOKIE_SECURE=True \
