@@ -299,10 +299,20 @@ def build_kukutool_admin_disabled_key():
 
 def is_kukutool_admin_disabled():
     try:
-        return bool(cache.get(build_kukutool_admin_disabled_key()))
+        cache_disabled = bool(cache.get(build_kukutool_admin_disabled_key()))
     except Exception:
         logger.exception("kukutool_admin_state_read_failed")
         return True
+    try:
+        from ...models import ProviderRuntimeSetting
+
+        runtime_disabled = bool(ProviderRuntimeSetting.load().kukutool_disabled)
+    except Exception as error:
+        if type(error).__name__ == "DatabaseOperationForbidden":
+            return cache_disabled
+        logger.exception("kukutool_runtime_admin_state_read_failed")
+        return True
+    return cache_disabled or runtime_disabled
 
 
 def set_kukutool_admin_disabled(disabled):

@@ -6,13 +6,15 @@ from urllib.parse import urlencode, urlparse
 
 import requests
 from django.conf import settings
+from django.contrib import messages
 from django.http import FileResponse, HttpResponse, JsonResponse
-from django.shortcuts import render
+from django.shortcuts import redirect, render
 from django.template.loader import render_to_string
 from django.urls import reverse
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_POST
 
+from .models import ProviderAccessMode, ProviderRuntimeSetting
 from .services.common import (
     XhsDownloadError,
     XhsError,
@@ -45,6 +47,16 @@ from .services.platforms.gallerydl_generic import GalleryDlGenericProvider
 from .services.platforms.kukutool_generic import KukutoolGenericProvider
 from .services.platforms.third_party import build_third_party_rollout_status
 from .services.platforms.ytdlp_generic import YtDlpGenericProvider
+from .services.provider_access import (
+    PROVIDER_DOUYIN_ULTRA,
+    PROVIDER_THIRD_PARTY,
+    PROVIDER_YOUTUBE_MERGE,
+    configured_mode_for_provider,
+    load_runtime_setting,
+    provider_access_summary,
+    provider_is_allowed_for_request,
+    request_user_is_staff,
+)
 from .services.registry import get_adapter_for_url, parse_media_page
 from .services.provider_manifest import build_provider_manifest_token
 from .services.youtube_merge import get_youtube_merge_health
@@ -229,12 +241,8 @@ def request_flag(value):
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def ultra_hd_is_available():
-    if not (
-        settings.ULTRA_HD_PUBLIC_ACCESS_ENABLED
-        and settings.ULTRA_HD_PROVIDER_ENABLED
-        and settings.KUKUTOOL_PROVIDER_ENABLED
-    ):
+def ultra_hd_is_available(request=None):
+    if not provider_is_allowed_for_request(PROVIDER_DOUYIN_ULTRA, request):
         return False
     health = get_kukutool_provider_health()
     return health["available"]
@@ -244,34 +252,21 @@ def youtube_merge_mode_is_available(request):
     health = get_youtube_merge_health()
     if not health.get("implemented") or not health.get("ready"):
         return False
-    if not health.get("public_access_enabled"):
-        return False
-    if health.get("staff_only"):
-        user = getattr(request, "user", None)
-        return bool(
-            getattr(user, "is_active", False)
-            and getattr(user, "is_staff", False)
-        )
-    return True
-
-
-def request_user_is_staff(request):
-    user = getattr(request, "user", None)
-    return bool(
-        getattr(user, "is_active", False)
-        and getattr(user, "is_staff", False)
-    )
+    runtime_setting = load_runtime_setting()
+    if (
+        configured_mode_for_provider(PROVIDER_YOUTUBE_MERGE, runtime_setting)
+        == ProviderAccessMode.DEFAULT
+    ):
+        if not health.get("public_access_enabled"):
+            return False
+        if health.get("staff_only"):
+            return request_user_is_staff(request)
+        return True
+    return provider_is_allowed_for_request(PROVIDER_YOUTUBE_MERGE, request)
 
 
 def third_party_provider_is_available(request):
-    if not (
-        settings.THIRD_PARTY_PROVIDER_ENABLED
-        and settings.THIRD_PARTY_PUBLIC_ACCESS_ENABLED
-    ):
-        return False
-    if getattr(settings, "THIRD_PARTY_STAFF_ONLY", False):
-        return request_user_is_staff(request)
-    return True
+    return provider_is_allowed_for_request(PROVIDER_THIRD_PARTY, request)
 
 
 def build_third_party_provider_summary(kukutool_health, gallerydl_health, ytdlp_health):
@@ -350,6 +345,139 @@ def build_third_party_provider_summary(kukutool_health, gallerydl_health, ytdlp_
     }
 
 
+def provider_settings_admin_required(request):
+    return bool(
+        getattr(request.user, "is_active", False)
+        and getattr(request.user, "is_staff", False)
+    )
+
+
+def build_provider_dashboard_rows(runtime_setting, request):
+    kukutool_health = get_kukutool_provider_health()
+    third_party_health = KukutoolGenericProvider().health()
+    gallerydl_health = GalleryDlGenericProvider().health()
+    ytdlp_health = YtDlpGenericProvider().health()
+    youtube_health = get_youtube_merge_health()
+    third_party_summary = build_third_party_provider_summary(
+        third_party_health,
+        gallerydl_health,
+        ytdlp_health,
+    )
+    access = {
+        PROVIDER_DOUYIN_ULTRA: provider_access_summary(
+            PROVIDER_DOUYIN_ULTRA,
+            request,
+            runtime_setting,
+        ),
+        PROVIDER_YOUTUBE_MERGE: provider_access_summary(
+            PROVIDER_YOUTUBE_MERGE,
+            request,
+            runtime_setting,
+        ),
+        PROVIDER_THIRD_PARTY: provider_access_summary(
+            PROVIDER_THIRD_PARTY,
+            request,
+            runtime_setting,
+        ),
+    }
+    rows = [
+        {
+            "id": PROVIDER_DOUYIN_ULTRA,
+            "name": "抖音超高清",
+            "description": "使用 KuKuTool 上游获取抖音超高清 / 4K 候选资源。",
+            "mode_field": "douyin_ultra_mode",
+            "current_mode": runtime_setting.douyin_ultra_mode,
+            "health_ready": bool(kukutool_health.get("available")),
+            "health_label": "可用" if kukutool_health.get("available") else "不可用",
+            "issue": (
+                "熔断中"
+                if (kukutool_health.get("circuit") or {}).get("open")
+                else (kukutool_health.get("runtime") or {}).get("error")
+                or (kukutool_health.get("sidecar") or {}).get("error")
+                or ""
+            ),
+            "access": access[PROVIDER_DOUYIN_ULTRA],
+        },
+        {
+            "id": PROVIDER_YOUTUBE_MERGE,
+            "name": "YouTube 高清合并",
+            "description": "通过 yt-dlp + ffmpeg 生成 1080p 或最高画质单文件。",
+            "mode_field": "youtube_merge_mode",
+            "current_mode": runtime_setting.youtube_merge_mode,
+            "health_ready": bool(youtube_health.get("ready")),
+            "health_label": "可用" if youtube_health.get("ready") else "不可用",
+            "issue": (
+                (youtube_health.get("ffmpeg") or {}).get("version_probe_error")
+                or (youtube_health.get("ytdlp") or {}).get("version_probe_error")
+                or ""
+            ),
+            "access": access[PROVIDER_YOUTUBE_MERGE],
+        },
+        {
+            "id": PROVIDER_THIRD_PARTY,
+            "name": "通用第三方 Provider",
+            "description": "用于 yt-dlp、gallery-dl 和长尾平台的通用解析入口。",
+            "mode_field": "third_party_mode",
+            "current_mode": runtime_setting.third_party_mode,
+            "health_ready": bool(third_party_summary.get("staff_ready")),
+            "health_label": (
+                "可用" if third_party_summary.get("staff_ready") else "不可用"
+            ),
+            "issue": third_party_summary.get("issue") or "",
+            "access": access[PROVIDER_THIRD_PARTY],
+        },
+    ]
+    return rows, {
+        "kukutool": kukutool_health,
+        "youtube_merge": youtube_health,
+        "third_party": third_party_summary,
+    }
+
+
+@csrf_protect
+def provider_settings_view(request):
+    if not provider_settings_admin_required(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+
+    runtime_setting = ProviderRuntimeSetting.load()
+    valid_modes = {choice[0] for choice in ProviderAccessMode.choices}
+    if request.method == "POST":
+        for field_name in (
+            "douyin_ultra_mode",
+            "youtube_merge_mode",
+            "third_party_mode",
+        ):
+            value = request.POST.get(field_name, ProviderAccessMode.DEFAULT)
+            if value not in valid_modes:
+                value = ProviderAccessMode.DEFAULT
+            setattr(runtime_setting, field_name, value)
+        runtime_setting.kukutool_disabled = request.POST.get("kukutool_disabled") == "1"
+        runtime_setting.save(
+            update_fields=[
+                "douyin_ultra_mode",
+                "youtube_merge_mode",
+                "third_party_mode",
+                "kukutool_disabled",
+                "updated_at",
+            ]
+        )
+        messages.success(request, "Provider 运行时配置已保存。")
+        return redirect("provider_settings")
+
+    rows, health = build_provider_dashboard_rows(runtime_setting, request)
+    return render(
+        request,
+        "admin/provider_settings.html",
+        {
+            "title": "Provider 管理后台",
+            "runtime_setting": runtime_setting,
+            "access_modes": ProviderAccessMode.choices,
+            "provider_rows": rows,
+            "provider_health": health,
+        },
+    )
+
+
 @require_GET
 def provider_health_view(request):
     if not request.user.is_active or not request.user.is_staff:
@@ -369,6 +497,24 @@ def provider_health_view(request):
         gallerydl_health,
         ytdlp_health,
     )
+    runtime_setting = ProviderRuntimeSetting.load()
+    health["provider_access"] = {
+        PROVIDER_DOUYIN_ULTRA: provider_access_summary(
+            PROVIDER_DOUYIN_ULTRA,
+            request,
+            runtime_setting,
+        ),
+        PROVIDER_YOUTUBE_MERGE: provider_access_summary(
+            PROVIDER_YOUTUBE_MERGE,
+            request,
+            runtime_setting,
+        ),
+        PROVIDER_THIRD_PARTY: provider_access_summary(
+            PROVIDER_THIRD_PARTY,
+            request,
+            runtime_setting,
+        ),
+    }
     response = JsonResponse(health)
     response["Cache-Control"] = "no-store"
     return response
@@ -404,6 +550,24 @@ def provider_control_view(request):
         gallerydl_health,
         ytdlp_health,
     )
+    runtime_setting = ProviderRuntimeSetting.load()
+    health["provider_access"] = {
+        PROVIDER_DOUYIN_ULTRA: provider_access_summary(
+            PROVIDER_DOUYIN_ULTRA,
+            request,
+            runtime_setting,
+        ),
+        PROVIDER_YOUTUBE_MERGE: provider_access_summary(
+            PROVIDER_YOUTUBE_MERGE,
+            request,
+            runtime_setting,
+        ),
+        PROVIDER_THIRD_PARTY: provider_access_summary(
+            PROVIDER_THIRD_PARTY,
+            request,
+            runtime_setting,
+        ),
+    }
     response = JsonResponse(health)
     response["Cache-Control"] = "no-store"
     return response
@@ -661,7 +825,7 @@ def get_download_settings_context(platform_key="home", request=None):
         "xhs_allow_server_save": settings.XHS_ALLOW_SERVER_SAVE,
         "xhs_allow_absolute_save_path": settings.XHS_ALLOW_ABSOLUTE_SAVE_PATH,
         "xhs_default_server_save_dir": settings.XHS_DEFAULT_SERVER_SAVE_DIR,
-        "ultra_hd_available": ultra_hd_is_available(),
+        "ultra_hd_available": ultra_hd_is_available(request),
         "youtube_merge_mode_available": (
             youtube_merge_mode_is_available(request) if request is not None else False
         ),
@@ -671,7 +835,7 @@ def get_download_settings_context(platform_key="home", request=None):
 def build_search_results_context(request, platform_key="home"):
     query = request.GET.get("q", "").strip()
     requested_ultra_hd = request_flag(request.GET.get("ultra_hd"))
-    prefer_ultra_hd = requested_ultra_hd and ultra_hd_is_available()
+    prefer_ultra_hd = requested_ultra_hd and ultra_hd_is_available(request)
     requested_youtube_merge = request_flag(request.GET.get("youtube_merge"))
     prefer_youtube_merge = (
         requested_youtube_merge and youtube_merge_mode_is_available(request)

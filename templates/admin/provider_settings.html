@@ -1,0 +1,549 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<style>
+    :root {
+        --provider-brand: #855be8;
+        --provider-brand-hover: #7447dd;
+        --provider-accent: #00b6d8;
+        --provider-light: #f7f1ff;
+        --provider-text: #111827;
+        --provider-muted: #6b7280;
+        --provider-line: #e5e6eb;
+        --provider-bg: #f8fbff;
+        --provider-success-bg: #e9f7ef;
+        --provider-success: #137333;
+        --provider-danger-bg: #fce8e6;
+        --provider-danger: #a50e0e;
+        --provider-warning-bg: #fff8e1;
+        --provider-warning: #765400;
+    }
+
+    #content {
+        padding: 0;
+    }
+
+    .provider-dashboard {
+        min-height: calc(100vh - 96px);
+        margin: -20px -20px 0;
+        padding: 34px clamp(18px, 4vw, 54px) 56px;
+        background:
+            linear-gradient(180deg, #fff 0%, var(--provider-bg) 54%, #fff 100%);
+        color: var(--provider-text);
+    }
+
+    .provider-shell {
+        max-width: 1180px;
+        margin: 0 auto;
+    }
+
+    .provider-hero {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 26px;
+    }
+
+    .provider-eyebrow {
+        display: inline-flex;
+        align-items: center;
+        min-height: 28px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: var(--provider-light);
+        color: var(--provider-brand);
+        font-size: 12px;
+        font-weight: 800;
+    }
+
+    .provider-title {
+        margin: 12px 0 0;
+        background: linear-gradient(135deg, var(--provider-brand), var(--provider-accent));
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        font-size: clamp(30px, 4vw, 48px);
+        font-weight: 900;
+        line-height: 1.12;
+        letter-spacing: 0;
+    }
+
+    .provider-subtitle {
+        max-width: 720px;
+        margin: 12px 0 0;
+        color: var(--provider-muted);
+        font-size: 15px;
+        line-height: 1.7;
+    }
+
+    .provider-hero-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+
+    .provider-btn,
+    .provider-link-btn {
+        display: inline-flex;
+        min-height: 42px;
+        align-items: center;
+        justify-content: center;
+        padding: 0 18px;
+        border: 1px solid var(--provider-line);
+        border-radius: 8px;
+        background: #fff;
+        color: var(--provider-text);
+        font-size: 14px;
+        font-weight: 800;
+        text-decoration: none;
+        transition: background .18s ease, border-color .18s ease, box-shadow .18s ease;
+    }
+
+    .provider-btn-primary {
+        border: 0;
+        background: linear-gradient(135deg, var(--provider-brand), var(--provider-brand-hover));
+        color: #fff;
+        box-shadow: 0 8px 22px rgba(133, 91, 232, .22);
+    }
+
+    .provider-btn:hover,
+    .provider-link-btn:hover {
+        border-color: rgba(133, 91, 232, .38);
+        background: var(--provider-light);
+        color: var(--provider-brand);
+        text-decoration: none;
+    }
+
+    .provider-btn-primary:hover {
+        background: linear-gradient(135deg, var(--provider-brand-hover), #6535d5);
+        color: #fff;
+    }
+
+    .provider-message-list {
+        margin: 0 0 18px;
+        padding: 0;
+        list-style: none;
+    }
+
+    .provider-message-list li {
+        padding: 12px 14px;
+        border: 1px solid rgba(19, 115, 51, .16);
+        border-radius: 8px;
+        background: var(--provider-success-bg);
+        color: var(--provider-success);
+        font-weight: 700;
+    }
+
+    .provider-warning {
+        display: grid;
+        grid-template-columns: 42px minmax(0, 1fr);
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 18px;
+        padding: 14px 16px;
+        border: 1px solid rgba(249, 171, 0, .25);
+        border-radius: 8px;
+        background: var(--provider-warning-bg);
+        color: var(--provider-warning);
+        line-height: 1.6;
+    }
+
+    .provider-warning-icon {
+        display: inline-flex;
+        width: 42px;
+        height: 42px;
+        align-items: center;
+        justify-content: center;
+        border-radius: 8px;
+        background: #fff;
+        color: var(--provider-warning);
+        font-size: 20px;
+        font-weight: 900;
+    }
+
+    .provider-summary {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 18px;
+    }
+
+    .provider-summary-card,
+    .provider-card,
+    .provider-emergency {
+        border: 1px solid var(--provider-line);
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: 0 4px 12px rgba(17, 24, 39, .05);
+    }
+
+    .provider-summary-card {
+        display: flex;
+        min-height: 118px;
+        flex-direction: column;
+        justify-content: center;
+        padding: 18px;
+    }
+
+    .provider-summary-card strong {
+        display: block;
+        color: var(--provider-muted);
+        font-size: 13px;
+        font-weight: 800;
+    }
+
+    .provider-summary-card span {
+        display: block;
+        margin-top: 8px;
+        color: var(--provider-text);
+        font-size: 22px;
+        font-weight: 900;
+        word-break: break-word;
+    }
+
+    .provider-form {
+        display: grid;
+        gap: 16px;
+    }
+
+    .provider-card-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 16px;
+    }
+
+    .provider-card {
+        display: grid;
+        min-height: 360px;
+        grid-template-rows: auto auto 1fr auto;
+        overflow: hidden;
+    }
+
+    .provider-card-header {
+        padding: 18px 18px 10px;
+    }
+
+    .provider-name-row {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+    }
+
+    .provider-name {
+        margin: 0;
+        color: var(--provider-text);
+        font-size: 19px;
+        font-weight: 900;
+        line-height: 1.3;
+    }
+
+    .provider-description,
+    .provider-meta {
+        color: var(--provider-muted);
+        font-size: 13px;
+        line-height: 1.6;
+    }
+
+    .provider-description {
+        margin-top: 10px;
+    }
+
+    .provider-status {
+        display: inline-flex;
+        flex: 0 0 auto;
+        align-items: center;
+        min-height: 26px;
+        padding: 3px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 900;
+        white-space: nowrap;
+    }
+
+    .provider-status.is-ready {
+        background: var(--provider-success-bg);
+        color: var(--provider-success);
+    }
+
+    .provider-status.is-blocked {
+        background: var(--provider-danger-bg);
+        color: var(--provider-danger);
+    }
+
+    .provider-card-body {
+        display: grid;
+        gap: 10px;
+        padding: 10px 18px 16px;
+    }
+
+    .provider-fact-grid {
+        display: grid;
+        gap: 8px;
+    }
+
+    .provider-fact {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: #f9fafb;
+        color: var(--provider-muted);
+        font-size: 13px;
+    }
+
+    .provider-fact strong {
+        color: var(--provider-text);
+        font-weight: 900;
+        text-align: right;
+    }
+
+    .provider-issue {
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: var(--provider-danger-bg);
+        color: var(--provider-danger);
+        font-size: 13px;
+        line-height: 1.5;
+    }
+
+    .provider-mode-panel {
+        padding: 14px 18px 18px;
+        border-top: 1px solid var(--provider-line);
+        background: linear-gradient(180deg, #fff 0%, var(--provider-light) 100%);
+    }
+
+    .provider-mode-title {
+        margin-bottom: 10px;
+        color: var(--provider-text);
+        font-size: 13px;
+        font-weight: 900;
+    }
+
+    .provider-mode-options {
+        display: grid;
+        gap: 8px;
+    }
+
+    .provider-mode-options label,
+    .provider-emergency label {
+        display: grid;
+        grid-template-columns: 18px minmax(0, 1fr);
+        gap: 8px;
+        align-items: center;
+        margin: 0;
+        color: var(--provider-text);
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+    }
+
+    .provider-mode-options input,
+    .provider-emergency input {
+        accent-color: var(--provider-brand);
+    }
+
+    .provider-emergency {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 16px 18px;
+    }
+
+    .provider-emergency-title {
+        color: var(--provider-text);
+        font-weight: 900;
+    }
+
+    .provider-emergency-help {
+        margin-top: 4px;
+        color: var(--provider-muted);
+        font-size: 13px;
+    }
+
+    .provider-actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 10px;
+        padding-top: 2px;
+    }
+
+    @media (max-width: 1100px) {
+        .provider-summary,
+        .provider-card-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+
+    @media (max-width: 720px) {
+        .provider-dashboard {
+            margin: -15px -10px 0;
+            padding: 24px 14px 42px;
+        }
+
+        .provider-summary,
+        .provider-card-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .provider-card {
+            min-height: auto;
+        }
+
+        .provider-actions {
+            justify-content: stretch;
+        }
+
+        .provider-btn,
+        .provider-link-btn {
+            width: 100%;
+        }
+    }
+</style>
+
+<div class="provider-dashboard">
+    <div class="provider-shell">
+        <section class="provider-hero">
+            <div>
+                <div class="provider-eyebrow">Provider Console</div>
+                <h1 class="provider-title">Provider 管理后台</h1>
+                <p class="provider-subtitle">
+                    控制超高清、YouTube 合并和长尾平台 Provider 的灰度范围。环境硬开关仍是底线，后台只负责运行时开放策略。
+                </p>
+            </div>
+            <div class="provider-hero-actions">
+                <a class="provider-link-btn" href="{% url 'provider_health' %}" target="_blank" rel="noopener">
+                    JSON 健康状态
+                </a>
+                <a class="provider-link-btn" href="{% url 'admin:index' %}">
+                    Django 后台
+                </a>
+            </div>
+        </section>
+
+        {% if messages %}
+            <ul class="provider-message-list">
+                {% for message in messages %}
+                    <li{% if message.tags %} class="{{ message.tags }}"{% endif %}>{{ message }}</li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+
+        <div class="provider-warning">
+            <span class="provider-warning-icon">!</span>
+            <span>
+                Provider 未安装、未启用或健康检查失败时，即使选择全站开放，也不会进入解析链路。生产环境建议先使用“仅管理员”完成 smoke test。
+            </span>
+        </div>
+
+        <div class="provider-summary">
+            <div class="provider-summary-card">
+                <strong>KuKuTool</strong>
+                <span>{{ provider_health.kukutool.available|yesno:"可用,不可用" }}</span>
+            </div>
+            <div class="provider-summary-card">
+                <strong>YouTube 合并</strong>
+                <span>{{ provider_health.youtube_merge.ready|yesno:"可用,不可用" }}</span>
+            </div>
+            <div class="provider-summary-card">
+                <strong>通用第三方</strong>
+                <span>{{ provider_health.third_party.rollout.status }}</span>
+            </div>
+            <div class="provider-summary-card">
+                <strong>更新时间</strong>
+                <span>{{ runtime_setting.updated_at|date:"m-d H:i" }}</span>
+            </div>
+        </div>
+
+        <form method="post" class="provider-form">
+            {% csrf_token %}
+
+            <div class="provider-card-grid">
+                {% for row in provider_rows %}
+                    <article class="provider-card">
+                        <div class="provider-card-header">
+                            <div class="provider-name-row">
+                                <h2 class="provider-name">{{ row.name }}</h2>
+                                <span class="provider-status {% if row.health_ready %}is-ready{% else %}is-blocked{% endif %}">
+                                    {{ row.health_label }}
+                                </span>
+                            </div>
+                            <div class="provider-description">{{ row.description }}</div>
+                        </div>
+
+                        <div class="provider-card-body">
+                            <div class="provider-fact-grid">
+                                <div class="provider-fact">
+                                    <span>环境硬开关</span>
+                                    <strong>{{ row.access.hard_enabled|yesno:"已开启,未开启" }}</strong>
+                                </div>
+                                <div class="provider-fact">
+                                    <span>有效权限</span>
+                                    <strong>{{ row.access.effective_label }}</strong>
+                                </div>
+                                <div class="provider-fact">
+                                    <span>当前用户</span>
+                                    <strong>{{ row.access.request_allowed|yesno:"可使用,不可使用" }}</strong>
+                                </div>
+                                <div class="provider-fact">
+                                    <span>默认策略</span>
+                                    <strong>{{ row.access.default_label }}</strong>
+                                </div>
+                            </div>
+                            {% if row.issue %}
+                                <div class="provider-issue">问题：{{ row.issue }}</div>
+                            {% else %}
+                                <div class="provider-meta">当前没有明显健康检查错误。</div>
+                            {% endif %}
+                        </div>
+
+                        <div class="provider-mode-panel">
+                            <div class="provider-mode-title">后台设置</div>
+                            <div class="provider-mode-options">
+                                {% for value,label in access_modes %}
+                                    <label>
+                                        <input
+                                            type="radio"
+                                            name="{{ row.mode_field }}"
+                                            value="{{ value }}"
+                                            {% if row.current_mode == value %}checked{% endif %}
+                                        >
+                                        {{ label }}
+                                    </label>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </article>
+                {% endfor %}
+            </div>
+
+            <section class="provider-emergency">
+                <div>
+                    <div class="provider-emergency-title">KuKuTool 紧急开关</div>
+                    <div class="provider-emergency-help">用于上游异常、费用风险或线上排障时快速停用抖音超高清链路。</div>
+                </div>
+                <label>
+                    <input
+                        type="checkbox"
+                        name="kukutool_disabled"
+                        value="1"
+                        {% if runtime_setting.kukutool_disabled %}checked{% endif %}
+                    >
+                    临时禁用 KuKuTool
+                </label>
+            </section>
+
+            <div class="provider-actions">
+                <a class="provider-link-btn" href="{% url 'admin:index' %}">返回后台首页</a>
+                <button type="submit" class="provider-btn provider-btn-primary">保存 Provider 设置</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

@@ -53,10 +53,12 @@ from .services.provider_settings import (
     normalize_provider_order,
 )
 from .services.provider_manifest import build_provider_manifest_token
+from .models import ProviderAccessMode, ProviderRuntimeSetting
 from .views import (
     build_provider_preview_query,
     build_search_results_context,
     third_party_provider_is_available,
+    ultra_hd_is_available,
     youtube_merge_mode_is_available,
 )
 from .services.quality import QualityProbe, QualityProbeResult
@@ -1200,6 +1202,22 @@ class XhsParserTests(SimpleTestCase):
         self.assertEqual(
             result.image_assets[0].preview_url,
             "https://ci.xiaohongshu.com/spectrum/abc123?imageView2/2/w/640/format/webp",
+        )
+
+    def test_xiaohongshu_adapter_ignores_static_og_image_assets(self):
+        html = """
+        <html>
+          <meta name="og:image" content="//picasso-static.xiaohongshu.com/fe-platform/e6214e4fbfae2cf14d634d4296916e8a5eaefdf4.png">
+          <meta name="og:image" content="https://sns-img.xhscdn.com/notes_pre_post/1040g3k0321rmapod7u0g5nbcsha0baamosu1deo!webp">
+        </html>
+        """
+
+        result = XiaohongshuAdapter().parse_html(html)
+
+        self.assertEqual(len(result.image_assets), 1)
+        self.assertEqual(
+            result.image_assets[0].url,
+            "https://ci.xiaohongshu.com/notes_pre_post/1040g3k0321rmapod7u0g5nbcsha0baamosu1deo?imageView2/format/jpg",
         )
 
     def test_parse_html_returns_video_post(self):
@@ -2366,6 +2384,28 @@ class DouyinAdapterTests(SimpleTestCase):
         self.assertEqual(len(result.image_assets), 2)
         self.assertEqual(result.image_assets[0].url, "https://p3-sign.douyinpic.com/image-1.webp")
 
+    def test_parse_aweme_prefers_unwatermarked_image_url_list(self):
+        result = DouyinAdapter().parse_aweme({
+            "aweme_id": "7634213610894689787",
+            "desc": "图文标题",
+            "author": {"nickname": "作者"},
+            "images": [
+                {
+                    "download_url_list": [
+                        "https://p3-sign.douyinpic.com/tos/image~tplv-dy-water-v10:author:3000:3000:q75.webp",
+                    ],
+                    "url_list": [
+                        "https://p3-sign.douyinpic.com/tos/image~tplv-dy-aweme-images-v2:2560:1440:q75.webp",
+                    ],
+                },
+            ],
+        })
+
+        self.assertEqual(result.post_type, "image")
+        self.assertEqual(len(result.image_assets), 1)
+        self.assertIn("tplv-dy-aweme-images-v2", result.image_assets[0].url)
+        self.assertNotIn("tplv-dy-water", result.image_assets[0].url)
+
     def test_parse_html_returns_highest_bitrate_video(self):
         data = {
             "loaderData": {
@@ -2401,6 +2441,30 @@ class DouyinAdapterTests(SimpleTestCase):
         self.assertEqual(result.post_type, "video")
         self.assertEqual(result.video_assets[0].url, "https://v3-web.douyinvod.com/high.mp4")
         self.assertEqual(result.video_assets[0].cover_url, "https://p3-sign.douyinpic.com/cover.webp")
+
+    def test_parse_aweme_does_not_treat_audio_candidates_as_video(self):
+        result = DouyinAdapter().parse_aweme({
+            "aweme_id": "7641197695256245190",
+            "desc": "图片音乐内容",
+            "author": {"nickname": "作者"},
+            "images": [
+                {"url_list": ["https://p3-sign.douyinpic.com/image-1.webp"]},
+                {"url_list": ["https://p26-sign.douyinpic.com/image-2.webp"]},
+            ],
+            "video": {
+                "play_addr": {
+                    "url_list": [
+                        "https://v3-music.douyinstatic.com/video/tos/cn/path/?mime_type=audio_mp4",
+                        "https://api-play.amemv.com/aweme/v1/play/music/?video_id=audio",
+                        "https://lf26-music-east.douyinstatic.com/obj/ies-music-hj/audio.mp3",
+                    ],
+                },
+            },
+        })
+
+        self.assertEqual(result.post_type, "image")
+        self.assertEqual(len(result.image_assets), 2)
+        self.assertFalse(result.video_assets)
 
     @patch("xhs_download.services.diagnostics.QualityProbe.probe")
     def test_parse_aweme_enhanced_prefers_larger_probed_video(self, mock_probe):
@@ -5918,3 +5982,83 @@ class ProviderControlViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 403)
+
+
+class ProviderSettingsAdminViewTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+
+        self.user = get_user_model().objects.create_user(
+            username="provider-settings-admin",
+            password="test-password",
+            is_staff=True,
+        )
+        self.client.force_login(self.user)
+
+    def test_provider_settings_requires_staff_user(self):
+        response = Client().get("/admin/provider-settings/")
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_staff_can_view_provider_settings_dashboard(self):
+        response = self.client.get("/admin/provider-settings/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Provider 管理后台")
+        self.assertContains(response, "抖音超高清")
+        self.assertContains(response, "YouTube 高清合并")
+        self.assertContains(response, "通用第三方 Provider")
+
+    def test_staff_can_update_provider_access_modes(self):
+        response = self.client.post(
+            "/admin/provider-settings/",
+            data={
+                "douyin_ultra_mode": ProviderAccessMode.STAFF,
+                "youtube_merge_mode": ProviderAccessMode.DISABLED,
+                "third_party_mode": ProviderAccessMode.PUBLIC,
+                "kukutool_disabled": "1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        setting = ProviderRuntimeSetting.load()
+        self.assertEqual(setting.douyin_ultra_mode, ProviderAccessMode.STAFF)
+        self.assertEqual(setting.youtube_merge_mode, ProviderAccessMode.DISABLED)
+        self.assertEqual(setting.third_party_mode, ProviderAccessMode.PUBLIC)
+        self.assertTrue(setting.kukutool_disabled)
+
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        ULTRA_HD_PUBLIC_ACCESS_ENABLED=False,
+        KUKUTOOL_PROVIDER_ENABLED=True,
+    )
+    @patch("xhs_download.views.get_kukutool_provider_health")
+    def test_douyin_ultra_staff_only_allows_staff_but_not_anonymous(self, mock_health):
+        mock_health.return_value = {"available": True}
+        setting = ProviderRuntimeSetting.load()
+        setting.douyin_ultra_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["douyin_ultra_mode", "updated_at"])
+        request = RequestFactory().get("/")
+
+        request.user = Mock(is_active=False, is_staff=False)
+        self.assertFalse(ultra_hd_is_available(request))
+
+        request.user = Mock(is_active=True, is_staff=True)
+        self.assertTrue(ultra_hd_is_available(request))
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=False,
+        THIRD_PARTY_STAFF_ONLY=True,
+    )
+    def test_third_party_staff_only_runtime_mode_allows_staff(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["third_party_mode", "updated_at"])
+        request = RequestFactory().get("/")
+
+        request.user = Mock(is_active=False, is_staff=False)
+        self.assertFalse(third_party_provider_is_available(request))
+
+        request.user = Mock(is_active=True, is_staff=True)
+        self.assertTrue(third_party_provider_is_available(request))
