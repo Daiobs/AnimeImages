@@ -18,7 +18,7 @@ YTDLP_MERGE_PROVIDER_ENABLED=True
 
 These values do not mean anonymous users can use the feature. They mean the deployment has the intended runtime, dependencies, and safety checks available. If a capability gate is `False`, the Provider is unavailable even when the admin runtime setting is `public`.
 
-Production checks still validate dependencies. For example, if `YTDLP_PROVIDER_ENABLED=True`, production must provide a working `YTDLP_BINARY`; if `YOUTUBE_MERGE_PROVIDER_ENABLED=True`, production must provide yt-dlp and ffmpeg commands.
+Production checks still validate dependencies and admin health exposes readiness. Missing optional Provider dependencies are warnings by default so the site can start with admin runtime modes still disabled. Set `PROVIDER_STRICT_CAPABILITY_CHECKS=True` to turn those warnings into release-blocking errors.
 
 `THIRD_PARTY_PUBLIC_ACCESS_ENABLED` and `YOUTUBE_MERGE_PUBLIC_ACCESS_ENABLED` remain compatibility flags in older diagnostics, but daily access control belongs in the admin runtime setting.
 
@@ -48,7 +48,7 @@ third_party_blocked_hosts=
 
 After deployment, routine rollout should happen in `/admin/provider-settings/` instead of by editing `.env`:
 
-1. Deploy with capability and dependencies configured.
+1. Deploy with capability defaults prepared and dependencies installed where possible.
 2. Run health checks and staff smoke tests.
 3. Move runtime mode from `disabled` to `staff`.
 4. Move to `public_gray` and raise that Provider's rollout percentage gradually.
@@ -128,9 +128,6 @@ Recommended public rollout:
 
 Douyin KuKuTool ultra-HD is riskier than the regular yt-dlp/gallery-dl capability because it depends on a third-party upstream, dynamic profile behavior, and anti-abuse conditions.
 
-Two production strategies are acceptable:
+The default production posture is operational: keep KuKuTool capability prepared when dependencies exist, but keep `douyin_ultra_mode=disabled` in admin until staff smoke is complete. If a server must fully remove this capability, set `KUKUTOOL_PROVIDER_ENABLED=False` or `ULTRA_HD_PROVIDER_ENABLED=False`.
 
-- Conservative: keep `KUKUTOOL_PROVIDER_ENABLED=False` until staging proves the sidecar/runtime, latency, and download recovery.
-- Operational: set `KUKUTOOL_PROVIDER_ENABLED=True` after dependencies are installed, but keep `douyin_ultra_mode=disabled` in admin until staff smoke is complete.
-
-In both cases, admin runtime mode remains the daily switch for staff/public access.
+Admin runtime mode remains the daily switch for staff/public access. Missing Node/sidecar dependencies should appear as health readiness failures, not as routine public access switches.

@@ -41,8 +41,8 @@ DJANGO_SECRET_KEY=local-production-check-7f4e2d9c8b1a6e5d3c0f9a8b7e6d5c4b3a2f1e0
 DJANGO_ALLOWED_HOSTS=example.com \
 DJANGO_DATABASE_URL=postgresql://animeimages:password@127.0.0.1:5432/animeimages \
 DJANGO_CACHE_URL=redis://localhost:6379/0 \
-ULTRA_HD_PROVIDER_ENABLED=False \
-KUKUTOOL_PROVIDER_ENABLED=False \
+ULTRA_HD_PROVIDER_ENABLED=True \
+KUKUTOOL_PROVIDER_ENABLED=True \
 THIRD_PARTY_PROVIDER_ENABLED=True \
 YTDLP_PROVIDER_ENABLED=True \
 YTDLP_BINARY="/srv/animeimages/.venv/bin/python -m yt_dlp" \
@@ -125,7 +125,7 @@ These are initial safety defaults, not capacity guarantees. Tune them from obser
 Ultra-HD access has two operator switches:
 
 ```text
-ULTRA_HD_PROVIDER_ENABLED=False
+ULTRA_HD_PROVIDER_ENABLED=True
 ULTRA_HD_PUBLIC_ACCESS_ENABLED=False
 ```
 

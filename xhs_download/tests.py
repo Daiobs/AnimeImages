@@ -10,7 +10,7 @@ from zipfile import ZipFile
 
 import requests
 from django.core.cache import cache
-from django.core.checks import run_checks
+from django.core.checks import Error as CheckError, Warning as CheckWarning, run_checks
 from django.template.loader import render_to_string
 from django.test import Client, RequestFactory, SimpleTestCase, TestCase, override_settings
 from PIL import Image
@@ -5618,6 +5618,28 @@ class RuntimeHealthCheckTests(TestCase):
         issue_ids = {issue.id for issue in run_checks()}
 
         self.assertIn("xhs_download.E004", issue_ids)
+
+    @override_settings(
+        YTDLP_PROVIDER_ENABLED=True,
+        YTDLP_BINARY="/path/that/does/not/exist/yt-dlp",
+        PROVIDER_STRICT_CAPABILITY_CHECKS=False,
+        REQUIRE_PRODUCTION_CONFIG=False,
+    )
+    def test_provider_dependency_check_defaults_to_warning(self):
+        issues = {issue.id: issue for issue in run_checks()}
+
+        self.assertIsInstance(issues["xhs_download.E004"], CheckWarning)
+
+    @override_settings(
+        YTDLP_PROVIDER_ENABLED=True,
+        YTDLP_BINARY="/path/that/does/not/exist/yt-dlp",
+        PROVIDER_STRICT_CAPABILITY_CHECKS=True,
+        REQUIRE_PRODUCTION_CONFIG=False,
+    )
+    def test_provider_dependency_check_can_be_strict_error(self):
+        issues = {issue.id: issue for issue in run_checks()}
+
+        self.assertIsInstance(issues["xhs_download.E004"], CheckError)
 
     @override_settings(
         YTDLP_PROVIDER_ENABLED=True,
