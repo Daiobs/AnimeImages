@@ -1,7 +1,7 @@
 import importlib.util
 
 from django.conf import settings
-from django.core.checks import Error, register
+from django.core.checks import Error, Warning as CheckWarning, register
 
 from .services.platforms.douyin_kukutool import (
     get_kukutool_runtime_status,
@@ -19,6 +19,15 @@ def third_party_specific_provider_enabled():
         or getattr(settings, "GALLERYDL_PROVIDER_ENABLED", False)
         or getattr(settings, "YOUTUBE_MERGE_PROVIDER_ENABLED", False)
     )
+
+
+def provider_check_message(message, *, hint=None, id):
+    check_class = (
+        Error
+        if getattr(settings, "PROVIDER_STRICT_CAPABILITY_CHECKS", False)
+        else CheckWarning
+    )
+    return check_class(message, hint=hint, id=id)
 
 
 @register()
@@ -50,7 +59,7 @@ def check_kukutool_runtime(app_configs, **kwargs):
         and not sidecar_base_url
     ):
         issues.append(
-            Error(
+            provider_check_message(
                 "Production KuKuTool requires an explicit KUKUTOOL_NODE_BINARY or KUKUTOOL_SIDECAR_BASE_URL.",
                 id="xhs_download.E001",
             )
@@ -61,7 +70,7 @@ def check_kukutool_runtime(app_configs, **kwargs):
         sidecar = get_kukutool_sidecar_status()
         if not runtime["available"] and not sidecar["available"]:
             issues.append(
-                Error(
+                provider_check_message(
                     "KuKuTool runtime is unavailable: "
                     f"{runtime['error']}; sidecar: {sidecar.get('error')}",
                     id="xhs_download.E002",
@@ -85,7 +94,7 @@ def check_external_provider_runtime(
     issues = []
     if getattr(settings, "REQUIRE_PRODUCTION_CONFIG", not settings.DEBUG) and not binary:
         issues.append(
-            Error(
+            provider_check_message(
                 f"Production {provider_name} requires an explicit executable binary setting.",
                 id=explicit_binary_error_id,
             )
@@ -94,14 +103,14 @@ def check_external_provider_runtime(
     health = provider_health()
     if not health.get("executable_found"):
         issues.append(
-            Error(
+            provider_check_message(
                 f"{provider_name} executable is unavailable: {health.get('error') or 'unknown error'}",
                 id=unavailable_error_id,
             )
         )
     elif not health.get("version_probe_ok"):
         issues.append(
-            Error(
+            provider_check_message(
                 f"{provider_name} executable failed version probe: {health.get('version_probe_error') or 'unknown error'}",
                 id=unavailable_error_id,
             )
@@ -114,12 +123,11 @@ def check_generic_external_provider_runtimes(app_configs, **kwargs):
     issues = []
     if (
         getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False)
-        and getattr(settings, "THIRD_PARTY_PUBLIC_ACCESS_ENABLED", False)
         and not third_party_specific_provider_enabled()
     ):
         issues.append(
-            Error(
-                "Third-party public parsing is enabled but no third-party provider is enabled.",
+            provider_check_message(
+                "Third-party provider capability is enabled but no concrete provider is enabled.",
                 id="xhs_download.E007",
             )
         )
@@ -155,7 +163,7 @@ def check_youtube_merge_provider_runtime(app_configs, **kwargs):
     production = getattr(settings, "REQUIRE_PRODUCTION_CONFIG", not settings.DEBUG)
     if production and not getattr(settings, "YTDLP_BINARY", ""):
         issues.append(
-            Error(
+            provider_check_message(
                 "Production YouTube merge mode requires an explicit YTDLP_BINARY.",
                 id="xhs_download.E009",
             )
@@ -166,7 +174,7 @@ def check_youtube_merge_provider_runtime(app_configs, **kwargs):
         and not getattr(settings, "YOUTUBE_MERGE_FFMPEG_BINARY", "")
     ):
         issues.append(
-            Error(
+            provider_check_message(
                 "Production YouTube merge mode requires an explicit YOUTUBE_MERGE_FFMPEG_BINARY.",
                 id="xhs_download.E011",
             )
@@ -176,7 +184,7 @@ def check_youtube_merge_provider_runtime(app_configs, **kwargs):
     ytdlp_health = health.get("ytdlp") or {}
     if not ytdlp_health.get("executable_found"):
         issues.append(
-            Error(
+            provider_check_message(
                 "YouTube merge yt-dlp executable is unavailable: "
                 f"{ytdlp_health.get('error') or 'unknown error'}",
                 id="xhs_download.E010",
@@ -184,7 +192,7 @@ def check_youtube_merge_provider_runtime(app_configs, **kwargs):
         )
     elif not ytdlp_health.get("version_probe_ok"):
         issues.append(
-            Error(
+            provider_check_message(
                 "YouTube merge yt-dlp executable failed version probe: "
                 f"{ytdlp_health.get('version_probe_error') or 'unknown error'}",
                 id="xhs_download.E010",
@@ -195,7 +203,7 @@ def check_youtube_merge_provider_runtime(app_configs, **kwargs):
         ffmpeg_health = health.get("ffmpeg") or {}
         if not ffmpeg_health.get("executable_found"):
             issues.append(
-                Error(
+                provider_check_message(
                     "YouTube merge ffmpeg executable is unavailable: "
                     f"{ffmpeg_health.get('error') or 'unknown error'}",
                     id="xhs_download.E012",
@@ -203,7 +211,7 @@ def check_youtube_merge_provider_runtime(app_configs, **kwargs):
             )
         elif not ffmpeg_health.get("version_probe_ok"):
             issues.append(
-                Error(
+                provider_check_message(
                     "YouTube merge ffmpeg executable failed version probe: "
                     f"{ffmpeg_health.get('version_probe_error') or 'unknown error'}",
                     id="xhs_download.E012",

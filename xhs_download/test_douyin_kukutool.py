@@ -715,6 +715,7 @@ class DouyinKukuToolTests(SimpleTestCase):
                 kukutool_global_max_concurrency=0,
                 kukutool_failure_cache_ttl_seconds=0,
                 kukutool_reference_wait_seconds=0,
+                ultra_kukutool_grace_seconds=0,
             ),
             runner=slow_runner,
         )
@@ -739,6 +740,119 @@ class DouyinKukuToolTests(SimpleTestCase):
             sleep(0.02)
         self.assertIsNotNone(cache.get(cache_key))
 
+    def test_deadline_grace_returns_late_kukutool_candidate(self):
+        payload = {
+            "videos": [{
+                "video_fullinfo": [{
+                    "type": "超高清",
+                    "size": 70_481_987,
+                    "url": ULTRA_URL,
+                }],
+            }],
+        }
+
+        def almost_done_runner(*_args, **_kwargs):
+            sleep(0.08)
+            return payload
+
+        class FakeAdapter:
+            platform_id = "douyin"
+            headers = DOUYIN_HEADERS
+            media_host_suffixes = ("365yg.com", "douyinvod.com")
+
+            def fetch_mobile_feed_result(self, _aweme_id, **_options):
+                return ParseResult(
+                    platform="douyin",
+                    post_type="video",
+                    base_filename="native",
+                    assets=(
+                        MediaAsset(
+                            media_type="video",
+                            url="https://v3-web.douyinvod.com/native.mp4",
+                            platform="douyin",
+                        ),
+                    ),
+                )
+
+        provider = DouyinKukuToolProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("kukutool", "native"),
+                ultra_total_timeout_seconds=0.05,
+                ultra_native_timeout_seconds=0.05,
+                ultra_kukutool_grace_seconds=0.2,
+                kukutool_timeout_seconds=1.0,
+                kukutool_global_max_concurrency=0,
+                kukutool_failure_cache_ttl_seconds=0,
+                kukutool_reference_wait_seconds=0,
+            ),
+            runner=almost_done_runner,
+        )
+
+        result = provider.parse(
+            FakeAdapter(),
+            DouyinParseContext(
+                url=f"https://www.douyin.com/video/{AWEME_ID}",
+                aweme_id=AWEME_ID,
+            ),
+        )
+
+        self.assertEqual(result.metadata["selected_provider"], "kukutool")
+        self.assertEqual(result.metadata["fallback_reason"], "kukutool_validated")
+        self.assertEqual(result.video_assets[0].provider, "kukutool")
+        self.assertEqual(result.video_assets[0].size_bytes, 70_481_987)
+
+    def test_deadline_grace_returns_late_native_when_kukutool_is_still_running(self):
+        def slow_runner(*_args, **_kwargs):
+            sleep(0.3)
+            return {"videos": []}
+
+        class AlmostDoneNativeAdapter:
+            platform_id = "douyin"
+            headers = DOUYIN_HEADERS
+            media_host_suffixes = ("365yg.com", "douyinvod.com")
+
+            def fetch_mobile_feed_result(self, _aweme_id, **_options):
+                sleep(0.08)
+                return ParseResult(
+                    platform="douyin",
+                    post_type="video",
+                    base_filename="native",
+                    assets=(
+                        MediaAsset(
+                            media_type="video",
+                            url="https://v3-web.douyinvod.com/native.mp4",
+                            platform="douyin",
+                        ),
+                    ),
+                )
+
+        provider = DouyinKukuToolProvider(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("kukutool", "native"),
+                ultra_total_timeout_seconds=0.05,
+                ultra_native_timeout_seconds=0.2,
+                ultra_kukutool_grace_seconds=0.2,
+                kukutool_timeout_seconds=1.0,
+                kukutool_global_max_concurrency=0,
+                kukutool_failure_cache_ttl_seconds=0,
+                kukutool_reference_wait_seconds=0,
+            ),
+            runner=slow_runner,
+        )
+
+        result = provider.parse(
+            AlmostDoneNativeAdapter(),
+            DouyinParseContext(
+                url=f"https://www.douyin.com/video/{AWEME_ID}",
+                aweme_id=AWEME_ID,
+            ),
+        )
+
+        self.assertEqual(result.metadata["selected_provider"], "native")
+        self.assertEqual(result.metadata["fallback_reason"], "kukutool_deadline")
+
     def test_deadline_raises_retryable_error_when_both_paths_are_still_running(self):
         def slow_runner(*_args, **_kwargs):
             sleep(0.15)
@@ -762,6 +876,7 @@ class DouyinKukuToolTests(SimpleTestCase):
                 provider_order=("kukutool", "native"),
                 ultra_total_timeout_seconds=0.05,
                 ultra_native_timeout_seconds=0.05,
+                ultra_kukutool_grace_seconds=0,
                 kukutool_timeout_seconds=1.0,
                 kukutool_global_max_concurrency=0,
                 kukutool_failure_cache_ttl_seconds=0,

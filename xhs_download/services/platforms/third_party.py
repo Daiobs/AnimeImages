@@ -31,6 +31,20 @@ from ..youtube_merge import (
 
 logger = logging.getLogger(__name__)
 
+RISK_SAFE = "safe"
+RISK_NORMAL = "normal"
+RISK_SENSITIVE = "sensitive"
+RISK_ADULT = "adult"
+RISK_LOGIN_REQUIRED = "login_required"
+RISK_UNKNOWN = "unknown"
+PUBLIC_DENIED_RISK_LEVELS = {RISK_ADULT, RISK_LOGIN_REQUIRED}
+BLOCKED_PUBLIC_HOST_SUFFIXES = (
+    "pornhub.com",
+    "xvideos.com",
+    "xnxx.com",
+    "onlyfans.com",
+)
+
 
 @dataclass(frozen=True)
 class ThirdPartyPlatformRule:
@@ -46,6 +60,10 @@ class ThirdPartyPlatformRule:
     media_host_suffixes: tuple[str, ...] = ()
     image_media_host_suffixes: tuple[str, ...] = ()
     video_media_host_suffixes: tuple[str, ...] = ()
+    risk_level: str = RISK_UNKNOWN
+    public_default: bool = False
+    staff_default: bool = True
+    notes: str = ""
 
     def supports_hostname(self, hostname):
         return host_matches(hostname, self.host_suffixes)
@@ -60,6 +78,10 @@ class ThirdPartyPlatformRule:
             "media_host_suffixes": self.media_host_suffixes,
             "image_media_host_suffixes": self.image_media_host_suffixes,
             "video_media_host_suffixes": self.video_media_host_suffixes,
+            "risk_level": self.risk_level,
+            "public_default": self.public_default,
+            "staff_default": self.staff_default,
+            "notes": self.notes,
         }
 
 
@@ -75,24 +97,32 @@ THIRD_PARTY_PLATFORM_RULES = (
             "byteoversea.com",
             "muscdn.com",
         ),
+        risk_level=RISK_NORMAL,
+        notes="短视频平台，默认仅 staff smoke；访客公开需要后台 allowlist。",
     ),
     ThirdPartyPlatformRule(
         platform_id="kuaishou",
         display_name="快手",
         host_suffixes=("kuaishou.com", "kuaishouapp.com", "kwai.com"),
         media_host_suffixes=("kwimgs.com", "yximgs.com"),
+        risk_level=RISK_NORMAL,
+        notes="短视频平台，默认仅 staff smoke；访客公开需要后台 allowlist。",
     ),
     ThirdPartyPlatformRule(
         platform_id="instagram",
         display_name="Instagram",
         host_suffixes=("instagram.com",),
         media_host_suffixes=("cdninstagram.com", "fbcdn.net"),
+        risk_level=RISK_SENSITIVE,
+        notes="常见登录/地区/风控限制，默认不向访客公开。",
     ),
     ThirdPartyPlatformRule(
         platform_id="facebook",
         display_name="Facebook",
         host_suffixes=("facebook.com", "fb.watch"),
         media_host_suffixes=("fbcdn.net",),
+        risk_level=RISK_SENSITIVE,
+        notes="常见登录/地区/风控限制，默认不向访客公开。",
     ),
     ThirdPartyPlatformRule(
         platform_id="youtube",
@@ -103,12 +133,17 @@ THIRD_PARTY_PLATFORM_RULES = (
         media_host_suffixes=("googlevideo.com", "ytimg.com"),
         image_media_host_suffixes=("ytimg.com",),
         video_media_host_suffixes=("googlevideo.com",),
+        risk_level=RISK_SAFE,
+        public_default=True,
+        notes="可作为公开灰度候选，但仍必须命中后台 allowlist。",
     ),
     ThirdPartyPlatformRule(
         platform_id="x",
         display_name="X / Twitter",
         host_suffixes=("x.com", "twitter.com"),
         media_host_suffixes=("twimg.com",),
+        risk_level=RISK_SENSITIVE,
+        notes="社交平台，内容风险和登录/地区限制较多，默认不公开。",
     ),
     ThirdPartyPlatformRule(
         platform_id="imgur",
@@ -117,6 +152,8 @@ THIRD_PARTY_PLATFORM_RULES = (
         media_types=("image", "video"),
         provider_ids=("kukutool_generic", "gallery_dl_generic"),
         media_host_suffixes=("imgur.com",),
+        risk_level=RISK_NORMAL,
+        notes="图片/动图平台，公开仍需后台 allowlist。",
     ),
     ThirdPartyPlatformRule(
         platform_id="reddit",
@@ -125,6 +162,8 @@ THIRD_PARTY_PLATFORM_RULES = (
         media_types=("image",),
         provider_ids=("kukutool_generic", "gallery_dl_generic"),
         media_host_suffixes=("redd.it", "redditmedia.com"),
+        risk_level=RISK_SENSITIVE,
+        notes="社区内容风险较高，默认不公开。",
     ),
     ThirdPartyPlatformRule(
         platform_id="tumblr",
@@ -133,6 +172,8 @@ THIRD_PARTY_PLATFORM_RULES = (
         media_types=("image",),
         provider_ids=("kukutool_generic", "gallery_dl_generic"),
         media_host_suffixes=("tumblr.com",),
+        risk_level=RISK_SENSITIVE,
+        notes="社区内容风险较高，默认不公开。",
     ),
     ThirdPartyPlatformRule(
         platform_id="flickr",
@@ -141,6 +182,8 @@ THIRD_PARTY_PLATFORM_RULES = (
         media_types=("image",),
         provider_ids=("kukutool_generic", "gallery_dl_generic"),
         media_host_suffixes=("staticflickr.com",),
+        risk_level=RISK_SAFE,
+        notes="图片平台，可作为公开灰度候选，但仍必须命中后台 allowlist。",
     ),
     ThirdPartyPlatformRule(
         platform_id="deviantart",
@@ -149,6 +192,8 @@ THIRD_PARTY_PLATFORM_RULES = (
         media_types=("image",),
         provider_ids=("kukutool_generic", "gallery_dl_generic"),
         media_host_suffixes=("wixmp.com", "deviantart.net"),
+        risk_level=RISK_SENSITIVE,
+        notes="社区内容风险较高，默认不公开。",
     ),
 )
 
@@ -468,8 +513,6 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         platform_name = rule.display_name if rule else self.display_name
         if not getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False):
             raise XhsParseError("第三方通用解析 Provider 当前未启用。")
-        if not getattr(settings, "THIRD_PARTY_PUBLIC_ACCESS_ENABLED", False):
-            raise XhsParseError("第三方通用解析暂未开放。")
         providers = list(self.iter_provider_specs(rule, respect_enabled=True))
         failures = []
         attempts = []
@@ -479,7 +522,6 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
             health = get_youtube_merge_health()
             if (
                 health.get("ready")
-                and health.get("public_access_enabled")
                 and health.get("implemented")
             ):
                 started_at = time.monotonic()

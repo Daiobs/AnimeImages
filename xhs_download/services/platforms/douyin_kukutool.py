@@ -299,10 +299,20 @@ def build_kukutool_admin_disabled_key():
 
 def is_kukutool_admin_disabled():
     try:
-        return bool(cache.get(build_kukutool_admin_disabled_key()))
+        cache_disabled = bool(cache.get(build_kukutool_admin_disabled_key()))
     except Exception:
         logger.exception("kukutool_admin_state_read_failed")
         return True
+    try:
+        from ...models import ProviderRuntimeSetting
+
+        runtime_disabled = bool(ProviderRuntimeSetting.load().kukutool_disabled)
+    except Exception as error:
+        if type(error).__name__ == "DatabaseOperationForbidden":
+            return cache_disabled
+        logger.exception("kukutool_runtime_admin_state_read_failed")
+        return True
+    return cache_disabled or runtime_disabled
 
 
 def set_kukutool_admin_disabled(disabled):
@@ -1554,6 +1564,55 @@ class DouyinKukuToolProvider:
             log_provider_failure("native_fast", context, error)
             return None
 
+    def wait_for_late_provider_results(
+        self,
+        adapter,
+        context,
+        kukutool_future,
+        flight_state,
+        native_future,
+    ):
+        from .douyin_providers import log_provider_failure
+
+        grace_seconds = max(
+            0.0,
+            float(self.provider_settings.ultra_kukutool_grace_seconds or 0),
+        )
+        native_result = self.get_finished_native_result(native_future, context)
+        if grace_seconds <= 0:
+            return None, native_result
+
+        deadline = monotonic() + grace_seconds
+        poll_interval = self.provider_settings.kukutool_cache_poll_interval_seconds
+        can_wait_kukutool = (
+            kukutool_future is not None or flight_state == "remote_single_flight"
+        )
+        while monotonic() < deadline:
+            if kukutool_future is not None and kukutool_future.done():
+                try:
+                    return kukutool_future.result(timeout=0), native_result
+                except Exception as error:
+                    log_provider_failure("kukutool_grace_wait", context, error)
+                    kukutool_future = None
+                    can_wait_kukutool = flight_state == "remote_single_flight"
+
+            if can_wait_kukutool:
+                cached = self.get_cached_candidate(adapter, context)
+                if cached:
+                    return cached, native_result
+
+            native_result = native_result or self.get_finished_native_result(
+                native_future,
+                context,
+            )
+            sleep(min(poll_interval, max(0.0, deadline - monotonic())))
+
+        if can_wait_kukutool:
+            cached = self.get_cached_candidate(adapter, context)
+            if cached:
+                return cached, native_result
+        return None, native_result
+
     def parse(self, adapter, context):
         if (
             not self.provider_settings.provider_is_enabled(self.name)
@@ -1687,7 +1746,21 @@ class DouyinKukuToolProvider:
                 parse_started_at,
             )
 
-        native_result = self.get_finished_native_result(native_future, context)
+        validated, native_result = self.wait_for_late_provider_results(
+            adapter,
+            context,
+            kukutool_future,
+            flight_state,
+            native_future,
+        )
+        if validated:
+            return self.build_result(
+                adapter,
+                context,
+                validated,
+                native_future,
+                parse_started_at,
+            )
         if native_result:
             log_provider_event(
                 "douyin_provider_deadline_native_fallback",

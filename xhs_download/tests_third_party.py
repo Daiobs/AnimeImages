@@ -2396,7 +2396,7 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
 
         self.assertTrue(payload["ok"])
         self.assertFalse(payload["settings"]["third_party_provider_enabled"])
-        self.assertTrue(payload["settings"]["third_party_staff_only"])
+        self.assertFalse(payload["settings"]["third_party_staff_only"])
         self.assertEqual(payload["rollout"]["status"], "disabled")
         self.assertEqual(
             payload["rollout"]["reason"],
@@ -2591,8 +2591,11 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["enabled_provider_ids"], ["kukutool_generic"])
         self.assertEqual(payload["ready_provider_ids"], ["kukutool_generic"])
-        self.assertEqual(payload["rollout"]["status"], "staff_only")
-        self.assertEqual(payload["rollout"]["reason"], "staff_only_gate_enabled")
+        self.assertEqual(payload["rollout"]["status"], "public_candidate")
+        self.assertEqual(
+            payload["rollout"]["reason"],
+            "ready_but_requires_manual_public_approval",
+        )
 
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,
@@ -2629,7 +2632,7 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         YTDLP_PROVIDER_ENABLED=False,
         GALLERYDL_PROVIDER_ENABLED=False,
     )
-    def test_inspect_third_party_provider_health_reports_staff_only_rollout(self):
+    def test_inspect_third_party_provider_health_ignores_legacy_staff_only_env_gate(self):
         cache.clear()
         output = StringIO()
 
@@ -2642,8 +2645,11 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         payload = json.loads(output.getvalue())
 
         self.assertTrue(payload["ok"])
-        self.assertEqual(payload["rollout"]["status"], "staff_only")
-        self.assertEqual(payload["rollout"]["reason"], "staff_only_gate_enabled")
+        self.assertEqual(payload["rollout"]["status"], "public_candidate")
+        self.assertEqual(
+            payload["rollout"]["reason"],
+            "ready_but_requires_manual_public_approval",
+        )
 
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,

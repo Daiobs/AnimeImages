@@ -21,6 +21,8 @@ def normalize_xhs_image_url(url):
         return None
 
     url = normalize_text(url)
+    if url.startswith("//"):
+        url = f"https:{url}"
     url = url.split("!")[0]
     url = url.split("?")[0]
 
@@ -37,6 +39,21 @@ def normalize_xhs_image_url(url):
         return f"https://ci.xiaohongshu.com/{match.group(1)}?imageView2/format/jpg"
 
     return url
+
+
+def is_xhs_note_image_candidate(url):
+    if not url:
+        return False
+    url = normalize_text(url)
+    return any(
+        key in url
+        for key in (
+            "notes_pre_post/",
+            "spectrum/",
+            "sns-webpic",
+            "ci.xiaohongshu.com",
+        )
+    )
 
 
 def normalize_xhs_preview_image_url(url, width=640):
@@ -129,6 +146,8 @@ class XiaohongshuAdapter(BasePlatformAdapter):
             property_name = tag.get("property", "")
 
             if ("og:image" in name or "og:image" in property_name) and content:
+                if not is_xhs_note_image_candidate(content):
+                    continue
                 image_url = normalize_xhs_image_url(content)
                 if image_url and image_url not in meta_image_urls:
                     meta_image_urls.append(image_url)
@@ -174,7 +193,7 @@ class XiaohongshuAdapter(BasePlatformAdapter):
         candidates = re.findall(r'https?://[^\s"\'<>]+', html_normalized)
 
         for item in candidates:
-            if any(key in item for key in ["sns-webpic", "ci.xiaohongshu.com", "notes_pre_post"]):
+            if is_xhs_note_image_candidate(item):
                 image_url = normalize_xhs_image_url(item)
                 if image_url and image_url not in fallback_image_urls:
                     fallback_image_urls.append(image_url)

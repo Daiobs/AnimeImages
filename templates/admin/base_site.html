@@ -1,0 +1,26 @@
+{% extends "admin/base.html" %}
+{% load static %}
+
+{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | 星空的高清下载小站{% endblock %}
+
+{% block extrastyle %}
+    {{ block.super }}
+    <link rel="stylesheet" href="{% static 'css/admin_theme.css' %}">
+{% endblock %}
+
+{% block branding %}
+    <div id="site-name" class="admin-site-brand">
+        <a href="{% url 'admin:index' %}">星空的高清下载小站</a>
+    </div>
+{% endblock %}
+
+{% block nav-global %}
+    <nav class="admin-global-nav" aria-label="后台快捷导航">
+        <a href="{% url 'home' %}">返回前台</a>
+        <a href="{% url 'ops_dashboard' %}">运营看板</a>
+        <a href="{% url 'parse_logs' %}">解析日志</a>
+        <a href="{% url 'download_logs' %}">下载日志</a>
+        <a href="{% url 'provider_settings' %}">Provider 管理</a>
+        <a href="{% url 'provider_health' %}" target="_blank" rel="noopener">健康状态</a>
+    </nav>
+{% endblock %}

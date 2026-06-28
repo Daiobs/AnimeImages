@@ -1,4 +1,4 @@
-from io import BytesIO
+from io import BytesIO, StringIO
 import json
 import os
 import time
@@ -9,11 +9,16 @@ from unittest.mock import Mock, patch
 from zipfile import ZipFile
 
 import requests
+from django.contrib.auth.models import Permission
 from django.core.cache import cache
-from django.core.checks import run_checks
+from django.core.checks import Error as CheckError, Warning as CheckWarning, run_checks
+from django.core.management import call_command
 from django.template.loader import render_to_string
 from django.test import Client, RequestFactory, SimpleTestCase, TestCase, override_settings
+from django.utils import timezone
 from PIL import Image
+
+from download_console.models import DownloadRuntimeSetting
 
 from .services.common import (
     MEDIA_HOST_SUFFIXES,
@@ -53,14 +58,35 @@ from .services.provider_settings import (
     normalize_provider_order,
 )
 from .services.provider_manifest import build_provider_manifest_token
+from .services.observability import record_download_request_log, record_provider_admin_audit_log
+from .services.provider_access import (
+    PROVIDER_DOUYIN_ULTRA,
+    PROVIDER_THIRD_PARTY,
+    PROVIDER_YOUTUBE_MERGE,
+    request_rollout_bucket,
+    third_party_public_access_allowed,
+    third_party_public_access_summary,
+)
+from .models import (
+    DownloadRequestLog,
+    ObservabilityStatus,
+    ParseRequestLog,
+    ProviderAccessMode,
+    ProviderAdminAuditLog,
+    ProviderRuntimeSetting,
+)
 from .views import (
     build_provider_preview_query,
     build_search_results_context,
+    limit_error_response,
+    log_parse_request_event,
     third_party_provider_is_available,
+    ultra_hd_is_available,
     youtube_merge_mode_is_available,
 )
 from .services.quality import QualityProbe, QualityProbeResult
 from .services.rate_limits import (
+    LimitResult,
     get_client_identity,
     get_client_ip,
     get_daily_total,
@@ -145,6 +171,7 @@ def make_kukutool_download_item(url, aweme_id="7647533902413173321"):
         provider_resource_id=aweme_id,
         provider_cache_key=cache_key,
         url=url,
+        media_type="video",
     )
     return item
 
@@ -540,6 +567,53 @@ class XhsUtilityTests(SimpleTestCase):
             )
 
         self.assertEqual(mock_get.call_count, 1)
+        redirect_response.close.assert_called_once()
+
+    @patch(
+        "xhs_download.services.common.socket.getaddrinfo",
+        return_value=[(None, None, None, "", ("93.184.216.34", 443))],
+    )
+    @patch("xhs_download.services.downloads.requests.get")
+    def test_signed_douyin_kukutool_download_allows_byte_cdn_url(self, mock_get, _mock_dns):
+        initial_url = "https://v6-default.365yg.com/path/video/tos/cn/source.mp4"
+        provider_item = make_kukutool_download_item(initial_url)
+        response = Mock(status_code=200, headers={}, url=initial_url)
+        mock_get.return_value = response
+
+        result = request_public_provider_get_with_retry(
+            initial_url,
+            retries=1,
+            provider_item=provider_item,
+        )
+
+        self.assertIs(result, response)
+
+    @patch(
+        "xhs_download.services.common.socket.getaddrinfo",
+        return_value=[(None, None, None, "", ("93.184.216.34", 443))],
+    )
+    @patch("xhs_download.services.downloads.requests.get")
+    def test_signed_douyin_kukutool_download_rejects_non_byte_cdn_redirect(
+        self,
+        mock_get,
+        _mock_dns,
+    ):
+        initial_url = "https://v6-default.365yg.com/path/video/tos/cn/source.mp4"
+        provider_item = make_kukutool_download_item(initial_url)
+        redirect_response = Mock(
+            status_code=302,
+            headers={"Location": "https://example.com/source.mp4"},
+        )
+        redirect_response.close = Mock()
+        mock_get.return_value = redirect_response
+
+        with self.assertRaisesRegex(XhsDownloadError, "Provider URL"):
+            request_public_provider_get_with_retry(
+                initial_url,
+                retries=1,
+                provider_item=provider_item,
+            )
+
         redirect_response.close.assert_called_once()
 
     @patch(
@@ -1200,6 +1274,22 @@ class XhsParserTests(SimpleTestCase):
         self.assertEqual(
             result.image_assets[0].preview_url,
             "https://ci.xiaohongshu.com/spectrum/abc123?imageView2/2/w/640/format/webp",
+        )
+
+    def test_xiaohongshu_adapter_ignores_static_og_image_assets(self):
+        html = """
+        <html>
+          <meta name="og:image" content="//picasso-static.xiaohongshu.com/fe-platform/e6214e4fbfae2cf14d634d4296916e8a5eaefdf4.png">
+          <meta name="og:image" content="https://sns-img.xhscdn.com/notes_pre_post/1040g3k0321rmapod7u0g5nbcsha0baamosu1deo!webp">
+        </html>
+        """
+
+        result = XiaohongshuAdapter().parse_html(html)
+
+        self.assertEqual(len(result.image_assets), 1)
+        self.assertEqual(
+            result.image_assets[0].url,
+            "https://ci.xiaohongshu.com/notes_pre_post/1040g3k0321rmapod7u0g5nbcsha0baamosu1deo?imageView2/format/jpg",
         )
 
     def test_parse_html_returns_video_post(self):
@@ -2366,6 +2456,28 @@ class DouyinAdapterTests(SimpleTestCase):
         self.assertEqual(len(result.image_assets), 2)
         self.assertEqual(result.image_assets[0].url, "https://p3-sign.douyinpic.com/image-1.webp")
 
+    def test_parse_aweme_prefers_unwatermarked_image_url_list(self):
+        result = DouyinAdapter().parse_aweme({
+            "aweme_id": "7634213610894689787",
+            "desc": "图文标题",
+            "author": {"nickname": "作者"},
+            "images": [
+                {
+                    "download_url_list": [
+                        "https://p3-sign.douyinpic.com/tos/image~tplv-dy-water-v10:author:3000:3000:q75.webp",
+                    ],
+                    "url_list": [
+                        "https://p3-sign.douyinpic.com/tos/image~tplv-dy-aweme-images-v2:2560:1440:q75.webp",
+                    ],
+                },
+            ],
+        })
+
+        self.assertEqual(result.post_type, "image")
+        self.assertEqual(len(result.image_assets), 1)
+        self.assertIn("tplv-dy-aweme-images-v2", result.image_assets[0].url)
+        self.assertNotIn("tplv-dy-water", result.image_assets[0].url)
+
     def test_parse_html_returns_highest_bitrate_video(self):
         data = {
             "loaderData": {
@@ -2401,6 +2513,30 @@ class DouyinAdapterTests(SimpleTestCase):
         self.assertEqual(result.post_type, "video")
         self.assertEqual(result.video_assets[0].url, "https://v3-web.douyinvod.com/high.mp4")
         self.assertEqual(result.video_assets[0].cover_url, "https://p3-sign.douyinpic.com/cover.webp")
+
+    def test_parse_aweme_does_not_treat_audio_candidates_as_video(self):
+        result = DouyinAdapter().parse_aweme({
+            "aweme_id": "7641197695256245190",
+            "desc": "图片音乐内容",
+            "author": {"nickname": "作者"},
+            "images": [
+                {"url_list": ["https://p3-sign.douyinpic.com/image-1.webp"]},
+                {"url_list": ["https://p26-sign.douyinpic.com/image-2.webp"]},
+            ],
+            "video": {
+                "play_addr": {
+                    "url_list": [
+                        "https://v3-music.douyinstatic.com/video/tos/cn/path/?mime_type=audio_mp4",
+                        "https://api-play.amemv.com/aweme/v1/play/music/?video_id=audio",
+                        "https://lf26-music-east.douyinstatic.com/obj/ies-music-hj/audio.mp3",
+                    ],
+                },
+            },
+        })
+
+        self.assertEqual(result.post_type, "image")
+        self.assertEqual(len(result.image_assets), 2)
+        self.assertFalse(result.video_assets)
 
     @patch("xhs_download.services.diagnostics.QualityProbe.probe")
     def test_parse_aweme_enhanced_prefers_larger_probed_video(self, mock_probe):
@@ -2768,6 +2904,48 @@ class BilibiliAdapterTests(SimpleTestCase):
         self.assertEqual(result.video_assets[0].url, "https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/video.mp4")
         self.assertEqual(result.video_assets[0].cover_url, "https://i0.hdslb.com/bfs/archive/cover.jpg")
         self.assertEqual(mock_get.call_args_list[0].args[0], "https://b23.tv/abc123")
+
+    @patch("xhs_download.services.platforms.bilibili.request_get_with_retry")
+    def test_parse_url_encodes_unicode_referer_for_api_headers(self, mock_get):
+        view_response = Mock()
+        view_response.json.return_value = {
+            "code": 0,
+            "data": {
+                "bvid": "BV1REjd6xEZf",
+                "aid": 2,
+                "title": "智能体副业还能做吗",
+                "pic": "https://i0.hdslb.com/bfs/archive/cover.jpg",
+                "owner": {"name": "作者"},
+                "pages": [{"cid": 62131, "page": 1, "part": "P1"}],
+            },
+        }
+        view_response.close = Mock()
+
+        play_response = Mock()
+        play_response.json.return_value = {
+            "code": 0,
+            "data": {
+                "quality": 80,
+                "durl": [
+                    {
+                        "size": 100,
+                        "url": "https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/video.mp4",
+                    }
+                ],
+            },
+        }
+        play_response.close = Mock()
+        mock_get.side_effect = [view_response, play_response]
+
+        BilibiliAdapter().parse_url(
+            "https://www.bilibili.com/video/BV1REjd6xEZf/?title_encode=智能体副业还能做吗？2026 年真实情况"
+        )
+
+        for call in mock_get.call_args_list:
+            referer = call.kwargs["headers"]["Referer"]
+            self.assertNotIn("智能体", referer)
+            referer.encode("latin-1")
+        self.assertIn("%E6%99%BA%E8%83%BD%E4%BD%93", mock_get.call_args_list[0].kwargs["headers"]["Referer"])
 
     def test_get_media_headers_uses_bilibili_headers_for_bilibili_media(self):
         self.assertIs(
@@ -3266,9 +3444,23 @@ class XhsDownloadArchiveTests(SimpleTestCase):
             self.assertTrue(Path(result["saved_files"][0]).exists())
 
 
-class XhsDownloadViewTests(SimpleTestCase):
+class XhsDownloadViewTests(TestCase):
     def setUp(self):
         cache.clear()
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC
+        setting.youtube_merge_mode = ProviderAccessMode.PUBLIC
+        setting.third_party_allowed_public_platforms = (
+            "youtube,kuaishou,tiktok,flickr,imgur"
+        )
+        setting.save(
+            update_fields=[
+                "third_party_mode",
+                "youtube_merge_mode",
+                "third_party_allowed_public_platforms",
+                "updated_at",
+            ]
+        )
 
     def test_home_route_renders_download_page(self):
         response = Client().get("/")
@@ -3589,6 +3781,18 @@ class XhsDownloadViewTests(SimpleTestCase):
             provider_manifest_allows_public_download({
                 **params,
                 "url": "https://evil.example.com/cover.jpg",
+            })
+        )
+
+    def test_provider_manifest_allows_signed_douyin_kukutool_video(self):
+        media_url = "https://v26-default.365yg.com/path/video/tos/cn/source.mp4"
+        item = make_kukutool_download_item(media_url)
+
+        self.assertTrue(provider_manifest_allows_public_download(item))
+        self.assertFalse(
+            provider_manifest_allows_public_download({
+                **item,
+                "url": "https://evil.example.com/source.mp4",
             })
         )
 
@@ -4349,6 +4553,9 @@ class XhsDownloadViewTests(SimpleTestCase):
         self,
         mock_parse,
     ):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["third_party_mode", "updated_at"])
         request = RequestFactory().get(
             "/results/",
             {"q": "https://www.youtube.com/watch?v=demo"},
@@ -4372,6 +4579,9 @@ class XhsDownloadViewTests(SimpleTestCase):
         self,
         mock_parse,
     ):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["third_party_mode", "updated_at"])
         mock_parse.return_value = ParseResult(
             platform="third_party",
             post_type="image",
@@ -4520,6 +4730,9 @@ class XhsDownloadViewTests(SimpleTestCase):
     )
     @patch("xhs_download.views.parse_media_page")
     def test_results_passes_ultra_hd_request_flag(self, mock_parse, _mock_health):
+        setting = ProviderRuntimeSetting.load()
+        setting.douyin_ultra_mode = ProviderAccessMode.PUBLIC
+        setting.save(update_fields=["douyin_ultra_mode", "updated_at"])
         mock_parse.return_value = ParseResult(
             platform="douyin",
             post_type="unknown",
@@ -4686,6 +4899,9 @@ class XhsDownloadViewTests(SimpleTestCase):
         mock_health,
         mock_parse,
     ):
+        setting = ProviderRuntimeSetting.load()
+        setting.youtube_merge_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["youtube_merge_mode", "updated_at"])
         mock_health.return_value = {
             "implemented": True,
             "ready": True,
@@ -4734,6 +4950,9 @@ class XhsDownloadViewTests(SimpleTestCase):
         mock_health,
         mock_parse,
     ):
+        setting = ProviderRuntimeSetting.load()
+        setting.youtube_merge_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["youtube_merge_mode", "updated_at"])
         mock_health.return_value = {
             "implemented": True,
             "ready": True,
@@ -4773,6 +4992,7 @@ class XhsDownloadViewTests(SimpleTestCase):
         THIRD_PARTY_PROVIDER_ENABLED=True,
         THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
         THIRD_PARTY_STAFF_ONLY=False,
+        YOUTUBE_MERGE_PROVIDER_ENABLED=False,
     )
     @patch("xhs_download.views.parse_media_page")
     @patch("xhs_download.views.get_youtube_merge_health")
@@ -4896,6 +5116,9 @@ class XhsDownloadViewTests(SimpleTestCase):
         mock_parse,
         mock_log_info,
     ):
+        setting = ProviderRuntimeSetting.load()
+        setting.youtube_merge_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["youtube_merge_mode", "updated_at"])
         mock_health.return_value = {
             "implemented": True,
             "ready": True,
@@ -4928,6 +5151,9 @@ class XhsDownloadViewTests(SimpleTestCase):
 
     @patch("xhs_download.views.get_youtube_merge_health")
     def test_youtube_merge_mode_respects_staff_only(self, mock_health):
+        setting = ProviderRuntimeSetting.load()
+        setting.youtube_merge_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["youtube_merge_mode", "updated_at"])
         mock_health.return_value = {
             "implemented": True,
             "ready": True,
@@ -4942,8 +5168,12 @@ class XhsDownloadViewTests(SimpleTestCase):
         request.user = Mock(is_active=True, is_staff=True)
         self.assertTrue(youtube_merge_mode_is_available(request))
 
+    @override_settings(YOUTUBE_MERGE_PROVIDER_ENABLED=False)
     @patch("xhs_download.views.get_youtube_merge_health")
-    def test_youtube_merge_mode_requires_public_access(self, mock_health):
+    def test_youtube_merge_mode_requires_provider_capability(self, mock_health):
+        setting = ProviderRuntimeSetting.load()
+        setting.youtube_merge_mode = ProviderAccessMode.PUBLIC
+        setting.save(update_fields=["youtube_merge_mode", "updated_at"])
         mock_health.return_value = {
             "implemented": True,
             "ready": True,
@@ -5237,6 +5467,17 @@ class XhsDownloadViewTests(SimpleTestCase):
     )
     @patch("xhs_download.views.build_download_archive_file")
     def test_download_endpoint_applies_ip_rate_limit(self, mock_archive):
+        DownloadRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={
+                "rate_limit_per_minute": 1,
+                "daily_request_limit_per_ip": 0,
+                "global_daily_request_limit": 1,
+                "max_concurrent_per_ip": 0,
+                "daily_bytes_limit_per_ip": 0,
+                "global_daily_bytes_limit": 0,
+            },
+        )
         mock_archive.side_effect = [
             {
                 "filename": "first.zip",
@@ -5267,8 +5508,53 @@ class XhsDownloadViewTests(SimpleTestCase):
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 429)
         self.assertIn("Retry-After", second)
+        self.assertEqual(second["X-Error-Code"], "DOWNLOAD_MINUTE_RATE_LIMIT")
         self.assertEqual(mock_archive.call_count, 1)
         self.assertEqual(get_daily_total("download-requests-global", "all"), 1)
+
+    @override_settings(
+        DOWNLOAD_RATE_LIMIT_PER_MINUTE=0,
+        DOWNLOAD_DAILY_REQUEST_LIMIT_PER_IP=0,
+        DOWNLOAD_GLOBAL_DAILY_REQUEST_LIMIT=0,
+        DOWNLOAD_MAX_CONCURRENT_PER_IP=0,
+        DOWNLOAD_DAILY_BYTES_LIMIT_PER_IP=0,
+        DOWNLOAD_GLOBAL_DAILY_BYTES_LIMIT=0,
+    )
+    @patch("xhs_download.views.build_download_archive_file")
+    def test_download_runtime_setting_overrides_env_defaults(self, mock_archive):
+        DownloadRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={
+                "rate_limit_per_minute": 1,
+                "daily_request_limit_per_ip": 0,
+                "global_daily_request_limit": 0,
+                "max_concurrent_per_ip": 0,
+                "daily_bytes_limit_per_ip": 0,
+                "global_daily_bytes_limit": 0,
+            },
+        )
+        mock_archive.return_value = {
+            "filename": "base.zip",
+            "file": BytesIO(b"zip-content"),
+            "saved_count": 1,
+            "failed_count": 0,
+        }
+        payload = '{"media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a"}]}'
+
+        first = Client().post(
+            "/media/download-images/",
+            data=payload,
+            content_type="application/json",
+        )
+        second = Client().post(
+            "/media/download-images/",
+            data=payload,
+            content_type="application/json",
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 429)
+        self.assertEqual(second["X-Error-Code"], "DOWNLOAD_MINUTE_RATE_LIMIT")
 
     @override_settings(DOWNLOAD_ASYNC_TASKS_ENABLED=False)
     def test_download_task_endpoint_is_disabled_in_production_mode(self):
@@ -5467,6 +5753,28 @@ class RuntimeHealthCheckTests(TestCase):
 
     @override_settings(
         YTDLP_PROVIDER_ENABLED=True,
+        YTDLP_BINARY="/path/that/does/not/exist/yt-dlp",
+        PROVIDER_STRICT_CAPABILITY_CHECKS=False,
+        REQUIRE_PRODUCTION_CONFIG=False,
+    )
+    def test_provider_dependency_check_defaults_to_warning(self):
+        issues = {issue.id: issue for issue in run_checks()}
+
+        self.assertIsInstance(issues["xhs_download.E004"], CheckWarning)
+
+    @override_settings(
+        YTDLP_PROVIDER_ENABLED=True,
+        YTDLP_BINARY="/path/that/does/not/exist/yt-dlp",
+        PROVIDER_STRICT_CAPABILITY_CHECKS=True,
+        REQUIRE_PRODUCTION_CONFIG=False,
+    )
+    def test_provider_dependency_check_can_be_strict_error(self):
+        issues = {issue.id: issue for issue in run_checks()}
+
+        self.assertIsInstance(issues["xhs_download.E004"], CheckError)
+
+    @override_settings(
+        YTDLP_PROVIDER_ENABLED=True,
         YTDLP_BINARY="/usr/bin/python -m missing_yt_dlp_module",
         YOUTUBE_MERGE_PROVIDER_ENABLED=False,
         REQUIRE_PRODUCTION_CONFIG=False,
@@ -5635,11 +5943,12 @@ class RuntimeHealthCheckTests(TestCase):
         THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=False,
         YTDLP_PROVIDER_ENABLED=False,
         GALLERYDL_PROVIDER_ENABLED=False,
+        YOUTUBE_MERGE_PROVIDER_ENABLED=False,
     )
-    def test_system_check_allows_private_third_party_without_enabled_provider(self):
+    def test_system_check_requires_concrete_provider_when_capability_is_enabled(self):
         issue_ids = {issue.id for issue in run_checks()}
 
-        self.assertNotIn("xhs_download.E007", issue_ids)
+        self.assertIn("xhs_download.E007", issue_ids)
 
     @override_settings(
         YOUTUBE_MERGE_PROVIDER_ENABLED=True,
@@ -5787,7 +6096,7 @@ class ProviderControlViewTests(TestCase):
         summary = response.json()["third_party_summary"]
         self.assertFalse(summary["enabled"])
         self.assertFalse(summary["public_access_enabled"])
-        self.assertTrue(summary["staff_only"])
+        self.assertFalse(summary["staff_only"])
         self.assertFalse(summary["configured"])
         self.assertFalse(summary["public_ready"])
         self.assertFalse(summary["staff_ready"])
@@ -5871,20 +6180,23 @@ class ProviderControlViewTests(TestCase):
         YTDLP_PROVIDER_ENABLED=False,
         GALLERYDL_PROVIDER_ENABLED=False,
     )
-    def test_provider_health_summary_marks_staff_only_as_not_public_ready(self):
+    def test_provider_health_summary_ignores_legacy_staff_only_env_gate(self):
         response = self.client.get("/admin/provider-health/")
 
         self.assertEqual(response.status_code, 200)
         summary = response.json()["third_party_summary"]
         self.assertTrue(summary["enabled"])
         self.assertTrue(summary["public_access_enabled"])
-        self.assertTrue(summary["staff_only"])
-        self.assertFalse(summary["public_ready"])
+        self.assertFalse(summary["staff_only"])
+        self.assertTrue(summary["public_ready"])
         self.assertTrue(summary["staff_ready"])
         self.assertEqual(summary["enabled_provider_ids"], ["kukutool_generic"])
         self.assertEqual(summary["ready_provider_ids"], ["kukutool_generic"])
-        self.assertEqual(summary["rollout"]["status"], "staff_only")
-        self.assertEqual(summary["rollout"]["reason"], "staff_only_gate_enabled")
+        self.assertEqual(summary["rollout"]["status"], "public_candidate")
+        self.assertEqual(
+            summary["rollout"]["reason"],
+            "ready_but_requires_manual_public_approval",
+        )
 
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,
@@ -5918,3 +6230,872 @@ class ProviderControlViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 403)
+
+
+class ProviderSettingsAdminViewTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+
+        self.user = get_user_model().objects.create_user(
+            username="provider-settings-admin",
+            password="test-password",
+            is_staff=True,
+        )
+        self.client.force_login(self.user)
+
+    def test_provider_settings_requires_staff_user(self):
+        response = Client().get("/admin/provider-settings/")
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_staff_can_view_provider_settings_dashboard(self):
+        response = self.client.get("/admin/provider-settings/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Provider 管理后台")
+        self.assertContains(response, "抖音超高清")
+        self.assertContains(response, "YouTube 高清合并")
+        self.assertContains(response, "通用第三方 Provider")
+        self.assertContains(response, "建议先使用 staff 完成 smoke test")
+        self.assertContains(response, "第三方 allowlist 为空")
+        self.assertContains(response, "public_gray")
+
+    def test_staff_can_update_provider_access_modes(self):
+        response = self.client.post(
+            "/admin/provider-settings/",
+            data={
+                "douyin_ultra_mode": ProviderAccessMode.STAFF,
+                "youtube_merge_mode": ProviderAccessMode.DISABLED,
+                "third_party_mode": ProviderAccessMode.PUBLIC,
+                "douyin_ultra_rollout_percent": "5",
+                "youtube_merge_rollout_percent": "42",
+                "third_party_rollout_percent": "9",
+                "douyin_ultra_disabled_reason": "upstream watch",
+                "youtube_merge_disabled_reason": "queue watch",
+                "third_party_disabled_reason": "smoke only",
+                "third_party_allowed_public_platforms": "youtube",
+                "third_party_allowed_public_hosts": "youtube.com",
+                "third_party_blocked_platforms": "reddit",
+                "third_party_blocked_hosts": "youtube.com.evil.com",
+                "kukutool_disabled": "1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        setting = ProviderRuntimeSetting.load()
+        self.assertEqual(setting.douyin_ultra_mode, ProviderAccessMode.STAFF)
+        self.assertEqual(setting.youtube_merge_mode, ProviderAccessMode.DISABLED)
+        self.assertEqual(setting.third_party_mode, ProviderAccessMode.PUBLIC)
+        self.assertEqual(setting.douyin_ultra_rollout_percent, 5)
+        self.assertEqual(setting.youtube_merge_rollout_percent, 42)
+        self.assertEqual(setting.third_party_rollout_percent, 9)
+        self.assertEqual(setting.douyin_ultra_disabled_reason, "upstream watch")
+        self.assertEqual(setting.youtube_merge_disabled_reason, "queue watch")
+        self.assertEqual(setting.third_party_disabled_reason, "smoke only")
+        self.assertEqual(setting.third_party_allowed_public_platforms, "youtube")
+        self.assertEqual(setting.third_party_allowed_public_hosts, "youtube.com")
+        self.assertEqual(setting.third_party_blocked_platforms, "reddit")
+        self.assertEqual(setting.third_party_blocked_hosts, "youtube.com.evil.com")
+        self.assertTrue(setting.kukutool_disabled)
+
+    def test_provider_runtime_defaults_are_conservative(self):
+        setting = ProviderRuntimeSetting.load()
+
+        self.assertEqual(setting.douyin_ultra_mode, ProviderAccessMode.DISABLED)
+        self.assertEqual(setting.youtube_merge_mode, ProviderAccessMode.DISABLED)
+        self.assertEqual(setting.third_party_mode, ProviderAccessMode.DISABLED)
+        self.assertEqual(setting.rollout_percent, 0)
+        self.assertEqual(setting.douyin_ultra_rollout_percent, 0)
+        self.assertEqual(setting.youtube_merge_rollout_percent, 0)
+        self.assertEqual(setting.third_party_rollout_percent, 0)
+        self.assertEqual(setting.third_party_allowed_public_platforms, "")
+        self.assertEqual(setting.third_party_allowed_public_hosts, "")
+        self.assertEqual(setting.third_party_blocked_platforms, "")
+        self.assertEqual(setting.third_party_blocked_hosts, "")
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_capability_enabled_admin_disabled_is_not_available(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.DISABLED
+        setting.save(update_fields=["third_party_mode", "updated_at"])
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=False, is_staff=False)
+
+        self.assertFalse(third_party_provider_is_available(request))
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_capability_enabled_admin_staff_allows_staff_only(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["third_party_mode", "updated_at"])
+        request = RequestFactory().get("/")
+
+        request.user = Mock(is_active=False, is_staff=False)
+        self.assertFalse(third_party_provider_is_available(request))
+
+        request.user = Mock(is_active=True, is_staff=True)
+        self.assertTrue(third_party_provider_is_available(request))
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_capability_enabled_public_gray_zero_blocks_visitor(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC_GRAY
+        setting.third_party_rollout_percent = 0
+        setting.save(
+            update_fields=[
+                "third_party_mode",
+                "third_party_rollout_percent",
+                "updated_at",
+            ]
+        )
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=False, is_staff=False)
+
+        self.assertFalse(third_party_provider_is_available(request))
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_capability_enabled_public_gray_hundred_allows_visitor(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC_GRAY
+        setting.third_party_rollout_percent = 100
+        setting.save(
+            update_fields=["third_party_mode", "third_party_rollout_percent", "updated_at"]
+        )
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=False, is_staff=False)
+
+        self.assertTrue(third_party_provider_is_available(request))
+
+    @override_settings(
+        YOUTUBE_MERGE_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        KUKUTOOL_PROVIDER_ENABLED=True,
+    )
+    def test_provider_rollout_percent_is_independent_per_provider(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.youtube_merge_mode = ProviderAccessMode.PUBLIC_GRAY
+        setting.third_party_mode = ProviderAccessMode.PUBLIC_GRAY
+        setting.douyin_ultra_mode = ProviderAccessMode.PUBLIC_GRAY
+        setting.youtube_merge_rollout_percent = 100
+        setting.third_party_rollout_percent = 0
+        setting.douyin_ultra_rollout_percent = 0
+        setting.save(
+            update_fields=[
+                "youtube_merge_mode",
+                "third_party_mode",
+                "douyin_ultra_mode",
+                "youtube_merge_rollout_percent",
+                "third_party_rollout_percent",
+                "douyin_ultra_rollout_percent",
+                "updated_at",
+            ]
+        )
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=False, is_staff=False)
+
+        with patch(
+            "xhs_download.views.get_youtube_merge_health",
+            return_value={"implemented": True, "ready": True},
+        ):
+            self.assertTrue(youtube_merge_mode_is_available(request))
+        self.assertFalse(third_party_provider_is_available(request))
+        with patch("xhs_download.views.get_kukutool_provider_health", return_value={"available": True}):
+            self.assertFalse(ultra_hd_is_available(request))
+
+    def test_rollout_bucket_is_stable_and_provider_specific(self):
+        request = RequestFactory().get("/", HTTP_USER_AGENT="pytest")
+        request.user = Mock(is_active=False, is_staff=False, is_authenticated=False)
+
+        youtube_bucket = request_rollout_bucket(PROVIDER_YOUTUBE_MERGE, request)
+        self.assertEqual(
+            youtube_bucket,
+            request_rollout_bucket(PROVIDER_YOUTUBE_MERGE, request),
+        )
+        self.assertNotEqual(
+            youtube_bucket,
+            request_rollout_bucket(PROVIDER_THIRD_PARTY, request),
+        )
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_third_party_public_requires_allowlist(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC
+        setting.save(update_fields=["third_party_mode", "updated_at"])
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=False, is_staff=False, is_authenticated=False)
+
+        summary = third_party_public_access_summary(
+            "https://www.youtube.com/watch?v=demo",
+            request,
+        )
+
+        self.assertFalse(summary["allowed"])
+        self.assertEqual(summary["error_code"], "THIRD_PARTY_PLATFORM_NOT_ALLOWLISTED")
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_third_party_allowed_platform_allows_public_visitor(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC
+        setting.third_party_allowed_public_platforms = "youtube"
+        setting.save(
+            update_fields=[
+                "third_party_mode",
+                "third_party_allowed_public_platforms",
+                "updated_at",
+            ]
+        )
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=False, is_staff=False, is_authenticated=False)
+
+        self.assertTrue(
+            third_party_public_access_allowed(
+                "https://www.youtube.com/watch?v=demo",
+                request,
+            )
+        )
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_third_party_allowed_host_uses_strict_suffix_boundary(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC
+        setting.third_party_allowed_public_hosts = "youtube.com"
+        setting.save(
+            update_fields=[
+                "third_party_mode",
+                "third_party_allowed_public_hosts",
+                "updated_at",
+            ]
+        )
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=False, is_staff=False, is_authenticated=False)
+
+        self.assertTrue(
+            third_party_public_access_allowed(
+                "https://www.youtube.com/watch?v=demo",
+                request,
+            )
+        )
+        self.assertFalse(
+            third_party_public_access_allowed(
+                "https://youtube.com.evil.com/watch?v=demo",
+                request,
+            )
+        )
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_third_party_blocklist_wins_over_allowlist(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC
+        setting.third_party_allowed_public_platforms = "youtube,reddit"
+        setting.third_party_blocked_platforms = "reddit"
+        setting.third_party_blocked_hosts = "youtube.com"
+        setting.save(
+            update_fields=[
+                "third_party_mode",
+                "third_party_allowed_public_platforms",
+                "third_party_blocked_platforms",
+                "third_party_blocked_hosts",
+                "updated_at",
+            ]
+        )
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=False, is_staff=False, is_authenticated=False)
+
+        self.assertFalse(
+            third_party_public_access_allowed(
+                "https://www.youtube.com/watch?v=demo",
+                request,
+            )
+        )
+        self.assertFalse(
+            third_party_public_access_allowed(
+                "https://www.reddit.com/r/pics/comments/demo",
+                request,
+            )
+        )
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_third_party_sensitive_staff_smoke_but_public_requires_allowlist(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["third_party_mode", "updated_at"])
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=True, is_staff=True, is_authenticated=True)
+
+        self.assertTrue(
+            third_party_public_access_allowed(
+                "https://www.instagram.com/p/demo",
+                request,
+            )
+        )
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_third_party_built_in_adult_host_is_rejected_for_staff_by_default(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.STAFF
+        setting.third_party_allowed_public_hosts = "onlyfans.com"
+        setting.save(
+            update_fields=[
+                "third_party_mode",
+                "third_party_allowed_public_hosts",
+                "updated_at",
+            ]
+        )
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=True, is_staff=True, is_authenticated=True)
+
+        summary = third_party_public_access_summary(
+            "https://onlyfans.com/demo",
+            request,
+        )
+
+        self.assertFalse(summary["allowed"])
+        self.assertEqual(summary["error_code"], "THIRD_PARTY_PLATFORM_BLOCKED")
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_capability_enabled_admin_public_allows_visitor(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC
+        setting.save(update_fields=["third_party_mode", "updated_at"])
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=False, is_staff=False)
+
+        self.assertTrue(third_party_provider_is_available(request))
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=False)
+    def test_capability_disabled_admin_public_is_still_unavailable(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC
+        setting.third_party_allowed_public_platforms = "youtube"
+        setting.save(
+            update_fields=[
+                "third_party_mode",
+                "third_party_allowed_public_platforms",
+                "updated_at",
+            ]
+        )
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=True, is_staff=True)
+
+        self.assertFalse(third_party_provider_is_available(request))
+        self.assertFalse(
+            third_party_public_access_allowed(
+                "https://www.youtube.com/watch?v=demo",
+                request,
+            )
+        )
+
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        ULTRA_HD_PUBLIC_ACCESS_ENABLED=False,
+        KUKUTOOL_PROVIDER_ENABLED=True,
+    )
+    @patch("xhs_download.views.get_kukutool_provider_health")
+    def test_douyin_ultra_staff_only_allows_staff_but_not_anonymous(self, mock_health):
+        mock_health.return_value = {"available": True}
+        setting = ProviderRuntimeSetting.load()
+        setting.douyin_ultra_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["douyin_ultra_mode", "updated_at"])
+        request = RequestFactory().get("/")
+
+        request.user = Mock(is_active=False, is_staff=False)
+        self.assertFalse(ultra_hd_is_available(request))
+
+        request.user = Mock(is_active=True, is_staff=True)
+        self.assertTrue(ultra_hd_is_available(request))
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=False,
+        THIRD_PARTY_STAFF_ONLY=True,
+    )
+    def test_third_party_staff_only_runtime_mode_allows_staff(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["third_party_mode", "updated_at"])
+        request = RequestFactory().get("/")
+
+        request.user = Mock(is_active=False, is_staff=False)
+        self.assertFalse(third_party_provider_is_available(request))
+
+        request.user = Mock(is_active=True, is_staff=True)
+        self.assertTrue(third_party_provider_is_available(request))
+
+
+class AdminObservabilityMvpTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+
+        cache.clear()
+        self.staff = get_user_model().objects.create_user(
+            username="ops-staff",
+            password="test-password",
+            is_staff=True,
+        )
+        self.superuser = get_user_model().objects.create_superuser(
+            username="ops-root",
+            password="test-password",
+        )
+
+    def grant_xhs_view_permission(self, user, codename):
+        permission = Permission.objects.get(
+            content_type__app_label="xhs_download",
+            codename=codename,
+        )
+        user.user_permissions.add(permission)
+        for cache_name in ("_perm_cache", "_user_perm_cache", "_group_perm_cache"):
+            if hasattr(user, cache_name):
+                delattr(user, cache_name)
+
+    def test_request_id_middleware_generates_and_reuses_request_id(self):
+        generated = Client().get("/")
+        reused = Client().get("/", HTTP_X_REQUEST_ID="nginx-request-123")
+
+        self.assertIn("X-Request-ID", generated)
+        self.assertEqual(reused["X-Request-ID"], "nginx-request-123")
+
+    @patch("xhs_download.views.parse_media_page")
+    def test_parse_success_writes_parse_request_log(self, mock_parse):
+        mock_parse.return_value = ParseResult(
+            platform="xiaohongshu",
+            post_type="image",
+            base_filename="demo",
+            assets=(
+                MediaAsset(
+                    media_type="image",
+                    url="https://ci.xiaohongshu.com/demo.jpg",
+                    platform="xiaohongshu",
+                ),
+            ),
+            metadata={"selected_provider": "native", "source_platform": "xiaohongshu"},
+        )
+
+        response = Client().get(
+            "/results/",
+            {"q": "https://www.xiaohongshu.com/explore/demo"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        log = ParseRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.SUCCESS)
+        self.assertEqual(log.query_host, "www.xiaohongshu.com")
+        self.assertEqual(log.selected_provider, "native")
+        self.assertEqual(log.image_count, 1)
+        self.assertEqual(len(log.ip_hash), 64)
+
+    @patch("xhs_download.views.parse_media_page", side_effect=XhsParseError("bad link"))
+    def test_parse_failure_writes_parse_request_log(self, _mock_parse):
+        response = Client().get("/results/", {"q": "https://www.xiaohongshu.com/explore/fail"})
+
+        self.assertEqual(response.status_code, 200)
+        log = ParseRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.FAILED)
+        self.assertEqual(log.error_type, "XhsParseError")
+        self.assertIn("bad link", log.error_message_short)
+
+    def test_observability_error_text_is_redacted_in_database_and_logger_extra(self):
+        request = RequestFactory().post("/xhs/results/")
+        request.user = self.staff
+        request.request_id = "rid-redact"
+        error = XhsParseError(
+            "下载失败 https://cdn.example.com/a.mp4?token=secret&signature=abc "
+            "provider_manifest_token=very-secret"
+        )
+
+        with patch("xhs_download.views.logger.info") as mock_info:
+            log_parse_request_event(
+                request,
+                "media_parse_failed",
+                query="https://www.xiaohongshu.com/explore/demo",
+                platform_key="xhs",
+                requested_ultra_hd=False,
+                prefer_ultra_hd=False,
+                requested_youtube_merge=False,
+                prefer_youtube_merge=False,
+                duration_ms=12,
+                error=error,
+                error_code="PROVIDER_TIMEOUT",
+            )
+
+        log = ParseRequestLog.objects.get(request_id="rid-redact")
+        self.assertIn("[url-redacted]", log.error_message_short)
+        self.assertNotIn("cdn.example.com/a.mp4", log.error_message_short)
+        self.assertNotIn("very-secret", log.error_message_short)
+        self.assertNotIn("token=secret", log.error_message_short)
+        logged_error = mock_info.call_args.kwargs["extra"]["error"]
+        self.assertIn("[url-redacted]", logged_error)
+        self.assertNotIn("cdn.example.com/a.mp4", logged_error)
+        self.assertNotIn("very-secret", logged_error)
+
+    def test_observability_keeps_plain_chinese_error_text(self):
+        request = RequestFactory().post("/media/download-images/")
+        request.user = self.staff
+        request.request_id = "rid-plain-error"
+
+        record_download_request_log(
+            request,
+            download_type="zip",
+            status=ObservabilityStatus.FAILED,
+            error_message_short="第三方解析超时，请稍后再试",
+        )
+
+        log = DownloadRequestLog.objects.get(request_id="rid-plain-error")
+        self.assertEqual(log.error_message_short, "第三方解析超时，请稍后再试")
+
+    def test_provider_admin_audit_snapshot_redacts_sensitive_text(self):
+        request = RequestFactory().post("/admin/provider-settings/")
+        request.user = self.superuser
+        request.request_id = "rid-audit-redact"
+
+        record_provider_admin_audit_log(
+            request,
+            action="provider_runtime_update",
+            before_snapshot={
+                "third_party_allowed_public_hosts": (
+                    "https://cdn.example.com/a.mp4?auth_key=secret"
+                ),
+            },
+            after_snapshot={
+                "third_party_allowed_public_hosts": (
+                    "provider_manifest_token=very-secret"
+                ),
+            },
+        )
+
+        audit = ProviderAdminAuditLog.objects.get(request_id="rid-audit-redact")
+        self.assertEqual(audit.changed_fields, ["third_party_allowed_public_hosts"])
+        self.assertEqual(
+            audit.before_snapshot["third_party_allowed_public_hosts"],
+            "[url-redacted]",
+        )
+        self.assertEqual(
+            audit.after_snapshot["third_party_allowed_public_hosts"],
+            "provider_manifest_token=[redacted]",
+        )
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_third_party_allowlist_miss_writes_blocked_log(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC
+        setting.third_party_allowed_public_platforms = ""
+        setting.save(
+            update_fields=[
+                "third_party_mode",
+                "third_party_allowed_public_platforms",
+                "updated_at",
+            ]
+        )
+
+        response = Client().get(
+            "/results/",
+            {"q": "https://www.youtube.com/watch?v=demo"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        log = ParseRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.BLOCKED)
+        self.assertEqual(log.error_code, "THIRD_PARTY_PLATFORM_NOT_ALLOWLISTED")
+
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        KUKUTOOL_PROVIDER_ENABLED=True,
+        ULTRA_HD_RATE_LIMIT_PER_MINUTE=1,
+    )
+    @patch("xhs_download.views.get_kukutool_provider_health", return_value={"available": True})
+    @patch("xhs_download.views.consume_fixed_window")
+    def test_parse_rate_limit_writes_rate_limited_log(self, mock_limit, _mock_health):
+        setting = ProviderRuntimeSetting.load()
+        setting.douyin_ultra_mode = ProviderAccessMode.PUBLIC
+        setting.save(update_fields=["douyin_ultra_mode", "updated_at"])
+        mock_limit.return_value = Mock(allowed=False, retry_after=30)
+
+        response = Client().get(
+            "/tiktok/results/",
+            {"q": "https://www.douyin.com/video/123", "ultra_hd": "1"},
+        )
+
+        self.assertEqual(response.status_code, 429)
+        log = ParseRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.RATE_LIMITED)
+        self.assertEqual(log.error_code, "RATE_LIMITED")
+
+    @patch("xhs_download.services.observability.ParseRequestLog.objects.create", side_effect=RuntimeError("db down"))
+    @patch("xhs_download.views.parse_media_page")
+    def test_parse_log_write_failure_does_not_break_response(self, mock_parse, _mock_create):
+        mock_parse.return_value = ParseResult(
+            platform="xiaohongshu",
+            post_type="image",
+            base_filename="demo",
+            assets=(),
+            metadata={},
+        )
+
+        response = Client().get(
+            "/results/",
+            {"q": "https://www.xiaohongshu.com/explore/demo"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    @patch("xhs_download.views.build_download_archive_file")
+    def test_zip_download_success_writes_download_log(self, mock_archive):
+        tmp = NamedTemporaryFile(suffix=".zip", delete=False)
+        tmp.write(b"zip-bytes")
+        tmp.flush()
+        tmp.seek(0)
+        mock_archive.return_value = {
+            "file": tmp,
+            "filename": "demo.zip",
+            "saved_count": 1,
+            "failed_count": 0,
+        }
+        payload = {
+            "media_items": [{"type": "image", "url": "https://ci.xiaohongshu.com/demo.jpg"}],
+            "base_filename": "demo",
+        }
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.SUCCESS)
+        self.assertEqual(log.download_type, "zip")
+        self.assertEqual(log.item_count, 1)
+        self.assertGreater(log.actual_bytes, 0)
+
+    @override_settings(DOWNLOAD_RATE_LIMIT_PER_MINUTE=1)
+    @patch("xhs_download.views.check_download_request_limits")
+    def test_download_rate_limit_writes_download_log(self, mock_limits):
+        mock_limits.return_value = (
+            "identity",
+            limit_error_response(
+                "limited",
+                retry_after=1,
+                error_code="DOWNLOAD_MINUTE_RATE_LIMIT",
+            ),
+        )
+        payload = {
+            "media_items": [{"type": "image", "url": "https://ci.xiaohongshu.com/demo.jpg"}],
+        }
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 429)
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.RATE_LIMITED)
+        self.assertEqual(log.error_code, "DOWNLOAD_MINUTE_RATE_LIMIT")
+
+    @patch("xhs_download.views.check_download_request_limits")
+    @patch("xhs_download.views.acquire_concurrency")
+    def test_download_concurrency_limit_writes_specific_download_log(
+        self,
+        mock_acquire,
+        mock_limits,
+    ):
+        mock_limits.return_value = ("identity", None)
+        mock_acquire.return_value = LimitResult(
+            allowed=False,
+            current=2,
+            limit=1,
+        )
+        payload = {
+            "media_items": [{"type": "image", "url": "https://ci.xiaohongshu.com/demo.jpg"}],
+        }
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response["X-Error-Code"], "DOWNLOAD_CONCURRENCY_LIMIT")
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.RATE_LIMITED)
+        self.assertEqual(log.error_code, "DOWNLOAD_CONCURRENCY_LIMIT")
+
+    def test_provider_manifest_failure_writes_download_log(self):
+        payload = {
+            "media_items": [
+                {
+                    "type": "image",
+                    "url": "https://ci.xiaohongshu.com/demo.jpg",
+                    "asset_id": "cover",
+                    "provider": "yt_dlp_generic",
+                    "provider_resource_id": "abc",
+                    "provider_cache_key": "third_party:yt_dlp_generic:abc",
+                    "provider_manifest_token": "bad-token",
+                }
+            ],
+        }
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.FAILED)
+        self.assertEqual(log.error_code, "PROVIDER_MANIFEST_REJECTED")
+
+    def test_provider_settings_update_writes_audit_log(self):
+        client = Client()
+        client.force_login(self.staff)
+
+        response = client.post(
+            "/admin/provider-settings/",
+            data={
+                "douyin_ultra_mode": ProviderAccessMode.STAFF,
+                "youtube_merge_mode": ProviderAccessMode.DISABLED,
+                "third_party_mode": ProviderAccessMode.DISABLED,
+                "douyin_ultra_rollout_percent": "0",
+                "youtube_merge_rollout_percent": "0",
+                "third_party_rollout_percent": "0",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        audit = ProviderAdminAuditLog.objects.get()
+        self.assertEqual(audit.actor_username, "ops-staff")
+        self.assertEqual(audit.action, "provider_runtime_update")
+        self.assertIn("douyin_ultra_mode", audit.changed_fields)
+        self.assertEqual(audit.before_snapshot["douyin_ultra_mode"], ProviderAccessMode.DISABLED)
+        self.assertEqual(audit.after_snapshot["douyin_ultra_mode"], ProviderAccessMode.STAFF)
+
+    def test_ops_dashboard_access_and_aggregation(self):
+        ParseRequestLog.objects.create(
+            request_id="rid1",
+            status=ObservabilityStatus.SUCCESS,
+            source_platform="xiaohongshu",
+            selected_provider="native",
+            duration_ms=100,
+        )
+        ParseRequestLog.objects.create(
+            request_id="rid2",
+            status=ObservabilityStatus.FAILED,
+            error_code="PROVIDER_TIMEOUT",
+            duration_ms=300,
+        )
+        DownloadRequestLog.objects.create(
+            request_id="rid3",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="zip",
+            actual_bytes=1024,
+        )
+        staff_client = Client()
+        staff_client.force_login(self.staff)
+        super_client = Client()
+        super_client.force_login(self.superuser)
+
+        anonymous = Client().get("/admin/ops-dashboard/")
+        staff_response = staff_client.get("/admin/ops-dashboard/")
+        super_response = super_client.get("/admin/ops-dashboard/")
+        self.grant_xhs_view_permission(self.staff, "view_parserequestlog")
+        permitted_response = staff_client.get("/admin/ops-dashboard/")
+
+        self.assertEqual(anonymous.status_code, 404)
+        self.assertEqual(staff_response.status_code, 404)
+        self.assertContains(super_response, "运营看板")
+        self.assertContains(permitted_response, "今日解析次数")
+        self.assertContains(permitted_response, "PROVIDER_TIMEOUT")
+
+    def test_observability_log_pages_require_specific_view_permissions(self):
+        client = Client()
+        client.force_login(self.staff)
+        super_client = Client()
+        super_client.force_login(self.superuser)
+
+        self.assertEqual(Client().get("/admin/parse-logs/").status_code, 404)
+        self.assertEqual(client.get("/admin/parse-logs/").status_code, 404)
+        self.assertEqual(client.get("/admin/download-logs/").status_code, 404)
+        self.assertEqual(client.get("/admin/provider-audit-logs/").status_code, 404)
+        self.assertContains(super_client.get("/admin/parse-logs/"), "解析日志")
+
+        self.grant_xhs_view_permission(self.staff, "view_parserequestlog")
+        self.assertContains(client.get("/admin/parse-logs/"), "解析日志")
+        self.grant_xhs_view_permission(self.staff, "view_downloadrequestlog")
+        self.assertContains(client.get("/admin/download-logs/"), "下载日志")
+        self.grant_xhs_view_permission(self.staff, "view_provideradminauditlog")
+        self.assertContains(client.get("/admin/provider-audit-logs/"), "Provider 审计")
+
+    def test_observability_admin_models_are_read_only_for_staff_and_runtime_is_changeable(self):
+        from django.contrib import admin
+        from django.contrib.admin.sites import AdminSite
+
+        from .admin import ProviderAdminAuditLogAdmin, ProviderRuntimeSettingAdmin
+
+        request = RequestFactory().get("/")
+        request.user = self.staff
+        super_request = RequestFactory().get("/")
+        super_request.user = self.superuser
+        audit_admin = ProviderAdminAuditLogAdmin(ProviderAdminAuditLog, AdminSite())
+        runtime_admin = ProviderRuntimeSettingAdmin(ProviderRuntimeSetting, AdminSite())
+
+        self.assertFalse(audit_admin.has_add_permission(request))
+        self.assertFalse(audit_admin.has_change_permission(request))
+        self.assertFalse(audit_admin.has_delete_permission(request))
+        self.assertTrue(audit_admin.has_delete_permission(super_request))
+        self.assertFalse(runtime_admin.has_change_permission(request))
+        self.assertTrue(runtime_admin.has_change_permission(super_request))
+
+        app_list = admin.site.get_app_list(super_request)
+        models_by_app = {
+            app["app_label"]: {model["object_name"] for model in app["models"]}
+            for app in app_list
+        }
+        self.assertIn("ProviderRuntimeSettingProxy", models_by_app["provider_console"])
+        self.assertIn("DownloadRuntimeSetting", models_by_app["download_console"])
+        self.assertNotIn("ProviderRuntimeSetting", models_by_app.get("xhs_download", set()))
+        self.assertNotIn("DownloadRuntimeSetting", models_by_app.get("xhs_download", set()))
+
+    @override_settings(
+        DOWNLOAD_RATE_LIMIT_PER_MINUTE=7,
+        DOWNLOAD_DAILY_REQUEST_LIMIT_PER_IP=70,
+        DOWNLOAD_GLOBAL_DAILY_REQUEST_LIMIT=700,
+        DOWNLOAD_MAX_CONCURRENT_PER_IP=3,
+        DOWNLOAD_DAILY_BYTES_LIMIT_PER_IP=1024,
+        DOWNLOAD_GLOBAL_DAILY_BYTES_LIMIT=2048,
+    )
+    def test_download_runtime_setting_initializes_from_environment_defaults(self):
+        setting = DownloadRuntimeSetting.load()
+
+        self.assertEqual(setting.rate_limit_per_minute, 7)
+        self.assertEqual(setting.daily_request_limit_per_ip, 70)
+        self.assertEqual(setting.global_daily_request_limit, 700)
+        self.assertEqual(setting.max_concurrent_per_ip, 3)
+        self.assertEqual(setting.daily_bytes_limit_per_ip, 1024)
+        self.assertEqual(setting.global_daily_bytes_limit, 2048)
+
+    def test_prune_observability_logs_dry_run_and_delete_keeps_audit_logs(self):
+        parse_log = ParseRequestLog.objects.create(request_id="old-parse")
+        download_log = DownloadRequestLog.objects.create(request_id="old-download")
+        audit_log = ProviderAdminAuditLog.objects.create(
+            request_id="old-audit",
+            action="provider_runtime_update",
+        )
+        old_time = timezone.now() - timezone.timedelta(days=45)
+        ParseRequestLog.objects.filter(pk=parse_log.pk).update(created_at=old_time)
+        DownloadRequestLog.objects.filter(pk=download_log.pk).update(created_at=old_time)
+        ProviderAdminAuditLog.objects.filter(pk=audit_log.pk).update(created_at=old_time)
+
+        out = StringIO()
+        call_command("prune_observability_logs", "--days", "30", "--dry-run", stdout=out)
+        self.assertEqual(ParseRequestLog.objects.count(), 1)
+        self.assertEqual(DownloadRequestLog.objects.count(), 1)
+
+        call_command("prune_observability_logs", "--days", "30", stdout=StringIO())
+
+        self.assertEqual(ParseRequestLog.objects.count(), 0)
+        self.assertEqual(DownloadRequestLog.objects.count(), 0)
+        self.assertEqual(ProviderAdminAuditLog.objects.count(), 1)

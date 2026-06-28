@@ -39,7 +39,7 @@ def get_youtube_merge_health(*, force_version_probe=False):
     public_access_enabled = bool(
         getattr(settings, "YOUTUBE_MERGE_PUBLIC_ACCESS_ENABLED", False)
     )
-    staff_only = bool(getattr(settings, "YOUTUBE_MERGE_STAFF_ONLY", True))
+    staff_only = bool(getattr(settings, "YOUTUBE_MERGE_STAFF_ONLY", False))
     require_ffmpeg = bool(getattr(settings, "YOUTUBE_MERGE_REQUIRE_FFMPEG", True))
     should_probe = bool(enabled or force_version_probe)
 

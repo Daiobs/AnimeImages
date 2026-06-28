@@ -376,13 +376,13 @@ def get_aweme_metadata(aweme):
 
 def get_image_url(image_item):
     for key in (
-        "download_url_list",
         "url_list",
         "origin_url",
         "large_image",
         "display_image",
         "image",
         "image_url",
+        "download_url_list",
     ):
         url = first_url(image_item.get(key) if isinstance(image_item, dict) else None)
         if url:
@@ -472,6 +472,15 @@ def get_addr_dimension(addr, key):
 def get_video_media_candidates(video):
     candidates = []
 
+    def is_audio_only_candidate(url):
+        url = str(url or "").lower()
+        return (
+            "mime_type=audio" in url
+            or "/play/music/" in url
+            or "/obj/ies-music" in url
+            or get_url_extension(url) in {"mp3", "m4a", "aac", "wav", "ogg"}
+        )
+
     for item in video.get("bit_rate") or []:
         if not isinstance(item, dict):
             continue
@@ -483,6 +492,8 @@ def get_video_media_candidates(video):
             width = get_addr_dimension(play_addr, "width")
             height = get_addr_dimension(play_addr, "height")
             for url in iter_urls(play_addr) or ():
+                if is_audio_only_candidate(url):
+                    continue
                 for ratio_score, candidate_url in expand_video_quality_urls(url):
                     candidates.append(
                         MediaCandidate(
@@ -504,6 +515,8 @@ def get_video_media_candidates(video):
         width = get_addr_dimension(addr, "width")
         height = get_addr_dimension(addr, "height")
         for url in iter_urls(addr) or ():
+            if is_audio_only_candidate(url):
+                continue
             for ratio_score, candidate_url in expand_video_quality_urls(url):
                 candidates.append(
                     MediaCandidate(

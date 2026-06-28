@@ -14,6 +14,12 @@ This stage stabilizes the multi-provider foundation after the provider hardening
 - Async queue decision evidence.
 - Long-tail platform opening criteria.
 
+Current production priority update:
+
+- Staff-only provider smoke is not the pre-launch main goal.
+- The immediate target is the production deploy baseline: Ubuntu VPS, Gunicorn, Nginx, PostgreSQL, Redis, HTTPS, explicit production environment, health checks, and rollback procedure.
+- Provider smoke continues after launch as staging/staff validation. It must not block or broaden the first public deployment.
+
 ## Completed
 
 ### YouTube Merge Smoke
@@ -150,7 +156,7 @@ Interpretation:
 
 Do not open generic third-party parsing broadly yet.
 
-Recommended next operating mode:
+Recommended next operating mode after the production baseline is deployed:
 
 - Keep dedicated adapters as the public path.
 - Enable YouTube merge only for staff/local validation.
@@ -167,7 +173,14 @@ Recommended next operating mode:
 
 ## Next Suggested Step
 
-Run staff smoke in PyCharm/local with real URLs and record results:
+Complete the production deploy baseline first:
+
+1. Use `docs/production-deploy-baseline.md` for the architecture and safety policy.
+2. Use `docs/production-deploy-checklist.md` for the server runbook.
+3. Deploy only the stable dedicated adapters publicly.
+4. Confirm `/health/live/`, `/health/ready/`, ZIP download, preview proxy, and basic adapter smoke.
+
+After that, resume staff smoke in staging with real URLs and record results:
 
 1. YouTube merge planning and `--download-smoke`.
 2. YouTube normal 1080p `yt_dlp_merge`.

@@ -9,8 +9,12 @@ https://docs.djangoproject.com/en/4.2/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
+import importlib.util
 import os
+import shutil
+import sys
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from django.core.exceptions import ImproperlyConfigured
 
@@ -70,6 +74,12 @@ def env_float(name, default=0.0):
     return float(value)
 
 
+def python_module_command(module_name):
+    if importlib.util.find_spec(module_name) is None:
+        return ""
+    return f"{sys.executable} -m {module_name}"
+
+
 def require_env(name):
     value = os.environ.get(name)
     if value is None or value.strip() == "":
@@ -82,6 +92,38 @@ def require_env_list(name):
     if not values:
         raise ImproperlyConfigured(f"{name} must be configured explicitly outside local development.")
     return values
+
+
+def database_config_from_url(value, *, require_postgresql=False):
+    parsed = urlparse(value)
+    scheme = parsed.scheme.lower()
+    if scheme in {"postgres", "postgresql"}:
+        database_name = parsed.path.lstrip("/")
+        if not database_name:
+            raise ImproperlyConfigured("DJANGO_DATABASE_URL must include a database name.")
+        config = {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": unquote(database_name),
+            "USER": unquote(parsed.username or ""),
+            "PASSWORD": unquote(parsed.password or ""),
+            "HOST": parsed.hostname or "",
+            "PORT": str(parsed.port or ""),
+        }
+        return config
+    if scheme == "sqlite":
+        if require_postgresql:
+            raise ImproperlyConfigured(
+                "DJANGO_DATABASE_URL must use PostgreSQL outside local development."
+            )
+        if parsed.netloc and parsed.netloc != "localhost":
+            raise ImproperlyConfigured("sqlite DJANGO_DATABASE_URL must not include a remote host.")
+        return {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": unquote(parsed.path),
+        }
+    raise ImproperlyConfigured(
+        "DJANGO_DATABASE_URL must use postgresql://, postgres://, or sqlite://."
+    )
 
 
 # Quick-start development settings - unsuitable for production
@@ -136,6 +178,8 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "provider_console.apps.ProviderConsoleConfig",
+    "download_console.apps.DownloadConsoleConfig",
     "search_app.apps.SearchAppConfig",
     "xhs_download.apps.XhsDownloadConfig",
     "submissions.apps.SubmissionsConfig",
@@ -143,6 +187,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "djangoProject.middleware.RequestIDMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -177,11 +222,24 @@ WSGI_APPLICATION = "djangoProject.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 
+DJANGO_DATABASE_URL = os.environ.get("DJANGO_DATABASE_URL", "").strip()
+if REQUIRE_PRODUCTION_CONFIG and not DJANGO_DATABASE_URL:
+    raise ImproperlyConfigured(
+        "DJANGO_DATABASE_URL must point to PostgreSQL outside local development."
+    )
+
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-    }
+    "default": (
+        database_config_from_url(
+            DJANGO_DATABASE_URL,
+            require_postgresql=REQUIRE_PRODUCTION_CONFIG,
+        )
+        if DJANGO_DATABASE_URL
+        else {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    )
 }
 
 
@@ -257,8 +315,8 @@ XHS_ALLOW_SERVER_SAVE = env_bool("XHS_ALLOW_SERVER_SAVE", DEBUG)
 XHS_ALLOW_ABSOLUTE_SAVE_PATH = env_bool("XHS_ALLOW_ABSOLUTE_SAVE_PATH", DEBUG)
 XHS_DEFAULT_SERVER_SAVE_DIR = os.environ.get("XHS_DEFAULT_SERVER_SAVE_DIR", "xhs")
 
-ULTRA_HD_PROVIDER_ENABLED = env_bool("ULTRA_HD_PROVIDER_ENABLED", False)
-ULTRA_HD_PUBLIC_ACCESS_ENABLED = env_bool("ULTRA_HD_PUBLIC_ACCESS_ENABLED", DEBUG)
+ULTRA_HD_PROVIDER_ENABLED = env_bool("ULTRA_HD_PROVIDER_ENABLED", True)
+ULTRA_HD_PUBLIC_ACCESS_ENABLED = env_bool("ULTRA_HD_PUBLIC_ACCESS_ENABLED", True)
 ULTRA_HD_RATE_LIMIT_PER_MINUTE = env_int(
     "ULTRA_HD_RATE_LIMIT_PER_MINUTE",
     0 if DEBUG else 2,
@@ -289,6 +347,10 @@ TIKHUB_GEOIP_DATABASE_PATH = os.environ.get(
 TIKHUB_DAILY_LIMIT = int(os.environ.get("TIKHUB_DAILY_LIMIT", "0") or 0)
 DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS = env_float("DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS", 4.0)
 DOUYIN_ULTRA_NATIVE_TIMEOUT_SECONDS = env_float("DOUYIN_ULTRA_NATIVE_TIMEOUT_SECONDS", 3.0)
+DOUYIN_ULTRA_KUKUTOOL_GRACE_SECONDS = env_float(
+    "DOUYIN_ULTRA_KUKUTOOL_GRACE_SECONDS",
+    1.0,
+)
 DOUYIN_METADATA_CACHE_TTL_SECONDS = env_int(
     "DOUYIN_METADATA_CACHE_TTL_SECONDS",
     1800,
@@ -297,12 +359,20 @@ PROVIDER_MANIFEST_MAX_AGE_SECONDS = env_int(
     "PROVIDER_MANIFEST_MAX_AGE_SECONDS",
     3600,
 )
+PROVIDER_STRICT_CAPABILITY_CHECKS = env_bool(
+    "PROVIDER_STRICT_CAPABILITY_CHECKS",
+    False,
+)
 DOUYIN_NATIVE_EXECUTOR_WORKERS = env_int("DOUYIN_NATIVE_EXECUTOR_WORKERS", 4)
 DOUYIN_NATIVE_MAX_PENDING_TASKS = env_int("DOUYIN_NATIVE_MAX_PENDING_TASKS", 8)
 DOUYIN_SHORT_LINK_TIMEOUT_SECONDS = env_float("DOUYIN_SHORT_LINK_TIMEOUT_SECONDS", 2.0)
 DOUYIN_SHORT_LINK_MAX_REDIRECTS = env_int("DOUYIN_SHORT_LINK_MAX_REDIRECTS", 4)
-KUKUTOOL_PROVIDER_ENABLED = env_bool("KUKUTOOL_PROVIDER_ENABLED", DEBUG)
-KUKUTOOL_NODE_BINARY = os.environ.get("KUKUTOOL_NODE_BINARY", "")
+KUKUTOOL_PROVIDER_ENABLED = env_bool("KUKUTOOL_PROVIDER_ENABLED", True)
+KUKUTOOL_NODE_BINARY = (
+    os.environ.get("KUKUTOOL_NODE_BINARY", "").strip()
+    or shutil.which("node")
+    or ""
+)
 KUKUTOOL_SIDECAR_BASE_URL = os.environ.get("KUKUTOOL_SIDECAR_BASE_URL", "").strip()
 KUKUTOOL_SIDECAR_TIMEOUT_SECONDS = env_float("KUKUTOOL_SIDECAR_TIMEOUT_SECONDS", 3.0)
 KUKUTOOL_SIDECAR_HEALTH_TIMEOUT_SECONDS = env_float(
@@ -353,9 +423,13 @@ KUKUTOOL_VALIDATED_CACHE_TTL_SECONDS = env_int(
     300,
 )
 KUKUTOOL_REFERENCE_WAIT_SECONDS = env_float("KUKUTOOL_REFERENCE_WAIT_SECONDS", 0.5)
-THIRD_PARTY_PROVIDER_ENABLED = env_bool("THIRD_PARTY_PROVIDER_ENABLED", False)
-THIRD_PARTY_PUBLIC_ACCESS_ENABLED = env_bool("THIRD_PARTY_PUBLIC_ACCESS_ENABLED", False)
-THIRD_PARTY_STAFF_ONLY = env_bool("THIRD_PARTY_STAFF_ONLY", True)
+THIRD_PARTY_PROVIDER_ENABLED = env_bool("THIRD_PARTY_PROVIDER_ENABLED", True)
+THIRD_PARTY_PUBLIC_ACCESS_ENABLED = env_bool("THIRD_PARTY_PUBLIC_ACCESS_ENABLED", True)
+THIRD_PARTY_STAFF_ONLY = env_bool("THIRD_PARTY_STAFF_ONLY", False)
+THIRD_PARTY_INTERNAL_STAFF_ALLOW_ADULT = env_bool(
+    "THIRD_PARTY_INTERNAL_STAFF_ALLOW_ADULT",
+    False,
+)
 THIRD_PARTY_RATE_LIMIT_PER_MINUTE = env_int(
     "THIRD_PARTY_RATE_LIMIT_PER_MINUTE",
     0 if DEBUG else 2,
@@ -429,8 +503,11 @@ THIRD_PARTY_KUKUTOOL_PAYLOAD_CACHE_TTL_SECONDS = env_int(
     "THIRD_PARTY_KUKUTOOL_PAYLOAD_CACHE_TTL_SECONDS",
     120,
 )
-YTDLP_PROVIDER_ENABLED = env_bool("YTDLP_PROVIDER_ENABLED", False)
-YTDLP_BINARY = os.environ.get("YTDLP_BINARY", "").strip()
+YTDLP_PROVIDER_ENABLED = env_bool("YTDLP_PROVIDER_ENABLED", True)
+YTDLP_BINARY = (
+    os.environ.get("YTDLP_BINARY", "").strip()
+    or python_module_command("yt_dlp")
+)
 YTDLP_TIMEOUT_SECONDS = env_float("YTDLP_TIMEOUT_SECONDS", 15.0)
 YTDLP_EXECUTOR_WORKERS = env_int("YTDLP_EXECUTOR_WORKERS", 1)
 YTDLP_MAX_PENDING_TASKS = env_int("YTDLP_MAX_PENDING_TASKS", 2)
@@ -448,13 +525,17 @@ YTDLP_MERGE_MAX_FILE_SIZE_BYTES = env_int(
     500 * 1024 * 1024,
 )
 YTDLP_MERGE_TIMEOUT_SECONDS = env_float("YTDLP_MERGE_TIMEOUT_SECONDS", 300.0)
-YTDLP_MERGE_FFMPEG_BINARY = os.environ.get("YTDLP_MERGE_FFMPEG_BINARY", "").strip()
-YOUTUBE_MERGE_PROVIDER_ENABLED = env_bool("YOUTUBE_MERGE_PROVIDER_ENABLED", False)
+YTDLP_MERGE_FFMPEG_BINARY = (
+    os.environ.get("YTDLP_MERGE_FFMPEG_BINARY", "").strip()
+    or shutil.which("ffmpeg")
+    or ""
+)
+YOUTUBE_MERGE_PROVIDER_ENABLED = env_bool("YOUTUBE_MERGE_PROVIDER_ENABLED", True)
 YOUTUBE_MERGE_PUBLIC_ACCESS_ENABLED = env_bool(
     "YOUTUBE_MERGE_PUBLIC_ACCESS_ENABLED",
-    False,
+    True,
 )
-YOUTUBE_MERGE_STAFF_ONLY = env_bool("YOUTUBE_MERGE_STAFF_ONLY", True)
+YOUTUBE_MERGE_STAFF_ONLY = env_bool("YOUTUBE_MERGE_STAFF_ONLY", False)
 YOUTUBE_MERGE_MAX_HEIGHT = env_int("YOUTUBE_MERGE_MAX_HEIGHT", 4320)
 YOUTUBE_MERGE_MAX_FILE_SIZE_BYTES = env_int(
     "YOUTUBE_MERGE_MAX_FILE_SIZE_BYTES",
@@ -464,9 +545,16 @@ YOUTUBE_MERGE_TIMEOUT_SECONDS = env_float("YOUTUBE_MERGE_TIMEOUT_SECONDS", 300.0
 YOUTUBE_MERGE_EXECUTOR_WORKERS = env_int("YOUTUBE_MERGE_EXECUTOR_WORKERS", 1)
 YOUTUBE_MERGE_MAX_PENDING_TASKS = env_int("YOUTUBE_MERGE_MAX_PENDING_TASKS", 1)
 YOUTUBE_MERGE_REQUIRE_FFMPEG = env_bool("YOUTUBE_MERGE_REQUIRE_FFMPEG", True)
-YOUTUBE_MERGE_FFMPEG_BINARY = os.environ.get("YOUTUBE_MERGE_FFMPEG_BINARY", "").strip()
-GALLERYDL_PROVIDER_ENABLED = env_bool("GALLERYDL_PROVIDER_ENABLED", False)
-GALLERYDL_BINARY = os.environ.get("GALLERYDL_BINARY", "").strip()
+YOUTUBE_MERGE_FFMPEG_BINARY = (
+    os.environ.get("YOUTUBE_MERGE_FFMPEG_BINARY", "").strip()
+    or shutil.which("ffmpeg")
+    or ""
+)
+GALLERYDL_PROVIDER_ENABLED = env_bool("GALLERYDL_PROVIDER_ENABLED", True)
+GALLERYDL_BINARY = (
+    os.environ.get("GALLERYDL_BINARY", "").strip()
+    or python_module_command("gallery_dl")
+)
 GALLERYDL_TIMEOUT_SECONDS = env_float("GALLERYDL_TIMEOUT_SECONDS", 15.0)
 GALLERYDL_EXECUTOR_WORKERS = env_int("GALLERYDL_EXECUTOR_WORKERS", 1)
 GALLERYDL_MAX_PENDING_TASKS = env_int("GALLERYDL_MAX_PENDING_TASKS", 2)
@@ -539,3 +627,30 @@ CSRF_COOKIE_SECURE = env_bool("DJANGO_CSRF_COOKIE_SECURE", not DEBUG)
 SECURE_HSTS_SECONDS = env_int("DJANGO_SECURE_HSTS_SECONDS", 0)
 SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool("DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS", False)
 SECURE_HSTS_PRELOAD = env_bool("DJANGO_SECURE_HSTS_PRELOAD", False)
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "request_context": {
+            "()": "djangoProject.logging.RequestContextFormatter",
+            "format": (
+                "%(levelname)s %(asctime)s %(name)s "
+                "request_id=%(request_id)s event=%(event)s provider=%(provider)s "
+                "status=%(status)s duration_ms=%(duration_ms)s "
+                "source_platform=%(source_platform)s error_type=%(error_type)s "
+                "message=%(message)s"
+            ),
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "request_context",
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": os.environ.get("DJANGO_LOG_LEVEL", "INFO"),
+    },
+}
