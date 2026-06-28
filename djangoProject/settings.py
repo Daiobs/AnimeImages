@@ -178,6 +178,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "provider_console.apps.ProviderConsoleConfig",
     "search_app.apps.SearchAppConfig",
     "xhs_download.apps.XhsDownloadConfig",
     "submissions.apps.SubmissionsConfig",

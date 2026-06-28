@@ -45,8 +45,14 @@ class ProviderRuntimeSettingAdmin(admin.ModelAdmin):
     def changelist_view(self, request, extra_context=None):
         return redirect("provider_settings")
 
+    def change_view(self, request, object_id, form_url="", extra_context=None):
+        return redirect("provider_settings")
+
     def has_change_permission(self, request, obj=None):
-        return False
+        return super().has_change_permission(request, obj=obj)
+
+    def get_model_perms(self, request):
+        return {}
 
 
 class ReadOnlyLogAdmin(admin.ModelAdmin):

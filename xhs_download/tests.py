@@ -165,6 +165,7 @@ def make_kukutool_download_item(url, aweme_id="7647533902413173321"):
         provider_resource_id=aweme_id,
         provider_cache_key=cache_key,
         url=url,
+        media_type="video",
     )
     return item
 
@@ -560,6 +561,53 @@ class XhsUtilityTests(SimpleTestCase):
             )
 
         self.assertEqual(mock_get.call_count, 1)
+        redirect_response.close.assert_called_once()
+
+    @patch(
+        "xhs_download.services.common.socket.getaddrinfo",
+        return_value=[(None, None, None, "", ("93.184.216.34", 443))],
+    )
+    @patch("xhs_download.services.downloads.requests.get")
+    def test_signed_douyin_kukutool_download_allows_byte_cdn_url(self, mock_get, _mock_dns):
+        initial_url = "https://v6-default.365yg.com/path/video/tos/cn/source.mp4"
+        provider_item = make_kukutool_download_item(initial_url)
+        response = Mock(status_code=200, headers={}, url=initial_url)
+        mock_get.return_value = response
+
+        result = request_public_provider_get_with_retry(
+            initial_url,
+            retries=1,
+            provider_item=provider_item,
+        )
+
+        self.assertIs(result, response)
+
+    @patch(
+        "xhs_download.services.common.socket.getaddrinfo",
+        return_value=[(None, None, None, "", ("93.184.216.34", 443))],
+    )
+    @patch("xhs_download.services.downloads.requests.get")
+    def test_signed_douyin_kukutool_download_rejects_non_byte_cdn_redirect(
+        self,
+        mock_get,
+        _mock_dns,
+    ):
+        initial_url = "https://v6-default.365yg.com/path/video/tos/cn/source.mp4"
+        provider_item = make_kukutool_download_item(initial_url)
+        redirect_response = Mock(
+            status_code=302,
+            headers={"Location": "https://example.com/source.mp4"},
+        )
+        redirect_response.close = Mock()
+        mock_get.return_value = redirect_response
+
+        with self.assertRaisesRegex(XhsDownloadError, "Provider URL"):
+            request_public_provider_get_with_retry(
+                initial_url,
+                retries=1,
+                provider_item=provider_item,
+            )
+
         redirect_response.close.assert_called_once()
 
     @patch(
@@ -3730,6 +3778,18 @@ class XhsDownloadViewTests(TestCase):
             })
         )
 
+    def test_provider_manifest_allows_signed_douyin_kukutool_video(self):
+        media_url = "https://v26-default.365yg.com/path/video/tos/cn/source.mp4"
+        item = make_kukutool_download_item(media_url)
+
+        self.assertTrue(provider_manifest_allows_public_download(item))
+        self.assertFalse(
+            provider_manifest_allows_public_download({
+                **item,
+                "url": "https://evil.example.com/source.mp4",
+            })
+        )
+
     def test_provider_preview_query_marks_image_asset_type(self):
         media_url = "https://i.imgur.com/demo.jpg"
         asset = MediaAsset(
@@ -6762,7 +6822,8 @@ class AdminObservabilityMvpTests(TestCase):
         self.assertContains(client.get("/admin/download-logs/"), "下载日志")
         self.assertContains(client.get("/admin/provider-audit-logs/"), "Provider 审计")
 
-    def test_observability_admin_models_are_read_only_for_staff(self):
+    def test_observability_admin_models_are_read_only_for_staff_and_runtime_is_changeable(self):
+        from django.contrib import admin
         from django.contrib.admin.sites import AdminSite
 
         from .admin import ProviderAdminAuditLogAdmin, ProviderRuntimeSettingAdmin
@@ -6779,6 +6840,15 @@ class AdminObservabilityMvpTests(TestCase):
         self.assertFalse(audit_admin.has_delete_permission(request))
         self.assertTrue(audit_admin.has_delete_permission(super_request))
         self.assertFalse(runtime_admin.has_change_permission(request))
+        self.assertTrue(runtime_admin.has_change_permission(super_request))
+
+        app_list = admin.site.get_app_list(super_request)
+        models_by_app = {
+            app["app_label"]: {model["object_name"] for model in app["models"]}
+            for app in app_list
+        }
+        self.assertIn("ProviderRuntimeSettingProxy", models_by_app["provider_console"])
+        self.assertNotIn("ProviderRuntimeSetting", models_by_app.get("xhs_download", set()))
 
     def test_prune_observability_logs_dry_run_and_delete_keeps_audit_logs(self):
         parse_log = ParseRequestLog.objects.create(request_id="old-parse")
