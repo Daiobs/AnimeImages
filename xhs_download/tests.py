@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 from zipfile import ZipFile
 
 import requests
+from django.contrib.auth.models import Permission
 from django.core.cache import cache
 from django.core.checks import Error as CheckError, Warning as CheckWarning, run_checks
 from django.core.management import call_command
@@ -55,6 +56,7 @@ from .services.provider_settings import (
     normalize_provider_order,
 )
 from .services.provider_manifest import build_provider_manifest_token
+from .services.observability import record_download_request_log, record_provider_admin_audit_log
 from .services.provider_access import (
     PROVIDER_DOUYIN_ULTRA,
     PROVIDER_THIRD_PARTY,
@@ -75,6 +77,7 @@ from .views import (
     build_provider_preview_query,
     build_search_results_context,
     limit_error_response,
+    log_parse_request_event,
     third_party_provider_is_available,
     ultra_hd_is_available,
     youtube_merge_mode_is_available,
@@ -6194,6 +6197,9 @@ class ProviderSettingsAdminViewTests(TestCase):
         self.assertContains(response, "抖音超高清")
         self.assertContains(response, "YouTube 高清合并")
         self.assertContains(response, "通用第三方 Provider")
+        self.assertContains(response, "建议先使用 staff 完成 smoke test")
+        self.assertContains(response, "第三方 allowlist 为空")
+        self.assertContains(response, "public_gray")
 
     def test_staff_can_update_provider_access_modes(self):
         response = self.client.post(
@@ -6573,6 +6579,16 @@ class AdminObservabilityMvpTests(TestCase):
             password="test-password",
         )
 
+    def grant_xhs_view_permission(self, user, codename):
+        permission = Permission.objects.get(
+            content_type__app_label="xhs_download",
+            codename=codename,
+        )
+        user.user_permissions.add(permission)
+        for cache_name in ("_perm_cache", "_user_perm_cache", "_group_perm_cache"):
+            if hasattr(user, cache_name):
+                delattr(user, cache_name)
+
     def test_request_id_middleware_generates_and_reuses_request_id(self):
         generated = Client().get("/")
         reused = Client().get("/", HTTP_X_REQUEST_ID="nginx-request-123")
@@ -6618,6 +6634,86 @@ class AdminObservabilityMvpTests(TestCase):
         self.assertEqual(log.status, ObservabilityStatus.FAILED)
         self.assertEqual(log.error_type, "XhsParseError")
         self.assertIn("bad link", log.error_message_short)
+
+    def test_observability_error_text_is_redacted_in_database_and_logger_extra(self):
+        request = RequestFactory().post("/xhs/results/")
+        request.user = self.staff
+        request.request_id = "rid-redact"
+        error = XhsParseError(
+            "下载失败 https://cdn.example.com/a.mp4?token=secret&signature=abc "
+            "provider_manifest_token=very-secret"
+        )
+
+        with patch("xhs_download.views.logger.info") as mock_info:
+            log_parse_request_event(
+                request,
+                "media_parse_failed",
+                query="https://www.xiaohongshu.com/explore/demo",
+                platform_key="xhs",
+                requested_ultra_hd=False,
+                prefer_ultra_hd=False,
+                requested_youtube_merge=False,
+                prefer_youtube_merge=False,
+                duration_ms=12,
+                error=error,
+                error_code="PROVIDER_TIMEOUT",
+            )
+
+        log = ParseRequestLog.objects.get(request_id="rid-redact")
+        self.assertIn("[url-redacted]", log.error_message_short)
+        self.assertNotIn("cdn.example.com/a.mp4", log.error_message_short)
+        self.assertNotIn("very-secret", log.error_message_short)
+        self.assertNotIn("token=secret", log.error_message_short)
+        logged_error = mock_info.call_args.kwargs["extra"]["error"]
+        self.assertIn("[url-redacted]", logged_error)
+        self.assertNotIn("cdn.example.com/a.mp4", logged_error)
+        self.assertNotIn("very-secret", logged_error)
+
+    def test_observability_keeps_plain_chinese_error_text(self):
+        request = RequestFactory().post("/media/download-images/")
+        request.user = self.staff
+        request.request_id = "rid-plain-error"
+
+        record_download_request_log(
+            request,
+            download_type="zip",
+            status=ObservabilityStatus.FAILED,
+            error_message_short="第三方解析超时，请稍后再试",
+        )
+
+        log = DownloadRequestLog.objects.get(request_id="rid-plain-error")
+        self.assertEqual(log.error_message_short, "第三方解析超时，请稍后再试")
+
+    def test_provider_admin_audit_snapshot_redacts_sensitive_text(self):
+        request = RequestFactory().post("/admin/provider-settings/")
+        request.user = self.superuser
+        request.request_id = "rid-audit-redact"
+
+        record_provider_admin_audit_log(
+            request,
+            action="provider_runtime_update",
+            before_snapshot={
+                "third_party_allowed_public_hosts": (
+                    "https://cdn.example.com/a.mp4?auth_key=secret"
+                ),
+            },
+            after_snapshot={
+                "third_party_allowed_public_hosts": (
+                    "provider_manifest_token=very-secret"
+                ),
+            },
+        )
+
+        audit = ProviderAdminAuditLog.objects.get(request_id="rid-audit-redact")
+        self.assertEqual(audit.changed_fields, ["third_party_allowed_public_hosts"])
+        self.assertEqual(
+            audit.before_snapshot["third_party_allowed_public_hosts"],
+            "[url-redacted]",
+        )
+        self.assertEqual(
+            audit.after_snapshot["third_party_allowed_public_hosts"],
+            "provider_manifest_token=[redacted]",
+        )
 
     @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
     def test_third_party_allowlist_miss_writes_blocked_log(self):
@@ -6802,24 +6898,40 @@ class AdminObservabilityMvpTests(TestCase):
             download_type="zip",
             actual_bytes=1024,
         )
-        client = Client()
-        client.force_login(self.staff)
+        staff_client = Client()
+        staff_client.force_login(self.staff)
+        super_client = Client()
+        super_client.force_login(self.superuser)
 
         anonymous = Client().get("/admin/ops-dashboard/")
-        response = client.get("/admin/ops-dashboard/")
+        staff_response = staff_client.get("/admin/ops-dashboard/")
+        super_response = super_client.get("/admin/ops-dashboard/")
+        self.grant_xhs_view_permission(self.staff, "view_parserequestlog")
+        permitted_response = staff_client.get("/admin/ops-dashboard/")
 
         self.assertEqual(anonymous.status_code, 404)
-        self.assertContains(response, "运营看板")
-        self.assertContains(response, "今日解析次数")
-        self.assertContains(response, "PROVIDER_TIMEOUT")
+        self.assertEqual(staff_response.status_code, 404)
+        self.assertContains(super_response, "运营看板")
+        self.assertContains(permitted_response, "今日解析次数")
+        self.assertContains(permitted_response, "PROVIDER_TIMEOUT")
 
-    def test_observability_log_pages_are_staff_only(self):
+    def test_observability_log_pages_require_specific_view_permissions(self):
         client = Client()
         client.force_login(self.staff)
+        super_client = Client()
+        super_client.force_login(self.superuser)
 
         self.assertEqual(Client().get("/admin/parse-logs/").status_code, 404)
+        self.assertEqual(client.get("/admin/parse-logs/").status_code, 404)
+        self.assertEqual(client.get("/admin/download-logs/").status_code, 404)
+        self.assertEqual(client.get("/admin/provider-audit-logs/").status_code, 404)
+        self.assertContains(super_client.get("/admin/parse-logs/"), "解析日志")
+
+        self.grant_xhs_view_permission(self.staff, "view_parserequestlog")
         self.assertContains(client.get("/admin/parse-logs/"), "解析日志")
+        self.grant_xhs_view_permission(self.staff, "view_downloadrequestlog")
         self.assertContains(client.get("/admin/download-logs/"), "下载日志")
+        self.grant_xhs_view_permission(self.staff, "view_provideradminauditlog")
         self.assertContains(client.get("/admin/provider-audit-logs/"), "Provider 审计")
 
     def test_observability_admin_models_are_read_only_for_staff_and_runtime_is_changeable(self):

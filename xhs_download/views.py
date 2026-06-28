@@ -73,6 +73,7 @@ from .services.observability import (
     record_download_request_log,
     record_parse_request_log,
     record_provider_admin_audit_log,
+    sanitize_observability_text,
 )
 from .services.youtube_merge import get_youtube_merge_health
 from .services.rate_limits import (
@@ -629,7 +630,24 @@ def provider_control_view(request):
 
 
 def admin_ops_required(request):
-    return provider_settings_admin_required(request)
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_parserequestlog",
+        "xhs_download.view_downloadrequestlog",
+        "xhs_download.view_provideradminauditlog",
+    )
+
+
+def observability_access_allowed(request, *permissions):
+    user = getattr(request, "user", None)
+    if not (
+        getattr(user, "is_active", False)
+        and getattr(user, "is_staff", False)
+    ):
+        return False
+    if getattr(user, "is_superuser", False):
+        return True
+    return any(user.has_perm(permission) for permission in permissions)
 
 
 def top_values(queryset, field_name, limit=10):
@@ -747,7 +765,7 @@ def filtered_log_queryset(model, request, filter_fields):
 
 @require_GET
 def parse_logs_view(request):
-    if not admin_ops_required(request):
+    if not observability_access_allowed(request, "xhs_download.view_parserequestlog"):
         return JsonResponse({"detail": "Not found."}, status=404)
     filter_fields = ("status", "source_platform", "selected_provider", "is_staff", "error_type")
     queryset = filtered_log_queryset(ParseRequestLog, request, filter_fields)[:200]
@@ -794,7 +812,7 @@ def parse_logs_view(request):
 
 @require_GET
 def download_logs_view(request):
-    if not admin_ops_required(request):
+    if not observability_access_allowed(request, "xhs_download.view_downloadrequestlog"):
         return JsonResponse({"detail": "Not found."}, status=404)
     filter_fields = ("status", "download_type", "provider", "source_platform", "error_type")
     queryset = filtered_log_queryset(DownloadRequestLog, request, filter_fields)[:200]
@@ -839,7 +857,7 @@ def download_logs_view(request):
 
 @require_GET
 def provider_audit_logs_view(request):
-    if not admin_ops_required(request):
+    if not observability_access_allowed(request, "xhs_download.view_provideradminauditlog"):
         return JsonResponse({"detail": "Not found."}, status=404)
     filter_fields = ("action", "actor_username")
     queryset = filtered_log_queryset(ProviderAdminAuditLog, request, filter_fields)[:200]
@@ -976,7 +994,11 @@ def log_download_request_event(
         duration_ms=duration_ms,
         error_code=error_code,
         error_type=type(error).__name__ if error is not None else "",
-        error_message_short=str(error) if error is not None else "",
+        error_message_short=(
+            sanitize_observability_text(error)
+            if error is not None
+            else ""
+        ),
     )
 
 
@@ -1160,10 +1182,10 @@ def log_parse_request_event(
     }
     if error is not None:
         extra["error_type"] = type(error).__name__
-        extra["error"] = str(error)[:300]
+        extra["error"] = sanitize_observability_text(error)
     elif error_message_short:
         extra["error_type"] = error_code
-        extra["error"] = error_message_short[:300]
+        extra["error"] = sanitize_observability_text(error_message_short)
     record_parse_request_log(
         request,
         query=query,
@@ -1182,7 +1204,9 @@ def log_parse_request_event(
         status=status,
         error_code=error_code,
         error_type=type(error).__name__ if error is not None else "",
-        error_message_short=error_message_short or (str(error) if error is not None else ""),
+        error_message_short=sanitize_observability_text(
+            error_message_short or (str(error) if error is not None else "")
+        ),
         duration_ms=duration_ms,
         selected_provider_duration_ms=metadata.get("selected_provider_duration_ms", 0),
         provider_total_duration_ms=metadata.get("provider_total_duration_ms", 0),

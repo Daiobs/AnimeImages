@@ -108,14 +108,40 @@ Do not commit `.env.production`. Do not paste real secrets into issue comments, 
 
 ## 5. Admin Observability
 
-- [ ] `/admin/ops-dashboard/` can be opened by staff.
-- [ ] A successful parse writes `/admin/parse-logs/`.
-- [ ] A successful download writes `/admin/download-logs/`.
-- [ ] Provider setting changes write `/admin/provider-audit-logs/`.
-- [ ] Nginx forwards request IDs:
+- [ ] Database migrations completed:
+
+```bash
+/srv/animeimages/.venv/bin/python manage.py migrate
+```
+
+- [ ] `/health/ready/` returns 200.
+- [ ] `/admin/ops-dashboard/` can be opened by a superuser or staff with observability view permissions.
+- [ ] `/admin/parse-logs/` can be opened by a user with `xhs_download.view_parserequestlog`.
+- [ ] A normal parse request writes a new `ParseRequestLog`.
+- [ ] A normal download request writes a new `DownloadRequestLog`.
+- [ ] Provider setting changes write a new `ProviderAdminAuditLog`.
+- [ ] Browser/network response headers include `X-Request-ID`.
+- [ ] `journalctl` can find the same request id:
+
+```bash
+journalctl -u animeimages --since "1 hour ago" | grep '<request_id>'
+```
+
+- [ ] Nginx forwards request IDs and access logs include them:
 
 ```nginx
 proxy_set_header X-Request-ID $request_id;
+
+log_format animeimages '$remote_addr - $request_id [$time_local] '
+                       '"$request" $status $body_bytes_sent '
+                       '"$http_referer" "$http_user_agent"';
+access_log /var/log/nginx/animeimages.access.log animeimages;
+```
+
+- [ ] `prune_observability_logs --dry-run` runs successfully:
+
+```bash
+/srv/animeimages/.venv/bin/python manage.py prune_observability_logs --days 30 --dry-run
 ```
 
 - [ ] Old parse/download logs are pruned by cron:

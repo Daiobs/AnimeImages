@@ -12,20 +12,32 @@ X-Request-ID: <request id>
 
 如果 Nginx 已传入合法 `X-Request-ID`，Django 会复用；否则生成 UUID。业务日志、数据库事件和 journalctl 日志都带有 request_id，方便串联一次请求。
 
-建议 Nginx 增加：
+建议 Nginx 在 `server` 或对应 `location` 中转发 request id：
 
 ```nginx
-proxy_set_header X-Request-ID $request_id;
+location / {
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Request-ID $request_id;
+    proxy_pass http://127.0.0.1:8000;
+}
+```
 
+建议 access log 也包含同一个 request id：
+
+```nginx
 log_format animeimages '$remote_addr - $request_id [$time_local] '
                        '"$request" $status $body_bytes_sent '
                        '"$http_referer" "$http_user_agent"';
 access_log /var/log/nginx/animeimages.access.log animeimages;
 ```
 
+Django 会读取 `X-Request-ID`，并在响应头再次返回 `X-Request-ID`。用户反馈问题时，可先让用户提供响应头里的 request id，再用它搜索后台解析/下载日志、journalctl 和 Nginx access log。
+
 ## 后台入口
 
-需要 staff 用户登录后台后访问：
+需要具备对应 view 权限的 staff 用户，或 superuser 登录后台后访问：
 
 ```text
 /admin/ops-dashboard/
@@ -34,6 +46,12 @@ access_log /var/log/nginx/animeimages.access.log animeimages;
 /admin/provider-audit-logs/
 /admin/provider-settings/
 ```
+
+`/admin/ops-dashboard/` 需要 superuser 或任意一个 observability view 权限。单独日志页面需要对应权限：
+
+- `xhs_download.view_parserequestlog`
+- `xhs_download.view_downloadrequestlog`
+- `xhs_download.view_provideradminauditlog`
 
 运营看板显示今日解析、下载、成功率、失败原因 Top 10、平台 Top 10、Provider Top 10 和最近 Provider 审计记录。
 
@@ -46,6 +64,8 @@ access_log /var/log/nginx/animeimages.access.log animeimages;
 `ProviderAdminAuditLog` 记录 Provider 设置修改的 actor、action、changed_fields、before_snapshot 和 after_snapshot。
 
 日志写入是 best effort。写入失败只会进入 `logger.exception`，不会中断正常解析或下载。
+
+错误短文本会先脱敏再落库或写入结构化日志。完整 URL 会替换成 `[url-redacted]`，`provider_manifest_token` 和常见签名参数会替换成 `[redacted]`，并截断到 300 字。
 
 ## 不保存的敏感信息
 
@@ -74,11 +94,15 @@ IP、User-Agent 和限流 identity 会使用 `sha256 + SECRET_KEY salt` 后保�
 journalctl -u animeimages --since "1 hour ago" | grep '<request_id>'
 ```
 
-5. 如需串联 Nginx，搜索 access log 中同一个 request_id。
+5. 如需串联 Nginx，搜索 access log 中同一个 request_id：
+
+```bash
+grep '<request_id>' /var/log/nginx/animeimages.access.log
+```
 
 ## 清理旧日志
 
-解析和下载日志默认建议保留 30 天：
+解析和下载日志默认建议保留 30 天。先 dry-run 看将删除的数量：
 
 ```bash
 python manage.py prune_observability_logs --days 30 --dry-run

@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import re
 from urllib.parse import urlparse
 
 from django.conf import settings
@@ -16,6 +17,15 @@ from .rate_limits import get_client_identity, get_client_ip
 
 logger = logging.getLogger(__name__)
 MAX_ERROR_MESSAGE_LENGTH = 300
+URL_PATTERN = re.compile(r"https?://[^\s<>'\"\]\)]+", re.IGNORECASE)
+PROVIDER_MANIFEST_TOKEN_PATTERN = re.compile(
+    r"(?i)(provider_manifest_token=)[^&\s]+"
+)
+SENSITIVE_QUERY_VALUE_PATTERN = re.compile(
+    r"(?i)(^|[?&;\s])"
+    r"((?:token|sign|signature|auth_key|x-signature|x-bogus|msToken|verifyFp)=)"
+    r"[^&\s;]+"
+)
 PROVIDER_RUNTIME_AUDIT_FIELDS = (
     "douyin_ultra_mode",
     "youtube_merge_mode",
@@ -45,6 +55,35 @@ def safe_int(value, default=0):
 
 def short_text(value, limit=MAX_ERROR_MESSAGE_LENGTH):
     return str(value or "").strip()[:limit]
+
+
+def sanitize_observability_text(value, limit=MAX_ERROR_MESSAGE_LENGTH):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = URL_PATTERN.sub("[url-redacted]", text)
+    text = PROVIDER_MANIFEST_TOKEN_PATTERN.sub(
+        r"\1[redacted]",
+        text,
+    )
+    text = SENSITIVE_QUERY_VALUE_PATTERN.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}[redacted]",
+        text,
+    )
+    return text[: max(0, int(limit or 0))]
+
+
+def sanitize_observability_value(value, limit=MAX_ERROR_MESSAGE_LENGTH):
+    if isinstance(value, str):
+        return sanitize_observability_text(value, limit=limit)
+    if isinstance(value, dict):
+        return {
+            str(key): sanitize_observability_value(item, limit=limit)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [sanitize_observability_value(item, limit=limit) for item in value]
+    return value
 
 
 def salted_hash(value):
@@ -131,7 +170,9 @@ def record_parse_request_log(request, **fields):
             "status": fields.get("status") or ObservabilityStatus.SUCCESS,
             "error_code": short_text(fields.get("error_code"), 80),
             "error_type": short_text(fields.get("error_type"), 120),
-            "error_message_short": short_text(fields.get("error_message_short")),
+            "error_message_short": sanitize_observability_text(
+                fields.get("error_message_short")
+            ),
             "duration_ms": safe_int(fields.get("duration_ms")),
             "selected_provider_duration_ms": safe_int(fields.get("selected_provider_duration_ms")),
             "provider_total_duration_ms": safe_int(fields.get("provider_total_duration_ms")),
@@ -168,7 +209,9 @@ def record_download_request_log(request, **fields):
             "source_platform": short_text(fields.get("source_platform") or summary["source_platform"], 64),
             "error_code": short_text(fields.get("error_code"), 80),
             "error_type": short_text(fields.get("error_type"), 120),
-            "error_message_short": short_text(fields.get("error_message_short")),
+            "error_message_short": sanitize_observability_text(
+                fields.get("error_message_short")
+            ),
             "duration_ms": safe_int(fields.get("duration_ms")),
         }
         return DownloadRequestLog.objects.create(**payload)
@@ -178,7 +221,10 @@ def record_download_request_log(request, **fields):
 
 
 def provider_runtime_snapshot(setting):
-    return {field: getattr(setting, field) for field in PROVIDER_RUNTIME_AUDIT_FIELDS}
+    return {
+        field: sanitize_observability_value(getattr(setting, field))
+        for field in PROVIDER_RUNTIME_AUDIT_FIELDS
+    }
 
 
 def changed_fields_between(before, after):
@@ -189,6 +235,8 @@ def record_provider_admin_audit_log(request, *, action, before_snapshot, after_s
     try:
         user = getattr(request, "user", None)
         changed_fields = changed_fields_between(before_snapshot, after_snapshot)
+        before_snapshot = sanitize_observability_value(before_snapshot)
+        after_snapshot = sanitize_observability_value(after_snapshot)
         privacy = request_privacy_fields(request)
         ProviderAdminAuditLog.objects.create(
             request_id=privacy["request_id"],
