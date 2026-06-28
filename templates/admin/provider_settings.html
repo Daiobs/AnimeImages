@@ -163,6 +163,22 @@
         font-weight: 900;
     }
 
+    .provider-public-warning {
+        margin-top: 12px;
+        padding: 10px 12px;
+        border: 1px solid rgba(249, 171, 0, .28);
+        border-radius: 8px;
+        background: var(--provider-warning-bg);
+        color: var(--provider-warning);
+        font-size: 13px;
+        font-weight: 700;
+        line-height: 1.55;
+    }
+
+    .provider-public-warning[hidden] {
+        display: none;
+    }
+
     .provider-summary {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -516,6 +532,18 @@
                 </p>
             </div>
             <div class="provider-hero-actions">
+                <a class="provider-link-btn" href="{% url 'ops_dashboard' %}">
+                    运营看板
+                </a>
+                <a class="provider-link-btn" href="{% url 'parse_logs' %}">
+                    解析日志
+                </a>
+                <a class="provider-link-btn" href="{% url 'download_logs' %}">
+                    下载日志
+                </a>
+                <a class="provider-link-btn" href="{% url 'provider_audit_logs' %}">
+                    Provider 审计
+                </a>
                 <a class="provider-link-btn" href="{% url 'provider_health' %}" target="_blank" rel="noopener">
                     JSON 健康状态
                 </a>
@@ -564,7 +592,7 @@
 
             <div class="provider-card-grid">
                 {% for row in provider_rows %}
-                    <article class="provider-card">
+                    <article class="provider-card" data-provider-id="{{ row.id }}">
                         <div class="provider-card-header">
                             <div class="provider-name-row">
                                 <h2 class="provider-name">{{ row.name }}</h2>
@@ -627,6 +655,20 @@
                                         {{ label }}
                                     </label>
                                 {% endfor %}
+                            </div>
+                            <div class="provider-public-warning" data-public-warning hidden>
+                                {% if row.id == "douyin_ultra" %}
+                                    KuKuTool 依赖第三方上游，public / public_gray 风险较高，建议先使用 staff 完成 smoke test。
+                                {% elif row.id == "third_party" %}
+                                    <span data-third-party-public-warning>
+                                        通用第三方 public / public_gray 会面向访客开放；请先确认平台/Host 白名单、输出大小限制和失败缓存。
+                                    </span>
+                                    <span data-third-party-empty-warning hidden>
+                                        第三方 allowlist 为空，选择 public / public_gray 后访客仍不会开放。
+                                    </span>
+                                {% else %}
+                                    public / public_gray 会面向访客开放，建议先使用 staff 完成 smoke test。
+                                {% endif %}
                             </div>
                             <div class="provider-field-grid">
                                 <label class="provider-field">
@@ -736,4 +778,52 @@
         </form>
     </div>
 </div>
+<script>
+    (function () {
+        const publicModes = new Set(["public", "public_gray"]);
+        const form = document.querySelector(".provider-form");
+        if (!form) {
+            return;
+        }
+
+        function allowlistHasValue() {
+            const platforms = form.querySelector('[name="third_party_allowed_public_platforms"]');
+            const hosts = form.querySelector('[name="third_party_allowed_public_hosts"]');
+            return Boolean(
+                (platforms && platforms.value.trim()) ||
+                (hosts && hosts.value.trim())
+            );
+        }
+
+        function updateProviderWarning(card) {
+            const warning = card.querySelector("[data-public-warning]");
+            const checked = card.querySelector('input[type="radio"]:checked');
+            if (!warning || !checked) {
+                return;
+            }
+            const isPublicMode = publicModes.has(checked.value);
+            warning.hidden = !isPublicMode;
+
+            if (card.dataset.providerId === "third_party") {
+                const publicWarning = warning.querySelector("[data-third-party-public-warning]");
+                const emptyWarning = warning.querySelector("[data-third-party-empty-warning]");
+                const emptyAllowlist = !allowlistHasValue();
+                if (publicWarning) {
+                    publicWarning.hidden = emptyAllowlist;
+                }
+                if (emptyWarning) {
+                    emptyWarning.hidden = !emptyAllowlist;
+                }
+            }
+        }
+
+        function updateAllWarnings() {
+            form.querySelectorAll("[data-provider-id]").forEach(updateProviderWarning);
+        }
+
+        form.addEventListener("change", updateAllWarnings);
+        form.addEventListener("input", updateAllWarnings);
+        updateAllWarnings();
+    })();
+</script>
 {% endblock %}

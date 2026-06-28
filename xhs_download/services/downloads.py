@@ -33,6 +33,7 @@ from .platforms.kukutool_generic import (
     build_failure_cache_key as build_generic_kukutool_failure_cache_key,
     build_payload_cache_key as build_generic_kukutool_payload_cache_key,
 )
+from .platforms.douyin_kukutool import is_byte_cdn_url
 from .provider_recovery import (
     get_kukutool_manifest_identity,
     iter_kukutool_download_recovery_urls,
@@ -285,6 +286,7 @@ def provider_manifest_allows_public_download(item):
     if not isinstance(item, dict):
         return False
     if item.get("provider") not in {
+        "kukutool",
         "kukutool_generic",
         "gallery_dl_generic",
         "yt_dlp_generic",
@@ -292,6 +294,8 @@ def provider_manifest_allows_public_download(item):
         YTDLP_MERGE_PROVIDER_ID,
     }:
         return False
+    if item.get("provider") == "kukutool":
+        return bool(get_kukutool_manifest_identity(item))
     if item.get("provider") == YOUTUBE_MERGE_PROVIDER_ID:
         return provider_manifest_allows_youtube_merge(item)
     if item.get("provider") == YTDLP_MERGE_PROVIDER_ID:
@@ -394,6 +398,8 @@ def validate_provider_signed_download_url(provider_item, url, message):
         allowed = youtube_merge_manifest_item_is_allowed(signed_url_item)
     elif provider == YTDLP_MERGE_PROVIDER_ID:
         allowed = ytdlp_merge_manifest_item_is_allowed(signed_url_item)
+    elif provider == "kukutool":
+        allowed = bool(get_kukutool_manifest_identity(provider_item)) and is_byte_cdn_url(url)
     else:
         allowed = third_party_manifest_item_is_allowed(signed_url_item)
     if not allowed:

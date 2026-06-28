@@ -54,6 +54,8 @@ After deployment, routine rollout should happen in `/admin/provider-settings/` i
 4. Move to `public_gray` and raise that Provider's rollout percentage gradually.
 5. Move to `public` only after latency, logs, and download recovery look stable.
 
+Provider runtime changes are written to `ProviderAdminAuditLog` and can be reviewed at `/admin/provider-audit-logs/`. Daily rollout should be checked together with `/admin/ops-dashboard/`, parse logs, and download logs; see `docs/admin-observability.md`.
+
 Emergency shutdown should also use admin `disabled` first. Change `.env` only when the server must completely remove the capability or when dependencies are missing.
 
 ## Platform Gate

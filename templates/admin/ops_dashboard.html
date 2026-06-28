@@ -1,0 +1,198 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<style>
+    #content { padding: 0; }
+    .ops-dashboard {
+        margin: -20px -20px 0;
+        padding: 34px clamp(18px, 4vw, 54px) 56px;
+        min-height: calc(100vh - 96px);
+        background: linear-gradient(180deg, #fff 0%, #f8fbff 58%, #fff 100%);
+        color: #111827;
+    }
+    .ops-shell { max-width: 1180px; margin: 0 auto; }
+    .ops-hero {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: flex-end;
+        margin-bottom: 22px;
+    }
+    .ops-eyebrow {
+        display: inline-flex;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: #f7f1ff;
+        color: #855be8;
+        font-size: 12px;
+        font-weight: 800;
+    }
+    .ops-title {
+        margin: 12px 0 0;
+        font-size: clamp(30px, 4vw, 48px);
+        font-weight: 900;
+        letter-spacing: 0;
+        background: linear-gradient(135deg, #855be8, #00b6d8);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+    }
+    .ops-subtitle { margin: 10px 0 0; color: #6b7280; line-height: 1.7; }
+    .ops-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    .ops-link {
+        display: inline-flex;
+        min-height: 40px;
+        align-items: center;
+        padding: 0 14px;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        color: #111827;
+        text-decoration: none;
+        font-weight: 800;
+    }
+    .ops-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 18px;
+    }
+    .ops-card,
+    .ops-panel {
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: 0 4px 12px rgba(17, 24, 39, .05);
+    }
+    .ops-card { padding: 18px; min-height: 112px; }
+    .ops-card strong { display: block; color: #6b7280; font-size: 13px; }
+    .ops-card span { display: block; margin-top: 10px; font-size: 24px; font-weight: 900; }
+    .ops-panels {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+    }
+    .ops-panel { padding: 18px; overflow: hidden; }
+    .ops-panel h2 { margin: 0 0 12px; font-size: 18px; font-weight: 900; }
+    .ops-table { width: 100%; border-collapse: collapse; }
+    .ops-table th,
+    .ops-table td {
+        padding: 9px 8px;
+        border-top: 1px solid #edf0f3;
+        text-align: left;
+        font-size: 13px;
+        word-break: break-word;
+    }
+    .ops-table th { color: #6b7280; font-weight: 800; }
+    @media (max-width: 980px) {
+        .ops-grid,
+        .ops-panels { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 640px) {
+        .ops-grid,
+        .ops-panels { grid-template-columns: 1fr; }
+    }
+</style>
+<div class="ops-dashboard">
+    <div class="ops-shell">
+        <section class="ops-hero">
+            <div>
+                <span class="ops-eyebrow">Admin Observability</span>
+                <h1 class="ops-title">运营看板</h1>
+                <p class="ops-subtitle">查看解析、下载、Provider 使用和失败原因，使用 request_id 串联一次请求。</p>
+            </div>
+            <div class="ops-actions">
+                <a class="ops-link" href="{% url 'parse_logs' %}">解析日志</a>
+                <a class="ops-link" href="{% url 'download_logs' %}">下载日志</a>
+                <a class="ops-link" href="{% url 'provider_audit_logs' %}">Provider 审计</a>
+                <a class="ops-link" href="{% url 'provider_settings' %}">Provider 设置</a>
+            </div>
+        </section>
+
+        <section class="ops-grid" aria-label="核心指标">
+            {% for card in cards %}
+                <div class="ops-card">
+                    <strong>{{ card.label }}</strong>
+                    <span>{{ card.value }}</span>
+                </div>
+            {% endfor %}
+        </section>
+
+        <section class="ops-panels">
+            <div class="ops-panel">
+                <h2>24h 失败原因 Top 10</h2>
+                <table class="ops-table">
+                    <tbody>
+                    {% for row in failure_top %}
+                        <tr><td>{{ row.error_code|default:"UNKNOWN" }}</td><td>{{ row.count }}</td></tr>
+                    {% empty %}
+                        <tr><td colspan="2">暂无失败记录</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <div class="ops-panel">
+                <h2>24h 平台 Top 10</h2>
+                <table class="ops-table">
+                    <tbody>
+                    {% for row in platform_top %}
+                        <tr><td>{{ row.source_platform }}</td><td>{{ row.count }}</td></tr>
+                    {% empty %}
+                        <tr><td colspan="2">暂无平台记录</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <div class="ops-panel">
+                <h2>24h Provider Top 10</h2>
+                <table class="ops-table">
+                    <tbody>
+                    {% for row in provider_top %}
+                        <tr><td>{{ row.selected_provider }}</td><td>{{ row.count }}</td></tr>
+                    {% empty %}
+                        <tr><td colspan="2">暂无 Provider 记录</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <div class="ops-panel">
+                <h2>24h 下载类型</h2>
+                <table class="ops-table">
+                    <tbody>
+                    {% for row in download_type_top %}
+                        <tr><td>{{ row.download_type }}</td><td>{{ row.count }}</td></tr>
+                    {% empty %}
+                        <tr><td colspan="2">暂无下载记录</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <div class="ops-panel">
+                <h2>24h 小时解析量</h2>
+                <table class="ops-table">
+                    <tbody>
+                    {% for row in hourly_parse %}
+                        <tr><td>{{ row.hour|date:"m-d H:00" }}</td><td>{{ row.count }}</td></tr>
+                    {% empty %}
+                        <tr><td colspan="2">暂无解析记录</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <div class="ops-panel">
+                <h2>最近 Provider 审计</h2>
+                <table class="ops-table">
+                    <tbody>
+                    {% for row in recent_audit_logs %}
+                        <tr><td>{{ row.actor_username }}</td><td>{{ row.action }}</td><td>{{ row.created_at|date:"m-d H:i" }}</td></tr>
+                    {% empty %}
+                        <tr><td colspan="3">暂无审计记录</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+</div>
+{% endblock %}
