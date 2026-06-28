@@ -17,6 +17,8 @@ from django.urls import reverse
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_POST
 
+from download_console.models import DownloadRuntimeSetting
+
 from .models import (
     DownloadRequestLog,
     ObservabilityStatus,
@@ -884,49 +886,76 @@ def provider_audit_logs_view(request):
     )
 
 
-def limit_error_response(message, retry_after=0):
+def limit_error_response(message, retry_after=0, error_code="RATE_LIMITED"):
     response = JsonResponse({"status": "error", "message": message}, status=429)
     if retry_after:
         response["Retry-After"] = str(retry_after)
+    response["X-Error-Code"] = error_code
     return response
+
+
+def get_download_runtime_setting():
+    return DownloadRuntimeSetting.load()
 
 
 def check_download_request_limits(request):
     identity = get_client_identity(request)
+    runtime_setting = get_download_runtime_setting()
     checks = (
-        lambda: consume_fixed_window(
-            "download-minute-ip",
-            identity,
-            settings.DOWNLOAD_RATE_LIMIT_PER_MINUTE,
-            60,
+        (
+            lambda: consume_fixed_window(
+                "download-minute-ip",
+                identity,
+                runtime_setting.rate_limit_per_minute,
+                60,
+            ),
+            "DOWNLOAD_MINUTE_RATE_LIMIT",
+            "下载请求过于频繁，请稍后再试。",
         ),
-        lambda: consume_daily(
-            "download-requests-ip",
-            identity,
-            settings.DOWNLOAD_DAILY_REQUEST_LIMIT_PER_IP,
+        (
+            lambda: consume_daily(
+                "download-requests-ip",
+                identity,
+                runtime_setting.daily_request_limit_per_ip,
+            ),
+            "DOWNLOAD_DAILY_REQUEST_LIMIT_IP",
+            "今日下载请求次数已达到限制，请明天再试。",
         ),
-        lambda: consume_daily(
-            "download-requests-global",
-            "all",
-            settings.DOWNLOAD_GLOBAL_DAILY_REQUEST_LIMIT,
+        (
+            lambda: consume_daily(
+                "download-requests-global",
+                "all",
+                runtime_setting.global_daily_request_limit,
+            ),
+            "DOWNLOAD_DAILY_REQUEST_LIMIT_GLOBAL",
+            "今日全站下载请求次数已达到限制，请稍后再试。",
         ),
-        lambda: has_daily_capacity(
-            "download-bytes-ip",
-            identity,
-            settings.DOWNLOAD_DAILY_BYTES_LIMIT_PER_IP,
+        (
+            lambda: has_daily_capacity(
+                "download-bytes-ip",
+                identity,
+                runtime_setting.daily_bytes_limit_per_ip,
+            ),
+            "DOWNLOAD_DAILY_BYTES_LIMIT_IP",
+            "今日下载流量已达到限制，请明天再试。",
         ),
-        lambda: has_daily_capacity(
-            "download-bytes-global",
-            "all",
-            settings.DOWNLOAD_GLOBAL_DAILY_BYTES_LIMIT,
+        (
+            lambda: has_daily_capacity(
+                "download-bytes-global",
+                "all",
+                runtime_setting.global_daily_bytes_limit,
+            ),
+            "DOWNLOAD_DAILY_BYTES_LIMIT_GLOBAL",
+            "今日全站下载流量已达到限制，请稍后再试。",
         ),
     )
-    for check in checks:
+    for check, error_code, message in checks:
         result = check()
         if not result.allowed:
             return identity, limit_error_response(
-                "下载请求过于频繁或今日流量已达到限制，请稍后再试。",
+                message,
                 result.retry_after,
+                error_code=error_code,
             )
     return identity, None
 
@@ -937,23 +966,26 @@ def record_download_archive_bytes(identity, archive_file):
     except (AttributeError, OSError):
         archive_size = 0
     if archive_size <= 0:
-        return True
+        return True, ""
 
+    runtime_setting = get_download_runtime_setting()
     per_ip = consume_daily(
         "download-bytes-ip",
         identity,
-        settings.DOWNLOAD_DAILY_BYTES_LIMIT_PER_IP,
+        runtime_setting.daily_bytes_limit_per_ip,
         amount=archive_size,
     )
     if not per_ip.allowed:
-        return False
+        return False, "DOWNLOAD_DAILY_BYTES_LIMIT_IP"
     global_result = consume_daily(
         "download-bytes-global",
         "all",
-        settings.DOWNLOAD_GLOBAL_DAILY_BYTES_LIMIT,
+        runtime_setting.global_daily_bytes_limit,
         amount=archive_size,
     )
-    return global_result.allowed
+    if not global_result.allowed:
+        return False, "DOWNLOAD_DAILY_BYTES_LIMIT_GLOBAL"
+    return True, ""
 
 
 def file_size_for_observability(file_obj):
@@ -1811,21 +1843,23 @@ def download_images_api(request):
             status=503,
         )
     if limit_response:
+        error_code = limit_response.get("X-Error-Code", "RATE_LIMITED")
         log_download_request_event(
             request,
             download_type="zip",
             media_items=media_items,
             status=ObservabilityStatus.RATE_LIMITED,
             started_at=started_at,
-            error_code="RATE_LIMITED",
+            error_code=error_code,
         )
         return limit_response
 
     try:
+        runtime_setting = get_download_runtime_setting()
         concurrency = acquire_concurrency(
             "download-concurrent",
             identity,
-            settings.DOWNLOAD_MAX_CONCURRENT_PER_IP,
+            runtime_setting.max_concurrent_per_ip,
         )
     except Exception:
         logger.exception("Download concurrency cache failed")
@@ -1848,9 +1882,12 @@ def download_images_api(request):
             media_items=media_items,
             status=ObservabilityStatus.RATE_LIMITED,
             started_at=started_at,
-            error_code="RATE_LIMITED",
+            error_code="DOWNLOAD_CONCURRENCY_LIMIT",
         )
-        return limit_error_response("当前已有下载任务正在处理，请等待完成后再试。")
+        return limit_error_response(
+            "当前已有下载任务正在处理，请等待完成后再试。",
+            error_code="DOWNLOAD_CONCURRENCY_LIMIT",
+        )
 
     try:
         download_mode = (data.get("download_mode") or "browser").lower().strip()
@@ -1898,7 +1935,10 @@ def download_images_api(request):
         )
         try:
             archive_size = file_size_for_observability(archive["file"])
-            within_limit = record_download_archive_bytes(identity, archive["file"])
+            within_limit, bytes_error_code = record_download_archive_bytes(
+                identity,
+                archive["file"],
+            )
         except Exception:
             archive["file"].close()
             raise
@@ -1911,9 +1951,12 @@ def download_images_api(request):
                 status=ObservabilityStatus.RATE_LIMITED,
                 started_at=started_at,
                 actual_bytes=archive_size,
-                error_code="RATE_LIMITED",
+                error_code=bytes_error_code or "RATE_LIMITED",
             )
-            return limit_error_response("今日下载流量已达到限制，请稍后再试。")
+            return limit_error_response(
+                "今日下载流量已达到限制，请稍后再试。",
+                error_code=bytes_error_code or "RATE_LIMITED",
+            )
     except XhsDownloadError as error:
         error_code = (
             "PROVIDER_MANIFEST_REJECTED"
@@ -2040,21 +2083,23 @@ def create_download_task_api(request):
             status=503,
         )
     if limit_response:
+        error_code = limit_response.get("X-Error-Code", "RATE_LIMITED")
         log_download_request_event(
             request,
             download_type="task_create",
             media_items=media_items,
             status=ObservabilityStatus.RATE_LIMITED,
             started_at=started_at,
-            error_code="RATE_LIMITED",
+            error_code=error_code,
         )
         return limit_response
 
     try:
+        runtime_setting = get_download_runtime_setting()
         concurrency = acquire_concurrency(
             "download-concurrent",
             identity,
-            settings.DOWNLOAD_MAX_CONCURRENT_PER_IP,
+            runtime_setting.max_concurrent_per_ip,
         )
     except Exception:
         logger.exception("Download concurrency cache failed")
@@ -2077,9 +2122,12 @@ def create_download_task_api(request):
             media_items=media_items,
             status=ObservabilityStatus.RATE_LIMITED,
             started_at=started_at,
-            error_code="RATE_LIMITED",
+            error_code="DOWNLOAD_CONCURRENCY_LIMIT",
         )
-        return limit_error_response("当前已有下载任务正在处理，请等待完成后再试。")
+        return limit_error_response(
+            "当前已有下载任务正在处理，请等待完成后再试。",
+            error_code="DOWNLOAD_CONCURRENCY_LIMIT",
+        )
 
     try:
         task = create_download_task({
@@ -2088,6 +2136,10 @@ def create_download_task_api(request):
             "save_format": data.get("save_format", "original"),
             "quality": data.get("quality", 95),
             "video_save_mode": data.get("video_save_mode", "video"),
+            "download_runtime_limits": {
+                "daily_bytes_limit_per_ip": runtime_setting.daily_bytes_limit_per_ip,
+                "global_daily_bytes_limit": runtime_setting.global_daily_bytes_limit,
+            },
         }, owner_identity=identity)
     except Exception:
         release_concurrency("download-concurrent", identity)

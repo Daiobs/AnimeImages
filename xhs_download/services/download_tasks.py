@@ -3,8 +3,7 @@ import time
 import uuid
 from pathlib import Path
 
-from django.conf import settings
-
+from download_console.models import DownloadRuntimeSetting
 from .downloads import build_download_archive_file
 from .rate_limits import consume_daily, release_concurrency
 
@@ -71,6 +70,15 @@ def update_task(task_id, **changes):
         task["updated_at"] = _now()
 
 
+def _download_limit(payload, key, fallback):
+    limits = payload.get("download_runtime_limits") or {}
+    value = limits.get(key, fallback)
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def run_download_task(task_id, payload, owner_identity):
     archive = None
 
@@ -97,10 +105,23 @@ def run_download_task(task_id, payload, owner_identity):
             progress_callback=progress_callback,
         )
         archive_size = Path(archive["file"].name).stat().st_size
+        runtime_setting = None
+        if not payload.get("download_runtime_limits"):
+            runtime_setting = DownloadRuntimeSetting.load()
+        daily_bytes_limit_per_ip = _download_limit(
+            payload,
+            "daily_bytes_limit_per_ip",
+            runtime_setting.daily_bytes_limit_per_ip if runtime_setting else 0,
+        )
+        global_daily_bytes_limit = _download_limit(
+            payload,
+            "global_daily_bytes_limit",
+            runtime_setting.global_daily_bytes_limit if runtime_setting else 0,
+        )
         per_ip_bytes = consume_daily(
             "download-bytes-ip",
             owner_identity,
-            settings.DOWNLOAD_DAILY_BYTES_LIMIT_PER_IP,
+            daily_bytes_limit_per_ip,
             amount=archive_size,
         )
         if not per_ip_bytes.allowed:
@@ -111,7 +132,7 @@ def run_download_task(task_id, payload, owner_identity):
         global_bytes = consume_daily(
             "download-bytes-global",
             "all",
-            settings.DOWNLOAD_GLOBAL_DAILY_BYTES_LIMIT,
+            global_daily_bytes_limit,
             amount=archive_size,
         )
         if not global_bytes.allowed:

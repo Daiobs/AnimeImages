@@ -18,6 +18,8 @@ from django.test import Client, RequestFactory, SimpleTestCase, TestCase, overri
 from django.utils import timezone
 from PIL import Image
 
+from download_console.models import DownloadRuntimeSetting
+
 from .services.common import (
     MEDIA_HOST_SUFFIXES,
     XhsDownloadError,
@@ -84,6 +86,7 @@ from .views import (
 )
 from .services.quality import QualityProbe, QualityProbeResult
 from .services.rate_limits import (
+    LimitResult,
     get_client_identity,
     get_client_ip,
     get_daily_total,
@@ -5464,6 +5467,17 @@ class XhsDownloadViewTests(TestCase):
     )
     @patch("xhs_download.views.build_download_archive_file")
     def test_download_endpoint_applies_ip_rate_limit(self, mock_archive):
+        DownloadRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={
+                "rate_limit_per_minute": 1,
+                "daily_request_limit_per_ip": 0,
+                "global_daily_request_limit": 1,
+                "max_concurrent_per_ip": 0,
+                "daily_bytes_limit_per_ip": 0,
+                "global_daily_bytes_limit": 0,
+            },
+        )
         mock_archive.side_effect = [
             {
                 "filename": "first.zip",
@@ -5494,8 +5508,53 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 429)
         self.assertIn("Retry-After", second)
+        self.assertEqual(second["X-Error-Code"], "DOWNLOAD_MINUTE_RATE_LIMIT")
         self.assertEqual(mock_archive.call_count, 1)
         self.assertEqual(get_daily_total("download-requests-global", "all"), 1)
+
+    @override_settings(
+        DOWNLOAD_RATE_LIMIT_PER_MINUTE=0,
+        DOWNLOAD_DAILY_REQUEST_LIMIT_PER_IP=0,
+        DOWNLOAD_GLOBAL_DAILY_REQUEST_LIMIT=0,
+        DOWNLOAD_MAX_CONCURRENT_PER_IP=0,
+        DOWNLOAD_DAILY_BYTES_LIMIT_PER_IP=0,
+        DOWNLOAD_GLOBAL_DAILY_BYTES_LIMIT=0,
+    )
+    @patch("xhs_download.views.build_download_archive_file")
+    def test_download_runtime_setting_overrides_env_defaults(self, mock_archive):
+        DownloadRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={
+                "rate_limit_per_minute": 1,
+                "daily_request_limit_per_ip": 0,
+                "global_daily_request_limit": 0,
+                "max_concurrent_per_ip": 0,
+                "daily_bytes_limit_per_ip": 0,
+                "global_daily_bytes_limit": 0,
+            },
+        )
+        mock_archive.return_value = {
+            "filename": "base.zip",
+            "file": BytesIO(b"zip-content"),
+            "saved_count": 1,
+            "failed_count": 0,
+        }
+        payload = '{"media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a"}]}'
+
+        first = Client().post(
+            "/media/download-images/",
+            data=payload,
+            content_type="application/json",
+        )
+        second = Client().post(
+            "/media/download-images/",
+            data=payload,
+            content_type="application/json",
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 429)
+        self.assertEqual(second["X-Error-Code"], "DOWNLOAD_MINUTE_RATE_LIMIT")
 
     @override_settings(DOWNLOAD_ASYNC_TASKS_ENABLED=False)
     def test_download_task_endpoint_is_disabled_in_production_mode(self):
@@ -6812,7 +6871,14 @@ class AdminObservabilityMvpTests(TestCase):
     @override_settings(DOWNLOAD_RATE_LIMIT_PER_MINUTE=1)
     @patch("xhs_download.views.check_download_request_limits")
     def test_download_rate_limit_writes_download_log(self, mock_limits):
-        mock_limits.return_value = ("identity", limit_error_response("limited", retry_after=1))
+        mock_limits.return_value = (
+            "identity",
+            limit_error_response(
+                "limited",
+                retry_after=1,
+                error_code="DOWNLOAD_MINUTE_RATE_LIMIT",
+            ),
+        )
         payload = {
             "media_items": [{"type": "image", "url": "https://ci.xiaohongshu.com/demo.jpg"}],
         }
@@ -6826,7 +6892,36 @@ class AdminObservabilityMvpTests(TestCase):
         self.assertEqual(response.status_code, 429)
         log = DownloadRequestLog.objects.get()
         self.assertEqual(log.status, ObservabilityStatus.RATE_LIMITED)
-        self.assertEqual(log.error_code, "RATE_LIMITED")
+        self.assertEqual(log.error_code, "DOWNLOAD_MINUTE_RATE_LIMIT")
+
+    @patch("xhs_download.views.check_download_request_limits")
+    @patch("xhs_download.views.acquire_concurrency")
+    def test_download_concurrency_limit_writes_specific_download_log(
+        self,
+        mock_acquire,
+        mock_limits,
+    ):
+        mock_limits.return_value = ("identity", None)
+        mock_acquire.return_value = LimitResult(
+            allowed=False,
+            current=2,
+            limit=1,
+        )
+        payload = {
+            "media_items": [{"type": "image", "url": "https://ci.xiaohongshu.com/demo.jpg"}],
+        }
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response["X-Error-Code"], "DOWNLOAD_CONCURRENCY_LIMIT")
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.RATE_LIMITED)
+        self.assertEqual(log.error_code, "DOWNLOAD_CONCURRENCY_LIMIT")
 
     def test_provider_manifest_failure_writes_download_log(self):
         payload = {
@@ -6960,7 +7055,27 @@ class AdminObservabilityMvpTests(TestCase):
             for app in app_list
         }
         self.assertIn("ProviderRuntimeSettingProxy", models_by_app["provider_console"])
+        self.assertIn("DownloadRuntimeSetting", models_by_app["download_console"])
         self.assertNotIn("ProviderRuntimeSetting", models_by_app.get("xhs_download", set()))
+        self.assertNotIn("DownloadRuntimeSetting", models_by_app.get("xhs_download", set()))
+
+    @override_settings(
+        DOWNLOAD_RATE_LIMIT_PER_MINUTE=7,
+        DOWNLOAD_DAILY_REQUEST_LIMIT_PER_IP=70,
+        DOWNLOAD_GLOBAL_DAILY_REQUEST_LIMIT=700,
+        DOWNLOAD_MAX_CONCURRENT_PER_IP=3,
+        DOWNLOAD_DAILY_BYTES_LIMIT_PER_IP=1024,
+        DOWNLOAD_GLOBAL_DAILY_BYTES_LIMIT=2048,
+    )
+    def test_download_runtime_setting_initializes_from_environment_defaults(self):
+        setting = DownloadRuntimeSetting.load()
+
+        self.assertEqual(setting.rate_limit_per_minute, 7)
+        self.assertEqual(setting.daily_request_limit_per_ip, 70)
+        self.assertEqual(setting.global_daily_request_limit, 700)
+        self.assertEqual(setting.max_concurrent_per_ip, 3)
+        self.assertEqual(setting.daily_bytes_limit_per_ip, 1024)
+        self.assertEqual(setting.global_daily_bytes_limit, 2048)
 
     def test_prune_observability_logs_dry_run_and_delete_keeps_audit_logs(self):
         parse_log = ParseRequestLog.objects.create(request_id="old-parse")
