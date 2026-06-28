@@ -1,4 +1,4 @@
-from io import BytesIO
+from io import BytesIO, StringIO
 import json
 import os
 import time
@@ -11,8 +11,10 @@ from zipfile import ZipFile
 import requests
 from django.core.cache import cache
 from django.core.checks import Error as CheckError, Warning as CheckWarning, run_checks
+from django.core.management import call_command
 from django.template.loader import render_to_string
 from django.test import Client, RequestFactory, SimpleTestCase, TestCase, override_settings
+from django.utils import timezone
 from PIL import Image
 
 from .services.common import (
@@ -61,10 +63,18 @@ from .services.provider_access import (
     third_party_public_access_allowed,
     third_party_public_access_summary,
 )
-from .models import ProviderAccessMode, ProviderRuntimeSetting
+from .models import (
+    DownloadRequestLog,
+    ObservabilityStatus,
+    ParseRequestLog,
+    ProviderAccessMode,
+    ProviderAdminAuditLog,
+    ProviderRuntimeSetting,
+)
 from .views import (
     build_provider_preview_query,
     build_search_results_context,
+    limit_error_response,
     third_party_provider_is_available,
     ultra_hd_is_available,
     youtube_merge_mode_is_available,
@@ -6486,3 +6496,309 @@ class ProviderSettingsAdminViewTests(TestCase):
 
         request.user = Mock(is_active=True, is_staff=True)
         self.assertTrue(third_party_provider_is_available(request))
+
+
+class AdminObservabilityMvpTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+
+        cache.clear()
+        self.staff = get_user_model().objects.create_user(
+            username="ops-staff",
+            password="test-password",
+            is_staff=True,
+        )
+        self.superuser = get_user_model().objects.create_superuser(
+            username="ops-root",
+            password="test-password",
+        )
+
+    def test_request_id_middleware_generates_and_reuses_request_id(self):
+        generated = Client().get("/")
+        reused = Client().get("/", HTTP_X_REQUEST_ID="nginx-request-123")
+
+        self.assertIn("X-Request-ID", generated)
+        self.assertEqual(reused["X-Request-ID"], "nginx-request-123")
+
+    @patch("xhs_download.views.parse_media_page")
+    def test_parse_success_writes_parse_request_log(self, mock_parse):
+        mock_parse.return_value = ParseResult(
+            platform="xiaohongshu",
+            post_type="image",
+            base_filename="demo",
+            assets=(
+                MediaAsset(
+                    media_type="image",
+                    url="https://ci.xiaohongshu.com/demo.jpg",
+                    platform="xiaohongshu",
+                ),
+            ),
+            metadata={"selected_provider": "native", "source_platform": "xiaohongshu"},
+        )
+
+        response = Client().get(
+            "/results/",
+            {"q": "https://www.xiaohongshu.com/explore/demo"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        log = ParseRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.SUCCESS)
+        self.assertEqual(log.query_host, "www.xiaohongshu.com")
+        self.assertEqual(log.selected_provider, "native")
+        self.assertEqual(log.image_count, 1)
+        self.assertEqual(len(log.ip_hash), 64)
+
+    @patch("xhs_download.views.parse_media_page", side_effect=XhsParseError("bad link"))
+    def test_parse_failure_writes_parse_request_log(self, _mock_parse):
+        response = Client().get("/results/", {"q": "https://www.xiaohongshu.com/explore/fail"})
+
+        self.assertEqual(response.status_code, 200)
+        log = ParseRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.FAILED)
+        self.assertEqual(log.error_type, "XhsParseError")
+        self.assertIn("bad link", log.error_message_short)
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_third_party_allowlist_miss_writes_blocked_log(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC
+        setting.third_party_allowed_public_platforms = ""
+        setting.save(
+            update_fields=[
+                "third_party_mode",
+                "third_party_allowed_public_platforms",
+                "updated_at",
+            ]
+        )
+
+        response = Client().get(
+            "/results/",
+            {"q": "https://www.youtube.com/watch?v=demo"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        log = ParseRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.BLOCKED)
+        self.assertEqual(log.error_code, "THIRD_PARTY_PLATFORM_NOT_ALLOWLISTED")
+
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        KUKUTOOL_PROVIDER_ENABLED=True,
+        ULTRA_HD_RATE_LIMIT_PER_MINUTE=1,
+    )
+    @patch("xhs_download.views.get_kukutool_provider_health", return_value={"available": True})
+    @patch("xhs_download.views.consume_fixed_window")
+    def test_parse_rate_limit_writes_rate_limited_log(self, mock_limit, _mock_health):
+        setting = ProviderRuntimeSetting.load()
+        setting.douyin_ultra_mode = ProviderAccessMode.PUBLIC
+        setting.save(update_fields=["douyin_ultra_mode", "updated_at"])
+        mock_limit.return_value = Mock(allowed=False, retry_after=30)
+
+        response = Client().get(
+            "/tiktok/results/",
+            {"q": "https://www.douyin.com/video/123", "ultra_hd": "1"},
+        )
+
+        self.assertEqual(response.status_code, 429)
+        log = ParseRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.RATE_LIMITED)
+        self.assertEqual(log.error_code, "RATE_LIMITED")
+
+    @patch("xhs_download.services.observability.ParseRequestLog.objects.create", side_effect=RuntimeError("db down"))
+    @patch("xhs_download.views.parse_media_page")
+    def test_parse_log_write_failure_does_not_break_response(self, mock_parse, _mock_create):
+        mock_parse.return_value = ParseResult(
+            platform="xiaohongshu",
+            post_type="image",
+            base_filename="demo",
+            assets=(),
+            metadata={},
+        )
+
+        response = Client().get(
+            "/results/",
+            {"q": "https://www.xiaohongshu.com/explore/demo"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    @patch("xhs_download.views.build_download_archive_file")
+    def test_zip_download_success_writes_download_log(self, mock_archive):
+        tmp = NamedTemporaryFile(suffix=".zip", delete=False)
+        tmp.write(b"zip-bytes")
+        tmp.flush()
+        tmp.seek(0)
+        mock_archive.return_value = {
+            "file": tmp,
+            "filename": "demo.zip",
+            "saved_count": 1,
+            "failed_count": 0,
+        }
+        payload = {
+            "media_items": [{"type": "image", "url": "https://ci.xiaohongshu.com/demo.jpg"}],
+            "base_filename": "demo",
+        }
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.SUCCESS)
+        self.assertEqual(log.download_type, "zip")
+        self.assertEqual(log.item_count, 1)
+        self.assertGreater(log.actual_bytes, 0)
+
+    @override_settings(DOWNLOAD_RATE_LIMIT_PER_MINUTE=1)
+    @patch("xhs_download.views.check_download_request_limits")
+    def test_download_rate_limit_writes_download_log(self, mock_limits):
+        mock_limits.return_value = ("identity", limit_error_response("limited", retry_after=1))
+        payload = {
+            "media_items": [{"type": "image", "url": "https://ci.xiaohongshu.com/demo.jpg"}],
+        }
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 429)
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.RATE_LIMITED)
+        self.assertEqual(log.error_code, "RATE_LIMITED")
+
+    def test_provider_manifest_failure_writes_download_log(self):
+        payload = {
+            "media_items": [
+                {
+                    "type": "image",
+                    "url": "https://ci.xiaohongshu.com/demo.jpg",
+                    "asset_id": "cover",
+                    "provider": "yt_dlp_generic",
+                    "provider_resource_id": "abc",
+                    "provider_cache_key": "third_party:yt_dlp_generic:abc",
+                    "provider_manifest_token": "bad-token",
+                }
+            ],
+        }
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.FAILED)
+        self.assertEqual(log.error_code, "PROVIDER_MANIFEST_REJECTED")
+
+    def test_provider_settings_update_writes_audit_log(self):
+        client = Client()
+        client.force_login(self.staff)
+
+        response = client.post(
+            "/admin/provider-settings/",
+            data={
+                "douyin_ultra_mode": ProviderAccessMode.STAFF,
+                "youtube_merge_mode": ProviderAccessMode.DISABLED,
+                "third_party_mode": ProviderAccessMode.DISABLED,
+                "douyin_ultra_rollout_percent": "0",
+                "youtube_merge_rollout_percent": "0",
+                "third_party_rollout_percent": "0",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        audit = ProviderAdminAuditLog.objects.get()
+        self.assertEqual(audit.actor_username, "ops-staff")
+        self.assertEqual(audit.action, "provider_runtime_update")
+        self.assertIn("douyin_ultra_mode", audit.changed_fields)
+        self.assertEqual(audit.before_snapshot["douyin_ultra_mode"], ProviderAccessMode.DISABLED)
+        self.assertEqual(audit.after_snapshot["douyin_ultra_mode"], ProviderAccessMode.STAFF)
+
+    def test_ops_dashboard_access_and_aggregation(self):
+        ParseRequestLog.objects.create(
+            request_id="rid1",
+            status=ObservabilityStatus.SUCCESS,
+            source_platform="xiaohongshu",
+            selected_provider="native",
+            duration_ms=100,
+        )
+        ParseRequestLog.objects.create(
+            request_id="rid2",
+            status=ObservabilityStatus.FAILED,
+            error_code="PROVIDER_TIMEOUT",
+            duration_ms=300,
+        )
+        DownloadRequestLog.objects.create(
+            request_id="rid3",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="zip",
+            actual_bytes=1024,
+        )
+        client = Client()
+        client.force_login(self.staff)
+
+        anonymous = Client().get("/admin/ops-dashboard/")
+        response = client.get("/admin/ops-dashboard/")
+
+        self.assertEqual(anonymous.status_code, 404)
+        self.assertContains(response, "运营看板")
+        self.assertContains(response, "今日解析次数")
+        self.assertContains(response, "PROVIDER_TIMEOUT")
+
+    def test_observability_log_pages_are_staff_only(self):
+        client = Client()
+        client.force_login(self.staff)
+
+        self.assertEqual(Client().get("/admin/parse-logs/").status_code, 404)
+        self.assertContains(client.get("/admin/parse-logs/"), "解析日志")
+        self.assertContains(client.get("/admin/download-logs/"), "下载日志")
+        self.assertContains(client.get("/admin/provider-audit-logs/"), "Provider 审计")
+
+    def test_observability_admin_models_are_read_only_for_staff(self):
+        from django.contrib.admin.sites import AdminSite
+
+        from .admin import ProviderAdminAuditLogAdmin, ProviderRuntimeSettingAdmin
+
+        request = RequestFactory().get("/")
+        request.user = self.staff
+        super_request = RequestFactory().get("/")
+        super_request.user = self.superuser
+        audit_admin = ProviderAdminAuditLogAdmin(ProviderAdminAuditLog, AdminSite())
+        runtime_admin = ProviderRuntimeSettingAdmin(ProviderRuntimeSetting, AdminSite())
+
+        self.assertFalse(audit_admin.has_add_permission(request))
+        self.assertFalse(audit_admin.has_change_permission(request))
+        self.assertFalse(audit_admin.has_delete_permission(request))
+        self.assertTrue(audit_admin.has_delete_permission(super_request))
+        self.assertFalse(runtime_admin.has_change_permission(request))
+
+    def test_prune_observability_logs_dry_run_and_delete_keeps_audit_logs(self):
+        parse_log = ParseRequestLog.objects.create(request_id="old-parse")
+        download_log = DownloadRequestLog.objects.create(request_id="old-download")
+        audit_log = ProviderAdminAuditLog.objects.create(
+            request_id="old-audit",
+            action="provider_runtime_update",
+        )
+        old_time = timezone.now() - timezone.timedelta(days=45)
+        ParseRequestLog.objects.filter(pk=parse_log.pk).update(created_at=old_time)
+        DownloadRequestLog.objects.filter(pk=download_log.pk).update(created_at=old_time)
+        ProviderAdminAuditLog.objects.filter(pk=audit_log.pk).update(created_at=old_time)
+
+        out = StringIO()
+        call_command("prune_observability_logs", "--days", "30", "--dry-run", stdout=out)
+        self.assertEqual(ParseRequestLog.objects.count(), 1)
+        self.assertEqual(DownloadRequestLog.objects.count(), 1)
+
+        call_command("prune_observability_logs", "--days", "30", stdout=StringIO())
+
+        self.assertEqual(ParseRequestLog.objects.count(), 0)
+        self.assertEqual(DownloadRequestLog.objects.count(), 0)
+        self.assertEqual(ProviderAdminAuditLog.objects.count(), 1)

@@ -7,14 +7,24 @@ from urllib.parse import urlencode, urlparse
 import requests
 from django.conf import settings
 from django.contrib import messages
+from django.db.models import Avg, Count, Q, Sum
+from django.db.models.functions import TruncHour
 from django.http import FileResponse, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 from django.template.loader import render_to_string
+from django.utils import timezone
 from django.urls import reverse
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_POST
 
-from .models import ProviderAccessMode, ProviderRuntimeSetting
+from .models import (
+    DownloadRequestLog,
+    ObservabilityStatus,
+    ParseRequestLog,
+    ProviderAccessMode,
+    ProviderAdminAuditLog,
+    ProviderRuntimeSetting,
+)
 from .services.common import (
     XhsDownloadError,
     XhsError,
@@ -58,6 +68,12 @@ from .services.provider_access import (
 )
 from .services.registry import get_adapter_for_url, parse_media_page
 from .services.provider_manifest import build_provider_manifest_token
+from .services.observability import (
+    provider_runtime_snapshot,
+    record_download_request_log,
+    record_parse_request_log,
+    record_provider_admin_audit_log,
+)
 from .services.youtube_merge import get_youtube_merge_health
 from .services.rate_limits import (
     acquire_concurrency,
@@ -439,6 +455,7 @@ def provider_settings_view(request):
     runtime_setting = ProviderRuntimeSetting.load()
     valid_modes = {choice[0] for choice in ProviderAccessMode.choices}
     if request.method == "POST":
+        before_snapshot = provider_runtime_snapshot(runtime_setting)
         for field_name in (
             "douyin_ultra_mode",
             "youtube_merge_mode",
@@ -488,6 +505,14 @@ def provider_settings_view(request):
                 "updated_at",
             ]
         )
+        after_snapshot = provider_runtime_snapshot(runtime_setting)
+        if before_snapshot != after_snapshot:
+            record_provider_admin_audit_log(
+                request,
+                action="provider_runtime_update",
+                before_snapshot=before_snapshot,
+                after_snapshot=after_snapshot,
+            )
         messages.success(request, "Provider 运行时配置已保存。")
         return redirect("provider_settings")
 
@@ -603,6 +628,244 @@ def provider_control_view(request):
     return response
 
 
+def admin_ops_required(request):
+    return provider_settings_admin_required(request)
+
+
+def top_values(queryset, field_name, limit=10):
+    return list(
+        queryset.exclude(**{field_name: ""})
+        .values(field_name)
+        .annotate(count=Count("id"))
+        .order_by("-count", field_name)[:limit]
+    )
+
+
+def percent(numerator, denominator):
+    denominator = int(denominator or 0)
+    if denominator <= 0:
+        return 0
+    return round((int(numerator or 0) / denominator) * 100, 1)
+
+
+@require_GET
+def ops_dashboard_view(request):
+    if not admin_ops_required(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+
+    now = timezone.now()
+    today_start = timezone.localtime(now).replace(hour=0, minute=0, second=0, microsecond=0)
+    recent_24h = now - timezone.timedelta(hours=24)
+    recent_7d = now - timezone.timedelta(days=7)
+
+    today_parse = ParseRequestLog.objects.filter(created_at__gte=today_start)
+    recent_parse = ParseRequestLog.objects.filter(created_at__gte=recent_24h)
+    today_download = DownloadRequestLog.objects.filter(created_at__gte=today_start)
+    recent_download = DownloadRequestLog.objects.filter(created_at__gte=recent_24h)
+    seven_day_parse = ParseRequestLog.objects.filter(created_at__gte=recent_7d)
+
+    today_parse_count = today_parse.count()
+    today_parse_success = today_parse.filter(status=ObservabilityStatus.SUCCESS).count()
+    recent_parse_count = recent_parse.count()
+    recent_provider_success = recent_parse.filter(
+        status=ObservabilityStatus.SUCCESS,
+    ).exclude(selected_provider="").count()
+    recent_provider_total = recent_parse.exclude(selected_provider="").count()
+
+    hourly_parse = list(
+        recent_parse.annotate(hour=TruncHour("created_at"))
+        .values("hour")
+        .annotate(count=Count("id"), avg_duration_ms=Avg("duration_ms"))
+        .order_by("hour")
+    )
+
+    context = {
+        "title": "运营看板",
+        "cards": [
+            {"label": "今日解析次数", "value": today_parse_count},
+            {"label": "今日成功率", "value": f"{percent(today_parse_success, today_parse_count)}%"},
+            {"label": "今日失败数", "value": today_parse.exclude(status=ObservabilityStatus.SUCCESS).count()},
+            {"label": "今日下载次数", "value": today_download.count()},
+            {
+                "label": "今日下载估算流量",
+                "value": format_file_size(today_download.aggregate(total=Sum("estimated_bytes"))["total"] or 0),
+            },
+            {
+                "label": "今日下载实际流量",
+                "value": format_file_size(today_download.aggregate(total=Sum("actual_bytes"))["total"] or 0),
+            },
+            {
+                "label": "24h 平均解析耗时",
+                "value": f"{int(recent_parse.aggregate(avg=Avg('duration_ms'))['avg'] or 0)} ms",
+            },
+            {
+                "label": "24h Provider 成功率",
+                "value": f"{percent(recent_provider_success, recent_provider_total)}%",
+            },
+        ],
+        "failure_top": top_values(
+            recent_parse.exclude(status=ObservabilityStatus.SUCCESS),
+            "error_code",
+        ),
+        "platform_top": top_values(recent_parse, "source_platform"),
+        "provider_top": top_values(recent_parse, "selected_provider"),
+        "download_type_top": top_values(recent_download, "download_type"),
+        "hourly_parse": hourly_parse,
+        "seven_day_parse_count": seven_day_parse.count(),
+        "recent_audit_logs": ProviderAdminAuditLog.objects.all()[:10],
+    }
+    return render(request, "admin/ops_dashboard.html", context)
+
+
+def filtered_log_queryset(model, request, filter_fields):
+    queryset = model.objects.all()
+    for field in filter_fields:
+        value = str(request.GET.get(field, "") or "").strip()
+        if value:
+            queryset = queryset.filter(**{field: value})
+    search = str(request.GET.get("q", "") or "").strip()
+    if search and model is ParseRequestLog:
+        queryset = queryset.filter(
+            Q(request_id__icontains=search)
+            | Q(query_host__icontains=search)
+            | Q(error_type__icontains=search)
+        )
+    elif search and model is DownloadRequestLog:
+        queryset = queryset.filter(
+            Q(request_id__icontains=search)
+            | Q(provider__icontains=search)
+            | Q(error_type__icontains=search)
+        )
+    elif search and model is ProviderAdminAuditLog:
+        queryset = queryset.filter(
+            Q(request_id__icontains=search)
+            | Q(actor_username__icontains=search)
+            | Q(action__icontains=search)
+        )
+    return queryset
+
+
+@require_GET
+def parse_logs_view(request):
+    if not admin_ops_required(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+    filter_fields = ("status", "source_platform", "selected_provider", "is_staff", "error_type")
+    queryset = filtered_log_queryset(ParseRequestLog, request, filter_fields)[:200]
+    return render(
+        request,
+        "admin/observability_log_list.html",
+        {
+            "title": "解析日志",
+            "nav_title": "解析日志",
+            "search_placeholder": "搜索 request_id / host / error_type",
+            "filter_fields": filter_fields,
+            "headers": (
+                "created_at",
+                "status",
+                "query_host",
+                "source_platform",
+                "selected_provider",
+                "duration_ms",
+                "image_count",
+                "video_count",
+                "error_type",
+                "error_message_short",
+                "request_id",
+            ),
+            "rows": [
+                {
+                    "created_at": item.created_at,
+                    "status": item.status,
+                    "query_host": item.query_host,
+                    "source_platform": item.source_platform,
+                    "selected_provider": item.selected_provider,
+                    "duration_ms": item.duration_ms,
+                    "image_count": item.image_count,
+                    "video_count": item.video_count,
+                    "error_type": item.error_type,
+                    "error_message_short": item.error_message_short,
+                    "request_id": item.request_id,
+                }
+                for item in queryset
+            ],
+        },
+    )
+
+
+@require_GET
+def download_logs_view(request):
+    if not admin_ops_required(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+    filter_fields = ("status", "download_type", "provider", "source_platform", "error_type")
+    queryset = filtered_log_queryset(DownloadRequestLog, request, filter_fields)[:200]
+    return render(
+        request,
+        "admin/observability_log_list.html",
+        {
+            "title": "下载日志",
+            "nav_title": "下载日志",
+            "search_placeholder": "搜索 request_id / provider / error_type",
+            "filter_fields": filter_fields,
+            "headers": (
+                "created_at",
+                "status",
+                "download_type",
+                "item_count",
+                "actual_bytes",
+                "provider",
+                "source_platform",
+                "duration_ms",
+                "error_type",
+                "request_id",
+            ),
+            "rows": [
+                {
+                    "created_at": item.created_at,
+                    "status": item.status,
+                    "download_type": item.download_type,
+                    "item_count": item.item_count,
+                    "actual_bytes": format_file_size(item.actual_bytes),
+                    "provider": item.provider,
+                    "source_platform": item.source_platform,
+                    "duration_ms": item.duration_ms,
+                    "error_type": item.error_type,
+                    "request_id": item.request_id,
+                }
+                for item in queryset
+            ],
+        },
+    )
+
+
+@require_GET
+def provider_audit_logs_view(request):
+    if not admin_ops_required(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+    filter_fields = ("action", "actor_username")
+    queryset = filtered_log_queryset(ProviderAdminAuditLog, request, filter_fields)[:200]
+    return render(
+        request,
+        "admin/observability_log_list.html",
+        {
+            "title": "Provider 审计",
+            "nav_title": "Provider 审计",
+            "search_placeholder": "搜索 request_id / actor / action",
+            "filter_fields": filter_fields,
+            "headers": ("created_at", "actor_username", "action", "changed_fields", "request_id"),
+            "rows": [
+                {
+                    "created_at": item.created_at,
+                    "actor_username": item.actor_username,
+                    "action": item.action,
+                    "changed_fields": ", ".join(item.changed_fields or ()),
+                    "request_id": item.request_id,
+                }
+                for item in queryset
+            ],
+        },
+    )
+
+
 def limit_error_response(message, retry_after=0):
     response = JsonResponse({"status": "error", "message": message}, status=429)
     if retry_after:
@@ -673,6 +936,56 @@ def record_download_archive_bytes(identity, archive_file):
         amount=archive_size,
     )
     return global_result.allowed
+
+
+def file_size_for_observability(file_obj):
+    try:
+        name = getattr(file_obj, "name", "")
+        if name:
+            return Path(name).stat().st_size
+    except (OSError, TypeError, ValueError):
+        pass
+    try:
+        current = file_obj.tell()
+        file_obj.seek(0, 2)
+        size = file_obj.tell()
+        file_obj.seek(current)
+        return size
+    except Exception:
+        return 0
+
+
+def log_download_request_event(
+    request,
+    *,
+    download_type,
+    media_items=None,
+    status=ObservabilityStatus.SUCCESS,
+    started_at=None,
+    actual_bytes=0,
+    error_code="",
+    error=None,
+):
+    duration_ms = (time.monotonic() - started_at) * 1000 if started_at else 0
+    record_download_request_log(
+        request,
+        download_type=download_type,
+        media_items=media_items or (),
+        status=status,
+        actual_bytes=actual_bytes,
+        duration_ms=duration_ms,
+        error_code=error_code,
+        error_type=type(error).__name__ if error is not None else "",
+        error_message_short=str(error) if error is not None else "",
+    )
+
+
+def download_items_have_invalid_provider_manifest(media_items):
+    for item in media_items or ():
+        if isinstance(item, dict) and item.get("provider"):
+            if not provider_manifest_allows_public_download(item):
+                return True
+    return False
 
 
 def check_preview_request_limits(request):
@@ -774,6 +1087,7 @@ def query_uses_third_party_provider(query):
 
 
 def log_parse_request_event(
+    request,
     event,
     *,
     query,
@@ -786,12 +1100,39 @@ def log_parse_request_event(
     result=None,
     context=None,
     error=None,
+    status=None,
+    error_code="",
+    error_message_short="",
 ):
     parsed = urlparse(str(query or ""))
     metadata = getattr(result, "metadata", None) or {}
     image_count = len(context.get("image_items", ())) if context else 0
     video_count = len(context.get("video_items", ())) if context else 0
+    source_platform = metadata.get("source_platform", "")
+    selected_provider = metadata.get("selected_provider", "")
+    provider_id = ""
+    if source_platform == "third_party" or selected_provider in {
+        "kukutool_generic",
+        "gallery_dl_generic",
+        "yt_dlp_generic",
+        "youtube_merge",
+        "yt_dlp_merge",
+    } or query_uses_third_party_provider(query):
+        provider_id = PROVIDER_THIRD_PARTY
+    elif requested_youtube_merge or prefer_youtube_merge:
+        provider_id = PROVIDER_YOUTUBE_MERGE
+    elif requested_ultra_hd or prefer_ultra_hd:
+        provider_id = PROVIDER_DOUYIN_ULTRA
+    access = provider_access_summary(provider_id, request) if provider_id else {}
+    if status is None:
+        status = (
+            ObservabilityStatus.FAILED
+            if error is not None or (context and context.get("error_message"))
+            else ObservabilityStatus.SUCCESS
+        )
     extra = {
+        "request_id": getattr(request, "request_id", ""),
+        "event": event,
         "page_platform": platform_key,
         "query_host": parsed.hostname or "",
         "requested_ultra_hd": bool(requested_ultra_hd),
@@ -799,10 +1140,12 @@ def log_parse_request_event(
         "requested_youtube_merge": bool(requested_youtube_merge),
         "prefer_youtube_merge": bool(prefer_youtube_merge),
         "duration_ms": int(duration_ms),
+        "status": status,
         "platform": getattr(result, "platform", "") if result else "",
         "post_type": getattr(result, "post_type", "") if result else "",
-        "source_platform": metadata.get("source_platform", ""),
-        "selected_provider": metadata.get("selected_provider", ""),
+        "source_platform": source_platform,
+        "provider": selected_provider,
+        "selected_provider": selected_provider,
         "selected_provider_duration_ms": metadata.get(
             "selected_provider_duration_ms",
             0,
@@ -818,6 +1161,38 @@ def log_parse_request_event(
     if error is not None:
         extra["error_type"] = type(error).__name__
         extra["error"] = str(error)[:300]
+    elif error_message_short:
+        extra["error_type"] = error_code
+        extra["error"] = error_message_short[:300]
+    record_parse_request_log(
+        request,
+        query=query,
+        page_platform=platform_key,
+        query_host=parsed.hostname or "",
+        source_platform=source_platform,
+        source_platform_name=metadata.get("source_platform_name", ""),
+        result_platform=getattr(result, "platform", "") if result else "",
+        post_type=getattr(result, "post_type", "") if result else "",
+        selected_provider=selected_provider,
+        provider_label=metadata.get("provider_label", ""),
+        requested_ultra_hd=requested_ultra_hd,
+        prefer_ultra_hd=prefer_ultra_hd,
+        requested_youtube_merge=requested_youtube_merge,
+        prefer_youtube_merge=prefer_youtube_merge,
+        status=status,
+        error_code=error_code,
+        error_type=type(error).__name__ if error is not None else "",
+        error_message_short=error_message_short or (str(error) if error is not None else ""),
+        duration_ms=duration_ms,
+        selected_provider_duration_ms=metadata.get("selected_provider_duration_ms", 0),
+        provider_total_duration_ms=metadata.get("provider_total_duration_ms", 0),
+        provider_fallback_count=metadata.get("provider_fallback_count", 0),
+        image_count=image_count,
+        video_count=video_count,
+        runtime_mode=access.get("effective_mode", ""),
+        rollout_percent=access.get("rollout_percent", 0),
+        rollout_bucket=access.get("rollout_bucket") or 0,
+    )
     logger.info(event, extra=extra)
 
 
@@ -890,6 +1265,8 @@ def build_search_results_context(request, platform_key="home"):
     if not query:
         return context, 200
 
+    parse_started_at = time.monotonic()
+
     if query_uses_third_party_provider(query):
         if not third_party_provider_is_available(request):
             access = provider_access_summary(PROVIDER_THIRD_PARTY, request)
@@ -898,13 +1275,58 @@ def build_search_results_context(request, platform_key="home"):
                 ProviderAccessMode.PUBLIC_GRAY,
             }:
                 context["error_message"] = "第三方通用解析暂未向该用户开放。"
+                log_parse_request_event(
+                    request,
+                    "media_parse_blocked",
+                    query=query,
+                    platform_key=platform_key,
+                    requested_ultra_hd=requested_ultra_hd,
+                    prefer_ultra_hd=prefer_ultra_hd,
+                    requested_youtube_merge=requested_youtube_merge,
+                    prefer_youtube_merge=prefer_youtube_merge,
+                    duration_ms=(time.monotonic() - parse_started_at) * 1000,
+                    context=context,
+                    status=ObservabilityStatus.BLOCKED,
+                    error_code="THIRD_PARTY_ROLLOUT_MISS",
+                    error_message_short=context["error_message"],
+                )
                 return context, 403
             context["error_message"] = "第三方通用解析暂未开放。"
+            log_parse_request_event(
+                request,
+                "media_parse_blocked",
+                query=query,
+                platform_key=platform_key,
+                requested_ultra_hd=requested_ultra_hd,
+                prefer_ultra_hd=prefer_ultra_hd,
+                requested_youtube_merge=requested_youtube_merge,
+                prefer_youtube_merge=prefer_youtube_merge,
+                duration_ms=(time.monotonic() - parse_started_at) * 1000,
+                context=context,
+                status=ObservabilityStatus.BLOCKED,
+                error_code="THIRD_PARTY_NOT_OPEN",
+                error_message_short=context["error_message"],
+            )
             return context, 403
         third_party_gate = third_party_public_access_summary(query, request)
         if not third_party_gate["allowed"]:
             context["error_message"] = third_party_gate["message"]
             context["provider_notice"] = third_party_gate.get("error_code", "")
+            log_parse_request_event(
+                request,
+                "media_parse_blocked",
+                query=query,
+                platform_key=platform_key,
+                requested_ultra_hd=requested_ultra_hd,
+                prefer_ultra_hd=prefer_ultra_hd,
+                requested_youtube_merge=requested_youtube_merge,
+                prefer_youtube_merge=prefer_youtube_merge,
+                duration_ms=(time.monotonic() - parse_started_at) * 1000,
+                context=context,
+                status=ObservabilityStatus.BLOCKED,
+                error_code=third_party_gate.get("error_code", ""),
+                error_message_short=context["error_message"],
+            )
             return context, 403
         try:
             limit = consume_fixed_window(
@@ -916,10 +1338,40 @@ def build_search_results_context(request, platform_key="home"):
         except Exception:
             logger.exception("Third-party provider rate-limit cache failed")
             context["error_message"] = "第三方解析保护服务暂时不可用，请稍后再试。"
+            log_parse_request_event(
+                request,
+                "media_parse_failed",
+                query=query,
+                platform_key=platform_key,
+                requested_ultra_hd=requested_ultra_hd,
+                prefer_ultra_hd=prefer_ultra_hd,
+                requested_youtube_merge=requested_youtube_merge,
+                prefer_youtube_merge=prefer_youtube_merge,
+                duration_ms=(time.monotonic() - parse_started_at) * 1000,
+                context=context,
+                status=ObservabilityStatus.FAILED,
+                error_code="RATE_LIMIT_CACHE_ERROR",
+                error_message_short=context["error_message"],
+            )
             return context, 503
         if not limit.allowed:
             context["error_message"] = "第三方解析请求过于频繁，请稍后再试。"
             context["retry_after"] = limit.retry_after
+            log_parse_request_event(
+                request,
+                "media_parse_rate_limited",
+                query=query,
+                platform_key=platform_key,
+                requested_ultra_hd=requested_ultra_hd,
+                prefer_ultra_hd=prefer_ultra_hd,
+                requested_youtube_merge=requested_youtube_merge,
+                prefer_youtube_merge=prefer_youtube_merge,
+                duration_ms=(time.monotonic() - parse_started_at) * 1000,
+                context=context,
+                status=ObservabilityStatus.RATE_LIMITED,
+                error_code="RATE_LIMITED",
+                error_message_short=context["error_message"],
+            )
             return context, 429
         try:
             global_limit = consume_fixed_window(
@@ -931,10 +1383,40 @@ def build_search_results_context(request, platform_key="home"):
         except Exception:
             logger.exception("Third-party provider global rate-limit cache failed")
             context["error_message"] = "第三方解析保护服务暂时不可用，请稍后再试。"
+            log_parse_request_event(
+                request,
+                "media_parse_failed",
+                query=query,
+                platform_key=platform_key,
+                requested_ultra_hd=requested_ultra_hd,
+                prefer_ultra_hd=prefer_ultra_hd,
+                requested_youtube_merge=requested_youtube_merge,
+                prefer_youtube_merge=prefer_youtube_merge,
+                duration_ms=(time.monotonic() - parse_started_at) * 1000,
+                context=context,
+                status=ObservabilityStatus.FAILED,
+                error_code="RATE_LIMIT_CACHE_ERROR",
+                error_message_short=context["error_message"],
+            )
             return context, 503
         if not global_limit.allowed:
             context["error_message"] = "第三方解析当前排队请求较多，请稍后再试。"
             context["retry_after"] = global_limit.retry_after
+            log_parse_request_event(
+                request,
+                "media_parse_rate_limited",
+                query=query,
+                platform_key=platform_key,
+                requested_ultra_hd=requested_ultra_hd,
+                prefer_ultra_hd=prefer_ultra_hd,
+                requested_youtube_merge=requested_youtube_merge,
+                prefer_youtube_merge=prefer_youtube_merge,
+                duration_ms=(time.monotonic() - parse_started_at) * 1000,
+                context=context,
+                status=ObservabilityStatus.RATE_LIMITED,
+                error_code="RATE_LIMITED",
+                error_message_short=context["error_message"],
+            )
             return context, 429
 
     if prefer_ultra_hd:
@@ -954,6 +1436,21 @@ def build_search_results_context(request, platform_key="home"):
         if limit is not None and not limit.allowed:
             context["error_message"] = "超高清解析请求过于频繁，请稍后再试。"
             context["retry_after"] = limit.retry_after
+            log_parse_request_event(
+                request,
+                "media_parse_rate_limited",
+                query=query,
+                platform_key=platform_key,
+                requested_ultra_hd=requested_ultra_hd,
+                prefer_ultra_hd=prefer_ultra_hd,
+                requested_youtube_merge=requested_youtube_merge,
+                prefer_youtube_merge=prefer_youtube_merge,
+                duration_ms=(time.monotonic() - parse_started_at) * 1000,
+                context=context,
+                status=ObservabilityStatus.RATE_LIMITED,
+                error_code="RATE_LIMITED",
+                error_message_short=context["error_message"],
+            )
             return context, 429
     elif requested_ultra_hd:
         context["provider_notice"] = "当前环境未向访客开放超高清 Provider，本次使用本地解析。"
@@ -961,7 +1458,6 @@ def build_search_results_context(request, platform_key="home"):
     if requested_youtube_merge and not prefer_youtube_merge:
         context["provider_notice"] = "当前环境未向该用户开放 YouTube 最高画质，本次默认优先 1080p。"
 
-    parse_started_at = time.monotonic()
     try:
         client_country_code = (
             get_request_country_code(request)
@@ -1048,6 +1544,7 @@ def build_search_results_context(request, platform_key="home"):
         if not context["image_items"] and not context["video_items"]:
             context["error_message"] = "没有解析到图片或视频。"
         log_parse_request_event(
+            request,
             "media_parse_completed",
             query=query,
             platform_key=platform_key,
@@ -1063,6 +1560,7 @@ def build_search_results_context(request, platform_key="home"):
     except XhsProviderTimeoutError as error:
         context["error_message"] = str(error)
         log_parse_request_event(
+            request,
             "media_parse_failed",
             query=query,
             platform_key=platform_key,
@@ -1072,10 +1570,13 @@ def build_search_results_context(request, platform_key="home"):
             prefer_youtube_merge=prefer_youtube_merge,
             duration_ms=(time.monotonic() - parse_started_at) * 1000,
             error=error,
+            status=ObservabilityStatus.FAILED,
+            error_code="PROVIDER_TIMEOUT",
         )
     except XhsError as error:
         context["error_message"] = f"解析失败：{error}"
         log_parse_request_event(
+            request,
             "media_parse_failed",
             query=query,
             platform_key=platform_key,
@@ -1085,10 +1586,12 @@ def build_search_results_context(request, platform_key="home"):
             prefer_youtube_merge=prefer_youtube_merge,
             duration_ms=(time.monotonic() - parse_started_at) * 1000,
             error=error,
+            status=ObservabilityStatus.FAILED,
         )
     except requests.RequestException as error:
         context["error_message"] = f"请求页面失败：{error}"
         log_parse_request_event(
+            request,
             "media_parse_failed",
             query=query,
             platform_key=platform_key,
@@ -1098,6 +1601,7 @@ def build_search_results_context(request, platform_key="home"):
             prefer_youtube_merge=prefer_youtube_merge,
             duration_ms=(time.monotonic() - parse_started_at) * 1000,
             error=error,
+            status=ObservabilityStatus.FAILED,
         )
 
     return context, 200
@@ -1233,25 +1737,64 @@ def proxy_image_view(request):
 @require_POST
 @csrf_protect
 def download_images_api(request):
+    started_at = time.monotonic()
     try:
         data = json.loads(request.body.decode("utf-8"))
     except json.JSONDecodeError:
+        log_download_request_event(
+            request,
+            download_type="zip",
+            status=ObservabilityStatus.FAILED,
+            started_at=started_at,
+            error_code="INVALID_JSON",
+            error=ValueError("请求数据不是有效 JSON。"),
+        )
         return JsonResponse({"status": "error", "message": "请求数据不是有效 JSON。"}, status=400)
 
     media_items = data.get("media_items", [])
     image_urls = data.get("image_urls", [])
     if image_urls and not media_items:
         media_items = [{"type": "image", "url": url} for url in image_urls]
+    if download_items_have_invalid_provider_manifest(media_items):
+        log_download_request_event(
+            request,
+            download_type="zip",
+            media_items=media_items,
+            status=ObservabilityStatus.FAILED,
+            started_at=started_at,
+            error_code="PROVIDER_MANIFEST_REJECTED",
+            error=ValueError("Provider 签名资源未通过校验"),
+        )
+        return JsonResponse(
+            {"status": "error", "message": "Provider 签名资源未通过校验"},
+            status=400,
+        )
 
     try:
         identity, limit_response = check_download_request_limits(request)
     except Exception:
         logger.exception("Download rate-limit cache failed")
+        log_download_request_event(
+            request,
+            download_type="zip",
+            media_items=media_items,
+            status=ObservabilityStatus.FAILED,
+            started_at=started_at,
+            error_code="RATE_LIMIT_CACHE_ERROR",
+        )
         return JsonResponse(
             {"status": "error", "message": "下载保护服务暂时不可用，请稍后再试。"},
             status=503,
         )
     if limit_response:
+        log_download_request_event(
+            request,
+            download_type="zip",
+            media_items=media_items,
+            status=ObservabilityStatus.RATE_LIMITED,
+            started_at=started_at,
+            error_code="RATE_LIMITED",
+        )
         return limit_response
 
     try:
@@ -1262,17 +1805,41 @@ def download_images_api(request):
         )
     except Exception:
         logger.exception("Download concurrency cache failed")
+        log_download_request_event(
+            request,
+            download_type="zip",
+            media_items=media_items,
+            status=ObservabilityStatus.FAILED,
+            started_at=started_at,
+            error_code="CONCURRENCY_CACHE_ERROR",
+        )
         return JsonResponse(
             {"status": "error", "message": "下载保护服务暂时不可用，请稍后再试。"},
             status=503,
         )
     if not concurrency.allowed:
+        log_download_request_event(
+            request,
+            download_type="zip",
+            media_items=media_items,
+            status=ObservabilityStatus.RATE_LIMITED,
+            started_at=started_at,
+            error_code="RATE_LIMITED",
+        )
         return limit_error_response("当前已有下载任务正在处理，请等待完成后再试。")
 
     try:
         download_mode = (data.get("download_mode") or "browser").lower().strip()
         if download_mode == "server":
             if not settings.XHS_ALLOW_SERVER_SAVE:
+                log_download_request_event(
+                    request,
+                    download_type="server",
+                    media_items=media_items,
+                    status=ObservabilityStatus.BLOCKED,
+                    started_at=started_at,
+                    error_code="SERVER_SAVE_DISABLED",
+                )
                 return JsonResponse({"status": "error", "message": "当前环境未开启服务端保存。"}, status=403)
 
             result = save_media_items_to_server(
@@ -1283,6 +1850,14 @@ def download_images_api(request):
                 quality=data.get("quality", 95),
                 video_save_mode=data.get("video_save_mode", "video"),
                 allow_absolute=settings.XHS_ALLOW_ABSOLUTE_SAVE_PATH,
+            )
+            log_download_request_event(
+                request,
+                download_type="server",
+                media_items=media_items,
+                status=ObservabilityStatus.SUCCESS,
+                started_at=started_at,
+                actual_bytes=0,
             )
             return JsonResponse({
                 "status": "success",
@@ -1298,17 +1873,50 @@ def download_images_api(request):
             video_save_mode=data.get("video_save_mode", "video"),
         )
         try:
+            archive_size = file_size_for_observability(archive["file"])
             within_limit = record_download_archive_bytes(identity, archive["file"])
         except Exception:
             archive["file"].close()
             raise
         if not within_limit:
             archive["file"].close()
+            log_download_request_event(
+                request,
+                download_type="zip",
+                media_items=media_items,
+                status=ObservabilityStatus.RATE_LIMITED,
+                started_at=started_at,
+                actual_bytes=archive_size,
+                error_code="RATE_LIMITED",
+            )
             return limit_error_response("今日下载流量已达到限制，请稍后再试。")
     except XhsDownloadError as error:
+        error_code = (
+            "PROVIDER_MANIFEST_REJECTED"
+            if "Provider 签名" in str(error) or "manifest" in str(error).lower()
+            else "DOWNLOAD_ERROR"
+        )
+        log_download_request_event(
+            request,
+            download_type="zip",
+            media_items=media_items,
+            status=ObservabilityStatus.FAILED,
+            started_at=started_at,
+            error_code=error_code,
+            error=error,
+        )
         return JsonResponse({"status": "error", "message": str(error)}, status=400)
     except Exception as error:
         logger.exception("XHS download failed")
+        log_download_request_event(
+            request,
+            download_type="zip",
+            media_items=media_items,
+            status=ObservabilityStatus.FAILED,
+            started_at=started_at,
+            error_code="DOWNLOAD_ERROR",
+            error=error,
+        )
         return JsonResponse({"status": "error", "message": f"下载失败：{error}"}, status=500)
     finally:
         release_concurrency("download-concurrent", identity)
@@ -1321,13 +1929,29 @@ def download_images_api(request):
     )
     response["X-Saved-Count"] = str(archive["saved_count"])
     response["X-Failed-Count"] = str(archive["failed_count"])
+    log_download_request_event(
+        request,
+        download_type="zip",
+        media_items=media_items,
+        status=ObservabilityStatus.SUCCESS,
+        started_at=started_at,
+        actual_bytes=archive_size,
+    )
     return response
 
 
 @require_POST
 @csrf_protect
 def create_download_task_api(request):
+    started_at = time.monotonic()
     if not settings.DOWNLOAD_ASYNC_TASKS_ENABLED:
+        log_download_request_event(
+            request,
+            download_type="task_create",
+            status=ObservabilityStatus.BLOCKED,
+            started_at=started_at,
+            error_code="ASYNC_TASKS_DISABLED",
+        )
         return JsonResponse(
             {
                 "status": "error",
@@ -1339,21 +1963,67 @@ def create_download_task_api(request):
     try:
         data = json.loads(request.body.decode("utf-8"))
     except json.JSONDecodeError:
+        log_download_request_event(
+            request,
+            download_type="task_create",
+            status=ObservabilityStatus.FAILED,
+            started_at=started_at,
+            error_code="INVALID_JSON",
+            error=ValueError("请求数据不是有效 JSON。"),
+        )
         return JsonResponse({"status": "error", "message": "请求数据不是有效 JSON。"}, status=400)
 
     media_items = data.get("media_items", [])
     if not media_items:
+        log_download_request_event(
+            request,
+            download_type="task_create",
+            media_items=media_items,
+            status=ObservabilityStatus.FAILED,
+            started_at=started_at,
+            error_code="NO_MEDIA_SELECTED",
+        )
         return JsonResponse({"status": "error", "message": "没有选择资源"}, status=400)
+    if download_items_have_invalid_provider_manifest(media_items):
+        log_download_request_event(
+            request,
+            download_type="task_create",
+            media_items=media_items,
+            status=ObservabilityStatus.FAILED,
+            started_at=started_at,
+            error_code="PROVIDER_MANIFEST_REJECTED",
+            error=ValueError("Provider 签名资源未通过校验"),
+        )
+        return JsonResponse(
+            {"status": "error", "message": "Provider 签名资源未通过校验"},
+            status=400,
+        )
 
     try:
         identity, limit_response = check_download_request_limits(request)
     except Exception:
         logger.exception("Download rate-limit cache failed")
+        log_download_request_event(
+            request,
+            download_type="task_create",
+            media_items=media_items,
+            status=ObservabilityStatus.FAILED,
+            started_at=started_at,
+            error_code="RATE_LIMIT_CACHE_ERROR",
+        )
         return JsonResponse(
             {"status": "error", "message": "下载保护服务暂时不可用，请稍后再试。"},
             status=503,
         )
     if limit_response:
+        log_download_request_event(
+            request,
+            download_type="task_create",
+            media_items=media_items,
+            status=ObservabilityStatus.RATE_LIMITED,
+            started_at=started_at,
+            error_code="RATE_LIMITED",
+        )
         return limit_response
 
     try:
@@ -1364,11 +2034,27 @@ def create_download_task_api(request):
         )
     except Exception:
         logger.exception("Download concurrency cache failed")
+        log_download_request_event(
+            request,
+            download_type="task_create",
+            media_items=media_items,
+            status=ObservabilityStatus.FAILED,
+            started_at=started_at,
+            error_code="CONCURRENCY_CACHE_ERROR",
+        )
         return JsonResponse(
             {"status": "error", "message": "下载保护服务暂时不可用，请稍后再试。"},
             status=503,
         )
     if not concurrency.allowed:
+        log_download_request_event(
+            request,
+            download_type="task_create",
+            media_items=media_items,
+            status=ObservabilityStatus.RATE_LIMITED,
+            started_at=started_at,
+            error_code="RATE_LIMITED",
+        )
         return limit_error_response("当前已有下载任务正在处理，请等待完成后再试。")
 
     try:
@@ -1381,8 +2067,23 @@ def create_download_task_api(request):
         }, owner_identity=identity)
     except Exception:
         release_concurrency("download-concurrent", identity)
+        log_download_request_event(
+            request,
+            download_type="task_create",
+            media_items=media_items,
+            status=ObservabilityStatus.FAILED,
+            started_at=started_at,
+            error_code="DOWNLOAD_TASK_CREATE_FAILED",
+        )
         raise
     task_id = task["task_id"]
+    log_download_request_event(
+        request,
+        download_type="task_create",
+        media_items=media_items,
+        status=ObservabilityStatus.SUCCESS,
+        started_at=started_at,
+    )
     return JsonResponse({
         "status": "success",
         "task": serialize_task(task),
@@ -1406,18 +2107,44 @@ def download_task_status_api(request, task_id):
 
 @require_GET
 def download_task_file_api(request, task_id):
+    started_at = time.monotonic()
     task = get_download_task(task_id)
     if not task:
+        log_download_request_event(
+            request,
+            download_type="task_file",
+            status=ObservabilityStatus.FAILED,
+            started_at=started_at,
+            error_code="TASK_NOT_FOUND",
+        )
         return JsonResponse({"status": "error", "message": "下载任务不存在或已过期"}, status=404)
     if task.get("status") != "completed":
+        log_download_request_event(
+            request,
+            download_type="task_file",
+            status=ObservabilityStatus.BLOCKED,
+            started_at=started_at,
+            error_code="TASK_NOT_COMPLETED",
+        )
         return JsonResponse({"status": "error", "message": "下载任务尚未完成"}, status=409)
 
     task = pop_download_task(task_id)
     if not task:
+        log_download_request_event(
+            request,
+            download_type="task_file",
+            status=ObservabilityStatus.FAILED,
+            started_at=started_at,
+            error_code="TASK_NOT_FOUND",
+        )
         return JsonResponse({"status": "error", "message": "下载任务不存在或已过期"}, status=404)
 
     archive_file = task["file"]
     archive_file.seek(0)
+    try:
+        archive_size = Path(archive_file.name).stat().st_size
+    except Exception:
+        archive_size = 0
     response = FileResponse(
         archive_file,
         as_attachment=True,
@@ -1427,7 +2154,14 @@ def download_task_file_api(request, task_id):
     response["X-Saved-Count"] = str(task.get("saved_count", 0))
     response["X-Failed-Count"] = str(task.get("failed_count", 0))
     try:
-        response["Content-Length"] = str(Path(archive_file.name).stat().st_size)
+        response["Content-Length"] = str(archive_size)
     except Exception:
         pass
+    log_download_request_event(
+        request,
+        download_type="task_file",
+        status=ObservabilityStatus.SUCCESS,
+        started_at=started_at,
+        actual_bytes=archive_size,
+    )
     return response

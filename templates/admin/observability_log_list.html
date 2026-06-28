@@ -1,0 +1,111 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<style>
+    #content { padding: 0; }
+    .ops-list {
+        margin: -20px -20px 0;
+        padding: 34px clamp(18px, 4vw, 54px) 56px;
+        min-height: calc(100vh - 96px);
+        background: linear-gradient(180deg, #fff 0%, #f8fbff 58%, #fff 100%);
+        color: #111827;
+    }
+    .ops-shell { max-width: 1240px; margin: 0 auto; }
+    .ops-title { margin: 0; font-size: clamp(28px, 4vw, 42px); font-weight: 900; }
+    .ops-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0; }
+    .ops-actions a,
+    .ops-filter button {
+        min-height: 38px;
+        padding: 0 14px;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        color: #111827;
+        text-decoration: none;
+        font-weight: 800;
+    }
+    .ops-filter {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        margin-bottom: 16px;
+    }
+    .ops-filter input {
+        min-height: 38px;
+        min-width: 280px;
+        padding: 0 12px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+    }
+    .ops-table-wrap {
+        overflow: auto;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: 0 4px 12px rgba(17, 24, 39, .05);
+    }
+    .ops-table { width: 100%; border-collapse: collapse; }
+    .ops-table th,
+    .ops-table td {
+        padding: 10px 9px;
+        border-bottom: 1px solid #edf0f3;
+        text-align: left;
+        vertical-align: top;
+        font-size: 13px;
+        white-space: nowrap;
+    }
+    .ops-table td:last-child,
+    .ops-table td:nth-last-child(2) {
+        white-space: normal;
+        word-break: break-all;
+    }
+    .ops-table th { color: #6b7280; font-weight: 900; background: #fbfcfe; }
+</style>
+<div class="ops-list">
+    <div class="ops-shell">
+        <h1 class="ops-title">{{ nav_title }}</h1>
+        <div class="ops-actions">
+            <a href="{% url 'ops_dashboard' %}">运营看板</a>
+            <a href="{% url 'parse_logs' %}">解析日志</a>
+            <a href="{% url 'download_logs' %}">下载日志</a>
+            <a href="{% url 'provider_audit_logs' %}">Provider 审计</a>
+            <a href="{% url 'provider_settings' %}">Provider 设置</a>
+        </div>
+        <form class="ops-filter" method="get">
+            <input type="search" name="q" value="{{ request.GET.q }}" placeholder="{{ search_placeholder }}">
+            {% for field in filter_fields %}
+                <input type="text" name="{{ field }}" value="" placeholder="{{ field }}">
+            {% endfor %}
+            <button type="submit">筛选</button>
+            {% if request.GET %}
+                <a href="{{ request.path }}">清除</a>
+            {% endif %}
+        </form>
+        <div class="ops-table-wrap">
+            <table class="ops-table">
+                <thead>
+                <tr>
+                    {% for header in headers %}
+                        <th>{{ header }}</th>
+                    {% endfor %}
+                </tr>
+                </thead>
+                <tbody>
+                {% for row in rows %}
+                    <tr>
+                        {% for _header, value in row.items %}
+                            <td>{{ value }}</td>
+                        {% endfor %}
+                    </tr>
+                {% empty %}
+                    <tr>
+                        <td colspan="{{ headers|length }}">暂无记录</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

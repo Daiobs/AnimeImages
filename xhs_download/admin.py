@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.shortcuts import redirect
 
-from .models import ProviderRuntimeSetting
+from .models import DownloadRequestLog, ParseRequestLog, ProviderAdminAuditLog, ProviderRuntimeSetting
 
 
 @admin.register(ProviderRuntimeSetting)
@@ -44,3 +44,68 @@ class ProviderRuntimeSettingAdmin(admin.ModelAdmin):
 
     def changelist_view(self, request, extra_context=None):
         return redirect("provider_settings")
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+class ReadOnlyLogAdmin(admin.ModelAdmin):
+    actions = None
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return bool(getattr(request.user, "is_superuser", False))
+
+
+@admin.register(ParseRequestLog)
+class ParseRequestLogAdmin(ReadOnlyLogAdmin):
+    list_display = (
+        "created_at",
+        "status",
+        "query_host",
+        "source_platform",
+        "selected_provider",
+        "duration_ms",
+        "image_count",
+        "video_count",
+        "error_type",
+        "request_id",
+    )
+    list_filter = (
+        "status",
+        "source_platform",
+        "selected_provider",
+        "is_staff",
+        "error_type",
+        "created_at",
+    )
+    search_fields = ("request_id", "query_host", "error_type")
+
+
+@admin.register(DownloadRequestLog)
+class DownloadRequestLogAdmin(ReadOnlyLogAdmin):
+    list_display = (
+        "created_at",
+        "status",
+        "download_type",
+        "item_count",
+        "actual_bytes",
+        "provider",
+        "source_platform",
+        "duration_ms",
+        "request_id",
+    )
+    list_filter = ("status", "download_type", "provider", "source_platform", "created_at")
+    search_fields = ("request_id", "provider", "source_platform", "error_type")
+
+
+@admin.register(ProviderAdminAuditLog)
+class ProviderAdminAuditLogAdmin(ReadOnlyLogAdmin):
+    list_display = ("created_at", "actor_username", "action", "changed_fields", "request_id")
+    list_filter = ("action", "actor_is_superuser", "created_at")
+    search_fields = ("request_id", "actor_username", "action")

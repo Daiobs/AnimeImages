@@ -516,6 +516,18 @@
                 </p>
             </div>
             <div class="provider-hero-actions">
+                <a class="provider-link-btn" href="{% url 'ops_dashboard' %}">
+                    运营看板
+                </a>
+                <a class="provider-link-btn" href="{% url 'parse_logs' %}">
+                    解析日志
+                </a>
+                <a class="provider-link-btn" href="{% url 'download_logs' %}">
+                    下载日志
+                </a>
+                <a class="provider-link-btn" href="{% url 'provider_audit_logs' %}">
+                    Provider 审计
+                </a>
                 <a class="provider-link-btn" href="{% url 'provider_health' %}" target="_blank" rel="noopener">
                     JSON 健康状态
                 </a>

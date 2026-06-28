@@ -1,0 +1,104 @@
+# Admin Observability MVP
+
+AnimeImages 上线后可以通过后台查看解析、下载和 Provider 操作审计。第一版只使用 Django ORM、模板和管理命令，不引入 Grafana、Prometheus、Celery 或前端图表库。
+
+## Request ID
+
+`RequestIDMiddleware` 会为每个请求写入 `request.request_id`，并在响应头返回：
+
+```http
+X-Request-ID: <request id>
+```
+
+如果 Nginx 已传入合法 `X-Request-ID`，Django 会复用；否则生成 UUID。业务日志、数据库事件和 journalctl 日志都带有 request_id，方便串联一次请求。
+
+建议 Nginx 增加：
+
+```nginx
+proxy_set_header X-Request-ID $request_id;
+
+log_format animeimages '$remote_addr - $request_id [$time_local] '
+                       '"$request" $status $body_bytes_sent '
+                       '"$http_referer" "$http_user_agent"';
+access_log /var/log/nginx/animeimages.access.log animeimages;
+```
+
+## 后台入口
+
+需要 staff 用户登录后台后访问：
+
+```text
+/admin/ops-dashboard/
+/admin/parse-logs/
+/admin/download-logs/
+/admin/provider-audit-logs/
+/admin/provider-settings/
+```
+
+运营看板显示今日解析、下载、成功率、失败原因 Top 10、平台 Top 10、Provider Top 10 和最近 Provider 审计记录。
+
+## 落库日志
+
+`ParseRequestLog` 记录解析请求的 request_id、host、平台、Provider、状态、失败原因、耗时、素材数量和 runtime/rollout 信息。
+
+`DownloadRequestLog` 记录下载请求的 request_id、状态、下载类型、素材数量、估算/实际字节数、Provider、失败原因和耗时。
+
+`ProviderAdminAuditLog` 记录 Provider 设置修改的 actor、action、changed_fields、before_snapshot 和 after_snapshot。
+
+日志写入是 best effort。写入失败只会进入 `logger.exception`，不会中断正常解析或下载。
+
+## 不保存的敏感信息
+
+业务日志不会保存：
+
+- 完整 URL
+- 真实 IP
+- 完整 User-Agent
+- provider signed URL
+- manifest token
+- cookie
+- Authorization
+- API key
+- 短期 CDN 链接
+
+IP、User-Agent 和限流 identity 会使用 `sha256 + SECRET_KEY salt` 后保存 hash。解析日志只保存 `query_host`，不保存完整 query。
+
+## 通过 request_id 排查
+
+1. 用户反馈失败时，让用户提供响应头或页面错误对应的 request_id。
+2. 在 `/admin/parse-logs/` 或 `/admin/download-logs/` 搜索 request_id。
+3. 查看 status、error_code、error_type、duration_ms、selected_provider。
+4. 到服务器用 journalctl 继续串联：
+
+```bash
+journalctl -u animeimages --since "1 hour ago" | grep '<request_id>'
+```
+
+5. 如需串联 Nginx，搜索 access log 中同一个 request_id。
+
+## 清理旧日志
+
+解析和下载日志默认建议保留 30 天：
+
+```bash
+python manage.py prune_observability_logs --days 30 --dry-run
+python manage.py prune_observability_logs --days 30
+```
+
+生产 cron 示例：
+
+```bash
+0 3 * * * /srv/animeimages/.venv/bin/python /srv/animeimages/manage.py prune_observability_logs --days 30
+```
+
+`ProviderAdminAuditLog` 默认保留更久，不会被普通 prune 命令删除。
+
+## 每日巡检
+
+1. 打开 `/health/ready/`
+2. 打开 `/admin/ops-dashboard/`
+3. 查看失败原因 Top 10
+4. 查看 Provider 成功率
+5. 查看下载流量是否异常
+6. 查看最近 Provider 审计记录
+7. 用 `journalctl -u animeimages --since today` 检查异常堆栈

@@ -17,6 +17,9 @@
 {% block nav-global %}
     <nav class="admin-global-nav" aria-label="后台快捷导航">
         <a href="{% url 'home' %}">返回前台</a>
+        <a href="{% url 'ops_dashboard' %}">运营看板</a>
+        <a href="{% url 'parse_logs' %}">解析日志</a>
+        <a href="{% url 'download_logs' %}">下载日志</a>
         <a href="{% url 'provider_settings' %}">Provider 管理</a>
         <a href="{% url 'provider_health' %}" target="_blank" rel="noopener">健康状态</a>
     </nav>

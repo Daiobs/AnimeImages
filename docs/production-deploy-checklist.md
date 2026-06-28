@@ -106,7 +106,27 @@ Provider capability can be configured at deploy time, but `ProviderRuntimeSettin
 
 Do not commit `.env.production`. Do not paste real secrets into issue comments, chat logs, or documentation.
 
-## 5. Run Django Checks
+## 5. Admin Observability
+
+- [ ] `/admin/ops-dashboard/` can be opened by staff.
+- [ ] A successful parse writes `/admin/parse-logs/`.
+- [ ] A successful download writes `/admin/download-logs/`.
+- [ ] Provider setting changes write `/admin/provider-audit-logs/`.
+- [ ] Nginx forwards request IDs:
+
+```nginx
+proxy_set_header X-Request-ID $request_id;
+```
+
+- [ ] Old parse/download logs are pruned by cron:
+
+```bash
+0 3 * * * /srv/animeimages/.venv/bin/python /srv/animeimages/manage.py prune_observability_logs --days 30
+```
+
+See `docs/admin-observability.md` for request_id tracing, privacy guarantees, and daily checks.
+
+## 6. Run Django Checks
 
 Load the production environment before running these commands:
 
@@ -161,7 +181,7 @@ set +a
 
 Accept only `rollout.status=disabled` or `rollout.status=staff_only` for first launch. Do not treat `public_candidate` as automatic approval.
 
-## 6. Configure Gunicorn and systemd
+## 7. Configure Gunicorn and systemd
 
 - [ ] Create `/etc/systemd/system/animeimages.service` using the sample from `docs/production-deploy-baseline.md`.
 - [ ] Verify placeholders are replaced:
@@ -187,7 +207,7 @@ sudo systemctl status animeimages --no-pager
 journalctl -u animeimages -n 100 --no-pager
 ```
 
-## 7. Configure Nginx and HTTPS
+## 8. Configure Nginx and HTTPS
 
 - [ ] Create `/etc/nginx/sites-available/animeimages`.
 - [ ] Link it:
@@ -211,7 +231,7 @@ sudo systemctl reload nginx
 - [ ] Configure HTTPS certificate.
 - [ ] Confirm HTTP redirects to HTTPS only after certificate works.
 
-## 8. Health Checks
+## 9. Health Checks
 
 - [ ] Liveness:
 
@@ -227,7 +247,7 @@ curl -i https://animeimages.example.com/health/ready/
 
 Readiness must return HTTP 200 and include both cache and database components as true.
 
-## 9. First Launch Smoke
+## 10. First Launch Smoke
 
 - [ ] Home page loads.
 - [ ] Xiaohongshu basic link parses.
@@ -240,7 +260,7 @@ Readiness must return HTTP 200 and include both cache and database components as
 - [ ] Third-party provider public entry remains disabled.
 - [ ] Provider health does not expose a public launch path.
 
-## 10. Rollback
+## 11. Rollback
 
 If deployment fails:
 
