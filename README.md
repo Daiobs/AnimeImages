@@ -80,7 +80,7 @@ XHS_DEFAULT_SERVER_SAVE_DIR=/Users/your-name/Downloads/xhs
 
 开启后，小红书页面设置里会出现“开发保存模式”，可以像之前一样填写服务端绝对路径。
 
-超高清 Provider 相关配置默认关闭，当前只预留基础设施。开发环境可以在项目根目录 `.env` 中配置：
+Provider 的 `.env` 配置表示服务器具备对应底层能力，不等于公网开放。开发环境可以在项目根目录 `.env` 中准备常规 Provider 能力，日常开放/关闭仍通过 `/admin/provider-settings/` 控制：
 
 ```text
 ULTRA_HD_PROVIDER_ENABLED=False
@@ -101,8 +101,9 @@ TIKHUB_MAX_ATTEMPTS=2
 TIKHUB_PROBE_TIMEOUT_SECONDS=1.8
 TIKHUB_MAX_PROBE_CANDIDATES=1
 TIKHUB_VALIDATED_CACHE_TTL_SECONDS=600
-DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS=3.0
+DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS=4.0
 DOUYIN_ULTRA_NATIVE_TIMEOUT_SECONDS=3.0
+DOUYIN_ULTRA_KUKUTOOL_GRACE_SECONDS=1.0
 DOUYIN_NATIVE_EXECUTOR_WORKERS=4
 DOUYIN_NATIVE_MAX_PENDING_TASKS=8
 DOUYIN_SHORT_LINK_TIMEOUT_SECONDS=2.0
@@ -129,8 +130,8 @@ KUKUTOOL_CIRCUIT_OPEN_SECONDS=120
 KUKUTOOL_PROFILE_CACHE_TTL_SECONDS=86400
 KUKUTOOL_VALIDATED_CACHE_TTL_SECONDS=300
 KUKUTOOL_REFERENCE_WAIT_SECONDS=0.5
-THIRD_PARTY_PROVIDER_ENABLED=False
-THIRD_PARTY_PUBLIC_ACCESS_ENABLED=False
+THIRD_PARTY_PROVIDER_ENABLED=True
+THIRD_PARTY_INTERNAL_STAFF_ALLOW_ADULT=False
 THIRD_PARTY_RATE_LIMIT_PER_MINUTE=0
 THIRD_PARTY_GLOBAL_REQUEST_LIMIT_PER_MINUTE=0
 THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS=3.0
@@ -149,14 +150,19 @@ THIRD_PARTY_KUKUTOOL_CIRCUIT_WINDOW_SECONDS=60
 THIRD_PARTY_KUKUTOOL_CIRCUIT_OPEN_SECONDS=120
 THIRD_PARTY_KUKUTOOL_PROFILE_CACHE_TTL_SECONDS=86400
 THIRD_PARTY_KUKUTOOL_PAYLOAD_CACHE_TTL_SECONDS=120
-YTDLP_PROVIDER_ENABLED=False
+YTDLP_PROVIDER_ENABLED=True
 YTDLP_BINARY=
 YTDLP_TIMEOUT_SECONDS=15.0
 YTDLP_EXECUTOR_WORKERS=1
 YTDLP_MAX_PENDING_TASKS=2
 YTDLP_PAYLOAD_CACHE_TTL_SECONDS=300
 YTDLP_FAILURE_CACHE_TTL_SECONDS=30
-GALLERYDL_PROVIDER_ENABLED=False
+YTDLP_MERGE_PROVIDER_ENABLED=True
+YTDLP_MERGE_DEFAULT_MAX_HEIGHT=1080
+YTDLP_MERGE_HIGH_QUALITY_MAX_HEIGHT=4320
+YTDLP_MERGE_MAX_FILE_SIZE_BYTES=1073741824
+YOUTUBE_MERGE_PROVIDER_ENABLED=True
+GALLERYDL_PROVIDER_ENABLED=True
 GALLERYDL_BINARY=
 GALLERYDL_TIMEOUT_SECONDS=15.0
 GALLERYDL_EXECUTOR_WORKERS=1
@@ -170,7 +176,7 @@ PROVIDER_MANIFEST_MAX_AGE_SECONDS=3600
 
 `native` 是默认快路径，不打开“抖音超高清”时只走这一路。当前阶段打开超高清后，只调用 KuKuTool 上游；TikHub 和 `native_enhanced` 不进入同步网页请求链路。TikHub 配置仅保留给研究和诊断命令，不建议作为当前公网超高清路径。KuKuTool 返回的 `video_fullinfo` 会按码率、大小和质量参数排序，并以稳定的 TOS 对象路径去重。具备合法字节 CDN 域名、正文件大小、稳定对象路径和未到期签名的最高档候选会直接采用；元数据不完整时才执行 `Range: bytes=0-0` 校验。结果不再与本地 1080p 比较。
 
-超高清请求会在独立线程池中同时启动 KuKuTool 和 native，并只占用最多 `DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS` 的前台等待预算。KuKuTool 在预算内成功时返回超高清；到达 deadline 时若 native 已完成则立即返回 native，而 KuKuTool 在受控后台继续运行并回填缓存；两条路径都未完成时返回可重试的超时信息。验证后的签名 URL 使用 Django cache 缓存，TTL 同时受 `KUKUTOOL_VALIDATED_CACHE_TTL_SECONDS` 和 CDN URL 自身到期时间约束。
+超高清请求会在独立线程池中同时启动 KuKuTool 和 native，并只占用最多 `DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS` 的主要前台等待预算。KuKuTool 在预算内成功时返回超高清；到达 deadline 时若 native 已完成，会额外使用 `DOUYIN_ULTRA_KUKUTOOL_GRACE_SECONDS` 做一个短暂尾部等待，尽量接住刚好完成的 KuKuTool 4K 结果；仍未完成则返回 native，而 KuKuTool 在受控后台继续运行并回填缓存。两条路径都未完成时返回可重试的超时信息。验证后的签名 URL 使用 Django cache 缓存，TTL 同时受 `KUKUTOOL_VALIDATED_CACHE_TTL_SECONDS` 和 CDN URL 自身到期时间约束。
 
 该 Provider 可以直接启动 Node helper，也可以优先调用内部 `douyin-source-resolver` sidecar。直接启动 helper 时需要 Node.js 18 或更高版本，因为上游请求使用 Node 内置的 `fetch` 和 `crypto`；生产环境必须显式配置 `KUKUTOOL_NODE_BINARY` 或 `KUKUTOOL_SIDECAR_BASE_URL`，不会搜索用户 Home 下的 Codex runtime。本地 `DEBUG=True` 时才允许回退到系统 `node` 或开发机的 Codex runtime。找不到可用运行时或可用 sidecar 时，页面不会开放超高清开关。sidecar 在预算内失败时才回退本地 helper，helper 只使用剩余预算，避免突破前台解析 deadline。线程池、待处理任务数、单进程子进程数、Redis 全局并发和每分钟上游请求量均受配置限制；Redis single-flight 让相同 `aweme_id` 的并发请求共享一次上游任务。连续失败会打开临时熔断，staff 可通过 `/admin/provider-health/` 查看状态，并通过 `/admin/provider-health/control/` 紧急停用或恢复。Node 子进程只继承最小化环境，不会获得 Django 密钥、数据库 URL 或其他 API key。长驻 sidecar 是正式上线后的推荐形态，Django 只消费 `douyin-source-resolver.v1` 响应契约。
 
@@ -178,7 +184,7 @@ PROVIDER_MANIFEST_MAX_AGE_SECONDS=3600
 
 抖音短链接采用受控重定向解析。任一跳转地址一旦出现 `aweme_id`，解析器会立即启动 native/KuKuTool 流程，不再请求后续桌面页面，以减少短链解析延迟和偶发 404/超时。
 
-第三方通用解析已预留独立 Provider 开关。`THIRD_PARTY_PROVIDER_ENABLED` 和 `THIRD_PARTY_PUBLIC_ACCESS_ENABLED` 是总开关；`THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED` 只控制通用长尾平台里的 KuKuTool 上游，和抖音超高清的 `KUKUTOOL_PROVIDER_ENABLED` 分开。KuKuTool generic 在本地和生产都默认关闭，必须显式开启；先灰度 `yt-dlp` 或 `gallery-dl` 时可以不触发 KuKuTool Node helper。
+第三方通用解析采用 capability gate、runtime gate 和 platform gate 分层控制。`.env` 中的 `THIRD_PARTY_PROVIDER_ENABLED`、`YTDLP_PROVIDER_ENABLED`、`GALLERYDL_PROVIDER_ENABLED`、`YOUTUBE_MERGE_PROVIDER_ENABLED` 表示服务器具备对应底层能力，不代表公网开放；日常的 disabled / staff / public_gray / public 由 `/admin/provider-settings/` 的 `ProviderRuntimeSetting` 控制。第三方公开访问还必须命中后台配置的 `third_party_allowed_public_platforms` 或 `third_party_allowed_public_hosts`，allowlist 为空时不会向访客开放。`third_party_blocked_platforms`、`third_party_blocked_hosts` 和内置高风险 host 阻止列表优先级最高，即使命中 allowlist 也会拒绝。YouTube、Flickr 这类 safe 候选平台也不会自动公开；Instagram、Facebook、X、Reddit、Tumblr、DeviantArt 等 normal/sensitive 平台默认只适合 staff smoke；adult、age-restricted、login_required 平台默认不向访客开放，也不通过 Cookie、登录或风控绕过提供公开解析入口。`THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED` 只控制通用长尾平台里的 KuKuTool 上游，和抖音超高清的 `KUKUTOOL_PROVIDER_ENABLED` 分开。KuKuTool generic 在本地和生产都默认关闭，必须显式开启；先灰度 `yt-dlp` 或 `gallery-dl` 时可以不触发 KuKuTool Node helper。
 
 第三方通用解析已预留 `yt-dlp` 兜底 Provider。它不会替代小红书、抖音或哔哩哔哩的专用 adapter，也不参与抖音超高清主线；只在显式开启 `YTDLP_PROVIDER_ENABLED=True` 时，对通用第三方视频平台作为白名单兜底。生产环境应先安装并固定 `yt-dlp` 可执行命令，再设置 `YTDLP_BINARY`。调用时会带 `--ignore-config`，并在最小化子进程环境中设置 `YTDLP_NO_PLUGINS=1` 和 `PYTHONNOUSERSITE=1`，同时使用临时工作目录和临时 `HOME`，避免开发机或服务器用户级 yt-dlp 配置、插件、缓存或 user-site Python 包悄悄改变解析行为。该路径只采用直接 HTTP 的完整单文件视频；HLS/DASH、音视频分离格式，以及缺少明确音频/视频 codec 标记的直链候选都会被拒绝，避免返回无声视频或需要转码合并的资源。
 
@@ -186,7 +192,7 @@ PROVIDER_MANIFEST_MAX_AGE_SECONDS=3600
 
 通用第三方 Provider 会记录结构化解析诊断。每次 Provider 尝试都会在日志中写入 `third_party_provider_failed` 或 `third_party_provider_selected`，并把 `selected_provider`、`selected_provider_duration_ms`、`provider_attempts` 和 `provider_fallback_count` 写入 `ParseResult.metadata`，便于排查某个平台是上游超时、输出结构变化，还是媒体 URL 被白名单拒绝。`inspect_third_party_provider --json` 的成功和失败输出都会在顶层返回 `attempts`、规范化后的 `source_url` 和匹配到的 `platform_id`；输入或配置阶段失败时 `attempts` 为空列表，错误状态为 `rejected`，例如缺少 URL、不支持的 URL、未启用 Provider 或无效的 `--binary` 覆盖。终端文本输出会直接列出规范化 URL、平台 ID、每个 Provider 的状态和耗时，方便灰度排障。
 
-只打开 `THIRD_PARTY_PROVIDER_ENABLED` 和 `THIRD_PARTY_PUBLIC_ACCESS_ENABLED` 不会自动启用任何具体上游。若当前平台规则下没有启用的 provider，解析会在调用外部工具前返回“没有启用可用 Provider”，并记录 `third_party_provider_unavailable` 日志，方便灰度配置排查。公网第三方入口打开但具体 provider 全部关闭时，`manage.py check` 也会报 `xhs_download.E007`。
+只打开 `THIRD_PARTY_PROVIDER_ENABLED` 不会自动启用任何具体上游，也不会自动公开所有 yt-dlp/gallery-dl 支持站点。若当前平台规则下没有启用的 provider，解析会在调用外部工具前返回“没有启用可用 Provider”，并记录 `third_party_provider_unavailable` 日志，方便灰度配置排查。第三方 capability 打开但具体 provider 全部关闭时，`manage.py check` 也会报 `xhs_download.E007`。如果 runtime 已设为 public/public_gray 但 URL 未命中 allowlist，Web 入口会返回“该平台暂未进入公开灰度”；命中 blocked 或高风险策略时会返回更明确的拒绝原因。
 
 第三方通用解析入口同时有 IP 级分钟限流和全站分钟限流。`THIRD_PARTY_RATE_LIMIT_PER_MINUTE` 限制单个访客，`THIRD_PARTY_GLOBAL_REQUEST_LIMIT_PER_MINUTE` 在 Web 入口层限制所有访客合计请求，因此会覆盖 KuKuTool generic、`yt-dlp` 和 `gallery-dl`，避免灰度阶段被长尾平台请求打满 worker 或外部上游。
 
@@ -258,8 +264,11 @@ DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,testserver \
 DJANGO_CACHE_URL=redis://localhost:6379/0 \
 ULTRA_HD_PROVIDER_ENABLED=False \
 KUKUTOOL_PROVIDER_ENABLED=False \
-THIRD_PARTY_PROVIDER_ENABLED=False \
-THIRD_PARTY_PUBLIC_ACCESS_ENABLED=False \
+THIRD_PARTY_PROVIDER_ENABLED=True \
+YTDLP_PROVIDER_ENABLED=True \
+YTDLP_MERGE_PROVIDER_ENABLED=True \
+YOUTUBE_MERGE_PROVIDER_ENABLED=True \
+GALLERYDL_PROVIDER_ENABLED=True \
 DJANGO_SECURE_SSL_REDIRECT=True \
 DJANGO_SESSION_COOKIE_SECURE=True \
 DJANGO_CSRF_COOKIE_SECURE=True \

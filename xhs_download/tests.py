@@ -53,6 +53,14 @@ from .services.provider_settings import (
     normalize_provider_order,
 )
 from .services.provider_manifest import build_provider_manifest_token
+from .services.provider_access import (
+    PROVIDER_DOUYIN_ULTRA,
+    PROVIDER_THIRD_PARTY,
+    PROVIDER_YOUTUBE_MERGE,
+    request_rollout_bucket,
+    third_party_public_access_allowed,
+    third_party_public_access_summary,
+)
 from .models import ProviderAccessMode, ProviderRuntimeSetting
 from .views import (
     build_provider_preview_query,
@@ -3378,10 +3386,14 @@ class XhsDownloadViewTests(TestCase):
         setting = ProviderRuntimeSetting.load()
         setting.third_party_mode = ProviderAccessMode.PUBLIC
         setting.youtube_merge_mode = ProviderAccessMode.PUBLIC
+        setting.third_party_allowed_public_platforms = (
+            "youtube,kuaishou,tiktok,flickr,imgur"
+        )
         setting.save(
             update_fields=[
                 "third_party_mode",
                 "youtube_merge_mode",
+                "third_party_allowed_public_platforms",
                 "updated_at",
             ]
         )
@@ -6098,7 +6110,16 @@ class ProviderSettingsAdminViewTests(TestCase):
                 "douyin_ultra_mode": ProviderAccessMode.STAFF,
                 "youtube_merge_mode": ProviderAccessMode.DISABLED,
                 "third_party_mode": ProviderAccessMode.PUBLIC,
-                "rollout_percent": "42",
+                "douyin_ultra_rollout_percent": "5",
+                "youtube_merge_rollout_percent": "42",
+                "third_party_rollout_percent": "9",
+                "douyin_ultra_disabled_reason": "upstream watch",
+                "youtube_merge_disabled_reason": "queue watch",
+                "third_party_disabled_reason": "smoke only",
+                "third_party_allowed_public_platforms": "youtube",
+                "third_party_allowed_public_hosts": "youtube.com",
+                "third_party_blocked_platforms": "reddit",
+                "third_party_blocked_hosts": "youtube.com.evil.com",
                 "kukutool_disabled": "1",
             },
         )
@@ -6108,7 +6129,16 @@ class ProviderSettingsAdminViewTests(TestCase):
         self.assertEqual(setting.douyin_ultra_mode, ProviderAccessMode.STAFF)
         self.assertEqual(setting.youtube_merge_mode, ProviderAccessMode.DISABLED)
         self.assertEqual(setting.third_party_mode, ProviderAccessMode.PUBLIC)
-        self.assertEqual(setting.rollout_percent, 42)
+        self.assertEqual(setting.douyin_ultra_rollout_percent, 5)
+        self.assertEqual(setting.youtube_merge_rollout_percent, 42)
+        self.assertEqual(setting.third_party_rollout_percent, 9)
+        self.assertEqual(setting.douyin_ultra_disabled_reason, "upstream watch")
+        self.assertEqual(setting.youtube_merge_disabled_reason, "queue watch")
+        self.assertEqual(setting.third_party_disabled_reason, "smoke only")
+        self.assertEqual(setting.third_party_allowed_public_platforms, "youtube")
+        self.assertEqual(setting.third_party_allowed_public_hosts, "youtube.com")
+        self.assertEqual(setting.third_party_blocked_platforms, "reddit")
+        self.assertEqual(setting.third_party_blocked_hosts, "youtube.com.evil.com")
         self.assertTrue(setting.kukutool_disabled)
 
     def test_provider_runtime_defaults_are_conservative(self):
@@ -6118,6 +6148,13 @@ class ProviderSettingsAdminViewTests(TestCase):
         self.assertEqual(setting.youtube_merge_mode, ProviderAccessMode.DISABLED)
         self.assertEqual(setting.third_party_mode, ProviderAccessMode.DISABLED)
         self.assertEqual(setting.rollout_percent, 0)
+        self.assertEqual(setting.douyin_ultra_rollout_percent, 0)
+        self.assertEqual(setting.youtube_merge_rollout_percent, 0)
+        self.assertEqual(setting.third_party_rollout_percent, 0)
+        self.assertEqual(setting.third_party_allowed_public_platforms, "")
+        self.assertEqual(setting.third_party_allowed_public_hosts, "")
+        self.assertEqual(setting.third_party_blocked_platforms, "")
+        self.assertEqual(setting.third_party_blocked_hosts, "")
 
     @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
     def test_capability_enabled_admin_disabled_is_not_available(self):
@@ -6146,9 +6183,13 @@ class ProviderSettingsAdminViewTests(TestCase):
     def test_capability_enabled_public_gray_zero_blocks_visitor(self):
         setting = ProviderRuntimeSetting.load()
         setting.third_party_mode = ProviderAccessMode.PUBLIC_GRAY
-        setting.rollout_percent = 0
+        setting.third_party_rollout_percent = 0
         setting.save(
-            update_fields=["third_party_mode", "rollout_percent", "updated_at"]
+            update_fields=[
+                "third_party_mode",
+                "third_party_rollout_percent",
+                "updated_at",
+            ]
         )
         request = RequestFactory().get("/")
         request.user = Mock(is_active=False, is_staff=False)
@@ -6159,14 +6200,201 @@ class ProviderSettingsAdminViewTests(TestCase):
     def test_capability_enabled_public_gray_hundred_allows_visitor(self):
         setting = ProviderRuntimeSetting.load()
         setting.third_party_mode = ProviderAccessMode.PUBLIC_GRAY
-        setting.rollout_percent = 100
+        setting.third_party_rollout_percent = 100
         setting.save(
-            update_fields=["third_party_mode", "rollout_percent", "updated_at"]
+            update_fields=["third_party_mode", "third_party_rollout_percent", "updated_at"]
         )
         request = RequestFactory().get("/")
         request.user = Mock(is_active=False, is_staff=False)
 
         self.assertTrue(third_party_provider_is_available(request))
+
+    @override_settings(
+        YOUTUBE_MERGE_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        KUKUTOOL_PROVIDER_ENABLED=True,
+    )
+    def test_provider_rollout_percent_is_independent_per_provider(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.youtube_merge_mode = ProviderAccessMode.PUBLIC_GRAY
+        setting.third_party_mode = ProviderAccessMode.PUBLIC_GRAY
+        setting.douyin_ultra_mode = ProviderAccessMode.PUBLIC_GRAY
+        setting.youtube_merge_rollout_percent = 100
+        setting.third_party_rollout_percent = 0
+        setting.douyin_ultra_rollout_percent = 0
+        setting.save(
+            update_fields=[
+                "youtube_merge_mode",
+                "third_party_mode",
+                "douyin_ultra_mode",
+                "youtube_merge_rollout_percent",
+                "third_party_rollout_percent",
+                "douyin_ultra_rollout_percent",
+                "updated_at",
+            ]
+        )
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=False, is_staff=False)
+
+        with patch(
+            "xhs_download.views.get_youtube_merge_health",
+            return_value={"implemented": True, "ready": True},
+        ):
+            self.assertTrue(youtube_merge_mode_is_available(request))
+        self.assertFalse(third_party_provider_is_available(request))
+        with patch("xhs_download.views.get_kukutool_provider_health", return_value={"available": True}):
+            self.assertFalse(ultra_hd_is_available(request))
+
+    def test_rollout_bucket_is_stable_and_provider_specific(self):
+        request = RequestFactory().get("/", HTTP_USER_AGENT="pytest")
+        request.user = Mock(is_active=False, is_staff=False, is_authenticated=False)
+
+        youtube_bucket = request_rollout_bucket(PROVIDER_YOUTUBE_MERGE, request)
+        self.assertEqual(
+            youtube_bucket,
+            request_rollout_bucket(PROVIDER_YOUTUBE_MERGE, request),
+        )
+        self.assertNotEqual(
+            youtube_bucket,
+            request_rollout_bucket(PROVIDER_THIRD_PARTY, request),
+        )
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_third_party_public_requires_allowlist(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC
+        setting.save(update_fields=["third_party_mode", "updated_at"])
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=False, is_staff=False, is_authenticated=False)
+
+        summary = third_party_public_access_summary(
+            "https://www.youtube.com/watch?v=demo",
+            request,
+        )
+
+        self.assertFalse(summary["allowed"])
+        self.assertEqual(summary["error_code"], "THIRD_PARTY_PLATFORM_NOT_ALLOWLISTED")
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_third_party_allowed_platform_allows_public_visitor(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC
+        setting.third_party_allowed_public_platforms = "youtube"
+        setting.save(
+            update_fields=[
+                "third_party_mode",
+                "third_party_allowed_public_platforms",
+                "updated_at",
+            ]
+        )
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=False, is_staff=False, is_authenticated=False)
+
+        self.assertTrue(
+            third_party_public_access_allowed(
+                "https://www.youtube.com/watch?v=demo",
+                request,
+            )
+        )
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_third_party_allowed_host_uses_strict_suffix_boundary(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC
+        setting.third_party_allowed_public_hosts = "youtube.com"
+        setting.save(
+            update_fields=[
+                "third_party_mode",
+                "third_party_allowed_public_hosts",
+                "updated_at",
+            ]
+        )
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=False, is_staff=False, is_authenticated=False)
+
+        self.assertTrue(
+            third_party_public_access_allowed(
+                "https://www.youtube.com/watch?v=demo",
+                request,
+            )
+        )
+        self.assertFalse(
+            third_party_public_access_allowed(
+                "https://youtube.com.evil.com/watch?v=demo",
+                request,
+            )
+        )
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_third_party_blocklist_wins_over_allowlist(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC
+        setting.third_party_allowed_public_platforms = "youtube,reddit"
+        setting.third_party_blocked_platforms = "reddit"
+        setting.third_party_blocked_hosts = "youtube.com"
+        setting.save(
+            update_fields=[
+                "third_party_mode",
+                "third_party_allowed_public_platforms",
+                "third_party_blocked_platforms",
+                "third_party_blocked_hosts",
+                "updated_at",
+            ]
+        )
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=False, is_staff=False, is_authenticated=False)
+
+        self.assertFalse(
+            third_party_public_access_allowed(
+                "https://www.youtube.com/watch?v=demo",
+                request,
+            )
+        )
+        self.assertFalse(
+            third_party_public_access_allowed(
+                "https://www.reddit.com/r/pics/comments/demo",
+                request,
+            )
+        )
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_third_party_sensitive_staff_smoke_but_public_requires_allowlist(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["third_party_mode", "updated_at"])
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=True, is_staff=True, is_authenticated=True)
+
+        self.assertTrue(
+            third_party_public_access_allowed(
+                "https://www.instagram.com/p/demo",
+                request,
+            )
+        )
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_third_party_built_in_adult_host_is_rejected_for_staff_by_default(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.STAFF
+        setting.third_party_allowed_public_hosts = "onlyfans.com"
+        setting.save(
+            update_fields=[
+                "third_party_mode",
+                "third_party_allowed_public_hosts",
+                "updated_at",
+            ]
+        )
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=True, is_staff=True, is_authenticated=True)
+
+        summary = third_party_public_access_summary(
+            "https://onlyfans.com/demo",
+            request,
+        )
+
+        self.assertFalse(summary["allowed"])
+        self.assertEqual(summary["error_code"], "THIRD_PARTY_PLATFORM_BLOCKED")
 
     @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
     def test_capability_enabled_admin_public_allows_visitor(self):
@@ -6182,11 +6410,24 @@ class ProviderSettingsAdminViewTests(TestCase):
     def test_capability_disabled_admin_public_is_still_unavailable(self):
         setting = ProviderRuntimeSetting.load()
         setting.third_party_mode = ProviderAccessMode.PUBLIC
-        setting.save(update_fields=["third_party_mode", "updated_at"])
+        setting.third_party_allowed_public_platforms = "youtube"
+        setting.save(
+            update_fields=[
+                "third_party_mode",
+                "third_party_allowed_public_platforms",
+                "updated_at",
+            ]
+        )
         request = RequestFactory().get("/")
         request.user = Mock(is_active=True, is_staff=True)
 
         self.assertFalse(third_party_provider_is_available(request))
+        self.assertFalse(
+            third_party_public_access_allowed(
+                "https://www.youtube.com/watch?v=demo",
+                request,
+            )
+        )
 
     @override_settings(
         ULTRA_HD_PROVIDER_ENABLED=True,

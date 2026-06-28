@@ -38,6 +38,7 @@ class ProviderSettings:
     tikhub_daily_limit: int = 0
     ultra_total_timeout_seconds: float = 4.0
     ultra_native_timeout_seconds: float = 3.0
+    ultra_kukutool_grace_seconds: float = 1.0
     tikhub_connect_timeout_seconds: float = 1.0
     tikhub_read_timeout_seconds: float = 6.5
     tikhub_max_attempts: int = 2
@@ -212,6 +213,7 @@ def get_platform_provider_settings(platform_id):
         tikhub_daily_limit=int(getattr(settings, "TIKHUB_DAILY_LIMIT", 0) or 0),
         ultra_total_timeout_seconds=float(getattr(settings, "DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS", 4.0) or 0),
         ultra_native_timeout_seconds=float(getattr(settings, "DOUYIN_ULTRA_NATIVE_TIMEOUT_SECONDS", 3.0) or 0),
+        ultra_kukutool_grace_seconds=float(getattr(settings, "DOUYIN_ULTRA_KUKUTOOL_GRACE_SECONDS", 1.0) or 0),
         tikhub_connect_timeout_seconds=float(getattr(settings, "TIKHUB_CONNECT_TIMEOUT_SECONDS", 1.0) or 0),
         tikhub_read_timeout_seconds=float(getattr(settings, "TIKHUB_READ_TIMEOUT_SECONDS", 6.5) or 0),
         tikhub_max_attempts=max(1, int(getattr(settings, "TIKHUB_MAX_ATTEMPTS", 2) or 1)),

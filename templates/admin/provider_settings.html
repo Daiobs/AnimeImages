@@ -383,6 +383,87 @@
         font-weight: 800;
     }
 
+    .provider-field-grid {
+        display: grid;
+        gap: 10px;
+        margin-top: 12px;
+    }
+
+    .provider-field {
+        display: grid;
+        gap: 6px;
+        color: var(--provider-text);
+        font-size: 13px;
+        font-weight: 800;
+    }
+
+    .provider-field input,
+    .provider-field textarea {
+        min-height: 38px;
+        border: 1px solid var(--provider-line);
+        border-radius: 8px;
+        padding: 8px 10px;
+        color: var(--provider-text);
+        font: inherit;
+        font-weight: 700;
+    }
+
+    .provider-field textarea {
+        min-height: 86px;
+        resize: vertical;
+    }
+
+    .provider-platform-panel {
+        border: 1px solid var(--provider-line);
+        border-radius: 8px;
+        background: #fff;
+        overflow: hidden;
+    }
+
+    .provider-platform-header {
+        padding: 16px 18px;
+        border-bottom: 1px solid var(--provider-line);
+    }
+
+    .provider-platform-title {
+        margin: 0;
+        color: var(--provider-text);
+        font-size: 18px;
+        font-weight: 900;
+    }
+
+    .provider-platform-help {
+        margin-top: 6px;
+        color: var(--provider-muted);
+        font-size: 13px;
+        line-height: 1.6;
+    }
+
+    .provider-platform-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+    }
+
+    .provider-platform-table th,
+    .provider-platform-table td {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--provider-line);
+        color: var(--provider-text);
+        text-align: left;
+        vertical-align: top;
+    }
+
+    .provider-platform-table th {
+        background: #f9fafb;
+        color: var(--provider-muted);
+        font-weight: 900;
+    }
+
+    .provider-platform-table tr:last-child td {
+        border-bottom: 0;
+    }
+
     .provider-actions {
         display: flex;
         flex-wrap: wrap;
@@ -455,7 +536,7 @@
         <div class="provider-warning">
             <span class="provider-warning-icon">!</span>
                 <span>
-                .env 只表示服务器具备对应 Provider 能力；实际开放状态由这里的 disabled / staff / public_gray / public 控制。抖音超高清依赖 KuKuTool 上游，可单独保持关闭。
+                .env 只表示服务器具备对应 Provider 能力；实际开放状态由这里的 disabled / staff / public_gray / public 控制。第三方 Provider 公开访问还必须命中平台/Host 白名单，黑名单永远优先。
             </span>
         </div>
 
@@ -520,6 +601,10 @@
                                     <span>灰度命中</span>
                                     <strong>{{ row.access.rollout_allowed|yesno:"是,否" }}</strong>
                                 </div>
+                                <div class="provider-fact">
+                                    <span>访问原因</span>
+                                    <strong>{{ row.access.access_reason }}</strong>
+                                </div>
                             </div>
                             {% if row.issue %}
                                 <div class="provider-issue">问题：{{ row.issue }}</div>
@@ -543,6 +628,28 @@
                                     </label>
                                 {% endfor %}
                             </div>
+                            <div class="provider-field-grid">
+                                <label class="provider-field">
+                                    <span>公开灰度比例</span>
+                                    <input
+                                        type="number"
+                                        name="{{ row.rollout_field }}"
+                                        min="0"
+                                        max="100"
+                                        step="1"
+                                        value="{{ row.current_rollout_percent }}"
+                                    >
+                                </label>
+                                <label class="provider-field">
+                                    <span>停用/灰度说明</span>
+                                    <input
+                                        type="text"
+                                        name="{{ row.disabled_reason_field }}"
+                                        value="{{ row.disabled_reason }}"
+                                        placeholder="例如：等待 smoke、上游不稳定、费用观察中"
+                                    >
+                                </label>
+                            </div>
                         </div>
                     </article>
                 {% endfor %}
@@ -550,20 +657,60 @@
 
             <section class="provider-emergency">
                 <div>
-                    <div class="provider-emergency-title">公开灰度比例</div>
-                    <div class="provider-emergency-help">仅对设置为 public_gray 的 Provider 生效；staff 用户不受灰度比例限制。</div>
+                    <div class="provider-emergency-title">第三方公开平台白名单</div>
+                    <div class="provider-emergency-help">allowlist 为空时，通用第三方 Provider 不向访客开放；blocked 优先级高于 allowed。</div>
                 </div>
-                <label class="provider-rollout-input">
-                    <span>比例</span>
-                    <input
-                        type="number"
-                        name="rollout_percent"
-                        min="0"
-                        max="100"
-                        step="1"
-                        value="{{ runtime_setting.rollout_percent }}"
-                    >
-                </label>
+                <div class="provider-field-grid" style="flex: 1 1 520px;">
+                    <label class="provider-field">
+                        <span>允许公开平台 platform_id</span>
+                        <textarea name="third_party_allowed_public_platforms" placeholder="youtube&#10;flickr">{{ runtime_setting.third_party_allowed_public_platforms }}</textarea>
+                    </label>
+                    <label class="provider-field">
+                        <span>允许公开 Host</span>
+                        <textarea name="third_party_allowed_public_hosts" placeholder="youtube.com&#10;flickr.com">{{ runtime_setting.third_party_allowed_public_hosts }}</textarea>
+                    </label>
+                    <label class="provider-field">
+                        <span>阻止平台 platform_id</span>
+                        <textarea name="third_party_blocked_platforms" placeholder="reddit&#10;x">{{ runtime_setting.third_party_blocked_platforms }}</textarea>
+                    </label>
+                    <label class="provider-field">
+                        <span>阻止 Host</span>
+                        <textarea name="third_party_blocked_hosts" placeholder="example.com">{{ runtime_setting.third_party_blocked_hosts }}</textarea>
+                    </label>
+                </div>
+            </section>
+
+            <section class="provider-platform-panel">
+                <div class="provider-platform-header">
+                    <h2 class="provider-platform-title">内置支持平台风险表</h2>
+                    <div class="provider-platform-help">
+                        public_default 只是候选提示，不会自动公开。adult / login_required 默认不向访客开放，staff smoke 也不能绕过黑名单。
+                    </div>
+                </div>
+                <table class="provider-platform-table">
+                    <thead>
+                        <tr>
+                            <th>平台</th>
+                            <th>Host 后缀</th>
+                            <th>风险</th>
+                            <th>公开候选</th>
+                            <th>Staff 默认</th>
+                            <th>说明</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for rule in third_party_platform_rules %}
+                            <tr>
+                                <td><strong>{{ rule.platform_id }}</strong><br>{{ rule.display_name }}</td>
+                                <td>{{ rule.host_suffixes|join:", " }}</td>
+                                <td>{{ rule.risk_level }}</td>
+                                <td>{{ rule.public_default|yesno:"是,否" }}</td>
+                                <td>{{ rule.staff_default|yesno:"是,否" }}</td>
+                                <td>{{ rule.notes }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
             </section>
 
             <section class="provider-emergency">

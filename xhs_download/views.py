@@ -46,6 +46,7 @@ from .services.platforms.douyin_kukutool import (
 from .services.platforms.gallerydl_generic import GalleryDlGenericProvider
 from .services.platforms.kukutool_generic import KukutoolGenericProvider
 from .services.platforms.third_party import build_third_party_rollout_status
+from .services.platforms.third_party import THIRD_PARTY_PLATFORM_RULES
 from .services.platforms.ytdlp_generic import YtDlpGenericProvider
 from .services.provider_access import (
     PROVIDER_DOUYIN_ULTRA,
@@ -53,6 +54,7 @@ from .services.provider_access import (
     PROVIDER_YOUTUBE_MERGE,
     provider_access_summary,
     provider_is_allowed_for_request,
+    third_party_public_access_summary,
 )
 from .services.registry import get_adapter_for_url, parse_media_page
 from .services.provider_manifest import build_provider_manifest_token
@@ -369,7 +371,11 @@ def build_provider_dashboard_rows(runtime_setting, request):
             "name": "抖音超高清",
             "description": "使用 KuKuTool 上游获取抖音超高清 / 4K 候选资源。",
             "mode_field": "douyin_ultra_mode",
+            "rollout_field": "douyin_ultra_rollout_percent",
+            "disabled_reason_field": "douyin_ultra_disabled_reason",
             "current_mode": runtime_setting.douyin_ultra_mode,
+            "current_rollout_percent": runtime_setting.douyin_ultra_rollout_percent,
+            "disabled_reason": runtime_setting.douyin_ultra_disabled_reason,
             "health_ready": bool(kukutool_health.get("available")),
             "health_label": "可用" if kukutool_health.get("available") else "不可用",
             "issue": (
@@ -386,7 +392,11 @@ def build_provider_dashboard_rows(runtime_setting, request):
             "name": "YouTube 高清合并",
             "description": "通过 yt-dlp + ffmpeg 生成 1080p 或最高画质单文件。",
             "mode_field": "youtube_merge_mode",
+            "rollout_field": "youtube_merge_rollout_percent",
+            "disabled_reason_field": "youtube_merge_disabled_reason",
             "current_mode": runtime_setting.youtube_merge_mode,
+            "current_rollout_percent": runtime_setting.youtube_merge_rollout_percent,
+            "disabled_reason": runtime_setting.youtube_merge_disabled_reason,
             "health_ready": bool(youtube_health.get("ready")),
             "health_label": "可用" if youtube_health.get("ready") else "不可用",
             "issue": (
@@ -401,7 +411,11 @@ def build_provider_dashboard_rows(runtime_setting, request):
             "name": "通用第三方 Provider",
             "description": "用于 yt-dlp、gallery-dl 和长尾平台的通用解析入口。",
             "mode_field": "third_party_mode",
+            "rollout_field": "third_party_rollout_percent",
+            "disabled_reason_field": "third_party_disabled_reason",
             "current_mode": runtime_setting.third_party_mode,
+            "current_rollout_percent": runtime_setting.third_party_rollout_percent,
+            "disabled_reason": runtime_setting.third_party_disabled_reason,
             "health_ready": bool(third_party_summary.get("staff_ready")),
             "health_label": (
                 "可用" if third_party_summary.get("staff_ready") else "不可用"
@@ -434,18 +448,42 @@ def provider_settings_view(request):
             if value not in valid_modes:
                 value = ProviderAccessMode.DISABLED
             setattr(runtime_setting, field_name, value)
-        try:
-            rollout_percent = int(request.POST.get("rollout_percent", "0") or 0)
-        except (TypeError, ValueError):
-            rollout_percent = 0
-        runtime_setting.rollout_percent = min(100, max(0, rollout_percent))
+        for field_name in (
+            "douyin_ultra_rollout_percent",
+            "youtube_merge_rollout_percent",
+            "third_party_rollout_percent",
+        ):
+            try:
+                rollout_percent = int(request.POST.get(field_name, "0") or 0)
+            except (TypeError, ValueError):
+                rollout_percent = 0
+            setattr(runtime_setting, field_name, min(100, max(0, rollout_percent)))
+        for field_name in (
+            "douyin_ultra_disabled_reason",
+            "youtube_merge_disabled_reason",
+            "third_party_disabled_reason",
+            "third_party_allowed_public_hosts",
+            "third_party_blocked_hosts",
+            "third_party_allowed_public_platforms",
+            "third_party_blocked_platforms",
+        ):
+            setattr(runtime_setting, field_name, str(request.POST.get(field_name, "") or "").strip())
         runtime_setting.kukutool_disabled = request.POST.get("kukutool_disabled") == "1"
         runtime_setting.save(
             update_fields=[
                 "douyin_ultra_mode",
                 "youtube_merge_mode",
                 "third_party_mode",
-                "rollout_percent",
+                "douyin_ultra_rollout_percent",
+                "youtube_merge_rollout_percent",
+                "third_party_rollout_percent",
+                "douyin_ultra_disabled_reason",
+                "youtube_merge_disabled_reason",
+                "third_party_disabled_reason",
+                "third_party_allowed_public_hosts",
+                "third_party_blocked_hosts",
+                "third_party_allowed_public_platforms",
+                "third_party_blocked_platforms",
                 "kukutool_disabled",
                 "updated_at",
             ]
@@ -463,6 +501,9 @@ def provider_settings_view(request):
             "access_modes": ProviderAccessMode.choices,
             "provider_rows": rows,
             "provider_health": health,
+            "third_party_platform_rules": [
+                rule.to_dict() for rule in THIRD_PARTY_PLATFORM_RULES
+            ],
         },
     )
 
@@ -859,6 +900,11 @@ def build_search_results_context(request, platform_key="home"):
                 context["error_message"] = "第三方通用解析暂未向该用户开放。"
                 return context, 403
             context["error_message"] = "第三方通用解析暂未开放。"
+            return context, 403
+        third_party_gate = third_party_public_access_summary(query, request)
+        if not third_party_gate["allowed"]:
+            context["error_message"] = third_party_gate["message"]
+            context["provider_notice"] = third_party_gate.get("error_code", "")
             return context, 403
         try:
             limit = consume_fixed_window(
