@@ -39,6 +39,8 @@ body {
 }
 
 #header {
+    display: flex;
+    gap: 18px;
     min-height: 64px;
     align-items: center;
     padding: 0 clamp(18px, 4vw, 54px);
@@ -49,8 +51,10 @@ body {
 
 #branding {
     display: flex;
+    order: 1;
     align-items: center;
     min-height: 64px;
+    flex: 0 0 auto;
 }
 
 .admin-site-brand a,
@@ -68,10 +72,11 @@ body {
 
 .admin-global-nav {
     display: flex;
+    order: 2;
     flex-wrap: wrap;
     align-items: center;
     gap: 10px;
-    margin-left: 22px;
+    margin-left: 0;
 }
 
 .admin-global-nav a:link,
@@ -93,9 +98,15 @@ body {
 }
 
 #user-tools {
+    display: flex;
+    order: 3;
+    align-items: center;
+    gap: 10px;
+    margin-left: auto;
     color: #6b7280;
     font-size: 12px;
     letter-spacing: 0;
+    white-space: nowrap;
 }
 
 #user-tools a,
@@ -105,6 +116,40 @@ body {
     color: #855be8;
     font-weight: 800;
     text-decoration: none;
+}
+
+.admin-account-user {
+    display: inline-flex;
+    min-height: 30px;
+    align-items: center;
+    padding: 0 10px;
+    border-radius: 999px;
+    background: #f7f1ff;
+    color: #7447dd;
+    font-weight: 900;
+}
+
+#logout-form {
+    display: inline-flex;
+    margin: 0;
+}
+
+#logout-form .admin-logout-button {
+    min-height: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: #855be8;
+    font-size: 12px;
+    font-weight: 800;
+    box-shadow: none;
+}
+
+#logout-form .admin-logout-button:hover {
+    background: transparent;
+    color: #7447dd;
+    text-decoration: underline;
 }
 
 div.breadcrumbs {
@@ -353,8 +398,12 @@ ul.errorlist {
 
     .admin-global-nav {
         order: 3;
-        width: 100%;
+        width: auto;
         margin-left: 0;
+    }
+
+    #user-tools {
+        order: 2;
     }
 
     .dashboard #content-main,
@@ -376,5 +425,20 @@ ul.errorlist {
     #site-name a:link,
     #site-name a:visited {
         font-size: 19px;
+    }
+
+    #header {
+        gap: 8px;
+    }
+
+    .admin-global-nav,
+    #user-tools {
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    #user-tools {
+        margin-left: 0;
+        white-space: normal;
     }
 }

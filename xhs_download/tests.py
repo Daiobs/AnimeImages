@@ -1,4 +1,5 @@
 from io import BytesIO, StringIO
+from datetime import datetime, timezone as datetime_timezone
 import json
 import os
 import time
@@ -73,6 +74,9 @@ from .models import (
     ParseRequestLog,
     ProviderAccessMode,
     ProviderAdminAuditLog,
+    ProviderHealthTestSetting,
+    ProviderHealthTestRun,
+    ProviderHealthTestStatus,
     ProviderRuntimeSetting,
 )
 from .views import (
@@ -6623,6 +6627,417 @@ class ProviderSettingsAdminViewTests(TestCase):
         self.assertTrue(third_party_provider_is_available(request))
 
 
+class ProviderHealthTestPanelTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+
+        cache.clear()
+        self.staff = get_user_model().objects.create_user(
+            username="health-staff",
+            password="test-password",
+            is_staff=True,
+        )
+        self.superuser = get_user_model().objects.create_superuser(
+            username="health-root",
+            password="test-password",
+        )
+
+    def grant_health_permission(self, user, codename):
+        permission = Permission.objects.get(
+            content_type__app_label="xhs_download",
+            codename=codename,
+        )
+        user.user_permissions.add(permission)
+        for cache_name in ("_perm_cache", "_user_perm_cache", "_group_perm_cache"):
+            if hasattr(user, cache_name):
+                delattr(user, cache_name)
+
+    def test_provider_health_tests_page_permissions(self):
+        staff_client = Client()
+        staff_client.force_login(self.staff)
+        super_client = Client()
+        super_client.force_login(self.superuser)
+
+        self.assertEqual(Client().get("/admin/provider-health-tests/").status_code, 404)
+        self.assertEqual(staff_client.get("/admin/provider-health-tests/").status_code, 404)
+        self.assertContains(super_client.get("/admin/provider-health-tests/"), "Provider 健康测试")
+
+        self.grant_health_permission(self.staff, "view_providerhealthtestrun")
+        self.assertContains(staff_client.get("/admin/provider-health-tests/"), "下载限流配置")
+
+    @patch("xhs_download.views.get_runtime_readiness", return_value={"ready": True, "components": {"database": True, "cache": True}})
+    def test_provider_health_tests_execute_permissions(self, _mock_readiness):
+        staff_client = Client()
+        staff_client.force_login(self.staff)
+        super_client = Client()
+        super_client.force_login(self.superuser)
+
+        blocked = staff_client.post("/admin/provider-health-tests/", data={"test_key": "health_ready"})
+        self.assertEqual(blocked.status_code, 404)
+
+        ok = super_client.post("/admin/provider-health-tests/", data={"test_key": "health_ready"})
+        self.assertEqual(ok.status_code, 302)
+        self.assertEqual(ProviderHealthTestRun.objects.get().status, ProviderHealthTestStatus.SUCCESS)
+
+        ProviderHealthTestRun.objects.all().delete()
+        self.grant_health_permission(self.staff, "add_providerhealthtestrun")
+        permitted = staff_client.post("/admin/provider-health-tests/", data={"test_key": "health_ready"})
+        self.assertEqual(permitted.status_code, 302)
+        self.assertEqual(ProviderHealthTestRun.objects.get().actor_username, "health-staff")
+
+    @patch("xhs_download.views.get_runtime_readiness", return_value={"ready": True, "components": {"database": True, "cache": True}})
+    def test_provider_health_tests_run_all_records_each_test(self, _mock_readiness):
+        staff_client = Client()
+        staff_client.force_login(self.staff)
+
+        blocked = staff_client.post("/admin/provider-health-tests/", data={"action": "run_all_tests"})
+        self.assertEqual(blocked.status_code, 404)
+
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.post("/admin/provider-health-tests/", data={"action": "run_all_tests"})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(ProviderHealthTestRun.objects.count(), 6)
+        statuses = dict(
+            ProviderHealthTestRun.objects.values_list("test_key", "status")
+        )
+        self.assertEqual(statuses["health_ready"], ProviderHealthTestStatus.SUCCESS)
+        self.assertEqual(statuses["douyin_native_parse"], ProviderHealthTestStatus.SKIPPED)
+        self.assertEqual(statuses["douyin_kukutool_ultra"], ProviderHealthTestStatus.SKIPPED)
+        self.assertEqual(statuses["youtube_merge"], ProviderHealthTestStatus.SKIPPED)
+        self.assertEqual(statuses["third_party_ytdlp"], ProviderHealthTestStatus.SKIPPED)
+        self.assertEqual(statuses["gallery_dl"], ProviderHealthTestStatus.SKIPPED)
+
+    @patch("xhs_download.views.get_runtime_readiness", return_value={"ready": True, "components": {"database": True, "cache": True}})
+    def test_provider_health_tests_ajax_post_renders_panel_without_redirect(self, _mock_readiness):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.post(
+            "/admin/provider-health-tests/",
+            data={"test_key": "health_ready"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("Location", response)
+        self.assertContains(response, "Runtime Readiness 测试完成：成功")
+        self.assertContains(response, "health_ready")
+        self.assertEqual(ProviderHealthTestRun.objects.get().status, ProviderHealthTestStatus.SUCCESS)
+
+    @patch("xhs_download.views.get_runtime_readiness", return_value={"ready": True, "components": {"database": True, "cache": True}})
+    def test_provider_health_tests_ajax_run_all_renders_panel_without_redirect(self, _mock_readiness):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.post(
+            "/admin/provider-health-tests/",
+            data={"action": "run_all_tests"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("Location", response)
+        self.assertContains(response, "Provider 一键测试完成")
+        self.assertEqual(ProviderHealthTestRun.objects.count(), 6)
+
+    def test_provider_health_test_empty_url_returns_skipped(self):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.post(
+            "/admin/provider-health-tests/",
+            data={"test_key": "douyin_native_parse"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        run = ProviderHealthTestRun.objects.get()
+        self.assertEqual(run.status, ProviderHealthTestStatus.SKIPPED)
+        self.assertEqual(run.error_type, "TestUrlMissing")
+
+    @override_settings(YTDLP_MERGE_DEFAULT_MAX_HEIGHT=1080)
+    @patch("xhs_download.views.build_youtube_merge_plan", return_value={"available": True})
+    @patch("xhs_download.views.YtDlpGenericProvider.parse", return_value={"title": "Demo"})
+    @patch(
+        "xhs_download.views.get_youtube_merge_health",
+        return_value={"implemented": True, "ready": True, "timeout_seconds": 10},
+    )
+    def test_youtube_health_test_uses_default_1080p_merge_target(
+        self,
+        _mock_health,
+        _mock_parse,
+        mock_plan,
+    ):
+        setting = ProviderHealthTestSetting.load()
+        setting.youtube_url = "https://www.youtube.com/watch?v=dt-m5GT2rSc"
+        setting.save()
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.post(
+            "/admin/provider-health-tests/",
+            data={"test_key": "youtube_merge"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(ProviderHealthTestRun.objects.get().status, ProviderHealthTestStatus.SUCCESS)
+        self.assertEqual(mock_plan.call_args.kwargs["max_height"], 1080)
+
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=False,
+        KUKUTOOL_PROVIDER_ENABLED=False,
+    )
+    def test_provider_health_test_capability_disabled_is_unavailable(self):
+        setting = ProviderHealthTestSetting.load()
+        setting.douyin_url = "https://www.douyin.com/video/123"
+        setting.save()
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.post(
+            "/admin/provider-health-tests/",
+            data={"test_key": "douyin_kukutool_ultra"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        run = ProviderHealthTestRun.objects.get()
+        self.assertEqual(run.status, ProviderHealthTestStatus.UNAVAILABLE)
+        self.assertEqual(run.error_type, "CapabilityDisabled")
+
+    @patch(
+        "xhs_download.views.parse_media_page",
+        side_effect=XhsParseError(
+            "失败 https://cdn.example.com/a.mp4?token=secret provider_manifest_token=abc"
+        ),
+    )
+    def test_provider_health_test_error_is_sanitized(self, _mock_parse):
+        setting = ProviderHealthTestSetting.load()
+        setting.douyin_url = "https://www.douyin.com/video/123?token=secret"
+        setting.save()
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.post(
+            "/admin/provider-health-tests/",
+            data={"test_key": "douyin_native_parse"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        run = ProviderHealthTestRun.objects.get()
+        self.assertEqual(run.status, ProviderHealthTestStatus.FAILED)
+        self.assertEqual(run.test_url_host, "www.douyin.com")
+        self.assertIn("[url-redacted]", run.error_message_short)
+        self.assertNotIn("cdn.example.com", run.error_message_short)
+        self.assertNotIn("token=secret", run.error_message_short)
+        self.assertNotIn("provider_manifest_token=abc", run.error_message_short)
+
+    def test_provider_health_test_urls_are_saved_in_database(self):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.post(
+            "/admin/provider-health-tests/",
+            data={
+                "action": "save_test_urls",
+                "douyin_url": "https://www.douyin.com/video/123",
+                "youtube_url": "https://www.youtube.com/watch?v=abc",
+                "third_party_url": "https://www.youtube.com/watch?v=third",
+                "gallerydl_url": "https://imgur.com/a/demo",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        setting = ProviderHealthTestSetting.load()
+        self.assertEqual(setting.douyin_url, "https://www.douyin.com/video/123")
+        self.assertEqual(setting.gallerydl_url, "https://imgur.com/a/demo")
+
+        page = client.get("/admin/provider-health-tests/")
+        self.assertContains(page, "www.douyin.com")
+        self.assertContains(page, "www.youtube.com")
+        self.assertContains(page, "imgur.com")
+        self.assertContains(page, "运行全部测试")
+        self.assertContains(page, "health-running")
+        self.assertContains(page, 'form.getAttribute("action")')
+        self.assertContains(page, "healthRequestInFlight")
+        self.assertNotContains(page, "fetch(form.action")
+
+    def test_provider_health_test_url_save_clears_invalid_urls(self):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.post(
+            "/admin/provider-health-tests/",
+            data={
+                "action": "save_test_urls",
+                "douyin_url": "not-a-url",
+                "youtube_url": "ftp://example.com/video",
+                "third_party_url": "https://www.youtube.com/watch?v=third",
+                "gallerydl_url": "",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        setting = ProviderHealthTestSetting.load()
+        self.assertEqual(setting.douyin_url, "")
+        self.assertEqual(setting.youtube_url, "")
+        self.assertEqual(setting.third_party_url, "https://www.youtube.com/watch?v=third")
+        self.assertEqual(setting.gallerydl_url, "")
+
+    def test_provider_health_test_url_save_requires_change_permission(self):
+        staff_client = Client()
+        staff_client.force_login(self.staff)
+
+        blocked = staff_client.post(
+            "/admin/provider-health-tests/",
+            data={"action": "save_test_urls", "douyin_url": "https://www.douyin.com/video/123"},
+        )
+        self.assertEqual(blocked.status_code, 404)
+        self.assertEqual(ProviderHealthTestSetting.load().douyin_url, "")
+
+        self.grant_health_permission(self.staff, "change_providerhealthtestsetting")
+        permitted = staff_client.post(
+            "/admin/provider-health-tests/",
+            data={"action": "save_test_urls", "douyin_url": "https://www.douyin.com/video/123"},
+        )
+        self.assertEqual(permitted.status_code, 302)
+        self.assertEqual(ProviderHealthTestSetting.load().douyin_url, "https://www.douyin.com/video/123")
+
+    @patch("xhs_download.views.get_runtime_readiness", return_value={"ready": True, "components": {"database": True, "cache": True}})
+    def test_provider_health_test_records_request_id(self, _mock_readiness):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.post(
+            "/admin/provider-health-tests/",
+            data={"test_key": "health_ready"},
+            HTTP_X_REQUEST_ID="health-test-request-1",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(ProviderHealthTestRun.objects.get().request_id, "health-test-request-1")
+
+    def test_provider_health_tests_page_shows_recent_records(self):
+        ProviderHealthTestRun.objects.create(
+            request_id="rid-health",
+            test_key="health_ready",
+            status=ProviderHealthTestStatus.SUCCESS,
+            provider="runtime",
+            actor_username="health-root",
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/provider-health-tests/")
+
+        self.assertContains(response, "health_ready")
+        self.assertContains(response, "rid-health")
+
+    def test_provider_health_tests_recent_records_are_paginated(self):
+        for index in range(55):
+            ProviderHealthTestRun.objects.create(
+                request_id=f"rid-health-{index}",
+                test_key="health_ready",
+                status=ProviderHealthTestStatus.SUCCESS,
+                provider="runtime",
+                actor_username="health-root",
+            )
+        client = Client()
+        client.force_login(self.superuser)
+
+        first_page = client.get("/admin/provider-health-tests/")
+        second_page = client.get("/admin/provider-health-tests/", {"page": "2"})
+
+        self.assertEqual(first_page.context["recent_runs_page"].paginator.count, 55)
+        self.assertEqual(len(first_page.context["recent_runs"]), 50)
+        self.assertContains(first_page, "共 55 条")
+        self.assertContains(first_page, "下一页")
+        self.assertEqual(second_page.context["recent_runs_page"].number, 2)
+        self.assertEqual(len(second_page.context["recent_runs"]), 5)
+
+    def test_provider_health_tests_show_admin_display_timezone(self):
+        run = ProviderHealthTestRun.objects.create(
+            request_id="rid-timezone",
+            test_key="health_ready",
+            status=ProviderHealthTestStatus.SUCCESS,
+            provider="runtime",
+            actor_username="health-root",
+        )
+        ProviderHealthTestRun.objects.filter(pk=run.pk).update(
+            created_at=datetime(2026, 6, 28, 16, 5, 6, tzinfo=datetime_timezone.utc),
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/provider-health-tests/")
+
+        self.assertContains(response, "2026-06-29 00:05:06")
+        self.assertContains(response, "Asia/Shanghai")
+
+    def test_provider_health_tests_page_shows_download_runtime_summary(self):
+        DownloadRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={
+                "rate_limit_per_minute": 9,
+                "daily_request_limit_per_ip": 90,
+                "global_daily_request_limit": 900,
+                "max_concurrent_per_ip": 2,
+                "daily_bytes_limit_per_ip": 1024,
+                "global_daily_bytes_limit": 2048,
+            },
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/provider-health-tests/")
+
+        self.assertContains(response, "每分钟下载请求数 / IP")
+        self.assertContains(response, "DownloadRuntimeSetting")
+        self.assertContains(response, "已初始化")
+        self.assertContains(response, "9")
+        self.assertContains(response, "2.0 KB")
+
+    def test_provider_health_run_admin_is_read_only_and_superuser_can_delete(self):
+        from django.contrib.admin.sites import AdminSite
+
+        from .admin import ProviderHealthTestRunAdmin
+
+        request = RequestFactory().get("/")
+        request.user = self.staff
+        super_request = RequestFactory().get("/")
+        super_request.user = self.superuser
+        health_admin = ProviderHealthTestRunAdmin(ProviderHealthTestRun, AdminSite())
+
+        self.assertFalse(health_admin.has_add_permission(request))
+        self.assertFalse(health_admin.has_change_permission(request))
+        self.assertFalse(health_admin.has_delete_permission(request))
+        self.assertTrue(health_admin.has_delete_permission(super_request))
+
+    def test_provider_health_tests_appears_in_admin_home(self):
+        from django.contrib import admin
+
+        request = RequestFactory().get("/")
+        request.user = self.superuser
+
+        app_list = admin.site.get_app_list(request)
+        models_by_app = {
+            app["app_label"]: {model["object_name"] for model in app["models"]}
+            for app in app_list
+        }
+
+        self.assertIn("ProviderHealthTestPanelProxy", models_by_app["provider_console"])
+
+    def test_provider_health_tests_admin_entry_redirects_to_panel(self):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/provider_console/providerhealthtestpanelproxy/")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "/admin/provider-health-tests/")
+
+
 class AdminObservabilityMvpTests(TestCase):
     def setUp(self):
         from django.contrib.auth import get_user_model
@@ -7029,6 +7444,67 @@ class AdminObservabilityMvpTests(TestCase):
         self.grant_xhs_view_permission(self.staff, "view_provideradminauditlog")
         self.assertContains(client.get("/admin/provider-audit-logs/"), "Provider 审计")
 
+    def test_observability_log_pages_are_paginated(self):
+        for index in range(55):
+            ParseRequestLog.objects.create(
+                request_id=f"rid-parse-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                query_host="example.com",
+            )
+            DownloadRequestLog.objects.create(
+                request_id=f"rid-download-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="zip",
+            )
+            ProviderAdminAuditLog.objects.create(
+                request_id=f"rid-audit-{index}",
+                actor_username="ops-root",
+                action="provider_runtime_update",
+            )
+        client = Client()
+        client.force_login(self.superuser)
+
+        parse_response = client.get("/admin/parse-logs/")
+        download_response = client.get("/admin/download-logs/")
+        audit_response = client.get("/admin/provider-audit-logs/")
+
+        self.assertEqual(parse_response.context["page_obj"].paginator.count, 55)
+        self.assertEqual(len(parse_response.context["page_obj"]), 50)
+        self.assertContains(parse_response, "共 55 条")
+        self.assertContains(parse_response, "下一页")
+        self.assertEqual(download_response.context["page_obj"].paginator.count, 55)
+        self.assertEqual(audit_response.context["page_obj"].paginator.count, 55)
+
+    def test_observability_log_pagination_preserves_filters(self):
+        for index in range(55):
+            ParseRequestLog.objects.create(
+                request_id=f"rid-keep-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                query_host="example.com",
+            )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/parse-logs/", {"q": "rid-keep"})
+
+        self.assertContains(response, "q=rid-keep&page=2")
+
+    def test_observability_log_pages_show_admin_display_timezone(self):
+        log = ParseRequestLog.objects.create(
+            request_id="rid-parse-timezone",
+            status=ObservabilityStatus.SUCCESS,
+            query_host="example.com",
+        )
+        ParseRequestLog.objects.filter(pk=log.pk).update(
+            created_at=datetime(2026, 6, 28, 16, 5, 6, tzinfo=datetime_timezone.utc),
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/parse-logs/")
+
+        self.assertContains(response, "2026-06-29 00:05:06")
+
     def test_observability_admin_models_are_read_only_for_staff_and_runtime_is_changeable(self):
         from django.contrib import admin
         from django.contrib.admin.sites import AdminSite
@@ -7055,6 +7531,7 @@ class AdminObservabilityMvpTests(TestCase):
             for app in app_list
         }
         self.assertIn("ProviderRuntimeSettingProxy", models_by_app["provider_console"])
+        self.assertIn("ProviderHealthTestPanelProxy", models_by_app["provider_console"])
         self.assertIn("DownloadRuntimeSetting", models_by_app["download_console"])
         self.assertNotIn("ProviderRuntimeSetting", models_by_app.get("xhs_download", set()))
         self.assertNotIn("DownloadRuntimeSetting", models_by_app.get("xhs_download", set()))

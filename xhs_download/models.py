@@ -123,6 +123,13 @@ class ObservabilityStatus(models.TextChoices):
     RATE_LIMITED = "rate_limited", "限流"
 
 
+class ProviderHealthTestStatus(models.TextChoices):
+    SUCCESS = "success", "成功"
+    FAILED = "failed", "失败"
+    SKIPPED = "skipped", "跳过"
+    UNAVAILABLE = "unavailable", "不可用"
+
+
 class ParseRequestLog(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     request_id = models.CharField(max_length=128, db_index=True)
@@ -238,3 +245,59 @@ class ProviderAdminAuditLog(models.Model):
 
     def __str__(self):
         return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.actor_username} {self.action}"
+
+
+class ProviderHealthTestRun(models.Model):
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    request_id = models.CharField(max_length=128, db_index=True)
+    test_key = models.CharField(max_length=64, db_index=True)
+    status = models.CharField(
+        max_length=16,
+        choices=ProviderHealthTestStatus.choices,
+        default=ProviderHealthTestStatus.SKIPPED,
+        db_index=True,
+    )
+    provider = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    duration_ms = models.PositiveIntegerField(default=0)
+    error_type = models.CharField(max_length=120, blank=True, default="", db_index=True)
+    error_message_short = models.CharField(max_length=300, blank=True, default="")
+    runtime_mode = models.CharField(max_length=32, blank=True, default="")
+    hard_enabled = models.BooleanField(default=False, db_index=True)
+    is_staff = models.BooleanField(default=False, db_index=True)
+    actor_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    actor_username = models.CharField(max_length=150, blank=True, default="", db_index=True)
+    test_url_host = models.CharField(max_length=255, blank=True, default="", db_index=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = (
+            models.Index(fields=("created_at", "test_key")),
+            models.Index(fields=("test_key", "status")),
+            models.Index(fields=("provider", "created_at")),
+        )
+        verbose_name = "Provider 健康测试记录"
+        verbose_name_plural = "Provider 健康测试记录"
+
+    def __str__(self):
+        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.test_key} {self.status}"
+
+
+class ProviderHealthTestSetting(models.Model):
+    singleton_key = models.PositiveSmallIntegerField(default=1, unique=True, editable=False)
+    douyin_url = models.TextField(blank=True, default="")
+    youtube_url = models.TextField(blank=True, default="")
+    third_party_url = models.TextField(blank=True, default="")
+    gallerydl_url = models.TextField(blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Provider 健康测试配置"
+        verbose_name_plural = "Provider 健康测试配置"
+
+    @classmethod
+    def load(cls):
+        setting, _created = cls.objects.get_or_create(singleton_key=1)
+        return setting
+
+    def __str__(self):
+        return "Provider 健康测试配置"

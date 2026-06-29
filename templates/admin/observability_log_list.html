@@ -1,4 +1,5 @@
 {% extends "admin/base_site.html" %}
+{% load admin_extras %}
 
 {% block content %}
 <style>
@@ -61,6 +62,32 @@
         word-break: break-all;
     }
     .ops-table th { color: #6b7280; font-weight: 900; background: #fbfcfe; }
+    .ops-pagination {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-top: 14px;
+        color: #6b7280;
+        font-size: 13px;
+    }
+    .ops-pagination-links { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .ops-pagination a,
+    .ops-pagination strong {
+        display: inline-flex;
+        min-height: 34px;
+        align-items: center;
+        justify-content: center;
+        padding: 0 11px;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        color: #111827;
+        text-decoration: none;
+        font-weight: 800;
+    }
+    .ops-pagination strong { background: #f7f1ff; color: #855be8; }
 </style>
 <div class="ops-list">
     <div class="ops-shell">
@@ -75,7 +102,7 @@
         <form class="ops-filter" method="get">
             <input type="search" name="q" value="{{ request.GET.q }}" placeholder="{{ search_placeholder }}">
             {% for field in filter_fields %}
-                <input type="text" name="{{ field }}" value="" placeholder="{{ field }}">
+                <input type="text" name="{{ field }}" value="{{ request.GET|get_item:field }}" placeholder="{{ field }}">
             {% endfor %}
             <button type="submit">筛选</button>
             {% if request.GET %}
@@ -106,6 +133,22 @@
                 </tbody>
             </table>
         </div>
+        {% if page_obj.paginator.count %}
+            <div class="ops-pagination">
+                <span>共 {{ page_obj.paginator.count }} 条，每页 {{ page_obj.paginator.per_page }} 条，当前第 {{ page_obj.number }} / {{ page_obj.paginator.num_pages }} 页</span>
+                <div class="ops-pagination-links">
+                    {% if page_obj.has_previous %}
+                        <a href="?{% if page_querystring %}{{ page_querystring }}&{% endif %}page=1">首页</a>
+                        <a href="?{% if page_querystring %}{{ page_querystring }}&{% endif %}page={{ page_obj.previous_page_number }}">上一页</a>
+                    {% endif %}
+                    <strong>{{ page_obj.number }}</strong>
+                    {% if page_obj.has_next %}
+                        <a href="?{% if page_querystring %}{{ page_querystring }}&{% endif %}page={{ page_obj.next_page_number }}">下一页</a>
+                        <a href="?{% if page_querystring %}{{ page_querystring }}&{% endif %}page={{ page_obj.paginator.num_pages }}">末页</a>
+                    {% endif %}
+                </div>
+            </div>
+        {% endif %}
     </div>
 </div>
 {% endblock %}

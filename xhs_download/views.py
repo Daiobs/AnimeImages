@@ -3,10 +3,12 @@ import logging
 import time
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 from django.conf import settings
 from django.contrib import messages
+from django.core.paginator import Paginator
 from django.db.models import Avg, Count, Q, Sum
 from django.db.models.functions import TruncHour
 from django.http import FileResponse, HttpResponse, JsonResponse
@@ -18,6 +20,7 @@ from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_POST
 
 from download_console.models import DownloadRuntimeSetting
+from djangoProject.health import get_runtime_readiness
 
 from .models import (
     DownloadRequestLog,
@@ -25,6 +28,9 @@ from .models import (
     ParseRequestLog,
     ProviderAccessMode,
     ProviderAdminAuditLog,
+    ProviderHealthTestSetting,
+    ProviderHealthTestRun,
+    ProviderHealthTestStatus,
     ProviderRuntimeSetting,
 )
 from .services.common import (
@@ -77,7 +83,7 @@ from .services.observability import (
     record_provider_admin_audit_log,
     sanitize_observability_text,
 )
-from .services.youtube_merge import get_youtube_merge_health
+from .services.youtube_merge import build_youtube_merge_plan, get_youtube_merge_health
 from .services.rate_limits import (
     acquire_concurrency,
     consume_daily,
@@ -90,6 +96,31 @@ from .services.region_routing import get_request_country_code
 
 
 logger = logging.getLogger(__name__)
+
+ADMIN_LOG_PAGE_SIZE = 50
+ADMIN_DISPLAY_TIME_ZONE = "Asia/Shanghai"
+
+
+def admin_display_timezone():
+    timezone_name = str(getattr(settings, "ADMIN_DISPLAY_TIME_ZONE", ADMIN_DISPLAY_TIME_ZONE) or ADMIN_DISPLAY_TIME_ZONE)
+    try:
+        return ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        return ZoneInfo(ADMIN_DISPLAY_TIME_ZONE)
+
+
+def format_admin_datetime(value):
+    if not value:
+        return ""
+    return timezone.localtime(value, admin_display_timezone()).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def paginate_admin_queryset(request, queryset, page_size=ADMIN_LOG_PAGE_SIZE):
+    paginator = Paginator(queryset, page_size)
+    page_obj = paginator.get_page(request.GET.get("page"))
+    query_params = request.GET.copy()
+    query_params.pop("page", None)
+    return page_obj, query_params.urlencode()
 PREVIEW_MAX_IMAGE_BYTES = 8 * 1024 * 1024
 SIGNED_THIRD_PARTY_VIDEO_PROVIDERS = {
     "kukutool_generic",
@@ -118,6 +149,13 @@ def format_file_size(size_bytes):
     if unit_index == 0:
         return f"{int(value)} {units[unit_index]}"
     return f"{value:.1f} {units[unit_index]}"
+
+
+def elapsed_ms(started_at):
+    try:
+        return int((time.monotonic() - float(started_at or 0)) * 1000)
+    except (TypeError, ValueError):
+        return 0
 
 
 def get_video_size_bytes(asset):
@@ -652,6 +690,448 @@ def observability_access_allowed(request, *permissions):
     return any(user.has_perm(permission) for permission in permissions)
 
 
+def provider_health_tests_view_allowed(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_providerhealthtestrun",
+    )
+
+
+def provider_health_tests_execute_allowed(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.add_providerhealthtestrun",
+    )
+
+
+PROVIDER_HEALTH_TESTS = (
+    {
+        "key": "health_ready",
+        "name": "Runtime Readiness",
+        "description": "验证 database/cache 是否可用。",
+        "provider": "runtime",
+        "provider_access_id": "",
+        "url_field": "",
+    },
+    {
+        "key": "douyin_native_parse",
+        "name": "抖音普通解析",
+        "description": "使用普通抖音 adapter 解析测试 URL，不强制 KuKuTool。",
+        "provider": "native",
+        "provider_access_id": "",
+        "url_field": "douyin_url",
+    },
+    {
+        "key": "douyin_kukutool_ultra",
+        "name": "抖音 KuKuTool 超清",
+        "description": "开启 prefer_ultra_hd=True 测试抖音超清链路。",
+        "provider": "kukutool",
+        "provider_access_id": PROVIDER_DOUYIN_ULTRA,
+        "url_field": "douyin_url",
+    },
+    {
+        "key": "youtube_merge",
+        "name": "YouTube 高清合并",
+        "description": "验证 yt-dlp + ffmpeg health，并只做候选规划，不下载大文件。",
+        "provider": "youtube_merge",
+        "provider_access_id": PROVIDER_YOUTUBE_MERGE,
+        "url_field": "youtube_url",
+    },
+    {
+        "key": "third_party_ytdlp",
+        "name": "第三方 yt-dlp",
+        "description": "验证通用 yt-dlp provider health，并轻量解析测试 URL。",
+        "provider": "yt_dlp_generic",
+        "provider_access_id": PROVIDER_THIRD_PARTY,
+        "url_field": "third_party_url",
+    },
+    {
+        "key": "gallery_dl",
+        "name": "gallery-dl",
+        "description": "验证 gallery-dl provider health，并轻量解析测试 URL。",
+        "provider": "gallery_dl_generic",
+        "provider_access_id": PROVIDER_THIRD_PARTY,
+        "url_field": "gallerydl_url",
+    },
+)
+
+
+def provider_health_test_by_key(test_key):
+    for item in PROVIDER_HEALTH_TESTS:
+        if item["key"] == test_key:
+            return item
+    return None
+
+
+def provider_test_url_host(test_url):
+    parsed = urlparse(str(test_url or ""))
+    return (parsed.hostname or "").strip().lower()
+
+
+def provider_health_tests_manage_config_allowed(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.change_providerhealthtestsetting",
+    )
+
+
+def provider_test_url_for(item, test_setting=None):
+    field_name = item.get("url_field") or ""
+    if not field_name:
+        return ""
+    test_setting = test_setting or ProviderHealthTestSetting.load()
+    return str(getattr(test_setting, field_name, "") or "").strip()
+
+
+def update_provider_health_test_setting(request):
+    setting = ProviderHealthTestSetting.load()
+    invalid_labels = []
+    labels = {
+        "douyin_url": "抖音测试 URL",
+        "youtube_url": "YouTube 测试 URL",
+        "third_party_url": "第三方 yt-dlp 测试 URL",
+        "gallerydl_url": "gallery-dl 测试 URL",
+    }
+    for field_name in ("douyin_url", "youtube_url", "third_party_url", "gallerydl_url"):
+        value = str(request.POST.get(field_name, "") or "").strip()
+        if value:
+            parsed = urlparse(value)
+            if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                invalid_labels.append(labels[field_name])
+                value = ""
+        setattr(setting, field_name, value)
+    setting.save(update_fields=("douyin_url", "youtube_url", "third_party_url", "gallerydl_url", "updated_at"))
+    return setting, invalid_labels
+
+
+def download_runtime_summary(setting):
+    return (
+        ("每分钟下载请求数 / IP", setting.rate_limit_per_minute),
+        ("每日下载请求数 / IP", setting.daily_request_limit_per_ip),
+        ("每日全站下载请求数", setting.global_daily_request_limit),
+        ("并发下载数 / IP", setting.max_concurrent_per_ip),
+        ("每日下载流量 / IP", format_file_size(setting.daily_bytes_limit_per_ip)),
+        ("每日全站下载流量", format_file_size(setting.global_daily_bytes_limit)),
+    )
+
+
+def provider_test_runtime_info(item, request, runtime_setting):
+    provider_id = item.get("provider_access_id") or ""
+    if not provider_id:
+        return {
+            "runtime_mode": "",
+            "runtime_label": "不适用",
+            "hard_enabled": True,
+            "access_reason": "",
+        }
+    access = provider_access_summary(provider_id, request, runtime_setting)
+    return {
+        "runtime_mode": access["effective_mode"],
+        "runtime_label": access["effective_label"],
+        "hard_enabled": bool(access["hard_enabled"]),
+        "access_reason": access["access_reason"],
+    }
+
+
+def provider_health_test_record(
+    request,
+    item,
+    *,
+    status,
+    started_at,
+    provider="",
+    error_type="",
+    error_message="",
+    test_url="",
+    runtime_mode="",
+    hard_enabled=False,
+):
+    user = getattr(request, "user", None)
+    return ProviderHealthTestRun.objects.create(
+        request_id=str(getattr(request, "request_id", "") or ""),
+        test_key=item["key"],
+        status=status,
+        provider=provider or item.get("provider", ""),
+        duration_ms=elapsed_ms(started_at),
+        error_type=str(error_type or "")[:120],
+        error_message_short=sanitize_observability_text(error_message),
+        runtime_mode=str(runtime_mode or "")[:32],
+        hard_enabled=bool(hard_enabled),
+        is_staff=bool(getattr(user, "is_active", False) and getattr(user, "is_staff", False)),
+        actor_id=getattr(user, "id", None),
+        actor_username=str(getattr(user, "get_username", lambda: "")() or "")[:150],
+        test_url_host=provider_test_url_host(test_url)[:255],
+    )
+
+
+def run_provider_health_test(request, item):
+    started_at = time.monotonic()
+    runtime_setting = ProviderRuntimeSetting.load()
+    test_setting = ProviderHealthTestSetting.load()
+    runtime_info = provider_test_runtime_info(item, request, runtime_setting)
+    test_url = provider_test_url_for(item, test_setting)
+    provider = item.get("provider", "")
+
+    def record(status, error_type="", error_message=""):
+        return provider_health_test_record(
+            request,
+            item,
+            status=status,
+            started_at=started_at,
+            provider=provider,
+            error_type=error_type,
+            error_message=error_message,
+            test_url=test_url,
+            runtime_mode=runtime_info["runtime_mode"],
+            hard_enabled=runtime_info["hard_enabled"],
+        )
+
+    try:
+        if item["key"] == "health_ready":
+            readiness = get_runtime_readiness()
+            if readiness["ready"]:
+                return record(ProviderHealthTestStatus.SUCCESS)
+            return record(
+                ProviderHealthTestStatus.UNAVAILABLE,
+                error_type="RuntimeUnavailable",
+                error_message=json.dumps(readiness.get("components", {}), ensure_ascii=False),
+            )
+
+        if not test_url:
+            return record(
+                ProviderHealthTestStatus.SKIPPED,
+                error_type="TestUrlMissing",
+                error_message="未配置测试 URL",
+            )
+
+        if item["key"] == "douyin_native_parse":
+            result = parse_media_page(test_url, prefer_ultra_hd=False)
+            if result.assets:
+                return record(ProviderHealthTestStatus.SUCCESS)
+            return record(
+                ProviderHealthTestStatus.UNAVAILABLE,
+                error_type="NoAssets",
+                error_message="未解析到资源",
+            )
+
+        if item["key"] == "douyin_kukutool_ultra":
+            if not (
+                getattr(settings, "ULTRA_HD_PROVIDER_ENABLED", False)
+                and getattr(settings, "KUKUTOOL_PROVIDER_ENABLED", False)
+            ):
+                return record(
+                    ProviderHealthTestStatus.UNAVAILABLE,
+                    error_type="CapabilityDisabled",
+                    error_message="ULTRA_HD_PROVIDER_ENABLED 或 KUKUTOOL_PROVIDER_ENABLED 未启用",
+                )
+            health = get_kukutool_provider_health()
+            if not health.get("available"):
+                return record(
+                    ProviderHealthTestStatus.UNAVAILABLE,
+                    error_type="ProviderUnavailable",
+                    error_message=json.dumps(health, ensure_ascii=False),
+                )
+            result = parse_media_page(test_url, prefer_ultra_hd=True)
+            if result.assets:
+                return record(ProviderHealthTestStatus.SUCCESS)
+            return record(
+                ProviderHealthTestStatus.UNAVAILABLE,
+                error_type="NoAssets",
+                error_message="未解析到超清资源",
+            )
+
+        if item["key"] == "youtube_merge":
+            health = get_youtube_merge_health()
+            if not (health.get("implemented") and health.get("ready")):
+                return record(
+                    ProviderHealthTestStatus.UNAVAILABLE,
+                    error_type="ProviderUnavailable",
+                    error_message=json.dumps(health, ensure_ascii=False),
+                )
+            payload = YtDlpGenericProvider().parse(
+                test_url,
+                timeout_seconds=min(10.0, float(health.get("timeout_seconds") or 10.0)),
+            )
+            plan = build_youtube_merge_plan(
+                payload,
+                max_height=int(getattr(settings, "YTDLP_MERGE_DEFAULT_MAX_HEIGHT", 1080) or 1080),
+            )
+            if plan.get("available"):
+                return record(ProviderHealthTestStatus.SUCCESS)
+            return record(
+                ProviderHealthTestStatus.UNAVAILABLE,
+                error_type=str(plan.get("reason") or "MergeUnavailable"),
+                error_message=json.dumps(plan, ensure_ascii=False),
+            )
+
+        if item["key"] == "third_party_ytdlp":
+            if not getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False):
+                return record(
+                    ProviderHealthTestStatus.UNAVAILABLE,
+                    error_type="CapabilityDisabled",
+                    error_message="THIRD_PARTY_PROVIDER_ENABLED 未启用",
+                )
+            health = YtDlpGenericProvider().health(force_version_probe=True)
+            if not health.get("ready"):
+                return record(
+                    ProviderHealthTestStatus.UNAVAILABLE,
+                    error_type="ProviderUnavailable",
+                    error_message=json.dumps(health, ensure_ascii=False),
+                )
+            payload = YtDlpGenericProvider().parse(test_url, timeout_seconds=10.0)
+            if payload:
+                return record(ProviderHealthTestStatus.SUCCESS)
+            return record(
+                ProviderHealthTestStatus.UNAVAILABLE,
+                error_type="EmptyPayload",
+                error_message="yt-dlp 返回空结果",
+            )
+
+        if item["key"] == "gallery_dl":
+            if not getattr(settings, "GALLERYDL_PROVIDER_ENABLED", False):
+                return record(
+                    ProviderHealthTestStatus.UNAVAILABLE,
+                    error_type="CapabilityDisabled",
+                    error_message="GALLERYDL_PROVIDER_ENABLED 未启用",
+                )
+            health = GalleryDlGenericProvider().health(force_version_probe=True)
+            if not health.get("ready"):
+                return record(
+                    ProviderHealthTestStatus.UNAVAILABLE,
+                    error_type="ProviderUnavailable",
+                    error_message=json.dumps(health, ensure_ascii=False),
+                )
+            payload = GalleryDlGenericProvider().parse(test_url, timeout_seconds=10.0)
+            if payload:
+                return record(ProviderHealthTestStatus.SUCCESS)
+            return record(
+                ProviderHealthTestStatus.UNAVAILABLE,
+                error_type="EmptyPayload",
+                error_message="gallery-dl 返回空结果",
+            )
+
+        return record(
+            ProviderHealthTestStatus.FAILED,
+            error_type="UnknownTest",
+            error_message=f"Unknown test key: {item['key']}",
+        )
+    except Exception as error:
+        return record(
+            ProviderHealthTestStatus.FAILED,
+            error_type=type(error).__name__,
+            error_message=str(error),
+        )
+
+
+def build_provider_health_test_cards(request):
+    runtime_setting = ProviderRuntimeSetting.load()
+    test_setting = ProviderHealthTestSetting.load()
+    last_runs = {}
+    for run in ProviderHealthTestRun.objects.order_by("-created_at")[:200]:
+        last_runs.setdefault(run.test_key, run)
+    cards = []
+    for item in PROVIDER_HEALTH_TESTS:
+        runtime_info = provider_test_runtime_info(item, request, runtime_setting)
+        test_url = provider_test_url_for(item, test_setting)
+        cards.append(
+            {
+                **item,
+                **runtime_info,
+                "url_configured": bool(test_url) or not item.get("url_field"),
+                "test_url_host": provider_test_url_host(test_url),
+                "last_run": last_runs.get(item["key"]),
+            }
+        )
+    return cards
+
+
+def provider_health_tests_is_ajax(request):
+    return request.headers.get("x-requested-with") == "XMLHttpRequest"
+
+
+def provider_health_tests_context(request):
+    readiness = get_runtime_readiness()
+    runtime_setting = ProviderRuntimeSetting.load()
+    test_setting = ProviderHealthTestSetting.load()
+    rows, health = build_provider_dashboard_rows(runtime_setting, request)
+    download_setting = DownloadRuntimeSetting.load()
+    recent_runs_page, recent_runs_querystring = paginate_admin_queryset(
+        request,
+        ProviderHealthTestRun.objects.all(),
+    )
+    return {
+        "title": "Provider 健康测试",
+        "request_id": str(getattr(request, "request_id", "") or ""),
+        "admin_time_zone": getattr(admin_display_timezone(), "key", ADMIN_DISPLAY_TIME_ZONE),
+        "readiness": readiness,
+        "provider_rows": rows,
+        "provider_health": health,
+        "download_setting": download_setting,
+        "download_summary": download_runtime_summary(download_setting),
+        "test_cards": build_provider_health_test_cards(request),
+        "test_setting": test_setting,
+        "can_manage_test_urls": provider_health_tests_manage_config_allowed(request),
+        "recent_runs": recent_runs_page,
+        "recent_runs_page": recent_runs_page,
+        "recent_runs_querystring": recent_runs_querystring,
+        "can_execute_tests": provider_health_tests_execute_allowed(request),
+    }
+
+
+def provider_health_tests_render(request):
+    return render(request, "admin/provider_health_tests.html", provider_health_tests_context(request))
+
+
+@csrf_protect
+def provider_health_tests_view(request):
+    if request.method == "POST":
+        if request.POST.get("action") == "save_test_urls":
+            if not provider_health_tests_manage_config_allowed(request):
+                return JsonResponse({"detail": "Not found."}, status=404)
+            _setting, invalid_labels = update_provider_health_test_setting(request)
+            if invalid_labels:
+                messages.warning(
+                    request,
+                    f"Provider 测试 URL 已保存；以下输入不是有效 http/https URL，已清空：{'、'.join(invalid_labels)}。",
+                )
+            else:
+                messages.info(request, "Provider 测试 URL 已保存。")
+            if provider_health_tests_is_ajax(request):
+                return provider_health_tests_render(request)
+            return redirect("provider_health_tests")
+
+        if not provider_health_tests_execute_allowed(request):
+            return JsonResponse({"detail": "Not found."}, status=404)
+
+        if request.POST.get("action") == "run_all_tests":
+            runs = [run_provider_health_test(request, item) for item in PROVIDER_HEALTH_TESTS]
+            status_counts = {}
+            for run in runs:
+                status_counts[run.status] = status_counts.get(run.status, 0) + 1
+            summary = "，".join(f"{status} {count}" for status, count in sorted(status_counts.items()))
+            messages.info(request, f"Provider 一键测试完成：{summary}")
+            if provider_health_tests_is_ajax(request):
+                return provider_health_tests_render(request)
+            return redirect("provider_health_tests")
+
+        item = provider_health_test_by_key(request.POST.get("test_key"))
+        if item is None:
+            return JsonResponse({"detail": "Unknown test."}, status=400)
+        run = run_provider_health_test(request, item)
+        messages.info(
+            request,
+            f"{item['name']} 测试完成：{run.get_status_display()}",
+        )
+        if provider_health_tests_is_ajax(request):
+            return provider_health_tests_render(request)
+        return redirect("provider_health_tests")
+
+    if not provider_health_tests_view_allowed(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+
+    return provider_health_tests_render(request)
+
+
 def top_values(queryset, field_name, limit=10):
     return list(
         queryset.exclude(**{field_name: ""})
@@ -674,7 +1154,8 @@ def ops_dashboard_view(request):
         return JsonResponse({"detail": "Not found."}, status=404)
 
     now = timezone.now()
-    today_start = timezone.localtime(now).replace(hour=0, minute=0, second=0, microsecond=0)
+    display_tz = admin_display_timezone()
+    today_start = timezone.localtime(now, display_tz).replace(hour=0, minute=0, second=0, microsecond=0)
     recent_24h = now - timezone.timedelta(hours=24)
     recent_7d = now - timezone.timedelta(days=7)
 
@@ -693,14 +1174,17 @@ def ops_dashboard_view(request):
     recent_provider_total = recent_parse.exclude(selected_provider="").count()
 
     hourly_parse = list(
-        recent_parse.annotate(hour=TruncHour("created_at"))
+        recent_parse.annotate(hour=TruncHour("created_at", tzinfo=display_tz))
         .values("hour")
         .annotate(count=Count("id"), avg_duration_ms=Avg("duration_ms"))
         .order_by("hour")
     )
+    for row in hourly_parse:
+        row["hour_display"] = format_admin_datetime(row["hour"])[:13] + ":00"
 
     context = {
         "title": "运营看板",
+        "admin_time_zone": getattr(display_tz, "key", ADMIN_DISPLAY_TIME_ZONE),
         "cards": [
             {"label": "今日解析次数", "value": today_parse_count},
             {"label": "今日成功率", "value": f"{percent(today_parse_success, today_parse_count)}%"},
@@ -732,7 +1216,14 @@ def ops_dashboard_view(request):
         "download_type_top": top_values(recent_download, "download_type"),
         "hourly_parse": hourly_parse,
         "seven_day_parse_count": seven_day_parse.count(),
-        "recent_audit_logs": ProviderAdminAuditLog.objects.all()[:10],
+        "recent_audit_logs": [
+            {
+                "actor_username": item.actor_username,
+                "action": item.action,
+                "created_at": format_admin_datetime(item.created_at),
+            }
+            for item in ProviderAdminAuditLog.objects.all()[:10]
+        ],
     }
     return render(request, "admin/ops_dashboard.html", context)
 
@@ -765,12 +1256,17 @@ def filtered_log_queryset(model, request, filter_fields):
     return queryset
 
 
+def filter_values_for_request(request, filter_fields):
+    return {field: str(request.GET.get(field, "") or "").strip() for field in filter_fields}
+
+
 @require_GET
 def parse_logs_view(request):
     if not observability_access_allowed(request, "xhs_download.view_parserequestlog"):
         return JsonResponse({"detail": "Not found."}, status=404)
     filter_fields = ("status", "source_platform", "selected_provider", "is_staff", "error_type")
-    queryset = filtered_log_queryset(ParseRequestLog, request, filter_fields)[:200]
+    queryset = filtered_log_queryset(ParseRequestLog, request, filter_fields)
+    page_obj, page_querystring = paginate_admin_queryset(request, queryset)
     return render(
         request,
         "admin/observability_log_list.html",
@@ -779,6 +1275,9 @@ def parse_logs_view(request):
             "nav_title": "解析日志",
             "search_placeholder": "搜索 request_id / host / error_type",
             "filter_fields": filter_fields,
+            "filter_values": filter_values_for_request(request, filter_fields),
+            "page_obj": page_obj,
+            "page_querystring": page_querystring,
             "headers": (
                 "created_at",
                 "status",
@@ -794,7 +1293,7 @@ def parse_logs_view(request):
             ),
             "rows": [
                 {
-                    "created_at": item.created_at,
+                    "created_at": format_admin_datetime(item.created_at),
                     "status": item.status,
                     "query_host": item.query_host,
                     "source_platform": item.source_platform,
@@ -806,7 +1305,7 @@ def parse_logs_view(request):
                     "error_message_short": item.error_message_short,
                     "request_id": item.request_id,
                 }
-                for item in queryset
+                for item in page_obj
             ],
         },
     )
@@ -817,7 +1316,8 @@ def download_logs_view(request):
     if not observability_access_allowed(request, "xhs_download.view_downloadrequestlog"):
         return JsonResponse({"detail": "Not found."}, status=404)
     filter_fields = ("status", "download_type", "provider", "source_platform", "error_type")
-    queryset = filtered_log_queryset(DownloadRequestLog, request, filter_fields)[:200]
+    queryset = filtered_log_queryset(DownloadRequestLog, request, filter_fields)
+    page_obj, page_querystring = paginate_admin_queryset(request, queryset)
     return render(
         request,
         "admin/observability_log_list.html",
@@ -826,6 +1326,9 @@ def download_logs_view(request):
             "nav_title": "下载日志",
             "search_placeholder": "搜索 request_id / provider / error_type",
             "filter_fields": filter_fields,
+            "filter_values": filter_values_for_request(request, filter_fields),
+            "page_obj": page_obj,
+            "page_querystring": page_querystring,
             "headers": (
                 "created_at",
                 "status",
@@ -840,7 +1343,7 @@ def download_logs_view(request):
             ),
             "rows": [
                 {
-                    "created_at": item.created_at,
+                    "created_at": format_admin_datetime(item.created_at),
                     "status": item.status,
                     "download_type": item.download_type,
                     "item_count": item.item_count,
@@ -851,7 +1354,7 @@ def download_logs_view(request):
                     "error_type": item.error_type,
                     "request_id": item.request_id,
                 }
-                for item in queryset
+                for item in page_obj
             ],
         },
     )
@@ -862,7 +1365,8 @@ def provider_audit_logs_view(request):
     if not observability_access_allowed(request, "xhs_download.view_provideradminauditlog"):
         return JsonResponse({"detail": "Not found."}, status=404)
     filter_fields = ("action", "actor_username")
-    queryset = filtered_log_queryset(ProviderAdminAuditLog, request, filter_fields)[:200]
+    queryset = filtered_log_queryset(ProviderAdminAuditLog, request, filter_fields)
+    page_obj, page_querystring = paginate_admin_queryset(request, queryset)
     return render(
         request,
         "admin/observability_log_list.html",
@@ -871,16 +1375,19 @@ def provider_audit_logs_view(request):
             "nav_title": "Provider 审计",
             "search_placeholder": "搜索 request_id / actor / action",
             "filter_fields": filter_fields,
+            "filter_values": filter_values_for_request(request, filter_fields),
+            "page_obj": page_obj,
+            "page_querystring": page_querystring,
             "headers": ("created_at", "actor_username", "action", "changed_fields", "request_id"),
             "rows": [
                 {
-                    "created_at": item.created_at,
+                    "created_at": format_admin_datetime(item.created_at),
                     "actor_username": item.actor_username,
                     "action": item.action,
                     "changed_fields": ", ".join(item.changed_fields or ()),
                     "request_id": item.request_id,
                 }
-                for item in queryset
+                for item in page_obj
             ],
         },
     )
