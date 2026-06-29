@@ -27,6 +27,7 @@ urlpatterns = [
                   path("health/live/", health.liveness_view, name="health_live"),
                   path("health/ready/", health.readiness_view, name="health_ready"),
                   path("admin/provider-settings/", download_views.provider_settings_view, name="provider_settings"),
+                  path("admin/console/", download_views.admin_console_view, name="admin_console"),
                   path("admin/provider-health/", download_views.provider_health_view, name="provider_health"),
                   path("admin/provider-health/control/", download_views.provider_control_view, name="provider_control"),
                   path("admin/provider-health-tests/", download_views.provider_health_tests_view, name="provider_health_tests"),

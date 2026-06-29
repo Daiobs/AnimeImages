@@ -84,6 +84,7 @@ from .services.observability import (
     sanitize_observability_text,
 )
 from .services.youtube_merge import build_youtube_merge_plan, get_youtube_merge_health
+from .services.admin_console import build_admin_console_context
 from .services.rate_limits import (
     acquire_concurrency,
     consume_daily,
@@ -688,6 +689,25 @@ def observability_access_allowed(request, *permissions):
     if getattr(user, "is_superuser", False):
         return True
     return any(user.has_perm(permission) for permission in permissions)
+
+
+def admin_console_required(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_parserequestlog",
+        "xhs_download.view_downloadrequestlog",
+        "xhs_download.view_providerhealthtestrun",
+        "xhs_download.view_provideradminauditlog",
+    )
+
+
+@require_GET
+def admin_console_view(request):
+    if not admin_console_required(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+    context = build_admin_console_context()
+    context["title"] = "运维首页"
+    return render(request, "admin/console.html", context)
 
 
 def provider_health_tests_view_allowed(request):
@@ -1401,8 +1421,101 @@ def limit_error_response(message, retry_after=0, error_code="RATE_LIMITED"):
     return response
 
 
+def download_guard_error_response(message, *, status=403, error_code):
+    response = JsonResponse({"status": "error", "message": message}, status=status)
+    response["X-Error-Code"] = error_code
+    return response
+
+
 def get_download_runtime_setting():
     return DownloadRuntimeSetting.load()
+
+
+def safe_download_size(value):
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def is_staff_request(request):
+    user = getattr(request, "user", None)
+    return bool(getattr(user, "is_active", False) and getattr(user, "is_staff", False))
+
+
+def download_item_type(item):
+    if not isinstance(item, dict):
+        return ""
+    return str(item.get("type") or item.get("media_type") or "").lower().strip()
+
+
+def download_item_is_video(item):
+    return download_item_type(item) == "video"
+
+
+def estimated_media_items_bytes(media_items):
+    return sum(
+        safe_download_size(item.get("size_bytes"))
+        for item in media_items or ()
+        if isinstance(item, dict)
+    )
+
+
+def staff_can_bypass_single_download_limits(request, runtime_setting):
+    return bool(
+        is_staff_request(request)
+        and getattr(runtime_setting, "staff_large_download_exempt", False)
+    )
+
+
+def check_download_cost_preflight(request, media_items, runtime_setting):
+    has_video = any(download_item_is_video(item) for item in media_items or ())
+    if has_video and not is_staff_request(request) and not runtime_setting.visitor_video_download_enabled:
+        return (
+            "VISITOR_VIDEO_DOWNLOAD_DISABLED",
+            "当前环境暂不允许访客下载视频资源。",
+            403,
+        )
+
+    if not staff_can_bypass_single_download_limits(request, runtime_setting):
+        single_video_limit = safe_download_size(runtime_setting.single_video_bytes_limit)
+        if single_video_limit > 0:
+            for item in media_items or ():
+                if not download_item_is_video(item):
+                    continue
+                size_bytes = safe_download_size(item.get("size_bytes") if isinstance(item, dict) else 0)
+                if size_bytes and size_bytes > single_video_limit:
+                    return (
+                        "SINGLE_VIDEO_SIZE_LIMIT",
+                        f"视频资源过大，当前单个视频限制为 {format_file_size(single_video_limit)}。",
+                        413,
+                    )
+
+        single_archive_limit = safe_download_size(runtime_setting.single_archive_bytes_limit)
+        estimated_bytes = estimated_media_items_bytes(media_items)
+        if single_archive_limit > 0 and estimated_bytes > single_archive_limit:
+            return (
+                "SINGLE_ARCHIVE_SIZE_LIMIT",
+                f"本次下载资源过大，当前单次打包限制为 {format_file_size(single_archive_limit)}。",
+                413,
+            )
+
+    return None
+
+
+def check_single_archive_actual_size(request, runtime_setting, archive_size):
+    single_archive_limit = safe_download_size(runtime_setting.single_archive_bytes_limit)
+    if (
+        single_archive_limit > 0
+        and archive_size > single_archive_limit
+        and not staff_can_bypass_single_download_limits(request, runtime_setting)
+    ):
+        return (
+            "SINGLE_ARCHIVE_SIZE_LIMIT",
+            f"打包后的文件过大，当前单次打包限制为 {format_file_size(single_archive_limit)}。",
+            413,
+        )
+    return None
 
 
 def check_download_request_limits(request):
@@ -1467,11 +1580,9 @@ def check_download_request_limits(request):
     return identity, None
 
 
-def record_download_archive_bytes(identity, archive_file):
-    try:
-        archive_size = Path(archive_file.name).stat().st_size
-    except (AttributeError, OSError):
-        archive_size = 0
+def record_download_archive_bytes(identity, archive_file, archive_size=None):
+    if archive_size is None:
+        archive_size = file_size_for_observability(archive_file)
     if archive_size <= 0:
         return True, ""
 
@@ -2333,6 +2444,25 @@ def download_images_api(request):
             status=400,
         )
 
+    runtime_setting = get_download_runtime_setting()
+    guard_result = check_download_cost_preflight(request, media_items, runtime_setting)
+    if guard_result:
+        error_code, message, status_code = guard_result
+        log_download_request_event(
+            request,
+            download_type="zip",
+            media_items=media_items,
+            status=ObservabilityStatus.BLOCKED,
+            started_at=started_at,
+            error_code=error_code,
+            error=ValueError(message),
+        )
+        return download_guard_error_response(
+            message,
+            status=status_code,
+            error_code=error_code,
+        )
+
     try:
         identity, limit_response = check_download_request_limits(request)
     except Exception:
@@ -2362,7 +2492,6 @@ def download_images_api(request):
         return limit_response
 
     try:
-        runtime_setting = get_download_runtime_setting()
         concurrency = acquire_concurrency(
             "download-concurrent",
             identity,
@@ -2442,9 +2571,33 @@ def download_images_api(request):
         )
         try:
             archive_size = file_size_for_observability(archive["file"])
+            actual_size_guard = check_single_archive_actual_size(
+                request,
+                runtime_setting,
+                archive_size,
+            )
+            if actual_size_guard:
+                error_code, message, status_code = actual_size_guard
+                archive["file"].close()
+                log_download_request_event(
+                    request,
+                    download_type="zip",
+                    media_items=media_items,
+                    status=ObservabilityStatus.BLOCKED,
+                    started_at=started_at,
+                    actual_bytes=archive_size,
+                    error_code=error_code,
+                    error=ValueError(message),
+                )
+                return download_guard_error_response(
+                    message,
+                    status=status_code,
+                    error_code=error_code,
+                )
             within_limit, bytes_error_code = record_download_archive_bytes(
                 identity,
                 archive["file"],
+                archive_size,
             )
         except Exception:
             archive["file"].close()
@@ -2573,6 +2726,25 @@ def create_download_task_api(request):
             status=400,
         )
 
+    runtime_setting = get_download_runtime_setting()
+    guard_result = check_download_cost_preflight(request, media_items, runtime_setting)
+    if guard_result:
+        error_code, message, status_code = guard_result
+        log_download_request_event(
+            request,
+            download_type="task_create",
+            media_items=media_items,
+            status=ObservabilityStatus.BLOCKED,
+            started_at=started_at,
+            error_code=error_code,
+            error=ValueError(message),
+        )
+        return download_guard_error_response(
+            message,
+            status=status_code,
+            error_code=error_code,
+        )
+
     try:
         identity, limit_response = check_download_request_limits(request)
     except Exception:
@@ -2602,7 +2774,6 @@ def create_download_task_api(request):
         return limit_response
 
     try:
-        runtime_setting = get_download_runtime_setting()
         concurrency = acquire_concurrency(
             "download-concurrent",
             identity,
@@ -2646,6 +2817,8 @@ def create_download_task_api(request):
             "download_runtime_limits": {
                 "daily_bytes_limit_per_ip": runtime_setting.daily_bytes_limit_per_ip,
                 "global_daily_bytes_limit": runtime_setting.global_daily_bytes_limit,
+                "single_archive_bytes_limit": runtime_setting.single_archive_bytes_limit,
+                "staff_large_download_exempt": runtime_setting.staff_large_download_exempt,
             },
         }, owner_identity=identity)
     except Exception:

@@ -5422,6 +5422,224 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(response["Content-Type"], "application/zip")
         self.assertEqual(response["X-Saved-Count"], "1")
 
+    def test_download_runtime_setting_cost_guard_defaults_to_unlimited(self):
+        setting = DownloadRuntimeSetting.load()
+
+        self.assertEqual(setting.single_archive_bytes_limit, 0)
+        self.assertEqual(setting.single_video_bytes_limit, 0)
+        self.assertTrue(setting.visitor_video_download_enabled)
+        self.assertFalse(setting.staff_large_download_exempt)
+        self.assertEqual(setting.large_download_warning_bytes, 100 * 1024 * 1024)
+
+    def test_download_endpoint_blocks_visitor_video_when_disabled(self):
+        setting = DownloadRuntimeSetting.load()
+        setting.visitor_video_download_enabled = False
+        setting.save(update_fields=["visitor_video_download_enabled", "updated_at"])
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "media_items": [{
+                    "type": "video",
+                    "url": "https://sns-video-hw.xhscdn.com/demo.mp4",
+                    "size_bytes": 1024,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response["X-Error-Code"], "VISITOR_VIDEO_DOWNLOAD_DISABLED")
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.BLOCKED)
+        self.assertEqual(log.error_code, "VISITOR_VIDEO_DOWNLOAD_DISABLED")
+
+    @patch("xhs_download.views.build_download_archive_file")
+    def test_staff_can_download_video_when_visitor_video_disabled(self, mock_archive):
+        from django.contrib.auth import get_user_model
+
+        setting = DownloadRuntimeSetting.load()
+        setting.visitor_video_download_enabled = False
+        setting.save(update_fields=["visitor_video_download_enabled", "updated_at"])
+        user = get_user_model().objects.create_user(username="download-staff", is_staff=True)
+        client = Client()
+        client.force_login(user)
+        mock_archive.return_value = {
+            "filename": "base.zip",
+            "file": BytesIO(b"zip-content"),
+            "saved_count": 1,
+            "failed_count": 0,
+        }
+
+        response = client.post(
+            "/media/download-images/",
+            data=json.dumps({
+                "media_items": [{
+                    "type": "video",
+                    "url": "https://sns-video-hw.xhscdn.com/demo.mp4",
+                    "size_bytes": 1024,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_archive.call_count, 1)
+
+    def test_download_endpoint_blocks_single_video_size_limit(self):
+        setting = DownloadRuntimeSetting.load()
+        setting.single_video_bytes_limit = 100
+        setting.save(update_fields=["single_video_bytes_limit", "updated_at"])
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "media_items": [{
+                    "type": "video",
+                    "url": "https://sns-video-hw.xhscdn.com/demo.mp4",
+                    "size_bytes": 101,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(response["X-Error-Code"], "SINGLE_VIDEO_SIZE_LIMIT")
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.BLOCKED)
+        self.assertEqual(log.error_code, "SINGLE_VIDEO_SIZE_LIMIT")
+        self.assertEqual(log.estimated_bytes, 101)
+
+    def test_download_endpoint_blocks_estimated_archive_size_limit(self):
+        setting = DownloadRuntimeSetting.load()
+        setting.single_archive_bytes_limit = 100
+        setting.save(update_fields=["single_archive_bytes_limit", "updated_at"])
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "media_items": [
+                    {"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg", "size_bytes": 60},
+                    {"type": "image", "url": "https://ci.xiaohongshu.com/b.jpg", "size_bytes": 41},
+                ],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(response["X-Error-Code"], "SINGLE_ARCHIVE_SIZE_LIMIT")
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.BLOCKED)
+        self.assertEqual(log.error_code, "SINGLE_ARCHIVE_SIZE_LIMIT")
+        self.assertEqual(log.estimated_bytes, 101)
+
+    @patch("xhs_download.views.build_download_archive_file")
+    def test_download_endpoint_blocks_actual_archive_size_limit(self, mock_archive):
+        setting = DownloadRuntimeSetting.load()
+        setting.single_archive_bytes_limit = 10
+        setting.save(update_fields=["single_archive_bytes_limit", "updated_at"])
+        mock_archive.return_value = {
+            "filename": "base.zip",
+            "file": BytesIO(b"this archive is too large"),
+            "saved_count": 1,
+            "failed_count": 0,
+        }
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "media_items": [{"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"}],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(response["X-Error-Code"], "SINGLE_ARCHIVE_SIZE_LIMIT")
+        self.assertEqual(mock_archive.call_count, 1)
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.BLOCKED)
+        self.assertEqual(log.error_code, "SINGLE_ARCHIVE_SIZE_LIMIT")
+        self.assertGreater(log.actual_bytes, 10)
+
+    @patch("xhs_download.views.build_download_archive_file")
+    def test_staff_large_download_exempt_bypasses_single_limits(self, mock_archive):
+        from django.contrib.auth import get_user_model
+
+        setting = DownloadRuntimeSetting.load()
+        setting.single_archive_bytes_limit = 10
+        setting.single_video_bytes_limit = 10
+        setting.staff_large_download_exempt = True
+        setting.save(update_fields=[
+            "single_archive_bytes_limit",
+            "single_video_bytes_limit",
+            "staff_large_download_exempt",
+            "updated_at",
+        ])
+        user = get_user_model().objects.create_user(username="large-staff", is_staff=True)
+        client = Client()
+        client.force_login(user)
+        mock_archive.return_value = {
+            "filename": "base.zip",
+            "file": BytesIO(b"this archive is allowed for staff"),
+            "saved_count": 1,
+            "failed_count": 0,
+        }
+
+        response = client.post(
+            "/media/download-images/",
+            data=json.dumps({
+                "media_items": [{
+                    "type": "video",
+                    "url": "https://sns-video-hw.xhscdn.com/demo.mp4",
+                    "size_bytes": 1000,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_archive.call_count, 1)
+
+    @patch("xhs_download.views.build_download_archive_file")
+    def test_staff_large_download_exempt_does_not_bypass_global_daily_bytes(self, mock_archive):
+        from django.contrib.auth import get_user_model
+
+        setting = DownloadRuntimeSetting.load()
+        setting.single_archive_bytes_limit = 10
+        setting.staff_large_download_exempt = True
+        setting.daily_bytes_limit_per_ip = 0
+        setting.global_daily_bytes_limit = 1
+        setting.save(update_fields=[
+            "single_archive_bytes_limit",
+            "staff_large_download_exempt",
+            "daily_bytes_limit_per_ip",
+            "global_daily_bytes_limit",
+            "updated_at",
+        ])
+        user = get_user_model().objects.create_user(username="daily-staff", is_staff=True)
+        client = Client()
+        client.force_login(user)
+        mock_archive.return_value = {
+            "filename": "base.zip",
+            "file": BytesIO(b"too much for global daily bytes"),
+            "saved_count": 1,
+            "failed_count": 0,
+        }
+
+        response = client.post(
+            "/media/download-images/",
+            data=json.dumps({
+                "media_items": [{"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"}],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response["X-Error-Code"], "DOWNLOAD_DAILY_BYTES_LIMIT_GLOBAL")
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.RATE_LIMITED)
+        self.assertEqual(log.error_code, "DOWNLOAD_DAILY_BYTES_LIMIT_GLOBAL")
+
     def test_download_endpoint_rejects_invalid_json(self):
         response = Client().post(
             "/media/download-images/",
@@ -7444,6 +7662,63 @@ class AdminObservabilityMvpTests(TestCase):
         self.grant_xhs_view_permission(self.staff, "view_provideradminauditlog")
         self.assertContains(client.get("/admin/provider-audit-logs/"), "Provider 审计")
 
+    def test_admin_console_permissions(self):
+        client = Client()
+        client.force_login(self.staff)
+        super_client = Client()
+        super_client.force_login(self.superuser)
+
+        self.assertEqual(Client().get("/admin/console/").status_code, 404)
+        self.assertEqual(client.get("/admin/console/").status_code, 404)
+        self.assertContains(super_client.get("/admin/console/"), "运维首页")
+
+        self.grant_xhs_view_permission(self.staff, "view_downloadrequestlog")
+        self.assertContains(client.get("/admin/console/"), "今日下载次数")
+
+    def test_admin_console_empty_data_renders(self):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/console/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "今日下载次数")
+        self.assertContains(response, "暂无失败记录")
+        self.assertContains(response, "暂无大文件下载记录")
+
+    def test_admin_console_shows_download_metrics_and_failure_top(self):
+        DownloadRequestLog.objects.create(
+            request_id="rid-download-success",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="zip",
+            provider="yt_dlp_generic",
+            source_platform="youtube",
+            estimated_bytes=4096,
+            actual_bytes=2048,
+        )
+        DownloadRequestLog.objects.create(
+            request_id="rid-download-failed",
+            status=ObservabilityStatus.BLOCKED,
+            download_type="zip",
+            provider="kukutool",
+            source_platform="douyin",
+            estimated_bytes=8192,
+            actual_bytes=4096,
+            error_code="SINGLE_ARCHIVE_SIZE_LIMIT",
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/console/")
+
+        self.assertContains(response, "今日下载次数")
+        self.assertContains(response, "2")
+        self.assertContains(response, "今日下载实际流量")
+        self.assertContains(response, "6.0 KB")
+        self.assertContains(response, "SINGLE_ARCHIVE_SIZE_LIMIT")
+        self.assertContains(response, "yt_dlp_generic")
+        self.assertContains(response, "douyin")
+
     def test_observability_log_pages_are_paginated(self):
         for index in range(55):
             ParseRequestLog.objects.create(
@@ -7543,6 +7818,11 @@ class AdminObservabilityMvpTests(TestCase):
         DOWNLOAD_MAX_CONCURRENT_PER_IP=3,
         DOWNLOAD_DAILY_BYTES_LIMIT_PER_IP=1024,
         DOWNLOAD_GLOBAL_DAILY_BYTES_LIMIT=2048,
+        DOWNLOAD_SINGLE_ARCHIVE_BYTES_LIMIT=4096,
+        DOWNLOAD_SINGLE_VIDEO_BYTES_LIMIT=512,
+        DOWNLOAD_VISITOR_VIDEO_DOWNLOAD_ENABLED=False,
+        DOWNLOAD_STAFF_LARGE_DOWNLOAD_EXEMPT=True,
+        DOWNLOAD_LARGE_DOWNLOAD_WARNING_BYTES=256,
     )
     def test_download_runtime_setting_initializes_from_environment_defaults(self):
         setting = DownloadRuntimeSetting.load()
@@ -7553,6 +7833,11 @@ class AdminObservabilityMvpTests(TestCase):
         self.assertEqual(setting.max_concurrent_per_ip, 3)
         self.assertEqual(setting.daily_bytes_limit_per_ip, 1024)
         self.assertEqual(setting.global_daily_bytes_limit, 2048)
+        self.assertEqual(setting.single_archive_bytes_limit, 4096)
+        self.assertEqual(setting.single_video_bytes_limit, 512)
+        self.assertFalse(setting.visitor_video_download_enabled)
+        self.assertTrue(setting.staff_large_download_exempt)
+        self.assertEqual(setting.large_download_warning_bytes, 256)
 
     def test_prune_observability_logs_dry_run_and_delete_keeps_audit_logs(self):
         parse_log = ParseRequestLog.objects.create(request_id="old-parse")

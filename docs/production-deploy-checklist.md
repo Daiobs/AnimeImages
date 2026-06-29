@@ -155,7 +155,30 @@ access_log /var/log/nginx/animeimages.access.log animeimages;
 
 See `docs/admin-observability.md` for request_id tracing, privacy guarantees, and daily checks.
 
-## 6. Run Django Checks
+## 6. Download Cost Guard
+
+- [ ] `/admin/console/` can be opened by a superuser or staff with any observability view permission.
+- [ ] `/admin/console/` shows today's download count, success rate, actual traffic, failed count, blocked/rate-limited count, 24h traffic, and 7d traffic.
+- [ ] Download settings can be opened from `/admin/console/`.
+- [ ] Confirm initial download cost limits in `DownloadRuntimeSetting`:
+
+```text
+single_archive_bytes_limit = 536870912      # 500 MB, adjust for server bandwidth
+single_video_bytes_limit = 314572800        # 300 MB, adjust for test phase
+visitor_video_download_enabled = True       # set False if public video traffic is risky
+staff_large_download_exempt = False
+large_download_warning_bytes = 104857600    # 100 MB
+```
+
+- [ ] Confirm `global_daily_bytes_limit` is set to a value that protects the VPS bandwidth plan, or intentionally left as `0` for no limit.
+- [ ] Trigger one normal ZIP download and confirm a `DownloadRequestLog` record appears with `actual_bytes`.
+- [ ] If testing cost guard manually, lower `single_archive_bytes_limit` temporarily and confirm blocked downloads return `X-Error-Code: SINGLE_ARCHIVE_SIZE_LIMIT`.
+- [ ] If public video traffic should be paused, set `visitor_video_download_enabled=False` and confirm visitor video downloads return `X-Error-Code: VISITOR_VIDEO_DOWNLOAD_DISABLED`.
+- [ ] Confirm staff large-file exemption is still `False` for first launch.
+
+See `docs/download-cost-guard.md` for traffic-cost behavior, error codes, warning thresholds, and rollback steps.
+
+## 7. Run Django Checks
 
 Load the production environment before running these commands:
 
@@ -210,7 +233,7 @@ set +a
 
 Accept only `rollout.status=disabled` or `rollout.status=staff_only` for first launch. Do not treat `public_candidate` as automatic approval.
 
-## 7. Configure Gunicorn and systemd
+## 8. Configure Gunicorn and systemd
 
 - [ ] Create `/etc/systemd/system/animeimages.service` using the sample from `docs/production-deploy-baseline.md`.
 - [ ] Verify placeholders are replaced:
@@ -236,7 +259,7 @@ sudo systemctl status animeimages --no-pager
 journalctl -u animeimages -n 100 --no-pager
 ```
 
-## 8. Configure Nginx and HTTPS
+## 9. Configure Nginx and HTTPS
 
 - [ ] Create `/etc/nginx/sites-available/animeimages`.
 - [ ] Link it:
@@ -260,7 +283,7 @@ sudo systemctl reload nginx
 - [ ] Configure HTTPS certificate.
 - [ ] Confirm HTTP redirects to HTTPS only after certificate works.
 
-## 9. Health Checks
+## 10. Health Checks
 
 - [ ] Liveness:
 
@@ -276,7 +299,7 @@ curl -i https://animeimages.example.com/health/ready/
 
 Readiness must return HTTP 200 and include both cache and database components as true.
 
-## 10. First Launch Smoke
+## 11. First Launch Smoke
 
 - [ ] Home page loads.
 - [ ] Xiaohongshu basic link parses.
@@ -288,6 +311,7 @@ Readiness must return HTTP 200 and include both cache and database components as
 - [ ] Async task endpoints are not used when `DOWNLOAD_ASYNC_TASKS_ENABLED=False`.
 - [ ] Third-party provider public entry remains disabled.
 - [ ] Provider health does not expose a public launch path.
+- [ ] Open `/admin/console/` and confirm traffic usage is normal after the first ZIP download.
 - [ ] Open `/admin/provider-health-tests/` and run `health_ready`.
 - [ ] Save stable smoke URLs in `/admin/provider-health-tests/`; these are database runtime settings, not `.env.production` values.
 - [ ] Run "一键测试" and confirm each item is `success`, `skipped`, or intentionally `unavailable`.
@@ -295,7 +319,7 @@ Readiness must return HTTP 200 and include both cache and database components as
 - [ ] Keep `douyin_kukutool_ultra`, `youtube_merge`, `third_party_ytdlp`, and `gallery_dl` staff-only until their test records are `success` or intentionally `skipped/unavailable`.
 - [ ] Use the test run `request_id` to confirm related logs can be found in Django logs or `journalctl`.
 
-## 11. Rollback
+## 12. Rollback
 
 If deployment fails:
 

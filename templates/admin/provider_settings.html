@@ -532,6 +532,9 @@
                 </p>
             </div>
             <div class="provider-hero-actions">
+                <a class="provider-link-btn" href="{% url 'admin_console' %}">
+                    运维首页
+                </a>
                 <a class="provider-link-btn" href="{% url 'ops_dashboard' %}">
                     运营看板
                 </a>
@@ -775,6 +778,7 @@
             </section>
 
             <div class="provider-actions">
+                <a class="provider-link-btn" href="{% url 'admin_console' %}">返回运维首页</a>
                 <a class="provider-link-btn" href="{% url 'admin:index' %}">返回后台首页</a>
                 <button type="submit" class="provider-btn provider-btn-primary">保存 Provider 设置</button>
             </div>
