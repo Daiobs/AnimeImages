@@ -1,5 +1,7 @@
 {% extends "admin/base_site.html" %}
 
+{% block content_title %}{% endblock %}
+
 {% block content %}
 <style>
     #content { padding: 0; }
@@ -104,6 +106,7 @@
             </div>
             <div class="ops-actions">
                 <a class="ops-link" href="{% url 'admin_console' %}">运维首页</a>
+                <a class="ops-link" href="{% url 'rollout_guard' %}">放量守卫</a>
                 <a class="ops-link" href="{% url 'parse_logs' %}">解析日志</a>
                 <a class="ops-link" href="{% url 'download_logs' %}">下载日志</a>
                 <a class="ops-link" href="{% url 'provider_audit_logs' %}">Provider 审计</a>

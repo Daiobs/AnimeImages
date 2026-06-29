@@ -1,0 +1,254 @@
+{% extends "admin/base_site.html" %}
+
+{% block content_title %}{% endblock %}
+
+{% block content %}
+<style>
+    #content { padding: 0; }
+    .rollout-page {
+        margin: -20px -20px 0;
+        min-height: calc(100vh - 96px);
+        padding: 34px clamp(18px, 4vw, 54px) 56px;
+        background: linear-gradient(180deg, #fff 0%, #f8fbff 58%, #fff 100%);
+        color: #111827;
+    }
+    .rollout-shell { max-width: 1320px; margin: 0 auto; }
+    .rollout-hero {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 22px;
+    }
+    .rollout-eyebrow {
+        display: inline-flex;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: #eff6ff;
+        color: #2563eb;
+        font-size: 12px;
+        font-weight: 900;
+    }
+    .rollout-title {
+        margin: 12px 0 0;
+        font-size: clamp(30px, 4vw, 46px);
+        font-weight: 900;
+        letter-spacing: 0;
+    }
+    .rollout-subtitle { margin: 10px 0 0; color: #6b7280; line-height: 1.7; }
+    .rollout-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    .rollout-link {
+        display: inline-flex;
+        min-height: 40px;
+        align-items: center;
+        justify-content: center;
+        padding: 0 14px;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        color: #111827;
+        text-decoration: none;
+        font-weight: 800;
+    }
+    .rollout-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 18px;
+    }
+    .rollout-card,
+    .rollout-panel {
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: 0 4px 12px rgba(17, 24, 39, .05);
+    }
+    .rollout-card { padding: 16px; }
+    .rollout-card span { display: block; color: #6b7280; font-size: 13px; font-weight: 800; }
+    .rollout-card strong { display: block; margin-top: 8px; font-size: 24px; font-weight: 900; }
+    .rollout-panel { padding: 18px; margin-bottom: 18px; overflow: hidden; }
+    .rollout-panel h2 { margin: 0 0 12px; font-size: 18px; font-weight: 900; }
+    .rollout-table-wrap { overflow: auto; }
+    .rollout-table { width: 100%; border-collapse: collapse; }
+    .rollout-table th,
+    .rollout-table td {
+        padding: 10px 8px;
+        border-top: 1px solid #edf0f3;
+        text-align: left;
+        vertical-align: top;
+        font-size: 13px;
+        word-break: break-word;
+    }
+    .rollout-table th { color: #6b7280; font-weight: 900; white-space: nowrap; }
+    .rollout-badge {
+        display: inline-flex;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: #f3f4f6;
+        color: #374151;
+        font-size: 12px;
+        font-weight: 900;
+        white-space: nowrap;
+    }
+    .rollout-badge-safe_for_staff { background: #eff6ff; color: #1d4ed8; }
+    .rollout-badge-safe_for_1_percent_gray { background: #ecfdf5; color: #047857; }
+    .rollout-badge-caution { background: #fffbeb; color: #92400e; }
+    .rollout-badge-do_not_public { background: #fff1f2; color: #be123c; }
+    .rollout-badge-success { background: #ecfdf5; color: #047857; }
+    .rollout-badge-failed,
+    .rollout-badge-unavailable { background: #fff1f2; color: #be123c; }
+    .rollout-badge-skipped,
+    .rollout-badge-none { background: #fffbeb; color: #92400e; }
+    .rollout-reasons { margin: 0; padding-left: 18px; color: #374151; min-width: 220px; }
+    .rollout-mini-links { display: flex; flex-wrap: wrap; gap: 6px; min-width: 180px; }
+    .rollout-mini-links a {
+        display: inline-flex;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: #f8fafc;
+        color: #2563eb;
+        text-decoration: none;
+        font-weight: 800;
+        font-size: 12px;
+    }
+    .rollout-section-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+    }
+    .rollout-note { color: #6b7280; line-height: 1.7; margin: 0; }
+    @media (max-width: 1120px) {
+        .rollout-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .rollout-section-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 640px) {
+        .rollout-grid { grid-template-columns: 1fr; }
+    }
+</style>
+
+<div class="rollout-page">
+    <div class="rollout-shell">
+        <section class="rollout-hero">
+            <div>
+                <span class="rollout-eyebrow">Read-only Rollout Advice</span>
+                <h1 class="rollout-title">放量守卫</h1>
+                <p class="rollout-subtitle">根据最近解析、下载、健康测试和下载流量风险，给出 Provider 放量建议。页面只读，不会自动修改 Provider 设置。当前展示时区：{{ admin_time_zone }}</p>
+            </div>
+            <div class="rollout-actions">
+                <a class="rollout-link" href="{{ links.provider_settings }}">Provider 设置</a>
+                <a class="rollout-link" href="{{ links.provider_health_tests }}">Provider 测试</a>
+                <a class="rollout-link" href="{{ links.admin_console }}">运维首页</a>
+                <a class="rollout-link" href="{{ links.ops_dashboard }}">Ops Dashboard</a>
+            </div>
+        </section>
+
+        <section class="rollout-grid" aria-label="核心指标">
+            {% for card in cards %}
+                <div class="rollout-card">
+                    <span>{{ card.label }}</span>
+                    <strong>{{ card.value }}</strong>
+                </div>
+            {% endfor %}
+        </section>
+
+        <section class="rollout-panel">
+            <h2>Provider 放量建议</h2>
+            <div class="rollout-table-wrap">
+                <table class="rollout-table">
+                    <thead>
+                        <tr>
+                            <th>Provider</th>
+                            <th>Capability</th>
+                            <th>Runtime</th>
+                            <th>灰度</th>
+                            <th>健康测试</th>
+                            <th>24h 解析量</th>
+                            <th>24h 成功率</th>
+                            <th>平均耗时</th>
+                            <th>24h 失败</th>
+                            <th>24h 下载</th>
+                            <th>24h 下载流量</th>
+                            <th>阻止/限流</th>
+                            <th>建议</th>
+                            <th>原因</th>
+                            <th>快捷链接</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {% for row in provider_rows %}
+                        <tr>
+                            <td><strong>{{ row.name }}</strong><br><span>{{ row.provider_id }}</span></td>
+                            <td>{{ row.capability_label }}</td>
+                            <td>{{ row.runtime_mode_label }}</td>
+                            <td>{{ row.rollout_percent }}%</td>
+                            <td>
+                                <span class="rollout-badge rollout-badge-{{ row.health_status }}">{{ row.health_label }}</span>
+                                <br><span>{{ row.health_created_at }}</span>
+                                <br><span>{{ row.health_details }}</span>
+                            </td>
+                            <td>{{ row.parse_total_24h }}</td>
+                            <td>{{ row.parse_success_rate_24h }}</td>
+                            <td>{{ row.parse_avg_duration_ms_24h }} ms</td>
+                            <td>{{ row.parse_failed_24h }}</td>
+                            <td>{{ row.download_count_24h }}</td>
+                            <td>{{ row.download_actual_bytes_24h }}</td>
+                            <td>{{ row.download_blocked_24h }}</td>
+                            <td><span class="rollout-badge rollout-badge-{{ row.recommendation }}">{{ row.recommendation_label }}</span></td>
+                            <td>
+                                <ul class="rollout-reasons">
+                                    {% for reason in row.reasons %}
+                                        <li>{{ reason }}</li>
+                                    {% endfor %}
+                                </ul>
+                            </td>
+                            <td>
+                                <div class="rollout-mini-links">
+                                    <a href="{{ links.provider_settings }}">设置</a>
+                                    <a href="{{ links.provider_health_tests }}">测试</a>
+                                    <a href="{{ links.parse_logs }}">解析日志</a>
+                                    <a href="{{ links.download_logs }}">下载日志</a>
+                                    <a href="{{ links.admin_console }}">运维首页</a>
+                                </div>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="rollout-section-grid">
+            <div class="rollout-panel">
+                <h2>最近 24h Provider 相关失败 Top reason</h2>
+                <table class="rollout-table">
+                    <thead><tr><th>error_code</th><th>次数</th></tr></thead>
+                    <tbody>
+                    {% for row in failure_top %}
+                        <tr><td>{{ row.error_code }}</td><td>{{ row.count }}</td></tr>
+                    {% empty %}
+                        <tr><td colspan="2">暂无失败记录</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <div class="rollout-panel">
+                <h2>最近 24h 下载成本风险摘要</h2>
+                <table class="rollout-table">
+                    <tbody>
+                        <tr><th>24h 下载实际流量</th><td>{{ download_risk.actual_bytes_24h }}</td></tr>
+                        <tr><th>今日全站限制</th><td>{{ download_risk.global_limit }}</td></tr>
+                        <tr><th>今日使用率</th><td>{{ download_risk.usage_label }}</td></tr>
+                        <tr><th>24h 阻止/限流</th><td>{{ download_risk.blocked_or_limited_24h }}</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="rollout-panel">
+            <h2>放量建议说明</h2>
+            <p class="rollout-note">建议节奏：staff → public_gray 1% → public_gray 5% → public_gray 10% → public。遇到健康测试失败、24h 成功率低于 90%、平均耗时过高、今日下载流量超过 70%、第三方 allowlist 为空、blocked/rate_limited 突增时，应暂停放量或回退。</p>
+        </section>
+    </div>
+</div>
+{% endblock %}

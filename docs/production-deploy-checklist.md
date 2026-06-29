@@ -158,7 +158,9 @@ See `docs/admin-observability.md` for request_id tracing, privacy guarantees, an
 ## 6. Download Cost Guard
 
 - [ ] `/admin/console/` can be opened by a superuser or staff with any observability view permission.
+- [ ] `/admin/rollout-guard/` can be opened by a superuser or staff with any observability view permission.
 - [ ] `/admin/console/` shows today's download count, success rate, actual traffic, failed count, blocked/rate-limited count, 24h traffic, and 7d traffic.
+- [ ] `/admin/rollout-guard/` shows read-only Provider rollout advice and does not change Provider settings.
 - [ ] Download settings can be opened from `/admin/console/`.
 - [ ] Confirm initial download cost limits in `DownloadRuntimeSetting`:
 
@@ -312,6 +314,7 @@ Readiness must return HTTP 200 and include both cache and database components as
 - [ ] Third-party provider public entry remains disabled.
 - [ ] Provider health does not expose a public launch path.
 - [ ] Open `/admin/console/` and confirm traffic usage is normal after the first ZIP download.
+- [ ] Open `/admin/rollout-guard/` and confirm Provider advice is `safe_for_staff`, `safe_for_1_percent_gray`, `caution`, or `do_not_public`.
 - [ ] Open `/admin/provider-health-tests/` and run `health_ready`.
 - [ ] Save stable smoke URLs in `/admin/provider-health-tests/`; these are database runtime settings, not `.env.production` values.
 - [ ] Run "一键测试" and confirm each item is `success`, `skipped`, or intentionally `unavailable`.
