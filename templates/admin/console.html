@@ -1,0 +1,321 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<style>
+    #content { padding: 0; }
+    .console-page {
+        margin: -20px -20px 0;
+        min-height: calc(100vh - 96px);
+        padding: 34px clamp(18px, 4vw, 54px) 56px;
+        background: linear-gradient(180deg, #fff 0%, #f8fbff 58%, #fff 100%);
+        color: #111827;
+    }
+    .console-shell { max-width: 1280px; margin: 0 auto; }
+    .console-hero {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 22px;
+    }
+    .console-eyebrow {
+        display: inline-flex;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: #f7f1ff;
+        color: #855be8;
+        font-size: 12px;
+        font-weight: 900;
+    }
+    .console-title {
+        margin: 12px 0 0;
+        font-size: clamp(30px, 4vw, 46px);
+        font-weight: 900;
+        letter-spacing: 0;
+        background: linear-gradient(135deg, #855be8, #00b6d8);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+    }
+    .console-subtitle { margin: 10px 0 0; color: #6b7280; line-height: 1.7; }
+    .console-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    .console-link {
+        display: inline-flex;
+        min-height: 40px;
+        align-items: center;
+        justify-content: center;
+        padding: 0 14px;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        color: #111827;
+        text-decoration: none;
+        font-weight: 800;
+    }
+    .console-link-primary {
+        border: 0;
+        background: linear-gradient(135deg, #855be8, #7447dd);
+        color: #fff;
+        box-shadow: 0 8px 22px rgba(133, 91, 232, .22);
+    }
+    .console-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 18px;
+    }
+    .console-card,
+    .console-panel {
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: 0 4px 12px rgba(17, 24, 39, .05);
+    }
+    .console-card { padding: 16px; }
+    .console-card span { display: block; color: #6b7280; font-size: 13px; font-weight: 800; }
+    .console-card strong { display: block; margin-top: 8px; font-size: 24px; font-weight: 900; }
+    .console-section-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+        margin-bottom: 18px;
+    }
+    .console-panel { padding: 18px; overflow: hidden; }
+    .console-panel h2 { margin: 0 0 12px; font-size: 18px; font-weight: 900; }
+    .console-list { margin: 0; padding: 0; list-style: none; }
+    .console-list li {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 8px 0;
+        border-top: 1px solid #f1f5f9;
+    }
+    .console-list li:first-child { border-top: 0; }
+    .console-list span { color: #6b7280; }
+    .console-list strong { text-align: right; }
+    .console-risk {
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 14px 16px;
+        margin-bottom: 18px;
+        background: #fff;
+    }
+    .console-risk-warning { border-color: #fde68a; background: #fffbeb; }
+    .console-risk-danger { border-color: #fecaca; background: #fff1f2; }
+    .console-risk-unlimited { border-color: #bfdbfe; background: #eff6ff; }
+    .console-table-wrap { overflow: auto; }
+    .console-table { width: 100%; border-collapse: collapse; }
+    .console-table th,
+    .console-table td {
+        padding: 9px 8px;
+        border-top: 1px solid #edf0f3;
+        text-align: left;
+        vertical-align: top;
+        font-size: 13px;
+        word-break: break-word;
+    }
+    .console-table th { color: #6b7280; font-weight: 900; }
+    .console-badge {
+        display: inline-flex;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: #f3f4f6;
+        color: #374151;
+        font-size: 12px;
+        font-weight: 900;
+    }
+    .console-badge-success { background: #ecfdf5; color: #047857; }
+    .console-badge-failed,
+    .console-badge-blocked,
+    .console-badge-rate_limited { background: #fff1f2; color: #be123c; }
+    .console-badge-skipped,
+    .console-badge-unavailable { background: #fffbeb; color: #92400e; }
+    @media (max-width: 1120px) {
+        .console-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .console-section-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 640px) {
+        .console-grid { grid-template-columns: 1fr; }
+    }
+</style>
+
+<div class="console-page">
+    <div class="console-shell">
+        <section class="console-hero">
+            <div>
+                <span class="console-eyebrow">Admin Cost Guard</span>
+                <h1 class="console-title">运维首页</h1>
+                <p class="console-subtitle">集中查看下载流量、成本风险、Provider 状态和上线后最常用的后台入口。当前展示时区：{{ admin_time_zone }}</p>
+            </div>
+            <div class="console-actions">
+                <a class="console-link console-link-primary" href="{% url 'admin:download_console_downloadruntimesetting_changelist' %}">Download 设置</a>
+                <a class="console-link" href="{% url 'provider_settings' %}">Provider 设置</a>
+                <a class="console-link" href="{% url 'provider_health_tests' %}">Provider 测试</a>
+                <a class="console-link" href="{% url 'ops_dashboard' %}">Ops Dashboard</a>
+            </div>
+        </section>
+
+        <section class="console-grid" aria-label="核心指标">
+            {% for card in cards %}
+                <div class="console-card">
+                    <span>{{ card.label }}</span>
+                    <strong>{{ card.value }}</strong>
+                </div>
+            {% endfor %}
+        </section>
+
+        <section class="console-risk console-risk-{{ usage_level }}">
+            <strong>今日全站流量使用率：{{ usage_label }}</strong>
+            <span> 今日实际 {{ today_actual_bytes }} / 每日全站限制 {{ global_daily_limit }}</span>
+        </section>
+
+        <section class="console-section-grid">
+            <div class="console-panel">
+                <h2>DownloadRuntimeSetting 摘要</h2>
+                <ul class="console-list">
+                    {% for label, value in download_summary %}
+                        <li><span>{{ label }}</span><strong>{{ value }}</strong></li>
+                    {% endfor %}
+                </ul>
+            </div>
+            <div class="console-panel">
+                <h2>ProviderRuntimeSetting 摘要</h2>
+                <table class="console-table">
+                    <thead><tr><th>Provider</th><th>模式</th><th>灰度</th></tr></thead>
+                    <tbody>
+                    {% for row in provider_summary %}
+                        <tr><td>{{ row.name }}</td><td>{{ row.mode }}</td><td>{{ row.rollout }}%</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="console-section-grid">
+            <div class="console-panel">
+                <h2>最近 Provider 健康测试</h2>
+                <div class="console-table-wrap">
+                    <table class="console-table">
+                        <thead><tr><th>测试项</th><th>状态</th><th>Provider</th><th>耗时</th><th>时间</th></tr></thead>
+                        <tbody>
+                        {% for row in health_runs %}
+                            <tr>
+                                <td>{{ row.test_key }}</td>
+                                <td><span class="console-badge console-badge-{{ row.status }}">{{ row.status }}</span></td>
+                                <td>{{ row.provider }}</td>
+                                <td>{{ row.duration_ms }} ms</td>
+                                <td>{{ row.created_at }}</td>
+                            </tr>
+                        {% empty %}
+                            <tr><td colspan="5">暂无 Provider 健康测试记录</td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="console-panel">
+                <h2>最近 24h 失败原因 Top 10</h2>
+                <table class="console-table">
+                    <thead><tr><th>error_code</th><th>次数</th></tr></thead>
+                    <tbody>
+                    {% for row in failure_top %}
+                        <tr><td>{{ row.error_code|default:"-" }}</td><td>{{ row.count }}</td></tr>
+                    {% empty %}
+                        <tr><td colspan="2">暂无失败记录</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="console-section-grid">
+            <div class="console-panel">
+                <h2>最近 24h 大文件下载 Top 10</h2>
+                <div class="console-table-wrap">
+                    <table class="console-table">
+                        <thead><tr><th>时间</th><th>类型</th><th>Provider</th><th>平台</th><th>实际大小</th><th>状态</th><th>request_id</th></tr></thead>
+                        <tbody>
+                        {% for row in large_downloads %}
+                            <tr>
+                                <td>{{ row.created_at }}</td>
+                                <td>{{ row.download_type }}</td>
+                                <td>{{ row.provider }}</td>
+                                <td>{{ row.source_platform }}</td>
+                                <td>{{ row.actual_bytes }}</td>
+                                <td>{{ row.status }}</td>
+                                <td>{{ row.request_id }}</td>
+                            </tr>
+                        {% empty %}
+                            <tr><td colspan="7">暂无大文件下载记录</td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="console-panel">
+                <h2>最近 24h blocked / rate_limited</h2>
+                <div class="console-table-wrap">
+                    <table class="console-table">
+                        <thead><tr><th>时间</th><th>状态</th><th>error_code</th><th>类型</th><th>Provider</th><th>大小</th></tr></thead>
+                        <tbody>
+                        {% for row in blocked_rows %}
+                            <tr>
+                                <td>{{ row.created_at }}</td>
+                                <td>{{ row.status }}</td>
+                                <td>{{ row.error_code }}</td>
+                                <td>{{ row.download_type }}</td>
+                                <td>{{ row.provider }}</td>
+                                <td>{{ row.actual_bytes }}</td>
+                            </tr>
+                        {% empty %}
+                            <tr><td colspan="6">暂无阻止或限流记录</td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <section class="console-section-grid">
+            <div class="console-panel">
+                <h2>今日下载最多 Provider</h2>
+                <table class="console-table">
+                    <tbody>
+                    {% for row in provider_top %}
+                        <tr><td>{{ row.provider|default:"-" }}</td><td>{{ row.count }}</td></tr>
+                    {% empty %}
+                        <tr><td colspan="2">暂无 Provider 下载记录</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <div class="console-panel">
+                <h2>今日下载最多平台</h2>
+                <table class="console-table">
+                    <tbody>
+                    {% for row in source_platform_top %}
+                        <tr><td>{{ row.source_platform|default:"-" }}</td><td>{{ row.count }}</td></tr>
+                    {% empty %}
+                        <tr><td colspan="2">暂无平台下载记录</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="console-panel">
+            <h2>快捷入口</h2>
+            <div class="console-actions">
+                <a class="console-link" href="{% url 'provider_settings' %}">Provider 设置</a>
+                <a class="console-link" href="{% url 'admin:download_console_downloadruntimesetting_changelist' %}">Download 设置</a>
+                <a class="console-link" href="{% url 'provider_health_tests' %}">Provider 测试</a>
+                <a class="console-link" href="{% url 'ops_dashboard' %}">Ops Dashboard</a>
+                <a class="console-link" href="{% url 'parse_logs' %}">Parse Logs</a>
+                <a class="console-link" href="{% url 'download_logs' %}">Download Logs</a>
+                <a class="console-link" href="{% url 'provider_audit_logs' %}">Audit Logs</a>
+            </div>
+        </section>
+    </div>
+</div>
+{% endblock %}

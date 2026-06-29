@@ -79,6 +79,12 @@ def _download_limit(payload, key, fallback):
         return 0
 
 
+def _download_bool(payload, key, fallback):
+    limits = payload.get("download_runtime_limits") or {}
+    value = limits.get(key, fallback)
+    return bool(value)
+
+
 def run_download_task(task_id, payload, owner_identity):
     archive = None
 
@@ -108,6 +114,24 @@ def run_download_task(task_id, payload, owner_identity):
         runtime_setting = None
         if not payload.get("download_runtime_limits"):
             runtime_setting = DownloadRuntimeSetting.load()
+        single_archive_bytes_limit = _download_limit(
+            payload,
+            "single_archive_bytes_limit",
+            runtime_setting.single_archive_bytes_limit if runtime_setting else 0,
+        )
+        staff_large_download_exempt = _download_bool(
+            payload,
+            "staff_large_download_exempt",
+            runtime_setting.staff_large_download_exempt if runtime_setting else False,
+        )
+        if (
+            single_archive_bytes_limit > 0
+            and archive_size > single_archive_bytes_limit
+            and not staff_large_download_exempt
+        ):
+            archive["file"].close()
+            archive = None
+            raise RuntimeError("打包后的文件超过单次 ZIP 下载限制")
         daily_bytes_limit_per_ip = _download_limit(
             payload,
             "daily_bytes_limit_per_ip",

@@ -13,6 +13,11 @@ class DownloadRuntimeSettingAdmin(admin.ModelAdmin):
         "max_concurrent_per_ip",
         "daily_bytes_limit_per_ip",
         "global_daily_bytes_limit",
+        "single_archive_bytes_limit",
+        "single_video_bytes_limit",
+        "visitor_video_download_enabled",
+        "staff_large_download_exempt",
+        "large_download_warning_bytes",
         "updated_at",
     )
     readonly_fields = ("singleton_key", "updated_at")
@@ -24,6 +29,11 @@ class DownloadRuntimeSettingAdmin(admin.ModelAdmin):
         "max_concurrent_per_ip",
         "daily_bytes_limit_per_ip",
         "global_daily_bytes_limit",
+        "single_archive_bytes_limit",
+        "single_video_bytes_limit",
+        "visitor_video_download_enabled",
+        "staff_large_download_exempt",
+        "large_download_warning_bytes",
         "updated_at",
     )
 
