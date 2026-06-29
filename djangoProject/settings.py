@@ -74,6 +74,13 @@ def env_float(name, default=0.0):
     return float(value)
 
 
+def env_str(name, default=""):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip()
+
+
 def python_module_command(module_name):
     if importlib.util.find_spec(module_name) is None:
         return ""

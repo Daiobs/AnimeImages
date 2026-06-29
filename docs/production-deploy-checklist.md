@@ -117,9 +117,12 @@ Do not commit `.env.production`. Do not paste real secrets into issue comments, 
 - [ ] `/health/ready/` returns 200.
 - [ ] `/admin/ops-dashboard/` can be opened by a superuser or staff with observability view permissions.
 - [ ] `/admin/parse-logs/` can be opened by a user with `xhs_download.view_parserequestlog`.
+- [ ] `/admin/provider-health-tests/` can be opened by a superuser or staff with `xhs_download.view_providerhealthtestrun`.
 - [ ] A normal parse request writes a new `ParseRequestLog`.
 - [ ] A normal download request writes a new `DownloadRequestLog`.
 - [ ] Provider setting changes write a new `ProviderAdminAuditLog`.
+- [ ] Running one Provider health test writes a new `ProviderHealthTestRun`.
+- [ ] Optional Provider smoke URLs are configured from `/admin/provider-health-tests/`, not `.env.production`.
 - [ ] Browser/network response headers include `X-Request-ID`.
 - [ ] `journalctl` can find the same request id:
 
@@ -285,6 +288,12 @@ Readiness must return HTTP 200 and include both cache and database components as
 - [ ] Async task endpoints are not used when `DOWNLOAD_ASYNC_TASKS_ENABLED=False`.
 - [ ] Third-party provider public entry remains disabled.
 - [ ] Provider health does not expose a public launch path.
+- [ ] Open `/admin/provider-health-tests/` and run `health_ready`.
+- [ ] Save stable smoke URLs in `/admin/provider-health-tests/`; these are database runtime settings, not `.env.production` values.
+- [ ] Run "一键测试" and confirm each item is `success`, `skipped`, or intentionally `unavailable`.
+- [ ] If a Douyin test URL is saved in the panel, confirm `douyin_native_parse` is not `failed`.
+- [ ] Keep `douyin_kukutool_ultra`, `youtube_merge`, `third_party_ytdlp`, and `gallery_dl` staff-only until their test records are `success` or intentionally `skipped/unavailable`.
+- [ ] Use the test run `request_id` to confirm related logs can be found in Django logs or `journalctl`.
 
 ## 11. Rollback
 

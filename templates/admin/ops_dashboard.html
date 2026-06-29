@@ -106,6 +106,7 @@
                 <a class="ops-link" href="{% url 'parse_logs' %}">解析日志</a>
                 <a class="ops-link" href="{% url 'download_logs' %}">下载日志</a>
                 <a class="ops-link" href="{% url 'provider_audit_logs' %}">Provider 审计</a>
+                <a class="ops-link" href="{% url 'provider_health_tests' %}">Provider 测试</a>
                 <a class="ops-link" href="{% url 'provider_settings' %}">Provider 设置</a>
             </div>
         </section>
@@ -173,7 +174,7 @@
                 <table class="ops-table">
                     <tbody>
                     {% for row in hourly_parse %}
-                        <tr><td>{{ row.hour|date:"m-d H:00" }}</td><td>{{ row.count }}</td></tr>
+                        <tr><td>{{ row.hour_display }}</td><td>{{ row.count }}</td></tr>
                     {% empty %}
                         <tr><td colspan="2">暂无解析记录</td></tr>
                     {% endfor %}
@@ -185,7 +186,7 @@
                 <table class="ops-table">
                     <tbody>
                     {% for row in recent_audit_logs %}
-                        <tr><td>{{ row.actor_username }}</td><td>{{ row.action }}</td><td>{{ row.created_at|date:"m-d H:i" }}</td></tr>
+                        <tr><td>{{ row.actor_username }}</td><td>{{ row.action }}</td><td>{{ row.created_at }}</td></tr>
                     {% empty %}
                         <tr><td colspan="3">暂无审计记录</td></tr>
                     {% endfor %}

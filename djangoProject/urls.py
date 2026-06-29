@@ -29,6 +29,7 @@ urlpatterns = [
                   path("admin/provider-settings/", download_views.provider_settings_view, name="provider_settings"),
                   path("admin/provider-health/", download_views.provider_health_view, name="provider_health"),
                   path("admin/provider-health/control/", download_views.provider_control_view, name="provider_control"),
+                  path("admin/provider-health-tests/", download_views.provider_health_tests_view, name="provider_health_tests"),
                   path("admin/ops-dashboard/", download_views.ops_dashboard_view, name="ops_dashboard"),
                   path("admin/parse-logs/", download_views.parse_logs_view, name="parse_logs"),
                   path("admin/download-logs/", download_views.download_logs_view, name="download_logs"),

@@ -8,19 +8,38 @@
     <link rel="stylesheet" href="{% static 'css/admin_theme.css' %}">
 {% endblock %}
 
+{% block dark-mode-vars %}{% endblock %}
+
 {% block branding %}
     <div id="site-name" class="admin-site-brand">
         <a href="{% url 'admin:index' %}">星空的高清下载小站</a>
     </div>
 {% endblock %}
 
+{% block usertools %}
+    {% if has_permission %}
+        <div id="user-tools" class="admin-account-tools">
+            <span class="admin-account-user">
+                {% firstof user.get_short_name user.get_username %}
+            </span>
+            {% if site_url %}
+                <a href="{{ site_url }}">前台</a>
+            {% endif %}
+            {% if user.has_usable_password %}
+                <a href="{% url 'admin:password_change' %}">改密码</a>
+            {% endif %}
+            <form id="logout-form" method="post" action="{% url 'admin:logout' %}">
+                {% csrf_token %}
+                <button type="submit" class="admin-logout-button">退出</button>
+            </form>
+        </div>
+    {% endif %}
+{% endblock %}
+
 {% block nav-global %}
     <nav class="admin-global-nav" aria-label="后台快捷导航">
-        <a href="{% url 'home' %}">返回前台</a>
+        <a href="{% url 'admin:index' %}">后台首页</a>
         <a href="{% url 'ops_dashboard' %}">运营看板</a>
-        <a href="{% url 'parse_logs' %}">解析日志</a>
-        <a href="{% url 'download_logs' %}">下载日志</a>
         <a href="{% url 'provider_settings' %}">Provider 管理</a>
-        <a href="{% url 'provider_health' %}" target="_blank" rel="noopener">健康状态</a>
     </nav>
 {% endblock %}

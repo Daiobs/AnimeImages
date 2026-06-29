@@ -1,7 +1,13 @@
 from django.contrib import admin
 from django.shortcuts import redirect
 
-from .models import DownloadRequestLog, ParseRequestLog, ProviderAdminAuditLog, ProviderRuntimeSetting
+from .models import (
+    DownloadRequestLog,
+    ParseRequestLog,
+    ProviderAdminAuditLog,
+    ProviderHealthTestRun,
+    ProviderRuntimeSetting,
+)
 
 
 @admin.register(ProviderRuntimeSetting)
@@ -115,3 +121,26 @@ class ProviderAdminAuditLogAdmin(ReadOnlyLogAdmin):
     list_display = ("created_at", "actor_username", "action", "changed_fields", "request_id")
     list_filter = ("action", "actor_is_superuser", "created_at")
     search_fields = ("request_id", "actor_username", "action")
+
+
+@admin.register(ProviderHealthTestRun)
+class ProviderHealthTestRunAdmin(ReadOnlyLogAdmin):
+    list_display = (
+        "created_at",
+        "test_key",
+        "status",
+        "provider",
+        "duration_ms",
+        "error_type",
+        "actor_username",
+        "request_id",
+    )
+    list_filter = ("test_key", "status", "provider", "is_staff", "created_at")
+    search_fields = (
+        "request_id",
+        "test_key",
+        "provider",
+        "error_type",
+        "actor_username",
+        "test_url_host",
+    )

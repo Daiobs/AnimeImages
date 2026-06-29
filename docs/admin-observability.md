@@ -45,6 +45,7 @@ Django 会读取 `X-Request-ID`，并在响应头再次返回 `X-Request-ID`。�
 /admin/download-logs/
 /admin/provider-audit-logs/
 /admin/provider-settings/
+/admin/provider-health-tests/
 ```
 
 `/admin/ops-dashboard/` 需要 superuser 或任意一个 observability view 权限。单独日志页面需要对应权限：
@@ -52,8 +53,13 @@ Django 会读取 `X-Request-ID`，并在响应头再次返回 `X-Request-ID`。�
 - `xhs_download.view_parserequestlog`
 - `xhs_download.view_downloadrequestlog`
 - `xhs_download.view_provideradminauditlog`
+- `xhs_download.view_providerhealthtestrun`
 
 运营看板显示今日解析、下载、成功率、失败原因 Top 10、平台 Top 10、Provider Top 10 和最近 Provider 审计记录。
+
+`/admin/provider-health-tests/` 用于上线后执行 Provider smoke。页面会展示环境 capability、runtime gate、下载限流摘要和最近 50 条测试记录。执行测试需要 superuser 或 `xhs_download.add_providerhealthtestrun` 权限。详细说明见 `docs/admin-provider-health-tests.md`。
+
+修改 Provider 测试 URL 需要 superuser 或 `xhs_download.change_providerhealthtestsetting` 权限。测试 URL 保存在数据库配置中，不放入 `.env`。
 
 ## 落库日志
 
