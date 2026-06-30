@@ -50,6 +50,13 @@ from .services.downloads import (
     resolve_server_save_folder,
     save_media_items_to_server,
 )
+from .services.download_routing import (
+    ROUTE_BLOCKED,
+    ROUTE_DIRECT,
+    ROUTE_PROXY,
+    ROUTE_ZIP,
+    decide_download_route,
+)
 from .services.assets import MediaAsset, ParseResult
 from .services.candidates import MediaCandidate, dedupe_candidates, rank_media_candidates
 from .services.diagnostics import CandidateDiagnostic, select_best_media_candidate
@@ -5403,6 +5410,32 @@ class XhsDownloadViewTests(TestCase):
         self.assertContains(response, "download-progress-wrap")
         mock_parse.assert_called_once_with("https://www.bilibili.com/video/BV1xx411c7mD/", prefer_ultra_hd=False)
 
+    @patch("xhs_download.views.parse_media_page")
+    def test_mobile_results_page_shows_download_location_warning(self, mock_parse):
+        mock_parse.return_value = ParseResult(
+            platform="xiaohongshu",
+            post_type="image",
+            base_filename="作者_标题",
+            assets=(
+                MediaAsset(
+                    media_type="image",
+                    url="https://ci.xiaohongshu.com/a.jpg",
+                    platform="xiaohongshu",
+                ),
+            ),
+        )
+
+        response = Client().get(
+            "/results/",
+            {"q": "https://www.xiaohongshu.com/explore/demo"},
+            HTTP_USER_AGENT="Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "手机端建议单张/单个保存")
+        self.assertContains(response, "系统“文件”App")
+        self.assertNotContains(response, "自动保存到相册")
+
     @patch("xhs_download.views.build_download_archive_file")
     def test_download_endpoint_returns_zip_response(self, mock_archive):
         mock_archive.return_value = {
@@ -5421,6 +5454,189 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "application/zip")
         self.assertEqual(response["X-Saved-Count"], "1")
+
+    def test_download_route_single_image_direct(self):
+        request = RequestFactory().post("/media/download-images/")
+        route = decide_download_route(
+            request,
+            [{"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg", "size_bytes": 123}],
+            requested_mode="auto",
+        )
+
+        self.assertEqual(route["route_type"], ROUTE_DIRECT)
+        self.assertEqual(route["browser_egress_estimated_bytes"], 123)
+        self.assertEqual(route["server_egress_estimated_bytes"], 0)
+
+    def test_download_route_many_images_uses_zip(self):
+        request = RequestFactory().post("/media/download-images/")
+        items = [
+            {"type": "image", "url": f"https://ci.xiaohongshu.com/{index}.jpg", "size_bytes": 10}
+            for index in range(13)
+        ]
+
+        route = decide_download_route(request, items, requested_mode="auto")
+
+        self.assertEqual(route["route_type"], ROUTE_ZIP)
+        self.assertEqual(route["server_egress_estimated_bytes"], 130)
+
+    def test_download_route_single_video_proxy(self):
+        request = RequestFactory().post("/media/download-images/")
+        route = decide_download_route(
+            request,
+            [{"type": "video", "url": "https://sns-video-hw.xhscdn.com/a.mp4", "size_bytes": 456}],
+            requested_mode="auto",
+        )
+
+        self.assertEqual(route["route_type"], ROUTE_PROXY)
+        self.assertEqual(route["server_egress_estimated_bytes"], 456)
+
+    def test_download_route_provider_resources_use_zip(self):
+        request = RequestFactory().post("/media/download-images/")
+        youtube_route = decide_download_route(
+            request,
+            [{
+                "type": "video",
+                "url": "https://example.com/youtube.mp4",
+                "provider": "youtube_merge",
+                "size_bytes": 1000,
+            }],
+            requested_mode="auto",
+        )
+        kukutool_route = decide_download_route(
+            request,
+            [{
+                "type": "video",
+                "url": "https://v6-default.365yg.com/a.mp4",
+                "provider": "kukutool",
+                "size_bytes": 2000,
+            }],
+            requested_mode="auto",
+        )
+
+        self.assertEqual(youtube_route["route_type"], ROUTE_ZIP)
+        self.assertEqual(kukutool_route["route_type"], ROUTE_ZIP)
+
+    def test_download_route_mixed_items_use_zip(self):
+        request = RequestFactory().post("/media/download-images/")
+        route = decide_download_route(
+            request,
+            [
+                {"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"},
+                {"type": "video", "url": "https://sns-video-hw.xhscdn.com/a.mp4"},
+            ],
+            requested_mode="auto",
+        )
+
+        self.assertEqual(route["route_type"], ROUTE_ZIP)
+
+    def test_download_route_visitor_video_disabled_blocks(self):
+        setting = DownloadRuntimeSetting.load()
+        setting.visitor_video_download_enabled = False
+        setting.save(update_fields=["visitor_video_download_enabled", "updated_at"])
+        request = RequestFactory().post("/media/download-images/")
+
+        route = decide_download_route(
+            request,
+            [{"type": "video", "url": "https://sns-video-hw.xhscdn.com/a.mp4", "size_bytes": 789}],
+            requested_mode="auto",
+        )
+
+        self.assertEqual(route["route_type"], ROUTE_BLOCKED)
+        self.assertEqual(route["error_code"], "VISITOR_VIDEO_DOWNLOAD_DISABLED")
+        self.assertEqual(route["estimated_bytes"], 789)
+
+    def test_download_auto_direct_returns_json_and_writes_route_log(self):
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "auto",
+                "media_items": [{
+                    "type": "image",
+                    "url": "https://ci.xiaohongshu.com/a.jpg",
+                    "size_bytes": 321,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "routed")
+        self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
+        self.assertEqual(response["Content-Type"], "application/json")
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.route_type, ROUTE_DIRECT)
+        self.assertEqual(log.browser_egress_estimated_bytes, 321)
+        self.assertNotIn("https://", log.route_reason)
+
+    def test_download_auto_video_proxy_returns_json_hint(self):
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "auto",
+                "media_items": [{
+                    "type": "video",
+                    "url": "https://sns-video-hw.xhscdn.com/a.mp4",
+                    "size_bytes": 654,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["route_type"], ROUTE_PROXY)
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.route_type, ROUTE_PROXY)
+        self.assertEqual(log.server_egress_estimated_bytes, 654)
+
+    def test_download_auto_blocked_returns_error_header_and_route_log(self):
+        setting = DownloadRuntimeSetting.load()
+        setting.visitor_video_download_enabled = False
+        setting.save(update_fields=["visitor_video_download_enabled", "updated_at"])
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "auto",
+                "media_items": [{
+                    "type": "video",
+                    "url": "https://sns-video-hw.xhscdn.com/a.mp4",
+                    "size_bytes": 100,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response["X-Error-Code"], "VISITOR_VIDEO_DOWNLOAD_DISABLED")
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.route_type, ROUTE_BLOCKED)
+        self.assertEqual(log.estimated_bytes, 100)
+
+    @patch("xhs_download.views.build_download_archive_file")
+    def test_download_auto_zip_still_uses_zip_flow(self, mock_archive):
+        mock_archive.return_value = {
+            "filename": "base.zip",
+            "file": BytesIO(b"zip-content"),
+            "saved_count": 2,
+            "failed_count": 0,
+        }
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "auto",
+                "media_items": [
+                    {"type": "image", "url": f"https://ci.xiaohongshu.com/{index}.jpg"}
+                    for index in range(13)
+                ],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/zip")
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.route_type, ROUTE_ZIP)
 
     def test_download_runtime_setting_cost_guard_defaults_to_unlimited(self):
         setting = DownloadRuntimeSetting.load()
@@ -7662,6 +7878,30 @@ class AdminObservabilityMvpTests(TestCase):
         self.grant_xhs_view_permission(self.staff, "view_provideradminauditlog")
         self.assertContains(client.get("/admin/provider-audit-logs/"), "Provider 审计")
 
+    def test_download_logs_page_shows_and_filters_route_type(self):
+        DownloadRequestLog.objects.create(
+            request_id="rid-direct",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="direct",
+            route_type="direct",
+        )
+        DownloadRequestLog.objects.create(
+            request_id="rid-zip",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="zip",
+            route_type="zip",
+        )
+        client = Client()
+        client.force_login(self.staff)
+        self.grant_xhs_view_permission(self.staff, "view_downloadrequestlog")
+
+        response = client.get("/admin/download-logs/", {"route_type": "direct"})
+
+        self.assertContains(response, "route_type")
+        self.assertContains(response, "direct")
+        self.assertContains(response, "rid-direct")
+        self.assertNotContains(response, "rid-zip")
+
     def test_admin_console_permissions(self):
         client = Client()
         client.force_login(self.staff)
@@ -7685,12 +7925,16 @@ class AdminObservabilityMvpTests(TestCase):
         self.assertContains(response, "今日下载次数")
         self.assertContains(response, "暂无失败记录")
         self.assertContains(response, "暂无大文件下载记录")
+        self.assertContains(response, "暂无路由数据")
 
     def test_admin_console_shows_download_metrics_and_failure_top(self):
         DownloadRequestLog.objects.create(
             request_id="rid-download-success",
             status=ObservabilityStatus.SUCCESS,
             download_type="zip",
+            route_type="zip",
+            route_reason="多资源需要统一打包下载",
+            server_egress_estimated_bytes=4096,
             provider="yt_dlp_generic",
             source_platform="youtube",
             estimated_bytes=4096,
@@ -7700,11 +7944,22 @@ class AdminObservabilityMvpTests(TestCase):
             request_id="rid-download-failed",
             status=ObservabilityStatus.BLOCKED,
             download_type="zip",
+            route_type="blocked",
+            route_reason="下载请求被成本策略阻止",
             provider="kukutool",
             source_platform="douyin",
             estimated_bytes=8192,
             actual_bytes=4096,
             error_code="SINGLE_ARCHIVE_SIZE_LIMIT",
+        )
+        DownloadRequestLog.objects.create(
+            request_id="rid-download-direct",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="direct",
+            route_type="direct",
+            route_reason="图片资源优先浏览器直链下载",
+            browser_egress_estimated_bytes=2048,
+            estimated_bytes=2048,
         )
         client = Client()
         client.force_login(self.superuser)
@@ -7712,12 +7967,16 @@ class AdminObservabilityMvpTests(TestCase):
         response = client.get("/admin/console/")
 
         self.assertContains(response, "今日下载次数")
-        self.assertContains(response, "2")
+        self.assertContains(response, "3")
         self.assertContains(response, "今日下载实际流量")
         self.assertContains(response, "6.0 KB")
         self.assertContains(response, "SINGLE_ARCHIVE_SIZE_LIMIT")
         self.assertContains(response, "yt_dlp_generic")
         self.assertContains(response, "douyin")
+        self.assertContains(response, "最近 24h 下载路由")
+        self.assertContains(response, "direct")
+        self.assertContains(response, "zip")
+        self.assertContains(response, "服务器出网节省估算")
 
     def test_rollout_guard_permissions(self):
         client = Client()

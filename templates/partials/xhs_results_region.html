@@ -54,6 +54,11 @@
                     全选
                 </button>
 
+                <button type="button" class="btn btn-outline-primary btn-sm" id="smart-download-btn">
+                    <i class="bi bi-lightning-charge me-1"></i>
+                    智能下载
+                </button>
+
                 <button type="button" class="btn btn-brand btn-sm" id="download-btn">
                     <i class="bi bi-download me-1"></i>
                     保存选中资源
@@ -62,6 +67,13 @@
         </div>
 
         <div class="card-body note-preview-bg">
+            {% if is_mobile_request %}
+                <div class="alert alert-info small mb-3">
+                    <i class="bi bi-phone me-1"></i>
+                    手机端建议单张/单个保存。ZIP 文件通常会保存到浏览器下载目录或系统“文件”App 中，不能保证直接进入相册。
+                </div>
+            {% endif %}
+
             {% if video_items %}
                 <h5 class="fw-bold mb-3">
                     <i class="bi bi-play-circle result-icon me-1"></i>

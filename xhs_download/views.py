@@ -47,6 +47,14 @@ from .services.download_tasks import (
     pop_download_task,
     serialize_task,
 )
+from .services.download_routing import (
+    ROUTE_BLOCKED,
+    ROUTE_DIRECT,
+    ROUTE_PROXY,
+    ROUTE_ZIP,
+    decide_download_route,
+    request_is_mobile,
+)
 from .services.downloads import (
     build_download_archive_file,
     fetch_media_response,
@@ -1344,7 +1352,7 @@ def parse_logs_view(request):
 def download_logs_view(request):
     if not observability_access_allowed(request, "xhs_download.view_downloadrequestlog"):
         return JsonResponse({"detail": "Not found."}, status=404)
-    filter_fields = ("status", "download_type", "provider", "source_platform", "error_type")
+    filter_fields = ("status", "download_type", "route_type", "provider", "source_platform", "error_type")
     queryset = filtered_log_queryset(DownloadRequestLog, request, filter_fields)
     page_obj, page_querystring = paginate_admin_queryset(request, queryset)
     return render(
@@ -1362,6 +1370,7 @@ def download_logs_view(request):
                 "created_at",
                 "status",
                 "download_type",
+                "route_type",
                 "item_count",
                 "actual_bytes",
                 "provider",
@@ -1375,6 +1384,7 @@ def download_logs_view(request):
                     "created_at": format_admin_datetime(item.created_at),
                     "status": item.status,
                     "download_type": item.download_type,
+                    "route_type": item.route_type,
                     "item_count": item.item_count,
                     "actual_bytes": format_file_size(item.actual_bytes),
                     "provider": item.provider,
@@ -1642,14 +1652,21 @@ def log_download_request_event(
     actual_bytes=0,
     error_code="",
     error=None,
+    route_info=None,
 ):
     duration_ms = (time.monotonic() - started_at) * 1000 if started_at else 0
+    route_info = route_info or {}
     record_download_request_log(
         request,
         download_type=download_type,
         media_items=media_items or (),
         status=status,
+        estimated_bytes=route_info.get("estimated_bytes"),
         actual_bytes=actual_bytes,
+        route_type=route_info.get("route_type", ""),
+        route_reason=route_info.get("route_reason", ""),
+        server_egress_estimated_bytes=route_info.get("server_egress_estimated_bytes", 0),
+        browser_egress_estimated_bytes=route_info.get("browser_egress_estimated_bytes", 0),
         duration_ms=duration_ms,
         error_code=error_code,
         error_type=type(error).__name__ if error is not None else "",
@@ -1659,6 +1676,38 @@ def log_download_request_event(
             else ""
         ),
     )
+
+
+def blocked_download_route_info(media_items, reason, error_code=""):
+    estimated_bytes = estimated_media_items_bytes(media_items)
+    return {
+        "route_type": ROUTE_BLOCKED,
+        "route_reason": sanitize_observability_text(reason, limit=200),
+        "download_strategy": "blocked",
+        "estimated_bytes": estimated_bytes,
+        "server_egress_estimated_bytes": 0,
+        "browser_egress_estimated_bytes": 0,
+        "items": [],
+        "warnings": [],
+        "error_code": error_code,
+    }
+
+
+def zip_download_route_info(request, media_items, reason="默认兼容旧 ZIP 下载流程"):
+    route_info = decide_download_route(
+        request,
+        media_items,
+        requested_mode="zip",
+    )
+    if route_info.get("route_type") == ROUTE_BLOCKED:
+        route_info["route_reason"] = sanitize_observability_text(reason, limit=200)
+        return route_info
+    route_info["route_type"] = ROUTE_ZIP
+    route_info["route_reason"] = sanitize_observability_text(reason, limit=200)
+    route_info["download_strategy"] = "server_zip"
+    route_info["server_egress_estimated_bytes"] = route_info.get("estimated_bytes", 0)
+    route_info["browser_egress_estimated_bytes"] = 0
+    return route_info
 
 
 def download_items_have_invalid_provider_manifest(media_items):
@@ -1941,6 +1990,7 @@ def build_search_results_context(request, platform_key="home"):
         "post_type": "",
         "image_items": [],
         "video_items": [],
+        "is_mobile_request": request_is_mobile(request),
         "error_message": None,
         "base_filename": "",
     }
@@ -2438,7 +2488,18 @@ def download_images_api(request):
     image_urls = data.get("image_urls", [])
     if image_urls and not media_items:
         media_items = [{"type": "image", "url": url} for url in image_urls]
+    download_mode = (data.get("download_mode") or "browser").lower().strip()
+    route_info = zip_download_route_info(
+        request,
+        media_items,
+        reason="默认兼容旧 ZIP 下载流程",
+    )
     if download_items_have_invalid_provider_manifest(media_items):
+        route_info = blocked_download_route_info(
+            media_items,
+            "Provider 签名资源未通过校验",
+            "PROVIDER_MANIFEST_REJECTED",
+        )
         log_download_request_event(
             request,
             download_type="zip",
@@ -2447,6 +2508,7 @@ def download_images_api(request):
             started_at=started_at,
             error_code="PROVIDER_MANIFEST_REJECTED",
             error=ValueError("Provider 签名资源未通过校验"),
+            route_info=route_info,
         )
         return JsonResponse(
             {"status": "error", "message": "Provider 签名资源未通过校验"},
@@ -2454,9 +2516,17 @@ def download_images_api(request):
         )
 
     runtime_setting = get_download_runtime_setting()
+    if download_mode == "auto":
+        route_info = decide_download_route(
+            request,
+            media_items,
+            requested_mode="auto",
+            platform_key=data.get("platform_key", ""),
+        )
     guard_result = check_download_cost_preflight(request, media_items, runtime_setting)
     if guard_result:
         error_code, message, status_code = guard_result
+        route_info = blocked_download_route_info(media_items, message, error_code)
         log_download_request_event(
             request,
             download_type="zip",
@@ -2465,6 +2535,7 @@ def download_images_api(request):
             started_at=started_at,
             error_code=error_code,
             error=ValueError(message),
+            route_info=route_info,
         )
         return download_guard_error_response(
             message,
@@ -2483,6 +2554,11 @@ def download_images_api(request):
             status=ObservabilityStatus.FAILED,
             started_at=started_at,
             error_code="RATE_LIMIT_CACHE_ERROR",
+            route_info=blocked_download_route_info(
+                media_items,
+                "下载保护服务暂时不可用",
+                "RATE_LIMIT_CACHE_ERROR",
+            ),
         )
         return JsonResponse(
             {"status": "error", "message": "下载保护服务暂时不可用，请稍后再试。"},
@@ -2490,6 +2566,11 @@ def download_images_api(request):
         )
     if limit_response:
         error_code = limit_response.get("X-Error-Code", "RATE_LIMITED")
+        route_info = blocked_download_route_info(
+            media_items,
+            "下载请求被成本或频率限制阻止",
+            error_code,
+        )
         log_download_request_event(
             request,
             download_type="zip",
@@ -2497,8 +2578,51 @@ def download_images_api(request):
             status=ObservabilityStatus.RATE_LIMITED,
             started_at=started_at,
             error_code=error_code,
+            route_info=route_info,
         )
         return limit_response
+
+    if download_mode == "auto" and route_info.get("route_type") == ROUTE_BLOCKED:
+        error_code = route_info.get("error_code") or "DOWNLOAD_BLOCKED"
+        log_download_request_event(
+            request,
+            download_type="auto",
+            media_items=media_items,
+            status=ObservabilityStatus.BLOCKED,
+            started_at=started_at,
+            error_code=error_code,
+            error=ValueError(route_info.get("route_reason", "下载被阻止")),
+            route_info=route_info,
+        )
+        return download_guard_error_response(
+            route_info.get("route_reason") or "下载被阻止",
+            status=403,
+            error_code=error_code,
+        )
+
+    if download_mode == "auto" and route_info.get("route_type") in {ROUTE_DIRECT, ROUTE_PROXY}:
+        log_download_request_event(
+            request,
+            download_type=route_info.get("route_type", "auto"),
+            media_items=media_items,
+            status=ObservabilityStatus.SUCCESS,
+            started_at=started_at,
+            actual_bytes=0,
+            route_info=route_info,
+        )
+        return JsonResponse(
+            {
+                "status": "routed",
+                "route_type": route_info.get("route_type"),
+                "route_reason": route_info.get("route_reason"),
+                "download_strategy": route_info.get("download_strategy"),
+                "items": route_info.get("items", []),
+                "warnings": route_info.get("warnings", []),
+                "estimated_bytes": route_info.get("estimated_bytes", 0),
+                "server_egress_estimated_bytes": route_info.get("server_egress_estimated_bytes", 0),
+                "browser_egress_estimated_bytes": route_info.get("browser_egress_estimated_bytes", 0),
+            }
+        )
 
     try:
         concurrency = acquire_concurrency(
@@ -2515,12 +2639,22 @@ def download_images_api(request):
             status=ObservabilityStatus.FAILED,
             started_at=started_at,
             error_code="CONCURRENCY_CACHE_ERROR",
+            route_info=blocked_download_route_info(
+                media_items,
+                "下载并发保护服务暂时不可用",
+                "CONCURRENCY_CACHE_ERROR",
+            ),
         )
         return JsonResponse(
             {"status": "error", "message": "下载保护服务暂时不可用，请稍后再试。"},
             status=503,
         )
     if not concurrency.allowed:
+        route_info = blocked_download_route_info(
+            media_items,
+            "当前已有下载任务正在处理，请等待完成后再试",
+            "DOWNLOAD_CONCURRENCY_LIMIT",
+        )
         log_download_request_event(
             request,
             download_type="zip",
@@ -2528,6 +2662,7 @@ def download_images_api(request):
             status=ObservabilityStatus.RATE_LIMITED,
             started_at=started_at,
             error_code="DOWNLOAD_CONCURRENCY_LIMIT",
+            route_info=route_info,
         )
         return limit_error_response(
             "当前已有下载任务正在处理，请等待完成后再试。",
@@ -2535,9 +2670,13 @@ def download_images_api(request):
         )
 
     try:
-        download_mode = (data.get("download_mode") or "browser").lower().strip()
         if download_mode == "server":
             if not settings.XHS_ALLOW_SERVER_SAVE:
+                route_info = blocked_download_route_info(
+                    media_items,
+                    "当前环境未开启服务端保存",
+                    "SERVER_SAVE_DISABLED",
+                )
                 log_download_request_event(
                     request,
                     download_type="server",
@@ -2545,6 +2684,7 @@ def download_images_api(request):
                     status=ObservabilityStatus.BLOCKED,
                     started_at=started_at,
                     error_code="SERVER_SAVE_DISABLED",
+                    route_info=route_info,
                 )
                 return JsonResponse({"status": "error", "message": "当前环境未开启服务端保存。"}, status=403)
 
@@ -2564,6 +2704,7 @@ def download_images_api(request):
                 status=ObservabilityStatus.SUCCESS,
                 started_at=started_at,
                 actual_bytes=0,
+                route_info=route_info,
             )
             return JsonResponse({
                 "status": "success",
@@ -2597,6 +2738,11 @@ def download_images_api(request):
                     actual_bytes=archive_size,
                     error_code=error_code,
                     error=ValueError(message),
+                    route_info=blocked_download_route_info(
+                        media_items,
+                        message,
+                        error_code,
+                    ),
                 )
                 return download_guard_error_response(
                     message,
@@ -2621,6 +2767,11 @@ def download_images_api(request):
                 started_at=started_at,
                 actual_bytes=archive_size,
                 error_code=bytes_error_code or "RATE_LIMITED",
+                route_info=blocked_download_route_info(
+                    media_items,
+                    "今日下载流量已达到限制",
+                    bytes_error_code or "RATE_LIMITED",
+                ),
             )
             return limit_error_response(
                 "今日下载流量已达到限制，请稍后再试。",
@@ -2640,6 +2791,7 @@ def download_images_api(request):
             started_at=started_at,
             error_code=error_code,
             error=error,
+            route_info=blocked_download_route_info(media_items, "下载失败", error_code),
         )
         return JsonResponse({"status": "error", "message": str(error)}, status=400)
     except Exception as error:
@@ -2652,6 +2804,7 @@ def download_images_api(request):
             started_at=started_at,
             error_code="DOWNLOAD_ERROR",
             error=error,
+            route_info=blocked_download_route_info(media_items, "下载失败", "DOWNLOAD_ERROR"),
         )
         return JsonResponse({"status": "error", "message": f"下载失败：{error}"}, status=500)
     finally:
@@ -2672,6 +2825,7 @@ def download_images_api(request):
         status=ObservabilityStatus.SUCCESS,
         started_at=started_at,
         actual_bytes=archive_size,
+        route_info=route_info,
     )
     return response
 

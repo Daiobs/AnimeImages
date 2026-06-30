@@ -174,11 +174,15 @@ large_download_warning_bytes = 104857600    # 100 MB
 
 - [ ] Confirm `global_daily_bytes_limit` is set to a value that protects the VPS bandwidth plan, or intentionally left as `0` for no limit.
 - [ ] Trigger one normal ZIP download and confirm a `DownloadRequestLog` record appears with `actual_bytes`.
+- [ ] Trigger one smart image download with `download_mode=auto` and confirm the response can return `route_type=direct`.
+- [ ] Confirm `/admin/console/` shows the last 24h download routing section. If no smart downloads have happened yet, it should show `暂无路由数据`.
+- [ ] Confirm `/admin/download-logs/` shows the `route_type` column and can filter by `route_type=direct` or `route_type=zip`.
+- [ ] On a mobile user-agent smoke test, confirm the result page explains that ZIP files usually go to the browser download directory or system Files app and does not promise automatic album saving.
 - [ ] If testing cost guard manually, lower `single_archive_bytes_limit` temporarily and confirm blocked downloads return `X-Error-Code: SINGLE_ARCHIVE_SIZE_LIMIT`.
 - [ ] If public video traffic should be paused, set `visitor_video_download_enabled=False` and confirm visitor video downloads return `X-Error-Code: VISITOR_VIDEO_DOWNLOAD_DISABLED`.
 - [ ] Confirm staff large-file exemption is still `False` for first launch.
 
-See `docs/download-cost-guard.md` for traffic-cost behavior, error codes, warning thresholds, and rollback steps.
+See `docs/download-cost-guard.md` for traffic-cost behavior, error codes, warning thresholds, and rollback steps. See `docs/download-routing-engine.md` for route types, smart download activation, mobile notes, admin observability, and rollback.
 
 ## 7. Run Django Checks
 

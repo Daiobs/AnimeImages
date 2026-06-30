@@ -205,6 +205,17 @@ def record_download_request_log(request, **fields):
             "video_count": safe_int(fields.get("video_count"), summary["video_count"]),
             "estimated_bytes": safe_int(fields.get("estimated_bytes"), summary["estimated_bytes"]),
             "actual_bytes": safe_int(fields.get("actual_bytes")),
+            "route_type": short_text(fields.get("route_type"), 32),
+            "route_reason": short_text(
+                sanitize_observability_text(fields.get("route_reason"), limit=200),
+                200,
+            ),
+            "server_egress_estimated_bytes": safe_int(
+                fields.get("server_egress_estimated_bytes")
+            ),
+            "browser_egress_estimated_bytes": safe_int(
+                fields.get("browser_egress_estimated_bytes")
+            ),
             "provider": short_text(fields.get("provider") or summary["provider"], 80),
             "source_platform": short_text(fields.get("source_platform") or summary["source_platform"], 64),
             "error_code": short_text(fields.get("error_code"), 80),
