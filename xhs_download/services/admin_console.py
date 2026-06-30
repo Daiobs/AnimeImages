@@ -15,6 +15,8 @@ from ..models import (
     ProviderHealthTestRun,
     ProviderRuntimeSetting,
 )
+from .routing_policy_adjuster import build_routing_policy_recommendations
+from .routing_v3 import build_routing_intelligence_snapshot
 
 
 ADMIN_DISPLAY_TIME_ZONE = "Asia/Shanghai"
@@ -167,6 +169,25 @@ def build_download_routing_summary(queryset):
     }
 
 
+def build_routing_intelligence_panel():
+    snapshot = build_routing_intelligence_snapshot()
+    rows = [
+        {
+            **row,
+            "estimated_server_bytes_label": format_bytes(row["estimated_server_bytes"]),
+            "actual_server_bytes_label": format_bytes(row["actual_server_bytes"]),
+            "cost_delta_label": format_bytes(abs(row["cost_delta_bytes"])),
+            "cost_delta_direction": "高于估算" if row["cost_delta_bytes"] > 0 else "低于估算",
+        }
+        for row in snapshot["rows"]
+    ]
+    return {
+        **snapshot,
+        "rows": rows,
+        "recommendations": build_routing_policy_recommendations(snapshot),
+    }
+
+
 def build_admin_console_context():
     now = timezone.now()
     display_tz = admin_console_timezone()
@@ -186,6 +207,7 @@ def build_admin_console_context():
     recent_24h_actual_bytes = sum_field(recent_24h_download, "actual_bytes")
     recent_7d_actual_bytes = sum_field(recent_7d_download, "actual_bytes")
     routing_summary = build_download_routing_summary(recent_24h_download)
+    routing_intelligence = build_routing_intelligence_panel()
     blocked_or_limited = today_download.filter(
         status__in=(ObservabilityStatus.BLOCKED, ObservabilityStatus.RATE_LIMITED)
     ).count()
@@ -275,6 +297,7 @@ def build_admin_console_context():
         "usage_level": usage_level,
         "health_runs": latest_health_by_key(),
         "routing_summary": routing_summary,
+        "routing_intelligence": routing_intelligence,
         "failure_top": top_values(recent_24h_download.exclude(status=ObservabilityStatus.SUCCESS), "error_code"),
         "large_downloads": large_download_rows,
         "blocked_rows": blocked_rows,

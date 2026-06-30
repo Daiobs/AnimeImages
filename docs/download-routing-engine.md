@@ -93,6 +93,64 @@ The console shows the last 24 hours of route distribution, estimated server egre
 
 The download logs page includes a `route_type` column and can be filtered by route type.
 
+## Routing Engine v3
+
+Routing Engine v3 adds a feedback layer on top of the v2 rule engine. It does not replace the Provider runtime gate and does not automatically change production settings.
+
+New service modules:
+
+```text
+xhs_download/services/routing_v3.py
+xhs_download/services/routing_policy_adjuster.py
+```
+
+The v3 decision function is:
+
+```python
+decide_route_v3(request, media_items, context=None)
+```
+
+It returns:
+
+```json
+{
+  "route_type": "direct|proxy|zip|blocked",
+  "reason": "...",
+  "confidence": 0.0,
+  "estimated_cost": {"server_bytes": 0, "browser_bytes": 0},
+  "routing_score": 0.0,
+  "strategy_version": "v3"
+}
+```
+
+V3 still starts from the v2 rules:
+
+- image -> direct when safe
+- video -> proxy or zip
+- mixed resources -> zip
+- blocked remains blocked when Download Cost Guard refuses the request
+
+Then it adds:
+
+- provider weights, for example native paths score higher than merge or experimental providers
+- historical success/failure feedback from `RoutingDecisionLog`
+- estimate-vs-actual server egress comparison
+- lightweight strategy recommendations
+
+`RoutingDecisionLog` records:
+
+- `route_type`
+- `provider`
+- `estimated_server_bytes`
+- `estimated_browser_bytes`
+- `actual_server_bytes`
+- `success`
+- `error_code`
+- `duration_ms`
+- `request_id`
+
+The Admin Console shows a `Routing Intelligence Panel` with route success rate, estimated vs actual cost delta, `routing_efficiency_score`, `cost_accuracy_score`, and policy recommendations. Recommendations are advisory only.
+
 ## Rollback
 
 Frontend rollback is simple: stop sending `download_mode=auto`. The old ZIP behavior remains available in the same endpoint.

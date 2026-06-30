@@ -256,6 +256,51 @@
             {% endif %}
         </section>
 
+        <section class="console-panel">
+            <h2>Routing Intelligence Panel</h2>
+            {% if routing_intelligence.has_data %}
+                <ul class="console-list">
+                    <li><span>routing_efficiency_score</span><strong>{{ routing_intelligence.routing_efficiency_score }}</strong></li>
+                    <li><span>cost_accuracy_score</span><strong>{{ routing_intelligence.cost_accuracy_score }}</strong></li>
+                </ul>
+                <div class="console-table-wrap">
+                    <table class="console-table">
+                        <thead>
+                            <tr>
+                                <th>route_type</th>
+                                <th>次数</th>
+                                <th>成功率</th>
+                                <th>预计成本</th>
+                                <th>实际成本</th>
+                                <th>偏差</th>
+                                <th>score</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        {% for row in routing_intelligence.rows %}
+                            <tr>
+                                <td>{{ row.route_type }}</td>
+                                <td>{{ row.count }}</td>
+                                <td>{{ row.success_rate }}%</td>
+                                <td>{{ row.estimated_server_bytes_label }}</td>
+                                <td>{{ row.actual_server_bytes_label }}</td>
+                                <td>{{ row.cost_delta_direction }} {{ row.cost_delta_label }}</td>
+                                <td>{{ row.routing_score }}</td>
+                            </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <ul class="console-list">
+                    {% for recommendation in routing_intelligence.recommendations %}
+                        <li><span>策略建议</span><strong>{{ recommendation }}</strong></li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <p class="text-muted mb-0">暂无 Routing v3 反馈数据</p>
+            {% endif %}
+        </section>
+
         <section class="console-section-grid">
             <div class="console-panel">
                 <h2>最近 24h 大文件下载 Top 10</h2>

@@ -7,6 +7,7 @@ from .models import (
     ProviderAdminAuditLog,
     ProviderHealthTestRun,
     ProviderRuntimeSetting,
+    RoutingDecisionLog,
 )
 
 
@@ -114,6 +115,23 @@ class DownloadRequestLogAdmin(ReadOnlyLogAdmin):
     )
     list_filter = ("status", "download_type", "provider", "source_platform", "created_at")
     search_fields = ("request_id", "provider", "source_platform", "error_type")
+
+
+@admin.register(RoutingDecisionLog)
+class RoutingDecisionLogAdmin(ReadOnlyLogAdmin):
+    list_display = (
+        "created_at",
+        "route_type",
+        "provider",
+        "success",
+        "estimated_server_bytes",
+        "actual_server_bytes",
+        "duration_ms",
+        "error_code",
+        "request_id",
+    )
+    list_filter = ("route_type", "provider", "success", "error_code", "created_at")
+    search_fields = ("request_id", "provider", "error_code")
 
 
 @admin.register(ProviderAdminAuditLog)

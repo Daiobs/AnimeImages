@@ -57,6 +57,8 @@ from .services.download_routing import (
     ROUTE_ZIP,
     decide_download_route,
 )
+from .services.routing_policy_adjuster import build_routing_policy_recommendations
+from .services.routing_v3 import compute_routing_score, decide_route_v3
 from .services.assets import MediaAsset, ParseResult
 from .services.candidates import MediaCandidate, dedupe_candidates, rank_media_candidates
 from .services.diagnostics import CandidateDiagnostic, select_best_media_candidate
@@ -85,6 +87,7 @@ from .models import (
     ProviderHealthTestRun,
     ProviderHealthTestStatus,
     ProviderRuntimeSetting,
+    RoutingDecisionLog,
 )
 from .views import (
     build_provider_preview_query,
@@ -5545,6 +5548,91 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(route["error_code"], "VISITOR_VIDEO_DOWNLOAD_DISABLED")
         self.assertEqual(route["estimated_bytes"], 789)
 
+    def test_route_v3_accuracy_inherits_v2_rules(self):
+        request = RequestFactory().post("/media/download-images/")
+
+        image_route = decide_route_v3(
+            request,
+            [{"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"}],
+            context={"requested_mode": "auto"},
+        )
+        video_route = decide_route_v3(
+            request,
+            [{"type": "video", "url": "https://sns-video-hw.xhscdn.com/a.mp4"}],
+            context={"requested_mode": "auto"},
+        )
+        mixed_route = decide_route_v3(
+            request,
+            [
+                {"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"},
+                {"type": "video", "url": "https://sns-video-hw.xhscdn.com/a.mp4"},
+            ],
+            context={"requested_mode": "auto"},
+        )
+
+        self.assertEqual(image_route["route_type"], ROUTE_DIRECT)
+        self.assertEqual(video_route["route_type"], ROUTE_PROXY)
+        self.assertEqual(mixed_route["route_type"], ROUTE_ZIP)
+        self.assertEqual(image_route["strategy_version"], "v3")
+        self.assertIn("estimated_cost", image_route)
+
+    def test_route_v3_cost_estimation_handles_actual_delta(self):
+        RoutingDecisionLog.objects.create(
+            request_id="rid-cost",
+            route_type=ROUTE_ZIP,
+            provider="native",
+            estimated_server_bytes=100,
+            actual_server_bytes=250,
+            success=True,
+            duration_ms=100,
+        )
+
+        score = compute_routing_score(
+            ROUTE_ZIP,
+            RoutingDecisionLog.objects.filter(route_type=ROUTE_ZIP),
+        )
+
+        self.assertGreaterEqual(score, 0)
+        self.assertLessEqual(score, 1)
+
+    def test_route_v3_feedback_loop_writes_log_and_scores(self):
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "auto",
+                "media_items": [{
+                    "type": "image",
+                    "url": "https://ci.xiaohongshu.com/a.jpg",
+                    "size_bytes": 321,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["strategy_version"], "v3")
+        self.assertIn("routing_score", response.json())
+        feedback = RoutingDecisionLog.objects.get()
+        self.assertEqual(feedback.route_type, ROUTE_DIRECT)
+        self.assertTrue(feedback.success)
+        self.assertEqual(feedback.estimated_browser_bytes, 321)
+
+    def test_routing_policy_adjuster_returns_recommendations(self):
+        for index in range(3):
+            RoutingDecisionLog.objects.create(
+                request_id=f"rid-direct-{index}",
+                route_type=ROUTE_DIRECT,
+                provider="native",
+                estimated_browser_bytes=10,
+                success=True,
+                duration_ms=100,
+            )
+
+        recommendations = build_routing_policy_recommendations()
+
+        self.assertTrue(recommendations)
+        self.assertIn("DIRECT", recommendations[0])
+
     def test_download_auto_direct_returns_json_and_writes_route_log(self):
         response = Client().post(
             "/media/download-images/",
@@ -7926,6 +8014,7 @@ class AdminObservabilityMvpTests(TestCase):
         self.assertContains(response, "暂无失败记录")
         self.assertContains(response, "暂无大文件下载记录")
         self.assertContains(response, "暂无路由数据")
+        self.assertContains(response, "暂无 Routing v3 反馈数据")
 
     def test_admin_console_shows_download_metrics_and_failure_top(self):
         DownloadRequestLog.objects.create(
@@ -7961,6 +8050,24 @@ class AdminObservabilityMvpTests(TestCase):
             browser_egress_estimated_bytes=2048,
             estimated_bytes=2048,
         )
+        RoutingDecisionLog.objects.create(
+            request_id="rid-route-direct",
+            route_type="direct",
+            provider="native",
+            estimated_browser_bytes=2048,
+            actual_server_bytes=0,
+            success=True,
+            duration_ms=120,
+        )
+        RoutingDecisionLog.objects.create(
+            request_id="rid-route-zip",
+            route_type="zip",
+            provider="yt_dlp_generic",
+            estimated_server_bytes=4096,
+            actual_server_bytes=6144,
+            success=True,
+            duration_ms=900,
+        )
         client = Client()
         client.force_login(self.superuser)
 
@@ -7977,6 +8084,10 @@ class AdminObservabilityMvpTests(TestCase):
         self.assertContains(response, "direct")
         self.assertContains(response, "zip")
         self.assertContains(response, "服务器出网节省估算")
+        self.assertContains(response, "Routing Intelligence Panel")
+        self.assertContains(response, "routing_efficiency_score")
+        self.assertContains(response, "cost_accuracy_score")
+        self.assertContains(response, "策略建议")
 
     def test_rollout_guard_permissions(self):
         client = Client()
