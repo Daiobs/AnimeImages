@@ -7719,6 +7719,208 @@ class AdminObservabilityMvpTests(TestCase):
         self.assertContains(response, "yt_dlp_generic")
         self.assertContains(response, "douyin")
 
+    def test_rollout_guard_permissions(self):
+        client = Client()
+        client.force_login(self.staff)
+        super_client = Client()
+        super_client.force_login(self.superuser)
+
+        self.assertEqual(Client().get("/admin/rollout-guard/").status_code, 404)
+        self.assertEqual(client.get("/admin/rollout-guard/").status_code, 404)
+        self.assertContains(super_client.get("/admin/rollout-guard/"), "放量守卫")
+
+        self.grant_xhs_view_permission(self.staff, "view_parserequestlog")
+        self.assertContains(client.get("/admin/rollout-guard/"), "Provider 放量建议")
+
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        KUKUTOOL_PROVIDER_ENABLED=True,
+        YOUTUBE_MERGE_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+    )
+    def test_rollout_guard_empty_data_renders(self):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/rollout-guard/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "抖音 KuKuTool 超高清")
+        self.assertContains(response, "YouTube 高清合并")
+        self.assertContains(response, "通用第三方 Provider")
+        self.assertContains(response, "谨慎，建议继续观察")
+
+    @override_settings(ULTRA_HD_PROVIDER_ENABLED=False, KUKUTOOL_PROVIDER_ENABLED=True)
+    def test_rollout_guard_capability_disabled_is_do_not_public(self):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/rollout-guard/")
+
+        self.assertContains(response, "环境 capability gate 未开启")
+        self.assertContains(response, "不建议公开")
+
+    @override_settings(YOUTUBE_MERGE_PROVIDER_ENABLED=True)
+    def test_rollout_guard_health_failed_is_do_not_public(self):
+        ProviderHealthTestRun.objects.create(
+            request_id="rid-health-failed",
+            test_key="youtube_merge",
+            status=ProviderHealthTestStatus.FAILED,
+            provider="youtube_merge",
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/rollout-guard/")
+
+        self.assertContains(response, "最近健康测试失败 / 不可用")
+        self.assertContains(response, "不建议公开")
+
+    @override_settings(YOUTUBE_MERGE_PROVIDER_ENABLED=True)
+    def test_rollout_guard_health_skipped_is_caution(self):
+        ProviderHealthTestRun.objects.create(
+            request_id="rid-health-skipped",
+            test_key="youtube_merge",
+            status=ProviderHealthTestStatus.SKIPPED,
+            provider="youtube_merge",
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/rollout-guard/")
+
+        self.assertContains(response, "最近健康测试跳过")
+        self.assertContains(response, "谨慎，建议继续观察")
+
+    @override_settings(YOUTUBE_MERGE_PROVIDER_ENABLED=True)
+    def test_rollout_guard_success_rate_allows_one_percent_gray(self):
+        ProviderHealthTestRun.objects.create(
+            request_id="rid-health-success",
+            test_key="youtube_merge",
+            status=ProviderHealthTestStatus.SUCCESS,
+            provider="youtube_merge",
+        )
+        for index in range(5):
+            ParseRequestLog.objects.create(
+                request_id=f"rid-youtube-success-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                selected_provider="youtube_merge",
+                duration_ms=500,
+            )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/rollout-guard/")
+
+        self.assertContains(response, "可考虑 1% 公开灰度")
+        self.assertContains(response, "24h 成功率达标")
+
+    @override_settings(YOUTUBE_MERGE_PROVIDER_ENABLED=True)
+    def test_rollout_guard_low_success_rate_is_do_not_public(self):
+        ProviderHealthTestRun.objects.create(
+            request_id="rid-health-success-low",
+            test_key="youtube_merge",
+            status=ProviderHealthTestStatus.SUCCESS,
+            provider="youtube_merge",
+        )
+        for index in range(2):
+            ParseRequestLog.objects.create(
+                request_id=f"rid-youtube-ok-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                selected_provider="youtube_merge",
+                duration_ms=500,
+            )
+        for index in range(3):
+            ParseRequestLog.objects.create(
+                request_id=f"rid-youtube-failed-{index}",
+                status=ObservabilityStatus.FAILED,
+                selected_provider="youtube_merge",
+                duration_ms=500,
+                error_code="PROVIDER_FAILED",
+            )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/rollout-guard/")
+
+        self.assertContains(response, "24h 成功率低于 70%")
+        self.assertContains(response, "不建议公开")
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
+    def test_rollout_guard_third_party_public_gray_requires_allowlist(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.third_party_mode = ProviderAccessMode.PUBLIC_GRAY
+        setting.third_party_rollout_percent = 1
+        setting.third_party_allowed_public_hosts = ""
+        setting.third_party_allowed_public_platforms = ""
+        setting.save(update_fields=[
+            "third_party_mode",
+            "third_party_rollout_percent",
+            "third_party_allowed_public_hosts",
+            "third_party_allowed_public_platforms",
+            "updated_at",
+        ])
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/rollout-guard/")
+
+        self.assertContains(response, "第三方公开白名单为空")
+        self.assertContains(response, "不建议公开")
+
+    @override_settings(YOUTUBE_MERGE_PROVIDER_ENABLED=True)
+    def test_rollout_guard_download_usage_over_ninety_blocks_public_gray(self):
+        provider_setting = ProviderRuntimeSetting.load()
+        provider_setting.youtube_merge_mode = ProviderAccessMode.PUBLIC_GRAY
+        provider_setting.youtube_merge_rollout_percent = 1
+        provider_setting.save(update_fields=[
+            "youtube_merge_mode",
+            "youtube_merge_rollout_percent",
+            "updated_at",
+        ])
+        download_setting = DownloadRuntimeSetting.load()
+        download_setting.global_daily_bytes_limit = 1000
+        download_setting.save(update_fields=["global_daily_bytes_limit", "updated_at"])
+        ProviderHealthTestRun.objects.create(
+            request_id="rid-health-usage",
+            test_key="youtube_merge",
+            status=ProviderHealthTestStatus.SUCCESS,
+            provider="youtube_merge",
+        )
+        for index in range(5):
+            ParseRequestLog.objects.create(
+                request_id=f"rid-youtube-usage-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                selected_provider="youtube_merge",
+                duration_ms=500,
+            )
+        DownloadRequestLog.objects.create(
+            request_id="rid-download-usage",
+            status=ObservabilityStatus.SUCCESS,
+            provider="youtube_merge",
+            source_platform="youtube",
+            actual_bytes=950,
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/rollout-guard/")
+
+        self.assertContains(response, "今日下载流量超过 90%")
+        self.assertContains(response, "不建议公开")
+
+    def test_rollout_guard_page_contains_operational_links(self):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/rollout-guard/")
+
+        self.assertContains(response, "Provider 设置")
+        self.assertContains(response, "Provider 测试")
+        self.assertContains(response, "解析日志")
+        self.assertContains(response, "下载日志")
+        self.assertContains(response, "运维首页")
+
     def test_observability_log_pages_are_paginated(self):
         for index in range(55):
             ParseRequestLog.objects.create(

@@ -1,5 +1,7 @@
 {% extends "admin/base_site.html" %}
 
+{% block content_title %}{% endblock %}
+
 {% block content %}
 <style>
     #content { padding: 0; }
@@ -52,12 +54,6 @@
         color: #111827;
         text-decoration: none;
         font-weight: 800;
-    }
-    .console-link-primary {
-        border: 0;
-        background: linear-gradient(135deg, #855be8, #7447dd);
-        color: #fff;
-        box-shadow: 0 8px 22px rgba(133, 91, 232, .22);
     }
     .console-grid {
         display: grid;
@@ -149,7 +145,8 @@
                 <p class="console-subtitle">集中查看下载流量、成本风险、Provider 状态和上线后最常用的后台入口。当前展示时区：{{ admin_time_zone }}</p>
             </div>
             <div class="console-actions">
-                <a class="console-link console-link-primary" href="{% url 'admin:download_console_downloadruntimesetting_changelist' %}">Download 设置</a>
+                <a class="console-link" href="{% url 'admin:download_console_downloadruntimesetting_changelist' %}">Download 设置</a>
+                <a class="console-link" href="{% url 'rollout_guard' %}">放量守卫</a>
                 <a class="console-link" href="{% url 'provider_settings' %}">Provider 设置</a>
                 <a class="console-link" href="{% url 'provider_health_tests' %}">Provider 测试</a>
                 <a class="console-link" href="{% url 'ops_dashboard' %}">Ops Dashboard</a>
@@ -308,6 +305,7 @@
             <h2>快捷入口</h2>
             <div class="console-actions">
                 <a class="console-link" href="{% url 'provider_settings' %}">Provider 设置</a>
+                <a class="console-link" href="{% url 'rollout_guard' %}">放量守卫</a>
                 <a class="console-link" href="{% url 'admin:download_console_downloadruntimesetting_changelist' %}">Download 设置</a>
                 <a class="console-link" href="{% url 'provider_health_tests' %}">Provider 测试</a>
                 <a class="console-link" href="{% url 'ops_dashboard' %}">Ops Dashboard</a>

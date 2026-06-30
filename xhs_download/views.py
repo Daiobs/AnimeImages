@@ -85,6 +85,7 @@ from .services.observability import (
 )
 from .services.youtube_merge import build_youtube_merge_plan, get_youtube_merge_health
 from .services.admin_console import build_admin_console_context
+from .services.rollout_guard import build_rollout_guard_context
 from .services.rate_limits import (
     acquire_concurrency,
     consume_daily,
@@ -708,6 +709,14 @@ def admin_console_view(request):
     context = build_admin_console_context()
     context["title"] = "运维首页"
     return render(request, "admin/console.html", context)
+
+
+@require_GET
+def rollout_guard_view(request):
+    if not admin_console_required(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+    context = build_rollout_guard_context(request)
+    return render(request, "admin/rollout_guard.html", context)
 
 
 def provider_health_tests_view_allowed(request):
