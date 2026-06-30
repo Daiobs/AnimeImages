@@ -130,6 +130,43 @@ def build_provider_runtime_summary(setting):
     )
 
 
+def build_download_routing_summary(queryset):
+    rows_by_type = {
+        row["route_type"]: row
+        for row in queryset.exclude(route_type="")
+        .values("route_type")
+        .annotate(
+            count=Count("id"),
+            server_egress=Sum("server_egress_estimated_bytes"),
+            browser_egress=Sum("browser_egress_estimated_bytes"),
+        )
+        .order_by("route_type")
+    }
+    route_order = ("direct", "proxy", "zip", "blocked", "fallback")
+    rows = []
+    for route_type in route_order:
+        row = rows_by_type.get(route_type, {})
+        server_egress = int(row.get("server_egress") or 0)
+        browser_egress = int(row.get("browser_egress") or 0)
+        rows.append(
+            {
+                "route_type": route_type,
+                "count": int(row.get("count") or 0),
+                "server_egress": format_bytes(server_egress),
+                "browser_egress": format_bytes(browser_egress),
+            }
+        )
+    total_server_egress = sum_field(queryset, "server_egress_estimated_bytes")
+    total_browser_egress = sum_field(queryset, "browser_egress_estimated_bytes")
+    return {
+        "has_data": bool(rows_by_type),
+        "rows": rows,
+        "total_server_egress": format_bytes(total_server_egress),
+        "total_browser_egress": format_bytes(total_browser_egress),
+        "server_egress_saved": format_bytes(total_browser_egress),
+    }
+
+
 def build_admin_console_context():
     now = timezone.now()
     display_tz = admin_console_timezone()
@@ -148,6 +185,7 @@ def build_admin_console_context():
     today_estimated_bytes = sum_field(today_download, "estimated_bytes")
     recent_24h_actual_bytes = sum_field(recent_24h_download, "actual_bytes")
     recent_7d_actual_bytes = sum_field(recent_7d_download, "actual_bytes")
+    routing_summary = build_download_routing_summary(recent_24h_download)
     blocked_or_limited = today_download.filter(
         status__in=(ObservabilityStatus.BLOCKED, ObservabilityStatus.RATE_LIMITED)
     ).count()
@@ -236,6 +274,7 @@ def build_admin_console_context():
         "usage_label": usage_label,
         "usage_level": usage_level,
         "health_runs": latest_health_by_key(),
+        "routing_summary": routing_summary,
         "failure_top": top_values(recent_24h_download.exclude(status=ObservabilityStatus.SUCCESS), "error_code"),
         "large_downloads": large_download_rows,
         "blocked_rows": blocked_rows,

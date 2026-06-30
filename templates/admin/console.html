@@ -226,6 +226,36 @@
             </div>
         </section>
 
+        <section class="console-panel">
+            <h2>最近 24h 下载路由</h2>
+            {% if routing_summary.has_data %}
+                <div class="console-table-wrap">
+                    <table class="console-table">
+                        <thead>
+                            <tr><th>route_type</th><th>次数</th><th>预计服务器出网</th><th>预计浏览器直连</th></tr>
+                        </thead>
+                        <tbody>
+                        {% for row in routing_summary.rows %}
+                            <tr>
+                                <td>{{ row.route_type }}</td>
+                                <td>{{ row.count }}</td>
+                                <td>{{ row.server_egress }}</td>
+                                <td>{{ row.browser_egress }}</td>
+                            </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <ul class="console-list">
+                    <li><span>预计服务器出网合计</span><strong>{{ routing_summary.total_server_egress }}</strong></li>
+                    <li><span>预计浏览器直连合计</span><strong>{{ routing_summary.total_browser_egress }}</strong></li>
+                    <li><span>服务器出网节省估算</span><strong>{{ routing_summary.server_egress_saved }}</strong></li>
+                </ul>
+            {% else %}
+                <p class="text-muted mb-0">暂无路由数据</p>
+            {% endif %}
+        </section>
+
         <section class="console-section-grid">
             <div class="console-panel">
                 <h2>最近 24h 大文件下载 Top 10</h2>

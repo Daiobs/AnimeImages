@@ -146,6 +146,28 @@
         return "已交给浏览器下载";
     }
 
+    function downloadDirectItems(items) {
+        (items || []).forEach((item, index) => {
+            if (!item || !item.url) {
+                return;
+            }
+            window.setTimeout(() => {
+                const link = document.createElement("a");
+                link.href = item.url;
+                link.rel = "noopener noreferrer";
+                link.target = "_blank";
+                link.download = item.filename || "";
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+            }, index * 120);
+        });
+    }
+
+    function routeWarningText(warnings) {
+        return Array.isArray(warnings) && warnings.length > 0 ? ` ${warnings.join(" ")}` : "";
+    }
+
     async function parseErrorResponse(response) {
         try {
             const data = await response.json();
@@ -597,7 +619,7 @@
             setStatus(getStatusElement(), `${savedMessage}：${filename}，成功 ${savedCount} 个，失败 ${failedCount} 个`, variant);
         }
 
-        async function handleDownloadClick(downloadBtn) {
+        async function handleDownloadClick(downloadBtn, forceAutoMode) {
             if (selected.length === 0) {
                 window.alert("请先选择需要保存的资源");
                 return;
@@ -610,7 +632,7 @@
                 const payload = {
                     media_items: selected,
                     base_filename: getBaseFilename(),
-                    download_mode: downloadModeInput ? downloadModeInput.value : "browser",
+                    download_mode: forceAutoMode ? "auto" : (downloadModeInput ? downloadModeInput.value : "browser"),
                     save_dir: saveDirInput ? saveDirInput.value.trim() : "xhs",
                     save_format: saveFormatInput ? saveFormatInput.value : "original",
                     quality: qualityInput ? qualityInput.value || 95 : 95,
@@ -639,6 +661,25 @@
                 const contentType = response.headers.get("Content-Type") || "";
                 if (contentType.includes("application/json")) {
                     const data = await response.json();
+                    if (data.status === "routed" && data.route_type === "direct") {
+                        downloadDirectItems(data.items || []);
+                        setProgress(100);
+                        setStatus(
+                            getStatusElement(),
+                            `${data.route_reason || "已使用浏览器直链下载"}${routeWarningText(data.warnings)}`,
+                            "text-success",
+                        );
+                        return;
+                    }
+                    if (data.status === "routed" && data.route_type === "proxy") {
+                        setProgress(100);
+                        setStatus(
+                            getStatusElement(),
+                            `${data.route_reason || "已生成代理下载建议"}${routeWarningText(data.warnings)}`,
+                            "text-muted",
+                        );
+                        return;
+                    }
                     setProgress(100);
                     setStatus(getStatusElement(), data.message || "服务端保存完成", "text-success");
                     return;
@@ -815,6 +856,12 @@
                 const downloadBtn = event.target.closest("#download-btn");
                 if (downloadBtn && resultsRegion.contains(downloadBtn)) {
                     handleDownloadClick(downloadBtn);
+                    return;
+                }
+
+                const smartDownloadBtn = event.target.closest("#smart-download-btn");
+                if (smartDownloadBtn && resultsRegion.contains(smartDownloadBtn)) {
+                    handleDownloadClick(smartDownloadBtn, true);
                     return;
                 }
 

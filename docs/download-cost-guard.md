@@ -24,6 +24,7 @@ AnimeImages 的 ZIP 下载、视频下载、YouTube merge 和 KuKuTool 超清下
 - 最近 24 小时失败原因 Top 10
 - 最近 24 小时大文件下载 Top 10
 - 最近 24 小时 blocked / rate_limited 记录
+- 最近 24 小时下载路由分布、预计服务器出网、预计浏览器直连和服务器出网节省估算
 - Provider 设置、Download 设置、Provider 测试、日志页面快捷入口
 
 ## DownloadRuntimeSetting 字段
@@ -65,6 +66,21 @@ large_download_warning_bytes = 104857600    # 100 MB
 - 已知 `size_bytes` 的资源总和超过 `single_archive_bytes_limit` 会被阻止。
 
 为了避免额外成本，preflight 不会主动对所有 URL 发送 HEAD 或 Range 请求。缺少 `size_bytes` 的资源不会在下载前被假定为 0 后强行通过，第一版只对已知大小做保护，真实 ZIP 大小仍会在打包后检查。
+
+## Routing Engine v2 兼容
+
+Download Routing Engine v2 不会绕过 Download Cost Guard。即使请求使用 `download_mode=auto`，以下保护仍会优先生效：
+
+- `visitor_video_download_enabled`
+- `single_video_bytes_limit`
+- `single_archive_bytes_limit`
+- 每日 IP / 全站请求限制
+- 每日 IP / 全站流量容量检查
+- Provider manifest 校验
+
+当请求被阻止时，`DownloadRequestLog.route_type` 会写入 `blocked`，并继续记录 `error_code`。当智能下载选择 `direct` 时，已知大小会计入 `browser_egress_estimated_bytes`；选择 `zip` 或 `proxy` 时，已知大小会计入 `server_egress_estimated_bytes`。
+
+默认下载仍然是 ZIP。只有请求体显式传入 `download_mode=auto` 时，才启用路由决策并可能返回 direct/proxy JSON。
 
 ## 下载后保护
 
