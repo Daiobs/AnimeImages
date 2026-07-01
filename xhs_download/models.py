@@ -148,6 +148,21 @@ class PolicyRuntimeSetting(models.Model):
         verbose_name="启用 v4 自适应影子建议",
         help_text="仅生成自适应权重建议，不自动修改真实策略。",
     )
+    v4_auto_weights_enabled = models.BooleanField(
+        default=False,
+        verbose_name="启用 v4 自动权重",
+        help_text="默认关闭。开启后 Policy Engine 会按历史反馈读取自适应权重，但不会修改 Provider 或 Cost Guard 配置。",
+    )
+    v4_adaptive_window_hours = models.PositiveSmallIntegerField(
+        default=24,
+        validators=(MinValueValidator(1), MaxValueValidator(168)),
+        verbose_name="v4 反馈窗口小时数",
+    )
+    v4_adaptive_min_confidence = models.FloatField(
+        default=0.65,
+        validators=(MinValueValidator(0.0), MaxValueValidator(1.0)),
+        verbose_name="v4 自动权重最低置信度",
+    )
     updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
 
     class Meta:

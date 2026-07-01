@@ -49,6 +49,9 @@ class PolicyDecision:
     decision_source: str = "policy_v3_5_shadow"
     active: bool = False
     estimated_savings_bytes: int = 0
+    policy_weights: dict = field(default_factory=dict)
+    weight_source: str = "static"
+    weight_confidence: float = 1.0
 
     def to_dict(self):
         return {
@@ -70,4 +73,10 @@ class PolicyDecision:
             "decision_source": self.decision_source,
             "active": bool(self.active),
             "estimated_savings_bytes": int(self.estimated_savings_bytes or 0),
+            "policy_weights": {
+                key: round(float(value or 0), 4)
+                for key, value in (self.policy_weights or {}).items()
+            },
+            "weight_source": self.weight_source,
+            "weight_confidence": round(float(self.weight_confidence or 0), 4),
         }

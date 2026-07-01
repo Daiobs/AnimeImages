@@ -132,19 +132,40 @@ Execution safety:
 
 ## Phase 3: Policy Engine v4
 
-Status: shadow adaptive recommendation.
+Status: adaptive feedback loop implemented with safe runtime gate.
+
+Default behavior is still shadow-only. v4 does not change Provider settings and
+does not change Cost Guard behavior.
 
 Purpose:
 
 - analyze success rate, server cost, provider diversity, and route failure
 - recommend adaptive weights
 - keep humans/admin gates in control
+- optionally feed adaptive weights into v3.5 conflict resolution when explicitly enabled
 
 Command:
 
 ```bash
 python manage.py inspect_policy_engine --window-hours 24 --adaptive --json
 ```
+
+Feedback inputs:
+
+- actual route: `DownloadRequestLog.route_type`
+- recommended route: `DownloadRequestLog.final_policy_route`
+- actual success/failure: `DownloadRequestLog.status`
+- server cost: `actual_bytes`, `server_egress_estimated_bytes`
+- latency: `duration_ms`
+- provider failures by `provider`
+
+Runtime gate:
+
+- `PolicyRuntimeSetting.v4_adaptive_shadow_enabled=True`: keep reporting adaptive recommendations
+- `PolicyRuntimeSetting.v4_auto_weights_enabled=False`: default; do not affect real decisions
+- `PolicyRuntimeSetting.v4_auto_weights_enabled=True`: use feedback-derived weights in Policy Engine conflict resolution
+- `PolicyRuntimeSetting.v4_adaptive_min_confidence`: minimum confidence required before using adaptive weights
+- if samples or confidence are insufficient, the engine falls back to static weights
 
 Constraints:
 
@@ -170,8 +191,9 @@ Rollback is low-risk:
 
 1. Set `PolicyRuntimeSetting.v35_mode=shadow`.
 2. Set `PolicyRuntimeSetting.v35_rollout_percent=0`.
-3. Ignore policy fields in `DownloadRequestLog`.
-4. Stop running `inspect_policy_engine --record`.
-5. If necessary, revert the migrations adding policy runtime/log fields and `PolicyLearningRun`.
+3. Set `PolicyRuntimeSetting.v4_auto_weights_enabled=False`.
+4. Ignore policy fields in `DownloadRequestLog`.
+5. Stop running `inspect_policy_engine --record`.
+6. If necessary, revert the migrations adding policy runtime/log fields and `PolicyLearningRun`.
 
 Existing download execution does not depend on the new policy tables.

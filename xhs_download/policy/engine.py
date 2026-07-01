@@ -125,20 +125,80 @@ def policy_engine_is_active(context=None):
     return False
 
 
-def policy_weights():
+def normalize_policy_weights(weights):
+    normalized = {}
+    for key, default in DEFAULT_POLICY_WEIGHTS.items():
+        try:
+            normalized[key] = max(0.0, float((weights or {}).get(key, default)))
+        except (TypeError, ValueError):
+            normalized[key] = default
+    total = sum(normalized.values())
+    if total <= 0:
+        return dict(DEFAULT_POLICY_WEIGHTS)
+    return {key: value / total for key, value in normalized.items()}
+
+
+def configured_policy_weights():
     configured = getattr(settings, "POLICY_ENGINE_WEIGHTS", None)
     if not isinstance(configured, dict):
         return dict(DEFAULT_POLICY_WEIGHTS)
-    weights = dict(DEFAULT_POLICY_WEIGHTS)
-    for key in tuple(weights):
-        try:
-            weights[key] = max(0.0, float(configured.get(key, weights[key])))
-        except (TypeError, ValueError):
-            pass
-    total = sum(weights.values())
-    if total <= 0:
-        return dict(DEFAULT_POLICY_WEIGHTS)
-    return {key: value / total for key, value in weights.items()}
+    return normalize_policy_weights(configured)
+
+
+def policy_weight_diagnostics():
+    static_weights = configured_policy_weights()
+    runtime_setting = load_policy_runtime_setting()
+    if not runtime_setting or not bool(runtime_setting.v4_auto_weights_enabled):
+        return {
+            "weights": static_weights,
+            "source": "static",
+            "confidence": 1.0,
+            "reason_chain": ["static-policy-weights"],
+        }
+
+    try:
+        from .adaptive import get_adaptive_weight_recommendation
+
+        recommendation = get_adaptive_weight_recommendation(
+            window_hours=runtime_setting.v4_adaptive_window_hours,
+        )
+    except Exception:
+        return {
+            "weights": static_weights,
+            "source": "static_adaptive_unavailable",
+            "confidence": 0.0,
+            "reason_chain": ["adaptive-weight-recommendation-unavailable"],
+        }
+
+    try:
+        confidence = max(0.0, min(1.0, float(recommendation.get("confidence") or 0)))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    try:
+        min_confidence = max(
+            0.0,
+            min(1.0, float(runtime_setting.v4_adaptive_min_confidence or 0.65)),
+        )
+    except (TypeError, ValueError):
+        min_confidence = 0.65
+    if confidence < min_confidence or int(recommendation.get("sample_count") or 0) <= 0:
+        return {
+            "weights": static_weights,
+            "source": "static_adaptive_confidence_too_low",
+            "confidence": confidence,
+            "reason_chain": recommendation.get("reason_chain") or [],
+        }
+
+    return {
+        "weights": normalize_policy_weights(recommendation.get("weights") or static_weights),
+        "source": "policy_v4_adaptive",
+        "confidence": confidence,
+        "reason_chain": recommendation.get("reason_chain") or [],
+    }
+
+
+def policy_weights():
+    return policy_weight_diagnostics()["weights"]
 
 
 def aggregate_weighted_routes(results, weights):
@@ -150,13 +210,13 @@ def aggregate_weighted_routes(results, weights):
     return weighted_routes
 
 
-def resolve_conflict(results, route_hint=None):
+def resolve_conflict(results, route_hint=None, weights=None):
     results = tuple(results or ())
     cost_result = next((item for item in results if item.policy == "cost"), None)
     if cost_result and cost_result.route == ROUTE_BLOCKED:
         return cost_result.route, 1.0, "cost-hard-constraint"
 
-    weights = policy_weights()
+    weights = weights or policy_weights()
     weighted_routes = aggregate_weighted_routes(results, weights)
     if not weighted_routes:
         fallback = str((route_hint or {}).get("route_type") or ROUTE_BLOCKED)
@@ -182,7 +242,13 @@ def fallback_route_for(context):
 def decide_final_policy(context: PolicyContext):
     policies = (CostPolicy(), ProviderPolicy(), RoutingPolicy())
     results = tuple(policy.evaluate(context) for policy in policies)
-    route, confidence, resolver_reason = resolve_conflict(results, context.route_hint)
+    weight_info = policy_weight_diagnostics()
+    weights = weight_info["weights"]
+    route, confidence, resolver_reason = resolve_conflict(
+        results,
+        context.route_hint,
+        weights=weights,
+    )
     provider = next((result.provider for result in results if result.provider), "")
     cost_level = next((result.cost_level for result in results if result.cost_level), "low")
     fallback_route = fallback_route_for(context)
@@ -197,13 +263,20 @@ def decide_final_policy(context: PolicyContext):
         provider=provider or "native",
         cost_level=cost_level,
         confidence=confidence,
-        reason_chain=tuple([resolver_reason] + [result.reason for result in results]),
+        reason_chain=tuple(
+            [resolver_reason]
+            + [result.reason for result in results]
+            + list(weight_info.get("reason_chain") or [])
+        ),
         policy_scores={result.policy: result.score for result in results},
-        weighted_routes=aggregate_weighted_routes(results, policy_weights()),
+        weighted_routes=aggregate_weighted_routes(results, weights),
         fallback_route=fallback_route,
         decision_source=decision_source,
         active=active,
         estimated_savings_bytes=estimated_server_savings(context.route_hint, route),
+        policy_weights=weights,
+        weight_source=weight_info["source"],
+        weight_confidence=weight_info["confidence"],
     )
 
 

@@ -76,6 +76,7 @@ from .policy.engine import (
     build_policy_context,
     decide_final_policy,
     evaluate_policy_shadow,
+    policy_weight_diagnostics,
 )
 from .policy.learning import build_policy_learning_snapshot, record_policy_learning_run
 from .policy.policies import CostPolicy, ProviderPolicy, RoutingPolicy
@@ -6920,6 +6921,75 @@ class PolicyEngineEvolutionTests(TestCase):
         self.assertEqual(set(recommendation["weights"]), {"cost", "provider", "routing"})
         self.assertAlmostEqual(sum(recommendation["weights"].values()), 1.0, places=3)
         self.assertIn("policy-v4-shadow-adaptive-weights", recommendation["reason_chain"])
+
+    def test_policy_v4_auto_weights_default_to_static(self):
+        DownloadRequestLog.objects.create(
+            request_id="rid-policy-v4-static",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="zip",
+            route_type=ROUTE_ZIP,
+            final_policy_route=ROUTE_ZIP,
+            provider="native",
+            actual_bytes=500_000_000,
+            server_egress_estimated_bytes=1,
+        )
+
+        diagnostics = policy_weight_diagnostics()
+
+        self.assertEqual(diagnostics["source"], "static")
+        self.assertAlmostEqual(diagnostics["weights"]["cost"], 0.4)
+        self.assertAlmostEqual(diagnostics["weights"]["provider"], 0.4)
+        self.assertAlmostEqual(diagnostics["weights"]["routing"], 0.2)
+
+    def test_policy_v4_auto_weights_can_feed_policy_decision(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v4_auto_weights_enabled = True
+        setting.v4_adaptive_min_confidence = 0.1
+        setting.v4_adaptive_window_hours = 24
+        setting.save(update_fields=[
+            "v4_auto_weights_enabled",
+            "v4_adaptive_min_confidence",
+            "v4_adaptive_window_hours",
+            "updated_at",
+        ])
+        DownloadRequestLog.objects.create(
+            request_id="rid-policy-v4-active",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="zip",
+            route_type=ROUTE_ZIP,
+            final_policy_route=ROUTE_ZIP,
+            provider="native",
+            actual_bytes=500_000_000,
+            server_egress_estimated_bytes=1,
+        )
+        context = build_policy_context(
+            self.request,
+            [{"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"}],
+            requested_mode="auto",
+        )
+
+        decision = decide_final_policy(context)
+
+        self.assertEqual(decision.weight_source, "policy_v4_adaptive")
+        self.assertIn("server-cost-delta-positive", decision.reason_chain)
+        self.assertGreater(decision.policy_weights["cost"], 0.4)
+        self.assertGreaterEqual(decision.weight_confidence, 0.1)
+
+    def test_policy_v4_auto_weights_low_confidence_falls_back_static(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v4_auto_weights_enabled = True
+        setting.v4_adaptive_min_confidence = 0.99
+        setting.save(update_fields=[
+            "v4_auto_weights_enabled",
+            "v4_adaptive_min_confidence",
+            "updated_at",
+        ])
+
+        diagnostics = policy_weight_diagnostics()
+
+        self.assertEqual(diagnostics["source"], "static_adaptive_confidence_too_low")
+        self.assertAlmostEqual(diagnostics["weights"]["cost"], 0.4)
+        self.assertLess(diagnostics["confidence"], 0.99)
 
 
 class RuntimeHealthViewTests(SimpleTestCase):

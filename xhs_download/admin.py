@@ -170,6 +170,9 @@ class PolicyRuntimeSettingAdmin(admin.ModelAdmin):
         "v35_mode",
         "v35_rollout_percent",
         "v4_adaptive_shadow_enabled",
+        "v4_auto_weights_enabled",
+        "v4_adaptive_window_hours",
+        "v4_adaptive_min_confidence",
         "updated_at",
     )
     readonly_fields = ("singleton_key", "updated_at")
@@ -178,6 +181,9 @@ class PolicyRuntimeSettingAdmin(admin.ModelAdmin):
         "v35_mode",
         "v35_rollout_percent",
         "v4_adaptive_shadow_enabled",
+        "v4_auto_weights_enabled",
+        "v4_adaptive_window_hours",
+        "v4_adaptive_min_confidence",
         "updated_at",
     )
 
