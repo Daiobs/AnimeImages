@@ -27,6 +27,8 @@ from .models import (
     DownloadRequestLog,
     ObservabilityStatus,
     ParseRequestLog,
+    PolicyRuntimeMode,
+    PolicyRuntimeSetting,
     ProviderAccessMode,
     ProviderAdminAuditLog,
     ProviderHealthTestSetting,
@@ -34,7 +36,13 @@ from .models import (
     ProviderHealthTestStatus,
     ProviderRuntimeSetting,
 )
-from .policy.engine import apply_policy_decision_to_route, evaluate_policy_shadow
+from .policy.adaptive import build_adaptive_weight_recommendation
+from .policy.engine import (
+    apply_policy_decision_to_route,
+    evaluate_policy_shadow,
+    policy_weight_diagnostics,
+)
+from .policy.learning import build_policy_learning_snapshot
 from .services.common import (
     XhsDownloadError,
     XhsError,
@@ -414,6 +422,173 @@ def provider_settings_admin_required(request):
     return bool(
         getattr(request.user, "is_active", False)
         and getattr(request.user, "is_staff", False)
+    )
+
+
+def policy_engine_view_allowed(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_policyruntimesetting",
+        "xhs_download.change_policyruntimesetting",
+    )
+
+
+def policy_engine_change_allowed(request):
+    user = getattr(request, "user", None)
+    return bool(
+        getattr(user, "is_active", False)
+        and getattr(user, "is_staff", False)
+        and (
+            getattr(user, "is_superuser", False)
+            or user.has_perm("xhs_download.change_policyruntimesetting")
+        )
+    )
+
+
+def policy_runtime_snapshot(setting):
+    return {
+        "v35_mode": setting.v35_mode,
+        "v35_rollout_percent": setting.v35_rollout_percent,
+        "v4_adaptive_shadow_enabled": setting.v4_adaptive_shadow_enabled,
+        "v4_auto_weights_enabled": setting.v4_auto_weights_enabled,
+        "v4_adaptive_window_hours": setting.v4_adaptive_window_hours,
+        "v4_adaptive_min_confidence": setting.v4_adaptive_min_confidence,
+    }
+
+
+def clamp_int(value, *, minimum=0, maximum=100, default=0):
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        value = default
+    return min(maximum, max(minimum, value))
+
+
+def clamp_float(value, *, minimum=0.0, maximum=1.0, default=0.0):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        value = default
+    return min(maximum, max(minimum, value))
+
+
+def policy_learning_card(snapshot):
+    recommendation = snapshot.get("shadow_recommendation") or {}
+    return {
+        "window_hours": snapshot.get("window_hours"),
+        "sample_count": snapshot.get("sample_count"),
+        "download_count": snapshot.get("download_count"),
+        "parse_count": snapshot.get("parse_count"),
+        "route": recommendation.get("route") or "-",
+        "reason": recommendation.get("reason") or "-",
+        "confidence": snapshot.get("confidence"),
+        "estimated_savings": format_file_size(snapshot.get("estimated_savings_bytes")),
+    }
+
+
+def build_policy_engine_context(request, runtime_setting):
+    weight_info = policy_weight_diagnostics()
+    adaptive = build_adaptive_weight_recommendation(
+        window_hours=runtime_setting.v4_adaptive_window_hours,
+    )
+    feedback = adaptive.get("feedback_summary") or {}
+    recent_decisions = [
+        {
+            "created_at": format_admin_datetime(item.created_at),
+            "status": item.status,
+            "actual_route": item.route_type or "-",
+            "recommended_route": item.final_policy_route or "-",
+            "policy_active": item.policy_active,
+            "weight_source": item.policy_decision_source or "-",
+            "provider": item.provider or "-",
+            "actual_bytes": format_file_size(item.actual_bytes),
+            "duration_ms": item.duration_ms,
+            "request_id": item.request_id,
+        }
+        for item in DownloadRequestLog.objects.exclude(final_policy_route="")
+        .order_by("-created_at")[:10]
+    ]
+    return {
+        "title": "Policy Engine",
+        "runtime_setting": runtime_setting,
+        "policy_modes": PolicyRuntimeMode.choices,
+        "can_change_policy": policy_engine_change_allowed(request),
+        "weight_info": weight_info,
+        "adaptive": adaptive,
+        "feedback": feedback,
+        "learning_cards": [
+            policy_learning_card(build_policy_learning_snapshot(window_hours=24)),
+            policy_learning_card(build_policy_learning_snapshot(window_hours=24 * 7)),
+        ],
+        "recent_decisions": recent_decisions,
+    }
+
+
+@csrf_protect
+def policy_engine_view(request):
+    if not policy_engine_view_allowed(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+
+    runtime_setting = PolicyRuntimeSetting.load()
+    if request.method == "POST":
+        if not policy_engine_change_allowed(request):
+            return JsonResponse({"detail": "Not found."}, status=404)
+        before_snapshot = policy_runtime_snapshot(runtime_setting)
+        valid_modes = {choice[0] for choice in PolicyRuntimeMode.choices}
+        v35_mode = request.POST.get("v35_mode", PolicyRuntimeMode.SHADOW)
+        if v35_mode not in valid_modes:
+            v35_mode = PolicyRuntimeMode.SHADOW
+        runtime_setting.v35_mode = v35_mode
+        runtime_setting.v35_rollout_percent = clamp_int(
+            request.POST.get("v35_rollout_percent"),
+            minimum=0,
+            maximum=100,
+            default=0,
+        )
+        runtime_setting.v4_adaptive_shadow_enabled = (
+            request.POST.get("v4_adaptive_shadow_enabled") == "1"
+        )
+        runtime_setting.v4_auto_weights_enabled = (
+            request.POST.get("v4_auto_weights_enabled") == "1"
+        )
+        runtime_setting.v4_adaptive_window_hours = clamp_int(
+            request.POST.get("v4_adaptive_window_hours"),
+            minimum=1,
+            maximum=168,
+            default=24,
+        )
+        runtime_setting.v4_adaptive_min_confidence = clamp_float(
+            request.POST.get("v4_adaptive_min_confidence"),
+            minimum=0.0,
+            maximum=1.0,
+            default=0.65,
+        )
+        runtime_setting.save(
+            update_fields=[
+                "v35_mode",
+                "v35_rollout_percent",
+                "v4_adaptive_shadow_enabled",
+                "v4_auto_weights_enabled",
+                "v4_adaptive_window_hours",
+                "v4_adaptive_min_confidence",
+                "updated_at",
+            ]
+        )
+        after_snapshot = policy_runtime_snapshot(runtime_setting)
+        if before_snapshot != after_snapshot:
+            record_provider_admin_audit_log(
+                request,
+                action="policy_runtime_update",
+                before_snapshot=before_snapshot,
+                after_snapshot=after_snapshot,
+            )
+        messages.success(request, "Policy Engine 运行时配置已保存。")
+        return redirect("policy_engine")
+
+    return render(
+        request,
+        "admin/policy_engine.html",
+        build_policy_engine_context(request, runtime_setting),
     )
 
 

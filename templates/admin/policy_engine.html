@@ -1,0 +1,377 @@
+{% extends "admin/base_site.html" %}
+
+{% block content_title %}{% endblock %}
+
+{% block content %}
+<style>
+    #content { padding: 0; }
+    .policy-page {
+        min-height: calc(100vh - 96px);
+        margin: -20px -20px 0;
+        padding: 34px clamp(18px, 4vw, 54px) 56px;
+        background: #f8fbff;
+        color: #111827;
+    }
+    .policy-shell { max-width: 1180px; margin: 0 auto; }
+    .policy-hero {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 20px;
+    }
+    .policy-eyebrow {
+        display: inline-flex;
+        min-height: 28px;
+        align-items: center;
+        padding: 4px 10px;
+        border-radius: 8px;
+        background: #eef2ff;
+        color: #4338ca;
+        font-size: 12px;
+        font-weight: 800;
+    }
+    .policy-title {
+        margin: 10px 0 0;
+        color: #111827;
+        font-size: clamp(28px, 4vw, 42px);
+        font-weight: 900;
+        line-height: 1.12;
+        letter-spacing: 0;
+    }
+    .policy-subtitle {
+        max-width: 760px;
+        margin: 10px 0 0;
+        color: #6b7280;
+        font-size: 15px;
+        line-height: 1.7;
+    }
+    .policy-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+    .policy-link,
+    .policy-button {
+        display: inline-flex;
+        min-height: 40px;
+        align-items: center;
+        justify-content: center;
+        padding: 0 14px;
+        border: 1px solid #d8dde8;
+        border-radius: 8px;
+        background: #fff;
+        color: #111827;
+        font-size: 14px;
+        font-weight: 800;
+        text-decoration: none;
+    }
+    .policy-button {
+        border-color: #2563eb;
+        background: #2563eb;
+        color: #fff;
+        cursor: pointer;
+    }
+    .policy-link:hover { color: #2563eb; border-color: #9db7f5; text-decoration: none; }
+    .policy-message-list {
+        margin: 0 0 16px;
+        padding: 0;
+        list-style: none;
+    }
+    .policy-message-list li {
+        padding: 12px 14px;
+        border: 1px solid #bfdbfe;
+        border-radius: 8px;
+        background: #eff6ff;
+        color: #1d4ed8;
+        font-weight: 700;
+    }
+    .policy-warning {
+        margin-bottom: 16px;
+        padding: 12px 14px;
+        border: 1px solid #fde68a;
+        border-radius: 8px;
+        background: #fffbeb;
+        color: #765400;
+        line-height: 1.65;
+        font-weight: 700;
+    }
+    .policy-grid,
+    .policy-panels {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 16px;
+    }
+    .policy-panels { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .policy-card,
+    .policy-panel {
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: 0 4px 12px rgba(17, 24, 39, .05);
+    }
+    .policy-card {
+        min-height: 104px;
+        padding: 16px;
+    }
+    .policy-card strong {
+        display: block;
+        color: #6b7280;
+        font-size: 13px;
+        font-weight: 800;
+    }
+    .policy-card span {
+        display: block;
+        margin-top: 8px;
+        color: #111827;
+        font-size: 20px;
+        font-weight: 900;
+        overflow-wrap: anywhere;
+    }
+    .policy-panel { padding: 18px; }
+    .policy-panel h2 {
+        margin: 0 0 14px;
+        color: #111827;
+        font-size: 18px;
+        font-weight: 900;
+    }
+    .policy-form-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+    }
+    .policy-field label,
+    .policy-check label {
+        display: block;
+        margin-bottom: 7px;
+        color: #374151;
+        font-size: 13px;
+        font-weight: 800;
+    }
+    .policy-field input,
+    .policy-field select {
+        width: 100%;
+        min-height: 40px;
+        box-sizing: border-box;
+        border: 1px solid #d8dde8;
+        border-radius: 8px;
+        padding: 0 10px;
+        background: #fff;
+    }
+    .policy-check {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 40px;
+    }
+    .policy-check label { margin: 0; }
+    .policy-muted {
+        margin-top: 8px;
+        color: #6b7280;
+        font-size: 13px;
+        line-height: 1.6;
+    }
+    .policy-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+    }
+    .policy-table th,
+    .policy-table td {
+        padding: 10px 8px;
+        border-bottom: 1px solid #eef2f7;
+        text-align: left;
+        vertical-align: top;
+    }
+    .policy-table th {
+        color: #6b7280;
+        font-size: 12px;
+        font-weight: 900;
+        text-transform: uppercase;
+    }
+    .policy-table code {
+        font-size: 12px;
+        overflow-wrap: anywhere;
+    }
+    @media (max-width: 960px) {
+        .policy-grid,
+        .policy-panels { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 640px) {
+        .policy-grid,
+        .policy-panels,
+        .policy-form-grid { grid-template-columns: 1fr; }
+    }
+</style>
+
+<div class="policy-page">
+    <div class="policy-shell">
+        <section class="policy-hero">
+            <div>
+                <span class="policy-eyebrow">Policy Engine</span>
+                <h1 class="policy-title">Policy Engine 决策中心</h1>
+                <p class="policy-subtitle">统一查看 v3 shadow learning、v3.5 灰度决策和 v4 adaptive weights。默认不影响生产路由，只有显式开启后才接管真实决策。</p>
+            </div>
+            <div class="policy-actions">
+                <a class="policy-link" href="{% url 'admin_console' %}">运维首页</a>
+                <a class="policy-link" href="{% url 'ops_dashboard' %}">运营看板</a>
+                <a class="policy-link" href="{% url 'download_logs' %}">下载日志</a>
+                <a class="policy-link" href="{% url 'provider_settings' %}">Provider 设置</a>
+            </div>
+        </section>
+
+        {% if messages %}
+            <ul class="policy-message-list">
+                {% for message in messages %}<li>{{ message }}</li>{% endfor %}
+            </ul>
+        {% endif %}
+
+        {% if runtime_setting.v35_mode == "public" or runtime_setting.v35_mode == "public_gray" or runtime_setting.v4_auto_weights_enabled %}
+            <div class="policy-warning">
+                当前存在公开灰度/全站启用或 v4 自动权重设置。上线时建议先使用 staff 模式和下载日志观察，再逐步扩大比例。
+            </div>
+        {% endif %}
+
+        <section class="policy-grid" aria-label="运行状态">
+            <div class="policy-card"><strong>v3.5 模式</strong><span>{{ runtime_setting.get_v35_mode_display }}</span></div>
+            <div class="policy-card"><strong>v3.5 灰度比例</strong><span>{{ runtime_setting.v35_rollout_percent }}%</span></div>
+            <div class="policy-card"><strong>权重来源</strong><span>{{ weight_info.source }}</span></div>
+            <div class="policy-card"><strong>权重置信度</strong><span>{{ weight_info.confidence }}</span></div>
+            <div class="policy-card"><strong>反馈样本</strong><span>{{ feedback.policy_feedback_count }}</span></div>
+            <div class="policy-card"><strong>Policy 接管次数</strong><span>{{ feedback.policy_active_count }}</span></div>
+            <div class="policy-card"><strong>推荐命中率</strong><span>{{ feedback.recommendation_match_rate }}</span></div>
+            <div class="policy-card"><strong>成功率</strong><span>{{ feedback.success_rate }}</span></div>
+        </section>
+
+        <section class="policy-panels">
+            <div class="policy-panel">
+                <h2>运行时配置</h2>
+                {% if can_change_policy %}
+                    <form method="post">
+                        {% csrf_token %}
+                        <div class="policy-form-grid">
+                            <div class="policy-field">
+                                <label for="id_v35_mode">v3.5 模式</label>
+                                <select id="id_v35_mode" name="v35_mode">
+                                    {% for value, label in policy_modes %}
+                                        <option value="{{ value }}"{% if runtime_setting.v35_mode == value %} selected{% endif %}>{{ label }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="policy-field">
+                                <label for="id_v35_rollout_percent">v3.5 灰度比例</label>
+                                <input id="id_v35_rollout_percent" name="v35_rollout_percent" type="number" min="0" max="100" value="{{ runtime_setting.v35_rollout_percent }}">
+                            </div>
+                            <div class="policy-field">
+                                <label for="id_v4_adaptive_window_hours">v4 反馈窗口小时数</label>
+                                <input id="id_v4_adaptive_window_hours" name="v4_adaptive_window_hours" type="number" min="1" max="168" value="{{ runtime_setting.v4_adaptive_window_hours }}">
+                            </div>
+                            <div class="policy-field">
+                                <label for="id_v4_adaptive_min_confidence">v4 自动权重最低置信度</label>
+                                <input id="id_v4_adaptive_min_confidence" name="v4_adaptive_min_confidence" type="number" min="0" max="1" step="0.01" value="{{ runtime_setting.v4_adaptive_min_confidence }}">
+                            </div>
+                            <div class="policy-check">
+                                <input id="id_v4_shadow" name="v4_adaptive_shadow_enabled" value="1" type="checkbox"{% if runtime_setting.v4_adaptive_shadow_enabled %} checked{% endif %}>
+                                <label for="id_v4_shadow">启用 v4 影子建议</label>
+                            </div>
+                            <div class="policy-check">
+                                <input id="id_v4_auto" name="v4_auto_weights_enabled" value="1" type="checkbox"{% if runtime_setting.v4_auto_weights_enabled %} checked{% endif %}>
+                                <label for="id_v4_auto">启用 v4 自动权重</label>
+                            </div>
+                        </div>
+                        <p class="policy-muted">建议路线：shadow → staff → public_gray 1% → public_gray 80%。回滚时把 v3.5 模式设为 shadow，并关闭 v4 自动权重。</p>
+                        <button class="policy-button" type="submit">保存 Policy 设置</button>
+                    </form>
+                {% else %}
+                    <p class="policy-muted">当前账号只有查看权限，不能修改 Policy Engine 运行时配置。</p>
+                {% endif %}
+            </div>
+
+            <div class="policy-panel">
+                <h2>当前权重</h2>
+                <table class="policy-table">
+                    <tbody>
+                    <tr><th>Cost</th><td>{{ weight_info.weights.cost }}</td></tr>
+                    <tr><th>Provider</th><td>{{ weight_info.weights.provider }}</td></tr>
+                    <tr><th>Routing</th><td>{{ weight_info.weights.routing }}</td></tr>
+                    <tr><th>来源</th><td>{{ weight_info.source }}</td></tr>
+                    <tr><th>原因链</th><td>{{ weight_info.reason_chain|join:", " }}</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="policy-panels">
+            <div class="policy-panel">
+                <h2>学习窗口</h2>
+                <table class="policy-table">
+                    <thead><tr><th>窗口</th><th>样本</th><th>推荐路线</th><th>置信度</th><th>预计节省</th></tr></thead>
+                    <tbody>
+                    {% for card in learning_cards %}
+                        <tr>
+                            <td>{{ card.window_hours }}h</td>
+                            <td>{{ card.sample_count }}</td>
+                            <td>{{ card.route }}</td>
+                            <td>{{ card.confidence }}</td>
+                            <td>{{ card.estimated_savings }}</td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <div class="policy-panel">
+                <h2>v4 自适应建议</h2>
+                <table class="policy-table">
+                    <tbody>
+                    <tr><th>窗口</th><td>{{ adaptive.window_hours }}h</td></tr>
+                    <tr><th>样本</th><td>{{ adaptive.sample_count }}</td></tr>
+                    <tr><th>置信度</th><td>{{ adaptive.confidence }}</td></tr>
+                    <tr><th>Cost</th><td>{{ adaptive.weights.cost }}</td></tr>
+                    <tr><th>Provider</th><td>{{ adaptive.weights.provider }}</td></tr>
+                    <tr><th>Routing</th><td>{{ adaptive.weights.routing }}</td></tr>
+                    <tr><th>原因链</th><td>{{ adaptive.reason_chain|join:", " }}</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="policy-panel">
+            <h2>最近 Policy 决策反馈</h2>
+            <table class="policy-table">
+                <thead>
+                <tr>
+                    <th>时间</th>
+                    <th>状态</th>
+                    <th>实际路线</th>
+                    <th>推荐路线</th>
+                    <th>接管</th>
+                    <th>Provider</th>
+                    <th>实际流量</th>
+                    <th>耗时</th>
+                    <th>request_id</th>
+                </tr>
+                </thead>
+                <tbody>
+                {% for item in recent_decisions %}
+                    <tr>
+                        <td>{{ item.created_at }}</td>
+                        <td>{{ item.status }}</td>
+                        <td>{{ item.actual_route }}</td>
+                        <td>{{ item.recommended_route }}</td>
+                        <td>{% if item.policy_active %}是{% else %}否{% endif %}</td>
+                        <td>{{ item.provider }}</td>
+                        <td>{{ item.actual_bytes }}</td>
+                        <td>{{ item.duration_ms }}ms</td>
+                        <td><code>{{ item.request_id }}</code></td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="9">暂无 Policy 决策反馈。发起下载后会在这里显示。</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+    </div>
+</div>
+{% endblock %}

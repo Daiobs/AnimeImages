@@ -115,6 +115,7 @@ Runtime gate:
 - `PolicyRuntimeSetting.v35_mode=staff`: staff requests can use policy decisions
 - `PolicyRuntimeSetting.v35_mode=public_gray`: public rollout by percent
 - `PolicyRuntimeSetting.v35_mode=public`: all requests can use policy decisions
+- `/admin/policy-engine/`: runtime configuration and diagnostics panel
 
 80/20 target:
 
@@ -166,6 +167,13 @@ Runtime gate:
 - `PolicyRuntimeSetting.v4_auto_weights_enabled=True`: use feedback-derived weights in Policy Engine conflict resolution
 - `PolicyRuntimeSetting.v4_adaptive_min_confidence`: minimum confidence required before using adaptive weights
 - if samples or confidence are insufficient, the engine falls back to static weights
+
+Admin diagnostics:
+
+- `/admin/policy-engine/` shows current v3.5 mode, rollout, v4 weight source, adaptive confidence, feedback sample count, and recent `actual route` vs `recommended route` rows.
+- superuser can view and edit.
+- staff with `view_policyruntimesetting` can view.
+- staff with `change_policyruntimesetting` can save changes.
 
 Constraints:
 

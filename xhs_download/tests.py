@@ -8783,6 +8783,72 @@ class AdminObservabilityMvpTests(TestCase):
         self.assertContains(permitted_response, "今日解析次数")
         self.assertContains(permitted_response, "PROVIDER_TIMEOUT")
 
+    def test_policy_engine_page_requires_specific_permission(self):
+        client = Client()
+        client.force_login(self.staff)
+        super_client = Client()
+        super_client.force_login(self.superuser)
+
+        self.assertEqual(Client().get("/admin/policy-engine/").status_code, 404)
+        self.assertEqual(client.get("/admin/policy-engine/").status_code, 404)
+        self.assertContains(super_client.get("/admin/policy-engine/"), "Policy Engine 决策中心")
+
+        self.grant_xhs_view_permission(self.staff, "view_policyruntimesetting")
+        response = client.get("/admin/policy-engine/")
+
+        self.assertContains(response, "Policy Engine 决策中心")
+        self.assertContains(response, "当前账号只有查看权限")
+        self.assertContains(response, "v3.5 模式")
+
+    def test_policy_engine_page_updates_runtime_with_change_permission(self):
+        client = Client()
+        client.force_login(self.staff)
+        self.grant_xhs_view_permission(self.staff, "change_policyruntimesetting")
+
+        response = client.post(
+            "/admin/policy-engine/",
+            data={
+                "v35_mode": PolicyRuntimeMode.PUBLIC_GRAY,
+                "v35_rollout_percent": "80",
+                "v4_adaptive_shadow_enabled": "1",
+                "v4_auto_weights_enabled": "1",
+                "v4_adaptive_window_hours": "168",
+                "v4_adaptive_min_confidence": "0.5",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        setting = PolicyRuntimeSetting.load()
+        self.assertEqual(setting.v35_mode, PolicyRuntimeMode.PUBLIC_GRAY)
+        self.assertEqual(setting.v35_rollout_percent, 80)
+        self.assertTrue(setting.v4_auto_weights_enabled)
+        self.assertEqual(setting.v4_adaptive_window_hours, 168)
+        self.assertEqual(setting.v4_adaptive_min_confidence, 0.5)
+        audit = ProviderAdminAuditLog.objects.get(action="policy_runtime_update")
+        self.assertIn("v35_mode", audit.changed_fields)
+        self.assertEqual(audit.after_snapshot["v35_rollout_percent"], 80)
+
+    def test_policy_engine_page_shows_feedback_rows(self):
+        DownloadRequestLog.objects.create(
+            request_id="rid-policy-page",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="auto",
+            route_type=ROUTE_DIRECT,
+            final_policy_route=ROUTE_DIRECT,
+            policy_active=True,
+            provider="native",
+            actual_bytes=1024,
+            duration_ms=12,
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/policy-engine/")
+
+        self.assertContains(response, "最近 Policy 决策反馈")
+        self.assertContains(response, "rid-policy-page")
+        self.assertContains(response, "1.0 KB")
+
     def test_observability_log_pages_require_specific_view_permissions(self):
         client = Client()
         client.force_login(self.staff)

@@ -277,7 +277,14 @@ def provider_runtime_snapshot(setting):
 
 
 def changed_fields_between(before, after):
-    return [field for field in PROVIDER_RUNTIME_AUDIT_FIELDS if before.get(field) != after.get(field)]
+    fields = tuple(
+        dict.fromkeys(
+            list(PROVIDER_RUNTIME_AUDIT_FIELDS)
+            + list((before or {}).keys())
+            + list((after or {}).keys())
+        )
+    )
+    return [field for field in fields if before.get(field) != after.get(field)]
 
 
 def record_provider_admin_audit_log(request, *, action, before_snapshot, after_snapshot):
