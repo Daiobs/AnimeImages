@@ -70,6 +70,10 @@ from .services.provider_settings import (
 )
 from .services.provider_manifest import build_provider_manifest_token
 from .services.observability import record_download_request_log, record_provider_admin_audit_log
+from .policy.adaptive import build_adaptive_weight_recommendation
+from .policy.engine import build_policy_context, decide_final_policy, evaluate_policy_shadow
+from .policy.learning import build_policy_learning_snapshot, record_policy_learning_run
+from .policy.policies import CostPolicy, ProviderPolicy, RoutingPolicy
 from .services.provider_access import (
     PROVIDER_DOUYIN_ULTRA,
     PROVIDER_THIRD_PARTY,
@@ -82,6 +86,7 @@ from .models import (
     DownloadRequestLog,
     ObservabilityStatus,
     ParseRequestLog,
+    PolicyLearningRun,
     ProviderAccessMode,
     ProviderAdminAuditLog,
     ProviderHealthTestSetting,
@@ -5860,6 +5865,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertTrue(recommendations)
         self.assertIn("DIRECT", recommendations[0])
 
+
     def test_download_auto_direct_returns_json_and_writes_route_log(self):
         response = Client().post(
             "/media/download-images/",
@@ -6620,6 +6626,155 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(file_response.status_code, 200)
         self.assertEqual(file_response["Content-Type"], "application/zip")
         self.assertEqual(b"".join(file_response.streaming_content), b"zip-content")
+
+
+class PolicyEngineEvolutionTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.request = RequestFactory().post("/media/download-images/")
+
+    def test_cost_provider_routing_policies_return_standard_results(self):
+        context = build_policy_context(
+            self.request,
+            [{"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"}],
+            requested_mode="auto",
+        )
+
+        cost = CostPolicy().evaluate(context)
+        provider = ProviderPolicy().evaluate(context)
+        routing = RoutingPolicy().evaluate(context)
+
+        self.assertEqual(cost.policy, "cost")
+        self.assertEqual(provider.policy, "provider")
+        self.assertEqual(routing.policy, "routing")
+        self.assertIn(cost.route, {ROUTE_DIRECT, ROUTE_PROXY, ROUTE_ZIP, ROUTE_BLOCKED})
+        self.assertGreaterEqual(cost.score, 0)
+        self.assertLessEqual(cost.score, 1)
+        self.assertGreaterEqual(provider.confidence, 0)
+        self.assertLessEqual(provider.confidence, 1)
+        self.assertEqual(routing.route, ROUTE_DIRECT)
+
+    def test_policy_conflict_resolution_prefers_provider_server_constraint(self):
+        context = build_policy_context(
+            self.request,
+            [{
+                "type": "video",
+                "url": "https://example.com/video.mp4",
+                "provider": "youtube_merge",
+                "size_bytes": 800_000_000,
+            }],
+            requested_mode="auto",
+        )
+
+        decision = decide_final_policy(context)
+
+        self.assertEqual(decision.route, ROUTE_ZIP)
+        self.assertEqual(set(decision.policy_scores.keys()), {"cost", "provider", "routing"})
+        self.assertIn("provider-requires-server-validation-or-merge", decision.reason_chain)
+
+    @override_settings(POLICY_ENGINE_MODE="shadow", POLICY_ENGINE_V35_ENABLED=False)
+    def test_policy_shadow_fallback_does_not_change_existing_download_route(self):
+        route_info = decide_download_route(
+            self.request,
+            [{"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg", "size_bytes": 321}],
+            requested_mode="auto",
+        )
+        shadow = evaluate_policy_shadow(
+            self.request,
+            [{"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg", "size_bytes": 321}],
+            route_info=route_info,
+            requested_mode="auto",
+        )
+
+        self.assertEqual(route_info["route_type"], ROUTE_DIRECT)
+        self.assertEqual(shadow["fallback_route"], ROUTE_DIRECT)
+        self.assertFalse(shadow["active"])
+        self.assertEqual(shadow["decision_source"], "routing_v2_fallback_with_policy_shadow")
+
+    def test_policy_shadow_fields_are_recorded_on_download_log(self):
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "auto",
+                "media_items": [{
+                    "type": "image",
+                    "url": "https://ci.xiaohongshu.com/a.jpg",
+                    "size_bytes": 321,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.route_type, ROUTE_DIRECT)
+        self.assertEqual(log.final_policy_route, ROUTE_DIRECT)
+        self.assertGreater(log.policy_cost_score, 0)
+        self.assertGreater(log.policy_provider_score, 0)
+        self.assertGreater(log.policy_routing_score, 0)
+        self.assertGreaterEqual(log.policy_confidence, 0)
+
+    def test_cost_guard_still_blocks_unsafe_request(self):
+        setting = DownloadRuntimeSetting.load()
+        setting.visitor_video_download_enabled = False
+        setting.save(update_fields=["visitor_video_download_enabled", "updated_at"])
+        context = build_policy_context(
+            self.request,
+            [{"type": "video", "url": "https://sns-video-hw.xhscdn.com/a.mp4"}],
+            requested_mode="auto",
+        )
+
+        decision = decide_final_policy(context)
+
+        self.assertFalse(decision.allow_download)
+        self.assertEqual(decision.route, ROUTE_BLOCKED)
+        self.assertIn("当前环境暂不允许访客下载视频资源。", decision.reason_chain)
+
+    def test_policy_learning_run_standardizes_shadow_recommendation(self):
+        DownloadRequestLog.objects.create(
+            request_id="rid-policy",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="zip",
+            item_count=1,
+            route_type=ROUTE_ZIP,
+            provider="native",
+            actual_bytes=100,
+            server_egress_estimated_bytes=80,
+        )
+        ParseRequestLog.objects.create(
+            request_id="rid-parse-policy",
+            status=ObservabilityStatus.SUCCESS,
+            selected_provider="native",
+            result_platform="xiaohongshu",
+        )
+
+        snapshot = build_policy_learning_snapshot(window_hours=24)
+        run = record_policy_learning_run(window_hours=24)
+
+        self.assertEqual(snapshot["window_hours"], 24)
+        self.assertIn("shadow_recommendation", snapshot)
+        self.assertIn("confidence", snapshot)
+        self.assertIn("estimated_savings_bytes", snapshot)
+        self.assertEqual(PolicyLearningRun.objects.count(), 1)
+        self.assertEqual(run.window_hours, 24)
+        self.assertGreaterEqual(run.sample_count, 2)
+
+    def test_policy_v4_adaptive_weights_are_shadow_only(self):
+        DownloadRequestLog.objects.create(
+            request_id="rid-policy-v4",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="zip",
+            route_type=ROUTE_ZIP,
+            provider="yt_dlp_merge",
+            actual_bytes=500_000_000,
+            server_egress_estimated_bytes=100_000_000,
+        )
+
+        recommendation = build_adaptive_weight_recommendation(window_hours=24)
+
+        self.assertEqual(set(recommendation["weights"]), {"cost", "provider", "routing"})
+        self.assertAlmostEqual(sum(recommendation["weights"].values()), 1.0, places=3)
+        self.assertIn("policy-v4-shadow-adaptive-weights", recommendation["reason_chain"])
 
 
 class RuntimeHealthViewTests(SimpleTestCase):

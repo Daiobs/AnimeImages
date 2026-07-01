@@ -34,6 +34,7 @@ from .models import (
     ProviderHealthTestStatus,
     ProviderRuntimeSetting,
 )
+from .policy.engine import evaluate_policy_shadow
 from .services.common import (
     XhsDownloadError,
     XhsError,
@@ -1669,6 +1670,20 @@ def log_download_request_event(
 ):
     duration_ms = (time.monotonic() - started_at) * 1000 if started_at else 0
     route_info = route_info or {}
+    policy_shadow = {}
+    if media_items:
+        try:
+            policy_shadow = evaluate_policy_shadow(
+                request,
+                media_items,
+                route_info=route_info,
+                requested_mode=download_type,
+                provider_hint=route_info.get("provider", ""),
+            )
+        except Exception:
+            logger.exception("policy_shadow_evaluation_failed")
+            policy_shadow = {}
+    policy_scores = policy_shadow.get("policy_scores") or {}
     record_download_request_log(
         request,
         download_type=download_type,
@@ -1690,6 +1705,11 @@ def log_download_request_event(
             if error is not None
             else ""
         ),
+        policy_cost_score=policy_scores.get("cost", 0),
+        policy_provider_score=policy_scores.get("provider", 0),
+        policy_routing_score=policy_scores.get("routing", 0),
+        final_policy_route=policy_shadow.get("route", ""),
+        policy_confidence=policy_shadow.get("confidence", 0),
     )
 
 
