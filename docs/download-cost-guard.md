@@ -48,8 +48,8 @@ AnimeImages 的 ZIP 下载、视频下载、YouTube merge 和 KuKuTool 超清下
 这些值是上线初期建议，不强制写入代码：
 
 ```text
-single_archive_bytes_limit = 536870912      # 500 MB
-single_video_bytes_limit = 314572800        # 300 MB
+single_archive_bytes_limit = 1073741824      # 1 GiB
+single_video_bytes_limit = 1073741824        # 1 GiB
 visitor_video_download_enabled = True       # 如流量风险高，可先设 False
 staff_large_download_exempt = False
 large_download_warning_bytes = 104857600    # 100 MB

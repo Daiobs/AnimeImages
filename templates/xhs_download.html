@@ -206,7 +206,7 @@
 
                         <label class="form-label" for="download-mode">下载处理方式</label>
                         <select id="download-mode" class="form-select">
-                            <option value="browser" selected>生产安全模式：浏览器下载 ZIP</option>
+                            <option value="browser" selected>生产安全模式：单视频直连，其他 ZIP</option>
                             {% if xhs_allow_server_save %}
                                 <option value="server">开发保存模式：保存到服务端路径</option>
                             {% endif %}
@@ -306,7 +306,7 @@
                         </div>
                     </section>
 
-                    <section class="settings-section">
+                    <section class="settings-section" hidden>
                         <div class="settings-section-title">
                             <i class="bi bi-play-circle"></i>
                             <span>视频内容</span>

@@ -18,7 +18,6 @@ ROUTE_TYPES = (
     ROUTE_FALLBACK,
 )
 
-DIRECT_IMAGE_LIMIT = 12
 SERVER_SIDE_PROVIDERS = {
     "kukutool",
     "kukutool_generic",
@@ -147,6 +146,31 @@ def provider_item_requires_server(item):
     return not provider_manifest_allows_public_download(item)
 
 
+def item_can_browser_direct_video(item):
+    if not isinstance(item, dict) or not item_is_video(item):
+        return False
+    url = item_url(item)
+    if not is_http_url(url):
+        return False
+    return not item_provider(item)
+
+
+def single_video_can_attachment_download(item):
+    return item_can_browser_direct_video(item)
+
+
+def single_image_can_attachment_download(item):
+    if not isinstance(item, dict) or not item_is_image(item):
+        return False
+    if not is_http_url(item_url(item)):
+        return False
+    return provider_item_can_direct_download(item)
+
+
+def single_item_can_attachment_download(item):
+    return single_video_can_attachment_download(item) or single_image_can_attachment_download(item)
+
+
 def public_route_item(item):
     allowed_keys = (
         "type",
@@ -235,6 +259,19 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
         )
 
     if requested_mode in {"zip", "browser"}:
+        if (
+            requested_mode == "browser"
+            and len(normalized_items) == 1
+            and single_item_can_attachment_download(normalized_items[0])
+        ):
+            return route_payload(
+                route_type=ROUTE_PROXY,
+                route_reason="单个资源使用单文件下载，不打包 ZIP",
+                download_strategy="server_single_attachment",
+                media_items=normalized_items,
+                estimated_bytes=estimated_bytes,
+                warnings=warnings,
+            )
         return route_payload(
             route_type=ROUTE_ZIP,
             route_reason="用户选择打包下载，使用服务器 ZIP 流程",
@@ -251,7 +288,7 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
 
     if (
         all_images
-        and len(normalized_items) <= DIRECT_IMAGE_LIMIT
+        and len(normalized_items) == 1
         and not has_server_provider
         and not has_non_http
     ):
@@ -275,6 +312,15 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
         )
 
     if all_videos and len(normalized_items) == 1:
+        if single_video_can_attachment_download(normalized_items[0]):
+            return route_payload(
+                route_type=ROUTE_PROXY,
+                route_reason="单个资源使用单文件下载，不打包 ZIP",
+                download_strategy="server_single_attachment",
+                media_items=normalized_items,
+                estimated_bytes=estimated_bytes,
+                warnings=warnings,
+            )
         if has_server_provider:
             return route_payload(
                 route_type=ROUTE_ZIP,

@@ -1,10 +1,12 @@
 import logging
 from hashlib import sha256
 import os
+from pathlib import Path
 import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 
 from django.conf import settings
 from django.core.cache import cache
@@ -66,7 +68,38 @@ def read_external_output(file_obj, *, max_bytes):
     return file_obj.read(max_bytes).decode("utf-8", errors="replace")
 
 
-def run_external_command(args, *, timeout_seconds):
+def directory_size(path):
+    total = 0
+    try:
+        for item in Path(path).rglob("*"):
+            if item.is_file():
+                try:
+                    total += item.stat().st_size
+                except OSError:
+                    continue
+    except OSError:
+        return 0
+    return total
+
+
+def emit_external_progress(progress_callback, progress_path, estimated_size):
+    if not progress_callback or not progress_path or not estimated_size:
+        return
+    current_size = directory_size(progress_path)
+    if current_size <= 0:
+        return
+    progress_callback(current_size, estimated_size)
+
+
+def run_external_command(
+    args,
+    *,
+    timeout_seconds,
+    progress_callback=None,
+    progress_path=None,
+    estimated_size=0,
+    progress_interval_seconds=0.25,
+):
     args = resolve_external_command_for_cwd(args)
     with (
         tempfile.TemporaryDirectory(prefix="xhs_external_tool_") as work_dir,
@@ -75,15 +108,35 @@ def run_external_command(args, *, timeout_seconds):
     ):
         env = safe_subprocess_env()
         env["HOME"] = work_dir
-        completed = subprocess.run(
-            args,
-            stdout=stdout_file,
-            stderr=stderr_file,
-            check=False,
-            cwd=work_dir,
-            env=env,
-            timeout=max(0.1, float(timeout_seconds or 15.0)),
-        )
+        timeout_seconds = max(0.1, float(timeout_seconds or 15.0))
+        if progress_callback and progress_path and estimated_size:
+            process = subprocess.Popen(
+                args,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                cwd=work_dir,
+                env=env,
+            )
+            started_at = time.monotonic()
+            while process.poll() is None:
+                if time.monotonic() - started_at > timeout_seconds:
+                    process.kill()
+                    process.wait()
+                    raise subprocess.TimeoutExpired(args, timeout_seconds)
+                emit_external_progress(progress_callback, progress_path, estimated_size)
+                time.sleep(max(0.1, float(progress_interval_seconds or 0.25)))
+            emit_external_progress(progress_callback, progress_path, estimated_size)
+            completed = subprocess.CompletedProcess(args, process.returncode)
+        else:
+            completed = subprocess.run(
+                args,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                check=False,
+                cwd=work_dir,
+                env=env,
+                timeout=timeout_seconds,
+            )
         max_bytes = external_command_output_max_bytes()
         completed.stdout = read_external_output(stdout_file, max_bytes=max_bytes)
         completed.stderr = read_external_output(stderr_file, max_bytes=max_bytes)

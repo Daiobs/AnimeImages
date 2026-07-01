@@ -1613,6 +1613,42 @@ class DouyinKukuToolProvider:
                 return cached, native_result
         return None, native_result
 
+    def wait_for_handoff_candidate(
+        self,
+        adapter,
+        context,
+        kukutool_future,
+        flight_state,
+    ):
+        if kukutool_future is None and flight_state != "remote_single_flight":
+            return None
+
+        handoff_seconds = max(
+            0.0,
+            min(
+                0.75,
+                float(self.provider_settings.ultra_kukutool_grace_seconds or 0),
+            ),
+        )
+        if handoff_seconds <= 0:
+            return self.get_cached_candidate(adapter, context)
+
+        deadline = monotonic() + handoff_seconds
+        poll_interval = self.provider_settings.kukutool_cache_poll_interval_seconds
+        while monotonic() < deadline:
+            if kukutool_future is not None and kukutool_future.done():
+                try:
+                    return kukutool_future.result(timeout=0)
+                except Exception:
+                    return None
+
+            cached = self.get_cached_candidate(adapter, context)
+            if cached:
+                return cached
+            sleep(min(poll_interval, max(0.0, deadline - monotonic())))
+
+        return self.get_cached_candidate(adapter, context)
+
     def parse(self, adapter, context):
         if (
             not self.provider_settings.provider_is_enabled(self.name)
@@ -1762,6 +1798,20 @@ class DouyinKukuToolProvider:
                 parse_started_at,
             )
         if native_result:
+            handoff_validated = self.wait_for_handoff_candidate(
+                adapter,
+                context,
+                kukutool_future,
+                flight_state,
+            )
+            if handoff_validated:
+                return self.build_result(
+                    adapter,
+                    context,
+                    handoff_validated,
+                    native_future,
+                    parse_started_at,
+                )
             log_provider_event(
                 "douyin_provider_deadline_native_fallback",
                 self.name,

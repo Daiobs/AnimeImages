@@ -120,12 +120,15 @@
 
     async function saveZipBlob(blob, filename, useFilePicker) {
         if (useFilePicker && window.showSaveFilePicker) {
+            const isZip = filename.toLowerCase().endsWith(".zip");
             const handle = await window.showSaveFilePicker({
                 suggestedName: filename,
                 types: [
                     {
-                        description: "ZIP archive",
-                        accept: {"application/zip": [".zip"]},
+                        description: isZip ? "ZIP archive" : "Media file",
+                        accept: isZip
+                            ? {"application/zip": [".zip"]}
+                            : {"video/mp4": [".mp4"], "application/octet-stream": [".mp4"]},
                     },
                 ],
             });
@@ -175,6 +178,21 @@
         } catch (error) {
             return "保存失败";
         }
+    }
+
+    function selectedSingleItem(items) {
+        const selectedItems = items || [];
+        return selectedItems.length === 1;
+    }
+
+    function itemRequiresZipTask(item) {
+        const provider = item ? String(item.provider || "") : "";
+        return ["kukutool", "kukutool_generic", "youtube_merge", "yt_dlp_merge"].includes(provider);
+    }
+
+    function selectedNeedsZipTask(items) {
+        const selectedItems = items || [];
+        return selectedItems.length > 1 || selectedItems.some(itemRequiresZipTask);
     }
 
     async function parseSearchResponse(response) {
@@ -233,7 +251,6 @@
         const downloadUrl = page.dataset.downloadUrl;
         const downloadTaskUrl = page.dataset.downloadTaskUrl;
         const downloadAsyncEnabled = page.dataset.downloadAsyncEnabled === "true";
-        const preferAsyncZipTasks = false;
         const savedSettings = loadSettings();
 
         let selected = [];
@@ -259,12 +276,8 @@
             return resultsRegion ? resultsRegion.querySelector("#download-btn") : null;
         }
 
-        function getSmartDownloadButton() {
-            return resultsRegion ? resultsRegion.querySelector("#smart-download-btn") : null;
-        }
-
         function getDownloadActionButtons() {
-            return [getSmartDownloadButton(), getDownloadButton()].filter(Boolean);
+            return [getDownloadButton()].filter(Boolean);
         }
 
         function getSelectAllButton() {
@@ -447,15 +460,35 @@
             const {progressWrap, progressTrack, progressBar, progressPercent} = getProgressElements();
             if (progressWrap) {
                 progressWrap.hidden = false;
+                progressWrap.classList.remove("is-pending");
             }
             if (progressTrack) {
                 progressTrack.setAttribute("aria-valuenow", String(value));
+                progressTrack.setAttribute("aria-valuetext", `${value}%`);
             }
             if (progressBar) {
                 progressBar.style.width = `${value}%`;
             }
             if (progressPercent) {
                 progressPercent.innerText = `${value}%`;
+            }
+        }
+
+        function setProgressPending(label) {
+            const {progressWrap, progressTrack, progressBar, progressPercent} = getProgressElements();
+            if (progressWrap) {
+                progressWrap.hidden = false;
+                progressWrap.classList.add("is-pending");
+            }
+            if (progressTrack) {
+                progressTrack.removeAttribute("aria-valuenow");
+                progressTrack.setAttribute("aria-valuetext", label || "准备中");
+            }
+            if (progressBar) {
+                progressBar.style.width = "100%";
+            }
+            if (progressPercent) {
+                progressPercent.innerText = label || "准备中";
             }
         }
 
@@ -602,7 +635,7 @@
                     return task;
                 }
 
-                await sleep(500);
+                await sleep(250);
             }
         }
 
@@ -679,12 +712,19 @@
                     video_save_mode: videoSaveModeInput ? videoSaveModeInput.value : "video",
                 };
 
-                if (payload.download_mode === "browser" && downloadAsyncEnabled && preferAsyncZipTasks && downloadTaskUrl) {
+                if (
+                    downloadAsyncEnabled
+                    && downloadTaskUrl
+                    && selectedNeedsZipTask(selected)
+                ) {
                     await downloadWithTask(payload);
                     return;
                 }
 
-                setProgress(0);
+                const pendingLabel = payload.download_mode === "auto"
+                    ? "判断中"
+                    : (selectedSingleItem(selected) ? "准备下载" : "打包中");
+                setProgressPending(pendingLabel);
                 const response = await fetch(downloadUrl, {
                     method: "POST",
                     headers: {
@@ -697,6 +737,7 @@
                 if (!response.ok) {
                     throw new Error(await parseErrorResponse(response));
                 }
+                setProgress(0);
 
                 const contentType = response.headers.get("Content-Type") || "";
                 if (contentType.includes("application/json")) {
@@ -895,12 +936,6 @@
                 const downloadBtn = event.target.closest("#download-btn");
                 if (downloadBtn && resultsRegion.contains(downloadBtn)) {
                     handleDownloadClick(downloadBtn);
-                    return;
-                }
-
-                const smartDownloadBtn = event.target.closest("#smart-download-btn");
-                if (smartDownloadBtn && resultsRegion.contains(smartDownloadBtn)) {
-                    handleDownloadClick(smartDownloadBtn, true);
                     return;
                 }
 

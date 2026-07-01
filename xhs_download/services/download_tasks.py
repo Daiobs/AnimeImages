@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 
 from download_console.models import DownloadRuntimeSetting
-from .downloads import build_download_archive_file
+from .downloads import build_download_archive_file, public_download_error_message
 from .rate_limits import consume_daily, release_concurrency
 
 
@@ -91,13 +91,20 @@ def run_download_task(task_id, payload, owner_identity):
     def progress_callback(completed, total):
         if total <= 0:
             return
-        completed = max(0, min(float(completed), float(total)))
-        progress = 5 + round((completed / total) * 90)
-        completed_count = min(int(completed), total)
+        total_float = float(total)
+        completed = max(0, min(float(completed), total_float))
+        ratio = completed / total_float
+        progress = 5 + round(ratio * 90)
+        completed_count = min(int(completed), int(total_float))
+        total_count = int(total_float)
+        if completed < total_float and not completed.is_integer():
+            message = f"正在打包 {max(1, min(round(ratio * 100), 99))}%"
+        else:
+            message = f"正在打包 {completed_count}/{total_count}"
         update_task(
             task_id,
             progress=min(progress, 95),
-            message=f"正在打包 {completed_count}/{total}",
+            message=message,
         )
 
     try:
@@ -181,7 +188,7 @@ def run_download_task(task_id, payload, owner_identity):
             task_id,
             status="failed",
             progress=100,
-            message=str(error),
+            message=public_download_error_message(error),
         )
     finally:
         release_concurrency("download-concurrent", owner_identity)
