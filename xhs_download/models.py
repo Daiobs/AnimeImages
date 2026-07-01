@@ -210,6 +210,11 @@ class DownloadRequestLog(models.Model):
     error_type = models.CharField(max_length=120, blank=True, default="", db_index=True)
     error_message_short = models.CharField(max_length=300, blank=True, default="")
     duration_ms = models.PositiveIntegerField(default=0)
+    policy_cost_score = models.FloatField(default=0)
+    policy_provider_score = models.FloatField(default=0)
+    policy_routing_score = models.FloatField(default=0)
+    final_policy_route = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    policy_confidence = models.FloatField(default=0)
 
     class Meta:
         ordering = ("-created_at",)
@@ -217,6 +222,7 @@ class DownloadRequestLog(models.Model):
             models.Index(fields=("created_at", "status")),
             models.Index(fields=("download_type", "created_at")),
             models.Index(fields=("provider", "created_at")),
+            models.Index(fields=("final_policy_route", "created_at")),
         )
         verbose_name = "下载请求日志"
         verbose_name_plural = "下载请求日志"
@@ -249,6 +255,36 @@ class RoutingDecisionLog(models.Model):
 
     def __str__(self):
         return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.route_type} {self.success}"
+
+
+class PolicyLearningRun(models.Model):
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    window_hours = models.PositiveSmallIntegerField(default=24, db_index=True)
+    window_started_at = models.DateTimeField(db_index=True)
+    window_ended_at = models.DateTimeField(db_index=True)
+    status = models.CharField(max_length=16, blank=True, default="success", db_index=True)
+    download_count = models.PositiveIntegerField(default=0)
+    parse_count = models.PositiveIntegerField(default=0)
+    sample_count = models.PositiveIntegerField(default=0)
+    shadow_recommendation = models.JSONField(default=dict, blank=True)
+    confidence = models.FloatField(default=0)
+    estimated_savings_bytes = models.BigIntegerField(default=0)
+    route_distribution = models.JSONField(default=dict, blank=True)
+    provider_distribution = models.JSONField(default=dict, blank=True)
+    cost_summary = models.JSONField(default=dict, blank=True)
+    reason_chain = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = (
+            models.Index(fields=("window_hours", "created_at")),
+            models.Index(fields=("status", "created_at")),
+        )
+        verbose_name = "Policy 学习运行"
+        verbose_name_plural = "Policy 学习运行"
+
+    def __str__(self):
+        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.window_hours}h {self.status}"
 
 
 class ProviderAdminAuditLog(models.Model):
