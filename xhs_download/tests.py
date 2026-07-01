@@ -5656,6 +5656,47 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(log.browser_egress_estimated_bytes, 321)
         self.assertNotIn("https://", log.route_reason)
 
+    @override_settings(
+        DOWNLOAD_RATE_LIMIT_PER_MINUTE=1,
+        DOWNLOAD_DAILY_REQUEST_LIMIT_PER_IP=0,
+        DOWNLOAD_GLOBAL_DAILY_REQUEST_LIMIT=1,
+        DOWNLOAD_MAX_CONCURRENT_PER_IP=1,
+        DOWNLOAD_DAILY_BYTES_LIMIT_PER_IP=0,
+        DOWNLOAD_GLOBAL_DAILY_BYTES_LIMIT=0,
+    )
+    def test_download_auto_direct_does_not_consume_server_download_limits(self):
+        cache.clear()
+        DownloadRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={
+                "rate_limit_per_minute": 1,
+                "daily_request_limit_per_ip": 0,
+                "global_daily_request_limit": 1,
+                "max_concurrent_per_ip": 1,
+                "daily_bytes_limit_per_ip": 0,
+                "global_daily_bytes_limit": 0,
+            },
+        )
+        payload = json.dumps({
+            "download_mode": "auto",
+            "media_items": [{
+                "type": "image",
+                "url": "https://ci.xiaohongshu.com/a.jpg",
+                "size_bytes": 321,
+            }],
+        })
+        client = Client()
+
+        first = client.post("/media/download-images/", data=payload, content_type="application/json")
+        second = client.post("/media/download-images/", data=payload, content_type="application/json")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json()["route_type"], ROUTE_DIRECT)
+        self.assertEqual(second.json()["route_type"], ROUTE_DIRECT)
+        self.assertEqual(get_daily_total("download-requests-global", "all"), 0)
+        self.assertEqual(get_daily_total("download-requests-ip", get_client_identity(first.wsgi_request)), 0)
+
     def test_download_auto_video_proxy_returns_json_hint(self):
         response = Client().post(
             "/media/download-images/",
