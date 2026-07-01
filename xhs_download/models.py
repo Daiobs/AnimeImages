@@ -202,6 +202,11 @@ class DownloadRequestLog(models.Model):
     actual_bytes = models.PositiveBigIntegerField(default=0)
     route_type = models.CharField(max_length=32, blank=True, default="", db_index=True)
     route_reason = models.CharField(max_length=200, blank=True, default="")
+    final_policy_route = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    policy_confidence = models.FloatField(default=0)
+    policy_cost_score = models.FloatField(default=0)
+    policy_provider_score = models.FloatField(default=0)
+    policy_routing_score = models.FloatField(default=0)
     server_egress_estimated_bytes = models.PositiveBigIntegerField(default=0)
     browser_egress_estimated_bytes = models.PositiveBigIntegerField(default=0)
     provider = models.CharField(max_length=80, blank=True, default="", db_index=True)
@@ -217,6 +222,7 @@ class DownloadRequestLog(models.Model):
             models.Index(fields=("created_at", "status")),
             models.Index(fields=("download_type", "created_at")),
             models.Index(fields=("provider", "created_at")),
+            models.Index(fields=("final_policy_route", "created_at")),
         )
         verbose_name = "下载请求日志"
         verbose_name_plural = "下载请求日志"

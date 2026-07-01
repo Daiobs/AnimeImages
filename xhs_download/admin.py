@@ -108,12 +108,14 @@ class DownloadRequestLogAdmin(ReadOnlyLogAdmin):
         "download_type",
         "item_count",
         "actual_bytes",
+        "final_policy_route",
+        "policy_confidence",
         "provider",
         "source_platform",
         "duration_ms",
         "request_id",
     )
-    list_filter = ("status", "download_type", "provider", "source_platform", "created_at")
+    list_filter = ("status", "download_type", "final_policy_route", "provider", "source_platform", "created_at")
     search_fields = ("request_id", "provider", "source_platform", "error_type")
 
 

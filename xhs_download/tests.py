@@ -59,8 +59,18 @@ from .services.download_routing import (
 )
 from .services.routing_policy_adjuster import build_routing_policy_recommendations
 from .services.routing_v3 import compute_routing_score, decide_route_v3
-from .policy import evaluate_download_policy
+from .policy import evaluate_download_policy, evaluate_download_policy_v1, evaluate_download_policy_v2
+from .policy.policy_context import build_policy_context
+from .policy.policy_scoring import (
+    CostPolicy,
+    ProviderPolicy,
+    RoutingPolicy,
+    aggregate_policy_results,
+    normalized_policy_weights,
+    resolve_policy_conflicts,
+)
 from .policy.policy_types import COST_LOW, COST_STRICT
+from .policy.policy_types import PolicyDecision, PolicyScoreResult
 from .services.assets import MediaAsset, ParseResult
 from .services.candidates import MediaCandidate, dedupe_candidates, rank_media_candidates
 from .services.diagnostics import CandidateDiagnostic, select_best_media_candidate
@@ -94,6 +104,7 @@ from .models import (
 from .views import (
     build_provider_preview_query,
     build_search_results_context,
+    apply_policy_v1_metadata,
     limit_error_response,
     log_parse_request_event,
     third_party_provider_is_available,
@@ -5592,8 +5603,10 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(decision.provider, "native")
         self.assertEqual(decision.cost_level, COST_LOW)
         self.assertIn("image_only", decision.reason_chain)
-        self.assertEqual(decision.strategy_version, "policy_v1")
+        self.assertEqual(decision.strategy_version, "policy_v2")
         self.assertEqual(decision.routing_strategy_version, "v3")
+        self.assertEqual(decision.policy_scores["cost"], 0.95)
+        self.assertEqual(decision.policy_weights["cost"], 0.4)
 
     def test_policy_engine_blocks_when_cost_guard_blocks(self):
         setting = DownloadRuntimeSetting.load()
@@ -5611,7 +5624,9 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(decision.route_type, ROUTE_BLOCKED)
         self.assertEqual(decision.cost_level, COST_STRICT)
         self.assertEqual(decision.error_code, "VISITOR_VIDEO_DOWNLOAD_DISABLED")
-        self.assertIn("VISITOR_VIDEO_DOWNLOAD_DISABLED", decision.reason_chain)
+        self.assertTrue(
+            any("VISITOR_VIDEO_DOWNLOAD_DISABLED" in reason for reason in decision.reason_chain)
+        )
 
     def test_policy_engine_marks_server_side_provider_as_zip(self):
         request = RequestFactory().post("/media/download-images/")
@@ -5630,7 +5645,124 @@ class XhsDownloadViewTests(TestCase):
         self.assertTrue(decision.allow_download)
         self.assertEqual(decision.route_type, ROUTE_ZIP)
         self.assertEqual(decision.provider, "youtube_merge")
-        self.assertIn("provider_requires_server_side_execution", decision.reason_chain)
+        self.assertTrue(
+            any("provider_requires_server_side_execution" in reason for reason in decision.reason_chain)
+        )
+
+    def test_policy_v2_three_scoring_policies_return_results(self):
+        request = RequestFactory().post("/media/download-images/")
+        routing_decision = decide_route_v3(
+            request,
+            [{"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"}],
+            context={"requested_mode": "auto"},
+        )
+        context = build_policy_context(
+            request,
+            [{"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"}],
+            requested_mode="auto",
+            routing_decision=routing_decision,
+        )
+
+        results = aggregate_policy_results(
+            context,
+            policies=(CostPolicy(), ProviderPolicy(), RoutingPolicy()),
+        )
+
+        self.assertEqual(set(results), {"cost", "provider", "routing"})
+        self.assertEqual(results["cost"].route, ROUTE_DIRECT)
+        self.assertEqual(results["provider"].route, ROUTE_DIRECT)
+        self.assertEqual(results["routing"].route, ROUTE_DIRECT)
+        self.assertGreaterEqual(results["cost"].score, 0)
+        self.assertLessEqual(results["routing"].confidence, 1)
+
+    def test_policy_v2_conflict_resolution_uses_weighted_scores(self):
+        results = {
+            "cost": PolicyScoreResult(
+                policy="cost",
+                route=ROUTE_DIRECT,
+                score=0.9,
+                confidence=0.9,
+                reason="cost_prefers_direct",
+            ),
+            "provider": PolicyScoreResult(
+                policy="provider",
+                route=ROUTE_ZIP,
+                score=0.95,
+                confidence=0.9,
+                reason="provider_requires_zip",
+            ),
+            "routing": PolicyScoreResult(
+                policy="routing",
+                route=ROUTE_DIRECT,
+                score=0.8,
+                confidence=0.8,
+                reason="routing_prefers_direct",
+            ),
+        }
+
+        resolution = resolve_policy_conflicts(
+            results,
+            weights={"cost": 0.2, "provider": 0.6, "routing": 0.2},
+        )
+
+        self.assertEqual(resolution.final_route, ROUTE_ZIP)
+        self.assertGreater(resolution.weighted_scores[ROUTE_ZIP], resolution.weighted_scores[ROUTE_DIRECT])
+        self.assertEqual(resolution.policy_scores["provider"], 0.95)
+
+    def test_policy_v2_weight_normalization(self):
+        weights = normalized_policy_weights({"cost": 2, "provider": 1, "routing": 1})
+
+        self.assertEqual(weights["cost"], 0.5)
+        self.assertEqual(weights["provider"], 0.25)
+        self.assertEqual(weights["routing"], 0.25)
+
+    @override_settings(POLICY_ENGINE_VERSION="policy_v1", POLICY_ENGINE_V2_ENABLED=False)
+    def test_policy_engine_can_fallback_to_v1(self):
+        request = RequestFactory().post("/media/download-images/")
+
+        decision = evaluate_download_policy(
+            request,
+            [{"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"}],
+            requested_mode="auto",
+        )
+
+        self.assertEqual(decision.strategy_version, "policy_v1")
+        self.assertEqual(decision.route_type, ROUTE_DIRECT)
+        self.assertEqual(decision.policy_scores, {})
+
+    def test_policy_v1_and_v2_keep_same_basic_route_for_single_image(self):
+        request = RequestFactory().post("/media/download-images/")
+        items = [{"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"}]
+
+        v1_decision = evaluate_download_policy_v1(request, items, requested_mode="auto")
+        v2_decision = evaluate_download_policy_v2(request, items, requested_mode="auto")
+
+        self.assertEqual(v1_decision.route_type, ROUTE_DIRECT)
+        self.assertEqual(v2_decision.route_type, ROUTE_DIRECT)
+
+    @patch("xhs_download.views.evaluate_download_policy")
+    def test_policy_hook_does_not_override_routing_execution_route(self, mock_policy):
+        mock_policy.return_value = PolicyDecision(
+            allow_download=True,
+            route_type=ROUTE_ZIP,
+            provider="native",
+            cost_level=COST_LOW,
+            confidence=0.9,
+            reason_chain=("test_policy_conflict",),
+            strategy_version="policy_v2",
+            policy_scores={"cost": 0.1, "provider": 0.9, "routing": 0.1},
+        )
+        request = RequestFactory().post("/media/download-images/")
+
+        route = apply_policy_v1_metadata(
+            request,
+            [{"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"}],
+            {"route_type": ROUTE_DIRECT, "route_reason": "routing selected direct"},
+            requested_mode="auto",
+        )
+
+        self.assertEqual(route["route_type"], ROUTE_DIRECT)
+        self.assertEqual(route["final_policy_route"], ROUTE_ZIP)
 
     def test_route_v3_cost_estimation_handles_actual_delta(self):
         RoutingDecisionLog.objects.create(
@@ -5709,9 +5841,15 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(response.json()["policy"]["decision"], "allow")
         self.assertEqual(response.json()["policy"]["cost_level"], COST_LOW)
         self.assertIn("image_only", response.json()["policy"]["reason_chain"])
+        self.assertEqual(response.json()["policy"]["strategy_version"], "policy_v2")
+        self.assertEqual(response.json()["policy"]["final_route"], ROUTE_DIRECT)
+        self.assertEqual(response.json()["policy"]["scores"]["cost"], 0.95)
         self.assertEqual(response["Content-Type"], "application/json")
         log = DownloadRequestLog.objects.get()
         self.assertEqual(log.route_type, ROUTE_DIRECT)
+        self.assertEqual(log.final_policy_route, ROUTE_DIRECT)
+        self.assertEqual(log.policy_cost_score, 0.95)
+        self.assertGreater(log.policy_confidence, 0)
         self.assertEqual(log.browser_egress_estimated_bytes, 321)
         self.assertNotIn("https://", log.route_reason)
 

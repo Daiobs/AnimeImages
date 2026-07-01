@@ -1373,6 +1373,8 @@ def download_logs_view(request):
                 "status",
                 "download_type",
                 "route_type",
+                "final_policy_route",
+                "policy_confidence",
                 "item_count",
                 "actual_bytes",
                 "provider",
@@ -1387,6 +1389,8 @@ def download_logs_view(request):
                     "status": item.status,
                     "download_type": item.download_type,
                     "route_type": item.route_type,
+                    "final_policy_route": item.final_policy_route,
+                    "policy_confidence": item.policy_confidence,
                     "item_count": item.item_count,
                     "actual_bytes": format_file_size(item.actual_bytes),
                     "provider": item.provider,
@@ -1667,6 +1671,11 @@ def log_download_request_event(
         actual_bytes=actual_bytes,
         route_type=route_info.get("route_type", ""),
         route_reason=route_info.get("route_reason", ""),
+        final_policy_route=route_info.get("final_policy_route", ""),
+        policy_confidence=route_info.get("policy_confidence", 0),
+        policy_cost_score=(route_info.get("policy_scores") or {}).get("cost", 0),
+        policy_provider_score=(route_info.get("policy_scores") or {}).get("provider", 0),
+        policy_routing_score=(route_info.get("policy_scores") or {}).get("routing", 0),
         server_egress_estimated_bytes=route_info.get("server_egress_estimated_bytes", 0),
         browser_egress_estimated_bytes=route_info.get("browser_egress_estimated_bytes", 0),
         duration_ms=duration_ms,
@@ -1763,7 +1772,6 @@ def apply_policy_v1_metadata(request, media_items, route_info, *, requested_mode
         },
     )
     updated = dict(route_info or {})
-    updated["route_type"] = policy_decision.route_type or updated.get("route_type", "")
     updated["policy_decision"] = policy_decision.decision
     updated["policy_allow_download"] = policy_decision.allow_download
     updated["policy_cost_level"] = policy_decision.cost_level
@@ -1771,6 +1779,9 @@ def apply_policy_v1_metadata(request, media_items, route_info, *, requested_mode
     updated["policy_provider"] = policy_decision.provider
     updated["policy_reason_chain"] = list(policy_decision.reason_chain)
     updated["policy_strategy_version"] = policy_decision.strategy_version
+    updated["policy_scores"] = dict(policy_decision.policy_scores or {})
+    updated["policy_weights"] = dict(policy_decision.policy_weights or {})
+    updated["final_policy_route"] = policy_decision.route_type
     return updated
 
 
@@ -2710,6 +2721,9 @@ def download_images_api(request):
                     "confidence": route_info.get("policy_confidence", 0),
                     "reason_chain": route_info.get("policy_reason_chain", []),
                     "strategy_version": route_info.get("policy_strategy_version", ""),
+                    "scores": route_info.get("policy_scores", {}),
+                    "weights": route_info.get("policy_weights", {}),
+                    "final_route": route_info.get("final_policy_route", ""),
                 },
             }
         )

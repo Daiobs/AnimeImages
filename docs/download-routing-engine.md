@@ -188,6 +188,82 @@ The response includes a `policy` object for explainability. Existing execution p
 
 This keeps Phase 1 safe: Policy is the unified decision brain for explanation and future control, while Routing Engine remains the execution-path selector. Future phases can let Policy override route suggestions or become the single decision source after enough observability data exists.
 
+## Policy Engine v2
+
+Policy Engine v2 upgrades the v1 rule chain into a multi-policy scoring and conflict-resolution layer. It still does not download files, does not change Provider runtime gates, and does not replace the execution layer.
+
+The v2 flow is:
+
+```text
+request + media_items
+  -> Routing Engine v3 suggestion
+  -> CostPolicy / ProviderPolicy / RoutingPolicy
+  -> Policy Aggregator
+  -> Conflict Resolver
+  -> PolicyDecision
+```
+
+Each scoring policy returns:
+
+```json
+{
+  "route": "direct|proxy|zip|blocked",
+  "score": 0.95,
+  "confidence": 0.9,
+  "reason": "zero_server_egress"
+}
+```
+
+The conflict resolver uses weighted scoring. Default weights are:
+
+```text
+cost: 0.4
+provider: 0.4
+routing: 0.2
+```
+
+These are configured with:
+
+```env
+POLICY_ENGINE_VERSION=policy_v2
+POLICY_ENGINE_V2_ENABLED=True
+POLICY_ENGINE_COST_WEIGHT=0.4
+POLICY_ENGINE_PROVIDER_WEIGHT=0.4
+POLICY_ENGINE_ROUTING_WEIGHT=0.2
+```
+
+The smart download JSON response includes:
+
+```json
+{
+  "policy": {
+    "decision": "allow",
+    "final_route": "direct",
+    "confidence": 0.88,
+    "scores": {"cost": 0.95, "provider": 0.9, "routing": 0.75},
+    "weights": {"cost": 0.4, "provider": 0.4, "routing": 0.2},
+    "reason_chain": []
+  }
+}
+```
+
+`DownloadRequestLog` also records:
+
+- `final_policy_route`
+- `policy_confidence`
+- `policy_cost_score`
+- `policy_provider_score`
+- `policy_routing_score`
+
+To fall back to the v1 rule chain without changing download execution:
+
+```env
+POLICY_ENGINE_VERSION=policy_v1
+POLICY_ENGINE_V2_ENABLED=False
+```
+
+Rollback remains safe because Policy v2 is still a hook around the existing route metadata. Stop sending `download_mode=auto` to bypass smart routing entirely, or switch the settings above to use v1 policy scoring while keeping Routing Engine v3.
+
 ## Rollback
 
 Frontend rollback is simple: stop sending `download_mode=auto`. The old ZIP behavior remains available in the same endpoint.

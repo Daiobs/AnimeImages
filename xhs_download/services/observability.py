@@ -54,6 +54,15 @@ def safe_int(value, default=0):
         return default
 
 
+def safe_float(value, default=0.0):
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def short_text(value, limit=MAX_ERROR_MESSAGE_LENGTH):
     return str(value or "").strip()[:limit]
 
@@ -211,6 +220,11 @@ def record_download_request_log(request, **fields):
                 sanitize_observability_text(fields.get("route_reason"), limit=200),
                 200,
             ),
+            "final_policy_route": short_text(fields.get("final_policy_route"), 32),
+            "policy_confidence": safe_float(fields.get("policy_confidence")),
+            "policy_cost_score": safe_float(fields.get("policy_cost_score")),
+            "policy_provider_score": safe_float(fields.get("policy_provider_score")),
+            "policy_routing_score": safe_float(fields.get("policy_routing_score")),
             "server_egress_estimated_bytes": safe_int(
                 fields.get("server_egress_estimated_bytes")
             ),
