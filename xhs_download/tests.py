@@ -59,6 +59,8 @@ from .services.download_routing import (
 )
 from .services.routing_policy_adjuster import build_routing_policy_recommendations
 from .services.routing_v3 import compute_routing_score, decide_route_v3
+from .policy import evaluate_download_policy
+from .policy.policy_types import COST_LOW, COST_STRICT
 from .services.assets import MediaAsset, ParseResult
 from .services.candidates import MediaCandidate, dedupe_candidates, rank_media_candidates
 from .services.diagnostics import CandidateDiagnostic, select_best_media_candidate
@@ -5576,6 +5578,60 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(image_route["strategy_version"], "v3")
         self.assertIn("estimated_cost", image_route)
 
+    def test_policy_engine_allows_single_image_direct_route(self):
+        request = RequestFactory().post("/media/download-images/")
+
+        decision = evaluate_download_policy(
+            request,
+            [{"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg", "size_bytes": 123}],
+            requested_mode="auto",
+        )
+
+        self.assertTrue(decision.allow_download)
+        self.assertEqual(decision.route_type, ROUTE_DIRECT)
+        self.assertEqual(decision.provider, "native")
+        self.assertEqual(decision.cost_level, COST_LOW)
+        self.assertIn("image_only", decision.reason_chain)
+        self.assertEqual(decision.strategy_version, "policy_v1")
+        self.assertEqual(decision.routing_strategy_version, "v3")
+
+    def test_policy_engine_blocks_when_cost_guard_blocks(self):
+        setting = DownloadRuntimeSetting.load()
+        setting.visitor_video_download_enabled = False
+        setting.save(update_fields=["visitor_video_download_enabled", "updated_at"])
+        request = RequestFactory().post("/media/download-images/")
+
+        decision = evaluate_download_policy(
+            request,
+            [{"type": "video", "url": "https://sns-video-hw.xhscdn.com/a.mp4", "size_bytes": 789}],
+            requested_mode="auto",
+        )
+
+        self.assertFalse(decision.allow_download)
+        self.assertEqual(decision.route_type, ROUTE_BLOCKED)
+        self.assertEqual(decision.cost_level, COST_STRICT)
+        self.assertEqual(decision.error_code, "VISITOR_VIDEO_DOWNLOAD_DISABLED")
+        self.assertIn("VISITOR_VIDEO_DOWNLOAD_DISABLED", decision.reason_chain)
+
+    def test_policy_engine_marks_server_side_provider_as_zip(self):
+        request = RequestFactory().post("/media/download-images/")
+
+        decision = evaluate_download_policy(
+            request,
+            [{
+                "type": "video",
+                "url": "https://example.com/youtube.mp4",
+                "provider": "youtube_merge",
+                "size_bytes": 1000,
+            }],
+            requested_mode="auto",
+        )
+
+        self.assertTrue(decision.allow_download)
+        self.assertEqual(decision.route_type, ROUTE_ZIP)
+        self.assertEqual(decision.provider, "youtube_merge")
+        self.assertIn("provider_requires_server_side_execution", decision.reason_chain)
+
     def test_route_v3_cost_estimation_handles_actual_delta(self):
         RoutingDecisionLog.objects.create(
             request_id="rid-cost",
@@ -5650,6 +5706,9 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "routed")
         self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
+        self.assertEqual(response.json()["policy"]["decision"], "allow")
+        self.assertEqual(response.json()["policy"]["cost_level"], COST_LOW)
+        self.assertIn("image_only", response.json()["policy"]["reason_chain"])
         self.assertEqual(response["Content-Type"], "application/json")
         log = DownloadRequestLog.objects.get()
         self.assertEqual(log.route_type, ROUTE_DIRECT)

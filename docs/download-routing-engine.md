@@ -151,6 +151,43 @@ Then it adds:
 
 The Admin Console shows a `Routing Intelligence Panel` with route success rate, estimated vs actual cost delta, `routing_efficiency_score`, `cost_accuracy_score`, and policy recommendations. Recommendations are advisory only.
 
+## Policy Engine v1
+
+Policy Engine v1 adds a unified read-only decision layer in front of the existing routing and download execution code. It lives in:
+
+```text
+xhs_download/policy/
+```
+
+The first version does not replace Routing Engine v2/v3 and does not download files. It evaluates the current request, media list, runtime cost limits, provider hints, mobile context, and the Routing Engine suggestion, then returns a normalized decision:
+
+```json
+{
+  "decision": "allow",
+  "allow_download": true,
+  "route_type": "direct",
+  "provider": "native",
+  "cost_level": "low_cost",
+  "confidence": 0.91,
+  "reason_chain": ["image_only", "cost_guard_passed", "routing:direct:..."]
+}
+```
+
+The current integration point is the smart download path:
+
+```text
+POST /media/download-images/ with download_mode=auto
+```
+
+The response includes a `policy` object for explainability. Existing execution paths remain unchanged:
+
+- `direct` and `proxy` still return routed JSON.
+- `zip` still uses the ZIP archive builder.
+- `blocked` still uses the existing cost guard and error headers.
+- Provider selection and provider runtime gates are not changed by Policy Engine v1.
+
+This keeps Phase 1 safe: Policy is the unified decision brain for explanation and future control, while Routing Engine remains the execution-path selector. Future phases can let Policy override route suggestions or become the single decision source after enough observability data exists.
+
 ## Rollback
 
 Frontend rollback is simple: stop sending `download_mode=auto`. The old ZIP behavior remains available in the same endpoint.

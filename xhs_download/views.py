@@ -91,6 +91,7 @@ from .services.observability import (
     record_provider_admin_audit_log,
     sanitize_observability_text,
 )
+from .policy import evaluate_download_policy
 from .services.youtube_merge import build_youtube_merge_plan, get_youtube_merge_health
 from .services.admin_console import build_admin_console_context
 from .services.rollout_guard import build_rollout_guard_context
@@ -1739,6 +1740,40 @@ def apply_route_v3_metadata(request, media_items, route_info, *, requested_mode=
     return updated
 
 
+def apply_policy_v1_metadata(request, media_items, route_info, *, requested_mode="", platform_key=""):
+    policy_decision = evaluate_download_policy(
+        request,
+        media_items,
+        requested_mode=requested_mode,
+        platform_key=platform_key,
+        routing_decision={
+            "route_type": route_info.get("route_type", ""),
+            "reason": route_info.get("route_reason", ""),
+            "confidence": route_info.get("confidence", 0),
+            "estimated_cost": {
+                "server_bytes": route_info.get("server_egress_estimated_bytes", 0),
+                "browser_bytes": route_info.get("browser_egress_estimated_bytes", 0),
+            },
+            "routing_score": route_info.get("routing_score", 0),
+            "provider_score": route_info.get("provider_score", 0),
+            "strategy_version": route_info.get("strategy_version", ""),
+            "download_strategy": route_info.get("download_strategy", ""),
+            "error_code": route_info.get("error_code", ""),
+            "warnings": route_info.get("warnings", []),
+        },
+    )
+    updated = dict(route_info or {})
+    updated["route_type"] = policy_decision.route_type or updated.get("route_type", "")
+    updated["policy_decision"] = policy_decision.decision
+    updated["policy_allow_download"] = policy_decision.allow_download
+    updated["policy_cost_level"] = policy_decision.cost_level
+    updated["policy_confidence"] = policy_decision.confidence
+    updated["policy_provider"] = policy_decision.provider
+    updated["policy_reason_chain"] = list(policy_decision.reason_chain)
+    updated["policy_strategy_version"] = policy_decision.strategy_version
+    return updated
+
+
 def download_items_have_invalid_provider_manifest(media_items):
     for item in media_items or ():
         if isinstance(item, dict) and item.get("provider"):
@@ -2559,6 +2594,13 @@ def download_images_api(request):
             requested_mode="auto",
             platform_key=data.get("platform_key", ""),
         )
+        route_info = apply_policy_v1_metadata(
+            request,
+            media_items,
+            route_info,
+            requested_mode="auto",
+            platform_key=data.get("platform_key", ""),
+        )
     guard_result = check_download_cost_preflight(request, media_items, runtime_setting)
     if guard_result:
         error_code, message, status_code = guard_result
@@ -2660,6 +2702,15 @@ def download_images_api(request):
                 "strategy_version": route_info.get("strategy_version", "v3"),
                 "confidence": route_info.get("confidence", 0),
                 "routing_score": route_info.get("routing_score", 0),
+                "policy": {
+                    "decision": route_info.get("policy_decision", ""),
+                    "allow_download": route_info.get("policy_allow_download", True),
+                    "provider": route_info.get("policy_provider", ""),
+                    "cost_level": route_info.get("policy_cost_level", ""),
+                    "confidence": route_info.get("policy_confidence", 0),
+                    "reason_chain": route_info.get("policy_reason_chain", []),
+                    "strategy_version": route_info.get("policy_strategy_version", ""),
+                },
             }
         )
 
