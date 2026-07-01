@@ -225,6 +225,32 @@ class DownloadRequestLog(models.Model):
         return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.status} {self.download_type}"
 
 
+class RoutingDecisionLog(models.Model):
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    request_id = models.CharField(max_length=128, db_index=True)
+    route_type = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    provider = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    estimated_server_bytes = models.PositiveBigIntegerField(default=0)
+    estimated_browser_bytes = models.PositiveBigIntegerField(default=0)
+    actual_server_bytes = models.PositiveBigIntegerField(default=0)
+    success = models.BooleanField(default=False, db_index=True)
+    error_code = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    duration_ms = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = (
+            models.Index(fields=("route_type", "created_at")),
+            models.Index(fields=("provider", "created_at")),
+            models.Index(fields=("success", "created_at")),
+        )
+        verbose_name = "路由决策日志"
+        verbose_name_plural = "路由决策日志"
+
+    def __str__(self):
+        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.route_type} {self.success}"
+
+
 class ProviderAdminAuditLog(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     request_id = models.CharField(max_length=128, db_index=True)

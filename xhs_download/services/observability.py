@@ -10,6 +10,7 @@ from ..models import (
     ObservabilityStatus,
     ParseRequestLog,
     ProviderAdminAuditLog,
+    RoutingDecisionLog,
 )
 from .common import extract_url_from_text
 from .rate_limits import get_client_identity, get_client_ip
@@ -225,9 +226,36 @@ def record_download_request_log(request, **fields):
             ),
             "duration_ms": safe_int(fields.get("duration_ms")),
         }
-        return DownloadRequestLog.objects.create(**payload)
+        log = DownloadRequestLog.objects.create(**payload)
+        record_routing_decision_log_from_download(payload)
+        return log
     except Exception:
         logger.exception("download_request_log_write_failed")
+        return None
+
+
+def record_routing_decision_log_from_download(payload):
+    route_type = str(payload.get("route_type") or "")
+    if not route_type:
+        return None
+    try:
+        return RoutingDecisionLog.objects.create(
+            request_id=short_text(payload.get("request_id"), 128),
+            route_type=short_text(route_type, 32),
+            provider=short_text(payload.get("provider"), 80),
+            estimated_server_bytes=safe_int(
+                payload.get("server_egress_estimated_bytes")
+            ),
+            estimated_browser_bytes=safe_int(
+                payload.get("browser_egress_estimated_bytes")
+            ),
+            actual_server_bytes=safe_int(payload.get("actual_bytes")),
+            success=payload.get("status") == ObservabilityStatus.SUCCESS,
+            error_code=short_text(payload.get("error_code"), 80),
+            duration_ms=safe_int(payload.get("duration_ms")),
+        )
+    except Exception:
+        logger.exception("routing_decision_log_write_failed")
         return None
 
 

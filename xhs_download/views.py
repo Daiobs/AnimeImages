@@ -94,6 +94,7 @@ from .services.observability import (
 from .services.youtube_merge import build_youtube_merge_plan, get_youtube_merge_health
 from .services.admin_console import build_admin_console_context
 from .services.rollout_guard import build_rollout_guard_context
+from .services.routing_v3 import decide_route_v3
 from .services.rate_limits import (
     acquire_concurrency,
     consume_daily,
@@ -1710,6 +1711,34 @@ def zip_download_route_info(request, media_items, reason="默认兼容旧 ZIP �
     return route_info
 
 
+def apply_route_v3_metadata(request, media_items, route_info, *, requested_mode="", platform_key=""):
+    v3_route = decide_route_v3(
+        request,
+        media_items,
+        context={
+            "requested_mode": requested_mode,
+            "platform_key": platform_key,
+        },
+    )
+    updated = dict(route_info or {})
+    updated["route_type"] = v3_route.get("route_type", updated.get("route_type", ""))
+    updated["route_reason"] = v3_route.get("reason", updated.get("route_reason", ""))
+    updated["download_strategy"] = v3_route.get("download_strategy", updated.get("download_strategy", ""))
+    updated["server_egress_estimated_bytes"] = v3_route.get("estimated_cost", {}).get(
+        "server_bytes",
+        updated.get("server_egress_estimated_bytes", 0),
+    )
+    updated["browser_egress_estimated_bytes"] = v3_route.get("estimated_cost", {}).get(
+        "browser_bytes",
+        updated.get("browser_egress_estimated_bytes", 0),
+    )
+    updated["strategy_version"] = v3_route.get("strategy_version", "v3")
+    updated["confidence"] = v3_route.get("confidence", 0)
+    updated["routing_score"] = v3_route.get("routing_score", 0)
+    updated["provider_score"] = v3_route.get("provider_score", 0)
+    return updated
+
+
 def download_items_have_invalid_provider_manifest(media_items):
     for item in media_items or ():
         if isinstance(item, dict) and item.get("provider"):
@@ -2523,6 +2552,13 @@ def download_images_api(request):
             requested_mode="auto",
             platform_key=data.get("platform_key", ""),
         )
+        route_info = apply_route_v3_metadata(
+            request,
+            media_items,
+            route_info,
+            requested_mode="auto",
+            platform_key=data.get("platform_key", ""),
+        )
     guard_result = check_download_cost_preflight(request, media_items, runtime_setting)
     if guard_result:
         error_code, message, status_code = guard_result
@@ -2621,6 +2657,9 @@ def download_images_api(request):
                 "estimated_bytes": route_info.get("estimated_bytes", 0),
                 "server_egress_estimated_bytes": route_info.get("server_egress_estimated_bytes", 0),
                 "browser_egress_estimated_bytes": route_info.get("browser_egress_estimated_bytes", 0),
+                "strategy_version": route_info.get("strategy_version", "v3"),
+                "confidence": route_info.get("confidence", 0),
+                "routing_score": route_info.get("routing_score", 0),
             }
         )
 
