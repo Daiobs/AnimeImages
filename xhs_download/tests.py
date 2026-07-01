@@ -58,6 +58,15 @@ from .services.download_routing import (
     decide_download_route,
 )
 from .services.routing_policy_adjuster import build_routing_policy_recommendations
+from .services.policy_learning import (
+    build_policy_learning_dataset,
+    build_policy_learning_result,
+    compute_route_metrics,
+    compute_provider_metrics,
+    estimate_shadow_outcome,
+    normalize_bounded_weights,
+    recommend_policy_weights,
+)
 from .services.routing_v3 import compute_routing_score, decide_route_v3
 from .policy import evaluate_download_policy, evaluate_download_policy_v1, evaluate_download_policy_v2
 from .policy.policy_context import build_policy_context
@@ -93,6 +102,8 @@ from .models import (
     DownloadRequestLog,
     ObservabilityStatus,
     ParseRequestLog,
+    PolicyLearningRun,
+    PolicyLearningStatus,
     ProviderAccessMode,
     ProviderAdminAuditLog,
     ProviderHealthTestSetting,
@@ -6360,6 +6371,234 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(file_response.status_code, 200)
         self.assertEqual(file_response["Content-Type"], "application/zip")
         self.assertEqual(b"".join(file_response.streaming_content), b"zip-content")
+
+
+class PolicyLearningTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+
+        cache.clear()
+        self.staff = get_user_model().objects.create_user(
+            username="policy-staff",
+            password="test-password",
+            is_staff=True,
+        )
+        self.superuser = get_user_model().objects.create_superuser(
+            username="policy-root",
+            password="test-password",
+        )
+
+    def grant_xhs_permission(self, user, codename):
+        permission = Permission.objects.get(
+            content_type__app_label="xhs_download",
+            codename=codename,
+        )
+        user.user_permissions.add(permission)
+        for cache_name in ("_perm_cache", "_user_perm_cache", "_group_perm_cache"):
+            if hasattr(user, cache_name):
+                delattr(user, cache_name)
+
+    def create_download_log(
+        self,
+        index,
+        *,
+        route_type=ROUTE_DIRECT,
+        status=ObservabilityStatus.SUCCESS,
+        provider="native",
+        server_bytes=0,
+        actual_bytes=None,
+        duration_ms=100,
+        item_count=1,
+        image_count=1,
+        video_count=0,
+    ):
+        return DownloadRequestLog.objects.create(
+            request_id=f"policy-log-{index}",
+            status=status,
+            download_type="auto",
+            item_count=item_count,
+            image_count=image_count,
+            video_count=video_count,
+            route_type=route_type,
+            final_policy_route=route_type,
+            policy_confidence=0.8,
+            policy_cost_score=0.75,
+            policy_provider_score=0.75,
+            policy_routing_score=0.75,
+            server_egress_estimated_bytes=server_bytes,
+            browser_egress_estimated_bytes=0 if server_bytes else 1024,
+            actual_bytes=server_bytes if actual_bytes is None else actual_bytes,
+            provider=provider,
+            source_platform="xiaohongshu",
+            duration_ms=duration_ms,
+        )
+
+    def test_policy_learning_insufficient_data_keeps_current_weights(self):
+        for index in range(3):
+            self.create_download_log(index)
+
+        result = build_policy_learning_result(window_hours=24)
+
+        self.assertEqual(result["status"], PolicyLearningStatus.INSUFFICIENT_DATA)
+        self.assertEqual(result["recommended_weights"], result["current_weights"])
+        self.assertLessEqual(result["confidence"], 0.3)
+        self.assertIn("样本不足", result["reason_summary"])
+
+    def test_policy_learning_cost_pressure_increases_cost_weight(self):
+        for index in range(25):
+            self.create_download_log(
+                index,
+                route_type=ROUTE_ZIP,
+                server_bytes=250 * 1024 * 1024,
+                image_count=0,
+                video_count=1,
+            )
+
+        result = build_policy_learning_result(window_hours=24)
+
+        self.assertEqual(result["status"], PolicyLearningStatus.SUCCESS)
+        self.assertGreater(
+            result["recommended_weights"]["cost"],
+            result["current_weights"]["cost"],
+        )
+        self.assertIn("cost pressure", result["reason_summary"])
+
+    def test_policy_learning_provider_failure_increases_provider_weight(self):
+        for index in range(10):
+            status = ObservabilityStatus.FAILED if index < 5 else ObservabilityStatus.SUCCESS
+            self.create_download_log(
+                index,
+                route_type=ROUTE_PROXY,
+                status=status,
+                provider="yt_dlp_generic",
+                server_bytes=20 * 1024,
+                image_count=0,
+                video_count=1,
+            )
+        for index in range(10, 25):
+            self.create_download_log(index, route_type=ROUTE_DIRECT, provider="native")
+
+        result = build_policy_learning_result(window_hours=24)
+
+        self.assertGreater(
+            result["recommended_weights"]["provider"],
+            result["current_weights"]["provider"],
+        )
+        self.assertIn("provider failure", result["reason_summary"])
+
+    def test_policy_learning_direct_success_stable_boosts_routing_weight(self):
+        for index in range(25):
+            self.create_download_log(index, route_type=ROUTE_DIRECT, provider="native")
+
+        result = build_policy_learning_result(window_hours=24)
+
+        self.assertGreater(
+            result["recommended_weights"]["routing"],
+            result["current_weights"]["routing"],
+        )
+        self.assertIn("direct route stable", result["reason_summary"])
+
+    def test_policy_learning_weight_normalization_bounds_and_sum(self):
+        weights = normalize_bounded_weights({"cost": 9, "provider": -5, "routing": 0.05})
+
+        self.assertAlmostEqual(sum(weights.values()), 1.0, places=4)
+        for value in weights.values():
+            self.assertGreaterEqual(value, 0.1)
+            self.assertLessEqual(value, 0.7)
+
+    def test_policy_learning_shadow_outcome_does_not_mutate_download_logs(self):
+        for index in range(25):
+            self.create_download_log(
+                index,
+                route_type=ROUTE_ZIP if index < 20 else ROUTE_DIRECT,
+                server_bytes=1024 if index < 20 else 0,
+            )
+        logs_before = list(
+            DownloadRequestLog.objects.order_by("id").values_list(
+                "id",
+                "route_type",
+                "final_policy_route",
+                "policy_cost_score",
+            )
+        )
+        dataset = build_policy_learning_result(window_hours=24)
+
+        shadow = dataset["details_json"]
+        logs_after = list(
+            DownloadRequestLog.objects.order_by("id").values_list(
+                "id",
+                "route_type",
+                "final_policy_route",
+                "policy_cost_score",
+            )
+        )
+
+        self.assertEqual(logs_after, logs_before)
+        self.assertIn("shadow_route_distribution", shadow)
+        self.assertGreaterEqual(dataset["estimated_savings_bytes"], 0)
+
+    def test_policy_learning_service_helpers_return_route_and_provider_metrics(self):
+        for index in range(22):
+            self.create_download_log(index, route_type=ROUTE_DIRECT, provider="native")
+
+        dataset = build_policy_learning_dataset(window_hours=24)
+        route_metrics = compute_route_metrics(dataset)
+        provider_metrics = compute_provider_metrics(dataset)
+        recommendation = recommend_policy_weights(
+            route_metrics,
+            provider_metrics,
+            {"cost": 0.4, "provider": 0.4, "routing": 0.2},
+            sample_count=dataset.sample_count,
+        )
+        shadow = estimate_shadow_outcome(dataset, recommendation["weights"], route_metrics)
+
+        self.assertEqual(route_metrics[ROUTE_DIRECT]["sample_count"], 22)
+        self.assertEqual(provider_metrics["native"]["sample_count"], 22)
+        self.assertIn("weights", recommendation)
+        self.assertIn("shadow_route_distribution", shadow)
+
+    def test_policy_learning_page_permissions(self):
+        staff_client = Client()
+        staff_client.force_login(self.staff)
+        super_client = Client()
+        super_client.force_login(self.superuser)
+
+        self.assertEqual(Client().get("/admin/policy-learning/").status_code, 404)
+        self.assertEqual(staff_client.get("/admin/policy-learning/").status_code, 404)
+        self.assertContains(super_client.get("/admin/policy-learning/"), "策略学习")
+
+        self.grant_xhs_permission(self.staff, "view_policylearningrun")
+        self.assertContains(staff_client.get("/admin/policy-learning/"), "Shadow Learning")
+
+    def test_policy_learning_execute_permissions(self):
+        staff_client = Client()
+        staff_client.force_login(self.staff)
+        super_client = Client()
+        super_client.force_login(self.superuser)
+
+        blocked = staff_client.post("/admin/policy-learning/", data={"window_hours": "24"})
+        self.assertEqual(blocked.status_code, 404)
+
+        ok = super_client.post("/admin/policy-learning/", data={"window_hours": "24"})
+        self.assertEqual(ok.status_code, 302)
+        self.assertEqual(PolicyLearningRun.objects.count(), 1)
+
+        PolicyLearningRun.objects.all().delete()
+        self.grant_xhs_permission(self.staff, "add_policylearningrun")
+        permitted = staff_client.post("/admin/policy-learning/", data={"window_hours": "24"})
+        self.assertEqual(permitted.status_code, 302)
+        self.assertEqual(PolicyLearningRun.objects.count(), 1)
+
+    def test_policy_learning_management_command_dry_run_and_write(self):
+        out = StringIO()
+        call_command("run_policy_learning", window_hours=24, dry_run=True, stdout=out)
+
+        self.assertEqual(PolicyLearningRun.objects.count(), 0)
+        self.assertIn('"sample_count"', out.getvalue())
+
+        call_command("run_policy_learning", window_hours=24, stdout=StringIO())
+
+        self.assertEqual(PolicyLearningRun.objects.count(), 1)
 
 
 class RuntimeHealthViewTests(SimpleTestCase):

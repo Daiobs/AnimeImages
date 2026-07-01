@@ -149,6 +149,7 @@
                 <a class="console-link" href="{% url 'rollout_guard' %}">放量守卫</a>
                 <a class="console-link" href="{% url 'provider_settings' %}">Provider 设置</a>
                 <a class="console-link" href="{% url 'provider_health_tests' %}">Provider 测试</a>
+                <a class="console-link" href="{% url 'policy_learning' %}">策略学习</a>
                 <a class="console-link" href="{% url 'ops_dashboard' %}">Ops Dashboard</a>
             </div>
         </section>
@@ -301,6 +302,26 @@
             {% endif %}
         </section>
 
+        <section class="console-panel">
+            <h2>Policy Learning</h2>
+            {% if policy_learning.has_data %}
+                <ul class="console-list">
+                    <li><span>最近学习时间</span><strong>{{ policy_learning.created_at }}</strong></li>
+                    <li><span>学习窗口 / 样本</span><strong>{{ policy_learning.window_hours }}h / {{ policy_learning.sample_count }}</strong></li>
+                    <li><span>推荐置信度</span><strong>{{ policy_learning.confidence }}</strong></li>
+                    <li><span>预计节省流量</span><strong>{{ policy_learning.estimated_savings }}</strong></li>
+                    <li><span>当前权重</span><strong>{{ policy_learning.current_weights.0 }} / {{ policy_learning.current_weights.1 }} / {{ policy_learning.current_weights.2 }}</strong></li>
+                    <li><span>推荐权重</span><strong>{{ policy_learning.recommended_weights.0 }} / {{ policy_learning.recommended_weights.1 }} / {{ policy_learning.recommended_weights.2 }}</strong></li>
+                </ul>
+                <p>{{ policy_learning.reason_summary }}</p>
+            {% else %}
+                <p>暂无策略学习记录</p>
+            {% endif %}
+            <div class="console-actions">
+                <a class="console-link" href="{% url 'policy_learning' %}">查看策略学习</a>
+            </div>
+        </section>
+
         <section class="console-section-grid">
             <div class="console-panel">
                 <h2>最近 24h 大文件下载 Top 10</h2>
@@ -383,6 +404,7 @@
                 <a class="console-link" href="{% url 'rollout_guard' %}">放量守卫</a>
                 <a class="console-link" href="{% url 'admin:download_console_downloadruntimesetting_changelist' %}">Download 设置</a>
                 <a class="console-link" href="{% url 'provider_health_tests' %}">Provider 测试</a>
+                <a class="console-link" href="{% url 'policy_learning' %}">策略学习</a>
                 <a class="console-link" href="{% url 'ops_dashboard' %}">Ops Dashboard</a>
                 <a class="console-link" href="{% url 'parse_logs' %}">Parse Logs</a>
                 <a class="console-link" href="{% url 'download_logs' %}">Download Logs</a>

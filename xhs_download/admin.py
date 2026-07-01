@@ -4,6 +4,7 @@ from django.shortcuts import redirect
 from .models import (
     DownloadRequestLog,
     ParseRequestLog,
+    PolicyLearningRun,
     ProviderAdminAuditLog,
     ProviderHealthTestRun,
     ProviderRuntimeSetting,
@@ -134,6 +135,23 @@ class RoutingDecisionLogAdmin(ReadOnlyLogAdmin):
     )
     list_filter = ("route_type", "provider", "success", "error_code", "created_at")
     search_fields = ("request_id", "provider", "error_code")
+
+
+@admin.register(PolicyLearningRun)
+class PolicyLearningRunAdmin(ReadOnlyLogAdmin):
+    list_display = (
+        "created_at",
+        "status",
+        "window_hours",
+        "sample_count",
+        "confidence",
+        "estimated_savings_bytes",
+        "recommended_cost_weight",
+        "recommended_provider_weight",
+        "recommended_routing_weight",
+    )
+    list_filter = ("status", "window_hours", "created_at")
+    search_fields = ("reason_summary",)
 
 
 @admin.register(ProviderAdminAuditLog)

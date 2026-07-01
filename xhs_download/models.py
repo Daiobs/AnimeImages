@@ -257,6 +257,56 @@ class RoutingDecisionLog(models.Model):
         return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.route_type} {self.success}"
 
 
+class PolicyLearningStatus(models.TextChoices):
+    SUCCESS = "success", "Success"
+    SKIPPED = "skipped", "Skipped"
+    INSUFFICIENT_DATA = "insufficient_data", "Insufficient data"
+    FAILED = "failed", "Failed"
+
+
+class PolicyLearningRun(models.Model):
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    window_hours = models.PositiveSmallIntegerField(default=24, db_index=True)
+    sample_count = models.PositiveIntegerField(default=0)
+
+    current_cost_weight = models.FloatField(default=0)
+    current_provider_weight = models.FloatField(default=0)
+    current_routing_weight = models.FloatField(default=0)
+
+    recommended_cost_weight = models.FloatField(default=0)
+    recommended_provider_weight = models.FloatField(default=0)
+    recommended_routing_weight = models.FloatField(default=0)
+
+    current_success_rate = models.FloatField(default=0)
+    recommended_shadow_success_rate = models.FloatField(default=0)
+
+    actual_server_egress_bytes = models.PositiveBigIntegerField(default=0)
+    estimated_shadow_server_egress_bytes = models.PositiveBigIntegerField(default=0)
+    estimated_savings_bytes = models.PositiveBigIntegerField(default=0)
+
+    confidence = models.FloatField(default=0)
+    status = models.CharField(
+        max_length=32,
+        choices=PolicyLearningStatus.choices,
+        default=PolicyLearningStatus.SKIPPED,
+        db_index=True,
+    )
+    reason_summary = models.CharField(max_length=500, blank=True, default="")
+    details_json = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = (
+            models.Index(fields=("status", "created_at")),
+            models.Index(fields=("window_hours", "created_at")),
+        )
+        verbose_name = "策略学习记录"
+        verbose_name_plural = "策略学习记录"
+
+    def __str__(self):
+        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.status} {self.window_hours}h"
+
+
 class ProviderAdminAuditLog(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     request_id = models.CharField(max_length=128, db_index=True)

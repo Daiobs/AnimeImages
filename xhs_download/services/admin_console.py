@@ -10,6 +10,7 @@ from ..models import (
     DownloadRequestLog,
     ObservabilityStatus,
     ParseRequestLog,
+    PolicyLearningRun,
     ProviderAccessMode,
     ProviderAdminAuditLog,
     ProviderHealthTestRun,
@@ -188,6 +189,32 @@ def build_routing_intelligence_panel():
     }
 
 
+def build_policy_learning_panel():
+    latest = PolicyLearningRun.objects.first()
+    if not latest:
+        return {"has_data": False}
+    return {
+        "has_data": True,
+        "created_at": format_admin_datetime(latest.created_at),
+        "window_hours": latest.window_hours,
+        "sample_count": latest.sample_count,
+        "confidence": latest.confidence,
+        "estimated_savings": format_bytes(latest.estimated_savings_bytes),
+        "status": latest.status,
+        "current_weights": (
+            latest.current_cost_weight,
+            latest.current_provider_weight,
+            latest.current_routing_weight,
+        ),
+        "recommended_weights": (
+            latest.recommended_cost_weight,
+            latest.recommended_provider_weight,
+            latest.recommended_routing_weight,
+        ),
+        "reason_summary": latest.reason_summary,
+    }
+
+
 def build_admin_console_context():
     now = timezone.now()
     display_tz = admin_console_timezone()
@@ -208,6 +235,7 @@ def build_admin_console_context():
     recent_7d_actual_bytes = sum_field(recent_7d_download, "actual_bytes")
     routing_summary = build_download_routing_summary(recent_24h_download)
     routing_intelligence = build_routing_intelligence_panel()
+    policy_learning = build_policy_learning_panel()
     blocked_or_limited = today_download.filter(
         status__in=(ObservabilityStatus.BLOCKED, ObservabilityStatus.RATE_LIMITED)
     ).count()
@@ -298,6 +326,7 @@ def build_admin_console_context():
         "health_runs": latest_health_by_key(),
         "routing_summary": routing_summary,
         "routing_intelligence": routing_intelligence,
+        "policy_learning": policy_learning,
         "failure_top": top_values(recent_24h_download.exclude(status=ObservabilityStatus.SUCCESS), "error_code"),
         "large_downloads": large_download_rows,
         "blocked_rows": blocked_rows,

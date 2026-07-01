@@ -1,0 +1,183 @@
+{% extends "admin/base_site.html" %}
+{% load admin_extras %}
+
+{% block content %}
+<style>
+    .policy-page { padding: 24px; background: #f8fafc; min-height: 100vh; margin: -24px; }
+    .policy-shell { max-width: 1280px; margin: 0 auto; }
+    .policy-hero,
+    .policy-panel,
+    .policy-card {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+    }
+    .policy-hero { padding: 22px; display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }
+    .policy-hero h1 { margin: 4px 0 8px; font-size: 28px; font-weight: 900; color: #111827; }
+    .policy-hero p { margin: 0; color: #6b7280; line-height: 1.7; }
+    .policy-eyebrow { color: #2563eb; font-size: 12px; font-weight: 900; text-transform: uppercase; }
+    .policy-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .policy-link,
+    .policy-button {
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        background: #fff;
+        color: #111827;
+        font-weight: 800;
+        padding: 9px 12px;
+        text-decoration: none;
+        cursor: pointer;
+    }
+    .policy-button-primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+    .policy-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
+    .policy-card { padding: 16px; }
+    .policy-card span { display: block; color: #6b7280; font-size: 13px; font-weight: 800; }
+    .policy-card strong { display: block; margin-top: 8px; font-size: 22px; color: #111827; }
+    .policy-section-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+    .policy-panel { padding: 18px; overflow: hidden; }
+    .policy-panel h2 { margin: 0 0 12px; font-size: 18px; font-weight: 900; color: #111827; }
+    .policy-table-wrap { overflow: auto; }
+    .policy-table { width: 100%; border-collapse: collapse; }
+    .policy-table th,
+    .policy-table td {
+        padding: 10px;
+        border-bottom: 1px solid #eef2f7;
+        text-align: left;
+        white-space: nowrap;
+    }
+    .policy-table th { color: #6b7280; font-size: 12px; font-weight: 900; }
+    .policy-reason { color: #374151; line-height: 1.7; }
+    .policy-muted { color: #6b7280; }
+    @media (max-width: 960px) {
+        .policy-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .policy-section-grid { grid-template-columns: 1fr; }
+        .policy-hero { display: block; }
+        .policy-actions { margin-top: 14px; }
+    }
+</style>
+
+<div class="policy-page">
+    <div class="policy-shell">
+        <section class="policy-hero">
+            <div>
+                <span class="policy-eyebrow">Shadow Learning</span>
+                <h1>策略学习</h1>
+                <p>读取下载日志，生成推荐权重和影子决策。此页面不会自动修改生产权重、下载路线、Provider 设置或 Download 设置。</p>
+            </div>
+            <div class="policy-actions">
+                <a class="policy-link" href="{% url 'admin_console' %}">运维首页</a>
+                <a class="policy-link" href="{% url 'rollout_guard' %}">放量守卫</a>
+                <a class="policy-link" href="{% url 'provider_settings' %}">Provider 设置</a>
+                {% if can_run_learning %}
+                    <form method="post">
+                        {% csrf_token %}
+                        <input type="hidden" name="window_hours" value="24">
+                        <button class="policy-button policy-button-primary" type="submit">运行 24h 学习</button>
+                    </form>
+                {% endif %}
+            </div>
+        </section>
+
+        {% if latest_run %}
+            <section class="policy-grid" aria-label="策略学习摘要">
+                <div class="policy-card"><span>最近学习时间</span><strong>{{ latest_run.created_at }}</strong></div>
+                <div class="policy-card"><span>学习窗口</span><strong>{{ latest_run.window_hours }}h</strong></div>
+                <div class="policy-card"><span>样本数量</span><strong>{{ latest_run.sample_count }}</strong></div>
+                <div class="policy-card"><span>推荐置信度</span><strong>{{ latest_run.confidence }}</strong></div>
+                <div class="policy-card"><span>预计节省服务器流量</span><strong>{{ latest_run.estimated_savings }}</strong></div>
+                <div class="policy-card"><span>状态</span><strong>{{ latest_run.status }}</strong></div>
+                <div class="policy-card"><span>当前 cost/provider/routing</span><strong>{{ latest_run.current_weights.cost }} / {{ latest_run.current_weights.provider }} / {{ latest_run.current_weights.routing }}</strong></div>
+                <div class="policy-card"><span>推荐 cost/provider/routing</span><strong>{{ latest_run.recommended_weights.cost }} / {{ latest_run.recommended_weights.provider }} / {{ latest_run.recommended_weights.routing }}</strong></div>
+            </section>
+
+            <section class="policy-section-grid">
+                <div class="policy-panel">
+                    <h2>权重对比</h2>
+                    <table class="policy-table">
+                        <thead><tr><th>Policy</th><th>当前</th><th>推荐</th></tr></thead>
+                        <tbody>
+                            <tr><td>Cost</td><td>{{ latest_run.current_weights.cost }}</td><td>{{ latest_run.recommended_weights.cost }}</td></tr>
+                            <tr><td>Provider</td><td>{{ latest_run.current_weights.provider }}</td><td>{{ latest_run.recommended_weights.provider }}</td></tr>
+                            <tr><td>Routing</td><td>{{ latest_run.current_weights.routing }}</td><td>{{ latest_run.recommended_weights.routing }}</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="policy-panel">
+                    <h2>推荐原因</h2>
+                    <p class="policy-reason">{{ latest_run.reason_summary|default:"暂无推荐原因" }}</p>
+                </div>
+            </section>
+
+            <section class="policy-section-grid">
+                <div class="policy-panel">
+                    <h2>Route 分布</h2>
+                    <table class="policy-table">
+                        <thead><tr><th>Route</th><th>实际</th><th>Shadow 推荐</th></tr></thead>
+                        <tbody>
+                            {% for route in route_order %}
+                                <tr>
+                                    <td>{{ route }}</td>
+                                    <td>{{ latest_run.actual_route_distribution|get_item:route|default:0 }}</td>
+                                    <td>{{ latest_run.shadow_route_distribution|get_item:route|default:0 }}</td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <div class="policy-panel">
+                    <h2>Provider 指标</h2>
+                    <div class="policy-table-wrap">
+                        <table class="policy-table">
+                            <thead><tr><th>Provider</th><th>样本</th><th>成功率</th><th>失败率</th><th>平均耗时</th><th>估算出网</th></tr></thead>
+                            <tbody>
+                                {% for row in latest_run.provider_metrics %}
+                                    <tr>
+                                        <td>{{ row.provider }}</td>
+                                        <td>{{ row.sample_count }}</td>
+                                        <td>{{ row.success_rate }}</td>
+                                        <td>{{ row.failure_rate }}</td>
+                                        <td>{{ row.avg_duration_ms }} ms</td>
+                                        <td>{{ row.server_egress_estimated }}</td>
+                                    </tr>
+                                {% empty %}
+                                    <tr><td colspan="6" class="policy-muted">暂无 Provider 指标</td></tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+        {% else %}
+            <section class="policy-panel" style="margin-top: 16px;">
+                <h2>暂无策略学习记录</h2>
+                <p class="policy-muted">请先运行一次学习，或使用 management command 生成记录。</p>
+            </section>
+        {% endif %}
+
+        <section class="policy-panel" style="margin-top: 16px;">
+            <h2>最近学习记录</h2>
+            <div class="policy-table-wrap">
+                <table class="policy-table">
+                    <thead><tr><th>时间</th><th>状态</th><th>窗口</th><th>样本</th><th>置信度</th><th>预计节省</th><th>推荐原因</th></tr></thead>
+                    <tbody>
+                        {% for run in recent_runs %}
+                            <tr>
+                                <td>{{ run.created_at }}</td>
+                                <td>{{ run.status }}</td>
+                                <td>{{ run.window_hours }}h</td>
+                                <td>{{ run.sample_count }}</td>
+                                <td>{{ run.confidence }}</td>
+                                <td>{{ run.estimated_savings }}</td>
+                                <td>{{ run.reason_summary }}</td>
+                            </tr>
+                        {% empty %}
+                            <tr><td colspan="7" class="policy-muted">暂无记录</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+</div>
+{% endblock %}

@@ -46,6 +46,7 @@ Django 会读取 `X-Request-ID`，并在响应头再次返回 `X-Request-ID`。�
 /admin/provider-audit-logs/
 /admin/provider-settings/
 /admin/provider-health-tests/
+/admin/policy-learning/
 /admin/console/
 ```
 
@@ -55,6 +56,7 @@ Django 会读取 `X-Request-ID`，并在响应头再次返回 `X-Request-ID`。�
 - `xhs_download.view_downloadrequestlog`
 - `xhs_download.view_provideradminauditlog`
 - `xhs_download.view_providerhealthtestrun`
+- `xhs_download.view_policylearningrun`
 
 运营看板显示今日解析、下载、成功率、失败原因 Top 10、平台 Top 10、Provider Top 10 和最近 Provider 审计记录。
 
@@ -63,6 +65,8 @@ Django 会读取 `X-Request-ID`，并在响应头再次返回 `X-Request-ID`。�
 `/admin/provider-health-tests/` 用于上线后执行 Provider smoke。页面会展示环境 capability、runtime gate、下载限流摘要和最近 50 条测试记录。执行测试需要 superuser 或 `xhs_download.add_providerhealthtestrun` 权限。详细说明见 `docs/admin-provider-health-tests.md`。
 
 修改 Provider 测试 URL 需要 superuser 或 `xhs_download.change_providerhealthtestsetting` 权限。测试 URL 保存在数据库配置中，不放入 `.env`。
+
+`/admin/policy-learning/` 用于查看 Policy Engine v3 的 shadow-only 学习结果。它读取 `DownloadRequestLog` 聚合数据，生成推荐权重、shadow route 分布和预计节省流量。执行学习需要 superuser 或 `xhs_download.add_policylearningrun` 权限。它不会自动修改生产权重、Provider 设置或 Download 设置。详细说明见 `docs/policy-learning.md`。
 
 ## 落库日志
 
@@ -137,4 +141,5 @@ python manage.py prune_observability_logs --days 30
 6. 查看失败原因 Top 10
 7. 查看 Provider 成功率
 8. 查看最近 Provider 审计记录
-9. 用 `journalctl -u animeimages --since today` 检查异常堆栈
+9. 打开 `/admin/policy-learning/`，确认最近学习结果仍是 shadow-only 且推荐方向合理
+10. 用 `journalctl -u animeimages --since today` 检查异常堆栈

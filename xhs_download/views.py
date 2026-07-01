@@ -17,7 +17,7 @@ from django.template.loader import render_to_string
 from django.utils import timezone
 from django.urls import reverse
 from django.views.decorators.csrf import csrf_protect
-from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.http import require_GET, require_POST, require_http_methods
 
 from download_console.models import DownloadRuntimeSetting
 from djangoProject.health import get_runtime_readiness
@@ -26,6 +26,7 @@ from .models import (
     DownloadRequestLog,
     ObservabilityStatus,
     ParseRequestLog,
+    PolicyLearningRun,
     ProviderAccessMode,
     ProviderAdminAuditLog,
     ProviderHealthTestSetting,
@@ -96,6 +97,7 @@ from .services.youtube_merge import build_youtube_merge_plan, get_youtube_merge_
 from .services.admin_console import build_admin_console_context
 from .services.rollout_guard import build_rollout_guard_context
 from .services.routing_v3 import decide_route_v3
+from .services.policy_learning import create_policy_learning_run
 from .services.rate_limits import (
     acquire_concurrency,
     consume_daily,
@@ -709,6 +711,7 @@ def admin_console_required(request):
         "xhs_download.view_downloadrequestlog",
         "xhs_download.view_providerhealthtestrun",
         "xhs_download.view_provideradminauditlog",
+        "xhs_download.view_policylearningrun",
     )
 
 
@@ -727,6 +730,87 @@ def rollout_guard_view(request):
         return JsonResponse({"detail": "Not found."}, status=404)
     context = build_rollout_guard_context(request)
     return render(request, "admin/rollout_guard.html", context)
+
+
+def policy_learning_view_allowed(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_parserequestlog",
+        "xhs_download.view_downloadrequestlog",
+        "xhs_download.view_providerhealthtestrun",
+        "xhs_download.view_provideradminauditlog",
+        "xhs_download.view_policylearningrun",
+    )
+
+
+def policy_learning_execute_allowed(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.add_policylearningrun",
+    )
+
+
+def policy_learning_run_row(run):
+    details = run.details_json or {}
+    return {
+        "created_at": format_admin_datetime(run.created_at),
+        "status": run.status,
+        "window_hours": run.window_hours,
+        "sample_count": run.sample_count,
+        "confidence": run.confidence,
+        "estimated_savings": format_file_size(run.estimated_savings_bytes),
+        "current_weights": {
+            "cost": run.current_cost_weight,
+            "provider": run.current_provider_weight,
+            "routing": run.current_routing_weight,
+        },
+        "recommended_weights": {
+            "cost": run.recommended_cost_weight,
+            "provider": run.recommended_provider_weight,
+            "routing": run.recommended_routing_weight,
+        },
+        "actual_route_distribution": details.get("actual_route_distribution") or {},
+        "shadow_route_distribution": details.get("shadow_route_distribution") or {},
+        "provider_metrics": [
+            {
+                **row,
+                "server_egress_estimated": format_file_size(
+                    row.get("server_egress_estimated_bytes", 0)
+                ),
+            }
+            for row in (details.get("provider_metrics") or {}).values()
+        ],
+        "reason_summary": run.reason_summary,
+        "details": details,
+    }
+
+
+@csrf_protect
+@require_http_methods(["GET", "POST"])
+def policy_learning_view(request):
+    if request.method == "POST":
+        if not policy_learning_execute_allowed(request):
+            return JsonResponse({"detail": "Not found."}, status=404)
+        try:
+            window_hours = int(request.POST.get("window_hours", "24") or 24)
+        except (TypeError, ValueError):
+            window_hours = 24
+        run = create_policy_learning_run(window_hours=max(1, min(24 * 14, window_hours)))
+        messages.success(request, f"策略学习已完成：{run.status}，样本 {run.sample_count} 条。")
+        return redirect("policy_learning")
+    if not policy_learning_view_allowed(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+
+    latest_run = PolicyLearningRun.objects.first()
+    recent_runs = list(PolicyLearningRun.objects.all()[:20])
+    context = {
+        "title": "策略学习",
+        "latest_run": policy_learning_run_row(latest_run) if latest_run else None,
+        "recent_runs": [policy_learning_run_row(run) for run in recent_runs],
+        "can_run_learning": policy_learning_execute_allowed(request),
+        "route_order": ("direct", "proxy", "zip", "blocked"),
+    }
+    return render(request, "admin/policy_learning.html", context)
 
 
 def provider_health_tests_view_allowed(request):

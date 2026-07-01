@@ -445,5 +445,6 @@ def build_rollout_guard_context(request):
             "download_logs": reverse("download_logs"),
             "admin_console": reverse("admin_console"),
             "ops_dashboard": reverse("ops_dashboard"),
+            "policy_learning": reverse("policy_learning"),
         },
     }

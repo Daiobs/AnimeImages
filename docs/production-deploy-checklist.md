@@ -118,10 +118,12 @@ Do not commit `.env.production`. Do not paste real secrets into issue comments, 
 - [ ] `/admin/ops-dashboard/` can be opened by a superuser or staff with observability view permissions.
 - [ ] `/admin/parse-logs/` can be opened by a user with `xhs_download.view_parserequestlog`.
 - [ ] `/admin/provider-health-tests/` can be opened by a superuser or staff with `xhs_download.view_providerhealthtestrun`.
+- [ ] `/admin/policy-learning/` can be opened by a superuser or staff with observability view permissions.
 - [ ] A normal parse request writes a new `ParseRequestLog`.
 - [ ] A normal download request writes a new `DownloadRequestLog`.
 - [ ] Provider setting changes write a new `ProviderAdminAuditLog`.
 - [ ] Running one Provider health test writes a new `ProviderHealthTestRun`.
+- [ ] Running one Policy Learning pass writes a new `PolicyLearningRun` and does not change Provider or Download settings.
 - [ ] Optional Provider smoke URLs are configured from `/admin/provider-health-tests/`, not `.env.production`.
 - [ ] Browser/network response headers include `X-Request-ID`.
 - [ ] `journalctl` can find the same request id:
@@ -155,6 +157,8 @@ access_log /var/log/nginx/animeimages.access.log animeimages;
 
 See `docs/admin-observability.md` for request_id tracing, privacy guarantees, and daily checks.
 
+Policy Learning is shadow-only. It recommends cost/provider/routing weights from historical download logs but never applies them automatically. See `docs/policy-learning.md`.
+
 ## 6. Download Cost Guard
 
 - [ ] `/admin/console/` can be opened by a superuser or staff with any observability view permission.
@@ -176,6 +180,7 @@ large_download_warning_bytes = 104857600    # 100 MB
 - [ ] Trigger one normal ZIP download and confirm a `DownloadRequestLog` record appears with `actual_bytes`.
 - [ ] Trigger one smart image download with `download_mode=auto` and confirm the response can return `route_type=direct`.
 - [ ] Confirm `/admin/console/` shows the last 24h download routing section. If no smart downloads have happened yet, it should show `暂无路由数据`.
+- [ ] Confirm `/admin/console/` shows the Policy Learning section. If no learning run has happened yet, it should show `暂无策略学习记录`.
 - [ ] Confirm `/admin/download-logs/` shows the `route_type` column and can filter by `route_type=direct` or `route_type=zip`.
 - [ ] On a mobile user-agent smoke test, confirm the result page explains that ZIP files usually go to the browser download directory or system Files app and does not promise automatic album saving.
 - [ ] If testing cost guard manually, lower `single_archive_bytes_limit` temporarily and confirm blocked downloads return `X-Error-Code: SINGLE_ARCHIVE_SIZE_LIMIT`.
@@ -238,6 +243,20 @@ set +a
 ```
 
 Accept only `rollout.status=disabled` or `rollout.status=staff_only` for first launch. Do not treat `public_candidate` as automatic approval.
+
+- [ ] Policy Learning dry-run works and does not write a record:
+
+```bash
+/srv/animeimages/.venv/bin/python manage.py run_policy_learning --window-hours 24 --dry-run
+```
+
+- [ ] Policy Learning write mode creates a `PolicyLearningRun`:
+
+```bash
+/srv/animeimages/.venv/bin/python manage.py run_policy_learning --window-hours 24
+```
+
+Do not add cron for Policy Learning during first launch. Review at least 7 days of stable recommendations before considering manual policy weight changes.
 
 ## 8. Configure Gunicorn and systemd
 
