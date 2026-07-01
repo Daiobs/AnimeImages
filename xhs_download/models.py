@@ -9,6 +9,13 @@ class ProviderAccessMode(models.TextChoices):
     PUBLIC = "public", "全站开放"
 
 
+class PolicyRuntimeMode(models.TextChoices):
+    SHADOW = "shadow", "影子观察"
+    STAFF = "staff", "仅管理员启用"
+    PUBLIC_GRAY = "public_gray", "公开灰度启用"
+    PUBLIC = "public", "全站启用"
+
+
 class ProviderRuntimeSetting(models.Model):
     singleton_key = models.PositiveSmallIntegerField(
         default=1,
@@ -116,6 +123,46 @@ class ProviderRuntimeSetting(models.Model):
         return setting
 
 
+class PolicyRuntimeSetting(models.Model):
+    singleton_key = models.PositiveSmallIntegerField(
+        default=1,
+        unique=True,
+        editable=False,
+        verbose_name="单例键",
+    )
+    v35_mode = models.CharField(
+        max_length=16,
+        choices=PolicyRuntimeMode.choices,
+        default=PolicyRuntimeMode.SHADOW,
+        verbose_name="Policy Engine v3.5 模式",
+        help_text="默认影子观察；启用后 Policy Engine 可接管真实下载路由。",
+    )
+    v35_rollout_percent = models.PositiveSmallIntegerField(
+        default=0,
+        validators=(MinValueValidator(0), MaxValueValidator(100)),
+        verbose_name="v3.5 公开灰度比例",
+        help_text="public_gray 模式下进入 Policy Engine 决策的访客比例。设置 80 即 80% Policy / 20% fallback。",
+    )
+    v4_adaptive_shadow_enabled = models.BooleanField(
+        default=True,
+        verbose_name="启用 v4 自适应影子建议",
+        help_text="仅生成自适应权重建议，不自动修改真实策略。",
+    )
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
+
+    class Meta:
+        verbose_name = "Policy Engine 运行时配置"
+        verbose_name_plural = "Policy Engine 运行时配置"
+
+    def __str__(self):
+        return "Policy Engine 运行时配置"
+
+    @classmethod
+    def load(cls):
+        setting, _created = cls.objects.get_or_create(singleton_key=1)
+        return setting
+
+
 class ObservabilityStatus(models.TextChoices):
     SUCCESS = "success", "成功"
     FAILED = "failed", "失败"
@@ -215,6 +262,9 @@ class DownloadRequestLog(models.Model):
     policy_routing_score = models.FloatField(default=0)
     final_policy_route = models.CharField(max_length=32, blank=True, default="", db_index=True)
     policy_confidence = models.FloatField(default=0)
+    policy_active = models.BooleanField(default=False, db_index=True)
+    policy_decision_source = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    policy_estimated_savings_bytes = models.BigIntegerField(default=0)
 
     class Meta:
         ordering = ("-created_at",)

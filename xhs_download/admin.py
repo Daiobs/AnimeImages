@@ -5,6 +5,7 @@ from .models import (
     DownloadRequestLog,
     ParseRequestLog,
     PolicyLearningRun,
+    PolicyRuntimeSetting,
     ProviderAdminAuditLog,
     ProviderHealthTestRun,
     ProviderRuntimeSetting,
@@ -113,6 +114,7 @@ class DownloadRequestLogAdmin(ReadOnlyLogAdmin):
         "source_platform",
         "final_policy_route",
         "policy_confidence",
+        "policy_active",
         "duration_ms",
         "request_id",
     )
@@ -122,6 +124,8 @@ class DownloadRequestLogAdmin(ReadOnlyLogAdmin):
         "provider",
         "source_platform",
         "final_policy_route",
+        "policy_active",
+        "policy_decision_source",
         "created_at",
     )
     search_fields = ("request_id", "provider", "source_platform", "error_type")
@@ -157,6 +161,30 @@ class PolicyLearningRunAdmin(ReadOnlyLogAdmin):
     )
     list_filter = ("window_hours", "status", "created_at")
     search_fields = ("status",)
+
+
+@admin.register(PolicyRuntimeSetting)
+class PolicyRuntimeSettingAdmin(admin.ModelAdmin):
+    list_display = (
+        "__str__",
+        "v35_mode",
+        "v35_rollout_percent",
+        "v4_adaptive_shadow_enabled",
+        "updated_at",
+    )
+    readonly_fields = ("singleton_key", "updated_at")
+    fields = (
+        "singleton_key",
+        "v35_mode",
+        "v35_rollout_percent",
+        "v4_adaptive_shadow_enabled",
+        "updated_at",
+    )
+
+    def has_add_permission(self, request):
+        if PolicyRuntimeSetting.objects.exists():
+            return False
+        return super().has_add_permission(request)
 
 
 @admin.register(ProviderAdminAuditLog)

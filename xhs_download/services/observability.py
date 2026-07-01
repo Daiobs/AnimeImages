@@ -230,6 +230,11 @@ def record_download_request_log(request, **fields):
             "policy_routing_score": float(fields.get("policy_routing_score") or 0),
             "final_policy_route": short_text(fields.get("final_policy_route"), 32),
             "policy_confidence": float(fields.get("policy_confidence") or 0),
+            "policy_active": bool(fields.get("policy_active")),
+            "policy_decision_source": short_text(fields.get("policy_decision_source"), 80),
+            "policy_estimated_savings_bytes": safe_int(
+                fields.get("policy_estimated_savings_bytes")
+            ),
         }
         log = DownloadRequestLog.objects.create(**payload)
         record_routing_decision_log_from_download(payload)

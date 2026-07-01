@@ -2,10 +2,26 @@ from django.conf import settings
 
 from download_console.models import DownloadRuntimeSetting
 
+from ..models import PolicyRuntimeMode, PolicyRuntimeSetting
+from ..services.provider_access import (
+    request_is_in_public_rollout,
+    request_rollout_bucket,
+    request_user_is_staff,
+)
 from ..services.download_routing import (
     ROUTE_BLOCKED,
+    ROUTE_DIRECT,
+    ROUTE_PROXY,
+    ROUTE_ZIP,
     decide_download_route,
     estimate_media_items_bytes,
+    is_http_url,
+    item_is_image,
+    item_provider,
+    item_url,
+    provider_item_can_direct_download,
+    route_payload,
+    single_item_can_attachment_download,
 )
 from ..services.routing_v3 import infer_provider
 from .policies import (
@@ -23,6 +39,7 @@ DEFAULT_POLICY_WEIGHTS = {
     "routing": 0.2,
 }
 POLICY_ENGINE_VERSION = "v3.5"
+POLICY_ENGINE_ROLLOUT_ID = "policy_engine_v35"
 
 
 def normalized_media_items(media_items):
@@ -59,15 +76,53 @@ def build_policy_context(
     )
 
 
-def policy_engine_mode():
+def load_policy_runtime_setting():
+    try:
+        return PolicyRuntimeSetting.load()
+    except Exception:
+        return None
+
+
+def policy_engine_mode(context=None):
     mode = str(getattr(settings, "POLICY_ENGINE_MODE", "shadow") or "shadow").lower()
     if bool(getattr(settings, "POLICY_ENGINE_V35_ENABLED", False)):
         return "v3_5"
+    runtime_setting = load_policy_runtime_setting()
+    if runtime_setting is not None:
+        return str(runtime_setting.v35_mode or PolicyRuntimeMode.SHADOW).lower()
     return mode
 
 
-def policy_engine_is_active():
-    return policy_engine_mode() in {"v3_5", "v35", "active", "policy_v3_5"}
+def policy_engine_rollout_percent():
+    runtime_setting = load_policy_runtime_setting()
+    if runtime_setting is None:
+        return 0
+    try:
+        return min(100, max(0, int(runtime_setting.v35_rollout_percent or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def policy_engine_rollout_bucket(request):
+    return request_rollout_bucket(POLICY_ENGINE_ROLLOUT_ID, request)
+
+
+def policy_engine_is_active(context=None):
+    mode = policy_engine_mode(context)
+    if mode in {"v3_5", "v35", "active", "policy_v3_5"}:
+        return True
+    request = getattr(context, "request", None)
+    if mode == PolicyRuntimeMode.STAFF:
+        return request_user_is_staff(request)
+    if mode == PolicyRuntimeMode.PUBLIC:
+        return True
+    if mode == PolicyRuntimeMode.PUBLIC_GRAY:
+        return request_is_in_public_rollout(
+            POLICY_ENGINE_ROLLOUT_ID,
+            request,
+            policy_engine_rollout_percent(),
+        )
+    return False
 
 
 def policy_weights():
@@ -131,7 +186,7 @@ def decide_final_policy(context: PolicyContext):
     provider = next((result.provider for result in results if result.provider), "")
     cost_level = next((result.cost_level for result in results if result.cost_level), "low")
     fallback_route = fallback_route_for(context)
-    active = policy_engine_is_active()
+    active = policy_engine_is_active(context)
     decision_source = "policy_v3_5" if active else "policy_v3_5_shadow"
     if not active:
         decision_source = "routing_v2_fallback_with_policy_shadow"
@@ -150,6 +205,115 @@ def decide_final_policy(context: PolicyContext):
         active=active,
         estimated_savings_bytes=estimated_server_savings(context.route_hint, route),
     )
+
+
+def route_can_be_browser_direct(media_items):
+    if len(media_items) != 1:
+        return False
+    item = media_items[0]
+    return (
+        item_is_image(item)
+        and is_http_url(item_url(item))
+        and not item_provider(item)
+        and provider_item_can_direct_download(item)
+    )
+
+
+def build_policy_route_payload(context, decision):
+    media_items = list(context.media_items)
+    estimated_bytes = estimate_media_items_bytes(media_items)
+    warnings = list((context.route_hint or {}).get("warnings") or ())
+    if decision.route == ROUTE_BLOCKED:
+        return route_payload(
+            route_type=ROUTE_BLOCKED,
+            route_reason="Policy Engine 拦截下载请求",
+            download_strategy="blocked_by_policy_engine",
+            media_items=media_items,
+            estimated_bytes=estimated_bytes,
+            error_code="POLICY_ENGINE_BLOCKED",
+            warnings=warnings,
+        )
+    if decision.route == ROUTE_ZIP:
+        return route_payload(
+            route_type=ROUTE_ZIP,
+            route_reason="Policy Engine 选择服务端打包下载",
+            download_strategy="server_zip_policy",
+            media_items=media_items,
+            estimated_bytes=estimated_bytes,
+            warnings=warnings,
+        )
+    if (
+        decision.route == ROUTE_PROXY
+        and len(media_items) == 1
+        and single_item_can_attachment_download(media_items[0])
+    ):
+        return route_payload(
+            route_type=ROUTE_PROXY,
+            route_reason="Policy Engine 选择单文件服务端下载",
+            download_strategy="server_single_attachment",
+            media_items=media_items,
+            estimated_bytes=estimated_bytes,
+            warnings=warnings,
+        )
+    if decision.route == ROUTE_DIRECT and route_can_be_browser_direct(media_items):
+        return route_payload(
+            route_type=ROUTE_DIRECT,
+            route_reason="Policy Engine 选择浏览器直连下载",
+            download_strategy="browser_direct",
+            media_items=media_items,
+            estimated_bytes=estimated_bytes,
+            warnings=warnings,
+        )
+    return None
+
+
+def attach_policy_metadata(route_info, decision, request=None):
+    updated = dict(route_info or {})
+    updated["policy_engine_version"] = POLICY_ENGINE_VERSION
+    updated["policy_active"] = bool(decision.active)
+    updated["policy_decision_source"] = decision.decision_source
+    updated["final_policy_route"] = decision.route
+    updated["policy_confidence"] = decision.confidence
+    updated["policy_estimated_savings_bytes"] = decision.estimated_savings_bytes
+    updated["policy_scores"] = dict(decision.policy_scores or {})
+    updated["policy_decision"] = {
+        **decision.to_dict(),
+        "version": POLICY_ENGINE_VERSION,
+        "rollout_percent": policy_engine_rollout_percent(),
+        "rollout_bucket": policy_engine_rollout_bucket(request),
+    }
+    return updated
+
+
+def apply_policy_decision_to_route(
+    request,
+    media_items,
+    route_info,
+    *,
+    requested_mode="",
+    platform_key="",
+    provider_hint="",
+):
+    context = build_policy_context(
+        request,
+        media_items,
+        requested_mode=requested_mode,
+        platform_key=platform_key,
+        route_hint=route_info or {},
+        provider_hint=provider_hint,
+    )
+    decision = decide_final_policy(context)
+    if not decision.active:
+        return attach_policy_metadata(route_info, decision, request)
+
+    policy_route = build_policy_route_payload(context, decision)
+    if policy_route is None:
+        fallback = attach_policy_metadata(route_info, decision, request)
+        fallback["policy_fallback_reason"] = "policy-route-not-executable-by-current-routing-layer"
+        return fallback
+
+    policy_route["strategy_version"] = POLICY_ENGINE_VERSION
+    return attach_policy_metadata(policy_route, decision, request)
 
 
 def evaluate_policy_shadow(
@@ -174,4 +338,6 @@ def evaluate_policy_shadow(
         **decision.to_dict(),
         "version": POLICY_ENGINE_VERSION,
         "estimated_bytes": estimate_media_items_bytes(context.media_items),
+        "rollout_percent": policy_engine_rollout_percent(),
+        "rollout_bucket": policy_engine_rollout_bucket(request),
     }

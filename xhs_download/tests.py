@@ -71,7 +71,12 @@ from .services.provider_settings import (
 from .services.provider_manifest import build_provider_manifest_token
 from .services.observability import record_download_request_log, record_provider_admin_audit_log
 from .policy.adaptive import build_adaptive_weight_recommendation
-from .policy.engine import build_policy_context, decide_final_policy, evaluate_policy_shadow
+from .policy.engine import (
+    apply_policy_decision_to_route,
+    build_policy_context,
+    decide_final_policy,
+    evaluate_policy_shadow,
+)
 from .policy.learning import build_policy_learning_snapshot, record_policy_learning_run
 from .policy.policies import CostPolicy, ProviderPolicy, RoutingPolicy
 from .services.provider_access import (
@@ -87,6 +92,8 @@ from .models import (
     ObservabilityStatus,
     ParseRequestLog,
     PolicyLearningRun,
+    PolicyRuntimeMode,
+    PolicyRuntimeSetting,
     ProviderAccessMode,
     ProviderAdminAuditLog,
     ProviderHealthTestSetting,
@@ -6691,6 +6698,112 @@ class PolicyEngineEvolutionTests(TestCase):
         self.assertFalse(shadow["active"])
         self.assertEqual(shadow["decision_source"], "routing_v2_fallback_with_policy_shadow")
 
+    def test_policy_runtime_default_shadow_does_not_override_route(self):
+        item = {"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg", "size_bytes": 321}
+        route_info = decide_download_route(self.request, [item], requested_mode="browser")
+
+        updated = apply_policy_decision_to_route(
+            self.request,
+            [item],
+            route_info,
+            requested_mode="browser",
+        )
+
+        self.assertEqual(route_info["route_type"], ROUTE_PROXY)
+        self.assertEqual(updated["route_type"], ROUTE_PROXY)
+        self.assertEqual(updated["final_policy_route"], ROUTE_DIRECT)
+        self.assertFalse(updated["policy_active"])
+        self.assertEqual(
+            updated["policy_decision_source"],
+            "routing_v2_fallback_with_policy_shadow",
+        )
+
+    def test_policy_v35_public_mode_can_override_executable_route(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v35_mode = PolicyRuntimeMode.PUBLIC
+        setting.save(update_fields=["v35_mode", "updated_at"])
+        item = {"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg", "size_bytes": 321}
+        route_info = decide_download_route(self.request, [item], requested_mode="browser")
+
+        updated = apply_policy_decision_to_route(
+            self.request,
+            [item],
+            route_info,
+            requested_mode="browser",
+        )
+
+        self.assertEqual(route_info["route_type"], ROUTE_PROXY)
+        self.assertEqual(updated["route_type"], ROUTE_DIRECT)
+        self.assertEqual(updated["download_strategy"], "browser_direct")
+        self.assertTrue(updated["policy_active"])
+        self.assertEqual(updated["policy_decision_source"], "policy_v3_5")
+        self.assertEqual(updated["strategy_version"], "v3.5")
+
+    def test_policy_v35_staff_mode_requires_staff(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v35_mode = PolicyRuntimeMode.STAFF
+        setting.save(update_fields=["v35_mode", "updated_at"])
+        item = {"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg", "size_bytes": 321}
+        anonymous_route = decide_download_route(self.request, [item], requested_mode="browser")
+
+        anonymous_result = apply_policy_decision_to_route(
+            self.request,
+            [item],
+            anonymous_route,
+            requested_mode="browser",
+        )
+
+        staff_request = RequestFactory().post("/media/download-images/")
+        staff_request.user = Mock(
+            is_active=True,
+            is_staff=True,
+            is_superuser=False,
+            is_authenticated=True,
+            pk=1,
+        )
+        staff_route = decide_download_route(staff_request, [item], requested_mode="browser")
+        staff_result = apply_policy_decision_to_route(
+            staff_request,
+            [item],
+            staff_route,
+            requested_mode="browser",
+        )
+
+        self.assertEqual(anonymous_result["route_type"], ROUTE_PROXY)
+        self.assertFalse(anonymous_result["policy_active"])
+        self.assertEqual(staff_result["route_type"], ROUTE_DIRECT)
+        self.assertTrue(staff_result["policy_active"])
+
+    def test_policy_v35_public_gray_supports_80_20_fallback_gate(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v35_mode = PolicyRuntimeMode.PUBLIC_GRAY
+        setting.v35_rollout_percent = 0
+        setting.save(update_fields=["v35_mode", "v35_rollout_percent", "updated_at"])
+        item = {"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg", "size_bytes": 321}
+        route_info = decide_download_route(self.request, [item], requested_mode="browser")
+
+        fallback_result = apply_policy_decision_to_route(
+            self.request,
+            [item],
+            route_info,
+            requested_mode="browser",
+        )
+
+        setting.v35_rollout_percent = 100
+        setting.save(update_fields=["v35_rollout_percent", "updated_at"])
+        active_result = apply_policy_decision_to_route(
+            self.request,
+            [item],
+            route_info,
+            requested_mode="browser",
+        )
+
+        self.assertEqual(fallback_result["route_type"], ROUTE_PROXY)
+        self.assertFalse(fallback_result["policy_active"])
+        self.assertEqual(active_result["route_type"], ROUTE_DIRECT)
+        self.assertTrue(active_result["policy_active"])
+        self.assertEqual(active_result["policy_decision"]["rollout_percent"], 100)
+
     def test_policy_shadow_fields_are_recorded_on_download_log(self):
         response = Client().post(
             "/media/download-images/",
@@ -6713,11 +6826,43 @@ class PolicyEngineEvolutionTests(TestCase):
         self.assertGreater(log.policy_provider_score, 0)
         self.assertGreater(log.policy_routing_score, 0)
         self.assertGreaterEqual(log.policy_confidence, 0)
+        self.assertFalse(log.policy_active)
+        self.assertEqual(log.policy_decision_source, "routing_v2_fallback_with_policy_shadow")
+
+    def test_policy_v35_active_download_records_feedback_fields(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v35_mode = PolicyRuntimeMode.PUBLIC
+        setting.save(update_fields=["v35_mode", "updated_at"])
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "browser",
+                "media_items": [{
+                    "type": "image",
+                    "url": "https://ci.xiaohongshu.com/a.jpg",
+                    "size_bytes": 321,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.route_type, ROUTE_DIRECT)
+        self.assertEqual(log.final_policy_route, ROUTE_DIRECT)
+        self.assertTrue(log.policy_active)
+        self.assertEqual(log.policy_decision_source, "policy_v3_5")
+        self.assertGreaterEqual(log.policy_estimated_savings_bytes, 0)
 
     def test_cost_guard_still_blocks_unsafe_request(self):
         setting = DownloadRuntimeSetting.load()
         setting.visitor_video_download_enabled = False
         setting.save(update_fields=["visitor_video_download_enabled", "updated_at"])
+        policy_setting = PolicyRuntimeSetting.load()
+        policy_setting.v35_mode = PolicyRuntimeMode.PUBLIC
+        policy_setting.save(update_fields=["v35_mode", "updated_at"])
         context = build_policy_context(
             self.request,
             [{"type": "video", "url": "https://sns-video-hw.xhscdn.com/a.mp4"}],

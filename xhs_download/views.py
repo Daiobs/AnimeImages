@@ -34,7 +34,7 @@ from .models import (
     ProviderHealthTestStatus,
     ProviderRuntimeSetting,
 )
-from .policy.engine import evaluate_policy_shadow
+from .policy.engine import apply_policy_decision_to_route, evaluate_policy_shadow
 from .services.common import (
     XhsDownloadError,
     XhsError,
@@ -1670,19 +1670,20 @@ def log_download_request_event(
 ):
     duration_ms = (time.monotonic() - started_at) * 1000 if started_at else 0
     route_info = route_info or {}
-    policy_shadow = {}
+    policy_shadow = route_info.get("policy_decision") or {}
     if media_items:
-        try:
-            policy_shadow = evaluate_policy_shadow(
-                request,
-                media_items,
-                route_info=route_info,
-                requested_mode=download_type,
-                provider_hint=route_info.get("provider", ""),
-            )
-        except Exception:
-            logger.exception("policy_shadow_evaluation_failed")
-            policy_shadow = {}
+        if not policy_shadow:
+            try:
+                policy_shadow = evaluate_policy_shadow(
+                    request,
+                    media_items,
+                    route_info=route_info,
+                    requested_mode=download_type,
+                    provider_hint=route_info.get("provider", ""),
+                )
+            except Exception:
+                logger.exception("policy_shadow_evaluation_failed")
+                policy_shadow = {}
     policy_scores = policy_shadow.get("policy_scores") or {}
     record_download_request_log(
         request,
@@ -1710,6 +1711,9 @@ def log_download_request_event(
         policy_routing_score=policy_scores.get("routing", 0),
         final_policy_route=policy_shadow.get("route", ""),
         policy_confidence=policy_shadow.get("confidence", 0),
+        policy_active=bool(policy_shadow.get("active")),
+        policy_decision_source=policy_shadow.get("decision_source", ""),
+        policy_estimated_savings_bytes=policy_shadow.get("estimated_savings_bytes", 0),
     )
 
 
@@ -2679,6 +2683,14 @@ def download_images_api(request):
                 requested_mode="auto",
                 platform_key=data.get("platform_key", ""),
             )
+        route_info = apply_policy_decision_to_route(
+            request,
+            media_items,
+            route_info,
+            requested_mode=download_mode,
+            platform_key=data.get("platform_key", ""),
+            provider_hint=route_info.get("provider", ""),
+        )
     guard_result = check_download_cost_preflight(request, media_items, runtime_setting)
     if guard_result:
         error_code, message, status_code = guard_result

@@ -57,7 +57,10 @@ Production impact:
 
 ## Phase 2: Policy Engine v3.5
 
-Status: implemented as a single decision API, default shadow.
+Status: implemented as a single decision API plus a guarded execution hook.
+
+Default behavior is still shadow-only. Production routing is unchanged until
+`PolicyRuntimeSetting.v35_mode` is moved away from `shadow`.
 
 Core API:
 
@@ -96,17 +99,36 @@ Conflict resolver:
 - Cost Guard block always wins
 - otherwise highest weighted route wins
 
-Current activation:
+Current activation and feedback:
 
 - `DownloadRequestLog` records `policy_cost_score`, `policy_provider_score`, `policy_routing_score`, `final_policy_route`, and `policy_confidence`
-- execution still follows existing routing
-- policy decisions are advisory
+- `DownloadRequestLog.route_type` remains the actual executed route
+- `DownloadRequestLog.final_policy_route` is the recommended route
+- `DownloadRequestLog.policy_active` records whether v3.5 actually controlled the route
+- `DownloadRequestLog.policy_decision_source` records shadow/fallback/active source
+- `DownloadRequestLog.policy_estimated_savings_bytes` stores the estimated server-cost delta
+- execution follows existing routing while `v35_mode=shadow`
 
-Future activation:
+Runtime gate:
 
-- set deployment/runtime flag `POLICY_ENGINE_MODE=v3_5` or `POLICY_ENGINE_V35_ENABLED=True`
-- then route override can be introduced behind a small rollout
-- target: 80% policy decisions, 20% v2 fallback
+- `PolicyRuntimeSetting.v35_mode=shadow`: observe only
+- `PolicyRuntimeSetting.v35_mode=staff`: staff requests can use policy decisions
+- `PolicyRuntimeSetting.v35_mode=public_gray`: public rollout by percent
+- `PolicyRuntimeSetting.v35_mode=public`: all requests can use policy decisions
+
+80/20 target:
+
+- set `v35_mode=public_gray`
+- set `v35_rollout_percent=80`
+- 80% of rollout buckets use Policy Engine v3.5
+- 20% stay on Routing v2/v3 fallback
+
+Execution safety:
+
+- Routing Engine still builds the executable route payload.
+- Policy v3.5 can only override to routes the current execution layer can run safely.
+- If a policy route is not executable, the system keeps the existing route and records `policy_fallback_reason`.
+- Cost Guard remains a hard final constraint.
 
 ## Phase 3: Policy Engine v4
 
@@ -138,15 +160,18 @@ Fallback is built into v3.5:
 
 - if policy mode is shadow, production route remains the current Routing v2/v3 route
 - if policy evaluation fails, download continues and logs `policy_shadow_evaluation_failed`
+- if policy active rollout misses, production route remains the current Routing v2/v3 route
+- if policy route cannot be mapped safely to the current execution layer, existing routing stays in place
 - if Cost Guard blocks, policy also returns `blocked`
 
 ## Rollback
 
 Rollback is low-risk:
 
-1. Keep `POLICY_ENGINE_MODE=shadow` or unset.
-2. Ignore policy fields in `DownloadRequestLog`.
-3. Stop running `inspect_policy_engine --record`.
-4. If necessary, revert the migration adding policy log fields and `PolicyLearningRun`.
+1. Set `PolicyRuntimeSetting.v35_mode=shadow`.
+2. Set `PolicyRuntimeSetting.v35_rollout_percent=0`.
+3. Ignore policy fields in `DownloadRequestLog`.
+4. Stop running `inspect_policy_engine --record`.
+5. If necessary, revert the migrations adding policy runtime/log fields and `PolicyLearningRun`.
 
 Existing download execution does not depend on the new policy tables.
