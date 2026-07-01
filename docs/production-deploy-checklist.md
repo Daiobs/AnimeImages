@@ -35,6 +35,18 @@ git checkout main
 git pull --ff-only origin main
 ```
 
+- [ ] Ensure the repository is owned by the deploy user and never by root:
+
+```bash
+sudo chown -R ubuntu:ubuntu /srv/animeimages
+```
+
+- [ ] Confirm Git commands are run as `ubuntu`, not `root`:
+
+```bash
+whoami
+```
+
 - [ ] Pin the deployed version:
 
 ```bash
@@ -238,6 +250,49 @@ set +a
 ```
 
 Accept only `rollout.status=disabled` or `rollout.status=staff_only` for first launch. Do not treat `public_candidate` as automatic approval.
+
+## 7.1 Safe Deploy Script
+
+After the first manual deployment is healthy, use the checked-in deploy script for repeat deploys:
+
+```bash
+cd /srv/animeimages
+./scripts/pre_deploy_check.sh
+./scripts/deploy.sh
+```
+
+The deploy script refuses root, checks that the working tree is clean on `main`, verifies `.env.production`, removes stale `.git/index.lock` only when no Git process is active, then runs:
+
+```bash
+git fetch origin
+git reset --hard origin/main
+pip install -r requirements.txt
+python manage.py migrate
+python manage.py collectstatic --noinput
+sudo systemctl restart animeimages
+```
+
+Before relying on it for routine deploys, run it three times from the `ubuntu` account and confirm all three runs finish without permission errors:
+
+```bash
+cd /srv/animeimages
+./scripts/deploy.sh
+./scripts/deploy.sh
+./scripts/deploy.sh
+```
+
+If deployment fails after a bad code change, rollback to the previous known-good commit:
+
+```bash
+cd /srv/animeimages
+git fetch origin
+git reset --hard <previous-good-commit>
+/srv/animeimages/.venv/bin/python manage.py migrate
+/srv/animeimages/.venv/bin/python manage.py collectstatic --noinput
+sudo systemctl restart animeimages
+```
+
+Do not edit `djangoProject/settings.py` on the server. Move production configuration into `/srv/animeimages/.env.production`.
 
 ## 8. Configure Gunicorn and systemd
 
