@@ -46,6 +46,7 @@ from .services.downloads import (
     normalize_save_format,
     normalize_video_save_mode,
     provider_manifest_allows_public_download,
+    public_download_error_message,
     request_public_provider_get_with_retry,
     resolve_server_save_folder,
     save_media_items_to_server,
@@ -247,6 +248,46 @@ class XhsUtilityTests(SimpleTestCase):
 
     def test_clean_filename_falls_back_when_empty(self):
         self.assertEqual(clean_filename("***"), "xhs_image")
+
+    def test_public_download_error_message_hides_cdn_url_and_ssl_details(self):
+        message = public_download_error_message(
+            "HTTPSConnectionPool(host='v11-default.365yg.com', port=443): "
+            "Max retries exceeded with url: /video.mp4?token=secret "
+            "(Caused by SSLError(SSLEOFError(8, 'EOF occurred in violation of protocol')))"
+        )
+
+        self.assertEqual(message, "资源下载失败：上游 CDN 连接异常，请重新解析后再试。")
+        self.assertNotIn("365yg.com", message)
+        self.assertNotIn("token=secret", message)
+
+    @override_settings(KUKUTOOL_DOWNLOAD_TIMEOUT_SECONDS=7.0)
+    @patch(
+        "xhs_download.services.downloads.iter_kukutool_download_recovery_urls",
+        return_value=["https://api-play.amemv.com/aweme/v1/play/?video_id=abc"],
+    )
+    @patch("xhs_download.services.downloads.fetch_to_temp_path")
+    def test_kukutool_download_uses_short_timeout_and_unsigned_native_recovery(
+        self,
+        mock_fetch,
+        _mock_recovery,
+    ):
+        expected = {"path": "/tmp/demo", "content_type": "video/mp4", "final_url": "native", "size": 1}
+        mock_fetch.side_effect = [
+            requests.exceptions.ReadTimeout("cdn timeout"),
+            expected,
+        ]
+        item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
+
+        result = fetch_item_to_temp_path(item, timeout=60, expected_type="video")
+
+        self.assertEqual(result, expected)
+        first_call = mock_fetch.call_args_list[0]
+        second_call = mock_fetch.call_args_list[1]
+        self.assertEqual(first_call.kwargs["timeout"], 7.0)
+        self.assertIsNotNone(first_call.kwargs["provider_signed"])
+        self.assertEqual(second_call.args[0], "https://api-play.amemv.com/aweme/v1/play/?video_id=abc")
+        self.assertEqual(second_call.kwargs["timeout"], 60)
+        self.assertIsNone(second_call.kwargs["provider_signed"])
 
     def test_normalize_save_format_accepts_supported_formats(self):
         self.assertEqual(normalize_save_format("original"), "original")
@@ -4547,6 +4588,131 @@ class XhsDownloadViewTests(TestCase):
         self.assertNotContains(response, ">third_party<")
 
     @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
+        THIRD_PARTY_STAFF_ONLY=False,
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        KUKUTOOL_PROVIDER_ENABLED=True,
+    )
+    @patch("xhs_download.views.get_kukutool_provider_health", return_value={"available": True})
+    @patch("xhs_download.views.parse_media_page")
+    def test_results_does_not_show_douyin_ultra_notice_for_youtube(
+        self,
+        mock_parse,
+        _mock_health,
+    ):
+        setting = ProviderRuntimeSetting.load()
+        setting.douyin_ultra_mode = ProviderAccessMode.PUBLIC
+        setting.save(update_fields=["douyin_ultra_mode", "updated_at"])
+        mock_parse.return_value = ParseResult(
+            platform="third_party",
+            post_type="video",
+            base_filename="youtube",
+            assets=(),
+            metadata={
+                "source_platform": "youtube",
+                "source_platform_name": "YouTube",
+                "selected_provider": "yt_dlp_merge",
+            },
+        )
+
+        response = Client().get(
+            "/results/",
+            {
+                "q": "https://www.youtube.com/watch?v=demo",
+                "ultra_hd": "1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_parse.assert_called_once_with(
+            "https://www.youtube.com/watch?v=demo",
+            prefer_ultra_hd=True,
+            client_country_code="CN",
+        )
+        self.assertContains(response, "yt-dlp 高清合并")
+        self.assertNotContains(response, "超高清 Provider 目前仅用于抖音视频")
+
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        KUKUTOOL_PROVIDER_ENABLED=True,
+    )
+    @patch("xhs_download.views.get_kukutool_provider_health", return_value={"available": True})
+    @patch("xhs_download.views.parse_media_page")
+    def test_results_does_not_show_douyin_ultra_notice_for_xhs(
+        self,
+        mock_parse,
+        _mock_health,
+    ):
+        setting = ProviderRuntimeSetting.load()
+        setting.douyin_ultra_mode = ProviderAccessMode.PUBLIC
+        setting.save(update_fields=["douyin_ultra_mode", "updated_at"])
+        mock_parse.return_value = ParseResult(
+            platform="xiaohongshu",
+            post_type="image",
+            base_filename="xhs-demo",
+            assets=(
+                MediaAsset(
+                    media_type="image",
+                    url="https://ci.xiaohongshu.com/a.jpg",
+                    platform="xiaohongshu",
+                ),
+            ),
+        )
+
+        response = Client().get(
+            "/results/",
+            {
+                "q": "https://www.xiaohongshu.com/explore/demo",
+                "ultra_hd": "1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "小红书")
+        self.assertNotContains(response, "超高清 Provider 目前仅用于抖音视频")
+
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        KUKUTOOL_PROVIDER_ENABLED=True,
+    )
+    @patch("xhs_download.views.get_kukutool_provider_health", return_value={"available": True})
+    @patch("xhs_download.views.parse_media_page")
+    def test_results_does_not_show_douyin_ultra_notice_for_bilibili(
+        self,
+        mock_parse,
+        _mock_health,
+    ):
+        setting = ProviderRuntimeSetting.load()
+        setting.douyin_ultra_mode = ProviderAccessMode.PUBLIC
+        setting.save(update_fields=["douyin_ultra_mode", "updated_at"])
+        mock_parse.return_value = ParseResult(
+            platform="bilibili",
+            post_type="video",
+            base_filename="bilibili-demo",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url="https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/video.mp4",
+                    platform="bilibili",
+                    size_bytes=1024 * 1024,
+                ),
+            ),
+        )
+
+        response = Client().get(
+            "/results/",
+            {
+                "q": "https://www.bilibili.com/video/BV1xx411c7mD/",
+                "ultra_hd": "1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "哔哩哔哩")
+        self.assertNotContains(response, "超高清 Provider 目前仅用于抖音视频")
+
+    @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=False,
         THIRD_PARTY_PUBLIC_ACCESS_ENABLED=False,
     )
@@ -5454,7 +5620,13 @@ class XhsDownloadViewTests(TestCase):
 
         response = Client().post(
             "/media/download-images/",
-            data='{"media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a"}],"base_filename":"base"}',
+            data=json.dumps({
+                "media_items": [
+                    {"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"},
+                    {"type": "image", "url": "https://ci.xiaohongshu.com/b.jpg"},
+                ],
+                "base_filename": "base",
+            }),
             content_type="application/json",
         )
 
@@ -5486,7 +5658,19 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(route["route_type"], ROUTE_ZIP)
         self.assertEqual(route["server_egress_estimated_bytes"], 130)
 
-    def test_download_route_single_video_proxy(self):
+    def test_download_route_nine_images_uses_zip(self):
+        request = RequestFactory().post("/media/download-images/")
+        items = [
+            {"type": "image", "url": f"https://ci.xiaohongshu.com/{index}.jpg", "size_bytes": 10}
+            for index in range(9)
+        ]
+
+        route = decide_download_route(request, items, requested_mode="auto")
+
+        self.assertEqual(route["route_type"], ROUTE_ZIP)
+        self.assertEqual(route["server_egress_estimated_bytes"], 90)
+
+    def test_download_route_single_video_attachment(self):
         request = RequestFactory().post("/media/download-images/")
         route = decide_download_route(
             request,
@@ -5495,7 +5679,22 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(route["route_type"], ROUTE_PROXY)
+        self.assertEqual(route["download_strategy"], "server_single_attachment")
         self.assertEqual(route["server_egress_estimated_bytes"], 456)
+        self.assertEqual(route["browser_egress_estimated_bytes"], 0)
+
+    def test_download_route_browser_single_video_attachment(self):
+        request = RequestFactory().post("/media/download-images/")
+        route = decide_download_route(
+            request,
+            [{"type": "video", "url": "https://sns-video-hw.xhscdn.com/a.mp4", "size_bytes": 456}],
+            requested_mode="browser",
+        )
+
+        self.assertEqual(route["route_type"], ROUTE_PROXY)
+        self.assertEqual(route["download_strategy"], "server_single_attachment")
+        self.assertEqual(route["server_egress_estimated_bytes"], 456)
+        self.assertEqual(route["browser_egress_estimated_bytes"], 0)
 
     def test_download_route_provider_resources_use_zip(self):
         request = RequestFactory().post("/media/download-images/")
@@ -5522,6 +5721,30 @@ class XhsDownloadViewTests(TestCase):
 
         self.assertEqual(youtube_route["route_type"], ROUTE_ZIP)
         self.assertEqual(kukutool_route["route_type"], ROUTE_ZIP)
+
+    def test_download_route_signed_kukutool_cdn_video_uses_zip(self):
+        request = RequestFactory().post("/media/download-images/")
+        item = make_kukutool_download_item("https://v6-default.365yg.com/a.mp4")
+        item["size_bytes"] = 2000
+
+        route = decide_download_route(request, [item], requested_mode="auto")
+
+        self.assertEqual(route["route_type"], ROUTE_ZIP)
+        self.assertEqual(route["download_strategy"], "server_zip_provider")
+        self.assertEqual(route["server_egress_estimated_bytes"], 2000)
+        self.assertEqual(route["browser_egress_estimated_bytes"], 0)
+
+    def test_download_route_browser_signed_kukutool_cdn_video_uses_zip(self):
+        request = RequestFactory().post("/media/download-images/")
+        item = make_kukutool_download_item("https://v6-default.365yg.com/a.mp4")
+        item["size_bytes"] = 2000
+
+        route = decide_download_route(request, [item], requested_mode="browser")
+
+        self.assertEqual(route["route_type"], ROUTE_ZIP)
+        self.assertEqual(route["download_strategy"], "server_zip")
+        self.assertEqual(route["server_egress_estimated_bytes"], 2000)
+        self.assertEqual(route["browser_egress_estimated_bytes"], 0)
 
     def test_download_route_mixed_items_use_zip(self):
         request = RequestFactory().post("/media/download-images/")
@@ -5701,7 +5924,13 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(get_daily_total("download-requests-global", "all"), 0)
         self.assertEqual(get_daily_total("download-requests-ip", get_client_identity(first.wsgi_request)), 0)
 
-    def test_download_auto_video_proxy_returns_json_hint(self):
+    @patch("xhs_download.views.fetch_media_response")
+    def test_download_auto_video_returns_single_file_response(self, mock_fetch):
+        mock_fetch.return_value = FakeStreamingResponse(
+            b"video-content",
+            url="https://sns-video-hw.xhscdn.com/a.mp4",
+            content_type="video/mp4",
+        )
         response = Client().post(
             "/media/download-images/",
             data=json.dumps({
@@ -5716,10 +5945,131 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["route_type"], ROUTE_PROXY)
+        self.assertEqual(response["Content-Type"], "video/mp4")
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertEqual(b"".join(response.streaming_content), b"video-content")
         log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.download_type, "single_file")
         self.assertEqual(log.route_type, ROUTE_PROXY)
         self.assertEqual(log.server_egress_estimated_bytes, 654)
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_download_single_video_ssl_error_returns_short_public_message(self, mock_fetch):
+        long_error = (
+            "HTTPSConnectionPool(host='v11-default.365yg.com', port=443): "
+            "Max retries exceeded with url: /video/tos/cn/demo.mp4?token=secret "
+            "(Caused by SSLError(SSLEOFError(8, 'EOF occurred in violation of protocol')))"
+        )
+        mock_fetch.side_effect = requests.exceptions.SSLError(long_error)
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "auto",
+                "media_items": [{
+                    "type": "video",
+                    "url": "https://sns-video-hw.xhscdn.com/a.mp4",
+                    "size_bytes": 654,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 500)
+        payload = response.json()
+        self.assertEqual(payload["message"], "资源下载失败：上游 CDN 连接异常，请重新解析后再试。")
+        self.assertNotIn("365yg.com", payload["message"])
+        self.assertNotIn("token=secret", payload["message"])
+        log = DownloadRequestLog.objects.get()
+        self.assertNotIn("365yg.com", log.error_message_short)
+        self.assertNotIn("token=secret", log.error_message_short)
+
+    @patch("xhs_download.views.build_download_archive_file")
+    def test_download_signed_kukutool_video_uses_zip_flow(self, mock_archive):
+        mock_archive.return_value = {
+            "filename": "douyin.zip",
+            "file": BytesIO(b"zip-content"),
+            "saved_count": 1,
+            "failed_count": 0,
+        }
+        item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
+        item["size_bytes"] = 2000
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "auto",
+                "media_items": [item],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/zip")
+        self.assertEqual(response["X-Saved-Count"], "1")
+        mock_archive.assert_called_once()
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.route_type, ROUTE_ZIP)
+        self.assertEqual(log.server_egress_estimated_bytes, 2000)
+        self.assertEqual(log.browser_egress_estimated_bytes, 0)
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_download_browser_single_video_returns_single_file_response(self, mock_fetch):
+        mock_fetch.return_value = FakeStreamingResponse(
+            b"video-content",
+            url="https://sns-video-hw.xhscdn.com/a.mp4",
+            content_type="video/mp4",
+        )
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "browser",
+                "media_items": [{
+                    "type": "video",
+                    "url": "https://sns-video-hw.xhscdn.com/a.mp4",
+                    "size_bytes": 654,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "video/mp4")
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertEqual(b"".join(response.streaming_content), b"video-content")
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.download_type, "single_file")
+        self.assertEqual(log.route_type, ROUTE_PROXY)
+        self.assertEqual(log.server_egress_estimated_bytes, 654)
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_download_browser_single_image_returns_single_file_response(self, mock_fetch):
+        mock_fetch.return_value = FakeStreamingResponse(
+            b"image-content",
+            url="https://ci.xiaohongshu.com/a.jpg",
+            content_type="image/jpeg",
+        )
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "browser",
+                "media_items": [{
+                    "type": "image",
+                    "url": "https://ci.xiaohongshu.com/a.jpg",
+                    "size_bytes": 321,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/jpeg")
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertEqual(b"".join(response.streaming_content), b"image-content")
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.download_type, "single_file")
+        self.assertEqual(log.route_type, ROUTE_PROXY)
+        self.assertEqual(log.server_egress_estimated_bytes, 321)
 
     def test_download_auto_blocked_returns_error_header_and_route_log(self):
         setting = DownloadRuntimeSetting.load()
@@ -5803,8 +6153,9 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(log.status, ObservabilityStatus.BLOCKED)
         self.assertEqual(log.error_code, "VISITOR_VIDEO_DOWNLOAD_DISABLED")
 
+    @patch("xhs_download.views.fetch_media_response")
     @patch("xhs_download.views.build_download_archive_file")
-    def test_staff_can_download_video_when_visitor_video_disabled(self, mock_archive):
+    def test_staff_can_download_video_direct_when_visitor_video_disabled(self, mock_archive, mock_fetch):
         from django.contrib.auth import get_user_model
 
         setting = DownloadRuntimeSetting.load()
@@ -5819,6 +6170,11 @@ class XhsDownloadViewTests(TestCase):
             "saved_count": 1,
             "failed_count": 0,
         }
+        mock_fetch.return_value = FakeStreamingResponse(
+            b"video-content",
+            url="https://sns-video-hw.xhscdn.com/demo.mp4",
+            content_type="video/mp4",
+        )
 
         response = client.post(
             "/media/download-images/",
@@ -5833,7 +6189,9 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(mock_archive.call_count, 1)
+        self.assertEqual(response["Content-Type"], "video/mp4")
+        self.assertEqual(b"".join(response.streaming_content), b"video-content")
+        self.assertEqual(mock_archive.call_count, 0)
 
     def test_download_endpoint_blocks_single_video_size_limit(self):
         setting = DownloadRuntimeSetting.load()
@@ -5897,7 +6255,10 @@ class XhsDownloadViewTests(TestCase):
         response = Client().post(
             "/media/download-images/",
             data=json.dumps({
-                "media_items": [{"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"}],
+                "media_items": [
+                    {"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"},
+                    {"type": "image", "url": "https://ci.xiaohongshu.com/b.jpg"},
+                ],
             }),
             content_type="application/json",
         )
@@ -5910,8 +6271,9 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(log.error_code, "SINGLE_ARCHIVE_SIZE_LIMIT")
         self.assertGreater(log.actual_bytes, 10)
 
+    @patch("xhs_download.views.fetch_media_response")
     @patch("xhs_download.views.build_download_archive_file")
-    def test_staff_large_download_exempt_bypasses_single_limits(self, mock_archive):
+    def test_staff_large_download_exempt_allows_single_video_direct(self, mock_archive, mock_fetch):
         from django.contrib.auth import get_user_model
 
         setting = DownloadRuntimeSetting.load()
@@ -5933,6 +6295,11 @@ class XhsDownloadViewTests(TestCase):
             "saved_count": 1,
             "failed_count": 0,
         }
+        mock_fetch.return_value = FakeStreamingResponse(
+            b"video-content",
+            url="https://sns-video-hw.xhscdn.com/demo.mp4",
+            content_type="video/mp4",
+        )
 
         response = client.post(
             "/media/download-images/",
@@ -5947,7 +6314,9 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(mock_archive.call_count, 1)
+        self.assertEqual(response["Content-Type"], "video/mp4")
+        self.assertEqual(b"".join(response.streaming_content), b"video-content")
+        self.assertEqual(mock_archive.call_count, 0)
 
     @patch("xhs_download.views.build_download_archive_file")
     def test_staff_large_download_exempt_does_not_bypass_global_daily_bytes(self, mock_archive):
@@ -5978,7 +6347,10 @@ class XhsDownloadViewTests(TestCase):
         response = client.post(
             "/media/download-images/",
             data=json.dumps({
-                "media_items": [{"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"}],
+                "media_items": [
+                    {"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"},
+                    {"type": "image", "url": "https://ci.xiaohongshu.com/b.jpg"},
+                ],
             }),
             content_type="application/json",
         )
@@ -6015,7 +6387,12 @@ class XhsDownloadViewTests(TestCase):
         with patch("xhs_download.views.logger.exception") as mock_log_exception:
             response = Client().post(
                 "/media/download-images/",
-                data='{"media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a"}]}',
+                data=json.dumps({
+                    "media_items": [
+                        {"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"},
+                        {"type": "image", "url": "https://ci.xiaohongshu.com/b.jpg"},
+                    ],
+                }),
                 content_type="application/json",
             )
 
@@ -6063,7 +6440,12 @@ class XhsDownloadViewTests(TestCase):
                 "failed_count": 0,
             },
         ]
-        payload = '{"media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a"}]}'
+        payload = json.dumps({
+            "media_items": [
+                {"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"},
+                {"type": "image", "url": "https://ci.xiaohongshu.com/b.jpg"},
+            ],
+        })
 
         first = Client().post(
             "/media/download-images/",
@@ -6110,7 +6492,12 @@ class XhsDownloadViewTests(TestCase):
             "saved_count": 1,
             "failed_count": 0,
         }
-        payload = '{"media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a"}]}'
+        payload = json.dumps({
+            "media_items": [
+                {"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"},
+                {"type": "image", "url": "https://ci.xiaohongshu.com/b.jpg"},
+            ],
+        })
 
         first = Client().post(
             "/media/download-images/",
@@ -6156,6 +6543,30 @@ class XhsDownloadViewTests(TestCase):
 
         archive = build_download_archive_file(
             media_items=[{"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg"}],
+            base_filename="base",
+            progress_callback=lambda completed, total: progress_events.append((completed, total)),
+        )
+
+        try:
+            self.assertTrue(any(0 < completed < 1 for completed, _ in progress_events))
+            self.assertEqual(progress_events[-1], (1, 1))
+        finally:
+            archive["file"].close()
+
+    @patch("xhs_download.services.downloads.fetch_media_response")
+    def test_archive_progress_uses_item_size_when_content_length_missing(self, mock_fetch):
+        content = b"a" * (1024 * 300)
+        response = FakeStreamingResponse(content, content_type="video/mp4")
+        response.headers.pop("Content-Length", None)
+        mock_fetch.return_value = response
+        progress_events = []
+
+        archive = build_download_archive_file(
+            media_items=[{
+                "type": "video",
+                "url": "https://v11-default.365yg.com/video/demo.mp4",
+                "size_bytes": len(content),
+            }],
             base_filename="base",
             progress_callback=lambda completed, total: progress_events.append((completed, total)),
         )
@@ -7834,7 +8245,10 @@ class AdminObservabilityMvpTests(TestCase):
             "failed_count": 0,
         }
         payload = {
-            "media_items": [{"type": "image", "url": "https://ci.xiaohongshu.com/demo.jpg"}],
+            "media_items": [
+                {"type": "image", "url": "https://ci.xiaohongshu.com/demo.jpg"},
+                {"type": "image", "url": "https://ci.xiaohongshu.com/demo-2.jpg"},
+            ],
             "base_filename": "demo",
         }
 
@@ -7848,7 +8262,7 @@ class AdminObservabilityMvpTests(TestCase):
         log = DownloadRequestLog.objects.get()
         self.assertEqual(log.status, ObservabilityStatus.SUCCESS)
         self.assertEqual(log.download_type, "zip")
-        self.assertEqual(log.item_count, 1)
+        self.assertEqual(log.item_count, 2)
         self.assertGreater(log.actual_bytes, 0)
 
     @override_settings(DOWNLOAD_RATE_LIMIT_PER_MINUTE=1)
@@ -7863,7 +8277,10 @@ class AdminObservabilityMvpTests(TestCase):
             ),
         )
         payload = {
-            "media_items": [{"type": "image", "url": "https://ci.xiaohongshu.com/demo.jpg"}],
+            "media_items": [
+                {"type": "image", "url": "https://ci.xiaohongshu.com/demo.jpg"},
+                {"type": "image", "url": "https://ci.xiaohongshu.com/demo-2.jpg"},
+            ],
         }
 
         response = Client().post(
@@ -7891,7 +8308,10 @@ class AdminObservabilityMvpTests(TestCase):
             limit=1,
         )
         payload = {
-            "media_items": [{"type": "image", "url": "https://ci.xiaohongshu.com/demo.jpg"}],
+            "media_items": [
+                {"type": "image", "url": "https://ci.xiaohongshu.com/demo.jpg"},
+                {"type": "image", "url": "https://ci.xiaohongshu.com/demo-2.jpg"},
+            ],
         }
 
         response = Client().post(

@@ -39,6 +39,7 @@ from .services.youtube_merge import (
 )
 from .services.platforms.ytdlp_merge import (
     build_parse_result as build_ytdlp_merge_parse_result,
+    build_ytdlp_merge_plan,
     download_to_temp_path as download_ytdlp_merge_to_temp_path,
     provider_manifest_allows_download as provider_manifest_allows_ytdlp_merge,
 )
@@ -128,6 +129,25 @@ def ytdlp_merge_demo_payload():
     return payload
 
 
+def ytdlp_merge_oversized_high_payload():
+    payload = youtube_merge_demo_payload()
+    payload["formats"].append({
+        "format_id": "401",
+        "url": "https://rr1---sn.googlevideo.com/videoplayback?itag=401",
+        "protocol": "https",
+        "ext": "mp4",
+        "height": 2160,
+        "width": 3840,
+        "fps": 30,
+        "tbr": 6000,
+        "vcodec": "av01.0.12M.08",
+        "acodec": "none",
+        "filesize": 120_000_000,
+        "format_note": "2160p",
+    })
+    return payload
+
+
 class YouTubeMergePlannerTests(SimpleTestCase):
     def test_planner_detects_video_audio_merge_candidate(self):
         plan = build_youtube_merge_plan(
@@ -160,6 +180,42 @@ class YouTubeMergePlannerTests(SimpleTestCase):
         self.assertTrue(plan["requires_merge"])
         self.assertFalse(plan["estimated_size_within_limit"])
         self.assertEqual(plan["reason"], "estimated_size_exceeds_limit")
+
+    def test_planner_falls_back_to_best_height_within_size_limit(self):
+        plan = build_youtube_merge_plan(
+            ytdlp_merge_oversized_high_payload(),
+            max_height=4320,
+            max_file_size_bytes=100_000_000,
+        )
+
+        self.assertTrue(plan["available"])
+        self.assertEqual(plan["reason"], "merge_candidate_available")
+        self.assertEqual(plan["requested_max_height"], 4320)
+        self.assertEqual(plan["max_height"], 1080)
+        self.assertEqual(plan["video_format"]["format_id"], "137")
+        self.assertEqual(plan["estimated_size_bytes"], 85_000_000)
+        self.assertEqual(
+            plan["merge_format_selector"],
+            "bv*[height<=1080]+ba/b[height<=1080]/b",
+        )
+
+    def test_planner_selects_4k_when_one_gib_limit_allows_it(self):
+        plan = build_youtube_merge_plan(
+            ytdlp_merge_oversized_high_payload(),
+            max_height=4320,
+            max_file_size_bytes=1024 * 1024 * 1024,
+        )
+
+        self.assertTrue(plan["available"])
+        self.assertEqual(plan["reason"], "merge_candidate_available")
+        self.assertEqual(plan["requested_max_height"], 4320)
+        self.assertEqual(plan["max_height"], 2160)
+        self.assertEqual(plan["video_format"]["format_id"], "401")
+        self.assertEqual(plan["estimated_size_bytes"], 125_000_000)
+        self.assertEqual(
+            plan["merge_format_selector"],
+            "bv*[height<=2160]+ba/b[height<=2160]/b",
+        )
 
     def test_planner_reports_missing_audio_stream(self):
         payload = youtube_merge_demo_payload()
@@ -226,18 +282,29 @@ class YouTubeMergePlannerTests(SimpleTestCase):
             return Mock(returncode=0, stdout="", stderr="")
 
         mock_run.side_effect = fake_run
+        progress_events = []
+        item = asset.to_download_item()
+        item["size_bytes"] = 85_000_000
 
-        temp_result = download_youtube_merge_to_temp_path(asset.to_download_item())
+        temp_result = download_youtube_merge_to_temp_path(
+            item,
+            progress_callback=lambda completed, total: progress_events.append((completed, total)),
+        )
 
         try:
             self.assertEqual(temp_result["content_type"], "video/mp4")
             self.assertEqual(Path(temp_result["path"]).read_bytes(), b"merged-video")
             args = mock_run.call_args.args[0]
+            kwargs = mock_run.call_args.kwargs
             self.assertIn("-f", args)
-            self.assertIn("bv*[height<=4320]+ba/b[height<=4320]/b", args)
+            self.assertIn("bv*[height<=1080]+ba/b[height<=1080]/b", args)
             self.assertIn("--merge-output-format", args)
             self.assertIn("mp4", args)
             self.assertIn("--ffmpeg-location", args)
+            self.assertTrue(progress_events)
+            self.assertIsNotNone(kwargs["progress_callback"])
+            self.assertTrue(kwargs["progress_path"])
+            self.assertGreater(kwargs["estimated_size"], 0)
         finally:
             Path(temp_result["path"]).unlink(missing_ok=True)
 
@@ -1047,6 +1114,66 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         self.assertIn(":h4320", result.video_assets[0].asset_id)
 
     @override_settings(
+        YTDLP_MERGE_DEFAULT_MAX_HEIGHT=1080,
+        YTDLP_MERGE_HIGH_QUALITY_MAX_HEIGHT=4320,
+        YTDLP_MERGE_MAX_FILE_SIZE_BYTES=100_000_000,
+    )
+    def test_ytdlp_merge_high_quality_falls_back_within_size_limit(self):
+        rule = GenericThirdPartyAdapter().get_rule_for_url(
+            "https://www.youtube.com/watch?v=demo"
+        )
+        plan = build_ytdlp_merge_plan(
+            ytdlp_merge_oversized_high_payload(),
+            max_height=4320,
+        )
+
+        self.assertTrue(plan["available"])
+        self.assertEqual(plan["requested_max_height"], 4320)
+        self.assertEqual(plan["max_height"], 1080)
+        self.assertEqual(plan["video_format"]["format_id"], "137")
+
+        result = build_ytdlp_merge_parse_result(
+            rule,
+            "YouTube",
+            "https://www.youtube.com/watch?v=demo",
+            ytdlp_merge_oversized_high_payload(),
+            max_height=4320,
+        )
+
+        self.assertEqual(result.video_assets[0].quality_label, "1080p60 高清合并")
+        self.assertIn(":h1080", result.video_assets[0].asset_id)
+
+    @override_settings(
+        YTDLP_MERGE_DEFAULT_MAX_HEIGHT=1080,
+        YTDLP_MERGE_HIGH_QUALITY_MAX_HEIGHT=4320,
+        YTDLP_MERGE_MAX_FILE_SIZE_BYTES=1024 * 1024 * 1024,
+    )
+    def test_ytdlp_merge_high_quality_selects_4k_under_one_gib_limit(self):
+        rule = GenericThirdPartyAdapter().get_rule_for_url(
+            "https://www.youtube.com/watch?v=demo"
+        )
+        plan = build_ytdlp_merge_plan(
+            ytdlp_merge_oversized_high_payload(),
+            max_height=4320,
+        )
+
+        self.assertTrue(plan["available"])
+        self.assertEqual(plan["requested_max_height"], 4320)
+        self.assertEqual(plan["max_height"], 2160)
+        self.assertEqual(plan["video_format"]["format_id"], "401")
+
+        result = build_ytdlp_merge_parse_result(
+            rule,
+            "YouTube",
+            "https://www.youtube.com/watch?v=demo",
+            ytdlp_merge_oversized_high_payload(),
+            max_height=4320,
+        )
+
+        self.assertEqual(result.video_assets[0].quality_label, "2160p30 高清合并")
+        self.assertIn(":h2160", result.video_assets[0].asset_id)
+
+    @override_settings(
         YTDLP_BINARY="python -m yt_dlp",
         YTDLP_MERGE_FFMPEG_BINARY="/usr/bin/ffmpeg",
         YTDLP_MERGE_DEFAULT_MAX_HEIGHT=1080,
@@ -1072,12 +1199,23 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
             return Mock(returncode=0, stdout="", stderr="")
 
         mock_run.side_effect = fake_run
-        temp_result = download_ytdlp_merge_to_temp_path(asset.to_download_item())
+        progress_events = []
+        item = asset.to_download_item()
+        item["size_bytes"] = 85_000_000
+        temp_result = download_ytdlp_merge_to_temp_path(
+            item,
+            progress_callback=lambda completed, total: progress_events.append((completed, total)),
+        )
 
         try:
             args = mock_run.call_args.args[0]
+            kwargs = mock_run.call_args.kwargs
             self.assertIn("bv*[height<=1080]+ba/b[height<=1080]/b", args)
             self.assertEqual(Path(temp_result["path"]).read_bytes(), b"merged-video")
+            self.assertTrue(progress_events)
+            self.assertIsNotNone(kwargs["progress_callback"])
+            self.assertTrue(kwargs["progress_path"])
+            self.assertGreater(kwargs["estimated_size"], 0)
         finally:
             Path(temp_result["path"]).unlink(missing_ok=True)
 

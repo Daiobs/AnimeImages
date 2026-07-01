@@ -113,7 +113,17 @@ def best_complete_format(formats, *, max_height):
     return max(candidates, key=ytdlp_format_score) if candidates else None
 
 
-def best_video_stream(formats, *, max_height):
+def combined_size_within_limit(video, audio, max_file_size_bytes):
+    if not max_file_size_bytes:
+        return True
+    video_size = format_size_bytes(video)
+    audio_size = format_size_bytes(audio)
+    if not video_size or not audio_size:
+        return True
+    return video_size + audio_size <= max_file_size_bytes
+
+
+def best_video_stream(formats, *, max_height, audio=None, max_file_size_bytes=0):
     candidates = []
     for item in formats:
         if not format_url_is_direct_http(item):
@@ -122,6 +132,8 @@ def best_video_stream(formats, *, max_height):
             continue
         height = integer_value(item.get("height"))
         if max_height and height > max_height:
+            continue
+        if audio and not combined_size_within_limit(item, audio, max_file_size_bytes):
             continue
         candidates.append(item)
     return max(candidates, key=video_stream_score) if candidates else None
@@ -165,27 +177,41 @@ def build_ytdlp_merge_plan(payload, *, max_height=None, max_file_size_bytes=None
     max_file_size_bytes = int(
         max_file_size_bytes
         if max_file_size_bytes is not None
-        else getattr(settings, "YTDLP_MERGE_MAX_FILE_SIZE_BYTES", 500 * 1024 * 1024)
+        else getattr(settings, "YTDLP_MERGE_MAX_FILE_SIZE_BYTES", 1024 * 1024 * 1024)
         or 0
     )
     formats = tuple(iter_formats(payload))
-    complete = best_complete_format(formats, max_height=max_height)
-    video = best_video_stream(formats, max_height=max_height)
     audio = best_audio_stream(formats)
+    complete = best_complete_format(formats, max_height=max_height)
+    unlimited_video = best_video_stream(formats, max_height=max_height)
+    video = best_video_stream(
+        formats,
+        max_height=max_height,
+        audio=audio,
+        max_file_size_bytes=max_file_size_bytes,
+    )
     complete_height = integer_value((complete or {}).get("height"))
     video_height = integer_value((video or {}).get("height"))
-    estimated_size_bytes = format_size_bytes(video) + format_size_bytes(audio)
-    estimated_size_known = bool(video and audio and estimated_size_bytes)
+    oversized_video_candidate = bool(audio and unlimited_video and not video)
+    estimated_video = video or (unlimited_video if oversized_video_candidate else None)
+    estimated_size_bytes = format_size_bytes(estimated_video) + format_size_bytes(audio)
+    estimated_size_known = bool(estimated_video and audio and estimated_size_bytes)
     estimated_size_within_limit = bool(
         not max_file_size_bytes
         or not estimated_size_known
         or estimated_size_bytes <= max_file_size_bytes
     )
-    requires_merge = bool(video and audio and (not complete or video_height > complete_height))
-    if not video or not audio:
-        reason = "no_merge_candidate"
-    elif not estimated_size_within_limit:
+    merge_video = video or (unlimited_video if oversized_video_candidate else None)
+    merge_video_height = integer_value((merge_video or {}).get("height"))
+    merge_candidate_found = bool(merge_video and audio)
+    requires_merge = bool(
+        merge_candidate_found and (not complete or merge_video_height > complete_height)
+    )
+    selected_max_height = video_height or max_height
+    if oversized_video_candidate:
         reason = "estimated_size_exceeds_limit"
+    elif not video or not audio:
+        reason = "no_merge_candidate"
     elif not requires_merge:
         reason = "single_file_is_sufficient"
     else:
@@ -197,7 +223,8 @@ def build_ytdlp_merge_plan(payload, *, max_height=None, max_file_size_bytes=None
         "implemented": True,
         "title": str((payload or {}).get("title") or ""),
         "format_count": len(formats),
-        "max_height": max_height,
+        "requested_max_height": max_height,
+        "max_height": selected_max_height,
         "max_file_size_bytes": max_file_size_bytes,
         "estimated_size_bytes": estimated_size_bytes,
         "estimated_size_known": estimated_size_known,
@@ -419,7 +446,7 @@ def build_command(source_url, output_template, *, max_height=None):
     return args
 
 
-def download_to_temp_path(item):
+def download_to_temp_path(item, progress_callback=None):
     if not provider_manifest_allows_download(item):
         raise XhsDownloadError("yt-dlp 合并资源签名未通过校验")
     parsed_asset = parse_asset_id(item.get("asset_id"))
@@ -428,12 +455,15 @@ def download_to_temp_path(item):
     source_url = str(item.get("url") or "")
     timeout_seconds = float(getattr(settings, "YTDLP_MERGE_TIMEOUT_SECONDS", 300.0) or 300.0)
     max_bytes = int(
-        getattr(settings, "YTDLP_MERGE_MAX_FILE_SIZE_BYTES", 500 * 1024 * 1024)
+        getattr(settings, "YTDLP_MERGE_MAX_FILE_SIZE_BYTES", 1024 * 1024 * 1024)
         or 0
     )
     work_dir = tempfile.mkdtemp(prefix="ytdlp_merge_")
     output_template = Path(work_dir) / "merged.%(ext)s"
     try:
+        estimated_size = int(item.get("size_bytes") or 0)
+        if progress_callback and estimated_size:
+            progress_callback(max(1, int(estimated_size * 0.02)), estimated_size)
         completed = run_external_command(
             build_command(
                 source_url,
@@ -441,6 +471,9 @@ def download_to_temp_path(item):
                 max_height=parsed_asset["max_height"],
             ),
             timeout_seconds=timeout_seconds,
+            progress_callback=progress_callback,
+            progress_path=work_dir,
+            estimated_size=estimated_size,
         )
         if completed.returncode != 0:
             message = (completed.stderr or completed.stdout or "yt-dlp merge failed").strip()
@@ -455,6 +488,8 @@ def download_to_temp_path(item):
         output_size = output_path.stat().st_size
         if max_bytes and output_size > max_bytes:
             raise XhsDownloadError("yt-dlp 合并文件超过允许大小限制")
+        if progress_callback and estimated_size:
+            progress_callback(max(output_size, int(estimated_size * 0.98)), estimated_size)
         target = tempfile.NamedTemporaryFile(
             prefix="ytdlp_merge_result_",
             suffix=".mp4",

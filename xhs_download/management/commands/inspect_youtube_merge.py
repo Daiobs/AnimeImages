@@ -236,7 +236,7 @@ class Command(BaseCommand):
                 original_max_size = getattr(
                     settings,
                     "YOUTUBE_MERGE_MAX_FILE_SIZE_BYTES",
-                    500 * 1024 * 1024,
+                    1024 * 1024 * 1024,
                 )
                 try:
                     settings.YOUTUBE_MERGE_MAX_HEIGHT = effective_max_height

@@ -11,10 +11,11 @@ from django.contrib import messages
 from django.core.paginator import Paginator
 from django.db.models import Avg, Count, Q, Sum
 from django.db.models.functions import TruncHour
-from django.http import FileResponse, HttpResponse, JsonResponse
+from django.http import FileResponse, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import redirect, render
 from django.template.loader import render_to_string
 from django.utils import timezone
+from django.utils.http import content_disposition_header
 from django.urls import reverse
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_POST
@@ -36,6 +37,7 @@ from .models import (
 from .services.common import (
     XhsDownloadError,
     XhsError,
+    clean_filename,
     XhsProviderTimeoutError,
     decode_url,
     encode_url,
@@ -56,14 +58,23 @@ from .services.download_routing import (
     request_is_mobile,
 )
 from .services.downloads import (
+    CHUNK_SIZE,
+    MAX_IMAGE_BYTES,
+    MAX_VIDEO_BYTES,
     build_download_archive_file,
     fetch_media_response,
+    guess_image_extension,
+    guess_video_extension_from_response,
     invalidate_external_provider_caches,
     is_recoverable_provider_download_error,
+    parse_content_length,
     provider_manifest_allows_public_download,
     probe_media_size,
+    public_download_error_message,
     read_limited_response,
+    response_chunk_looks_like_html,
     save_media_items_to_server,
+    validate_response_content_type,
 )
 from .services.platforms.douyin_kukutool import (
     get_kukutool_provider_health,
@@ -1653,6 +1664,7 @@ def log_download_request_event(
     actual_bytes=0,
     error_code="",
     error=None,
+    error_message_short="",
     route_info=None,
 ):
     duration_ms = (time.monotonic() - started_at) * 1000 if started_at else 0
@@ -1672,7 +1684,9 @@ def log_download_request_event(
         error_code=error_code,
         error_type=type(error).__name__ if error is not None else "",
         error_message_short=(
-            sanitize_observability_text(error)
+            sanitize_observability_text(error_message_short)
+            if error_message_short
+            else sanitize_observability_text(error)
             if error is not None
             else ""
         ),
@@ -1709,6 +1723,94 @@ def zip_download_route_info(request, media_items, reason="默认兼容旧 ZIP �
     route_info["server_egress_estimated_bytes"] = route_info.get("estimated_bytes", 0)
     route_info["browser_egress_estimated_bytes"] = 0
     return route_info
+
+
+def single_attachment_download_filename(item, base_filename, final_url="", content_type=""):
+    raw_filename = str(item.get("filename") or "").strip()
+    if raw_filename:
+        stem = Path(raw_filename).stem or raw_filename
+    else:
+        stem = base_filename or str(item.get("type") or "media")
+    media_type = str(item.get("type") or "").lower()
+    if media_type == "image":
+        ext = guess_image_extension(final_url or item.get("url", ""), content_type)
+    else:
+        ext = guess_video_extension_from_response(final_url or item.get("url", ""), content_type)
+    return clean_filename(f"{stem}.{ext}")
+
+
+def build_single_attachment_response(item, base_filename):
+    media_type = str(item.get("type") or "").lower() if isinstance(item, dict) else ""
+    if media_type not in {"image", "video"}:
+        raise XhsDownloadError("单文件下载仅支持图片或视频资源")
+
+    url = item.get("url")
+    if not url:
+        raise XhsDownloadError("资源 URL 为空")
+
+    max_bytes = MAX_IMAGE_BYTES if media_type == "image" else MAX_VIDEO_BYTES
+    provider_signed = item if provider_manifest_allows_public_download(item) else False
+    upstream = fetch_media_response(
+        url,
+        timeout=20 if media_type == "image" else 60,
+        retries=1 if provider_signed else 3,
+        provider_signed=provider_signed,
+    )
+    try:
+        content_type = upstream.headers.get("Content-Type", "")
+        validate_response_content_type(content_type, media_type)
+        content_length = parse_content_length(upstream)
+        if content_length and content_length > max_bytes:
+            raise XhsDownloadError("资源超过允许的大小限制")
+
+        upstream_chunks = upstream.iter_content(chunk_size=CHUNK_SIZE)
+        first_chunk = b""
+        for chunk in upstream_chunks:
+            if chunk:
+                first_chunk = chunk
+                break
+        if first_chunk and response_chunk_looks_like_html(first_chunk):
+            raise XhsDownloadError("资源类型异常：HTML response body")
+        if len(first_chunk) > max_bytes:
+            raise XhsDownloadError("资源超过允许的大小限制")
+
+        def stream_media():
+            total = 0
+            try:
+                if first_chunk:
+                    total += len(first_chunk)
+                    yield first_chunk
+                for chunk in upstream_chunks:
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise XhsDownloadError("资源超过允许的大小限制")
+                    yield chunk
+            finally:
+                upstream.close()
+
+        filename = single_attachment_download_filename(
+            item,
+            base_filename,
+            final_url=getattr(upstream, "url", "") or url,
+            content_type=content_type,
+        )
+        response = StreamingHttpResponse(
+            stream_media(),
+            content_type=content_type or "application/octet-stream",
+        )
+        disposition = content_disposition_header(True, filename)
+        if disposition:
+            response["Content-Disposition"] = disposition
+        if content_length:
+            response["Content-Length"] = str(content_length)
+        response["X-Saved-Count"] = "1"
+        response["X-Failed-Count"] = "0"
+        return response, content_length or estimated_media_items_bytes([item])
+    except Exception:
+        upstream.close()
+        raise
 
 
 def apply_route_v3_metadata(request, media_items, route_info, *, requested_mode="", platform_key=""):
@@ -2259,11 +2361,8 @@ def build_search_results_context(request, platform_key="home"):
                 context["provider_notice"] = "本次使用 YouTube 最高画质任务；下载时将在服务端合并音频和视频，文件可能更大。"
             elif result_metadata.get("selected_provider") == "yt_dlp_merge":
                 context["provider_notice"] = "本次使用 yt-dlp 高清合并；默认优先 1080p，下载时将在服务端合并音频和视频。"
-        if prefer_ultra_hd:
-            if result.platform == "douyin":
-                context["provider_notice"] = "本次优先使用 KuKuTool 超高清上游；若不可用会自动回退本地解析。"
-            else:
-                context["provider_notice"] = "超高清 Provider 目前仅用于抖音视频，本次已按对应平台本地解析。"
+        if prefer_ultra_hd and result.platform == "douyin":
+            context["provider_notice"] = "本次优先使用 KuKuTool 超高清上游；若不可用会自动回退本地解析。"
         context["post_type"] = result.post_type
         context["base_filename"] = result.base_filename
         context["image_items"] = [
@@ -2545,20 +2644,21 @@ def download_images_api(request):
         )
 
     runtime_setting = get_download_runtime_setting()
-    if download_mode == "auto":
+    if download_mode in {"auto", "browser"}:
         route_info = decide_download_route(
             request,
             media_items,
-            requested_mode="auto",
+            requested_mode=download_mode,
             platform_key=data.get("platform_key", ""),
         )
-        route_info = apply_route_v3_metadata(
-            request,
-            media_items,
-            route_info,
-            requested_mode="auto",
-            platform_key=data.get("platform_key", ""),
-        )
+        if download_mode == "auto":
+            route_info = apply_route_v3_metadata(
+                request,
+                media_items,
+                route_info,
+                requested_mode="auto",
+                platform_key=data.get("platform_key", ""),
+            )
     guard_result = check_download_cost_preflight(request, media_items, runtime_setting)
     if guard_result:
         error_code, message, status_code = guard_result
@@ -2579,7 +2679,7 @@ def download_images_api(request):
             error_code=error_code,
         )
 
-    if download_mode == "auto" and route_info.get("route_type") == ROUTE_BLOCKED:
+    if download_mode in {"auto", "browser"} and route_info.get("route_type") == ROUTE_BLOCKED:
         error_code = route_info.get("error_code") or "DOWNLOAD_BLOCKED"
         log_download_request_event(
             request,
@@ -2597,7 +2697,7 @@ def download_images_api(request):
             error_code=error_code,
         )
 
-    if download_mode == "auto" and route_info.get("route_type") in {ROUTE_DIRECT, ROUTE_PROXY}:
+    if download_mode in {"auto", "browser"} and route_info.get("route_type") == ROUTE_DIRECT:
         log_download_request_event(
             request,
             download_type=route_info.get("route_type", "auto"),
@@ -2709,6 +2809,47 @@ def download_images_api(request):
         )
 
     try:
+        if route_info.get("download_strategy") == "server_single_attachment":
+            single_response, actual_bytes = build_single_attachment_response(
+                media_items[0],
+                data.get("base_filename", "xhs"),
+            )
+            within_limit, bytes_error_code = record_download_archive_bytes(
+                identity,
+                None,
+                actual_bytes,
+            )
+            if not within_limit:
+                single_response.close()
+                log_download_request_event(
+                    request,
+                    download_type="single_file",
+                    media_items=media_items,
+                    status=ObservabilityStatus.RATE_LIMITED,
+                    started_at=started_at,
+                    actual_bytes=actual_bytes,
+                    error_code=bytes_error_code or "RATE_LIMITED",
+                    route_info=blocked_download_route_info(
+                        media_items,
+                        "今日下载流量已达到限制",
+                        bytes_error_code or "RATE_LIMITED",
+                    ),
+                )
+                return limit_error_response(
+                    "今日下载流量已达到限制，请稍后再试。",
+                    error_code=bytes_error_code or "RATE_LIMITED",
+                )
+            log_download_request_event(
+                request,
+                download_type="single_file",
+                media_items=media_items,
+                status=ObservabilityStatus.SUCCESS,
+                started_at=started_at,
+                actual_bytes=actual_bytes,
+                route_info=route_info,
+            )
+            return single_response
+
         if download_mode == "server":
             if not settings.XHS_ALLOW_SERVER_SAVE:
                 route_info = blocked_download_route_info(
@@ -2817,6 +2958,7 @@ def download_images_api(request):
                 error_code=bytes_error_code or "RATE_LIMITED",
             )
     except XhsDownloadError as error:
+        public_message = public_download_error_message(error)
         error_code = (
             "PROVIDER_MANIFEST_REJECTED"
             if "Provider 签名" in str(error) or "manifest" in str(error).lower()
@@ -2830,11 +2972,22 @@ def download_images_api(request):
             started_at=started_at,
             error_code=error_code,
             error=error,
+            error_message_short=public_message,
             route_info=blocked_download_route_info(media_items, "下载失败", error_code),
         )
-        return JsonResponse({"status": "error", "message": str(error)}, status=400)
+        return JsonResponse(
+            {"status": "error", "message": public_message},
+            status=400,
+        )
     except Exception as error:
-        logger.exception("XHS download failed")
+        public_message = public_download_error_message(error)
+        logger.warning(
+            "xhs_download_failed",
+            extra={
+                "error_type": type(error).__name__,
+                "error": sanitize_observability_text(public_message),
+            },
+        )
         log_download_request_event(
             request,
             download_type="zip",
@@ -2843,9 +2996,13 @@ def download_images_api(request):
             started_at=started_at,
             error_code="DOWNLOAD_ERROR",
             error=error,
+            error_message_short=public_message,
             route_info=blocked_download_route_info(media_items, "下载失败", "DOWNLOAD_ERROR"),
         )
-        return JsonResponse({"status": "error", "message": f"下载失败：{error}"}, status=500)
+        return JsonResponse(
+            {"status": "error", "message": public_message},
+            status=500,
+        )
     finally:
         release_concurrency("download-concurrent", identity)
 

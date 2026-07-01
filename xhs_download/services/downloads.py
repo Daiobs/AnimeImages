@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import shutil
 import tempfile
 from io import BytesIO
@@ -63,7 +64,7 @@ from .quality import (
 logger = logging.getLogger(__name__)
 MAX_DOWNLOAD_ITEMS = 30
 MAX_IMAGE_BYTES = 50 * 1024 * 1024
-MAX_VIDEO_BYTES = 500 * 1024 * 1024
+MAX_VIDEO_BYTES = 1024 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
 CHUNK_SIZE = 1024 * 256
 ORIGINAL_FORMAT = "original"
@@ -83,6 +84,23 @@ YOUTUBE_COVER_FALLBACK_NAMES = (
     "hqdefault.jpg",
     "mqdefault.jpg",
     "default.jpg",
+)
+DOWNLOAD_ERROR_URL_PATTERN = re.compile(r"https?://[^\s<>'\"\]\)]+", re.IGNORECASE)
+NETWORK_DOWNLOAD_ERROR_MARKERS = (
+    "connectionpool",
+    "max retries exceeded",
+    "ssl",
+    "ssleoferror",
+    "unexpected_eof",
+    "eof occurred",
+    "connection aborted",
+    "connection reset",
+    "read timed out",
+    "connect timeout",
+    "timeout",
+    "timed out",
+    "temporary failure",
+    "name or service not known",
 )
 
 
@@ -125,6 +143,31 @@ def normalize_video_save_mode(mode):
     if mode not in ["video", "cover", "both"]:
         mode = "video"
     return mode
+
+
+def public_download_error_message(error, limit=120):
+    text = str(error or "").strip()
+    if not text:
+        return "下载失败，请稍后再试。"
+    lower_text = text.lower()
+    if any(marker in lower_text for marker in NETWORK_DOWNLOAD_ERROR_MARKERS):
+        return "资源下载失败：上游 CDN 连接异常，请重新解析后再试。"
+    if text.startswith("没有资源保存成功") and DOWNLOAD_ERROR_URL_PATTERN.search(text):
+        return "没有资源保存成功：上游资源下载失败，请重新解析后再试。"
+    text = DOWNLOAD_ERROR_URL_PATTERN.sub("[url-redacted]", text)
+    text = re.sub(
+        r"(?i)(provider_manifest_token=)[^&\s]+",
+        r"\1[redacted]",
+        text,
+    )
+    return text[: max(0, int(limit or 0))]
+
+
+def safe_download_size(value):
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def guess_video_extension(url):
@@ -656,12 +699,12 @@ def fetch_item_to_temp_path(
         str(item.get("provider") or "") == YOUTUBE_MERGE_PROVIDER_ID
         and str(item.get("type") or "") == "video"
     ):
-        return download_youtube_merge_to_temp_path(item)
+        return download_youtube_merge_to_temp_path(item, progress_callback=progress_callback)
     if (
         str(item.get("provider") or "") == YTDLP_MERGE_PROVIDER_ID
         and str(item.get("type") or "") == "video"
     ):
-        return download_ytdlp_merge_to_temp_path(item)
+        return download_ytdlp_merge_to_temp_path(item, progress_callback=progress_callback)
 
     initial_url = url or item.get("url")
     recovery_enabled = bool(get_kukutool_manifest_identity(item))
@@ -678,6 +721,16 @@ def fetch_item_to_temp_path(
     candidates = [initial_url]
     recovery_urls = None
     last_error = None
+    provider_download_timeout = timeout
+    if recovery_enabled:
+        try:
+            configured_timeout = float(
+                getattr(settings, "KUKUTOOL_DOWNLOAD_TIMEOUT_SECONDS", 8.0)
+                or 8.0
+            )
+        except (TypeError, ValueError):
+            configured_timeout = 8.0
+        provider_download_timeout = max(1.0, min(float(timeout or configured_timeout), configured_timeout))
 
     while candidates or recovery_urls is not None:
         if not candidates:
@@ -690,16 +743,19 @@ def fetch_item_to_temp_path(
         if not candidate_url or candidate_url in attempted_urls:
             continue
         attempted_urls.add(candidate_url)
+        candidate_provider_signed = provider_signed
+        if recovery_enabled and not is_byte_cdn_url(candidate_url):
+            candidate_provider_signed = None
         try:
             return fetch_to_temp_path(
                 candidate_url,
                 headers=headers or get_media_headers(candidate_url),
-                timeout=timeout,
+                timeout=provider_download_timeout if candidate_provider_signed else timeout,
                 max_bytes=max_bytes,
                 progress_callback=progress_callback,
                 expected_type=expected_type,
                 retries=1 if recovery_enabled else 3,
-                provider_signed=provider_signed,
+                provider_signed=candidate_provider_signed,
             )
         except Exception as error:
             last_error = error
@@ -899,7 +955,7 @@ def iter_download_files(media_items, base_filename, save_format=ORIGINAL_FORMAT,
                 raise XhsDownloadError(f"暂不支持的资源类型：{media_type}")
 
         except Exception as error:
-            failures.append(f"{media_type}: {url or '-'} -> {error}")
+            failures.append(f"{media_type} #{index}: {public_download_error_message(error)}")
 
     if failures:
         yield "failed.txt", "\n".join(failures).encode("utf-8")
@@ -950,10 +1006,13 @@ def build_download_archive_file(
     processed_count = 0
     total_items = len(media_items)
 
-    def report_item_progress(item_index, bytes_read, content_length):
-        if not progress_callback or not content_length:
+    def report_item_progress(item_index, bytes_read, content_length, fallback_size=0):
+        if not progress_callback:
             return
-        item_fraction = min(bytes_read / content_length, 0.98)
+        total_bytes = content_length or safe_download_size(fallback_size)
+        if not total_bytes:
+            return
+        item_fraction = min(bytes_read / total_bytes, 0.98)
         progress_callback((item_index - 1) + item_fraction, total_items)
 
     try:
@@ -977,6 +1036,7 @@ def build_download_archive_file(
                                     item_index,
                                     done,
                                     total,
+                                    item.get("size_bytes"),
                                 ),
                             )
                             try:
@@ -1015,6 +1075,7 @@ def build_download_archive_file(
                                     item_index,
                                     done,
                                     total,
+                                    item.get("size_bytes"),
                                 ),
                             )
                             try:
@@ -1048,6 +1109,7 @@ def build_download_archive_file(
                                         item_index,
                                         done,
                                         total,
+                                        item.get("cover_size_bytes") or item.get("size_bytes"),
                                     ),
                                 )
                                 try:
@@ -1084,7 +1146,7 @@ def build_download_archive_file(
                         raise XhsDownloadError(f"暂不支持的资源类型：{media_type}")
 
                 except Exception as error:
-                    failures.append(f"{media_type}: {url or '-'} -> {error}")
+                    failures.append(f"{media_type} #{index}: {public_download_error_message(error)}")
                 finally:
                     processed_count += 1
                     if progress_callback:
@@ -1095,7 +1157,7 @@ def build_download_archive_file(
 
         if saved_count == 0:
             detail = f"：{failures[0]}" if failures else ""
-            raise XhsDownloadError(f"没有资源保存成功{detail}")
+            raise XhsDownloadError(public_download_error_message(f"没有资源保存成功{detail}"))
 
         archive_file.seek(0)
         return {
@@ -1263,14 +1325,14 @@ def save_media_items_to_server(
                 raise XhsDownloadError(f"暂不支持的资源类型：{media_type}")
 
         except Exception as error:
-            failures.append(f"{media_type}: {url or '-'} -> {error}")
+            failures.append(f"{media_type} #{index}: {public_download_error_message(error)}")
 
     if failures:
         (save_folder / "failed.txt").write_text("\n".join(failures), encoding="utf-8")
 
     if not saved_files:
         detail = f"：{failures[0]}" if failures else ""
-        raise XhsDownloadError(f"没有资源保存成功{detail}")
+        raise XhsDownloadError(public_download_error_message(f"没有资源保存成功{detail}"))
 
     return {
         "save_folder": str(save_folder),

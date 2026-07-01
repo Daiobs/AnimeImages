@@ -177,8 +177,8 @@ See `docs/admin-observability.md` for request_id tracing, privacy guarantees, an
 - [ ] Confirm initial download cost limits in `DownloadRuntimeSetting`:
 
 ```text
-single_archive_bytes_limit = 536870912      # 500 MB, adjust for server bandwidth
-single_video_bytes_limit = 314572800        # 300 MB, adjust for test phase
+single_archive_bytes_limit = 1073741824      # 1 GiB, adjust for server bandwidth
+single_video_bytes_limit = 1073741824        # 1 GiB, adjust for test phase
 visitor_video_download_enabled = True       # set False if public video traffic is risky
 staff_large_download_exempt = False
 large_download_warning_bytes = 104857600    # 100 MB

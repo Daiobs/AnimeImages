@@ -23,9 +23,9 @@
 
     {% if image_items or video_items %}
         <div class="card result-card result-theme-{{ result_theme|default:'home' }} border-0 shadow-sm mb-4">
-        <div class="card-header bg-white d-flex flex-wrap justify-content-between align-items-center gap-2 py-3">
-            <div>
-                <div class="fw-bold">
+        <div class="card-header bg-white result-card-header py-3">
+            <div class="result-summary">
+                <div class="fw-bold result-title">
                     {% if post_type == "video" %}
                         <i class="bi bi-play-circle result-icon me-1"></i>
                         视频笔记
@@ -57,27 +57,17 @@
 
                     <button
                         type="button"
-                        class="btn btn-outline-primary btn-sm"
-                        id="smart-download-btn"
-                        title="自动判断直连、代理或 ZIP，优先降低服务器下载压力"
-                    >
-                        <i class="bi bi-lightning-charge me-1"></i>
-                        智能下载
-                    </button>
-
-                    <button
-                        type="button"
                         class="btn btn-brand btn-sm"
                         id="download-btn"
-                        title="按下载设置保存选中资源，默认由浏览器下载 ZIP"
+                        title="下载选中资源：单视频直接保存，多资源自动打包 ZIP"
                     >
                         <i class="bi bi-download me-1"></i>
-                        保存选中资源
+                        下载选中资源
                     </button>
                 </div>
 
                 <div class="download-action-help small text-muted">
-                    智能下载优先直连/代理以减少服务器压力；保存选中资源按设置打包，默认下载 ZIP。
+                    单个视频直接保存为文件；多图、多资源或需服务端处理时自动打包 ZIP。
                 </div>
             </div>
         </div>
