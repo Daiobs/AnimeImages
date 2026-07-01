@@ -254,6 +254,9 @@ def summarize_rule_health(adapter, health_by_id):
 def build_health_report(adapter, force_probe_provider_id=""):
     health_by_id = provider_health_by_id(force_probe_provider_id)
     rules = summarize_rule_health(adapter, health_by_id)
+    third_party_enabled = bool(
+        getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False)
+    )
     enabled_providers = tuple(
         provider_id
         for provider_id, health in health_by_id.items()
@@ -273,7 +276,7 @@ def build_health_report(adapter, force_probe_provider_id=""):
             "code": "no_provider_enabled",
             "message": "Third-party provider capability is enabled but no concrete provider is enabled.",
         })
-    for provider_id in enabled_providers:
+    for provider_id in enabled_providers if third_party_enabled else ():
         if provider_id not in ready_providers:
             health = health_by_id.get(provider_id, {})
             issues.append({
@@ -281,9 +284,6 @@ def build_health_report(adapter, force_probe_provider_id=""):
                 "provider": provider_id,
                 "message": health.get("version_probe_error") or health.get("error") or "provider is not ready",
             })
-    third_party_enabled = bool(
-        getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False)
-    )
     public_access_enabled = third_party_enabled
     staff_only = False
     rollout = build_third_party_rollout_status(

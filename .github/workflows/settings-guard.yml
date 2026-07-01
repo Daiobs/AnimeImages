@@ -1,0 +1,39 @@
+name: Settings Guard
+
+on:
+  pull_request:
+  push:
+    branches-ignore:
+      - main
+
+jobs:
+  protect-settings:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Block settings.py changes on feature branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF:-}" == "refs/heads/main" ]]; then
+            echo "main branch may carry reviewed settings.py changes."
+            exit 0
+          fi
+
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            base_sha="${{ github.event.pull_request.base.sha }}"
+          else
+            git fetch origin main
+            base_sha="$(git merge-base HEAD origin/main)"
+          fi
+
+          if git diff --name-only "$base_sha" HEAD -- djangoProject/settings.py | grep -q .; then
+            echo "::error file=djangoProject/settings.py::Do not change settings.py in feature branches. Move production configuration to .env.production or deployment environment variables."
+            exit 1
+          fi
+
+          echo "settings.py unchanged in this feature branch."

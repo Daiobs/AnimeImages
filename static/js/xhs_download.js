@@ -232,6 +232,8 @@
         const videoSaveModeInput = document.getElementById("video-save-mode");
         const downloadUrl = page.dataset.downloadUrl;
         const downloadTaskUrl = page.dataset.downloadTaskUrl;
+        const downloadAsyncEnabled = page.dataset.downloadAsyncEnabled === "true";
+        const preferAsyncZipTasks = false;
         const savedSettings = loadSettings();
 
         let selected = [];
@@ -239,6 +241,7 @@
         let downloadMode = savedSettings.download_mode || "browser";
         let activeParseController = null;
         let parseRequestId = 0;
+        let downloadInProgress = false;
 
         function getBaseFilename() {
             return page.dataset.baseFilename || "xhs_image";
@@ -254,6 +257,14 @@
 
         function getDownloadButton() {
             return resultsRegion ? resultsRegion.querySelector("#download-btn") : null;
+        }
+
+        function getSmartDownloadButton() {
+            return resultsRegion ? resultsRegion.querySelector("#smart-download-btn") : null;
+        }
+
+        function getDownloadActionButtons() {
+            return [getSmartDownloadButton(), getDownloadButton()].filter(Boolean);
         }
 
         function getSelectAllButton() {
@@ -366,6 +377,26 @@
             selectAllBtn.innerHTML = allSelected
                 ? '<i class="bi bi-x-square me-1"></i>取消全选'
                 : '<i class="bi bi-check2-square me-1"></i>全选';
+        }
+
+        function setDownloadButtonsBusy(isBusy, activeButton, label) {
+            getDownloadActionButtons().forEach((button) => {
+                if (!button.isConnected) {
+                    return;
+                }
+                if (isBusy && !button.dataset.originalHtml) {
+                    button.dataset.originalHtml = button.innerHTML;
+                }
+                button.disabled = isBusy;
+                button.setAttribute("aria-busy", isBusy ? "true" : "false");
+                if (isBusy && button === activeButton) {
+                    const busyLabel = label || "处理中";
+                    button.innerHTML = `<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>${busyLabel}`;
+                } else if (!isBusy && button.dataset.originalHtml) {
+                    button.innerHTML = button.dataset.originalHtml;
+                    delete button.dataset.originalHtml;
+                }
+            });
         }
 
         function updateDownloadLocationButtons() {
@@ -581,7 +612,7 @@
             }
 
             setProgress(0);
-            setStatus(getStatusElement(), "正在准备下载...");
+            setStatus(getStatusElement(), "正在创建后台打包任务，请保持页面打开...");
 
             const createResponse = await fetch(downloadTaskUrl, {
                 method: "POST",
@@ -624,9 +655,18 @@
                 window.alert("请先选择需要保存的资源");
                 return;
             }
+            if (downloadInProgress) {
+                setStatus(getStatusElement(), "当前下载仍在处理中，请等待完成后再操作。", "text-muted");
+                return;
+            }
 
-            setStatus(getStatusElement(), "正在保存，请稍候...");
-            downloadBtn.disabled = true;
+            downloadInProgress = true;
+            const busyLabel = forceAutoMode ? "智能处理中" : "保存中";
+            setDownloadButtonsBusy(true, downloadBtn, busyLabel);
+            setStatus(
+                getStatusElement(),
+                forceAutoMode ? "正在智能判断下载方式，请稍候..." : "正在保存，请稍候...",
+            );
 
             try {
                 const payload = {
@@ -639,7 +679,7 @@
                     video_save_mode: videoSaveModeInput ? videoSaveModeInput.value : "video",
                 };
 
-                if (payload.download_mode === "browser" && downloadTaskUrl) {
+                if (payload.download_mode === "browser" && downloadAsyncEnabled && preferAsyncZipTasks && downloadTaskUrl) {
                     await downloadWithTask(payload);
                     return;
                 }
@@ -700,9 +740,8 @@
                     setStatus(getStatusElement(), error.message || "保存失败，请查看浏览器控制台或 Django 后台日志", "text-danger");
                 }
             } finally {
-                if (downloadBtn.isConnected) {
-                    downloadBtn.disabled = false;
-                }
+                downloadInProgress = false;
+                setDownloadButtonsBusy(false);
             }
         }
 

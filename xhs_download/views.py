@@ -2579,45 +2579,6 @@ def download_images_api(request):
             error_code=error_code,
         )
 
-    try:
-        identity, limit_response = check_download_request_limits(request)
-    except Exception:
-        logger.exception("Download rate-limit cache failed")
-        log_download_request_event(
-            request,
-            download_type="zip",
-            media_items=media_items,
-            status=ObservabilityStatus.FAILED,
-            started_at=started_at,
-            error_code="RATE_LIMIT_CACHE_ERROR",
-            route_info=blocked_download_route_info(
-                media_items,
-                "下载保护服务暂时不可用",
-                "RATE_LIMIT_CACHE_ERROR",
-            ),
-        )
-        return JsonResponse(
-            {"status": "error", "message": "下载保护服务暂时不可用，请稍后再试。"},
-            status=503,
-        )
-    if limit_response:
-        error_code = limit_response.get("X-Error-Code", "RATE_LIMITED")
-        route_info = blocked_download_route_info(
-            media_items,
-            "下载请求被成本或频率限制阻止",
-            error_code,
-        )
-        log_download_request_event(
-            request,
-            download_type="zip",
-            media_items=media_items,
-            status=ObservabilityStatus.RATE_LIMITED,
-            started_at=started_at,
-            error_code=error_code,
-            route_info=route_info,
-        )
-        return limit_response
-
     if download_mode == "auto" and route_info.get("route_type") == ROUTE_BLOCKED:
         error_code = route_info.get("error_code") or "DOWNLOAD_BLOCKED"
         log_download_request_event(
@@ -2662,6 +2623,45 @@ def download_images_api(request):
                 "routing_score": route_info.get("routing_score", 0),
             }
         )
+
+    try:
+        identity, limit_response = check_download_request_limits(request)
+    except Exception:
+        logger.exception("Download rate-limit cache failed")
+        log_download_request_event(
+            request,
+            download_type="zip",
+            media_items=media_items,
+            status=ObservabilityStatus.FAILED,
+            started_at=started_at,
+            error_code="RATE_LIMIT_CACHE_ERROR",
+            route_info=blocked_download_route_info(
+                media_items,
+                "下载保护服务暂时不可用",
+                "RATE_LIMIT_CACHE_ERROR",
+            ),
+        )
+        return JsonResponse(
+            {"status": "error", "message": "下载保护服务暂时不可用，请稍后再试。"},
+            status=503,
+        )
+    if limit_response:
+        error_code = limit_response.get("X-Error-Code", "RATE_LIMITED")
+        route_info = blocked_download_route_info(
+            media_items,
+            "下载请求被成本或频率限制阻止",
+            error_code,
+        )
+        log_download_request_event(
+            request,
+            download_type="zip",
+            media_items=media_items,
+            status=ObservabilityStatus.RATE_LIMITED,
+            started_at=started_at,
+            error_code=error_code,
+            route_info=route_info,
+        )
+        return limit_response
 
     try:
         concurrency = acquire_concurrency(

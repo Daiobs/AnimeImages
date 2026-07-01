@@ -36,6 +36,54 @@ Local development can keep convenience defaults such as SQLite, `DEBUG=True`, se
 
 Production must use explicit infrastructure configuration. The production process should read a server-side environment file such as `/srv/animeimages/.env.production` or systemd `EnvironmentFile`, not a committed secret file.
 
+## Git Ownership and Deployment Hygiene
+
+The production Git working tree must have one owner:
+
+```text
+/srv/animeimages -> ubuntu:ubuntu
+```
+
+Do not run `git fetch`, `git pull`, `git reset`, `git checkout`, or other Git commands as `root` inside `/srv/animeimages`. Mixing `root` and `ubuntu` ownership can leave `.git/index.lock` or index files unreadable by the deploy user.
+
+Use the deploy script from the `ubuntu` account:
+
+```bash
+cd /srv/animeimages
+./scripts/deploy.sh
+```
+
+`scripts/deploy.sh` will:
+
+1. Refuse to run as root.
+2. Ensure `/srv/animeimages` is owned by `ubuntu:ubuntu`.
+3. Remove a stale `.git/index.lock` only when no `git` process is active for the deploy user.
+4. Run `scripts/pre_deploy_check.sh`.
+5. Fetch and reset to `origin/main`.
+6. Install dependencies, run migrations, collect static files, and restart `animeimages`.
+
+`scripts/pre_deploy_check.sh` requires:
+
+- Current branch is `main`.
+- `git status` is clean.
+- `djangoProject/settings.py` has no uncommitted changes.
+- `/srv/animeimages/.env.production` exists and is readable.
+
+If permissions are already mixed, fix them outside Git first:
+
+```bash
+sudo chown -R ubuntu:ubuntu /srv/animeimages
+```
+
+Production configuration belongs in `.env.production` or systemd environment variables. Do not edit `djangoProject/settings.py` on the server. A CI guard blocks `djangoProject/settings.py` changes on feature branches so production-only settings do not leak into code review.
+
+When a `.env.production` value contains spaces, quote it so shell-based deploy commands can load it safely:
+
+```text
+YTDLP_BINARY="/srv/animeimages/.venv/bin/python -m yt_dlp"
+GALLERYDL_BINARY="/srv/animeimages/.venv/bin/python -m gallery_dl"
+```
+
 Important production posture:
 
 ```text

@@ -3316,16 +3316,13 @@ class XhsDownloadArchiveTests(SimpleTestCase):
         THIRD_PARTY_PROVIDER_ENABLED=True,
         THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
         THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=True,
-    )
-    @patch(
-        "xhs_download.services.common.socket.getaddrinfo",
-        return_value=[(None, None, None, "", ("93.184.216.34", 443))],
+        YTDLP_PROVIDER_ENABLED=False,
+        GALLERYDL_PROVIDER_ENABLED=False,
     )
     @patch("xhs_download.services.downloads.requests.get")
     def test_signed_generic_provider_download_allows_public_url(
         self,
         mock_get,
-        _mock_getaddrinfo,
     ):
         content = make_image_bytes()
         media_url = "https://scontent.cdninstagram.com/image.jpg"
@@ -3344,12 +3341,16 @@ class XhsDownloadArchiveTests(SimpleTestCase):
         ).parse_url("https://www.instagram.com/p/example/")
         item = result.image_assets[0].to_download_item()
 
-        temp_result = fetch_item_to_temp_path(
-            item,
-            timeout=1,
-            max_bytes=MAX_IMAGE_BYTES,
-            expected_type="image",
-        )
+        with patch(
+            "xhs_download.services.common.socket.getaddrinfo",
+            return_value=[(None, None, None, "", ("93.184.216.34", 443))],
+        ):
+            temp_result = fetch_item_to_temp_path(
+                item,
+                timeout=1,
+                max_bytes=MAX_IMAGE_BYTES,
+                expected_type="image",
+            )
 
         try:
             self.assertEqual(Path(temp_result["path"]).read_bytes(), content)
@@ -3361,16 +3362,13 @@ class XhsDownloadArchiveTests(SimpleTestCase):
         THIRD_PARTY_PROVIDER_ENABLED=True,
         THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
         THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=True,
-    )
-    @patch(
-        "xhs_download.services.common.socket.getaddrinfo",
-        return_value=[(None, None, None, "", ("93.184.216.34", 443))],
+        YTDLP_PROVIDER_ENABLED=False,
+        GALLERYDL_PROVIDER_ENABLED=False,
     )
     @patch("xhs_download.services.downloads.requests.get")
     def test_signed_generic_provider_video_cover_download_allows_public_url(
         self,
         mock_get,
-        _mock_getaddrinfo,
     ):
         cover_bytes = make_image_bytes()
         video_url = "https://scontent.cdninstagram.com/video.mp4"
@@ -3391,11 +3389,15 @@ class XhsDownloadArchiveTests(SimpleTestCase):
         ).parse_url("https://www.instagram.com/p/video-cover-example/")
         item = result.video_assets[0].to_download_item()
 
-        archive = build_download_archive_file(
-            [item],
-            base_filename="base",
-            video_save_mode="cover",
-        )
+        with patch(
+            "xhs_download.services.common.socket.getaddrinfo",
+            return_value=[(None, None, None, "", ("93.184.216.34", 443))],
+        ):
+            archive = build_download_archive_file(
+                [item],
+                base_filename="base",
+                video_save_mode="cover",
+            )
 
         try:
             with ZipFile(archive["file"]) as zip_file:
@@ -3410,6 +3412,8 @@ class XhsDownloadArchiveTests(SimpleTestCase):
         THIRD_PARTY_PROVIDER_ENABLED=True,
         THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True,
         THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=True,
+        YTDLP_PROVIDER_ENABLED=False,
+        GALLERYDL_PROVIDER_ENABLED=False,
     )
     def test_signed_generic_provider_url_override_does_not_reuse_original_manifest(self):
         media_url = "https://scontent.cdninstagram.com/image.jpg"
@@ -5656,6 +5660,47 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(log.browser_egress_estimated_bytes, 321)
         self.assertNotIn("https://", log.route_reason)
 
+    @override_settings(
+        DOWNLOAD_RATE_LIMIT_PER_MINUTE=1,
+        DOWNLOAD_DAILY_REQUEST_LIMIT_PER_IP=0,
+        DOWNLOAD_GLOBAL_DAILY_REQUEST_LIMIT=1,
+        DOWNLOAD_MAX_CONCURRENT_PER_IP=1,
+        DOWNLOAD_DAILY_BYTES_LIMIT_PER_IP=0,
+        DOWNLOAD_GLOBAL_DAILY_BYTES_LIMIT=0,
+    )
+    def test_download_auto_direct_does_not_consume_server_download_limits(self):
+        cache.clear()
+        DownloadRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={
+                "rate_limit_per_minute": 1,
+                "daily_request_limit_per_ip": 0,
+                "global_daily_request_limit": 1,
+                "max_concurrent_per_ip": 1,
+                "daily_bytes_limit_per_ip": 0,
+                "global_daily_bytes_limit": 0,
+            },
+        )
+        payload = json.dumps({
+            "download_mode": "auto",
+            "media_items": [{
+                "type": "image",
+                "url": "https://ci.xiaohongshu.com/a.jpg",
+                "size_bytes": 321,
+            }],
+        })
+        client = Client()
+
+        first = client.post("/media/download-images/", data=payload, content_type="application/json")
+        second = client.post("/media/download-images/", data=payload, content_type="application/json")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json()["route_type"], ROUTE_DIRECT)
+        self.assertEqual(second.json()["route_type"], ROUTE_DIRECT)
+        self.assertEqual(get_daily_total("download-requests-global", "all"), 0)
+        self.assertEqual(get_daily_total("download-requests-ip", get_client_identity(first.wsgi_request)), 0)
+
     def test_download_auto_video_proxy_returns_json_hint(self):
         response = Client().post(
             "/media/download-images/",
@@ -6121,6 +6166,7 @@ class XhsDownloadViewTests(TestCase):
         finally:
             archive["file"].close()
 
+    @override_settings(DOWNLOAD_ASYNC_TASKS_ENABLED=True)
     @patch("xhs_download.services.download_tasks.build_download_archive_file")
     def test_download_task_flow_returns_progress_and_file(self, mock_archive):
         archive_file = NamedTemporaryFile(prefix="test_archive_", suffix=".zip")

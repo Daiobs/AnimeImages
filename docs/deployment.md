@@ -8,6 +8,16 @@ Netlify can host a future static frontend, but it is not the right target for th
 
 For the Hong Kong VPS first-launch baseline, use `docs/production-deploy-baseline.md` and `docs/production-deploy-checklist.md` as the operator runbook.
 
+For repeat VPS deploys, use the repository deploy scripts from the `ubuntu` account:
+
+```bash
+cd /srv/animeimages
+./scripts/pre_deploy_check.sh
+./scripts/deploy.sh
+```
+
+Do not run Git as root in `/srv/animeimages`. The working tree should remain owned by `ubuntu:ubuntu`, and production-only values should live in `/srv/animeimages/.env.production`, not in `djangoProject/settings.py`.
+
 ## Required Environment Variables
 
 Start from `.env.example.production` if you keep configuration in the project root. Runtime reads the project-root `.env` plus deployment environment variables; the example files are templates only.
