@@ -25,7 +25,7 @@ from ..models import (
     ProviderRuntimeSetting,
     SelfHealingEvent,
 )
-from .governance_engine import GOVERNANCE_VERSION
+from .policy_constants import GOVERNANCE_VERSION
 from .provider_access import (
     PROVIDER_DOUYIN_ULTRA,
     PROVIDER_THIRD_PARTY,

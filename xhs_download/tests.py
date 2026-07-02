@@ -114,10 +114,10 @@ from .services.autonomous_evolution_engine import (
 )
 from .services.governance_engine import (
     DAILY_MUTATION_LIMIT,
-    GOVERNANCE_VERSION,
     governance_engine,
     record_governance_audit_decision,
 )
+from .services.policy_constants import GOVERNANCE_VERSION
 from .services.production_intelligence import build_observability_v2_context
 from .policy.healing_policy import (
     HEAL_ACTION_BLOCK_GRACEFULLY,

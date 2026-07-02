@@ -15,9 +15,9 @@ from .production_intelligence import (
     safe_ratio,
 )
 from .stabilization_engine import bounded, build_stabilization_snapshot
+from .policy_constants import GOVERNANCE_VERSION
 
 
-GOVERNANCE_VERSION = "autonomous_governance_v8"
 MAX_POLICY_CHANGE_RATIO = 0.10
 DAILY_MUTATION_LIMIT = 5
 ROLLBACK_FAILURE_RATE_THRESHOLD = 0.20
