@@ -19,17 +19,18 @@ from ..models import (
     PolicyLearningRun,
     PolicyOptimizationProposal,
     PolicyOptimizationStatus,
+    ProviderAccessMode,
     ProviderHealthTestRun,
     ProviderHealthTestStatus,
     ProviderRuntimeSetting,
     SelfHealingEvent,
 )
-from .feedback_loop import build_feedback, build_insights, build_suggestions
-from .governance_engine import GOVERNANCE_VERSION, build_governance_v8_context
+from .governance_engine import GOVERNANCE_VERSION
 from .provider_access import (
     PROVIDER_DOUYIN_ULTRA,
     PROVIDER_THIRD_PARTY,
     PROVIDER_YOUTUBE_MERGE,
+    hard_enabled_for_provider,
     provider_access_summary,
 )
 
@@ -157,6 +158,14 @@ def cache_set(key, value, timeout=CONTROL_PLANE_CACHE_SECONDS):
         logger.warning("control_plane_cache_set_failed", extra={"error_type": type(error).__name__})
 
 
+def get_download_runtime_setting_readonly():
+    return DownloadRuntimeSetting.objects.filter(singleton_key=1).first()
+
+
+def get_provider_runtime_setting_readonly():
+    return ProviderRuntimeSetting.objects.filter(singleton_key=1).first()
+
+
 def build_system_status(request):
     readiness = get_runtime_readiness()
     return {
@@ -194,8 +203,8 @@ def build_core_metrics():
         created_at__gte=start_24h,
         source=GOVERNANCE_VERSION,
     )
-    runtime = DownloadRuntimeSetting.load()
-    global_limit = int(runtime.global_daily_bytes_limit or 0)
+    runtime = get_download_runtime_setting_readonly()
+    global_limit = int(runtime.global_daily_bytes_limit or 0) if runtime is not None else 0
     usage = ratio(actual_bytes, global_limit) if global_limit else 0
     return {
         "available": True,
@@ -213,9 +222,14 @@ def build_core_metrics():
         "governance_approved_24h": governance_records.filter(
             state__in=(PolicyControlState.APPROVED, PolicyControlState.AUTO_APPLIED, PolicyControlState.EXECUTED)
         ).count(),
+        "download_runtime_initialized": runtime is not None,
         "global_daily_bytes_limit": global_limit,
         "global_daily_bytes_usage_rate": usage,
-        "global_daily_bytes_usage_label": f"{round(usage * 100, 1)}%" if global_limit else "未设置",
+        "global_daily_bytes_usage_label": (
+            f"{round(usage * 100, 1)}%"
+            if global_limit
+            else ("未设置" if runtime is not None else "未初始化")
+        ),
     }
 
 
@@ -241,14 +255,25 @@ def provider_log_stats(provider_names):
 
 
 def build_provider_status(request):
-    runtime = ProviderRuntimeSetting.load()
+    runtime = get_provider_runtime_setting_readonly()
     rows = []
     for item in PROVIDER_ROWS:
-        access = provider_access_summary(item["provider_id"], request, runtime)
+        if runtime is not None:
+            access = provider_access_summary(item["provider_id"], request, runtime)
+        else:
+            hard_enabled = hard_enabled_for_provider(item["provider_id"])
+            access = {
+                "effective_mode": ProviderAccessMode.DISABLED,
+                "effective_label": "未初始化",
+                "rollout_percent": 0,
+                "hard_enabled": hard_enabled,
+                "access_reason": "ProviderRuntimeSetting 未初始化。",
+            }
         last_run = latest_health_for(item["test_keys"])
         stats = provider_log_stats(item["log_providers"])
         rows.append({
             **item,
+            "runtime_initialized": runtime is not None,
             "runtime_mode": access["effective_mode"],
             "runtime_label": access["effective_label"],
             "rollout_percent": access["rollout_percent"],
@@ -264,7 +289,7 @@ def build_provider_status(request):
             "health_url": url_or_empty("provider_health_tests"),
             "parse_logs_url": url_or_empty("parse_logs"),
         })
-    return {"available": True, "rows": rows}
+    return {"available": True, "runtime_initialized": runtime is not None, "rows": rows}
 
 
 def route_distribution_rows(queryset):
@@ -306,21 +331,41 @@ def build_download_cost_status():
     limit_hits = today_download.filter(
         status__in=(ObservabilityStatus.BLOCKED, ObservabilityStatus.RATE_LIMITED),
     ).values("error_code").annotate(count=Count("id")).order_by("-count")[:10]
-    runtime = DownloadRuntimeSetting.load()
-    runtime_summary = {
-        "global_daily_bytes_limit": runtime.global_daily_bytes_limit,
-        "global_daily_bytes_limit_label": format_bytes(runtime.global_daily_bytes_limit),
-        "daily_bytes_limit_per_ip": runtime.daily_bytes_limit_per_ip,
-        "daily_bytes_limit_per_ip_label": format_bytes(runtime.daily_bytes_limit_per_ip),
-        "single_archive_bytes_limit": runtime.single_archive_bytes_limit,
-        "single_archive_bytes_limit_label": format_bytes(runtime.single_archive_bytes_limit),
-        "single_video_bytes_limit": runtime.single_video_bytes_limit,
-        "single_video_bytes_limit_label": format_bytes(runtime.single_video_bytes_limit),
-        "visitor_video_download_enabled": runtime.visitor_video_download_enabled,
-        "staff_large_download_exempt": runtime.staff_large_download_exempt,
-    }
+    runtime = get_download_runtime_setting_readonly()
+    if runtime is None:
+        runtime_summary = {
+            "initialized": False,
+            "global_daily_bytes_limit": 0,
+            "global_daily_bytes_limit_label": "未初始化",
+            "daily_bytes_limit_per_ip": 0,
+            "daily_bytes_limit_per_ip_label": "未初始化",
+            "single_archive_bytes_limit": 0,
+            "single_archive_bytes_limit_label": "未初始化",
+            "single_video_bytes_limit": 0,
+            "single_video_bytes_limit_label": "未初始化",
+            "visitor_video_download_enabled": None,
+            "visitor_video_download_enabled_label": "未初始化",
+            "staff_large_download_exempt": None,
+            "staff_large_download_exempt_label": "未初始化",
+        }
+    else:
+        runtime_summary = {
+            "initialized": True,
+            "global_daily_bytes_limit": runtime.global_daily_bytes_limit,
+            "global_daily_bytes_limit_label": format_bytes(runtime.global_daily_bytes_limit),
+            "daily_bytes_limit_per_ip": runtime.daily_bytes_limit_per_ip,
+            "daily_bytes_limit_per_ip_label": format_bytes(runtime.daily_bytes_limit_per_ip),
+            "single_archive_bytes_limit": runtime.single_archive_bytes_limit,
+            "single_archive_bytes_limit_label": format_bytes(runtime.single_archive_bytes_limit),
+            "single_video_bytes_limit": runtime.single_video_bytes_limit,
+            "single_video_bytes_limit_label": format_bytes(runtime.single_video_bytes_limit),
+            "visitor_video_download_enabled": runtime.visitor_video_download_enabled,
+            "visitor_video_download_enabled_label": "开启" if runtime.visitor_video_download_enabled else "关闭",
+            "staff_large_download_exempt": runtime.staff_large_download_exempt,
+            "staff_large_download_exempt_label": "开启" if runtime.staff_large_download_exempt else "关闭",
+        }
     actual_bytes = aggregates["actual_bytes"] or 0
-    global_limit = runtime.global_daily_bytes_limit or 0
+    global_limit = runtime.global_daily_bytes_limit if runtime is not None else 0
     return {
         "available": True,
         "route_distribution": route_distribution_rows(today_download),
@@ -344,9 +389,6 @@ def build_download_cost_status():
 
 def build_policy_governance_status():
     start_24h = window_start(24)
-    feedback = build_feedback(window_hours=24)
-    insights = build_insights(feedback)
-    suggestions = build_suggestions(insights)
     latest_learning = PolicyLearningRun.objects.order_by("-created_at").first()
     pending_approvals = PolicyOptimizationProposal.objects.filter(
         status=PolicyOptimizationStatus.NEEDS_APPROVAL,
@@ -367,22 +409,20 @@ def build_policy_governance_status():
     )
     for event in recent_events:
         event["created_at_label"] = timezone.localtime(event["created_at"]).strftime("%H:%M:%S")
-    governance_context = build_governance_v8_context(window_hours=24)
-    safety = (governance_context.get("governance") or {}).get("system_safety_status") or {}
     return {
         "available": True,
-        "feedback_generated_at": feedback.get("signals", {}).get("window_ended_at", ""),
-        "insight_count": len(insights.get("insights") or []),
-        "suggestion_count": len(suggestions.get("suggestions") or []),
+        "feedback_generated_at": "暂无数据",
+        "insight_count": "暂无数据",
+        "suggestion_count": "暂无数据",
         "latest_learning_status": latest_learning.status if latest_learning else "暂无数据",
         "latest_learning_at": timezone.localtime(latest_learning.created_at).strftime("%Y-%m-%d %H:%M:%S") if latest_learning else "",
         "pending_approvals": pending_approvals,
         "governance_decision_count": governance_records.count(),
         "governance_distribution": governance_distribution,
-        "stability_index": safety.get("stability_index", 0),
-        "stability_index_label": safety.get("stability_index_label", "暂无数据"),
-        "risk_score": safety.get("risk_exposure", 0),
-        "risk_label": safety.get("risk_exposure_label", "normal"),
+        "stability_index": None,
+        "stability_index_label": "暂无数据",
+        "risk_score": None,
+        "risk_label": "暂无数据",
         "recent_events": recent_events,
         "feedback_url": url_or_empty("feedback_loop"),
         "policy_url": url_or_empty("policy_engine"),

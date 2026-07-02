@@ -10233,6 +10233,50 @@ class ProductionControlPlaneTests(TestCase):
         self.assertContains(response, "暂无数据")
         self.assertContains(response, "系统状态正常")
 
+    @patch("xhs_download.views.build_stability_v6_context", side_effect=AssertionError("stability should not run"))
+    @patch("xhs_download.views.build_autonomous_evolution_context", side_effect=AssertionError("evolution should not run"))
+    @patch("xhs_download.services.governance_engine.build_governance_v8_context", side_effect=AssertionError("governance should not run"))
+    @patch("xhs_download.services.feedback_loop.build_feedback", side_effect=AssertionError("feedback should not run"))
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_control_plane_does_not_call_feedback_or_governance_engines(
+        self,
+        _mock_readiness,
+        mock_feedback,
+        mock_governance,
+        mock_evolution,
+        mock_stability,
+    ):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        self.assertEqual(response.status_code, 200)
+        mock_feedback.assert_not_called()
+        mock_governance.assert_not_called()
+        mock_evolution.assert_not_called()
+        mock_stability.assert_not_called()
+
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_control_plane_does_not_create_runtime_settings(self, _mock_readiness):
+        DownloadRuntimeSetting.objects.all().delete()
+        ProviderRuntimeSetting.objects.all().delete()
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "未初始化")
+        self.assertEqual(DownloadRuntimeSetting.objects.count(), 0)
+        self.assertEqual(ProviderRuntimeSetting.objects.count(), 0)
+
     @patch(
         "xhs_download.services.control_plane.get_runtime_readiness",
         return_value={"ready": True, "components": {"database": True, "cache": True}},

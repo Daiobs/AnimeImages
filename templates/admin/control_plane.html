@@ -231,8 +231,8 @@
                             <tr><th>全站日流量限制</th><td>{{ download_cost.runtime.global_daily_bytes_limit_label|default:"暂无数据" }}</td></tr>
                             <tr><th>单 ZIP 限制</th><td>{{ download_cost.runtime.single_archive_bytes_limit_label|default:"暂无数据" }}</td></tr>
                             <tr><th>单视频限制</th><td>{{ download_cost.runtime.single_video_bytes_limit_label|default:"暂无数据" }}</td></tr>
-                            <tr><th>访客视频下载</th><td>{% if download_cost.runtime.visitor_video_download_enabled %}开启{% else %}关闭{% endif %}</td></tr>
-                            <tr><th>staff 大文件豁免</th><td>{% if download_cost.runtime.staff_large_download_exempt %}开启{% else %}关闭{% endif %}</td></tr>
+                            <tr><th>访客视频下载</th><td>{{ download_cost.runtime.visitor_video_download_enabled_label|default:"未初始化" }}</td></tr>
+                            <tr><th>staff 大文件豁免</th><td>{{ download_cost.runtime.staff_large_download_exempt_label|default:"未初始化" }}</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -287,7 +287,7 @@
             <h2>Policy / Feedback / Governance</h2>
             <div class="control-grid">
                 <div class="control-card"><strong>Feedback 生成时间</strong><span>{{ policy_governance.feedback_generated_at|default:"暂无数据" }}</span></div>
-                <div class="control-card"><strong>Insights / Suggestions</strong><span>{{ policy_governance.insight_count|default:0 }} / {{ policy_governance.suggestion_count|default:0 }}</span></div>
+                <div class="control-card"><strong>Insights / Suggestions</strong><span>{{ policy_governance.insight_count|default:"暂无数据" }} / {{ policy_governance.suggestion_count|default:"暂无数据" }}</span></div>
                 <div class="control-card"><strong>Learning 状态</strong><span>{{ policy_governance.latest_learning_status|default:"暂无数据" }}</span></div>
                 <div class="control-card"><strong>Pending approvals</strong><span>{{ policy_governance.pending_approvals|default:0 }}</span></div>
                 <div class="control-card"><strong>Governance decisions</strong><span>{{ policy_governance.governance_decision_count|default:0 }}</span></div>

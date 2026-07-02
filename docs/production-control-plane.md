@@ -20,10 +20,12 @@ It does not:
 
 - modify Provider runtime settings
 - modify DownloadRuntimeSetting
+- initialize runtime settings with `.load()` or `get_or_create()`
 - approve or reject Governance decisions
 - run Provider health tests
 - call third-party Provider APIs
 - trigger downloads or parsing jobs
+- run Feedback, Governance, Evolution, or Stabilization engines
 
 It only reads local health state, database logs, runtime settings, and cached aggregates.
 
@@ -41,10 +43,11 @@ The page reads:
 - `PolicyOptimizationProposal`
 - `PolicyControlRecord`
 - `SelfHealingEvent`
-- Feedback Loop summaries
-- Governance v8 local context
+- lightweight 24h aggregates from saved policy/control records
 
 Every section is wrapped independently. If one model, query, or cache read fails, the page should degrade that section and continue rendering.
+
+If `ProviderRuntimeSetting` or `DownloadRuntimeSetting` has not been initialized yet, the page displays `未初始化` and links to the relevant settings page. It must not create singleton rows while rendering.
 
 ## Risk Levels
 
@@ -84,6 +87,10 @@ Recommended daily production check:
 ## Why Provider Tests Are Not Run Automatically
 
 Provider tests can call external services, consume quotas, and trigger upstream rate limits. The control plane must stay cheap, fast, and safe to refresh. Use `/admin/provider-health-tests/` for explicit smoke tests.
+
+## Why Feedback and Governance Are Not Recomputed
+
+Feedback, Governance, Evolution, and Stabilization engines can scan larger windows of logs or perform heavier decision analysis. The production control plane is only a status surface, so it reads saved runs, pending approval counts, and recent `PolicyControlRecord` aggregates. If no saved risk or stability snapshot exists, it shows `暂无数据` instead of calculating one during page load.
 
 ## Permissions
 
