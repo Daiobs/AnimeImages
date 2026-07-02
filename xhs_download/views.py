@@ -139,6 +139,7 @@ from .services.control_convergence_engine import build_control_convergence_conte
 from .services.stabilization_engine import build_stability_v6_context
 from .services.autonomous_evolution_engine import build_autonomous_evolution_context
 from .services.governance_engine import build_governance_v8_context
+from .services.control_plane import build_control_plane_context
 from .services.rollout_guard import build_rollout_guard_context
 from .services.routing_v3 import decide_route_v3
 from .services.rate_limits import (
@@ -1017,6 +1018,50 @@ def admin_console_required(request):
         "xhs_download.view_provideradminauditlog",
         "xhs_download.view_selfhealingevent",
     )
+
+
+def control_plane_required(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_parserequestlog",
+        "xhs_download.view_downloadrequestlog",
+        "xhs_download.view_providerhealthtestrun",
+        "xhs_download.view_provideradminauditlog",
+    )
+
+
+@require_GET
+def control_plane_view(request):
+    if not control_plane_required(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+    try:
+        context = build_control_plane_context(request)
+    except Exception as error:
+        logger.exception("control_plane_view_failed")
+        context = {
+            "title": "Production Control Plane",
+            "version": "production_control_plane_v1",
+            "request_id": str(getattr(request, "request_id", "") or ""),
+            "system_status": {
+                "available": False,
+                "risk_level": "danger",
+                "error": type(error).__name__,
+            },
+            "core_metrics": {"available": False},
+            "provider_status": {"available": False, "rows": []},
+            "download_cost": {"available": False, "route_distribution": [], "runtime": {}},
+            "policy_governance": {"available": False, "recent_events": []},
+            "actions": {
+                "items": [{
+                    "level": "danger",
+                    "title": "控制平面加载失败",
+                    "body": "请查看 Django 日志中的 control_plane_view_failed。",
+                    "url": "",
+                }]
+            },
+            "links": {},
+        }
+    return render(request, "admin/control_plane.html", context)
 
 
 @require_GET

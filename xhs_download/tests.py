@@ -10178,6 +10178,209 @@ class ProviderHealthTestPanelTests(TestCase):
         self.assertEqual(response["Location"], "/admin/provider-health-tests/")
 
 
+class ProductionControlPlaneTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.staff = User.objects.create_user(
+            username="control-staff",
+            password="test-password",
+            is_staff=True,
+        )
+        self.superuser = User.objects.create_superuser(
+            username="control-root",
+            password="test-password",
+        )
+
+    def grant_xhs_permission(self, user, codename):
+        permission = Permission.objects.get(
+            content_type__app_label="xhs_download",
+            codename=codename,
+        )
+        user.user_permissions.add(permission)
+        for cache_name in ("_perm_cache", "_user_perm_cache", "_group_perm_cache"):
+            if hasattr(user, cache_name):
+                delattr(user, cache_name)
+
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_control_plane_permissions(self, _mock_readiness):
+        staff_client = Client()
+        staff_client.force_login(self.staff)
+        super_client = Client()
+        super_client.force_login(self.superuser)
+
+        self.assertEqual(Client().get("/admin/control-plane/").status_code, 404)
+        self.assertEqual(staff_client.get("/admin/control-plane/").status_code, 404)
+        self.assertContains(super_client.get("/admin/control-plane/"), "统一生产控制平面")
+
+        self.grant_xhs_permission(self.staff, "view_downloadrequestlog")
+        self.assertContains(staff_client.get("/admin/control-plane/"), "Action Center")
+
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_control_plane_empty_data_renders(self, _mock_readiness):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "今日解析次数")
+        self.assertContains(response, "暂无数据")
+        self.assertContains(response, "系统状态正常")
+
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_control_plane_shows_download_route_and_provider_metrics(self, _mock_readiness):
+        ParseRequestLog.objects.create(
+            request_id="parse-control-1",
+            status=ObservabilityStatus.SUCCESS,
+            query_host="www.douyin.com",
+            selected_provider="native",
+        )
+        DownloadRequestLog.objects.create(
+            request_id="download-control-1",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="video",
+            item_count=1,
+            video_count=1,
+            actual_bytes=1024,
+            route_type="direct",
+            provider="kukutool",
+            duration_ms=120,
+            browser_egress_estimated_bytes=1024,
+        )
+        DownloadRequestLog.objects.create(
+            request_id="download-control-2",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="archive",
+            item_count=3,
+            image_count=3,
+            actual_bytes=2048,
+            route_type="zip",
+            provider="native",
+            duration_ms=240,
+            server_egress_estimated_bytes=2048,
+        )
+        DownloadRequestLog.objects.create(
+            request_id="download-control-3",
+            status=ObservabilityStatus.BLOCKED,
+            download_type="video",
+            item_count=1,
+            video_count=1,
+            route_type="blocked",
+            error_code="SINGLE_VIDEO_SIZE_LIMIT",
+            provider="native",
+        )
+        ProviderHealthTestRun.objects.create(
+            request_id="health-control-1",
+            test_key="douyin_kukutool_ultra",
+            status=ProviderHealthTestStatus.SUCCESS,
+            provider="kukutool",
+            duration_ms=88,
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        self.assertContains(response, "3.0 KB")
+        self.assertContains(response, "direct")
+        self.assertContains(response, "zip")
+        self.assertContains(response, "blocked")
+        self.assertContains(response, "SINGLE_VIDEO_SIZE_LIMIT")
+        self.assertContains(response, "抖音 KuKuTool 超清")
+        self.assertContains(response, "成功")
+
+    @patch("xhs_download.services.control_plane.cache.set", side_effect=RuntimeError("cache down"))
+    @patch("xhs_download.services.control_plane.cache.get", side_effect=RuntimeError("cache down"))
+    @patch(
+        "xhs_download.services.control_plane.build_policy_governance_status",
+        side_effect=RuntimeError("missing governance model"),
+    )
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": False}},
+    )
+    def test_control_plane_degrades_when_cache_or_policy_section_fails(
+        self,
+        _mock_readiness,
+        _mock_policy,
+        _mock_cache_get,
+        _mock_cache_set,
+    ):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "统一生产控制平面")
+        self.assertContains(response, "Policy / Feedback / Governance")
+
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_control_plane_action_center_warns_when_traffic_exceeds_70_percent(self, _mock_readiness):
+        DownloadRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={"global_daily_bytes_limit": 1000},
+        )
+        DownloadRequestLog.objects.create(
+            request_id="download-control-traffic",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="video",
+            actual_bytes=800,
+            route_type="zip",
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        self.assertContains(response, "今日全站下载流量偏高")
+        self.assertContains(response, "warning")
+
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_control_plane_action_center_warns_when_provider_health_failed(self, _mock_readiness):
+        ProviderHealthTestRun.objects.create(
+            request_id="health-control-failed",
+            test_key="youtube_merge",
+            status=ProviderHealthTestStatus.FAILED,
+            provider="youtube_merge",
+            error_type="ProviderFailed",
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        self.assertContains(response, "YouTube merge 最近健康测试异常")
+        self.assertContains(response, "建议运行 Provider 健康测试")
+
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_control_plane_action_center_normal_state(self, _mock_readiness):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        self.assertContains(response, "系统状态正常")
+
+
 class AdminObservabilityMvpTests(TestCase):
     def setUp(self):
         from django.contrib.auth import get_user_model
