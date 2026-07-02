@@ -615,7 +615,7 @@
         async function readResponseBlobWithProgress(response, startPercent, endPercent) {
             const contentLength = Number.parseInt(response.headers.get("Content-Length") || "0", 10);
             if (!response.body || !contentLength) {
-                setProgressPending("接收中");
+                setProgressPending("下载中");
                 const blob = await response.blob();
                 setProgress(endPercent);
                 return blob;
@@ -887,7 +887,7 @@
             const fileUrl = completed.file_url || created.file_url;
 
             setProgress(95);
-            setStatus(getStatusElement(), "正在接收文件...");
+            setStatus(getStatusElement(), "正在下载文件...");
 
             const fileResponse = await fetch(fileUrl, {cache: "no-store"});
             if (!fileResponse.ok) {
@@ -1047,9 +1047,9 @@
                 if (response.headers.get("Content-Length")) {
                     setProgress(1);
                 } else {
-                    setProgressPending("接收中");
+                    setProgressPending("下载中");
                 }
-                setStatus(getStatusElement(), "服务器处理完成，正在接收文件...");
+                setStatus(getStatusElement(), "服务器处理完成，正在下载文件...");
                 const result = await saveDownloadResponse(response, getBaseFilename(), 0, 100);
                 setStatus(getStatusElement(), serverDownloadStatusMessage(result), result.variant);
             } catch (error) {
