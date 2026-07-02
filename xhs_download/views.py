@@ -3013,7 +3013,7 @@ def download_images_api(request):
     download_mode = (data.get("download_mode") or "browser").lower().strip()
     if download_mode == "server" and not server_save_mode_is_enabled():
         download_mode = "auto"
-    routed_download_modes = {"auto", "browser", "proxy", "server_single"}
+    routed_download_modes = {"auto", "browser", "proxy", "server_single", "zip"}
     route_info = zip_download_route_info(
         request,
         media_items,
@@ -3058,15 +3058,14 @@ def download_images_api(request):
                     requested_mode="auto",
                     platform_key=data.get("platform_key", ""),
                 )
-            if download_mode in {"auto", "browser"}:
-                decided = apply_policy_decision_to_route(
-                    request,
-                    media_items,
-                    decided,
-                    requested_mode=download_mode,
-                    platform_key=data.get("platform_key", ""),
-                    provider_hint=decided.get("provider", ""),
-                )
+            decided = apply_policy_decision_to_route(
+                request,
+                media_items,
+                decided,
+                requested_mode=download_mode,
+                platform_key=data.get("platform_key", ""),
+                provider_hint=decided.get("provider", ""),
+            )
             return decided
 
         route_info = safe_routing_decision(

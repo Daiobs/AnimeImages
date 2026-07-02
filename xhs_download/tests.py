@@ -7234,6 +7234,87 @@ class PolicyEngineEvolutionTests(TestCase):
         self.assertEqual(log.policy_decision_source, "policy_v3_5")
         self.assertGreaterEqual(log.policy_estimated_savings_bytes, 0)
 
+    def test_policy_v35_active_can_override_explicit_zip_mode(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v35_mode = PolicyRuntimeMode.PUBLIC
+        setting.save(update_fields=["v35_mode", "updated_at"])
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "zip",
+                "media_items": [{
+                    "type": "image",
+                    "url": "https://ci.xiaohongshu.com/a.jpg",
+                    "size_bytes": 321,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/json")
+        self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.route_type, ROUTE_DIRECT)
+        self.assertEqual(log.final_policy_route, ROUTE_DIRECT)
+        self.assertTrue(log.policy_active)
+        self.assertEqual(log.policy_decision_source, "policy_v3_5")
+
+    def test_policy_v35_active_can_override_explicit_proxy_mode(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v35_mode = PolicyRuntimeMode.PUBLIC
+        setting.save(update_fields=["v35_mode", "updated_at"])
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "proxy",
+                "media_items": [{
+                    "type": "image",
+                    "url": "https://ci.xiaohongshu.com/a.jpg",
+                    "size_bytes": 321,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/json")
+        self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.route_type, ROUTE_DIRECT)
+        self.assertEqual(log.final_policy_route, ROUTE_DIRECT)
+        self.assertTrue(log.policy_active)
+        self.assertEqual(log.policy_decision_source, "policy_v3_5")
+
+    def test_policy_v35_active_can_override_explicit_server_single_mode(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v35_mode = PolicyRuntimeMode.PUBLIC
+        setting.save(update_fields=["v35_mode", "updated_at"])
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "server_single",
+                "media_items": [{
+                    "type": "image",
+                    "url": "https://ci.xiaohongshu.com/a.jpg",
+                    "size_bytes": 321,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/json")
+        self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.route_type, ROUTE_DIRECT)
+        self.assertEqual(log.final_policy_route, ROUTE_DIRECT)
+        self.assertTrue(log.policy_active)
+        self.assertEqual(log.policy_decision_source, "policy_v3_5")
+
     def test_cost_guard_still_blocks_unsafe_request(self):
         setting = DownloadRuntimeSetting.load()
         setting.visitor_video_download_enabled = False
