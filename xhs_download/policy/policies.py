@@ -12,7 +12,7 @@ from ..services.download_routing import (
     provider_item_requires_server,
     request_is_mobile,
     safe_download_size,
-    single_video_can_browser_direct_download,
+    single_video_can_browser_direct_attempt,
 )
 from ..services.routing_v3 import decide_route_v3, infer_provider, provider_score
 from .types import PolicyContext, PolicyResult
@@ -45,7 +45,7 @@ def route_for_media_shape(media_items):
         return ROUTE_BLOCKED
     if len(items) == 1 and item_is_image(items[0]):
         return ROUTE_DIRECT
-    if len(items) == 1 and single_video_can_browser_direct_download(items[0]):
+    if len(items) == 1 and single_video_can_browser_direct_attempt(items[0]):
         return ROUTE_DIRECT
     if len(items) == 1 and item_is_video(items[0]):
         return ROUTE_PROXY

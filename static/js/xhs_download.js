@@ -717,6 +717,53 @@
             return filenames;
         }
 
+        async function postDownloadPayload(payload) {
+            return fetch(downloadUrl, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-CSRFToken": getCookie("csrftoken"),
+                },
+                body: JSON.stringify(payload),
+            });
+        }
+
+        async function saveDownloadResponse(response, fallbackName, startPercent, endPercent) {
+            const filename = getDownloadFilename(response, fallbackName);
+            const blob = await readResponseBlobWithProgress(response, startPercent, endPercent);
+            const savedMessage = await saveZipBlob(blob, filename, useFilePicker);
+            const savedCount = response.headers.get("X-Saved-Count") || "?";
+            const failedCount = response.headers.get("X-Failed-Count") || "0";
+            const variant = failedCount === "0" ? "text-success" : "text-muted";
+            return {filename, savedMessage, savedCount, failedCount, variant};
+        }
+
+        function serverDownloadStatusMessage(result) {
+            return `${result.savedMessage}：${result.filename}，成功 ${result.savedCount} 个，失败 ${result.failedCount} 个`;
+        }
+
+        async function downloadServerSingleFallback(payload) {
+            const fallbackPayload = {
+                ...payload,
+                download_mode: "proxy",
+            };
+            setProgressPending("切换中");
+            setStatus(getStatusElement(), "直链下载不可用，正在切换服务器单文件下载...");
+
+            const response = await postDownloadPayload(fallbackPayload);
+            if (!response.ok) {
+                throw new Error(await parseErrorResponse(response));
+            }
+
+            const contentType = response.headers.get("Content-Type") || "";
+            if (contentType.includes("application/json")) {
+                const data = await response.json();
+                throw new Error(data.message || data.route_reason || "服务器兜底下载未返回文件");
+            }
+
+            return saveDownloadResponse(response, getBaseFilename(), 0, 100);
+        }
+
         async function waitForDownloadTask(taskStatusUrl) {
             while (true) {
                 const response = await fetch(taskStatusUrl, {cache: "no-store"});
@@ -825,14 +872,7 @@
                     ? "判断中"
                     : (selectedSingleItem(selected) ? "准备下载" : "打包中");
                 setProgressPending(pendingLabel);
-                const response = await fetch(downloadUrl, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "X-CSRFToken": getCookie("csrftoken"),
-                    },
-                    body: JSON.stringify(payload),
-                });
+                const response = await postDownloadPayload(payload);
 
                 if (!response.ok) {
                     throw new Error(await parseErrorResponse(response));
@@ -843,13 +883,30 @@
                 if (contentType.includes("application/json")) {
                     const data = await response.json();
                     if (data.status === "routed" && data.route_type === "direct") {
-                        const filenames = await downloadDirectRouteItems(data.items || []);
-                        setProgress(100);
-                        setStatus(
-                            getStatusElement(),
-                            `${data.route_reason || "已使用浏览器直链下载"}：${filenames.join("、")}${routeWarningText(data.warnings)}`,
-                            "text-success",
-                        );
+                        try {
+                            const filenames = await downloadDirectRouteItems(data.items || []);
+                            setProgress(100);
+                            setStatus(
+                                getStatusElement(),
+                                `${data.route_reason || "已使用浏览器直链下载"}：${filenames.join("、")}${routeWarningText(data.warnings)}`,
+                                "text-success",
+                            );
+                        } catch (directError) {
+                            if (directError && directError.name === "AbortError") {
+                                throw directError;
+                            }
+                            if (!selectedSingleItem(selected)) {
+                                throw directError;
+                            }
+                            console.warn("Direct download failed, falling back to server proxy", directError);
+                            const fallback = await downloadServerSingleFallback(payload);
+                            setProgress(100);
+                            setStatus(
+                                getStatusElement(),
+                                `${serverDownloadStatusMessage(fallback)}（已自动切换服务器下载）`,
+                                fallback.variant,
+                            );
+                        }
                         return;
                     }
                     if (data.status === "routed" && data.route_type === "proxy") {
@@ -866,13 +923,8 @@
                     return;
                 }
 
-                const filename = getDownloadFilename(response, getBaseFilename());
-                const blob = await readResponseBlobWithProgress(response, 0, 100);
-                const savedMessage = await saveZipBlob(blob, filename, useFilePicker);
-                const savedCount = response.headers.get("X-Saved-Count") || "?";
-                const failedCount = response.headers.get("X-Failed-Count") || "0";
-                const variant = failedCount === "0" ? "text-success" : "text-muted";
-                setStatus(getStatusElement(), `${savedMessage}：${filename}，成功 ${savedCount} 个，失败 ${failedCount} 个`, variant);
+                const result = await saveDownloadResponse(response, getBaseFilename(), 0, 100);
+                setStatus(getStatusElement(), serverDownloadStatusMessage(result), result.variant);
             } catch (error) {
                 if (error && error.name === "AbortError") {
                     setStatus(getStatusElement(), "已取消保存位置选择");

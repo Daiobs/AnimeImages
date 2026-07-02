@@ -2843,7 +2843,8 @@ def download_images_api(request):
         )
 
     runtime_setting = get_download_runtime_setting()
-    if download_mode in {"auto", "browser"}:
+    routed_download_modes = {"auto", "browser", "proxy", "server_single"}
+    if download_mode in routed_download_modes:
         route_info = decide_download_route(
             request,
             media_items,
@@ -2858,14 +2859,15 @@ def download_images_api(request):
                 requested_mode="auto",
                 platform_key=data.get("platform_key", ""),
             )
-        route_info = apply_policy_decision_to_route(
-            request,
-            media_items,
-            route_info,
-            requested_mode=download_mode,
-            platform_key=data.get("platform_key", ""),
-            provider_hint=route_info.get("provider", ""),
-        )
+        if download_mode in {"auto", "browser"}:
+            route_info = apply_policy_decision_to_route(
+                request,
+                media_items,
+                route_info,
+                requested_mode=download_mode,
+                platform_key=data.get("platform_key", ""),
+                provider_hint=route_info.get("provider", ""),
+            )
     guard_result = check_download_cost_preflight(request, media_items, runtime_setting)
     if guard_result:
         error_code, message, status_code = guard_result
@@ -2886,7 +2888,7 @@ def download_images_api(request):
             error_code=error_code,
         )
 
-    if download_mode in {"auto", "browser"} and route_info.get("route_type") == ROUTE_BLOCKED:
+    if download_mode in routed_download_modes and route_info.get("route_type") == ROUTE_BLOCKED:
         error_code = route_info.get("error_code") or "DOWNLOAD_BLOCKED"
         log_download_request_event(
             request,
@@ -2904,7 +2906,7 @@ def download_images_api(request):
             error_code=error_code,
         )
 
-    if download_mode in {"auto", "browser"} and route_info.get("route_type") == ROUTE_DIRECT:
+    if download_mode in routed_download_modes and route_info.get("route_type") == ROUTE_DIRECT:
         log_download_request_event(
             request,
             download_type=route_info.get("route_type", "auto"),
