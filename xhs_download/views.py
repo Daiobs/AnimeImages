@@ -135,6 +135,7 @@ from .services.policy_control_layer import (
     build_policy_control_preview,
     create_controlled_policy_proposals,
 )
+from .services.control_convergence_engine import build_control_convergence_context
 from .services.rollout_guard import build_rollout_guard_context
 from .services.routing_v3 import decide_route_v3
 from .services.rate_limits import (
@@ -957,6 +958,14 @@ def policy_control_change_allowed(request):
     )
 
 
+def control_convergence_view_allowed(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_policycontrolrecord",
+        "xhs_download.view_policyoptimizationproposal",
+    )
+
+
 def observability_access_allowed(request, *permissions):
     user = getattr(request, "user", None)
     if not (
@@ -1690,6 +1699,18 @@ def policy_control_view(request):
         },
     }
     return render(request, "admin/policy_control.html", context)
+
+
+@csrf_protect
+def control_convergence_view(request):
+    if not control_convergence_view_allowed(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+    window_hours = clamp_int(request.GET.get("window"), minimum=1, maximum=168, default=24)
+    return render(
+        request,
+        "admin/control_convergence.html",
+        build_control_convergence_context(window_hours=window_hours),
+    )
 
 
 def filtered_log_queryset(model, request, filter_fields):

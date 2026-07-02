@@ -4,6 +4,7 @@ from django.shortcuts import redirect
 from .models import (
     DownloadRequestLog,
     ParseRequestLog,
+    PolicyControlRecord,
     PolicyLearningRun,
     PolicyOptimizationProposal,
     PolicyRuntimeSetting,
@@ -204,6 +205,35 @@ class PolicyOptimizationProposalAdmin(ReadOnlyLogAdmin):
         "created_at",
     )
     search_fields = ("kind", "policy_area", "title", "signature", "drift_key", "actor_username")
+
+
+@admin.register(PolicyControlRecord)
+class PolicyControlRecordAdmin(ReadOnlyLogAdmin):
+    list_display = (
+        "created_at",
+        "state",
+        "policy_decision",
+        "control_decision",
+        "execution_result",
+        "route",
+        "provider",
+        "cost",
+        "control_confidence",
+        "failure_pattern",
+        "request_id",
+    )
+    list_filter = (
+        "state",
+        "control_decision",
+        "policy_decision",
+        "execution_result",
+        "route",
+        "provider",
+        "failure_pattern",
+        "source",
+        "created_at",
+    )
+    search_fields = ("request_id", "policy_decision", "control_decision", "provider", "route", "failure_pattern")
 
 
 @admin.register(PolicyRuntimeSetting)

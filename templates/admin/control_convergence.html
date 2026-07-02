@@ -1,0 +1,219 @@
+{% extends "admin/base_site.html" %}
+
+{% block content_title %}{% endblock %}
+
+{% block content %}
+<style>
+    #content { padding: 0; }
+    .convergence-page {
+        min-height: calc(100vh - 96px);
+        margin: -20px -20px 0;
+        padding: 34px clamp(18px, 4vw, 54px) 56px;
+        background: #f8fbff;
+        color: #111827;
+    }
+    .convergence-shell { max-width: 1180px; margin: 0 auto; }
+    .convergence-hero {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 20px;
+    }
+    .convergence-eyebrow {
+        display: inline-flex;
+        min-height: 28px;
+        align-items: center;
+        padding: 4px 10px;
+        border-radius: 8px;
+        background: #ecfeff;
+        color: #0e7490;
+        font-size: 12px;
+        font-weight: 800;
+    }
+    .convergence-title {
+        margin: 10px 0 0;
+        color: #111827;
+        font-size: clamp(28px, 4vw, 42px);
+        font-weight: 900;
+        line-height: 1.12;
+        letter-spacing: 0;
+    }
+    .convergence-subtitle {
+        max-width: 760px;
+        margin: 10px 0 0;
+        color: #6b7280;
+        font-size: 15px;
+        line-height: 1.7;
+    }
+    .convergence-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    .convergence-link,
+    .convergence-button {
+        display: inline-flex;
+        min-height: 40px;
+        align-items: center;
+        justify-content: center;
+        padding: 0 14px;
+        border: 1px solid #d8dde8;
+        border-radius: 8px;
+        background: #fff;
+        color: #111827;
+        font-size: 14px;
+        font-weight: 800;
+        text-decoration: none;
+    }
+    .convergence-button { background: #0e7490; border-color: #0e7490; color: #fff; }
+    .convergence-link:hover { color: #0e7490; border-color: #67e8f9; text-decoration: none; }
+    .convergence-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 16px;
+    }
+    .convergence-card,
+    .convergence-panel {
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: 0 4px 12px rgba(17, 24, 39, .05);
+    }
+    .convergence-card { min-height: 96px; padding: 16px; }
+    .convergence-card strong {
+        display: block;
+        color: #6b7280;
+        font-size: 13px;
+        font-weight: 800;
+    }
+    .convergence-card span {
+        display: block;
+        margin-top: 8px;
+        color: #111827;
+        font-size: 20px;
+        font-weight: 900;
+        overflow-wrap: anywhere;
+    }
+    .convergence-panel { margin-bottom: 16px; padding: 18px; }
+    .convergence-panel h2 { margin: 0 0 14px; font-size: 18px; font-weight: 900; }
+    .convergence-muted { color: #6b7280; font-size: 13px; line-height: 1.6; }
+    .convergence-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .convergence-table th,
+    .convergence-table td {
+        padding: 10px 8px;
+        border-bottom: 1px solid #eef2f7;
+        text-align: left;
+        vertical-align: top;
+    }
+    .convergence-table th {
+        color: #6b7280;
+        font-size: 12px;
+        font-weight: 900;
+        text-transform: uppercase;
+    }
+    .convergence-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+    .convergence-list li {
+        border: 1px solid #eef2f7;
+        border-radius: 8px;
+        padding: 12px;
+        background: #fff;
+    }
+    @media (max-width: 960px) { .convergence-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 640px) { .convergence-grid { grid-template-columns: 1fr; } }
+</style>
+
+<div class="convergence-page">
+    <div class="convergence-shell">
+        <section class="convergence-hero">
+            <div>
+                <span class="convergence-eyebrow">Production Control Convergence</span>
+                <h1 class="convergence-title">Control Convergence 生产控制收敛</h1>
+                <p class="convergence-subtitle">聚合 Policy Control 状态机、执行追踪和反馈回写，观察控制层是否稳定收敛。本页只读分析，不会自动修改 Routing、Provider 或 Cost Guard。</p>
+                <p class="convergence-muted">生成时间：{{ generated_at }} · 窗口：{{ window_hours }} 小时 · {{ safety_note }}</p>
+            </div>
+            <div class="convergence-actions">
+                <a class="convergence-link" href="{% url 'policy_control' %}">Policy Control</a>
+                <a class="convergence-link" href="{% url 'policy_engine' %}">Policy Engine</a>
+                <a class="convergence-link" href="{% url 'feedback_loop' %}">Feedback Loop</a>
+            </div>
+        </section>
+
+        <section class="convergence-grid">
+            <div class="convergence-card"><strong>控制记录</strong><span>{{ total_records }}</span></div>
+            <div class="convergence-card"><strong>执行成功率</strong><span>{{ execution_success_rate_label }}</span></div>
+            <div class="convergence-card"><strong>审批通过率</strong><span>{{ approval_rate_label }}</span></div>
+            <div class="convergence-card"><strong>稳定分</strong><span>{{ control_stability_score_label }}</span></div>
+            <div class="convergence-card"><strong>漂移分</strong><span>{{ control_drift_score_label }}</span></div>
+            <div class="convergence-card"><strong>一致性分</strong><span>{{ policy_consistency_score_label }}</span></div>
+            <div class="convergence-card"><strong>Orphan 决策</strong><span>{{ orphan_count }}</span></div>
+            <div class="convergence-card"><strong>执行成本</strong><span>{{ total_cost_label }}</span></div>
+        </section>
+
+        <section class="convergence-panel">
+            <h2>状态分布</h2>
+            <table class="convergence-table">
+                <thead><tr><th>状态</th><th>数量</th></tr></thead>
+                <tbody>
+                {% for state, count in state_distribution.items %}
+                    <tr><td>{{ state }}</td><td>{{ count }}</td></tr>
+                {% empty %}
+                    <tr><td colspan="2">暂无控制状态记录。</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+
+        <section class="convergence-panel">
+            <h2>失败模式</h2>
+            <table class="convergence-table">
+                <thead><tr><th>Pattern</th><th>数量</th></tr></thead>
+                <tbody>
+                {% for item in failure_patterns %}
+                    <tr><td>{{ item.pattern }}</td><td>{{ item.count }}</td></tr>
+                {% empty %}
+                    <tr><td colspan="2">暂无失败模式。</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+
+        <section class="convergence-panel">
+            <h2>控制建议</h2>
+            <ul class="convergence-list">
+                {% for item in suggestions %}
+                    <li>
+                        <strong>{{ item.title }}</strong>
+                        <div class="convergence-muted">{{ item.body }}</div>
+                        <div class="convergence-muted">原因：{{ item.reason }} · 自动执行：否</div>
+                    </li>
+                {% empty %}
+                    <li>暂无建议。</li>
+                {% endfor %}
+            </ul>
+        </section>
+
+        <section class="convergence-panel">
+            <h2>最近 50 条控制执行记录</h2>
+            <table class="convergence-table">
+                <thead><tr><th>时间</th><th>Request ID</th><th>Policy</th><th>Control</th><th>State</th><th>Route</th><th>Provider</th><th>Cost</th><th>Failure</th></tr></thead>
+                <tbody>
+                {% for item in recent_records %}
+                    <tr>
+                        <td>{{ item.created_at }}</td>
+                        <td>{{ item.request_id|default:"-" }}</td>
+                        <td>{{ item.policy_decision|default:"-" }}</td>
+                        <td>{{ item.control_decision|default:"-" }}</td>
+                        <td>{{ item.state }}</td>
+                        <td>{{ item.route }}</td>
+                        <td>{{ item.provider }}</td>
+                        <td>{{ item.cost_label }}</td>
+                        <td>{{ item.failure_pattern }}</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="9">暂无控制执行记录。</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+    </div>
+</div>
+{% endblock %}

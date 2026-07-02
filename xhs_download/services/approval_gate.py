@@ -1,11 +1,12 @@
 from django.utils import timezone
 
 from ..models import (
-    PolicyOptimizationProposal,
+    PolicyControlState,
     PolicyOptimizationStatus,
     PolicyRuntimeSetting,
 )
 from ..policy.evolution import SAFETY_REJECT
+from .control_state_machine import transition_control_record
 from .policy_risk_engine import RISK_HIGH_MIN, RISK_LOW_MAX
 
 
@@ -80,6 +81,14 @@ def approve_policy_change(proposal, *, actor_username=""):
         "runtime_mutated",
         "updated_at",
     ])
+    for record in proposal.control_records.all():
+        if record.state == PolicyControlState.PENDING:
+            transition_control_record(
+                record,
+                PolicyControlState.APPROVED,
+                reason="human-approved",
+                actor_username=actor_username,
+            )
     return {"ok": True, "status": proposal.status, "reason": "approved"}
 
 
@@ -103,6 +112,14 @@ def reject_policy_change(proposal, *, actor_username="", reason="human-rejected"
         "runtime_mutated",
         "updated_at",
     ])
+    for record in proposal.control_records.all():
+        if record.state == PolicyControlState.PENDING:
+            transition_control_record(
+                record,
+                PolicyControlState.REJECTED,
+                reason=reason,
+                actor_username=actor_username,
+            )
     return {"ok": True, "status": proposal.status, "reason": reason}
 
 
@@ -151,4 +168,17 @@ def rollback_policy_change(proposal, *, actor_username=""):
         "runtime_mutated",
         "updated_at",
     ])
+    for record in proposal.control_records.exclude(state__in=[
+        PolicyControlState.REJECTED,
+        PolicyControlState.FAILED,
+    ]):
+        transition_control_record(
+            record,
+            PolicyControlState.FAILED,
+            reason="rollback-recorded",
+            actor_username=actor_username,
+            execution_result="rolled_back",
+            execution_snapshot=result,
+            failure_pattern="rollback:policy-control",
+        )
     return result

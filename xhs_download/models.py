@@ -209,6 +209,15 @@ class PolicyOptimizationStatus(models.TextChoices):
     ROLLED_BACK = "rolled_back", "已回滚"
 
 
+class PolicyControlState(models.TextChoices):
+    PENDING = "pending", "等待处理"
+    APPROVED = "approved", "已批准"
+    REJECTED = "rejected", "已拒绝"
+    AUTO_APPLIED = "auto_applied", "低风险自动通过"
+    EXECUTED = "executed", "已执行"
+    FAILED = "failed", "执行失败"
+
+
 class ParseRequestLog(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     request_id = models.CharField(max_length=128, db_index=True)
@@ -481,6 +490,57 @@ class PolicyOptimizationProposal(models.Model):
 
     def __str__(self):
         return f"{local_datetime_label(self.created_at)} {self.kind} {self.status}"
+
+
+class PolicyControlRecord(models.Model):
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    proposal = models.ForeignKey(
+        PolicyOptimizationProposal,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="control_records",
+    )
+    request_id = models.CharField(max_length=128, blank=True, default="", db_index=True)
+    policy_decision = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    policy_snapshot = models.JSONField(default=dict, blank=True)
+    control_decision = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    state = models.CharField(
+        max_length=32,
+        choices=PolicyControlState.choices,
+        default=PolicyControlState.PENDING,
+        db_index=True,
+    )
+    execution_result = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    execution_snapshot = models.JSONField(default=dict, blank=True)
+    provider = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    route = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    cost = models.PositiveBigIntegerField(default=0)
+    control_confidence = models.FloatField(default=0)
+    feedback_summary = models.JSONField(default=dict, blank=True)
+    failure_pattern = models.CharField(max_length=160, blank=True, default="", db_index=True)
+    drift_score = models.FloatField(default=0)
+    consistency_score = models.FloatField(default=1)
+    transition_history = models.JSONField(default=list, blank=True)
+    source = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    actor_username = models.CharField(max_length=150, blank=True, default="", db_index=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = (
+            models.Index(fields=("state", "created_at")),
+            models.Index(fields=("control_decision", "created_at")),
+            models.Index(fields=("policy_decision", "created_at")),
+            models.Index(fields=("provider", "created_at")),
+            models.Index(fields=("route", "created_at")),
+            models.Index(fields=("failure_pattern", "created_at")),
+        )
+        verbose_name = "Policy 控制闭环记录"
+        verbose_name_plural = "Policy 控制闭环记录"
+
+    def __str__(self):
+        return f"{local_datetime_label(self.created_at)} {self.state} {self.policy_decision or self.control_decision}"
 
 
 class ProviderAdminAuditLog(models.Model):

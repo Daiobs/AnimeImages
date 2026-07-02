@@ -8,6 +8,7 @@ from .approval_gate import (
     approval_gate_decision,
     status_for_control_decision,
 )
+from .control_state_machine import record_control_decision_for_proposal
 from .policy_risk_engine import score_policy_risk
 
 
@@ -127,6 +128,12 @@ def create_controlled_policy_proposals(*, window_hours=24, actor_username=""):
             "runtime_mutated",
             "updated_at",
         ])
+        record_control_decision_for_proposal(
+            proposal,
+            risk=item["risk"],
+            gate=item["gate"],
+            actor_username=actor_username,
+        )
         proposals.append(proposal)
 
     return {

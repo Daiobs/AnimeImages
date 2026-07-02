@@ -68,6 +68,16 @@ Available actions:
 - reject
 - rollback
 
+`/admin/control-convergence/` extends this view with lifecycle and execution
+feedback:
+
+- control state distribution
+- execution success rate
+- approval rate
+- failure patterns
+- policy drift score
+- policy consistency score
+
 ## Production Mutation
 
 Generating controlled proposals does not mutate runtime settings.

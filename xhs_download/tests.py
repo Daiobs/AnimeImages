@@ -89,6 +89,17 @@ from .services.policy_control_layer import (
     evaluate_policy_control_layer,
 )
 from .services.policy_risk_engine import score_policy_risk
+from .services.control_convergence_engine import (
+    apply_control_feedback_to_records,
+    build_control_convergence_snapshot,
+    find_orphan_control_decisions,
+)
+from .services.control_execution_tracker import record_control_execution
+from .services.control_state_machine import (
+    create_control_record,
+    record_control_decision_for_proposal,
+    transition_control_record,
+)
 from .services.production_intelligence import build_observability_v2_context
 from .policy.healing_policy import (
     HEAL_ACTION_BLOCK_GRACEFULLY,
@@ -137,6 +148,8 @@ from .models import (
     DownloadRequestLog,
     ObservabilityStatus,
     ParseRequestLog,
+    PolicyControlRecord,
+    PolicyControlState,
     PolicyLearningRun,
     PolicyOptimizationProposal,
     PolicyOptimizationStatus,
@@ -7896,6 +7909,193 @@ class PolicyEngineEvolutionTests(TestCase):
         post_response = client.post("/admin/policy-control/", {"action": "generate", "window": "24"})
         self.assertEqual(post_response.status_code, 302)
         self.assertEqual(post_response["Location"], "/admin/policy-control/")
+
+    def test_control_state_machine_transition_correctness(self):
+        record = create_control_record(
+            policy_decision=ROUTE_DIRECT,
+            control_decision=CONTROL_REQUIRE_APPROVAL,
+            source="test",
+        )
+
+        self.assertEqual(record.state, PolicyControlState.PENDING)
+        transition_control_record(record, PolicyControlState.APPROVED, reason="approved")
+        record.refresh_from_db()
+        self.assertEqual(record.state, PolicyControlState.APPROVED)
+        transition_control_record(record, PolicyControlState.EXECUTED, reason="executed")
+        record.refresh_from_db()
+        self.assertEqual(record.state, PolicyControlState.EXECUTED)
+        self.assertGreaterEqual(len(record.transition_history), 3)
+        with self.assertRaises(ValueError):
+            transition_control_record(record, PolicyControlState.APPROVED, reason="invalid")
+
+    def test_control_approval_execution_feedback_loop(self):
+        proposal = PolicyOptimizationProposal.objects.create(
+            source_version="v5",
+            status=PolicyOptimizationStatus.NEEDS_APPROVAL,
+            kind="adaptive_policy_weights",
+            policy_area="policy_weights",
+            title="review",
+            risk="medium",
+            risk_score=0.5,
+            impact_area="routing",
+            control_decision=CONTROL_REQUIRE_APPROVAL,
+            safety_decision=SAFETY_REVIEW,
+            confidence=0.8,
+            sample_count=20,
+            proposed_change={"weights": {"cost": 0.42, "provider": 0.39, "routing": 0.19}},
+            safety={"decision": SAFETY_REVIEW, "risk": "medium"},
+            drift={},
+            signature="c" * 64,
+            drift_key="policy_weights:adaptive_policy_weights",
+        )
+        control_record = record_control_decision_for_proposal(
+            proposal,
+            risk={"risk_score": 0.5, "risk_level": "medium"},
+            gate={"reason": "human-approval-required"},
+        )
+
+        self.assertEqual(control_record.state, PolicyControlState.PENDING)
+        approve_policy_change(proposal, actor_username="admin")
+        control_record.refresh_from_db()
+        self.assertEqual(control_record.state, PolicyControlState.APPROVED)
+
+        executed = record_control_execution(
+            proposal=proposal,
+            request_id="rid-control-loop",
+            policy_decision=ROUTE_DIRECT,
+            control_decision=CONTROL_REQUIRE_APPROVAL,
+            status=ObservabilityStatus.SUCCESS,
+            provider="native",
+            route=ROUTE_DIRECT,
+            cost=900,
+            policy_confidence=0.8,
+        )
+        self.assertEqual(executed.id, control_record.id)
+        self.assertEqual(executed.state, PolicyControlState.EXECUTED)
+
+        feedback = apply_control_feedback_to_records(window_hours=24)
+        executed.refresh_from_db()
+        self.assertEqual(feedback["updated"], 1)
+        self.assertEqual(executed.feedback_summary["route_success_rate"], 1.0)
+        self.assertGreater(executed.control_confidence, 0)
+
+    def test_control_execution_cannot_bypass_pending_approval(self):
+        proposal = PolicyOptimizationProposal.objects.create(
+            source_version="v5",
+            status=PolicyOptimizationStatus.NEEDS_APPROVAL,
+            kind="provider_priority_change",
+            policy_area="provider",
+            title="provider review",
+            risk="high",
+            risk_score=0.7,
+            impact_area="provider",
+            control_decision=CONTROL_REQUIRE_APPROVAL,
+            safety_decision=SAFETY_REVIEW,
+            confidence=0.8,
+            sample_count=20,
+            proposed_change={"provider": "kukutool"},
+            safety={"decision": SAFETY_REVIEW, "risk": "medium"},
+            drift={},
+            signature="d" * 64,
+            drift_key="provider:provider_priority_change",
+        )
+        record_control_decision_for_proposal(
+            proposal,
+            risk={"risk_score": 0.7, "risk_level": "high"},
+            gate={"reason": "human-approval-required"},
+        )
+
+        with self.assertRaises(ValueError):
+            record_control_execution(
+                proposal=proposal,
+                request_id="rid-control-bypass",
+                policy_decision=ROUTE_DIRECT,
+                control_decision=CONTROL_REQUIRE_APPROVAL,
+                status=ObservabilityStatus.SUCCESS,
+                provider="kukutool",
+                route=ROUTE_DIRECT,
+                cost=1000,
+            )
+
+    def test_control_failure_execution_tracking(self):
+        record = record_control_execution(
+            request_id="rid-control-failure",
+            policy_decision=ROUTE_PROXY,
+            control_decision="download_policy_observed",
+            status=ObservabilityStatus.FAILED,
+            provider="kukutool",
+            route=ROUTE_PROXY,
+            cost=1234,
+            error_type="TimeoutError",
+            failure_type="provider_timeout",
+        )
+
+        self.assertEqual(record.state, PolicyControlState.FAILED)
+        self.assertEqual(record.execution_result, "failed")
+        self.assertIn("provider_timeout", record.failure_pattern)
+
+    def test_control_convergence_detects_policy_drift(self):
+        record_control_execution(
+            request_id="rid-control-drift",
+            policy_decision=ROUTE_DIRECT,
+            control_decision="policy_v5",
+            status=ObservabilityStatus.SUCCESS,
+            provider="native",
+            route=ROUTE_ZIP,
+            cost=5000,
+            policy_confidence=0.9,
+        )
+
+        snapshot = build_control_convergence_snapshot(window_hours=24)
+
+        self.assertEqual(snapshot["total_records"], 1)
+        self.assertLess(snapshot["control_drift_score"], 1.0)
+        self.assertEqual(snapshot["policy_consistency_score"], 1.0)
+        self.assertTrue(snapshot["suggestions"])
+
+    def test_control_no_orphan_decision_after_control_generation(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v4_adaptive_min_confidence = 0.1
+        setting.v4_auto_weights_enabled = False
+        setting.save(update_fields=[
+            "v4_adaptive_min_confidence",
+            "v4_auto_weights_enabled",
+            "updated_at",
+        ])
+        for index in range(8):
+            DownloadRequestLog.objects.create(
+                request_id=f"rid-control-no-orphan-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="auto",
+                route_type=ROUTE_DIRECT,
+                final_policy_route=ROUTE_DIRECT,
+                provider="native",
+                estimated_bytes=1000,
+                actual_bytes=900,
+                browser_egress_estimated_bytes=1000,
+            )
+
+        result = create_controlled_policy_proposals(window_hours=24)
+
+        self.assertEqual(result["proposal_count"], 1)
+        self.assertEqual(PolicyControlRecord.objects.count(), 1)
+        self.assertEqual(find_orphan_control_decisions(window_hours=24), [])
+
+    def test_control_convergence_admin_page_requires_permission(self):
+        response = Client().get("/admin/control-convergence/")
+        self.assertEqual(response.status_code, 404)
+
+        user = User.objects.create_superuser(
+            username="control-admin",
+            email="control@example.com",
+            password="pw",
+        )
+        client = Client()
+        client.force_login(user)
+
+        response = client.get("/admin/control-convergence/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Control Convergence")
 
     def test_observability_v2_metrics_are_computed_from_policy_feedback(self):
         DownloadRequestLog.objects.create(

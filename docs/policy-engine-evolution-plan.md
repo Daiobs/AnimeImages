@@ -239,6 +239,36 @@ Safety:
 - rollback only restores explicitly recorded runtime mutations
 - Routing Engine, Provider runtime gates, and Cost Guard core logic are unchanged
 
+## Phase 6: Control Convergence System
+
+Status: Control convergence MVP implemented on top of Production Control Layer.
+
+Purpose:
+
+- create a traceable control lifecycle for policy decisions
+- record approval, rejection, auto-apply, execution, and failure states
+- bind execution observations to request, route, provider, and cost
+- write feedback summaries back to control records
+- expose convergence metrics without automatic production mutation
+
+Modules:
+
+- `control_state_machine.py`: validates `pending -> approved/rejected/auto_applied -> executed/failed` lifecycle transitions.
+- `control_execution_tracker.py`: writes execution traces from download observability.
+- `control_convergence_engine.py`: computes state distribution, success rate, approval rate, failure patterns, drift score, and consistency score.
+
+Admin:
+
+- `/admin/control-convergence/` provides the read-only convergence dashboard.
+
+Safety:
+
+- no automatic policy execution
+- no change to Routing Engine core logic
+- no change to Provider runtime gate logic
+- no change to Cost Guard limits
+- convergence suggestions remain human-reviewed
+
 ## Fallback
 
 Fallback is built into v3.5:

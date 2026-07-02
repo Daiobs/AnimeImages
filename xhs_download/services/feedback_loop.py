@@ -26,6 +26,7 @@ from .production_intelligence import (
     safe_ratio,
 )
 from .recovery_engine import provider_stability_score, provider_stability_status
+from .control_convergence_engine import apply_control_feedback_to_records
 
 
 FEEDBACK_LOOP_VERSION = "mvp"
@@ -565,6 +566,7 @@ def build_suggestions(insights):
 def build_feedback_loop_context(*, window_hours=DEFAULT_FEEDBACK_WINDOW_HOURS):
     window_hours = normalize_window_hours(window_hours)
     feedback = build_feedback(window_hours=window_hours)
+    control_feedback = apply_control_feedback_to_records(window_hours=window_hours)
     insights = build_insights(feedback)
     suggestions = build_suggestions(insights)
     return {
@@ -581,6 +583,7 @@ def build_feedback_loop_context(*, window_hours=DEFAULT_FEEDBACK_WINDOW_HOURS):
         "routing_trend": feedback["routing_trend"],
         "insights": insights["insights"],
         "suggestions": suggestions["suggestions"],
+        "control_feedback": control_feedback,
         "flow_steps": (
             "Observation",
             "Feedback",
