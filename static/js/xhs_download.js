@@ -205,6 +205,10 @@
         return selectedItems.length > 1 || selectedItems.some(itemRequiresZipTask);
     }
 
+    function selectedRequiresProviderProcessing(items) {
+        return (items || []).some(itemRequiresZipTask);
+    }
+
     async function parseSearchResponse(response) {
         const contentType = response.headers.get("Content-Type") || "";
         if (contentType.includes("application/json")) {
@@ -606,6 +610,7 @@
         async function readResponseBlobWithProgress(response, startPercent, endPercent) {
             const contentLength = Number.parseInt(response.headers.get("Content-Length") || "0", 10);
             if (!response.body || !contentLength) {
+                setProgressPending("接收中");
                 const blob = await response.blob();
                 setProgress(endPercent);
                 return blob;
@@ -785,28 +790,6 @@
             return `${result.savedMessage}：${result.filename}，成功 ${result.savedCount} 个，失败 ${result.failedCount} 个`;
         }
 
-        async function downloadServerSingleFallback(payload) {
-            const fallbackPayload = {
-                ...payload,
-                download_mode: "proxy",
-            };
-            setProgressPending("切换中");
-            setStatus(getStatusElement(), "直链下载不可用，正在切换服务器单文件下载...");
-
-            const response = await postDownloadPayload(fallbackPayload);
-            if (!response.ok) {
-                throw new Error(await parseErrorResponse(response));
-            }
-
-            const contentType = response.headers.get("Content-Type") || "";
-            if (contentType.includes("application/json")) {
-                const data = await response.json();
-                throw new Error(data.message || data.route_reason || "服务器兜底下载未返回文件");
-            }
-
-            return saveDownloadResponse(response, getBaseFilename(), 0, 100);
-        }
-
         async function waitForDownloadTask(taskStatusUrl) {
             while (true) {
                 const response = await fetch(taskStatusUrl, {cache: "no-store"});
@@ -815,7 +798,12 @@
                 }
 
                 const task = await response.json();
-                setProgress(task.progress || 0);
+                const progress = Number(task.progress || 0);
+                if (progress > 0) {
+                    setProgress(progress);
+                } else {
+                    setProgressPending(task.status === "pending" ? "排队中" : "后台打包中");
+                }
 
                 if (task.status === "failed") {
                     throw new Error(task.message || "下载失败");
@@ -834,7 +822,7 @@
                 throw new Error("当前页面缺少下载任务接口");
             }
 
-            setProgress(0);
+            setProgressPending("创建任务");
             setStatus(getStatusElement(), "正在创建后台打包任务，请保持页面打开...");
 
             const createResponse = await fetch(downloadTaskUrl, {
@@ -911,19 +899,29 @@
                     return;
                 }
 
-                const pendingLabel = payload.download_mode === "auto"
-                    ? "判断中"
-                    : (selectedSingleItem(selected) ? "准备下载" : "打包中");
+                const requiresProviderProcessing = selectedRequiresProviderProcessing(selected);
+                const pendingLabel = requiresProviderProcessing
+                    ? "服务端处理"
+                    : (
+                        payload.download_mode === "auto"
+                            ? "判断中"
+                            : (selectedSingleItem(selected) ? "准备下载" : "打包中")
+                    );
                 setProgressPending(pendingLabel);
+                if (requiresProviderProcessing) {
+                    setStatus(getStatusElement(), "Provider 资源正在服务端校验、恢复或合并，完成后会开始传输...");
+                } else if (!selectedSingleItem(selected)) {
+                    setStatus(getStatusElement(), "服务器正在打包 ZIP，文件开始传输后会显示接收进度...");
+                }
                 const response = await postDownloadPayload(payload);
 
                 if (!response.ok) {
                     throw new Error(await parseErrorResponse(response));
                 }
-                setProgress(0);
 
                 const contentType = response.headers.get("Content-Type") || "";
                 if (contentType.includes("application/json")) {
+                    setProgress(0);
                     const data = await response.json();
                     if (data.status === "routed" && data.route_type === "direct") {
                         try {
@@ -974,6 +972,12 @@
                     return;
                 }
 
+                if (response.headers.get("Content-Length")) {
+                    setProgress(1);
+                } else {
+                    setProgressPending("接收中");
+                }
+                setStatus(getStatusElement(), "服务器处理完成，正在接收文件...");
                 const result = await saveDownloadResponse(response, getBaseFilename(), 0, 100);
                 setStatus(getStatusElement(), serverDownloadStatusMessage(result), result.variant);
             } catch (error) {

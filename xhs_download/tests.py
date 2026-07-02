@@ -5633,7 +5633,7 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "手机端建议单张/单个保存")
+        self.assertContains(response, "手机端建议单张图片或单个视频保存")
         self.assertContains(response, "系统“文件”App")
         self.assertNotContains(response, "自动保存到相册")
 
@@ -7127,6 +7127,27 @@ class PolicyEngineEvolutionTests(TestCase):
 
 
 class RuntimeHealthViewTests(SimpleTestCase):
+    @override_settings(
+        DEBUG=False,
+        ALLOWED_HOSTS=["download.example.com"],
+        SECURE_SSL_REDIRECT=True,
+        SESSION_COOKIE_SECURE=True,
+        CSRF_COOKIE_SECURE=True,
+        SECURE_PROXY_SSL_HEADER=("HTTP_X_FORWARDED_PROTO", "https"),
+    )
+    def test_production_security_settings_are_available(self):
+        from django.conf import settings as django_settings
+
+        self.assertFalse(django_settings.DEBUG)
+        self.assertIn("download.example.com", django_settings.ALLOWED_HOSTS)
+        self.assertTrue(django_settings.SECURE_SSL_REDIRECT)
+        self.assertTrue(django_settings.SESSION_COOKIE_SECURE)
+        self.assertTrue(django_settings.CSRF_COOKIE_SECURE)
+        self.assertEqual(
+            django_settings.SECURE_PROXY_SSL_HEADER,
+            ("HTTP_X_FORWARDED_PROTO", "https"),
+        )
+
     def test_liveness_does_not_depend_on_external_services(self):
         response = Client().get("/health/live/")
 

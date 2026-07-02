@@ -35,7 +35,7 @@ MOBILE_USER_AGENT_MARKERS = (
     "windows phone",
 )
 MOBILE_DOWNLOAD_WARNING = (
-    "手机端建议单张/单个保存。ZIP 文件通常会保存到浏览器下载目录或系统“文件”App 中，不能保证直接进入相册。"
+    "手机端建议单张图片或单个视频保存。ZIP 文件通常会进入浏览器下载目录或系统“文件”App，不能保证直接进入相册。"
 )
 
 

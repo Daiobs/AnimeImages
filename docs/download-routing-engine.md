@@ -75,7 +75,7 @@ For `direct`, known `size_bytes` contributes to browser egress. For `zip` and `p
 Web pages cannot reliably force iOS or Android browsers to save files into the photo album. Mobile result pages therefore show:
 
 ```text
-手机端建议单张/单个保存。ZIP 文件通常会保存到浏览器下载目录或系统“文件”App 中，不能保证直接进入相册。
+手机端建议单张图片或单个视频保存。ZIP 文件通常会进入浏览器下载目录或系统“文件”App，不能保证直接进入相册。
 ```
 
 Do not promise automatic album saving. Prefer direct single-image or single-video actions on mobile, and keep ZIP as the multi-resource fallback.
