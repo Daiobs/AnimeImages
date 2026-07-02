@@ -199,6 +199,15 @@ class ProviderHealthTestStatus(models.TextChoices):
     UNAVAILABLE = "unavailable", "不可用"
 
 
+class PolicyOptimizationStatus(models.TextChoices):
+    QUEUED = "queued", "已入队"
+    NEEDS_APPROVAL = "needs_approval", "等待审批"
+    AUTO_APPLIED = "auto_applied", "已自动应用"
+    APPROVED = "approved", "已批准"
+    REJECTED = "rejected", "已拒绝"
+    APPLIED = "applied", "已应用"
+
+
 class ParseRequestLog(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     request_id = models.CharField(max_length=128, db_index=True)
@@ -416,6 +425,52 @@ class PolicyLearningRun(models.Model):
 
     def __str__(self):
         return f"{local_datetime_label(self.created_at)} {self.window_hours}h {self.status}"
+
+
+class PolicyOptimizationProposal(models.Model):
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    source_version = models.CharField(max_length=16, default="v5", db_index=True)
+    source_window_hours = models.PositiveSmallIntegerField(default=24, db_index=True)
+    status = models.CharField(
+        max_length=32,
+        choices=PolicyOptimizationStatus.choices,
+        default=PolicyOptimizationStatus.QUEUED,
+        db_index=True,
+    )
+    kind = models.CharField(max_length=80, db_index=True)
+    policy_area = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    title = models.CharField(max_length=160, blank=True, default="")
+    body = models.TextField(blank=True, default="")
+    risk = models.CharField(max_length=16, blank=True, default="", db_index=True)
+    safety_decision = models.CharField(max_length=16, blank=True, default="", db_index=True)
+    confidence = models.FloatField(default=0)
+    sample_count = models.PositiveIntegerField(default=0)
+    proposed_change = models.JSONField(default=dict, blank=True)
+    safety = models.JSONField(default=dict, blank=True)
+    drift = models.JSONField(default=dict, blank=True)
+    reason_chain = models.JSONField(default=list, blank=True)
+    signature = models.CharField(max_length=64, db_index=True)
+    drift_key = models.CharField(max_length=120, blank=True, default="", db_index=True)
+    automatic_execution = models.BooleanField(default=False, db_index=True)
+    runtime_mutated = models.BooleanField(default=False, db_index=True)
+    application_result = models.JSONField(default=dict, blank=True)
+    applied_at = models.DateTimeField(null=True, blank=True)
+    actor_username = models.CharField(max_length=150, blank=True, default="", db_index=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = (
+            models.Index(fields=("status", "created_at")),
+            models.Index(fields=("kind", "created_at")),
+            models.Index(fields=("policy_area", "created_at")),
+            models.Index(fields=("drift_key", "created_at")),
+        )
+        verbose_name = "Policy 优化队列"
+        verbose_name_plural = "Policy 优化队列"
+
+    def __str__(self):
+        return f"{local_datetime_label(self.created_at)} {self.kind} {self.status}"
 
 
 class ProviderAdminAuditLog(models.Model):

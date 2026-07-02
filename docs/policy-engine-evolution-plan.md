@@ -187,6 +187,31 @@ Constraints:
 - no automatic ProviderRuntimeSetting changes
 - no Cost Guard behavior changes
 
+## Phase 4: Policy Engine v5
+
+Status: human-in-the-loop optimization queue MVP implemented.
+
+Purpose:
+
+- turn v4 suggestions into persistent `PolicyOptimizationProposal` records
+- auto-apply low-risk suggestions into the queue
+- require human approval for medium-risk or drift-sensitive suggestions
+- reject high-risk suggestions
+- prevent repeated low-risk changes from accumulating through Drift Control
+
+Default behavior:
+
+- queue generation is explicit
+- admin page displays recent proposals but does not create them
+- runtime mutation is disabled unless trusted code passes `allow_runtime_mutation=True`
+- Provider gates, Cost Guard, and Routing Engine are not modified by queue creation
+
+Rollback:
+
+- stop generating v5 proposals
+- set `PolicyRuntimeSetting.v4_auto_weights_enabled=False`
+- keep proposal rows as audit history or delete them as superuser
+
 ## Fallback
 
 Fallback is built into v3.5:

@@ -373,6 +373,43 @@
         </section>
 
         <section class="policy-panel">
+            <h2>v5 Optimization Queue</h2>
+            <p class="policy-muted">v5 队列记录低风险自动应用、中风险待审批和高风险拒绝结果。默认不会在页面渲染时创建新优化，也不会自动修改 Provider 或 Cost Guard。</p>
+            <table class="policy-table">
+                <thead>
+                <tr>
+                    <th>时间</th>
+                    <th>建议</th>
+                    <th>状态</th>
+                    <th>风险</th>
+                    <th>Safety</th>
+                    <th>置信度</th>
+                    <th>样本</th>
+                    <th>自动执行</th>
+                    <th>运行时变更</th>
+                </tr>
+                </thead>
+                <tbody>
+                {% for item in recent_optimizations %}
+                    <tr>
+                        <td>{{ item.created_at }}</td>
+                        <td>{{ item.kind }}</td>
+                        <td>{{ item.status }}</td>
+                        <td>{{ item.risk }}</td>
+                        <td>{{ item.safety_decision }}</td>
+                        <td>{{ item.confidence }}</td>
+                        <td>{{ item.sample_count }}</td>
+                        <td>{% if item.automatic_execution %}是{% else %}否{% endif %}</td>
+                        <td>{% if item.runtime_mutated %}是{% else %}否{% endif %}</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="9">暂无优化队列记录。运行 v5 队列生成后会在这里显示。</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+
+        <section class="policy-panel">
             <h2>最近 Policy 决策反馈</h2>
             <table class="policy-table">
                 <thead>

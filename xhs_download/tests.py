@@ -106,6 +106,11 @@ from .policy.evolution import (
     validate_policy_suggestion,
 )
 from .policy.learning import build_policy_learning_snapshot, record_policy_learning_run
+from .policy.optimization import (
+    build_policy_optimization_queue,
+    create_policy_optimization_proposal,
+    evaluate_policy_drift,
+)
 from .policy.policies import CostPolicy, ProviderPolicy, RoutingPolicy
 from .services.provider_access import (
     PROVIDER_DOUYIN_ULTRA,
@@ -120,6 +125,8 @@ from .models import (
     ObservabilityStatus,
     ParseRequestLog,
     PolicyLearningRun,
+    PolicyOptimizationProposal,
+    PolicyOptimizationStatus,
     PolicyRuntimeMode,
     PolicyRuntimeSetting,
     ProviderAccessMode,
@@ -7514,6 +7521,166 @@ class PolicyEngineEvolutionTests(TestCase):
         self.assertEqual(safety["decision"], SAFETY_REJECT)
         self.assertEqual(safety["risk"], "high")
         self.assertIn("automatic-execution-is-not-allowed-in-v4", safety["reason_chain"])
+
+    def test_policy_v5_queue_auto_applies_low_risk_without_runtime_mutation_by_default(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v4_adaptive_min_confidence = 0.1
+        setting.v4_auto_weights_enabled = False
+        setting.save(update_fields=[
+            "v4_adaptive_min_confidence",
+            "v4_auto_weights_enabled",
+            "updated_at",
+        ])
+        for index in range(8):
+            DownloadRequestLog.objects.create(
+                request_id=f"rid-v5-auto-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="auto",
+                route_type=ROUTE_DIRECT,
+                final_policy_route=ROUTE_DIRECT,
+                provider="native",
+                estimated_bytes=1000,
+                actual_bytes=900,
+                browser_egress_estimated_bytes=1000,
+            )
+
+        result = build_policy_optimization_queue(
+            window_hours=24,
+            auto_apply_low_risk=True,
+            allow_runtime_mutation=False,
+        )
+
+        proposal = PolicyOptimizationProposal.objects.get()
+        setting.refresh_from_db()
+        self.assertEqual(result["version"], "v5")
+        self.assertEqual(result["auto_applied_count"], 1)
+        self.assertEqual(proposal.status, PolicyOptimizationStatus.AUTO_APPLIED)
+        self.assertTrue(proposal.automatic_execution)
+        self.assertFalse(proposal.runtime_mutated)
+        self.assertFalse(setting.v4_auto_weights_enabled)
+        self.assertFalse(result["production_behavior_changed"])
+
+    def test_policy_v5_queue_can_mutate_runtime_when_explicitly_allowed(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v4_adaptive_min_confidence = 0.1
+        setting.v4_auto_weights_enabled = False
+        setting.save(update_fields=[
+            "v4_adaptive_min_confidence",
+            "v4_auto_weights_enabled",
+            "updated_at",
+        ])
+        for index in range(8):
+            DownloadRequestLog.objects.create(
+                request_id=f"rid-v5-mutate-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="auto",
+                route_type=ROUTE_DIRECT,
+                final_policy_route=ROUTE_DIRECT,
+                provider="native",
+                estimated_bytes=1000,
+                actual_bytes=900,
+                browser_egress_estimated_bytes=1000,
+            )
+
+        result = build_policy_optimization_queue(
+            window_hours=24,
+            auto_apply_low_risk=True,
+            allow_runtime_mutation=True,
+        )
+
+        proposal = PolicyOptimizationProposal.objects.get()
+        setting.refresh_from_db()
+        self.assertEqual(proposal.status, PolicyOptimizationStatus.AUTO_APPLIED)
+        self.assertTrue(proposal.runtime_mutated)
+        self.assertTrue(setting.v4_auto_weights_enabled)
+        self.assertTrue(result["production_behavior_changed"])
+
+    def test_policy_v5_queue_requires_approval_when_auto_apply_disabled(self):
+        suggestion = {
+            "kind": "adaptive_policy_weights",
+            "policy_area": "policy_weights",
+            "title": "调整 Policy Engine 权重",
+            "body": "low risk",
+            "proposed_change": {
+                "weights": {"cost": 0.42, "provider": 0.39, "routing": 0.19},
+                "delta": {"cost": 0.02, "provider": -0.01, "routing": -0.01},
+            },
+            "confidence": 0.8,
+            "sample_count": 20,
+            "reason_chain": ["test-low-risk"],
+            "automatic_execution": False,
+            "safety": {"decision": SAFETY_APPROVE, "risk": "low"},
+        }
+
+        proposal = create_policy_optimization_proposal(
+            suggestion,
+            auto_apply_low_risk=False,
+        )
+
+        self.assertEqual(proposal.status, PolicyOptimizationStatus.NEEDS_APPROVAL)
+        self.assertFalse(proposal.automatic_execution)
+
+    def test_policy_v5_drift_control_forces_human_review(self):
+        for index in range(3):
+            PolicyOptimizationProposal.objects.create(
+                source_version="v5",
+                status=PolicyOptimizationStatus.AUTO_APPLIED,
+                kind="adaptive_policy_weights",
+                policy_area="policy_weights",
+                title="existing",
+                risk="low",
+                safety_decision=SAFETY_APPROVE,
+                confidence=0.8,
+                sample_count=20,
+                proposed_change={"weights": {"cost": 0.42, "provider": 0.39, "routing": 0.19}},
+                safety={"decision": SAFETY_APPROVE, "risk": "low"},
+                drift={},
+                signature=f"{index}".zfill(64),
+                drift_key="policy_weights:adaptive_policy_weights",
+                automatic_execution=True,
+            )
+        suggestion = {
+            "kind": "adaptive_policy_weights",
+            "policy_area": "policy_weights",
+            "title": "调整 Policy Engine 权重",
+            "body": "low risk",
+            "proposed_change": {
+                "weights": {"cost": 0.42, "provider": 0.39, "routing": 0.19},
+                "delta": {"cost": 0.02, "provider": -0.01, "routing": -0.01},
+            },
+            "confidence": 0.8,
+            "sample_count": 20,
+            "reason_chain": ["test-drift"],
+            "automatic_execution": False,
+            "safety": {"decision": SAFETY_APPROVE, "risk": "low"},
+        }
+
+        drift = evaluate_policy_drift(suggestion)
+        proposal = create_policy_optimization_proposal(suggestion)
+
+        self.assertEqual(drift["decision"], SAFETY_REVIEW)
+        self.assertEqual(proposal.status, PolicyOptimizationStatus.NEEDS_APPROVAL)
+        self.assertIn("policy-drift-threshold", proposal.drift["reason"])
+
+    def test_policy_v5_queue_rejects_high_risk_suggestion(self):
+        suggestion = {
+            "kind": "adaptive_policy_weights",
+            "policy_area": "policy_weights",
+            "title": "unsafe",
+            "body": "unsafe",
+            "proposed_change": {
+                "weights": {"cost": 0.4, "provider": 0.4, "routing": 0.2},
+            },
+            "confidence": 1.0,
+            "sample_count": 20,
+            "automatic_execution": True,
+            "safety": {"decision": SAFETY_REJECT, "risk": "high"},
+        }
+
+        proposal = create_policy_optimization_proposal(suggestion)
+
+        self.assertEqual(proposal.status, PolicyOptimizationStatus.REJECTED)
+        self.assertFalse(proposal.automatic_execution)
 
     def test_observability_v2_metrics_are_computed_from_policy_feedback(self):
         DownloadRequestLog.objects.create(

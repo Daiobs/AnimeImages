@@ -27,6 +27,7 @@ from .models import (
     DownloadRequestLog,
     ObservabilityStatus,
     ParseRequestLog,
+    PolicyOptimizationProposal,
     PolicyRuntimeMode,
     PolicyRuntimeSetting,
     ProviderAccessMode,
@@ -523,6 +524,20 @@ def build_policy_engine_context(request, runtime_setting):
         for item in DownloadRequestLog.objects.exclude(final_policy_route="")
         .order_by("-created_at")[:10]
     ]
+    recent_optimizations = [
+        {
+            "created_at": format_admin_datetime(item.created_at),
+            "kind": item.kind,
+            "status": item.status,
+            "risk": item.risk or "-",
+            "safety_decision": item.safety_decision or "-",
+            "confidence": item.confidence,
+            "sample_count": item.sample_count,
+            "automatic_execution": item.automatic_execution,
+            "runtime_mutated": item.runtime_mutated,
+        }
+        for item in PolicyOptimizationProposal.objects.order_by("-created_at")[:10]
+    ]
     return {
         "title": "Policy Engine",
         "runtime_setting": runtime_setting,
@@ -537,6 +552,7 @@ def build_policy_engine_context(request, runtime_setting):
             policy_learning_card(build_policy_learning_snapshot(window_hours=24 * 7)),
         ],
         "recent_decisions": recent_decisions,
+        "recent_optimizations": recent_optimizations,
     }
 
 
