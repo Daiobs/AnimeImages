@@ -69,6 +69,12 @@ from .services.provider_settings import (
     normalize_provider_order,
 )
 from .services.provider_manifest import build_provider_manifest_token
+from .services.feedback_loop import (
+    build_feedback,
+    build_feedback_loop_context,
+    build_insights,
+    build_suggestions,
+)
 from .services.observability import record_download_request_log, record_provider_admin_audit_log
 from .services.production_intelligence import build_observability_v2_context
 from .policy.healing_policy import (
@@ -7427,6 +7433,96 @@ class PolicyEngineEvolutionTests(TestCase):
             )
         )
 
+    def test_feedback_loop_generates_signals_insights_and_suggestions(self):
+        DownloadRequestLog.objects.create(
+            request_id="rid-feedback-direct",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="auto",
+            route_type=ROUTE_DIRECT,
+            provider="native",
+            estimated_bytes=1000,
+            actual_bytes=900,
+            browser_egress_estimated_bytes=1000,
+        )
+        DownloadRequestLog.objects.create(
+            request_id="rid-feedback-provider-fail",
+            status=ObservabilityStatus.FAILED,
+            download_type="zip",
+            route_type=ROUTE_ZIP,
+            provider="yt_dlp_generic",
+            estimated_bytes=1000,
+            actual_bytes=500,
+            server_egress_estimated_bytes=1000,
+            fallback_count=1,
+            failure_type=FAILURE_PROVIDER_TIMEOUT,
+        )
+        ParseRequestLog.objects.create(
+            request_id="rid-feedback-parse-fail",
+            status=ObservabilityStatus.FAILED,
+            selected_provider="yt_dlp_generic",
+            error_type="ProviderParseError",
+        )
+        ProviderHealthTestRun.objects.create(
+            request_id="rid-feedback-health-fail",
+            test_key="third_party_ytdlp",
+            status=ProviderHealthTestStatus.FAILED,
+            provider="yt_dlp_generic",
+            error_type="ProviderHealthTimeout",
+            duration_ms=9000,
+        )
+        RoutingDecisionLog.objects.create(
+            request_id="rid-feedback-route",
+            route_type=ROUTE_ZIP,
+            provider="yt_dlp_generic",
+            success=False,
+            duration_ms=5000,
+        )
+
+        feedback = build_feedback(window_hours=24)
+        insights = build_insights(feedback)
+        suggestions = build_suggestions(insights)
+
+        self.assertEqual(feedback["provider"], "all")
+        self.assertEqual(feedback["signals"]["download_count"], 2)
+        self.assertEqual(feedback["signals"]["parse_count"], 1)
+        self.assertEqual(feedback["signals"]["health_count"], 1)
+        self.assertAlmostEqual(feedback["signals"]["failure_rate"], 0.75)
+        self.assertEqual(feedback["routes"][ROUTE_ZIP]["download_count"], 1)
+        self.assertEqual(feedback["routes"][ROUTE_ZIP]["fallback_rate_label"], "100.0%")
+        self.assertTrue(
+            any(
+                row["provider"] == "yt_dlp_generic"
+                and row["failure_rate_label"] == "100.0%"
+                for row in feedback["signals"]["provider_signals"]
+            )
+        )
+        self.assertTrue(
+            any(
+                row["failure_type"] == FAILURE_PROVIDER_TIMEOUT
+                for row in feedback["signals"]["failures"]
+            )
+        )
+
+        insight_kinds = {row["kind"] for row in insights["insights"]}
+        self.assertIn("failure_increase", insight_kinds)
+        self.assertIn("provider_degraded", insight_kinds)
+        self.assertIn("route_inefficiency", insight_kinds)
+        self.assertTrue(suggestions["suggestions"])
+        self.assertTrue(
+            all(not row["automatic_execution"] for row in suggestions["suggestions"])
+        )
+
+    def test_feedback_loop_does_not_change_download_routing_behavior(self):
+        item = {"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg", "size_bytes": 321}
+
+        before = decide_download_route(self.request, [item], requested_mode="auto")
+        context = build_feedback_loop_context(window_hours=24)
+        after = decide_download_route(self.request, [item], requested_mode="auto")
+
+        self.assertEqual(before["route_type"], after["route_type"])
+        self.assertEqual(before["download_strategy"], after["download_strategy"])
+        self.assertEqual(context["suggestion"]["suggestions"][0]["automatic_execution"], False)
+
 
 class RuntimeHealthViewTests(SimpleTestCase):
     @override_settings(
@@ -9270,6 +9366,34 @@ class AdminObservabilityMvpTests(TestCase):
         self.assertContains(permitted_response, "Observability v2")
         self.assertContains(permitted_response, "routing_efficiency")
         self.assertNotContains(permitted_response, "rid-intel-page")
+
+    def test_feedback_loop_page_access_and_render(self):
+        DownloadRequestLog.objects.create(
+            request_id="rid-feedback-page",
+            status=ObservabilityStatus.FAILED,
+            download_type="zip",
+            route_type=ROUTE_ZIP,
+            provider="yt_dlp_generic",
+            fallback_count=1,
+            failure_type=FAILURE_PROVIDER_TIMEOUT,
+        )
+        client = Client()
+        client.force_login(self.staff)
+        super_client = Client()
+        super_client.force_login(self.superuser)
+
+        self.assertEqual(Client().get("/admin/feedback-loop/").status_code, 404)
+        self.assertEqual(client.get("/admin/feedback-loop/").status_code, 404)
+        self.assertContains(super_client.get("/admin/feedback-loop/"), "Feedback Loop MVP")
+        self.assertContains(super_client.get("/admin/feedback-loop/"), "Provider Trend")
+        self.assertContains(super_client.get("/admin/feedback-loop/"), "Policy Suggestions")
+
+        self.grant_xhs_view_permission(self.staff, "view_downloadrequestlog")
+        permitted_response = client.get("/admin/feedback-loop/")
+
+        self.assertContains(permitted_response, "Feedback Loop MVP")
+        self.assertContains(permitted_response, "yt_dlp_generic")
+        self.assertNotContains(permitted_response, "rid-feedback-page")
 
     def test_policy_engine_page_requires_specific_permission(self):
         client = Client()

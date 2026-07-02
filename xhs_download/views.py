@@ -59,6 +59,7 @@ from .services.download_tasks import (
     pop_download_task,
     serialize_task,
 )
+from .services.feedback_loop import build_feedback_loop_context
 from .services.download_routing import (
     ROUTE_BLOCKED,
     ROUTE_DIRECT,
@@ -894,6 +895,16 @@ def observability_v2_required(request):
     )
 
 
+def feedback_loop_required(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_downloadrequestlog",
+        "xhs_download.view_parserequestlog",
+        "xhs_download.view_providerhealthtestrun",
+        "xhs_download.view_routingdecisionlog",
+    )
+
+
 def observability_access_allowed(request, *permissions):
     user = getattr(request, "user", None)
     if not (
@@ -1548,6 +1559,16 @@ def observability_v2_view(request):
         window_hours=request.GET.get("window") or 24,
     )
     return render(request, "admin/observability_v2.html", context)
+
+
+@require_GET
+def feedback_loop_view(request):
+    if not feedback_loop_required(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+    context = build_feedback_loop_context(
+        window_hours=request.GET.get("window") or 24,
+    )
+    return render(request, "admin/feedback_loop.html", context)
 
 
 def filtered_log_queryset(model, request, filter_fields):
