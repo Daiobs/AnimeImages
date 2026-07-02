@@ -273,6 +273,7 @@
         let activeParseController = null;
         let parseRequestId = 0;
         let downloadInProgress = false;
+        const directHandoffAttemptKeys = new Set();
 
         function getBaseFilename() {
             return page.dataset.baseFilename || "xhs_image";
@@ -535,6 +536,7 @@
                 return;
             }
             selected = [];
+            directHandoffAttemptKeys.clear();
             setPageHasResults(true);
             resultsRegion.innerHTML = `
                 <div class="parse-loading-card">
@@ -552,6 +554,7 @@
                 return;
             }
             selected = [];
+            directHandoffAttemptKeys.clear();
             setPageHasResults(true);
             page.dataset.baseFilename = "xhs_image";
             resultsRegion.innerHTML = `
@@ -583,6 +586,7 @@
             }
             applyTargetPage(payload.target_page);
             selected = [];
+            directHandoffAttemptKeys.clear();
             resultsRegion.innerHTML = payload.html || "";
             page.dataset.baseFilename = payload.base_filename || "xhs_image";
             setPageHasResults(Boolean(payload.has_content || payload.has_results));
@@ -598,6 +602,7 @@
                 activeParseController = null;
             }
             selected = [];
+            directHandoffAttemptKeys.clear();
             parseRequestId += 1;
             setParseLoading(false);
             page.dataset.baseFilename = "xhs_image";
@@ -656,16 +661,33 @@
         }
 
         function handoffDirectItemToBrowser(item, index, total) {
+            const frame = getDirectDownloadFrame();
             const link = document.createElement("a");
             const filename = directLinkFilename(item, index, total);
             link.href = item.url;
             link.download = filename;
-            link.target = "_blank";
+            link.target = frame ? frame.name : "_blank";
+            link.referrerPolicy = "no-referrer";
             link.rel = "noopener noreferrer";
             document.body.appendChild(link);
             link.click();
             link.remove();
             return filename;
+        }
+
+        function getDirectDownloadFrame() {
+            let frame = document.getElementById("xhs-direct-download-frame");
+            if (frame) {
+                return frame;
+            }
+
+            frame = document.createElement("iframe");
+            frame.id = "xhs-direct-download-frame";
+            frame.name = "xhs-direct-download-frame";
+            frame.hidden = true;
+            frame.style.display = "none";
+            document.body.appendChild(frame);
+            return frame;
         }
 
         function directRouteShouldUseNativeBrowserDownload(items) {
@@ -674,6 +696,20 @@
                 return false;
             }
             return String(directItems[0].type || "").toLowerCase() === "video";
+        }
+
+        function directRouteHandoffKey(items) {
+            if (!directRouteShouldUseNativeBrowserDownload(items)) {
+                return "";
+            }
+
+            const item = (items || []).find((candidate) => candidate && candidate.url) || {};
+            const identity = item.asset_id || item.provider_resource_id || item.url;
+            return `${item.provider || "native"}:${identity}`;
+        }
+
+        function directRouteRetryHint() {
+            return "如果浏览器拦截、只打开直链或未开始下载，请再次点击下载，系统会改用服务器单文件下载。";
         }
 
         async function writeResponseToFileWithProgress(response, fileHandle, startPercent, endPercent) {
@@ -888,15 +924,31 @@
             );
 
             try {
+                const directRetryKey = directRouteHandoffKey(selected);
+                const retryDirectViaServer = Boolean(
+                    forceAutoMode
+                    && directRetryKey
+                    && directHandoffAttemptKeys.has(directRetryKey)
+                );
                 const payload = {
                     media_items: selected,
                     base_filename: getBaseFilename(),
-                    download_mode: forceAutoMode ? "auto" : normalizeDownloadMode(downloadModeInput ? downloadModeInput.value : "browser"),
+                    download_mode: retryDirectViaServer
+                        ? "server_single"
+                        : (
+                            forceAutoMode
+                                ? "auto"
+                                : normalizeDownloadMode(downloadModeInput ? downloadModeInput.value : "browser")
+                        ),
                     save_dir: saveDirInput ? saveDirInput.value.trim() : "xhs",
                     save_format: saveFormatInput ? saveFormatInput.value : "original",
                     quality: qualityInput ? qualityInput.value || 95 : 95,
                     video_save_mode: videoSaveModeInput ? videoSaveModeInput.value : "video",
                 };
+
+                if (retryDirectViaServer) {
+                    setStatus(getStatusElement(), "正在切换服务器单文件下载，请稍候...");
+                }
 
                 if (
                     downloadAsyncEnabled
@@ -932,13 +984,15 @@
                     setProgress(0);
                     const data = await response.json();
                     if (data.status === "routed" && data.route_type === "direct") {
-                        if (directRouteShouldUseNativeBrowserDownload(data.items || [])) {
+                        const handoffKey = directRouteHandoffKey(data.items || []);
+                        if (handoffKey && !directHandoffAttemptKeys.has(handoffKey)) {
+                            directHandoffAttemptKeys.add(handoffKey);
                             const filenames = handoffDirectRouteItemsToBrowser(data.items || []);
                             setProgress(100);
                             setStatus(
                                 getStatusElement(),
-                                `${data.route_reason || "已交给浏览器直接下载源文件"}：${filenames.join("、")}${routeWarningText(data.warnings)}`,
-                                "text-success",
+                                `${data.route_reason || "已交给浏览器直接下载源文件"}：${filenames.join("、")}。${directRouteRetryHint()}${routeWarningText(data.warnings)}`,
+                                "text-muted",
                             );
                             return;
                         }
