@@ -1,5 +1,12 @@
 from django.db import models
 from django.core.validators import MaxValueValidator, MinValueValidator
+from django.utils import timezone
+
+
+def local_datetime_label(value):
+    if not value:
+        return ""
+    return timezone.localtime(value).strftime("%Y-%m-%d %H:%M:%S")
 
 
 class ProviderAccessMode(models.TextChoices):
@@ -241,7 +248,7 @@ class ParseRequestLog(models.Model):
         verbose_name_plural = "解析请求日志"
 
     def __str__(self):
-        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.status} {self.request_id}"
+        return f"{local_datetime_label(self.created_at)} {self.status} {self.request_id}"
 
 
 class DownloadRequestLog(models.Model):
@@ -311,7 +318,7 @@ class DownloadRequestLog(models.Model):
         verbose_name_plural = "下载请求日志"
 
     def __str__(self):
-        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.status} {self.download_type}"
+        return f"{local_datetime_label(self.created_at)} {self.status} {self.download_type}"
 
 
 class RoutingDecisionLog(models.Model):
@@ -337,7 +344,7 @@ class RoutingDecisionLog(models.Model):
         verbose_name_plural = "路由决策日志"
 
     def __str__(self):
-        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.route_type} {self.success}"
+        return f"{local_datetime_label(self.created_at)} {self.route_type} {self.success}"
 
 
 class SelfHealingEvent(models.Model):
@@ -378,7 +385,7 @@ class SelfHealingEvent(models.Model):
         verbose_name_plural = "Self-Healing 事件"
 
     def __str__(self):
-        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.trigger} {self.action}"
+        return f"{local_datetime_label(self.created_at)} {self.trigger} {self.action}"
 
 
 class PolicyLearningRun(models.Model):
@@ -408,7 +415,7 @@ class PolicyLearningRun(models.Model):
         verbose_name_plural = "Policy 学习运行"
 
     def __str__(self):
-        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.window_hours}h {self.status}"
+        return f"{local_datetime_label(self.created_at)} {self.window_hours}h {self.status}"
 
 
 class ProviderAdminAuditLog(models.Model):
@@ -434,7 +441,7 @@ class ProviderAdminAuditLog(models.Model):
         verbose_name_plural = "Provider 操作审计"
 
     def __str__(self):
-        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.actor_username} {self.action}"
+        return f"{local_datetime_label(self.created_at)} {self.actor_username} {self.action}"
 
 
 class ProviderHealthTestRun(models.Model):
@@ -469,7 +476,7 @@ class ProviderHealthTestRun(models.Model):
         verbose_name_plural = "Provider 健康测试记录"
 
     def __str__(self):
-        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.test_key} {self.status}"
+        return f"{local_datetime_label(self.created_at)} {self.test_key} {self.status}"
 
 
 class ProviderHealthTestSetting(models.Model):
