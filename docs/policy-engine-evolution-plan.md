@@ -330,6 +330,39 @@ Safety:
 - no automatic rollout
 - no queue or AI/ML model
 
+## Phase 9: Autonomous Governance System v8
+
+Status: Governance and risk control MVP implemented on top of v7 autonomous
+optimization.
+
+Purpose:
+
+- take over v7 evolution proposals before any production consideration
+- score cost spike risk, routing instability, provider volatility, and traffic anomaly
+- cap policy change magnitude to 10%
+- enforce daily mutation limits and rollback-aware blocking
+- produce `allow`, `deny`, or `partial_allow` decisions
+- provide explicit audit recording through existing `PolicyControlRecord`
+
+Module:
+
+- `governance_engine.py`: governance engine, risk governor, evolution limiter,
+  policy guard, audit writer, and admin context builder.
+
+Admin:
+
+- `/admin/governance-v8/` provides the read-only governance dashboard.
+
+Safety:
+
+- no direct production policy mutation
+- no automatic unlimited optimization
+- no AI/ML model
+- no Routing Engine core change
+- no Provider gate change
+- no Cost Guard change
+- audit writes require explicit function calls and are not triggered by page rendering
+
 ## Fallback
 
 Fallback is built into v3.5:

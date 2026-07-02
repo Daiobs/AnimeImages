@@ -32,6 +32,7 @@ urlpatterns = [
                   path("admin/control-convergence/", download_views.control_convergence_view, name="control_convergence"),
                   path("admin/stability-v6/", download_views.stability_v6_view, name="stability_v6"),
                   path("admin/autonomous-evolution/", download_views.autonomous_evolution_view, name="autonomous_evolution"),
+                  path("admin/governance-v8/", download_views.governance_v8_view, name="governance_v8"),
                   path("admin/console/", download_views.admin_console_view, name="admin_console"),
                   path("admin/rollout-guard/", download_views.rollout_guard_view, name="rollout_guard"),
                   path("admin/provider-health/", download_views.provider_health_view, name="provider_health"),

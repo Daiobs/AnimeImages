@@ -112,6 +112,12 @@ from .services.autonomous_evolution_engine import (
     rollback_engine,
     shadow_experiment,
 )
+from .services.governance_engine import (
+    DAILY_MUTATION_LIMIT,
+    GOVERNANCE_VERSION,
+    governance_engine,
+    record_governance_audit_decision,
+)
 from .services.production_intelligence import build_observability_v2_context
 from .policy.healing_policy import (
     HEAL_ACTION_BLOCK_GRACEFULLY,
@@ -8408,6 +8414,193 @@ class PolicyEngineEvolutionTests(TestCase):
         response = client.get("/admin/autonomous-evolution/")
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Autonomous Evolution")
+
+    def test_governance_v8_high_risk_must_block(self):
+        proposal = {
+            "type": "routing_adjustment",
+            "from": ROUTE_ZIP,
+            "to": ROUTE_PROXY,
+            "expected_gain": {"cost": 0.12, "latency": 0.18, "success_rate": -0.06},
+            "confidence": 0.92,
+        }
+        evolution = {
+            "proposals": [proposal],
+            "shadow_results": [{
+                "shadow_result": "worse",
+                "delta_cost": 0.12,
+                "delta_latency": 0.18,
+                "delta_success_rate": -0.06,
+            }],
+            "mutation_decisions": [{
+                "decision": "reject",
+                "allowed": False,
+                "production_behavior_changed": False,
+            }],
+            "provider_metrics": [{
+                "provider": "native",
+                "count": 4,
+                "failure_rate": 0.75,
+            }],
+            "policy_execution_history": {"failure_rate": 0.4},
+            "feedback_risk_score": 0.8,
+            "system_gain_metrics": {"better_rate": 0},
+            "stability": {"stability_score": 0.25},
+        }
+
+        result = governance_engine(evolution_result=evolution, control_records=[])
+        decision = result["governance_decisions"][0]
+
+        self.assertEqual(decision["decision"], "deny")
+        self.assertIn(decision["risk_classification"], {"high", "critical"})
+        self.assertFalse(decision["production_behavior_changed"])
+        self.assertEqual(result["system_safety_status"]["system_autonomy_level"], "guarded_manual")
+
+    def test_governance_v8_low_risk_large_change_is_partial_allow(self):
+        proposal = {
+            "type": "routing_adjustment",
+            "from": ROUTE_ZIP,
+            "to": ROUTE_PROXY,
+            "expected_gain": {"cost": -0.2, "latency": -0.02, "success_rate": 0.01},
+            "confidence": 0.95,
+        }
+        evolution = {
+            "proposals": [proposal],
+            "shadow_results": [{
+                "shadow_result": "better",
+                "delta_cost": -0.2,
+                "delta_latency": -0.02,
+                "delta_success_rate": 0.01,
+            }],
+            "mutation_decisions": [{
+                "decision": "allow_apply",
+                "allowed": True,
+                "production_behavior_changed": False,
+            }],
+            "provider_metrics": [{"provider": "native", "count": 10, "failure_rate": 0}],
+            "policy_execution_history": {"failure_rate": 0},
+            "feedback_risk_score": 0,
+            "system_gain_metrics": {"better_rate": 1},
+            "stability": {"stability_score": 0.99},
+        }
+
+        result = governance_engine(evolution_result=evolution, control_records=[])
+        decision = result["governance_decisions"][0]
+
+        self.assertEqual(decision["decision"], "partial_allow")
+        self.assertEqual(decision["allowed_change"], 0.1)
+        self.assertEqual(decision["limits_applied"][0]["key"], "max_policy_change")
+        self.assertLess(decision["risk_score"], 0.4)
+
+    def test_governance_v8_blocked_change_does_not_affect_production_and_can_audit(self):
+        before_count = PolicyControlRecord.objects.count()
+        proposal = {
+            "type": "routing_adjustment",
+            "from": ROUTE_DIRECT,
+            "to": ROUTE_ZIP,
+            "expected_gain": {"cost": 0.2, "latency": 0.2, "success_rate": -0.05},
+            "confidence": 0.9,
+        }
+        evolution = {
+            "proposals": [proposal],
+            "shadow_results": [{"shadow_result": "worse"}],
+            "mutation_decisions": [{"decision": "reject", "allowed": False}],
+            "provider_metrics": [{"provider": "native", "count": 1, "failure_rate": 1}],
+            "policy_execution_history": {"failure_rate": 0.5},
+            "feedback_risk_score": 0.5,
+            "system_gain_metrics": {"better_rate": 0},
+            "stability": {"stability_score": 0.3},
+        }
+
+        result = governance_engine(evolution_result=evolution, control_records=[])
+        decision = result["governance_decisions"][0]
+
+        self.assertEqual(PolicyControlRecord.objects.count(), before_count)
+        self.assertEqual(decision["decision"], "deny")
+        self.assertFalse(decision["production_behavior_changed"])
+
+        record = record_governance_audit_decision(decision, actor_username="governance-admin")
+        self.assertEqual(record.source, GOVERNANCE_VERSION)
+        self.assertEqual(record.state, PolicyControlState.REJECTED)
+        self.assertFalse(record.policy_snapshot["production_behavior_changed"])
+
+    def test_governance_v8_autonomy_limit_blocks_daily_mutation_over_threshold(self):
+        for index in range(DAILY_MUTATION_LIMIT):
+            PolicyControlRecord.objects.create(
+                policy_decision=f"governance:allow:{index}",
+                control_decision="allow",
+                state=PolicyControlState.PENDING,
+                source=GOVERNANCE_VERSION,
+            )
+        proposal = {
+            "type": "routing_adjustment",
+            "from": ROUTE_ZIP,
+            "to": ROUTE_PROXY,
+            "expected_gain": {"cost": -0.05, "latency": -0.03, "success_rate": 0.01},
+            "confidence": 0.92,
+        }
+        evolution = {
+            "proposals": [proposal],
+            "shadow_results": [{"shadow_result": "better"}],
+            "mutation_decisions": [{"decision": "allow_apply", "allowed": True}],
+            "provider_metrics": [{"provider": "native", "count": 10, "failure_rate": 0}],
+            "policy_execution_history": {"failure_rate": 0},
+            "feedback_risk_score": 0,
+            "system_gain_metrics": {"better_rate": 1},
+            "stability": {"stability_score": 0.99},
+        }
+
+        result = governance_engine(
+            evolution_result=evolution,
+            control_records=list(PolicyControlRecord.objects.all()),
+        )
+        decision = result["governance_decisions"][0]
+
+        self.assertEqual(decision["decision"], "deny")
+        self.assertIn("evolution-limiter-blocked", decision["reason"])
+        self.assertEqual(decision["limits_applied"][0]["key"], "daily_mutation_limit")
+        self.assertEqual(result["system_safety_status"]["mutation_rate"], 0)
+
+    def test_governance_v8_missing_shadow_or_mutation_defaults_to_denied(self):
+        evolution = {
+            "proposals": [
+                {
+                    "type": "routing_adjustment",
+                    "from": ROUTE_ZIP,
+                    "to": ROUTE_PROXY,
+                    "expected_gain": {"cost": -0.05, "latency": -0.03, "success_rate": 0.01},
+                    "confidence": 0.92,
+                }
+            ],
+            "shadow_results": [],
+            "mutation_decisions": [],
+            "provider_metrics": [],
+            "policy_execution_history": {"failure_rate": 0},
+            "feedback_risk_score": 0,
+            "system_gain_metrics": {"better_rate": 1},
+            "stability": {"stability_score": 0.99},
+        }
+
+        result = governance_engine(evolution_result=evolution, control_records=[])
+
+        self.assertEqual(len(result["governance_decisions"]), 1)
+        self.assertEqual(result["governance_decisions"][0]["decision"], "deny")
+        self.assertIn("shadow-not-better", result["governance_decisions"][0]["reason"])
+
+    def test_governance_v8_admin_page_requires_permission(self):
+        response = Client().get("/admin/governance-v8/")
+        self.assertEqual(response.status_code, 404)
+
+        user = User.objects.create_superuser(
+            username="governance-admin",
+            email="governance@example.com",
+            password="pw",
+        )
+        client = Client()
+        client.force_login(user)
+
+        response = client.get("/admin/governance-v8/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Governance v8")
 
     def test_observability_v2_metrics_are_computed_from_policy_feedback(self):
         DownloadRequestLog.objects.create(

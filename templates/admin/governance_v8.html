@@ -1,0 +1,235 @@
+{% extends "admin/base_site.html" %}
+
+{% block content_title %}{% endblock %}
+
+{% block content %}
+<style>
+    #content { padding: 0; }
+    .governance-page {
+        min-height: calc(100vh - 96px);
+        margin: -20px -20px 0;
+        padding: 34px clamp(18px, 4vw, 54px) 56px;
+        background: #f8fbff;
+        color: #111827;
+    }
+    .governance-shell { max-width: 1180px; margin: 0 auto; }
+    .governance-hero {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 20px;
+    }
+    .governance-eyebrow {
+        display: inline-flex;
+        min-height: 28px;
+        align-items: center;
+        padding: 4px 10px;
+        border-radius: 8px;
+        background: #fef3c7;
+        color: #92400e;
+        font-size: 12px;
+        font-weight: 800;
+    }
+    .governance-title {
+        margin: 10px 0 0;
+        color: #111827;
+        font-size: clamp(28px, 4vw, 42px);
+        font-weight: 900;
+        line-height: 1.12;
+        letter-spacing: 0;
+    }
+    .governance-subtitle {
+        max-width: 820px;
+        margin: 10px 0 0;
+        color: #6b7280;
+        font-size: 15px;
+        line-height: 1.7;
+    }
+    .governance-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    .governance-link {
+        display: inline-flex;
+        min-height: 40px;
+        align-items: center;
+        justify-content: center;
+        padding: 0 14px;
+        border: 1px solid #d8dde8;
+        border-radius: 8px;
+        background: #fff;
+        color: #111827;
+        font-size: 14px;
+        font-weight: 800;
+        text-decoration: none;
+    }
+    .governance-link:hover { color: #92400e; border-color: #fbbf24; text-decoration: none; }
+    .governance-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 16px;
+    }
+    .governance-card,
+    .governance-panel {
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: 0 4px 12px rgba(17, 24, 39, .05);
+    }
+    .governance-card { min-height: 96px; padding: 16px; }
+    .governance-card strong {
+        display: block;
+        color: #6b7280;
+        font-size: 13px;
+        font-weight: 800;
+    }
+    .governance-card span {
+        display: block;
+        margin-top: 8px;
+        color: #111827;
+        font-size: 20px;
+        font-weight: 900;
+        overflow-wrap: anywhere;
+    }
+    .governance-panel { margin-bottom: 16px; padding: 18px; }
+    .governance-panel h2 { margin: 0 0 14px; font-size: 18px; font-weight: 900; }
+    .governance-muted { color: #6b7280; font-size: 13px; line-height: 1.6; }
+    .governance-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .governance-table th,
+    .governance-table td {
+        padding: 10px 8px;
+        border-bottom: 1px solid #eef2f7;
+        text-align: left;
+        vertical-align: top;
+    }
+    .governance-table th {
+        color: #6b7280;
+        font-size: 12px;
+        font-weight: 900;
+        text-transform: uppercase;
+    }
+    @media (max-width: 960px) { .governance-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 640px) { .governance-grid { grid-template-columns: 1fr; } }
+</style>
+
+<div class="governance-page">
+    <div class="governance-shell">
+        <section class="governance-hero">
+            <div>
+                <span class="governance-eyebrow">Autonomous Governance System v8</span>
+                <h1 class="governance-title">Governance v8 可控自治治理</h1>
+                <p class="governance-subtitle">v8 位于 v7 之上，对自治优化 proposal 执行风险评分、演化限制和 Policy Guard 判断。本页展示 allow / deny / partial_allow，但不直接修改生产配置。</p>
+                <p class="governance-muted">生成时间：{{ generated_at }} · 窗口：{{ window_hours }} 小时 · {{ governance.safety_note }}</p>
+            </div>
+            <div class="governance-actions">
+                <a class="governance-link" href="{% url 'autonomous_evolution' %}">Autonomous v7</a>
+                <a class="governance-link" href="{% url 'stability_v6' %}">Stability v6</a>
+                <a class="governance-link" href="{% url 'policy_engine' %}">Policy Engine</a>
+            </div>
+        </section>
+
+        <section class="governance-grid">
+            <div class="governance-card"><strong>System Autonomy Level</strong><span>{{ governance.system_safety_status.system_autonomy_level }}</span></div>
+            <div class="governance-card"><strong>Risk Exposure</strong><span>{{ governance.system_safety_status.risk_exposure|floatformat:3 }}</span></div>
+            <div class="governance-card"><strong>Mutation Rate</strong><span>{{ governance.system_safety_status.mutation_rate_label }}</span></div>
+            <div class="governance-card"><strong>Stability Index</strong><span>{{ governance.system_safety_status.stability_index_label }}</span></div>
+            <div class="governance-card"><strong>Decisions</strong><span>{{ governance.governance_decisions|length }}</span></div>
+            <div class="governance-card"><strong>Allowed</strong><span>{{ governance.system_safety_status.allow_count }}</span></div>
+            <div class="governance-card"><strong>Partial Allowed</strong><span>{{ governance.system_safety_status.partial_allow_count }}</span></div>
+            <div class="governance-card"><strong>Blocked</strong><span>{{ governance.system_safety_status.deny_count }}</span></div>
+        </section>
+
+        <section class="governance-panel">
+            <h2>Governance Decisions</h2>
+            <table class="governance-table">
+                <thead><tr><th>Decision</th><th>Risk</th><th>From</th><th>To</th><th>Allowed Change</th><th>Limits</th><th>Reason</th></tr></thead>
+                <tbody>
+                {% for item in governance.governance_decisions %}
+                    <tr>
+                        <td>{{ item.decision }}</td>
+                        <td>{{ item.risk_score|floatformat:3 }} / {{ item.risk_classification }}</td>
+                        <td>{{ item.proposal.from }}</td>
+                        <td>{{ item.proposal.to }}</td>
+                        <td>{{ item.allowed_change|floatformat:3 }}</td>
+                        <td>
+                            {% for limit in item.limits_applied %}
+                                {{ limit.key }}: {{ limit.requested }} → {{ limit.applied }}<br>
+                            {% empty %}
+                                无
+                            {% endfor %}
+                        </td>
+                        <td>{{ item.reason|join:", " }}</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="7">暂无 governance decision。</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+
+        <section class="governance-panel">
+            <h2>Blocked Optimizations</h2>
+            <table class="governance-table">
+                <thead><tr><th>From</th><th>To</th><th>Risk</th><th>Rollback Required</th><th>Reason</th></tr></thead>
+                <tbody>
+                {% for item in governance.blocked_optimizations %}
+                    <tr>
+                        <td>{{ item.proposal.from }}</td>
+                        <td>{{ item.proposal.to }}</td>
+                        <td>{{ item.risk_score|floatformat:3 }} / {{ item.risk_classification }}</td>
+                        <td>{% if item.rollback_required %}是{% else %}否{% endif %}</td>
+                        <td>{{ item.reason|join:", " }}</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="5">暂无 blocked optimization。</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+
+        <section class="governance-panel">
+            <h2>Partial Applied Changes</h2>
+            <table class="governance-table">
+                <thead><tr><th>From</th><th>To</th><th>Allowed Change</th><th>Limits</th><th>Production Changed</th></tr></thead>
+                <tbody>
+                {% for item in governance.partial_applied_changes %}
+                    <tr>
+                        <td>{{ item.proposal.from }}</td>
+                        <td>{{ item.proposal.to }}</td>
+                        <td>{{ item.allowed_change|floatformat:3 }}</td>
+                        <td>
+                            {% for limit in item.limits_applied %}
+                                {{ limit.key }}: {{ limit.requested }} → {{ limit.applied }}<br>
+                            {% endfor %}
+                        </td>
+                        <td>{% if item.production_behavior_changed %}是{% else %}否{% endif %}</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="5">暂无 partial allow。</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+
+        <section class="governance-panel">
+            <h2>Governance Audit Records</h2>
+            <table class="governance-table">
+                <thead><tr><th>Created</th><th>Decision</th><th>State</th><th>Route</th><th>Actor</th></tr></thead>
+                <tbody>
+                {% for item in audit_records %}
+                    <tr>
+                        <td>{{ item.created_at }}</td>
+                        <td>{{ item.control_decision }}</td>
+                        <td>{{ item.state }}</td>
+                        <td>{{ item.route }}</td>
+                        <td>{{ item.actor_username }}</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="5">暂无 governance audit record。v8 默认只读，只有显式记录时才写入审计。</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+    </div>
+</div>
+{% endblock %}
