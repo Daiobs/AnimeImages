@@ -66,6 +66,7 @@
 
     function getCardItem(card) {
         const type = card.dataset.type || "image";
+        const sizeBytes = Number.parseInt(card.dataset.sizeBytes || "0", 10) || 0;
         const providerFields = {
             asset_id: card.dataset.assetId || "",
             provider: card.dataset.provider || "",
@@ -79,6 +80,7 @@
                 type: "video",
                 url: card.dataset.url,
                 cover_url: card.dataset.coverUrl || "",
+                size_bytes: sizeBytes,
                 ...providerFields,
             };
         }
@@ -86,6 +88,7 @@
         return {
             type: "image",
             url: card.dataset.url,
+            size_bytes: sizeBytes,
             ...providerFields,
         };
     }
@@ -187,7 +190,7 @@
 
     function itemRequiresZipTask(item) {
         const provider = item ? String(item.provider || "") : "";
-        return ["kukutool", "kukutool_generic", "youtube_merge", "yt_dlp_merge"].includes(provider);
+        return ["kukutool_generic", "youtube_merge", "yt_dlp_merge"].includes(provider);
     }
 
     function selectedNeedsZipTask(items) {
