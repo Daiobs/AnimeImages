@@ -2290,6 +2290,7 @@ def get_download_settings_context(platform_key="home", request=None):
         ),
         "download_async_tasks_enabled": settings.DOWNLOAD_ASYNC_TASKS_ENABLED,
         "xhs_allow_server_save": settings.XHS_ALLOW_SERVER_SAVE,
+        "xhs_show_server_save_mode": settings.DEBUG and settings.XHS_ALLOW_SERVER_SAVE,
         "xhs_allow_absolute_save_path": settings.XHS_ALLOW_ABSOLUTE_SAVE_PATH,
         "xhs_default_server_save_dir": settings.XHS_DEFAULT_SERVER_SAVE_DIR,
         "ultra_hd_available": ultra_hd_is_available(request),

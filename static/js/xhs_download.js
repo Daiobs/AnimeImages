@@ -191,6 +191,10 @@
         return selectedItems.length === 1;
     }
 
+    function normalizeDownloadMode(value) {
+        return value === "server" ? "browser" : (value || "browser");
+    }
+
     function itemRequiresZipTask(item) {
         const provider = item ? String(item.provider || "") : "";
         return ["kukutool_generic", "youtube_merge", "yt_dlp_merge"].includes(provider);
@@ -261,7 +265,7 @@
 
         let selected = [];
         let useFilePicker = Boolean(savedSettings.use_file_picker);
-        let downloadMode = savedSettings.download_mode || "browser";
+        let downloadMode = normalizeDownloadMode(savedSettings.download_mode);
         let activeParseController = null;
         let parseRequestId = 0;
         let downloadInProgress = false;
@@ -450,7 +454,10 @@
         }
 
         function updateModeVisibility() {
-            downloadMode = downloadModeInput ? downloadModeInput.value : "browser";
+            downloadMode = normalizeDownloadMode(downloadModeInput ? downloadModeInput.value : "browser");
+            if (downloadModeInput && downloadModeInput.value !== downloadMode) {
+                downloadModeInput.value = downloadMode;
+            }
 
             if (browserDownloadSettings) {
                 browserDownloadSettings.hidden = downloadMode !== "browser";
@@ -852,7 +859,7 @@
                 const payload = {
                     media_items: selected,
                     base_filename: getBaseFilename(),
-                    download_mode: forceAutoMode ? "auto" : (downloadModeInput ? downloadModeInput.value : "browser"),
+                    download_mode: forceAutoMode ? "auto" : normalizeDownloadMode(downloadModeInput ? downloadModeInput.value : "browser"),
                     save_dir: saveDirInput ? saveDirInput.value.trim() : "xhs",
                     save_format: saveFormatInput ? saveFormatInput.value : "original",
                     quality: qualityInput ? qualityInput.value || 95 : 95,
@@ -1087,7 +1094,7 @@
 
                 const downloadBtn = event.target.closest("#download-btn");
                 if (downloadBtn && resultsRegion.contains(downloadBtn)) {
-                    handleDownloadClick(downloadBtn);
+                    handleDownloadClick(downloadBtn, true);
                     return;
                 }
 
@@ -1148,7 +1155,7 @@
         if (saveSettingsBtn) {
             saveSettingsBtn.addEventListener("click", () => {
                 saveSettings({
-                    download_mode: downloadModeInput ? downloadModeInput.value : "browser",
+                    download_mode: normalizeDownloadMode(downloadModeInput ? downloadModeInput.value : "browser"),
                     save_dir: saveDirInput ? saveDirInput.value.trim() : "xhs",
                     save_format: saveFormatInput ? saveFormatInput.value : "original",
                     quality: qualityInput ? qualityInput.value || 95 : 95,

@@ -3545,6 +3545,21 @@ class XhsDownloadViewTests(TestCase):
         self.assertContains(response, "js/xhs_download.js?v=")
         self.assertContains(response, "data-download-task-url")
 
+    @override_settings(DEBUG=False, XHS_ALLOW_SERVER_SAVE=True)
+    def test_production_page_hides_server_save_mode(self):
+        response = Client().get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'value="server"')
+        self.assertNotContains(response, "开发保存模式：保存到服务端路径")
+
+    @override_settings(DEBUG=True, XHS_ALLOW_SERVER_SAVE=True)
+    def test_debug_page_can_show_server_save_mode(self):
+        response = Client().get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'value="server"')
+
     def test_download_page_marks_provider_notice_as_result_content(self):
         html = render_to_string(
             "xhs_download.html",
