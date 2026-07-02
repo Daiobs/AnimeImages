@@ -640,6 +640,29 @@
             return getDispositionFilename(response) || item.filename || `${fallbackBase}${suffix}.${extension}`;
         }
 
+        function directLinkFilename(item, index, total) {
+            const fallbackBase = getBaseFilename();
+            const suffix = total > 1 ? `_${index + 1}` : "";
+            const rawFilename = item.filename || "";
+            if (rawFilename) {
+                return rawFilename;
+            }
+            return `${fallbackBase}${suffix}.${item.type === "video" ? "mp4" : "jpg"}`;
+        }
+
+        function handoffDirectItemToBrowser(item, index, total) {
+            const link = document.createElement("a");
+            const filename = directLinkFilename(item, index, total);
+            link.href = item.url;
+            link.download = filename;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            return filename;
+        }
+
         async function writeResponseToFileWithProgress(response, fileHandle, startPercent, endPercent) {
             const contentLength = Number.parseInt(response.headers.get("Content-Length") || "0", 10);
             if (!response.body || !contentLength) {
@@ -708,6 +731,19 @@
             const blob = await readResponseBlobWithProgress(response, startPercent, endPercent);
             await saveZipBlob(blob, filename, false);
             return filename;
+        }
+
+        function handoffDirectRouteItemsToBrowser(items) {
+            const directItems = (items || []).filter((item) => item && item.url);
+            if (directItems.length === 0) {
+                throw new Error("没有可下载的直链资源");
+            }
+
+            const filenames = [];
+            for (let index = 0; index < directItems.length; index += 1) {
+                filenames.push(handoffDirectItemToBrowser(directItems[index], index, directItems.length));
+            }
+            return filenames;
         }
 
         async function downloadDirectRouteItems(items) {
@@ -905,13 +941,13 @@
                             if (!selectedSingleItem(selected)) {
                                 throw directError;
                             }
-                            console.warn("Direct download failed, falling back to server proxy", directError);
-                            const fallback = await downloadServerSingleFallback(payload);
+                            console.warn("Direct fetch failed, handing off original URL to browser", directError);
+                            const filenames = handoffDirectRouteItemsToBrowser(data.items || []);
                             setProgress(100);
                             setStatus(
                                 getStatusElement(),
-                                `${serverDownloadStatusMessage(fallback)}（已自动切换服务器下载）`,
-                                fallback.variant,
+                                `${data.route_reason || "已交给浏览器处理原始直链"}：${filenames.join("、")}。如浏览器打开原始视频页，请使用浏览器下载栏或视频菜单保存。${routeWarningText(data.warnings)}`,
+                                "text-success",
                             );
                         }
                         return;
@@ -926,7 +962,15 @@
                         return;
                     }
                     setProgress(100);
-                    setStatus(getStatusElement(), data.message || "服务端保存完成", "text-success");
+                    if (data.status === "success" && data.message) {
+                        setStatus(getStatusElement(), data.message, "text-success");
+                        return;
+                    }
+                    setStatus(
+                        getStatusElement(),
+                        data.message || data.route_reason || "下载请求未返回可保存的文件，请刷新页面后重试。",
+                        "text-danger",
+                    );
                     return;
                 }
 
