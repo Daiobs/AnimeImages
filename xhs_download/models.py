@@ -1,5 +1,12 @@
 from django.db import models
 from django.core.validators import MaxValueValidator, MinValueValidator
+from django.utils import timezone
+
+
+def local_datetime_label(value):
+    if not value:
+        return ""
+    return timezone.localtime(value).strftime("%Y-%m-%d %H:%M:%S")
 
 
 class ProviderAccessMode(models.TextChoices):
@@ -241,7 +248,7 @@ class ParseRequestLog(models.Model):
         verbose_name_plural = "解析请求日志"
 
     def __str__(self):
-        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.status} {self.request_id}"
+        return f"{local_datetime_label(self.created_at)} {self.status} {self.request_id}"
 
 
 class DownloadRequestLog(models.Model):
@@ -280,6 +287,19 @@ class DownloadRequestLog(models.Model):
     policy_active = models.BooleanField(default=False, db_index=True)
     policy_decision_source = models.CharField(max_length=80, blank=True, default="", db_index=True)
     policy_estimated_savings_bytes = models.BigIntegerField(default=0)
+    recovery_count = models.PositiveSmallIntegerField(default=0)
+    fallback_count = models.PositiveSmallIntegerField(default=0)
+    recovery_action = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    recovery_reason = models.CharField(max_length=200, blank=True, default="")
+    fallback_from_route = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    fallback_to_route = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    failure_type = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    auto_recovery_count = models.PositiveSmallIntegerField(default=0)
+    provider_auto_switch_count = models.PositiveSmallIntegerField(default=0)
+    failure_to_recovery_ms = models.PositiveIntegerField(default=0)
+    healing_action = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    healing_risk = models.CharField(max_length=16, blank=True, default="", db_index=True)
+    healing_confidence = models.FloatField(default=0)
 
     class Meta:
         ordering = ("-created_at",)
@@ -288,12 +308,17 @@ class DownloadRequestLog(models.Model):
             models.Index(fields=("download_type", "created_at")),
             models.Index(fields=("provider", "created_at")),
             models.Index(fields=("final_policy_route", "created_at")),
+            models.Index(fields=("recovery_action", "created_at")),
+            models.Index(fields=("fallback_to_route", "created_at")),
+            models.Index(fields=("failure_type", "created_at")),
+            models.Index(fields=("healing_action", "created_at")),
+            models.Index(fields=("healing_risk", "created_at")),
         )
         verbose_name = "下载请求日志"
         verbose_name_plural = "下载请求日志"
 
     def __str__(self):
-        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.status} {self.download_type}"
+        return f"{local_datetime_label(self.created_at)} {self.status} {self.download_type}"
 
 
 class RoutingDecisionLog(models.Model):
@@ -319,7 +344,48 @@ class RoutingDecisionLog(models.Model):
         verbose_name_plural = "路由决策日志"
 
     def __str__(self):
-        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.route_type} {self.success}"
+        return f"{local_datetime_label(self.created_at)} {self.route_type} {self.success}"
+
+
+class SelfHealingEvent(models.Model):
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    request_id = models.CharField(max_length=128, blank=True, default="", db_index=True)
+    trigger = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    failure_type = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    action = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    risk = models.CharField(max_length=16, blank=True, default="", db_index=True)
+    confidence = models.FloatField(default=0)
+    healed = models.BooleanField(default=False, db_index=True)
+    depth = models.PositiveSmallIntegerField(default=0)
+    max_depth = models.PositiveSmallIntegerField(default=3)
+    provider = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    switched_from_provider = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    switched_to_provider = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    route_type = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    fallback_from_route = models.CharField(max_length=32, blank=True, default="")
+    fallback_to_route = models.CharField(max_length=32, blank=True, default="")
+    duration_ms = models.PositiveIntegerField(default=0)
+    error_type = models.CharField(max_length=120, blank=True, default="", db_index=True)
+    reason = models.CharField(max_length=300, blank=True, default="")
+    context_snapshot = models.JSONField(default=dict, blank=True)
+    client_identity_hash = models.CharField(max_length=64, blank=True, default="")
+    ip_hash = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    is_staff = models.BooleanField(default=False, db_index=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = (
+            models.Index(fields=("created_at", "trigger")),
+            models.Index(fields=("failure_type", "created_at")),
+            models.Index(fields=("action", "created_at")),
+            models.Index(fields=("provider", "created_at")),
+            models.Index(fields=("healed", "created_at")),
+        )
+        verbose_name = "Self-Healing 事件"
+        verbose_name_plural = "Self-Healing 事件"
+
+    def __str__(self):
+        return f"{local_datetime_label(self.created_at)} {self.trigger} {self.action}"
 
 
 class PolicyLearningRun(models.Model):
@@ -349,7 +415,7 @@ class PolicyLearningRun(models.Model):
         verbose_name_plural = "Policy 学习运行"
 
     def __str__(self):
-        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.window_hours}h {self.status}"
+        return f"{local_datetime_label(self.created_at)} {self.window_hours}h {self.status}"
 
 
 class ProviderAdminAuditLog(models.Model):
@@ -375,7 +441,7 @@ class ProviderAdminAuditLog(models.Model):
         verbose_name_plural = "Provider 操作审计"
 
     def __str__(self):
-        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.actor_username} {self.action}"
+        return f"{local_datetime_label(self.created_at)} {self.actor_username} {self.action}"
 
 
 class ProviderHealthTestRun(models.Model):
@@ -410,7 +476,7 @@ class ProviderHealthTestRun(models.Model):
         verbose_name_plural = "Provider 健康测试记录"
 
     def __str__(self):
-        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.test_key} {self.status}"
+        return f"{local_datetime_label(self.created_at)} {self.test_key} {self.status}"
 
 
 class ProviderHealthTestSetting(models.Model):

@@ -59,7 +59,7 @@
                         type="button"
                         class="btn btn-brand btn-sm"
                         id="download-btn"
-                        title="下载选中资源：单视频直接保存，多资源自动打包 ZIP"
+                        title="下载选中资源：图片/单视频优先浏览器下载，多资源自动打包 ZIP"
                     >
                         <i class="bi bi-download me-1"></i>
                         下载选中资源
@@ -67,7 +67,7 @@
                 </div>
 
                 <div class="download-action-help small text-muted">
-                    单个视频直接保存为文件；多图、多资源或需服务端处理时自动打包 ZIP。
+                    图片优先浏览器直链；单视频优先浏览器保存；多图、多资源或需合并/恢复的 Provider 资源自动使用服务端处理。
                 </div>
             </div>
         </div>
@@ -76,7 +76,7 @@
             {% if is_mobile_request %}
                 <div class="alert alert-info small mb-3">
                     <i class="bi bi-phone me-1"></i>
-                    手机端建议单张/单个保存。ZIP 文件通常会保存到浏览器下载目录或系统“文件”App 中，不能保证直接进入相册。
+                    手机端建议单张图片或单个视频保存。ZIP 文件通常会进入浏览器下载目录或系统“文件”App，不能保证直接进入相册。
                 </div>
             {% endif %}
 

@@ -69,7 +69,27 @@ from .services.provider_settings import (
     normalize_provider_order,
 )
 from .services.provider_manifest import build_provider_manifest_token
+from .services.feedback_loop import (
+    build_feedback,
+    build_feedback_loop_context,
+    build_insights,
+    build_suggestions,
+)
 from .services.observability import record_download_request_log, record_provider_admin_audit_log
+from .services.production_intelligence import build_observability_v2_context
+from .policy.healing_policy import (
+    HEAL_ACTION_BLOCK_GRACEFULLY,
+    HEAL_ACTION_SWITCH_PROVIDER,
+    next_provider,
+)
+from .services.recovery_engine import (
+    FAILURE_PROVIDER_TIMEOUT,
+    FAILURE_PROXY_FAILED,
+    FAILURE_ROUTING_FAILED,
+    provider_stability_score,
+    provider_stability_status,
+)
+from .services.self_healing_engine import SelfHealingEngine
 from .policy.adaptive import build_adaptive_weight_recommendation
 from .policy.engine import (
     apply_policy_decision_to_route,
@@ -102,6 +122,7 @@ from .models import (
     ProviderHealthTestStatus,
     ProviderRuntimeSetting,
     RoutingDecisionLog,
+    SelfHealingEvent,
 )
 from .views import (
     build_provider_preview_query,
@@ -272,6 +293,28 @@ class XhsUtilityTests(SimpleTestCase):
         self.assertEqual(message, "资源下载失败：上游 CDN 连接异常，请重新解析后再试。")
         self.assertNotIn("365yg.com", message)
         self.assertNotIn("token=secret", message)
+
+    def test_provider_stability_score_marks_unstable_provider(self):
+        stable_score = provider_stability_score(
+            success_rate=0.95,
+            timeout_rate=0,
+            failure_rate=0.05,
+            average_latency_ms=500,
+        )
+        unstable_score = provider_stability_score(
+            success_rate=0.2,
+            timeout_rate=0.5,
+            failure_rate=0.8,
+            average_latency_ms=20000,
+        )
+
+        self.assertEqual(provider_stability_status(stable_score), "stable")
+        self.assertEqual(provider_stability_status(unstable_score), "unstable")
+
+    def test_healing_policy_provider_fallback_chain(self):
+        self.assertEqual(next_provider("kukutool"), "yt_dlp_generic")
+        self.assertEqual(next_provider("yt_dlp_generic"), "native")
+        self.assertEqual(next_provider("native"), "fallback")
 
     @override_settings(KUKUTOOL_DOWNLOAD_TIMEOUT_SECONDS=7.0)
     @patch(
@@ -5633,7 +5676,7 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "手机端建议单张/单个保存")
+        self.assertContains(response, "手机端建议单张图片或单个视频保存")
         self.assertContains(response, "系统“文件”App")
         self.assertNotContains(response, "自动保存到相册")
 
@@ -5706,10 +5749,10 @@ class XhsDownloadViewTests(TestCase):
             requested_mode="auto",
         )
 
-        self.assertEqual(route["route_type"], ROUTE_DIRECT)
-        self.assertEqual(route["download_strategy"], "browser_direct_provider_video")
-        self.assertEqual(route["server_egress_estimated_bytes"], 0)
-        self.assertEqual(route["browser_egress_estimated_bytes"], 456)
+        self.assertEqual(route["route_type"], ROUTE_PROXY)
+        self.assertEqual(route["download_strategy"], "server_single_attachment")
+        self.assertEqual(route["server_egress_estimated_bytes"], 456)
+        self.assertEqual(route["browser_egress_estimated_bytes"], 0)
 
     def test_download_route_browser_single_video_attachment(self):
         request = RequestFactory().post("/media/download-images/")
@@ -5719,10 +5762,10 @@ class XhsDownloadViewTests(TestCase):
             requested_mode="browser",
         )
 
-        self.assertEqual(route["route_type"], ROUTE_DIRECT)
-        self.assertEqual(route["download_strategy"], "browser_direct_provider_video")
-        self.assertEqual(route["server_egress_estimated_bytes"], 0)
-        self.assertEqual(route["browser_egress_estimated_bytes"], 456)
+        self.assertEqual(route["route_type"], ROUTE_PROXY)
+        self.assertEqual(route["download_strategy"], "server_single_attachment")
+        self.assertEqual(route["server_egress_estimated_bytes"], 456)
+        self.assertEqual(route["browser_egress_estimated_bytes"], 0)
 
     def test_download_route_proxy_single_video_forces_server_attachment(self):
         request = RequestFactory().post("/media/download-images/")
@@ -5763,29 +5806,29 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(youtube_route["route_type"], ROUTE_ZIP)
         self.assertEqual(kukutool_route["route_type"], ROUTE_ZIP)
 
-    def test_download_route_signed_kukutool_cdn_video_uses_browser_direct(self):
+    def test_download_route_signed_kukutool_cdn_video_uses_server_attachment(self):
         request = RequestFactory().post("/media/download-images/")
         item = make_kukutool_download_item("https://v6-default.365yg.com/a.mp4")
         item["size_bytes"] = 2000
 
         route = decide_download_route(request, [item], requested_mode="auto")
 
-        self.assertEqual(route["route_type"], ROUTE_DIRECT)
-        self.assertEqual(route["download_strategy"], "browser_direct_provider_video")
-        self.assertEqual(route["server_egress_estimated_bytes"], 0)
-        self.assertEqual(route["browser_egress_estimated_bytes"], 2000)
+        self.assertEqual(route["route_type"], ROUTE_PROXY)
+        self.assertEqual(route["download_strategy"], "server_single_attachment")
+        self.assertEqual(route["server_egress_estimated_bytes"], 2000)
+        self.assertEqual(route["browser_egress_estimated_bytes"], 0)
 
-    def test_download_route_browser_signed_kukutool_cdn_video_uses_browser_direct(self):
+    def test_download_route_browser_signed_kukutool_cdn_video_uses_server_attachment(self):
         request = RequestFactory().post("/media/download-images/")
         item = make_kukutool_download_item("https://v6-default.365yg.com/a.mp4")
         item["size_bytes"] = 2000
 
         route = decide_download_route(request, [item], requested_mode="browser")
 
-        self.assertEqual(route["route_type"], ROUTE_DIRECT)
-        self.assertEqual(route["download_strategy"], "browser_direct_provider_video")
-        self.assertEqual(route["server_egress_estimated_bytes"], 0)
-        self.assertEqual(route["browser_egress_estimated_bytes"], 2000)
+        self.assertEqual(route["route_type"], ROUTE_PROXY)
+        self.assertEqual(route["download_strategy"], "server_single_attachment")
+        self.assertEqual(route["server_egress_estimated_bytes"], 2000)
+        self.assertEqual(route["browser_egress_estimated_bytes"], 0)
 
     def test_download_route_proxy_signed_kukutool_cdn_video_forces_server_attachment(self):
         request = RequestFactory().post("/media/download-images/")
@@ -5851,7 +5894,7 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(image_route["route_type"], ROUTE_DIRECT)
-        self.assertEqual(video_route["route_type"], ROUTE_DIRECT)
+        self.assertEqual(video_route["route_type"], ROUTE_PROXY)
         self.assertEqual(mixed_route["route_type"], ROUTE_ZIP)
         self.assertEqual(image_route["strategy_version"], "v3")
         self.assertIn("estimated_cost", image_route)
@@ -5979,7 +6022,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(get_daily_total("download-requests-ip", get_client_identity(first.wsgi_request)), 0)
 
     @patch("xhs_download.views.fetch_media_response")
-    def test_download_auto_video_returns_direct_route(self, mock_fetch):
+    def test_download_auto_video_returns_server_single_file(self, mock_fetch):
         mock_fetch.return_value = FakeStreamingResponse(
             b"video-content",
             url="https://sns-video-hw.xhscdn.com/a.mp4",
@@ -5999,13 +6042,14 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "application/json")
-        self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
-        self.assertEqual(mock_fetch.call_count, 0)
+        self.assertEqual(response["Content-Type"], "video/mp4")
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertEqual(b"".join(response.streaming_content), b"video-content")
+        self.assertEqual(mock_fetch.call_count, 1)
         log = DownloadRequestLog.objects.get()
-        self.assertEqual(log.route_type, ROUTE_DIRECT)
-        self.assertEqual(log.server_egress_estimated_bytes, 0)
-        self.assertEqual(log.browser_egress_estimated_bytes, 654)
+        self.assertEqual(log.route_type, ROUTE_PROXY)
+        self.assertEqual(log.server_egress_estimated_bytes, 654)
+        self.assertEqual(log.browser_egress_estimated_bytes, 0)
 
     @patch("xhs_download.views.fetch_media_response")
     def test_download_proxy_video_returns_single_file_response(self, mock_fetch):
@@ -6037,7 +6081,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(log.server_egress_estimated_bytes, 654)
 
     @patch("xhs_download.views.fetch_media_response")
-    def test_download_single_video_ssl_error_returns_short_public_message(self, mock_fetch):
+    def test_download_single_video_ssl_error_returns_short_error(self, mock_fetch):
         long_error = (
             "HTTPSConnectionPool(host='v11-default.365yg.com', port=443): "
             "Max retries exceeded with url: /video/tos/cn/demo.mp4?token=secret "
@@ -6058,18 +6102,29 @@ class XhsDownloadViewTests(TestCase):
             content_type="application/json",
         )
 
-        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.status_code, 400)
         payload = response.json()
-        self.assertEqual(payload["message"], "资源下载失败：上游 CDN 连接异常，请重新解析后再试。")
-        self.assertNotIn("365yg.com", payload["message"])
-        self.assertNotIn("token=secret", payload["message"])
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["message"], "单文件下载失败，请重新解析后再试。")
         log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.BLOCKED)
+        self.assertEqual(log.route_type, ROUTE_BLOCKED)
+        self.assertEqual(log.error_code, "PROXY_FAILED_RECOVERY_BLOCKED")
+        self.assertEqual(log.fallback_from_route, ROUTE_PROXY)
+        self.assertEqual(log.fallback_to_route, ROUTE_BLOCKED)
+        self.assertEqual(log.failure_type, FAILURE_PROXY_FAILED)
         self.assertNotIn("365yg.com", log.error_message_short)
         self.assertNotIn("token=secret", log.error_message_short)
 
-    def test_download_signed_kukutool_video_uses_direct_flow(self):
+    @patch("xhs_download.views.fetch_media_response")
+    def test_download_signed_kukutool_video_uses_server_single_file(self, mock_fetch):
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
+        mock_fetch.return_value = FakeStreamingResponse(
+            b"video-content",
+            url=item["url"],
+            content_type="video/mp4",
+        )
 
         response = Client().post(
             "/media/download-images/",
@@ -6081,16 +6136,14 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "application/json")
-        payload = response.json()
-        self.assertEqual(payload["status"], "routed")
-        self.assertEqual(payload["route_type"], ROUTE_DIRECT)
-        self.assertEqual(payload["items"][0]["url"], item["url"])
-        self.assertEqual(payload["items"][0]["provider"], "kukutool")
+        self.assertEqual(response["Content-Type"], "video/mp4")
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertEqual(b"".join(response.streaming_content), b"video-content")
         log = DownloadRequestLog.objects.get()
-        self.assertEqual(log.route_type, ROUTE_DIRECT)
-        self.assertEqual(log.server_egress_estimated_bytes, 0)
-        self.assertEqual(log.browser_egress_estimated_bytes, 2000)
+        self.assertEqual(log.download_type, "single_file")
+        self.assertEqual(log.route_type, ROUTE_PROXY)
+        self.assertEqual(log.server_egress_estimated_bytes, 2000)
+        self.assertEqual(log.browser_egress_estimated_bytes, 0)
 
     @patch("xhs_download.views.fetch_media_response")
     def test_download_proxy_signed_kukutool_video_returns_single_file_response(self, mock_fetch):
@@ -6228,6 +6281,194 @@ class XhsDownloadViewTests(TestCase):
         log = DownloadRequestLog.objects.get()
         self.assertEqual(log.route_type, ROUTE_ZIP)
 
+    @patch("xhs_download.views.build_download_archive_file")
+    @patch("xhs_download.views.decide_download_route", side_effect=RuntimeError("routing exploded"))
+    def test_routing_safe_wrapper_falls_back_to_zip_without_500(self, _mock_route, mock_archive):
+        mock_archive.return_value = {
+            "filename": "base.zip",
+            "file": BytesIO(b"zip-content"),
+            "saved_count": 1,
+            "failed_count": 0,
+        }
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "auto",
+                "media_items": [{
+                    "type": "image",
+                    "url": "https://ci.xiaohongshu.com/a.jpg",
+                    "size_bytes": 100,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/zip")
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.route_type, ROUTE_ZIP)
+        self.assertEqual(log.recovery_count, 1)
+        self.assertEqual(log.fallback_count, 1)
+        self.assertEqual(log.fallback_from_route, "routing")
+        self.assertEqual(log.fallback_to_route, ROUTE_ZIP)
+        self.assertEqual(log.failure_type, FAILURE_ROUTING_FAILED)
+        self.assertEqual(log.auto_recovery_count, 1)
+        self.assertEqual(log.healing_action, "fallback_zip")
+        self.assertEqual(SelfHealingEvent.objects.count(), 1)
+        event = SelfHealingEvent.objects.get()
+        self.assertEqual(event.failure_type, FAILURE_ROUTING_FAILED)
+        self.assertEqual(event.action, "fallback_zip")
+        self.assertTrue(event.healed)
+
+    def test_self_healing_engine_switches_provider_and_records_event(self):
+        request = RequestFactory().get("/media/download-images/")
+        request.request_id = "rid-heal-provider"
+        switched = []
+
+        outcome = SelfHealingEngine(request).handle_failure(
+            trigger="provider_exception",
+            route_result={"provider": "kukutool"},
+            provider="kukutool",
+            error=XhsProviderTimeoutError("provider timeout"),
+            depth=1,
+            provider_switcher=switched.append,
+        )
+
+        self.assertTrue(outcome.healed)
+        self.assertEqual(outcome.action, HEAL_ACTION_SWITCH_PROVIDER)
+        self.assertEqual(outcome.switched_from_provider, "kukutool")
+        self.assertEqual(outcome.switched_to_provider, "yt_dlp_generic")
+        self.assertEqual(switched, ["yt_dlp_generic"])
+        event = SelfHealingEvent.objects.get()
+        self.assertEqual(event.request_id, "rid-heal-provider")
+        self.assertEqual(event.action, HEAL_ACTION_SWITCH_PROVIDER)
+        self.assertEqual(event.switched_to_provider, "yt_dlp_generic")
+
+    def test_self_healing_engine_blocks_after_max_depth(self):
+        request = RequestFactory().get("/media/download-images/")
+        request.request_id = "rid-heal-depth"
+
+        outcome = SelfHealingEngine(request).handle_failure(
+            trigger="provider_exception",
+            route_result={"provider": "kukutool"},
+            provider="kukutool",
+            error=XhsProviderTimeoutError("provider timeout"),
+            depth=3,
+        )
+
+        self.assertFalse(outcome.healed)
+        self.assertEqual(outcome.action, HEAL_ACTION_BLOCK_GRACEFULLY)
+        self.assertEqual(outcome.fallback_to_route, ROUTE_BLOCKED)
+        self.assertEqual(SelfHealingEvent.objects.get().depth, 3)
+
+    @patch("xhs_download.views.fetch_media_response")
+    @patch("xhs_download.views.build_download_archive_file")
+    def test_provider_timeout_during_zip_falls_back_to_proxy(self, mock_archive, mock_fetch):
+        item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
+        item["size_bytes"] = 2000
+        mock_archive.side_effect = XhsProviderTimeoutError("provider timeout")
+        mock_fetch.return_value = FakeStreamingResponse(
+            b"video-content",
+            url=item["url"],
+            content_type="video/mp4",
+        )
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "zip",
+                "media_items": [item],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "video/mp4")
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertEqual(b"".join(response.streaming_content), b"video-content")
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.download_type, "single_file")
+        self.assertEqual(log.route_type, ROUTE_PROXY)
+        self.assertEqual(log.recovery_count, 1)
+        self.assertEqual(log.fallback_count, 1)
+        self.assertEqual(log.fallback_from_route, ROUTE_ZIP)
+        self.assertEqual(log.fallback_to_route, ROUTE_PROXY)
+        self.assertEqual(log.failure_type, FAILURE_PROVIDER_TIMEOUT)
+        self.assertEqual(log.auto_recovery_count, 1)
+        self.assertEqual(log.provider_auto_switch_count, 1)
+        self.assertEqual(log.healing_action, HEAL_ACTION_SWITCH_PROVIDER)
+        event = SelfHealingEvent.objects.get()
+        self.assertEqual(event.failure_type, FAILURE_PROVIDER_TIMEOUT)
+        self.assertEqual(event.switched_from_provider, "kukutool")
+        self.assertEqual(event.switched_to_provider, "yt_dlp_generic")
+
+    @patch("xhs_download.views.fetch_media_response")
+    @patch("xhs_download.views.build_download_archive_file")
+    def test_zip_failure_falls_back_to_proxy_for_single_image(self, mock_archive, mock_fetch):
+        mock_archive.side_effect = XhsDownloadError("zip failed")
+        mock_fetch.return_value = FakeStreamingResponse(
+            b"image-content",
+            url="https://ci.xiaohongshu.com/a.jpg",
+            content_type="image/jpeg",
+        )
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "zip",
+                "media_items": [{
+                    "type": "image",
+                    "url": "https://ci.xiaohongshu.com/a.jpg",
+                    "size_bytes": 100,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/jpeg")
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.route_type, ROUTE_PROXY)
+        self.assertEqual(log.recovery_count, 1)
+        self.assertEqual(log.fallback_count, 1)
+        self.assertEqual(log.fallback_from_route, ROUTE_ZIP)
+        self.assertEqual(log.fallback_to_route, ROUTE_PROXY)
+        self.assertEqual(log.auto_recovery_count, 1)
+        self.assertEqual(log.healing_action, "fallback_proxy")
+        self.assertEqual(SelfHealingEvent.objects.get().action, "fallback_proxy")
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_proxy_failure_blocks_when_direct_fallback_is_not_safe(self, mock_fetch):
+        mock_fetch.side_effect = XhsDownloadError("proxy failed")
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "proxy",
+                "media_items": [{
+                    "type": "image",
+                    "url": "https://ci.xiaohongshu.com/a.jpg",
+                    "size_bytes": 100,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["status"], "error")
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.BLOCKED)
+        self.assertEqual(log.route_type, ROUTE_BLOCKED)
+        self.assertEqual(log.recovery_count, 1)
+        self.assertEqual(log.fallback_count, 1)
+        self.assertEqual(log.fallback_from_route, ROUTE_PROXY)
+        self.assertEqual(log.fallback_to_route, ROUTE_BLOCKED)
+        self.assertEqual(log.failure_type, FAILURE_PROXY_FAILED)
+        self.assertEqual(log.auto_recovery_count, 0)
+        self.assertEqual(log.healing_action, "fallback_direct")
+        self.assertFalse(SelfHealingEvent.objects.get().healed)
+
     def test_download_runtime_setting_cost_guard_defaults_to_unlimited(self):
         setting = DownloadRuntimeSetting.load()
 
@@ -6262,7 +6503,7 @@ class XhsDownloadViewTests(TestCase):
 
     @patch("xhs_download.views.fetch_media_response")
     @patch("xhs_download.views.build_download_archive_file")
-    def test_staff_can_download_video_direct_when_visitor_video_disabled(self, mock_archive, mock_fetch):
+    def test_staff_can_download_video_single_file_when_visitor_video_disabled(self, mock_archive, mock_fetch):
         from django.contrib.auth import get_user_model
 
         setting = DownloadRuntimeSetting.load()
@@ -6296,10 +6537,11 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "application/json")
-        self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
+        self.assertEqual(response["Content-Type"], "video/mp4")
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertEqual(b"".join(response.streaming_content), b"video-content")
         self.assertEqual(mock_archive.call_count, 0)
-        self.assertEqual(mock_fetch.call_count, 0)
+        self.assertEqual(mock_fetch.call_count, 1)
 
     def test_download_endpoint_blocks_single_video_size_limit(self):
         setting = DownloadRuntimeSetting.load()
@@ -6381,7 +6623,7 @@ class XhsDownloadViewTests(TestCase):
 
     @patch("xhs_download.views.fetch_media_response")
     @patch("xhs_download.views.build_download_archive_file")
-    def test_staff_large_download_exempt_allows_single_video_direct(self, mock_archive, mock_fetch):
+    def test_staff_large_download_exempt_allows_single_video_file(self, mock_archive, mock_fetch):
         from django.contrib.auth import get_user_model
 
         setting = DownloadRuntimeSetting.load()
@@ -6422,10 +6664,11 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "application/json")
-        self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
+        self.assertEqual(response["Content-Type"], "video/mp4")
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertEqual(b"".join(response.streaming_content), b"video-content")
         self.assertEqual(mock_archive.call_count, 0)
-        self.assertEqual(mock_fetch.call_count, 0)
+        self.assertEqual(mock_fetch.call_count, 1)
 
     @patch("xhs_download.views.build_download_archive_file")
     def test_staff_large_download_exempt_does_not_bypass_global_daily_bytes(self, mock_archive):
@@ -7125,8 +7368,188 @@ class PolicyEngineEvolutionTests(TestCase):
         self.assertAlmostEqual(diagnostics["weights"]["cost"], 0.4)
         self.assertLess(diagnostics["confidence"], 0.99)
 
+    def test_observability_v2_metrics_are_computed_from_policy_feedback(self):
+        DownloadRequestLog.objects.create(
+            request_id="rid-intel-direct",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="auto",
+            route_type=ROUTE_DIRECT,
+            final_policy_route=ROUTE_DIRECT,
+            policy_cost_score=0.9,
+            policy_provider_score=0.8,
+            policy_routing_score=0.7,
+            policy_confidence=0.8,
+            provider="native",
+            estimated_bytes=1000,
+            actual_bytes=900,
+            browser_egress_estimated_bytes=1000,
+        )
+        DownloadRequestLog.objects.create(
+            request_id="rid-intel-conflict",
+            status=ObservabilityStatus.FAILED,
+            download_type="zip",
+            route_type=ROUTE_ZIP,
+            final_policy_route=ROUTE_DIRECT,
+            policy_cost_score=0.4,
+            policy_provider_score=0.5,
+            policy_routing_score=0.6,
+            policy_confidence=0.5,
+            provider="yt_dlp_generic",
+            estimated_bytes=1000,
+            actual_bytes=500,
+            server_egress_estimated_bytes=1000,
+            fallback_count=1,
+            failure_type=FAILURE_PROVIDER_TIMEOUT,
+        )
+        DownloadRequestLog.objects.create(
+            request_id="rid-intel-proxy",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="proxy",
+            route_type=ROUTE_PROXY,
+            final_policy_route=ROUTE_PROXY,
+            policy_cost_score=0.7,
+            policy_provider_score=0.6,
+            policy_routing_score=0.8,
+            policy_confidence=0.72,
+            provider="yt_dlp_generic",
+            estimated_bytes=1000,
+            actual_bytes=1000,
+            server_egress_estimated_bytes=1000,
+        )
+
+        context = build_observability_v2_context(window_hours=24)
+
+        self.assertEqual(context["download_count"], 3)
+        self.assertAlmostEqual(context["metrics"]["policy_conflict_rate"], 1 / 3, places=3)
+        self.assertAlmostEqual(context["metrics"]["fallback_frequency"], 1 / 3, places=3)
+        self.assertAlmostEqual(context["metrics"]["provider_reliability"], 2 / 3, places=3)
+        self.assertAlmostEqual(context["metrics"]["routing_efficiency"], 0.4444, places=3)
+        self.assertAlmostEqual(context["metrics"]["cost_accuracy"], 0.8, places=3)
+        self.assertFalse(context["recommendation"]["automatic_execution"])
+        self.assertEqual(context["recommendation"]["mode"], "recommendation_only")
+        self.assertEqual(context["policy"]["policy_count"], 3)
+        self.assertEqual(context["policy"]["policy_conflict_rate_label"], "33.3%")
+        self.assertTrue(
+            any(
+                row["provider"] == "yt_dlp_generic"
+                and row["failure_type"] == FAILURE_PROVIDER_TIMEOUT
+                for row in context["provider"]["failure_heatmap"]
+            )
+        )
+
+    def test_feedback_loop_generates_signals_insights_and_suggestions(self):
+        DownloadRequestLog.objects.create(
+            request_id="rid-feedback-direct",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="auto",
+            route_type=ROUTE_DIRECT,
+            provider="native",
+            estimated_bytes=1000,
+            actual_bytes=900,
+            browser_egress_estimated_bytes=1000,
+        )
+        DownloadRequestLog.objects.create(
+            request_id="rid-feedback-provider-fail",
+            status=ObservabilityStatus.FAILED,
+            download_type="zip",
+            route_type=ROUTE_ZIP,
+            provider="yt_dlp_generic",
+            estimated_bytes=1000,
+            actual_bytes=500,
+            server_egress_estimated_bytes=1000,
+            fallback_count=1,
+            failure_type=FAILURE_PROVIDER_TIMEOUT,
+        )
+        ParseRequestLog.objects.create(
+            request_id="rid-feedback-parse-fail",
+            status=ObservabilityStatus.FAILED,
+            selected_provider="yt_dlp_generic",
+            error_type="ProviderParseError",
+        )
+        ProviderHealthTestRun.objects.create(
+            request_id="rid-feedback-health-fail",
+            test_key="third_party_ytdlp",
+            status=ProviderHealthTestStatus.FAILED,
+            provider="yt_dlp_generic",
+            error_type="ProviderHealthTimeout",
+            duration_ms=9000,
+        )
+        RoutingDecisionLog.objects.create(
+            request_id="rid-feedback-route",
+            route_type=ROUTE_ZIP,
+            provider="yt_dlp_generic",
+            success=False,
+            duration_ms=5000,
+        )
+
+        feedback = build_feedback(window_hours=24)
+        insights = build_insights(feedback)
+        suggestions = build_suggestions(insights)
+
+        self.assertEqual(feedback["provider"], "all")
+        self.assertEqual(feedback["signals"]["download_count"], 2)
+        self.assertEqual(feedback["signals"]["parse_count"], 1)
+        self.assertEqual(feedback["signals"]["health_count"], 1)
+        self.assertAlmostEqual(feedback["signals"]["failure_rate"], 0.75)
+        self.assertEqual(feedback["routes"][ROUTE_ZIP]["download_count"], 1)
+        self.assertEqual(feedback["routes"][ROUTE_ZIP]["fallback_rate_label"], "100.0%")
+        self.assertTrue(
+            any(
+                row["provider"] == "yt_dlp_generic"
+                and row["failure_rate_label"] == "100.0%"
+                for row in feedback["signals"]["provider_signals"]
+            )
+        )
+        self.assertTrue(
+            any(
+                row["failure_type"] == FAILURE_PROVIDER_TIMEOUT
+                for row in feedback["signals"]["failures"]
+            )
+        )
+
+        insight_kinds = {row["kind"] for row in insights["insights"]}
+        self.assertIn("failure_increase", insight_kinds)
+        self.assertIn("provider_degraded", insight_kinds)
+        self.assertIn("route_inefficiency", insight_kinds)
+        self.assertTrue(suggestions["suggestions"])
+        self.assertTrue(
+            all(not row["automatic_execution"] for row in suggestions["suggestions"])
+        )
+
+    def test_feedback_loop_does_not_change_download_routing_behavior(self):
+        item = {"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg", "size_bytes": 321}
+
+        before = decide_download_route(self.request, [item], requested_mode="auto")
+        context = build_feedback_loop_context(window_hours=24)
+        after = decide_download_route(self.request, [item], requested_mode="auto")
+
+        self.assertEqual(before["route_type"], after["route_type"])
+        self.assertEqual(before["download_strategy"], after["download_strategy"])
+        self.assertEqual(context["suggestion"]["suggestions"][0]["automatic_execution"], False)
+
 
 class RuntimeHealthViewTests(SimpleTestCase):
+    @override_settings(
+        DEBUG=False,
+        ALLOWED_HOSTS=["download.example.com"],
+        SECURE_SSL_REDIRECT=True,
+        SESSION_COOKIE_SECURE=True,
+        CSRF_COOKIE_SECURE=True,
+        SECURE_PROXY_SSL_HEADER=("HTTP_X_FORWARDED_PROTO", "https"),
+    )
+    def test_production_security_settings_are_available(self):
+        from django.conf import settings as django_settings
+
+        self.assertFalse(django_settings.DEBUG)
+        self.assertIn("download.example.com", django_settings.ALLOWED_HOSTS)
+        self.assertTrue(django_settings.SECURE_SSL_REDIRECT)
+        self.assertTrue(django_settings.SESSION_COOKIE_SECURE)
+        self.assertTrue(django_settings.CSRF_COOKIE_SECURE)
+        self.assertEqual(
+            django_settings.SECURE_PROXY_SSL_HEADER,
+            ("HTTP_X_FORWARDED_PROTO", "https"),
+        )
+
     def test_liveness_does_not_depend_on_external_services(self):
         response = Client().get("/health/live/")
 
@@ -8917,6 +9340,65 @@ class AdminObservabilityMvpTests(TestCase):
         self.assertContains(permitted_response, "今日解析次数")
         self.assertContains(permitted_response, "PROVIDER_TIMEOUT")
 
+    def test_observability_v2_access_and_metrics_render(self):
+        DownloadRequestLog.objects.create(
+            request_id="rid-intel-page",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="auto",
+            route_type=ROUTE_DIRECT,
+            final_policy_route=ROUTE_DIRECT,
+            policy_confidence=0.8,
+            provider="native",
+            estimated_bytes=1024,
+            actual_bytes=1024,
+            browser_egress_estimated_bytes=1024,
+        )
+        client = Client()
+        client.force_login(self.staff)
+        super_client = Client()
+        super_client.force_login(self.superuser)
+
+        self.assertEqual(Client().get("/admin/observability-v2/").status_code, 404)
+        self.assertEqual(client.get("/admin/observability-v2/").status_code, 404)
+        self.assertContains(super_client.get("/admin/observability-v2/"), "Observability v2")
+        self.assertContains(super_client.get("/admin/observability-v2/"), "policy_conflict_rate")
+        self.assertContains(super_client.get("/admin/observability-v2/"), "recommendation_only")
+
+        self.grant_xhs_view_permission(self.staff, "view_downloadrequestlog")
+        permitted_response = client.get("/admin/observability-v2/")
+
+        self.assertContains(permitted_response, "Observability v2")
+        self.assertContains(permitted_response, "routing_efficiency")
+        self.assertNotContains(permitted_response, "rid-intel-page")
+
+    def test_feedback_loop_page_access_and_render(self):
+        DownloadRequestLog.objects.create(
+            request_id="rid-feedback-page",
+            status=ObservabilityStatus.FAILED,
+            download_type="zip",
+            route_type=ROUTE_ZIP,
+            provider="yt_dlp_generic",
+            fallback_count=1,
+            failure_type=FAILURE_PROVIDER_TIMEOUT,
+        )
+        client = Client()
+        client.force_login(self.staff)
+        super_client = Client()
+        super_client.force_login(self.superuser)
+
+        self.assertEqual(Client().get("/admin/feedback-loop/").status_code, 404)
+        self.assertEqual(client.get("/admin/feedback-loop/").status_code, 404)
+        self.assertContains(super_client.get("/admin/feedback-loop/"), "Feedback Loop MVP")
+        self.assertContains(super_client.get("/admin/feedback-loop/"), "Provider Trend")
+        self.assertContains(super_client.get("/admin/feedback-loop/"), "Policy Suggestions")
+
+        self.grant_xhs_view_permission(self.staff, "view_downloadrequestlog")
+        permitted_response = client.get("/admin/feedback-loop/")
+
+        self.assertContains(permitted_response, "Feedback Loop MVP")
+        self.assertContains(permitted_response, "yt_dlp_generic")
+        self.assertNotContains(permitted_response, "rid-feedback-page")
+
     def test_policy_engine_page_requires_specific_permission(self):
         client = Client()
         client.force_login(self.staff)
@@ -9039,6 +9521,33 @@ class AdminObservabilityMvpTests(TestCase):
         self.grant_xhs_view_permission(self.staff, "view_downloadrequestlog")
         self.assertContains(client.get("/admin/console/"), "今日下载次数")
 
+    def test_self_healing_run_permissions_and_manual_event(self):
+        client = Client()
+        client.force_login(self.staff)
+        super_client = Client()
+        super_client.force_login(self.superuser)
+
+        self.assertEqual(Client().get("/admin/self-healing/run/").status_code, 404)
+        self.assertEqual(client.get("/admin/self-healing/run/").status_code, 404)
+        self.assertContains(super_client.get("/admin/self-healing/run/"), "Self-Healing")
+
+        self.grant_xhs_view_permission(self.staff, "view_selfhealingevent")
+        self.assertContains(client.get("/admin/self-healing/run/"), "Self-Healing")
+        self.assertEqual(
+            client.post("/admin/self-healing/run/", data={"provider": "kukutool"}).status_code,
+            404,
+        )
+
+        self.grant_xhs_view_permission(self.staff, "add_selfhealingevent")
+        response = client.post("/admin/self-healing/run/", data={"provider": "kukutool"})
+
+        self.assertEqual(response.status_code, 302)
+        event = SelfHealingEvent.objects.get()
+        self.assertEqual(event.trigger, "manual_diagnostics")
+        self.assertEqual(event.provider, "kukutool")
+        self.assertEqual(event.action, HEAL_ACTION_SWITCH_PROVIDER)
+        self.assertEqual(event.switched_to_provider, "yt_dlp_generic")
+
     def test_admin_console_empty_data_renders(self):
         client = Client()
         client.force_login(self.superuser)
@@ -9051,6 +9560,7 @@ class AdminObservabilityMvpTests(TestCase):
         self.assertContains(response, "暂无大文件下载记录")
         self.assertContains(response, "暂无路由数据")
         self.assertContains(response, "暂无 Routing v3 反馈数据")
+        self.assertContains(response, "Self-Healing Dashboard")
 
     def test_admin_console_shows_download_metrics_and_failure_top(self):
         DownloadRequestLog.objects.create(
@@ -9076,6 +9586,13 @@ class AdminObservabilityMvpTests(TestCase):
             estimated_bytes=8192,
             actual_bytes=4096,
             error_code="SINGLE_ARCHIVE_SIZE_LIMIT",
+            failure_type=FAILURE_PROVIDER_TIMEOUT,
+            recovery_count=1,
+            fallback_count=1,
+            recovery_action="zip_to_proxy",
+            fallback_from_route=ROUTE_ZIP,
+            fallback_to_route=ROUTE_PROXY,
+            duration_ms=16000,
         )
         DownloadRequestLog.objects.create(
             request_id="rid-download-direct",
@@ -9124,6 +9641,12 @@ class AdminObservabilityMvpTests(TestCase):
         self.assertContains(response, "routing_efficiency_score")
         self.assertContains(response, "cost_accuracy_score")
         self.assertContains(response, "策略建议")
+        self.assertContains(response, "System Stability Panel")
+        self.assertContains(response, "24h recovery_count")
+        self.assertContains(response, "24h fallback_count")
+        self.assertContains(response, FAILURE_PROVIDER_TIMEOUT)
+        self.assertContains(response, "Provider Stability Score")
+        self.assertContains(response, "unstable")
 
     def test_rollout_guard_permissions(self):
         client = Client()

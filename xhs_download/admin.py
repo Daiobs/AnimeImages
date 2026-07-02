@@ -10,6 +10,7 @@ from .models import (
     ProviderHealthTestRun,
     ProviderRuntimeSetting,
     RoutingDecisionLog,
+    SelfHealingEvent,
 )
 
 
@@ -115,6 +116,10 @@ class DownloadRequestLogAdmin(ReadOnlyLogAdmin):
         "final_policy_route",
         "policy_confidence",
         "policy_active",
+        "recovery_action",
+        "healing_action",
+        "fallback_to_route",
+        "failure_type",
         "duration_ms",
         "request_id",
     )
@@ -126,9 +131,14 @@ class DownloadRequestLogAdmin(ReadOnlyLogAdmin):
         "final_policy_route",
         "policy_active",
         "policy_decision_source",
+        "recovery_action",
+        "healing_action",
+        "healing_risk",
+        "fallback_to_route",
+        "failure_type",
         "created_at",
     )
-    search_fields = ("request_id", "provider", "source_platform", "error_type")
+    search_fields = ("request_id", "provider", "source_platform", "error_type", "failure_type", "healing_action")
 
 
 @admin.register(RoutingDecisionLog)
@@ -220,4 +230,39 @@ class ProviderHealthTestRunAdmin(ReadOnlyLogAdmin):
         "error_type",
         "actor_username",
         "test_url_host",
+    )
+
+
+@admin.register(SelfHealingEvent)
+class SelfHealingEventAdmin(ReadOnlyLogAdmin):
+    list_display = (
+        "created_at",
+        "trigger",
+        "failure_type",
+        "action",
+        "healed",
+        "provider",
+        "switched_to_provider",
+        "risk",
+        "confidence",
+        "duration_ms",
+        "request_id",
+    )
+    list_filter = (
+        "trigger",
+        "failure_type",
+        "action",
+        "healed",
+        "provider",
+        "risk",
+        "created_at",
+    )
+    search_fields = (
+        "request_id",
+        "trigger",
+        "failure_type",
+        "action",
+        "provider",
+        "switched_to_provider",
+        "error_type",
     )

@@ -18,6 +18,20 @@ cd /srv/animeimages
 
 Do not run Git as root in `/srv/animeimages`. The working tree should remain owned by `ubuntu:ubuntu`, and production-only values should live in `/srv/animeimages/.env.production`, not in `djangoProject/settings.py`.
 
+For small operational checks after a manual change:
+
+```bash
+cd /srv/animeimages
+./scripts/restart.sh
+./scripts/health_check.sh
+```
+
+`deploy.sh` deploys `main` by default. For a staging-only branch deploy, set `DEPLOY_BRANCH` explicitly:
+
+```bash
+DEPLOY_BRANCH=codex/production-stabilization-v0.1 ./scripts/deploy.sh
+```
+
 ## Required Environment Variables
 
 Start from `.env.example.production` if you keep configuration in the project root. Runtime reads the project-root `.env` plus deployment environment variables; the example files are templates only.
@@ -30,6 +44,8 @@ Start from `.env.example.production` if you keep configuration in the project ro
 - `DJANGO_SECURE_SSL_REDIRECT=True` when HTTPS is available
 - `DJANGO_SESSION_COOKIE_SECURE=True` when HTTPS is available
 - `DJANGO_CSRF_COOKIE_SECURE=True` when HTTPS is available
+- `DJANGO_TRUST_X_FORWARDED_PROTO=True` when Nginx terminates HTTPS and proxies to Gunicorn over HTTP
+- `DJANGO_CSRF_TRUSTED_ORIGINS=https://your-domain.example` for the public HTTPS origins that serve the admin and download pages
 - `DJANGO_SECURE_HSTS_SECONDS=31536000` only after confirming HTTPS for the full site
 - `DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS=True` only if all subdomains are HTTPS-only
 - `DJANGO_SECURE_HSTS_PRELOAD=True` only if the domain is ready for browser preload
@@ -63,6 +79,8 @@ YOUTUBE_MERGE_FFMPEG_BINARY=/usr/bin/ffmpeg \
 DJANGO_SECURE_SSL_REDIRECT=True \
 DJANGO_SESSION_COOKIE_SECURE=True \
 DJANGO_CSRF_COOKIE_SECURE=True \
+DJANGO_TRUST_X_FORWARDED_PROTO=True \
+DJANGO_CSRF_TRUSTED_ORIGINS=https://example.com \
 DJANGO_SECURE_HSTS_SECONDS=31536000 \
 DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS=True \
 DJANGO_SECURE_HSTS_PRELOAD=True \
@@ -83,12 +101,34 @@ gunicorn djangoProject.wsgi:application
 
 Add `gunicorn` to dependencies when a deployment target is chosen.
 
+For the VPS baseline, keep Gunicorn bound to localhost behind Nginx:
+
+```text
+ExecStart=/srv/animeimages/.venv/bin/gunicorn djangoProject.wsgi:application --bind 127.0.0.1:8000 --workers 2 --timeout 120
+Restart=on-failure
+RestartSec=5
+```
+
 Configure the deployment platform or load balancer with:
 
 - `/health/live/` for process liveness. It does not contact external services.
 - `/health/ready/` for traffic readiness. It verifies the configured Django cache/Redis and database with a real round trip.
 
 Both endpoints disable response caching and expose only component availability, not connection strings or exception text. A failed dependency makes readiness return HTTP `503`.
+
+When Nginx terminates HTTPS, forward the original scheme and request id:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Request-ID $request_id;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+With `DJANGO_TRUST_X_FORWARDED_PROTO=True`, Django uses `X-Forwarded-Proto: https` to build secure URLs and apply HTTPS-aware CSRF/session behavior while Gunicorn stays on localhost HTTP.
 
 ## Database
 
@@ -160,3 +200,25 @@ Keep each deployed version tied to a Git commit. If deployment fails:
 1. Revert to the previous known-good commit.
 2. Re-run migrations only if rollback migrations are safe.
 3. Confirm `check`, smoke URLs, and logs.
+
+Production baseline v0.1 should be tagged only after smoke passes:
+
+```bash
+git tag -a v0.1-production-baseline -m "Production baseline v0.1"
+git push origin v0.1-production-baseline
+```
+
+Rollback to a known-good tag or commit:
+
+```bash
+cd /srv/animeimages
+git fetch origin --tags
+git reset --hard <known-good-commit-or-tag>
+source .venv/bin/activate
+set -a
+source /srv/animeimages/.env.production
+set +a
+python manage.py migrate
+python manage.py collectstatic --noinput
+./scripts/restart.sh
+```

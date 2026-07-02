@@ -80,7 +80,10 @@ python3 -m venv .venv
 ```bash
 cp .env.example.production /srv/animeimages/.env.production
 chmod 600 /srv/animeimages/.env.production
+chown ubuntu:ubuntu /srv/animeimages/.env.production
 ```
+
+Keep `.env.production` readable by the deploy user (`ubuntu` in this runbook). The deploy and check scripts load this file before running Django commands. Do not make it root-only unless you also run those commands through a wrapper that injects the environment.
 
 - [ ] Set real values in `.env.production`:
 
@@ -94,6 +97,8 @@ DJANGO_CACHE_URL=redis://:<password>@127.0.0.1:6379/0
 DJANGO_SECURE_SSL_REDIRECT=True
 DJANGO_SESSION_COOKIE_SECURE=True
 DJANGO_CSRF_COOKIE_SECURE=True
+DJANGO_TRUST_X_FORWARDED_PROTO=True
+DJANGO_CSRF_TRUSTED_ORIGINS=https://animeimages.example.com
 ```
 
 - [ ] Confirm first-launch safety switches:
@@ -127,6 +132,16 @@ Do not commit `.env.production`. Do not paste real secrets into issue comments, 
 ```
 
 - [ ] `/health/ready/` returns 200.
+- [ ] Repository deployment scripts pass:
+
+```bash
+cd /srv/animeimages
+./scripts/pre_deploy_check.sh
+./scripts/health_check.sh
+```
+
+- [ ] Gunicorn is only bound to localhost, for example `127.0.0.1:8000`.
+- [ ] Nginx forwards `X-Forwarded-Proto $scheme`, `Host $host`, and `X-Request-ID $request_id`.
 - [ ] `/admin/ops-dashboard/` can be opened by a superuser or staff with observability view permissions.
 - [ ] `/admin/parse-logs/` can be opened by a user with `xhs_download.view_parserequestlog`.
 - [ ] `/admin/provider-health-tests/` can be opened by a superuser or staff with `xhs_download.view_providerhealthtestrun`.

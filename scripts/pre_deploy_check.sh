@@ -4,6 +4,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="${APP_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 DEPLOY_USER="${DEPLOY_USER:-ubuntu}"
+DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 ENV_FILE="${ENV_FILE:-$APP_DIR/.env.production}"
 SETTINGS_FILE="${SETTINGS_FILE:-djangoProject/settings.py}"
 
@@ -34,10 +35,10 @@ require_repo() {
     cd "$APP_DIR"
 }
 
-require_main_branch() {
+require_deploy_branch() {
     local branch
     branch="$(git rev-parse --abbrev-ref HEAD)"
-    [[ "$branch" == "main" ]] || fail "deployment branch must be main, current branch is $branch"
+    [[ "$branch" == "$DEPLOY_BRANCH" ]] || fail "deployment branch must be $DEPLOY_BRANCH, current branch is $branch"
 }
 
 require_clean_status() {
@@ -60,11 +61,11 @@ require_env_file() {
 main() {
     require_deploy_user
     require_repo
-    require_main_branch
+    require_deploy_branch
     require_clean_status
     require_clean_settings
     require_env_file
-    log "ok: branch=main, git clean, settings clean, env file present"
+    log "ok: branch=$DEPLOY_BRANCH, git clean, settings clean, env file present"
 }
 
 main "$@"

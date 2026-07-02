@@ -205,6 +205,10 @@
         return selectedItems.length > 1 || selectedItems.some(itemRequiresZipTask);
     }
 
+    function selectedRequiresProviderProcessing(items) {
+        return (items || []).some(itemRequiresZipTask);
+    }
+
     async function parseSearchResponse(response) {
         const contentType = response.headers.get("Content-Type") || "";
         if (contentType.includes("application/json")) {
@@ -269,6 +273,7 @@
         let activeParseController = null;
         let parseRequestId = 0;
         let downloadInProgress = false;
+        const directHandoffAttemptKeys = new Set();
 
         function getBaseFilename() {
             return page.dataset.baseFilename || "xhs_image";
@@ -531,6 +536,7 @@
                 return;
             }
             selected = [];
+            directHandoffAttemptKeys.clear();
             setPageHasResults(true);
             resultsRegion.innerHTML = `
                 <div class="parse-loading-card">
@@ -548,6 +554,7 @@
                 return;
             }
             selected = [];
+            directHandoffAttemptKeys.clear();
             setPageHasResults(true);
             page.dataset.baseFilename = "xhs_image";
             resultsRegion.innerHTML = `
@@ -579,6 +586,7 @@
             }
             applyTargetPage(payload.target_page);
             selected = [];
+            directHandoffAttemptKeys.clear();
             resultsRegion.innerHTML = payload.html || "";
             page.dataset.baseFilename = payload.base_filename || "xhs_image";
             setPageHasResults(Boolean(payload.has_content || payload.has_results));
@@ -594,6 +602,7 @@
                 activeParseController = null;
             }
             selected = [];
+            directHandoffAttemptKeys.clear();
             parseRequestId += 1;
             setParseLoading(false);
             page.dataset.baseFilename = "xhs_image";
@@ -606,6 +615,7 @@
         async function readResponseBlobWithProgress(response, startPercent, endPercent) {
             const contentLength = Number.parseInt(response.headers.get("Content-Length") || "0", 10);
             if (!response.body || !contentLength) {
+                setProgressPending("下载中");
                 const blob = await response.blob();
                 setProgress(endPercent);
                 return blob;
@@ -651,16 +661,55 @@
         }
 
         function handoffDirectItemToBrowser(item, index, total) {
+            const frame = getDirectDownloadFrame();
             const link = document.createElement("a");
             const filename = directLinkFilename(item, index, total);
             link.href = item.url;
             link.download = filename;
-            link.target = "_blank";
+            link.target = frame ? frame.name : "_blank";
+            link.referrerPolicy = "no-referrer";
             link.rel = "noopener noreferrer";
             document.body.appendChild(link);
             link.click();
             link.remove();
             return filename;
+        }
+
+        function getDirectDownloadFrame() {
+            let frame = document.getElementById("xhs-direct-download-frame");
+            if (frame) {
+                return frame;
+            }
+
+            frame = document.createElement("iframe");
+            frame.id = "xhs-direct-download-frame";
+            frame.name = "xhs-direct-download-frame";
+            frame.hidden = true;
+            frame.style.display = "none";
+            document.body.appendChild(frame);
+            return frame;
+        }
+
+        function directRouteShouldUseNativeBrowserDownload(items) {
+            const directItems = (items || []).filter((item) => item && item.url);
+            if (directItems.length !== 1) {
+                return false;
+            }
+            return String(directItems[0].type || "").toLowerCase() === "video";
+        }
+
+        function directRouteHandoffKey(items) {
+            if (!directRouteShouldUseNativeBrowserDownload(items)) {
+                return "";
+            }
+
+            const item = (items || []).find((candidate) => candidate && candidate.url) || {};
+            const identity = item.asset_id || item.provider_resource_id || item.url;
+            return `${item.provider || "native"}:${identity}`;
+        }
+
+        function directRouteRetryHint() {
+            return "如果浏览器拦截、只打开直链或未开始下载，请再次点击下载，系统会改用服务器单文件下载。";
         }
 
         async function writeResponseToFileWithProgress(response, fileHandle, startPercent, endPercent) {
@@ -785,28 +834,6 @@
             return `${result.savedMessage}：${result.filename}，成功 ${result.savedCount} 个，失败 ${result.failedCount} 个`;
         }
 
-        async function downloadServerSingleFallback(payload) {
-            const fallbackPayload = {
-                ...payload,
-                download_mode: "proxy",
-            };
-            setProgressPending("切换中");
-            setStatus(getStatusElement(), "直链下载不可用，正在切换服务器单文件下载...");
-
-            const response = await postDownloadPayload(fallbackPayload);
-            if (!response.ok) {
-                throw new Error(await parseErrorResponse(response));
-            }
-
-            const contentType = response.headers.get("Content-Type") || "";
-            if (contentType.includes("application/json")) {
-                const data = await response.json();
-                throw new Error(data.message || data.route_reason || "服务器兜底下载未返回文件");
-            }
-
-            return saveDownloadResponse(response, getBaseFilename(), 0, 100);
-        }
-
         async function waitForDownloadTask(taskStatusUrl) {
             while (true) {
                 const response = await fetch(taskStatusUrl, {cache: "no-store"});
@@ -815,7 +842,12 @@
                 }
 
                 const task = await response.json();
-                setProgress(task.progress || 0);
+                const progress = Number(task.progress || 0);
+                if (progress > 0) {
+                    setProgress(progress);
+                } else {
+                    setProgressPending(task.status === "pending" ? "排队中" : "后台打包中");
+                }
 
                 if (task.status === "failed") {
                     throw new Error(task.message || "下载失败");
@@ -834,7 +866,7 @@
                 throw new Error("当前页面缺少下载任务接口");
             }
 
-            setProgress(0);
+            setProgressPending("创建任务");
             setStatus(getStatusElement(), "正在创建后台打包任务，请保持页面打开...");
 
             const createResponse = await fetch(downloadTaskUrl, {
@@ -855,7 +887,7 @@
             const fileUrl = completed.file_url || created.file_url;
 
             setProgress(95);
-            setStatus(getStatusElement(), "正在接收文件...");
+            setStatus(getStatusElement(), "正在下载文件...");
 
             const fileResponse = await fetch(fileUrl, {cache: "no-store"});
             if (!fileResponse.ok) {
@@ -892,15 +924,31 @@
             );
 
             try {
+                const directRetryKey = directRouteHandoffKey(selected);
+                const retryDirectViaServer = Boolean(
+                    forceAutoMode
+                    && directRetryKey
+                    && directHandoffAttemptKeys.has(directRetryKey)
+                );
                 const payload = {
                     media_items: selected,
                     base_filename: getBaseFilename(),
-                    download_mode: forceAutoMode ? "auto" : normalizeDownloadMode(downloadModeInput ? downloadModeInput.value : "browser"),
+                    download_mode: retryDirectViaServer
+                        ? "server_single"
+                        : (
+                            forceAutoMode
+                                ? "auto"
+                                : normalizeDownloadMode(downloadModeInput ? downloadModeInput.value : "browser")
+                        ),
                     save_dir: saveDirInput ? saveDirInput.value.trim() : "xhs",
                     save_format: saveFormatInput ? saveFormatInput.value : "original",
                     quality: qualityInput ? qualityInput.value || 95 : 95,
                     video_save_mode: videoSaveModeInput ? videoSaveModeInput.value : "video",
                 };
+
+                if (retryDirectViaServer) {
+                    setStatus(getStatusElement(), "正在切换服务器单文件下载，请稍候...");
+                }
 
                 if (
                     downloadAsyncEnabled
@@ -911,21 +959,43 @@
                     return;
                 }
 
-                const pendingLabel = payload.download_mode === "auto"
-                    ? "判断中"
-                    : (selectedSingleItem(selected) ? "准备下载" : "打包中");
+                const requiresProviderProcessing = selectedRequiresProviderProcessing(selected);
+                const pendingLabel = requiresProviderProcessing
+                    ? "服务端处理"
+                    : (
+                        payload.download_mode === "auto"
+                            ? "判断中"
+                            : (selectedSingleItem(selected) ? "准备下载" : "打包中")
+                    );
                 setProgressPending(pendingLabel);
+                if (requiresProviderProcessing) {
+                    setStatus(getStatusElement(), "Provider 资源正在服务端校验、恢复或合并，完成后会开始传输...");
+                } else if (!selectedSingleItem(selected)) {
+                    setStatus(getStatusElement(), "服务器正在打包 ZIP，文件开始传输后会显示接收进度...");
+                }
                 const response = await postDownloadPayload(payload);
 
                 if (!response.ok) {
                     throw new Error(await parseErrorResponse(response));
                 }
-                setProgress(0);
 
                 const contentType = response.headers.get("Content-Type") || "";
                 if (contentType.includes("application/json")) {
+                    setProgress(0);
                     const data = await response.json();
                     if (data.status === "routed" && data.route_type === "direct") {
+                        const handoffKey = directRouteHandoffKey(data.items || []);
+                        if (handoffKey && !directHandoffAttemptKeys.has(handoffKey)) {
+                            directHandoffAttemptKeys.add(handoffKey);
+                            const filenames = handoffDirectRouteItemsToBrowser(data.items || []);
+                            setProgress(100);
+                            setStatus(
+                                getStatusElement(),
+                                `${data.route_reason || "已交给浏览器直接下载源文件"}：${filenames.join("、")}。${directRouteRetryHint()}${routeWarningText(data.warnings)}`,
+                                "text-muted",
+                            );
+                            return;
+                        }
                         try {
                             const filenames = await downloadDirectRouteItems(data.items || []);
                             setProgress(100);
@@ -974,6 +1044,12 @@
                     return;
                 }
 
+                if (response.headers.get("Content-Length")) {
+                    setProgress(1);
+                } else {
+                    setProgressPending("下载中");
+                }
+                setStatus(getStatusElement(), "服务器处理完成，正在下载文件...");
                 const result = await saveDownloadResponse(response, getBaseFilename(), 0, 100);
                 setStatus(getStatusElement(), serverDownloadStatusMessage(result), result.variant);
             } catch (error) {

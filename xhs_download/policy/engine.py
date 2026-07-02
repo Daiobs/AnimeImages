@@ -23,6 +23,7 @@ from ..services.download_routing import (
     route_payload,
     single_item_can_attachment_download,
     single_video_can_browser_direct_attempt,
+    single_video_can_server_proxy_download,
 )
 from ..services.routing_v3 import infer_provider
 from .policies import (
@@ -320,7 +321,10 @@ def build_policy_route_payload(context, decision):
     if (
         decision.route == ROUTE_PROXY
         and len(media_items) == 1
-        and single_item_can_attachment_download(media_items[0])
+        and (
+            single_item_can_attachment_download(media_items[0])
+            or single_video_can_server_proxy_download(media_items[0])
+        )
     ):
         return route_payload(
             route_type=ROUTE_PROXY,

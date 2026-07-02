@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="${APP_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 DEPLOY_USER="${DEPLOY_USER:-ubuntu}"
 DEPLOY_GROUP="${DEPLOY_GROUP:-$DEPLOY_USER}"
+DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 SERVICE_NAME="${SERVICE_NAME:-animeimages}"
 ENV_FILE="${ENV_FILE:-$APP_DIR/.env.production}"
 PYTHON_BIN="${PYTHON_BIN:-$APP_DIR/.venv/bin/python}"
@@ -85,6 +86,7 @@ run_pre_deploy_check() {
         ENV_FILE="$ENV_FILE" \
         APP_DIR="$APP_DIR" \
         DEPLOY_USER="$DEPLOY_USER" \
+        DEPLOY_BRANCH="$DEPLOY_BRANCH" \
         "$APP_DIR/scripts/pre_deploy_check.sh"
 }
 
@@ -107,15 +109,15 @@ main() {
     cleanup_stale_git_lock
     run_pre_deploy_check
 
-    run git fetch origin
+    run git fetch origin "$DEPLOY_BRANCH"
     cleanup_stale_git_lock
-    run git reset --hard origin/main
+    run git reset --hard "origin/$DEPLOY_BRANCH"
 
     load_environment
     run "$PIP_BIN" install -r requirements.txt
     run "$PYTHON_BIN" manage.py migrate
     run "$PYTHON_BIN" manage.py collectstatic --noinput
-    run_sudo systemctl restart "$SERVICE_NAME"
+    run env APP_DIR="$APP_DIR" SERVICE_NAME="$SERVICE_NAME" "$APP_DIR/scripts/restart.sh"
     log "deployment finished"
 }
 

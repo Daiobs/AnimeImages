@@ -23,7 +23,8 @@ SERVER_SIDE_PROVIDERS = {
     "youtube_merge",
     "yt_dlp_merge",
 }
-BROWSER_DIRECT_VIDEO_PROVIDERS = {
+BROWSER_DIRECT_VIDEO_PROVIDERS = set()
+SERVER_PROXY_VIDEO_PROVIDERS = {
     "kukutool",
 }
 MOBILE_USER_AGENT_MARKERS = (
@@ -35,7 +36,7 @@ MOBILE_USER_AGENT_MARKERS = (
     "windows phone",
 )
 MOBILE_DOWNLOAD_WARNING = (
-    "手机端建议单张/单个保存。ZIP 文件通常会保存到浏览器下载目录或系统“文件”App 中，不能保证直接进入相册。"
+    "手机端建议单张图片或单个视频保存。ZIP 文件通常会进入浏览器下载目录或系统“文件”App，不能保证直接进入相册。"
 )
 
 
@@ -170,7 +171,7 @@ def single_video_can_server_proxy_download(item):
     if not provider:
         return True
     return (
-        provider in BROWSER_DIRECT_VIDEO_PROVIDERS
+        provider in SERVER_PROXY_VIDEO_PROVIDERS
         and provider_manifest_allows_public_download(item)
     )
 
@@ -192,9 +193,6 @@ def single_video_can_browser_direct_attempt(item):
         return False
     if not is_http_url(item_url(item)):
         return False
-    provider = item_provider(item)
-    if not provider:
-        return True
     return single_video_can_browser_direct_download(item)
 
 
@@ -335,7 +333,10 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
         if (
             requested_mode == "browser"
             and len(normalized_items) == 1
-            and single_item_can_attachment_download(normalized_items[0])
+            and (
+                single_item_can_attachment_download(normalized_items[0])
+                or single_video_can_server_proxy_download(normalized_items[0])
+            )
         ):
             return route_payload(
                 route_type=ROUTE_PROXY,
@@ -398,6 +399,15 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
             return route_payload(
                 route_type=ROUTE_PROXY,
                 route_reason="单个资源使用单文件下载，不打包 ZIP",
+                download_strategy="server_single_attachment",
+                media_items=normalized_items,
+                estimated_bytes=estimated_bytes,
+                warnings=warnings,
+            )
+        if single_video_can_server_proxy_download(normalized_items[0]):
+            return route_payload(
+                route_type=ROUTE_PROXY,
+                route_reason="KuKuTool 视频使用服务器单文件下载，避免浏览器直链拦截或签名 URL 失效",
                 download_strategy="server_single_attachment",
                 media_items=normalized_items,
                 estimated_bytes=estimated_bytes,
