@@ -109,7 +109,7 @@
         }
     }
 
-    function getDownloadFilename(response, fallbackName) {
+    function getDispositionFilename(response) {
         const disposition = response.headers.get("Content-Disposition") || "";
         const encodedMatch = disposition.match(/filename\*=([^;]+)/i);
 
@@ -118,7 +118,11 @@
         }
 
         const match = disposition.match(/filename="([^"]+)"/i);
-        return match ? match[1] : `${fallbackName || "xhs"}.zip`;
+        return match ? match[1] : "";
+    }
+
+    function getDownloadFilename(response, fallbackName) {
+        return getDispositionFilename(response) || `${fallbackName || "xhs"}.zip`;
     }
 
     async function saveZipBlob(blob, filename, useFilePicker) {
@@ -626,10 +630,7 @@
                 response.headers.get("Content-Type") || "",
                 item.type || "video",
             );
-            return getDownloadFilename(
-                response,
-                item.filename || `${fallbackBase}${suffix}.${extension}`,
-            );
+            return getDispositionFilename(response) || item.filename || `${fallbackBase}${suffix}.${extension}`;
         }
 
         async function writeResponseToFileWithProgress(response, fileHandle, startPercent, endPercent) {
