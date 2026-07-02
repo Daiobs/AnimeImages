@@ -66,6 +66,7 @@
 
     function getCardItem(card) {
         const type = card.dataset.type || "image";
+        const sizeBytes = Number.parseInt(card.dataset.sizeBytes || "0", 10) || 0;
         const providerFields = {
             asset_id: card.dataset.assetId || "",
             provider: card.dataset.provider || "",
@@ -79,6 +80,7 @@
                 type: "video",
                 url: card.dataset.url,
                 cover_url: card.dataset.coverUrl || "",
+                size_bytes: sizeBytes,
                 ...providerFields,
             };
         }
@@ -86,6 +88,7 @@
         return {
             type: "image",
             url: card.dataset.url,
+            size_bytes: sizeBytes,
             ...providerFields,
         };
     }
@@ -106,7 +109,7 @@
         }
     }
 
-    function getDownloadFilename(response, fallbackName) {
+    function getDispositionFilename(response) {
         const disposition = response.headers.get("Content-Disposition") || "";
         const encodedMatch = disposition.match(/filename\*=([^;]+)/i);
 
@@ -115,7 +118,11 @@
         }
 
         const match = disposition.match(/filename="([^"]+)"/i);
-        return match ? match[1] : `${fallbackName || "xhs"}.zip`;
+        return match ? match[1] : "";
+    }
+
+    function getDownloadFilename(response, fallbackName) {
+        return getDispositionFilename(response) || `${fallbackName || "xhs"}.zip`;
     }
 
     async function saveZipBlob(blob, filename, useFilePicker) {
@@ -149,22 +156,21 @@
         return "已交给浏览器下载";
     }
 
-    function downloadDirectItems(items) {
-        (items || []).forEach((item, index) => {
-            if (!item || !item.url) {
-                return;
-            }
-            window.setTimeout(() => {
-                const link = document.createElement("a");
-                link.href = item.url;
-                link.rel = "noopener noreferrer";
-                link.target = "_blank";
-                link.download = item.filename || "";
-                document.body.appendChild(link);
-                link.click();
-                link.remove();
-            }, index * 120);
-        });
+    function extensionFromContentType(contentType, itemType) {
+        const normalized = String(contentType || "").toLowerCase();
+        if (normalized.includes("video/mp4")) {
+            return "mp4";
+        }
+        if (normalized.includes("image/jpeg")) {
+            return "jpg";
+        }
+        if (normalized.includes("image/png")) {
+            return "png";
+        }
+        if (normalized.includes("image/webp")) {
+            return "webp";
+        }
+        return itemType === "video" ? "mp4" : "jpg";
     }
 
     function routeWarningText(warnings) {
@@ -187,7 +193,7 @@
 
     function itemRequiresZipTask(item) {
         const provider = item ? String(item.provider || "") : "";
-        return ["kukutool", "kukutool_generic", "youtube_merge", "yt_dlp_merge"].includes(provider);
+        return ["kukutool_generic", "youtube_merge", "yt_dlp_merge"].includes(provider);
     }
 
     function selectedNeedsZipTask(items) {
@@ -617,6 +623,147 @@
             return new Blob(chunks, {type: response.headers.get("Content-Type") || "application/zip"});
         }
 
+        function directDownloadFilename(item, response, index, total) {
+            const fallbackBase = getBaseFilename();
+            const suffix = total > 1 ? `_${index + 1}` : "";
+            const extension = extensionFromContentType(
+                response.headers.get("Content-Type") || "",
+                item.type || "video",
+            );
+            return getDispositionFilename(response) || item.filename || `${fallbackBase}${suffix}.${extension}`;
+        }
+
+        async function writeResponseToFileWithProgress(response, fileHandle, startPercent, endPercent) {
+            const contentLength = Number.parseInt(response.headers.get("Content-Length") || "0", 10);
+            if (!response.body || !contentLength) {
+                const blob = await response.blob();
+                const writable = await fileHandle.createWritable();
+                try {
+                    await writable.write(blob);
+                } finally {
+                    await writable.close();
+                }
+                setProgress(endPercent);
+                return;
+            }
+
+            const reader = response.body.getReader();
+            const writable = await fileHandle.createWritable();
+            let received = 0;
+
+            try {
+                while (true) {
+                    const {done, value} = await reader.read();
+                    if (done) {
+                        break;
+                    }
+                    await writable.write(value);
+                    received += value.length;
+                    const ratio = received / contentLength;
+                    setProgress(startPercent + (endPercent - startPercent) * ratio);
+                }
+            } finally {
+                await writable.close();
+            }
+            setProgress(endPercent);
+        }
+
+        async function downloadDirectItem(item, index, total) {
+            const startPercent = total > 1 ? (index / total) * 100 : 0;
+            const endPercent = total > 1 ? ((index + 1) / total) * 100 : 100;
+            const response = await fetch(item.url, {
+                cache: "no-store",
+                credentials: "omit",
+            });
+
+            if (!response.ok) {
+                throw new Error(`直链下载失败（${response.status}）`);
+            }
+
+            const filename = directDownloadFilename(item, response, index, total);
+            if (useFilePicker && window.showSaveFilePicker) {
+                const extension = filename.split(".").pop() || "mp4";
+                const handle = await window.showSaveFilePicker({
+                    suggestedName: filename,
+                    types: [
+                        {
+                            description: item.type === "image" ? "Image file" : "Media file",
+                            accept: item.type === "image"
+                                ? {"image/*": [`.${extension}`]}
+                                : {"video/mp4": [`.${extension}`], "application/octet-stream": [`.${extension}`]},
+                        },
+                    ],
+                });
+                await writeResponseToFileWithProgress(response, handle, startPercent, endPercent);
+                return filename;
+            }
+
+            const blob = await readResponseBlobWithProgress(response, startPercent, endPercent);
+            await saveZipBlob(blob, filename, false);
+            return filename;
+        }
+
+        async function downloadDirectRouteItems(items) {
+            const directItems = (items || []).filter((item) => item && item.url);
+            if (directItems.length === 0) {
+                throw new Error("没有可下载的直链资源");
+            }
+
+            setStatus(getStatusElement(), "正在通过浏览器直接下载源文件...");
+            const filenames = [];
+            for (let index = 0; index < directItems.length; index += 1) {
+                filenames.push(await downloadDirectItem(directItems[index], index, directItems.length));
+            }
+            return filenames;
+        }
+
+        async function postDownloadPayload(payload) {
+            return fetch(downloadUrl, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-CSRFToken": getCookie("csrftoken"),
+                },
+                body: JSON.stringify(payload),
+            });
+        }
+
+        async function saveDownloadResponse(response, fallbackName, startPercent, endPercent) {
+            const filename = getDownloadFilename(response, fallbackName);
+            const blob = await readResponseBlobWithProgress(response, startPercent, endPercent);
+            const savedMessage = await saveZipBlob(blob, filename, useFilePicker);
+            const savedCount = response.headers.get("X-Saved-Count") || "?";
+            const failedCount = response.headers.get("X-Failed-Count") || "0";
+            const variant = failedCount === "0" ? "text-success" : "text-muted";
+            return {filename, savedMessage, savedCount, failedCount, variant};
+        }
+
+        function serverDownloadStatusMessage(result) {
+            return `${result.savedMessage}：${result.filename}，成功 ${result.savedCount} 个，失败 ${result.failedCount} 个`;
+        }
+
+        async function downloadServerSingleFallback(payload) {
+            const fallbackPayload = {
+                ...payload,
+                download_mode: "proxy",
+            };
+            setProgressPending("切换中");
+            setStatus(getStatusElement(), "直链下载不可用，正在切换服务器单文件下载...");
+
+            const response = await postDownloadPayload(fallbackPayload);
+            if (!response.ok) {
+                throw new Error(await parseErrorResponse(response));
+            }
+
+            const contentType = response.headers.get("Content-Type") || "";
+            if (contentType.includes("application/json")) {
+                const data = await response.json();
+                throw new Error(data.message || data.route_reason || "服务器兜底下载未返回文件");
+            }
+
+            return saveDownloadResponse(response, getBaseFilename(), 0, 100);
+        }
+
         async function waitForDownloadTask(taskStatusUrl) {
             while (true) {
                 const response = await fetch(taskStatusUrl, {cache: "no-store"});
@@ -725,14 +872,7 @@
                     ? "判断中"
                     : (selectedSingleItem(selected) ? "准备下载" : "打包中");
                 setProgressPending(pendingLabel);
-                const response = await fetch(downloadUrl, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "X-CSRFToken": getCookie("csrftoken"),
-                    },
-                    body: JSON.stringify(payload),
-                });
+                const response = await postDownloadPayload(payload);
 
                 if (!response.ok) {
                     throw new Error(await parseErrorResponse(response));
@@ -743,13 +883,30 @@
                 if (contentType.includes("application/json")) {
                     const data = await response.json();
                     if (data.status === "routed" && data.route_type === "direct") {
-                        downloadDirectItems(data.items || []);
-                        setProgress(100);
-                        setStatus(
-                            getStatusElement(),
-                            `${data.route_reason || "已使用浏览器直链下载"}${routeWarningText(data.warnings)}`,
-                            "text-success",
-                        );
+                        try {
+                            const filenames = await downloadDirectRouteItems(data.items || []);
+                            setProgress(100);
+                            setStatus(
+                                getStatusElement(),
+                                `${data.route_reason || "已使用浏览器直链下载"}：${filenames.join("、")}${routeWarningText(data.warnings)}`,
+                                "text-success",
+                            );
+                        } catch (directError) {
+                            if (directError && directError.name === "AbortError") {
+                                throw directError;
+                            }
+                            if (!selectedSingleItem(selected)) {
+                                throw directError;
+                            }
+                            console.warn("Direct download failed, falling back to server proxy", directError);
+                            const fallback = await downloadServerSingleFallback(payload);
+                            setProgress(100);
+                            setStatus(
+                                getStatusElement(),
+                                `${serverDownloadStatusMessage(fallback)}（已自动切换服务器下载）`,
+                                fallback.variant,
+                            );
+                        }
                         return;
                     }
                     if (data.status === "routed" && data.route_type === "proxy") {
@@ -766,13 +923,8 @@
                     return;
                 }
 
-                const filename = getDownloadFilename(response, getBaseFilename());
-                const blob = await readResponseBlobWithProgress(response, 0, 100);
-                const savedMessage = await saveZipBlob(blob, filename, useFilePicker);
-                const savedCount = response.headers.get("X-Saved-Count") || "?";
-                const failedCount = response.headers.get("X-Failed-Count") || "0";
-                const variant = failedCount === "0" ? "text-success" : "text-muted";
-                setStatus(getStatusElement(), `${savedMessage}：${filename}，成功 ${savedCount} 个，失败 ${failedCount} 个`, variant);
+                const result = await saveDownloadResponse(response, getBaseFilename(), 0, 100);
+                setStatus(getStatusElement(), serverDownloadStatusMessage(result), result.variant);
             } catch (error) {
                 if (error && error.name === "AbortError") {
                     setStatus(getStatusElement(), "已取消保存位置选择");

@@ -19,10 +19,12 @@ ROUTE_TYPES = (
 )
 
 SERVER_SIDE_PROVIDERS = {
-    "kukutool",
     "kukutool_generic",
     "youtube_merge",
     "yt_dlp_merge",
+}
+BROWSER_DIRECT_VIDEO_PROVIDERS = {
+    "kukutool",
 }
 MOBILE_USER_AGENT_MARKERS = (
     "android",
@@ -152,11 +154,48 @@ def item_can_browser_direct_video(item):
     url = item_url(item)
     if not is_http_url(url):
         return False
-    return not item_provider(item)
+    provider = item_provider(item)
+    return (
+        provider in BROWSER_DIRECT_VIDEO_PROVIDERS
+        and provider_manifest_allows_public_download(item)
+    )
+
+
+def single_video_can_server_proxy_download(item):
+    if not isinstance(item, dict) or not item_is_video(item):
+        return False
+    if not is_http_url(item_url(item)):
+        return False
+    provider = item_provider(item)
+    if not provider:
+        return True
+    return (
+        provider in BROWSER_DIRECT_VIDEO_PROVIDERS
+        and provider_manifest_allows_public_download(item)
+    )
 
 
 def single_video_can_attachment_download(item):
+    if not isinstance(item, dict) or not item_is_video(item):
+        return False
+    if not is_http_url(item_url(item)):
+        return False
+    return not item_provider(item)
+
+
+def single_video_can_browser_direct_download(item):
     return item_can_browser_direct_video(item)
+
+
+def single_video_can_browser_direct_attempt(item):
+    if not isinstance(item, dict) or not item_is_video(item):
+        return False
+    if not is_http_url(item_url(item)):
+        return False
+    provider = item_provider(item)
+    if not provider:
+        return True
+    return single_video_can_browser_direct_download(item)
 
 
 def single_image_can_attachment_download(item):
@@ -258,7 +297,41 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
             warnings=warnings,
         )
 
+    if requested_mode in {"proxy", "server_single"}:
+        if len(normalized_items) == 1:
+            item = normalized_items[0]
+            if single_image_can_attachment_download(item) or single_video_can_server_proxy_download(item):
+                return route_payload(
+                    route_type=ROUTE_PROXY,
+                    route_reason="单个资源使用服务器代理下载，不打包 ZIP",
+                    download_strategy="server_single_attachment",
+                    media_items=normalized_items,
+                    estimated_bytes=estimated_bytes,
+                    warnings=warnings,
+                )
+        return route_payload(
+            route_type=ROUTE_ZIP,
+            route_reason="当前选择无法单文件代理下载，使用服务器 ZIP 流程",
+            download_strategy="server_zip",
+            media_items=normalized_items,
+            estimated_bytes=estimated_bytes,
+            warnings=warnings,
+        )
+
     if requested_mode in {"zip", "browser"}:
+        if (
+            requested_mode == "browser"
+            and len(normalized_items) == 1
+            and single_video_can_browser_direct_attempt(normalized_items[0])
+        ):
+            return route_payload(
+                route_type=ROUTE_DIRECT,
+                route_reason="单个视频资源优先使用浏览器直连下载，减少服务器中转等待",
+                download_strategy="browser_direct_provider_video",
+                media_items=normalized_items,
+                estimated_bytes=estimated_bytes,
+                warnings=warnings,
+            )
         if (
             requested_mode == "browser"
             and len(normalized_items) == 1
@@ -312,6 +385,15 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
         )
 
     if all_videos and len(normalized_items) == 1:
+        if single_video_can_browser_direct_attempt(normalized_items[0]):
+            return route_payload(
+                route_type=ROUTE_DIRECT,
+                route_reason="单个视频资源优先使用浏览器直连下载，减少服务器中转等待",
+                download_strategy="browser_direct_provider_video",
+                media_items=normalized_items,
+                estimated_bytes=estimated_bytes,
+                warnings=warnings,
+            )
         if single_video_can_attachment_download(normalized_items[0]):
             return route_payload(
                 route_type=ROUTE_PROXY,
