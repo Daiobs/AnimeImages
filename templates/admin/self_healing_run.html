@@ -1,0 +1,143 @@
+{% extends "admin/base_site.html" %}
+
+{% block content_title %}{% endblock %}
+
+{% block content %}
+<style>
+    #content { padding: 0; }
+    .healing-page {
+        margin: -20px -20px 0;
+        min-height: calc(100vh - 96px);
+        padding: 34px clamp(18px, 4vw, 54px) 56px;
+        background: linear-gradient(180deg, #fff 0%, #f8fbff 58%, #fff 100%);
+        color: #111827;
+    }
+    .healing-shell { max-width: 1180px; margin: 0 auto; }
+    .healing-hero {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 20px;
+    }
+    .healing-title { margin: 0; font-size: clamp(30px, 4vw, 44px); font-weight: 900; letter-spacing: 0; }
+    .healing-subtitle { margin: 10px 0 0; color: #6b7280; line-height: 1.7; }
+    .healing-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .healing-link,
+    .healing-button {
+        display: inline-flex;
+        min-height: 40px;
+        align-items: center;
+        justify-content: center;
+        padding: 0 14px;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        color: #111827;
+        text-decoration: none;
+        font-weight: 800;
+        cursor: pointer;
+    }
+    .healing-button { background: #111827; color: #fff; border-color: #111827; }
+    .healing-panel {
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        padding: 18px;
+        box-shadow: 0 4px 12px rgba(17, 24, 39, .05);
+        margin-bottom: 18px;
+    }
+    .healing-panel h2 { margin: 0 0 12px; font-size: 18px; font-weight: 900; }
+    .healing-table-wrap { overflow: auto; }
+    .healing-table { width: 100%; border-collapse: collapse; }
+    .healing-table th,
+    .healing-table td {
+        padding: 9px 8px;
+        border-top: 1px solid #edf0f3;
+        text-align: left;
+        vertical-align: top;
+        font-size: 13px;
+        word-break: break-word;
+    }
+    .healing-table th { color: #6b7280; font-weight: 900; }
+    .healing-badge {
+        display: inline-flex;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: #f3f4f6;
+        color: #374151;
+        font-size: 12px;
+        font-weight: 900;
+    }
+    .healing-badge-true { background: #ecfdf5; color: #047857; }
+    .healing-badge-false { background: #fff1f2; color: #be123c; }
+</style>
+
+<div class="healing-page">
+    <div class="healing-shell">
+        <section class="healing-hero">
+            <div>
+                <h1 class="healing-title">Self-Healing</h1>
+                <p class="healing-subtitle">手动触发一次自愈诊断事件，并查看最近的自动修复记录。这里不会修改 Provider 运行配置，也不会自动放量。</p>
+            </div>
+            <div class="healing-actions">
+                <a class="healing-link" href="{% url 'admin_console' %}">运维首页</a>
+                <a class="healing-link" href="{% url 'provider_settings' %}">Provider 设置</a>
+                <a class="healing-link" href="{% url 'download_logs' %}">下载日志</a>
+            </div>
+        </section>
+
+        <section class="healing-panel">
+            <h2>手动诊断</h2>
+            <p class="healing-subtitle">该操作只记录一次模拟 provider timeout 的 healing 事件，用于验证日志、权限和 Dashboard 链路。</p>
+            <form method="post">
+                {% csrf_token %}
+                <input type="hidden" name="provider" value="kukutool">
+                <button class="healing-button" type="submit" {% if not can_execute %}disabled{% endif %}>运行 Self-Healing 诊断</button>
+            </form>
+        </section>
+
+        <section class="healing-panel">
+            <h2>最近 50 条 Self-Healing 事件</h2>
+            <div class="healing-table-wrap">
+                <table class="healing-table">
+                    <thead>
+                        <tr>
+                            <th>时间</th>
+                            <th>触发点</th>
+                            <th>failure_type</th>
+                            <th>action</th>
+                            <th>healed</th>
+                            <th>provider</th>
+                            <th>切换到</th>
+                            <th>risk</th>
+                            <th>confidence</th>
+                            <th>耗时</th>
+                            <th>request_id</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {% for row in recent_events %}
+                        <tr>
+                            <td>{{ row.created_at }}</td>
+                            <td>{{ row.trigger }}</td>
+                            <td>{{ row.failure_type }}</td>
+                            <td>{{ row.action }}</td>
+                            <td><span class="healing-badge healing-badge-{{ row.healed|lower }}">{{ row.healed }}</span></td>
+                            <td>{{ row.provider|default:"-" }}</td>
+                            <td>{{ row.switched_to_provider|default:"-" }}</td>
+                            <td>{{ row.risk }}</td>
+                            <td>{{ row.confidence }}</td>
+                            <td>{{ row.duration_ms }} ms</td>
+                            <td>{{ row.request_id }}</td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="11">暂无 Self-Healing 事件</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+</div>
+{% endblock %}

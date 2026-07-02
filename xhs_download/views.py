@@ -35,6 +35,7 @@ from .models import (
     ProviderHealthTestRun,
     ProviderHealthTestStatus,
     ProviderRuntimeSetting,
+    SelfHealingEvent,
 )
 from .policy.adaptive import build_adaptive_weight_recommendation
 from .policy.engine import (
@@ -112,10 +113,12 @@ from .services.observability import (
     sanitize_observability_text,
 )
 from .services.recovery_engine import (
+    FAILURE_PROVIDER_TIMEOUT,
     proxy_failure_recovery,
     safe_routing_decision,
     zip_failure_recovery,
 )
+from .services.self_healing_engine import SelfHealingEngine, attach_healing_to_route_info
 from .services.youtube_merge import build_youtube_merge_plan, get_youtube_merge_health
 from .services.admin_console import build_admin_console_context
 from .services.rollout_guard import build_rollout_guard_context
@@ -900,6 +903,7 @@ def admin_console_required(request):
         "xhs_download.view_downloadrequestlog",
         "xhs_download.view_providerhealthtestrun",
         "xhs_download.view_provideradminauditlog",
+        "xhs_download.view_selfhealingevent",
     )
 
 
@@ -918,6 +922,74 @@ def rollout_guard_view(request):
         return JsonResponse({"detail": "Not found."}, status=404)
     context = build_rollout_guard_context(request)
     return render(request, "admin/rollout_guard.html", context)
+
+
+def self_healing_access_allowed(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_selfhealingevent",
+    )
+
+
+def self_healing_execute_allowed(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.add_selfhealingevent",
+    )
+
+
+@csrf_protect
+def self_healing_run_view(request):
+    if not self_healing_access_allowed(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+    if request.method == "POST":
+        if not self_healing_execute_allowed(request):
+            return JsonResponse({"detail": "Not found."}, status=404)
+        provider = str(request.POST.get("provider") or "kukutool").strip()[:80]
+        outcome = SelfHealingEngine(
+            request,
+            context={
+                "manual": True,
+                "source": "admin_self_healing_run",
+            },
+        ).handle_failure(
+            trigger="manual_diagnostics",
+            route_result={"route_type": "", "provider": provider},
+            provider=provider,
+            error=XhsProviderTimeoutError("manual self-healing diagnostic provider timeout"),
+            depth=1,
+        )
+        messages.success(
+            request,
+            f"Self-Healing 诊断已记录：{outcome.action} / {outcome.failure_type}",
+        )
+        return redirect("self_healing_run")
+
+    recent_events = [
+        {
+            "created_at": format_admin_datetime(event.created_at),
+            "trigger": event.trigger,
+            "failure_type": event.failure_type,
+            "action": event.action,
+            "healed": event.healed,
+            "provider": event.provider,
+            "switched_to_provider": event.switched_to_provider,
+            "risk": event.risk,
+            "confidence": event.confidence,
+            "duration_ms": event.duration_ms,
+            "request_id": event.request_id,
+        }
+        for event in SelfHealingEvent.objects.order_by("-created_at")[:50]
+    ]
+    return render(
+        request,
+        "admin/self_healing_run.html",
+        {
+            "title": "Self-Healing",
+            "recent_events": recent_events,
+            "can_execute": self_healing_execute_allowed(request),
+        },
+    )
 
 
 def provider_health_tests_view_allowed(request):
@@ -1866,6 +1938,7 @@ def log_download_request_event(
                 policy_shadow = {}
     policy_scores = policy_shadow.get("policy_scores") or {}
     recovery = route_info.get("recovery") or {}
+    healing = route_info.get("healing") or {}
     record_download_request_log(
         request,
         download_type=download_type,
@@ -1902,6 +1975,12 @@ def log_download_request_event(
         fallback_from_route=recovery.get("fallback_from_route", ""),
         fallback_to_route=recovery.get("fallback_to_route", ""),
         failure_type=recovery.get("failure_type", ""),
+        auto_recovery_count=healing.get("auto_recovery_count", 0),
+        provider_auto_switch_count=healing.get("provider_auto_switch_count", 0),
+        failure_to_recovery_ms=healing.get("failure_to_recovery_ms", 0),
+        healing_action=healing.get("healing_action", ""),
+        healing_risk=healing.get("healing_risk", ""),
+        healing_confidence=healing.get("healing_confidence", 0),
     )
 
 
@@ -1920,7 +1999,7 @@ def blocked_download_route_info(media_items, reason, error_code=""):
     }
 
 
-def zip_download_route_info(request, media_items, reason="默认兼容旧 ZIP 下载流程"):
+def zip_download_route_info(request, media_items, reason="默认兼容旧 ZIP 下载流程", *, record_healing=True):
     route_info = safe_routing_decision(
         request,
         media_items,
@@ -1931,6 +2010,14 @@ def zip_download_route_info(request, media_items, reason="默认兼容旧 ZIP �
         ),
         reason="ZIP 兼容路由异常，已降级为 ZIP 下载",
     )
+    if record_healing and route_info.get("recovery"):
+        route_info = attach_self_healing_event(
+            request,
+            route_info,
+            media_items,
+            trigger="routing_exception",
+            error=RuntimeError(route_info.get("route_reason", "")),
+        )
     if route_info.get("route_type") == ROUTE_BLOCKED:
         route_info["route_reason"] = sanitize_observability_text(reason, limit=200)
         return route_info
@@ -1940,6 +2027,50 @@ def zip_download_route_info(request, media_items, reason="默认兼容旧 ZIP �
     route_info["server_egress_estimated_bytes"] = route_info.get("estimated_bytes", 0)
     route_info["browser_egress_estimated_bytes"] = 0
     return route_info
+
+
+def attach_self_healing_event(
+    request,
+    route_info,
+    media_items,
+    *,
+    trigger,
+    error=None,
+    error_code="",
+    provider="",
+    depth=0,
+    force_healed=None,
+):
+    route_info = dict(route_info or {})
+    provider = provider or route_info.get("provider", "")
+    if not provider:
+        for item in media_items or ():
+            if isinstance(item, dict) and item.get("provider"):
+                provider = item.get("provider")
+                break
+    context = {
+        "item_count": len([item for item in media_items or () if isinstance(item, dict)]),
+        "route_type": route_info.get("route_type", ""),
+        "download_strategy": route_info.get("download_strategy", ""),
+        "error_code": error_code or route_info.get("error_code", ""),
+    }
+    recovery = route_info.get("recovery") or {}
+    failure_type = recovery.get("failure_type", "")
+    if failure_type == FAILURE_PROVIDER_TIMEOUT and depth == 0:
+        # Download recovery already reached this point after the provider path failed;
+        # treat the retry budget as spent and move to the next provider.
+        depth = 1
+    outcome = SelfHealingEngine(request, context=context).handle_failure(
+        trigger=trigger,
+        route_result=route_info,
+        provider=provider,
+        error=error,
+        error_code=error_code or route_info.get("error_code", ""),
+        failure_type=failure_type,
+        depth=depth,
+        force_healed=force_healed,
+    )
+    return attach_healing_to_route_info(route_info, outcome)
 
 
 def single_attachment_download_filename(item, base_filename, final_url="", content_type=""):
@@ -2841,10 +2972,12 @@ def download_images_api(request):
     download_mode = (data.get("download_mode") or "browser").lower().strip()
     if download_mode == "server" and not server_save_mode_is_enabled():
         download_mode = "auto"
+    routed_download_modes = {"auto", "browser", "proxy", "server_single"}
     route_info = zip_download_route_info(
         request,
         media_items,
         reason="默认兼容旧 ZIP 下载流程",
+        record_healing=download_mode not in routed_download_modes,
     )
     if download_items_have_invalid_provider_manifest(media_items):
         route_info = blocked_download_route_info(
@@ -2868,7 +3001,6 @@ def download_images_api(request):
         )
 
     runtime_setting = get_download_runtime_setting()
-    routed_download_modes = {"auto", "browser", "proxy", "server_single"}
     if download_mode in routed_download_modes:
         def route_decision():
             decided = decide_download_route(
@@ -2902,10 +3034,26 @@ def download_images_api(request):
             route_decision,
             reason="下载路由异常，已降级为 ZIP 下载",
         )
+        if route_info.get("recovery"):
+            route_info = attach_self_healing_event(
+                request,
+                route_info,
+                media_items,
+                trigger="routing_exception",
+                error=RuntimeError(route_info.get("route_reason", "")),
+            )
     guard_result = check_download_cost_preflight(request, media_items, runtime_setting)
     if guard_result:
         error_code, message, status_code = guard_result
         route_info = blocked_download_route_info(media_items, message, error_code)
+        route_info = attach_self_healing_event(
+            request,
+            route_info,
+            media_items,
+            trigger="cost_guard",
+            error=ValueError(message),
+            error_code=error_code,
+        )
         log_download_request_event(
             request,
             download_type="zip",
@@ -3063,6 +3211,13 @@ def download_images_api(request):
                 recovered_route = recovery_decision.route_info
                 if recovered_route and recovered_route.get("route_type") == ROUTE_DIRECT:
                     recovered_route["recovery"] = recovery_decision.log_fields()
+                    recovered_route = attach_self_healing_event(
+                        request,
+                        recovered_route,
+                        media_items,
+                        trigger="proxy_failure",
+                        error=error,
+                    )
                     log_download_request_event(
                         request,
                         download_type=ROUTE_DIRECT,
@@ -3095,6 +3250,15 @@ def download_images_api(request):
                     "PROXY_FAILED_RECOVERY_BLOCKED",
                 )
                 blocked_route["recovery"] = recovery_decision.log_fields()
+                blocked_route = attach_self_healing_event(
+                    request,
+                    blocked_route,
+                    media_items,
+                    trigger="proxy_failure",
+                    error=error,
+                    error_code="PROXY_FAILED_RECOVERY_BLOCKED",
+                    force_healed=False,
+                )
                 log_download_request_event(
                     request,
                     download_type="single_file",
@@ -3203,6 +3367,13 @@ def download_images_api(request):
             recovered_route = recovery_decision.route_info
             if recovered_route and recovered_route.get("route_type") == ROUTE_PROXY:
                 recovered_route["recovery"] = recovery_decision.log_fields()
+                recovered_route = attach_self_healing_event(
+                    request,
+                    recovered_route,
+                    media_items,
+                    trigger="zip_failure",
+                    error=error,
+                )
                 try:
                     single_response, actual_bytes = build_single_attachment_response(
                         media_items[0],
@@ -3216,6 +3387,16 @@ def download_images_api(request):
                         "ZIP_RECOVERY_PROXY_FAILED",
                     )
                     blocked_route["recovery"] = proxy_recovery.log_fields()
+                    blocked_route = attach_self_healing_event(
+                        request,
+                        blocked_route,
+                        media_items,
+                        trigger="zip_recovery_proxy_failure",
+                        error=proxy_error,
+                        error_code="ZIP_RECOVERY_PROXY_FAILED",
+                        depth=1,
+                        force_healed=False,
+                    )
                     log_download_request_event(
                         request,
                         download_type="zip",
@@ -3246,6 +3427,15 @@ def download_images_api(request):
                         bytes_error_code or "RATE_LIMITED",
                     )
                     blocked_route["recovery"] = recovery_decision.log_fields()
+                    blocked_route = attach_self_healing_event(
+                        request,
+                        blocked_route,
+                        media_items,
+                        trigger="cost_guard",
+                        error=ValueError("今日下载流量已达到限制"),
+                        error_code=bytes_error_code or "RATE_LIMITED",
+                        depth=1,
+                    )
                     log_download_request_event(
                         request,
                         download_type="single_file",
@@ -3279,6 +3469,15 @@ def download_images_api(request):
                 "ZIP_FAILED_RECOVERY_BLOCKED",
             )
             blocked_route["recovery"] = recovery_decision.log_fields()
+            blocked_route = attach_self_healing_event(
+                request,
+                blocked_route,
+                media_items,
+                trigger="zip_failure",
+                error=error,
+                error_code="ZIP_FAILED_RECOVERY_BLOCKED",
+                force_healed=False,
+            )
             log_download_request_event(
                 request,
                 download_type="zip",
@@ -3361,6 +3560,15 @@ def download_images_api(request):
             if "Provider 签名" in str(error) or "manifest" in str(error).lower()
             else "DOWNLOAD_ERROR"
         )
+        route_info = blocked_download_route_info(media_items, "下载失败", error_code)
+        route_info = attach_self_healing_event(
+            request,
+            route_info,
+            media_items,
+            trigger="download_exception",
+            error=error,
+            error_code=error_code,
+        )
         log_download_request_event(
             request,
             download_type="zip",
@@ -3370,7 +3578,7 @@ def download_images_api(request):
             error_code=error_code,
             error=error,
             error_message_short=public_message,
-            route_info=blocked_download_route_info(media_items, "下载失败", error_code),
+            route_info=route_info,
         )
         return JsonResponse(
             {"status": "error", "message": public_message},
@@ -3385,6 +3593,15 @@ def download_images_api(request):
                 "error": sanitize_observability_text(public_message),
             },
         )
+        route_info = blocked_download_route_info(media_items, "下载失败", "DOWNLOAD_ERROR")
+        route_info = attach_self_healing_event(
+            request,
+            route_info,
+            media_items,
+            trigger="download_exception",
+            error=error,
+            error_code="DOWNLOAD_ERROR",
+        )
         log_download_request_event(
             request,
             download_type="zip",
@@ -3394,7 +3611,7 @@ def download_images_api(request):
             error_code="DOWNLOAD_ERROR",
             error=error,
             error_message_short=public_message,
-            route_info=blocked_download_route_info(media_items, "下载失败", "DOWNLOAD_ERROR"),
+            route_info=route_info,
         )
         return JsonResponse(
             {"status": "error", "message": public_message},

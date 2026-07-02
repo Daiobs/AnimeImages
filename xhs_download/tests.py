@@ -70,6 +70,11 @@ from .services.provider_settings import (
 )
 from .services.provider_manifest import build_provider_manifest_token
 from .services.observability import record_download_request_log, record_provider_admin_audit_log
+from .policy.healing_policy import (
+    HEAL_ACTION_BLOCK_GRACEFULLY,
+    HEAL_ACTION_SWITCH_PROVIDER,
+    next_provider,
+)
 from .services.recovery_engine import (
     FAILURE_PROVIDER_TIMEOUT,
     FAILURE_PROXY_FAILED,
@@ -77,6 +82,7 @@ from .services.recovery_engine import (
     provider_stability_score,
     provider_stability_status,
 )
+from .services.self_healing_engine import SelfHealingEngine
 from .policy.adaptive import build_adaptive_weight_recommendation
 from .policy.engine import (
     apply_policy_decision_to_route,
@@ -109,6 +115,7 @@ from .models import (
     ProviderHealthTestStatus,
     ProviderRuntimeSetting,
     RoutingDecisionLog,
+    SelfHealingEvent,
 )
 from .views import (
     build_provider_preview_query,
@@ -296,6 +303,11 @@ class XhsUtilityTests(SimpleTestCase):
 
         self.assertEqual(provider_stability_status(stable_score), "stable")
         self.assertEqual(provider_stability_status(unstable_score), "unstable")
+
+    def test_healing_policy_provider_fallback_chain(self):
+        self.assertEqual(next_provider("kukutool"), "yt_dlp_generic")
+        self.assertEqual(next_provider("yt_dlp_generic"), "native")
+        self.assertEqual(next_provider("native"), "fallback")
 
     @override_settings(KUKUTOOL_DOWNLOAD_TIMEOUT_SECONDS=7.0)
     @patch(
@@ -6292,6 +6304,54 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(log.fallback_from_route, "routing")
         self.assertEqual(log.fallback_to_route, ROUTE_ZIP)
         self.assertEqual(log.failure_type, FAILURE_ROUTING_FAILED)
+        self.assertEqual(log.auto_recovery_count, 1)
+        self.assertEqual(log.healing_action, "fallback_zip")
+        self.assertEqual(SelfHealingEvent.objects.count(), 1)
+        event = SelfHealingEvent.objects.get()
+        self.assertEqual(event.failure_type, FAILURE_ROUTING_FAILED)
+        self.assertEqual(event.action, "fallback_zip")
+        self.assertTrue(event.healed)
+
+    def test_self_healing_engine_switches_provider_and_records_event(self):
+        request = RequestFactory().get("/media/download-images/")
+        request.request_id = "rid-heal-provider"
+        switched = []
+
+        outcome = SelfHealingEngine(request).handle_failure(
+            trigger="provider_exception",
+            route_result={"provider": "kukutool"},
+            provider="kukutool",
+            error=XhsProviderTimeoutError("provider timeout"),
+            depth=1,
+            provider_switcher=switched.append,
+        )
+
+        self.assertTrue(outcome.healed)
+        self.assertEqual(outcome.action, HEAL_ACTION_SWITCH_PROVIDER)
+        self.assertEqual(outcome.switched_from_provider, "kukutool")
+        self.assertEqual(outcome.switched_to_provider, "yt_dlp_generic")
+        self.assertEqual(switched, ["yt_dlp_generic"])
+        event = SelfHealingEvent.objects.get()
+        self.assertEqual(event.request_id, "rid-heal-provider")
+        self.assertEqual(event.action, HEAL_ACTION_SWITCH_PROVIDER)
+        self.assertEqual(event.switched_to_provider, "yt_dlp_generic")
+
+    def test_self_healing_engine_blocks_after_max_depth(self):
+        request = RequestFactory().get("/media/download-images/")
+        request.request_id = "rid-heal-depth"
+
+        outcome = SelfHealingEngine(request).handle_failure(
+            trigger="provider_exception",
+            route_result={"provider": "kukutool"},
+            provider="kukutool",
+            error=XhsProviderTimeoutError("provider timeout"),
+            depth=3,
+        )
+
+        self.assertFalse(outcome.healed)
+        self.assertEqual(outcome.action, HEAL_ACTION_BLOCK_GRACEFULLY)
+        self.assertEqual(outcome.fallback_to_route, ROUTE_BLOCKED)
+        self.assertEqual(SelfHealingEvent.objects.get().depth, 3)
 
     @patch("xhs_download.views.fetch_media_response")
     @patch("xhs_download.views.build_download_archive_file")
@@ -6326,6 +6386,13 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(log.fallback_from_route, ROUTE_ZIP)
         self.assertEqual(log.fallback_to_route, ROUTE_PROXY)
         self.assertEqual(log.failure_type, FAILURE_PROVIDER_TIMEOUT)
+        self.assertEqual(log.auto_recovery_count, 1)
+        self.assertEqual(log.provider_auto_switch_count, 1)
+        self.assertEqual(log.healing_action, HEAL_ACTION_SWITCH_PROVIDER)
+        event = SelfHealingEvent.objects.get()
+        self.assertEqual(event.failure_type, FAILURE_PROVIDER_TIMEOUT)
+        self.assertEqual(event.switched_from_provider, "kukutool")
+        self.assertEqual(event.switched_to_provider, "yt_dlp_generic")
 
     @patch("xhs_download.views.fetch_media_response")
     @patch("xhs_download.views.build_download_archive_file")
@@ -6358,6 +6425,9 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(log.fallback_count, 1)
         self.assertEqual(log.fallback_from_route, ROUTE_ZIP)
         self.assertEqual(log.fallback_to_route, ROUTE_PROXY)
+        self.assertEqual(log.auto_recovery_count, 1)
+        self.assertEqual(log.healing_action, "fallback_proxy")
+        self.assertEqual(SelfHealingEvent.objects.get().action, "fallback_proxy")
 
     @patch("xhs_download.views.fetch_media_response")
     def test_proxy_failure_blocks_when_direct_fallback_is_not_safe(self, mock_fetch):
@@ -6386,6 +6456,9 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(log.fallback_from_route, ROUTE_PROXY)
         self.assertEqual(log.fallback_to_route, ROUTE_BLOCKED)
         self.assertEqual(log.failure_type, FAILURE_PROXY_FAILED)
+        self.assertEqual(log.auto_recovery_count, 0)
+        self.assertEqual(log.healing_action, "fallback_direct")
+        self.assertFalse(SelfHealingEvent.objects.get().healed)
 
     def test_download_runtime_setting_cost_guard_defaults_to_unlimited(self):
         setting = DownloadRuntimeSetting.load()
@@ -9219,6 +9292,33 @@ class AdminObservabilityMvpTests(TestCase):
         self.grant_xhs_view_permission(self.staff, "view_downloadrequestlog")
         self.assertContains(client.get("/admin/console/"), "今日下载次数")
 
+    def test_self_healing_run_permissions_and_manual_event(self):
+        client = Client()
+        client.force_login(self.staff)
+        super_client = Client()
+        super_client.force_login(self.superuser)
+
+        self.assertEqual(Client().get("/admin/self-healing/run/").status_code, 404)
+        self.assertEqual(client.get("/admin/self-healing/run/").status_code, 404)
+        self.assertContains(super_client.get("/admin/self-healing/run/"), "Self-Healing")
+
+        self.grant_xhs_view_permission(self.staff, "view_selfhealingevent")
+        self.assertContains(client.get("/admin/self-healing/run/"), "Self-Healing")
+        self.assertEqual(
+            client.post("/admin/self-healing/run/", data={"provider": "kukutool"}).status_code,
+            404,
+        )
+
+        self.grant_xhs_view_permission(self.staff, "add_selfhealingevent")
+        response = client.post("/admin/self-healing/run/", data={"provider": "kukutool"})
+
+        self.assertEqual(response.status_code, 302)
+        event = SelfHealingEvent.objects.get()
+        self.assertEqual(event.trigger, "manual_diagnostics")
+        self.assertEqual(event.provider, "kukutool")
+        self.assertEqual(event.action, HEAL_ACTION_SWITCH_PROVIDER)
+        self.assertEqual(event.switched_to_provider, "yt_dlp_generic")
+
     def test_admin_console_empty_data_renders(self):
         client = Client()
         client.force_login(self.superuser)
@@ -9231,6 +9331,7 @@ class AdminObservabilityMvpTests(TestCase):
         self.assertContains(response, "暂无大文件下载记录")
         self.assertContains(response, "暂无路由数据")
         self.assertContains(response, "暂无 Routing v3 反馈数据")
+        self.assertContains(response, "Self-Healing Dashboard")
 
     def test_admin_console_shows_download_metrics_and_failure_top(self):
         DownloadRequestLog.objects.create(

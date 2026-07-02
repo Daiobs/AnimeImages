@@ -153,6 +153,7 @@
                 <a class="console-link" href="{% url 'provider_settings' %}">Provider 设置</a>
                 <a class="console-link" href="{% url 'policy_engine' %}">Policy Engine</a>
                 <a class="console-link" href="{% url 'provider_health_tests' %}">Provider 测试</a>
+                <a class="console-link" href="{% url 'self_healing_run' %}">Self-Healing</a>
                 <a class="console-link" href="{% url 'ops_dashboard' %}">Ops Dashboard</a>
             </div>
         </section>
@@ -235,6 +236,68 @@
                         </tbody>
                     </table>
                 </div>
+            </div>
+        </section>
+
+        <section class="console-panel">
+            <h2>Self-Healing Dashboard</h2>
+            <section class="console-grid" aria-label="自愈指标">
+                {% for row in self_healing.summary %}
+                    <div class="console-card">
+                        <span>{{ row.label }}</span>
+                        <strong>{{ row.value }}</strong>
+                    </div>
+                {% endfor %}
+            </section>
+            <div class="console-section-grid">
+                <div>
+                    <h2>Top Healing Causes</h2>
+                    <table class="console-table">
+                        <thead><tr><th>failure_type</th><th>次数</th></tr></thead>
+                        <tbody>
+                        {% for row in self_healing.top_failure_causes %}
+                            <tr><td>{{ row.failure_type|default:"-" }}</td><td>{{ row.count }}</td></tr>
+                        {% empty %}
+                            <tr><td colspan="2">暂无 Self-Healing 事件</td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <div>
+                    <h2>Top Healing Actions</h2>
+                    <table class="console-table">
+                        <thead><tr><th>action</th><th>次数</th></tr></thead>
+                        <tbody>
+                        {% for row in self_healing.top_actions %}
+                            <tr><td>{{ row.action|default:"-" }}</td><td>{{ row.count }}</td></tr>
+                        {% empty %}
+                            <tr><td colspan="2">暂无自动修复动作</td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="console-table-wrap">
+                <table class="console-table">
+                    <thead><tr><th>时间</th><th>触发点</th><th>failure_type</th><th>action</th><th>healed</th><th>provider</th><th>切换到</th><th>耗时</th><th>request_id</th></tr></thead>
+                    <tbody>
+                    {% for row in self_healing.recent_events %}
+                        <tr>
+                            <td>{{ row.created_at }}</td>
+                            <td>{{ row.trigger }}</td>
+                            <td>{{ row.failure_type }}</td>
+                            <td>{{ row.action }}</td>
+                            <td><span class="console-badge console-badge-{% if row.healed %}success{% else %}blocked{% endif %}">{{ row.healed }}</span></td>
+                            <td>{{ row.provider|default:"-" }}</td>
+                            <td>{{ row.switched_to_provider|default:"-" }}</td>
+                            <td>{{ row.duration_ms }} ms</td>
+                            <td>{{ row.request_id }}</td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="9">暂无最近 Self-Healing 事件</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
             </div>
         </section>
 
@@ -454,6 +517,7 @@
                 <a class="console-link" href="{% url 'rollout_guard' %}">放量守卫</a>
                 <a class="console-link" href="{% url 'admin:download_console_downloadruntimesetting_changelist' %}">Download 设置</a>
                 <a class="console-link" href="{% url 'provider_health_tests' %}">Provider 测试</a>
+                <a class="console-link" href="{% url 'self_healing_run' %}">Self-Healing</a>
                 <a class="console-link" href="{% url 'ops_dashboard' %}">Ops Dashboard</a>
                 <a class="console-link" href="{% url 'parse_logs' %}">Parse Logs</a>
                 <a class="console-link" href="{% url 'download_logs' %}">Download Logs</a>

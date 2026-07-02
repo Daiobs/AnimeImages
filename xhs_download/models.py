@@ -287,6 +287,12 @@ class DownloadRequestLog(models.Model):
     fallback_from_route = models.CharField(max_length=32, blank=True, default="", db_index=True)
     fallback_to_route = models.CharField(max_length=32, blank=True, default="", db_index=True)
     failure_type = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    auto_recovery_count = models.PositiveSmallIntegerField(default=0)
+    provider_auto_switch_count = models.PositiveSmallIntegerField(default=0)
+    failure_to_recovery_ms = models.PositiveIntegerField(default=0)
+    healing_action = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    healing_risk = models.CharField(max_length=16, blank=True, default="", db_index=True)
+    healing_confidence = models.FloatField(default=0)
 
     class Meta:
         ordering = ("-created_at",)
@@ -298,6 +304,8 @@ class DownloadRequestLog(models.Model):
             models.Index(fields=("recovery_action", "created_at")),
             models.Index(fields=("fallback_to_route", "created_at")),
             models.Index(fields=("failure_type", "created_at")),
+            models.Index(fields=("healing_action", "created_at")),
+            models.Index(fields=("healing_risk", "created_at")),
         )
         verbose_name = "下载请求日志"
         verbose_name_plural = "下载请求日志"
@@ -330,6 +338,47 @@ class RoutingDecisionLog(models.Model):
 
     def __str__(self):
         return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.route_type} {self.success}"
+
+
+class SelfHealingEvent(models.Model):
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    request_id = models.CharField(max_length=128, blank=True, default="", db_index=True)
+    trigger = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    failure_type = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    action = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    risk = models.CharField(max_length=16, blank=True, default="", db_index=True)
+    confidence = models.FloatField(default=0)
+    healed = models.BooleanField(default=False, db_index=True)
+    depth = models.PositiveSmallIntegerField(default=0)
+    max_depth = models.PositiveSmallIntegerField(default=3)
+    provider = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    switched_from_provider = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    switched_to_provider = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    route_type = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    fallback_from_route = models.CharField(max_length=32, blank=True, default="")
+    fallback_to_route = models.CharField(max_length=32, blank=True, default="")
+    duration_ms = models.PositiveIntegerField(default=0)
+    error_type = models.CharField(max_length=120, blank=True, default="", db_index=True)
+    reason = models.CharField(max_length=300, blank=True, default="")
+    context_snapshot = models.JSONField(default=dict, blank=True)
+    client_identity_hash = models.CharField(max_length=64, blank=True, default="")
+    ip_hash = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    is_staff = models.BooleanField(default=False, db_index=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = (
+            models.Index(fields=("created_at", "trigger")),
+            models.Index(fields=("failure_type", "created_at")),
+            models.Index(fields=("action", "created_at")),
+            models.Index(fields=("provider", "created_at")),
+            models.Index(fields=("healed", "created_at")),
+        )
+        verbose_name = "Self-Healing 事件"
+        verbose_name_plural = "Self-Healing 事件"
+
+    def __str__(self):
+        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.trigger} {self.action}"
 
 
 class PolicyLearningRun(models.Model):

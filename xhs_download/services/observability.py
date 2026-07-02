@@ -252,6 +252,12 @@ def record_download_request_log(request, **fields):
             "fallback_from_route": short_text(fields.get("fallback_from_route"), 32),
             "fallback_to_route": short_text(fields.get("fallback_to_route"), 32),
             "failure_type": short_text(fields.get("failure_type"), 64),
+            "auto_recovery_count": safe_int(fields.get("auto_recovery_count")),
+            "provider_auto_switch_count": safe_int(fields.get("provider_auto_switch_count")),
+            "failure_to_recovery_ms": safe_int(fields.get("failure_to_recovery_ms")),
+            "healing_action": short_text(fields.get("healing_action"), 80),
+            "healing_risk": short_text(fields.get("healing_risk"), 16),
+            "healing_confidence": float(fields.get("healing_confidence") or 0),
         }
         log = DownloadRequestLog.objects.create(**payload)
         record_routing_decision_log_from_download(payload)

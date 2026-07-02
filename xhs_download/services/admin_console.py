@@ -14,6 +14,7 @@ from ..models import (
     ProviderAdminAuditLog,
     ProviderHealthTestRun,
     ProviderRuntimeSetting,
+    SelfHealingEvent,
 )
 from .routing_policy_adjuster import build_routing_policy_recommendations
 from .routing_v3 import build_routing_intelligence_snapshot
@@ -261,6 +262,41 @@ def build_system_stability_panel(download_24h, download_7d):
     }
 
 
+def build_self_healing_panel(recent_24h_start, recent_7d_start):
+    healing_24h = SelfHealingEvent.objects.filter(created_at__gte=recent_24h_start)
+    healing_7d = SelfHealingEvent.objects.filter(created_at__gte=recent_7d_start)
+    total_24h = healing_24h.count()
+    healed_24h = healing_24h.filter(healed=True).count()
+    provider_switch_count = healing_24h.exclude(switched_to_provider="").count()
+    average_recovery_ms = int(healing_24h.aggregate(avg=Avg("duration_ms"))["avg"] or 0)
+    recent_events = [
+        {
+            "created_at": format_admin_datetime(event.created_at),
+            "trigger": event.trigger,
+            "failure_type": event.failure_type,
+            "action": event.action,
+            "healed": event.healed,
+            "provider": event.provider,
+            "switched_to_provider": event.switched_to_provider,
+            "duration_ms": event.duration_ms,
+            "request_id": event.request_id,
+        }
+        for event in healing_24h.order_by("-created_at")[:10]
+    ]
+    return {
+        "summary": (
+            {"label": "24h auto_recovery_count", "value": healed_24h},
+            {"label": "24h healing_success_rate", "value": f"{percent(healed_24h, total_24h)}%"},
+            {"label": "24h failure_to_recovery_time", "value": f"{average_recovery_ms} ms"},
+            {"label": "24h provider_auto_switch_count", "value": provider_switch_count},
+            {"label": "7d healing_events", "value": healing_7d.count()},
+        ),
+        "top_failure_causes": top_values(healing_24h.exclude(failure_type=""), "failure_type", limit=8),
+        "top_actions": top_values(healing_24h.exclude(action=""), "action", limit=8),
+        "recent_events": recent_events,
+    }
+
+
 def build_admin_console_context():
     now = timezone.now()
     display_tz = admin_console_timezone()
@@ -282,6 +318,7 @@ def build_admin_console_context():
     routing_summary = build_download_routing_summary(recent_24h_download)
     routing_intelligence = build_routing_intelligence_panel()
     system_stability = build_system_stability_panel(recent_24h_download, recent_7d_download)
+    self_healing = build_self_healing_panel(recent_24h_start, recent_7d_start)
     blocked_or_limited = today_download.filter(
         status__in=(ObservabilityStatus.BLOCKED, ObservabilityStatus.RATE_LIMITED)
     ).count()
@@ -373,6 +410,7 @@ def build_admin_console_context():
         "routing_summary": routing_summary,
         "routing_intelligence": routing_intelligence,
         "system_stability": system_stability,
+        "self_healing": self_healing,
         "failure_top": top_values(recent_24h_download.exclude(status=ObservabilityStatus.SUCCESS), "error_code"),
         "large_downloads": large_download_rows,
         "blocked_rows": blocked_rows,
