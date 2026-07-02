@@ -2266,6 +2266,10 @@ def search_view(request, platform_key="home"):
     )
 
 
+def server_save_mode_is_enabled():
+    return bool(settings.XHS_ENABLE_SERVER_SAVE_MODE and settings.XHS_ALLOW_SERVER_SAVE)
+
+
 def get_download_settings_context(platform_key="home", request=None):
     page_config = get_platform_page_config(platform_key)
     return {
@@ -2290,7 +2294,7 @@ def get_download_settings_context(platform_key="home", request=None):
         ),
         "download_async_tasks_enabled": settings.DOWNLOAD_ASYNC_TASKS_ENABLED,
         "xhs_allow_server_save": settings.XHS_ALLOW_SERVER_SAVE,
-        "xhs_show_server_save_mode": settings.DEBUG and settings.XHS_ALLOW_SERVER_SAVE,
+        "xhs_show_server_save_mode": server_save_mode_is_enabled(),
         "xhs_allow_absolute_save_path": settings.XHS_ALLOW_ABSOLUTE_SAVE_PATH,
         "xhs_default_server_save_dir": settings.XHS_DEFAULT_SERVER_SAVE_DIR,
         "ultra_hd_available": ultra_hd_is_available(request),
@@ -2817,7 +2821,7 @@ def download_images_api(request):
     if image_urls and not media_items:
         media_items = [{"type": "image", "url": url} for url in image_urls]
     download_mode = (data.get("download_mode") or "browser").lower().strip()
-    if download_mode == "server" and not (settings.DEBUG and settings.XHS_ALLOW_SERVER_SAVE):
+    if download_mode == "server" and not server_save_mode_is_enabled():
         download_mode = "auto"
     route_info = zip_download_route_info(
         request,
@@ -3063,7 +3067,7 @@ def download_images_api(request):
             return single_response
 
         if download_mode == "server":
-            if not settings.XHS_ALLOW_SERVER_SAVE:
+            if not server_save_mode_is_enabled():
                 route_info = blocked_download_route_info(
                     media_items,
                     "当前环境未开启服务端保存",
