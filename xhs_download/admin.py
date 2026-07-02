@@ -115,6 +115,9 @@ class DownloadRequestLogAdmin(ReadOnlyLogAdmin):
         "final_policy_route",
         "policy_confidence",
         "policy_active",
+        "recovery_action",
+        "fallback_to_route",
+        "failure_type",
         "duration_ms",
         "request_id",
     )
@@ -126,9 +129,12 @@ class DownloadRequestLogAdmin(ReadOnlyLogAdmin):
         "final_policy_route",
         "policy_active",
         "policy_decision_source",
+        "recovery_action",
+        "fallback_to_route",
+        "failure_type",
         "created_at",
     )
-    search_fields = ("request_id", "provider", "source_platform", "error_type")
+    search_fields = ("request_id", "provider", "source_platform", "error_type", "failure_type")
 
 
 @admin.register(RoutingDecisionLog)

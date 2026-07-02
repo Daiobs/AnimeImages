@@ -122,6 +122,9 @@
         font-weight: 900;
     }
     .console-badge-success { background: #ecfdf5; color: #047857; }
+    .console-badge-stable { background: #ecfdf5; color: #047857; }
+    .console-badge-degraded { background: #fffbeb; color: #92400e; }
+    .console-badge-unstable { background: #fff1f2; color: #be123c; }
     .console-badge-failed,
     .console-badge-blocked,
     .console-badge-rate_limited { background: #fff1f2; color: #be123c; }
@@ -166,6 +169,73 @@
         <section class="console-risk console-risk-{{ usage_level }}">
             <strong>今日全站流量使用率：{{ usage_label }}</strong>
             <span> 今日实际 {{ today_actual_bytes }} / 每日全站限制 {{ global_daily_limit }}</span>
+        </section>
+
+        <section class="console-panel">
+            <h2>System Stability Panel</h2>
+            <section class="console-grid" aria-label="稳定性指标">
+                {% for row in system_stability.summary %}
+                    <div class="console-card">
+                        <span>{{ row.label }}</span>
+                        <strong>{{ row.value }}</strong>
+                    </div>
+                {% endfor %}
+            </section>
+            <div class="console-section-grid">
+                <div>
+                    <h2>Provider Stability Score</h2>
+                    <div class="console-table-wrap">
+                        <table class="console-table">
+                            <thead><tr><th>Provider</th><th>状态</th><th>score</th><th>7d 请求</th><th>成功率</th><th>超时率</th><th>失败率</th><th>平均耗时</th></tr></thead>
+                            <tbody>
+                            {% for row in system_stability.provider_rows %}
+                                <tr>
+                                    <td>{{ row.provider }}</td>
+                                    <td><span class="console-badge console-badge-{{ row.status }}">{{ row.status }}</span></td>
+                                    <td>{{ row.stability_score }}</td>
+                                    <td>{{ row.count }}</td>
+                                    <td>{{ row.success_rate }}</td>
+                                    <td>{{ row.timeout_rate }}</td>
+                                    <td>{{ row.failure_rate }}</td>
+                                    <td>{{ row.average_latency_ms }} ms</td>
+                                </tr>
+                            {% empty %}
+                                <tr><td colspan="8">暂无 Provider 下载数据</td></tr>
+                            {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div>
+                    <h2>Top Failure Types</h2>
+                    <table class="console-table">
+                        <thead><tr><th>failure_type</th><th>次数</th></tr></thead>
+                        <tbody>
+                        {% for row in system_stability.top_error_types %}
+                            <tr><td>{{ row.failure_type|default:"-" }}</td><td>{{ row.count }}</td></tr>
+                        {% empty %}
+                            <tr><td colspan="2">暂无恢复/失败分类记录</td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+
+                    <h2 class="mt-3">Unstable Providers</h2>
+                    <table class="console-table">
+                        <thead><tr><th>Provider</th><th>状态</th><th>score</th></tr></thead>
+                        <tbody>
+                        {% for row in system_stability.unstable_providers %}
+                            <tr>
+                                <td>{{ row.provider }}</td>
+                                <td><span class="console-badge console-badge-{{ row.status }}">{{ row.status }}</span></td>
+                                <td>{{ row.stability_score }}</td>
+                            </tr>
+                        {% empty %}
+                            <tr><td colspan="3">暂无不稳定 Provider</td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </section>
 
         <section class="console-section-grid">

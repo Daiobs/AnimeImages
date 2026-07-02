@@ -1,7 +1,7 @@
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
-from django.db.models import Count, Sum
+from django.db.models import Avg, Count, Q, Sum
 from django.utils import timezone
 
 from download_console.models import DownloadRuntimeSetting
@@ -17,6 +17,7 @@ from ..models import (
 )
 from .routing_policy_adjuster import build_routing_policy_recommendations
 from .routing_v3 import build_routing_intelligence_snapshot
+from .recovery_engine import provider_stability_score, provider_stability_status
 
 
 ADMIN_DISPLAY_TIME_ZONE = "Asia/Shanghai"
@@ -188,6 +189,78 @@ def build_routing_intelligence_panel():
     }
 
 
+def build_provider_stability_rows(download_queryset):
+    rows = []
+    provider_names = (
+        download_queryset.exclude(provider="")
+        .values_list("provider", flat=True)
+        .distinct()
+    )
+    for provider in provider_names:
+        provider_rows = download_queryset.filter(provider=provider)
+        total = provider_rows.count()
+        if total <= 0:
+            continue
+        success = provider_rows.filter(status=ObservabilityStatus.SUCCESS).count()
+        failures = provider_rows.exclude(status=ObservabilityStatus.SUCCESS).count()
+        timeouts = provider_rows.filter(
+            Q(failure_type="provider_timeout")
+            | Q(error_type__icontains="timeout")
+            | Q(error_code__icontains="TIMEOUT")
+        ).count()
+        average_latency = int(provider_rows.aggregate(avg=Avg("duration_ms"))["avg"] or 0)
+        success_ratio = success / total
+        failure_ratio = failures / total
+        timeout_ratio = timeouts / total
+        score = provider_stability_score(
+            success_rate=success_ratio,
+            timeout_rate=timeout_ratio,
+            failure_rate=failure_ratio,
+            average_latency_ms=average_latency,
+        )
+        rows.append(
+            {
+                "provider": provider,
+                "count": total,
+                "success_rate": f"{percent(success, total)}%",
+                "timeout_rate": f"{percent(timeouts, total)}%",
+                "failure_rate": f"{percent(failures, total)}%",
+                "average_latency_ms": average_latency,
+                "stability_score": score,
+                "status": provider_stability_status(score),
+            }
+        )
+    return sorted(rows, key=lambda row: (row["stability_score"], -row["count"], row["provider"]))
+
+
+def build_system_stability_panel(download_24h, download_7d):
+    total_24h = download_24h.count()
+    failed_24h = download_24h.exclude(status=ObservabilityStatus.SUCCESS).count()
+    routing_failures = download_24h.filter(failure_type="routing_failed").count()
+    provider_failures = download_24h.filter(
+        Q(failure_type__startswith="provider_")
+        | Q(error_type__icontains="provider")
+        | Q(provider__gt="")
+    ).exclude(status=ObservabilityStatus.SUCCESS).count()
+    recovery_count = sum_field(download_24h, "recovery_count")
+    fallback_count = sum_field(download_24h, "fallback_count")
+    provider_rows = build_provider_stability_rows(download_7d)
+    return {
+        "summary": (
+            {"label": "24h 下载失败率", "value": f"{percent(failed_24h, total_24h)}%"},
+            {"label": "24h routing_failure_rate", "value": f"{percent(routing_failures, total_24h)}%"},
+            {"label": "24h provider_failure_rate", "value": f"{percent(provider_failures, total_24h)}%"},
+            {"label": "24h recovery_count", "value": recovery_count},
+            {"label": "24h fallback_count", "value": fallback_count},
+        ),
+        "top_error_types": top_values(download_24h.exclude(failure_type=""), "failure_type", limit=8),
+        "provider_rows": provider_rows,
+        "unstable_providers": [
+            row for row in provider_rows if row["status"] in {"degraded", "unstable"}
+        ][:8],
+    }
+
+
 def build_admin_console_context():
     now = timezone.now()
     display_tz = admin_console_timezone()
@@ -208,6 +281,7 @@ def build_admin_console_context():
     recent_7d_actual_bytes = sum_field(recent_7d_download, "actual_bytes")
     routing_summary = build_download_routing_summary(recent_24h_download)
     routing_intelligence = build_routing_intelligence_panel()
+    system_stability = build_system_stability_panel(recent_24h_download, recent_7d_download)
     blocked_or_limited = today_download.filter(
         status__in=(ObservabilityStatus.BLOCKED, ObservabilityStatus.RATE_LIMITED)
     ).count()
@@ -298,6 +372,7 @@ def build_admin_console_context():
         "health_runs": latest_health_by_key(),
         "routing_summary": routing_summary,
         "routing_intelligence": routing_intelligence,
+        "system_stability": system_stability,
         "failure_top": top_values(recent_24h_download.exclude(status=ObservabilityStatus.SUCCESS), "error_code"),
         "large_downloads": large_download_rows,
         "blocked_rows": blocked_rows,

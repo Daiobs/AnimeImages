@@ -22,6 +22,9 @@ URL_PATTERN = re.compile(r"https?://[^\s<>'\"\]\)]+", re.IGNORECASE)
 PROVIDER_MANIFEST_TOKEN_PATTERN = re.compile(
     r"(?i)(provider_manifest_token=)[^&\s]+"
 )
+CONNECTION_HOST_PATTERN = re.compile(
+    r"(?i)(host=['\"])[^'\"]+(['\"])",
+)
 SENSITIVE_QUERY_VALUE_PATTERN = re.compile(
     r"(?i)(^|[?&;\s])"
     r"((?:token|sign|signature|auth_key|x-signature|x-bogus|msToken|verifyFp)=)"
@@ -65,6 +68,10 @@ def sanitize_observability_text(value, limit=MAX_ERROR_MESSAGE_LENGTH):
     text = URL_PATTERN.sub("[url-redacted]", text)
     text = PROVIDER_MANIFEST_TOKEN_PATTERN.sub(
         r"\1[redacted]",
+        text,
+    )
+    text = CONNECTION_HOST_PATTERN.sub(
+        r"\1[host-redacted]\2",
         text,
     )
     text = SENSITIVE_QUERY_VALUE_PATTERN.sub(
@@ -235,6 +242,16 @@ def record_download_request_log(request, **fields):
             "policy_estimated_savings_bytes": safe_int(
                 fields.get("policy_estimated_savings_bytes")
             ),
+            "recovery_count": safe_int(fields.get("recovery_count")),
+            "fallback_count": safe_int(fields.get("fallback_count")),
+            "recovery_action": short_text(fields.get("recovery_action"), 80),
+            "recovery_reason": short_text(
+                sanitize_observability_text(fields.get("recovery_reason"), limit=200),
+                200,
+            ),
+            "fallback_from_route": short_text(fields.get("fallback_from_route"), 32),
+            "fallback_to_route": short_text(fields.get("fallback_to_route"), 32),
+            "failure_type": short_text(fields.get("failure_type"), 64),
         }
         log = DownloadRequestLog.objects.create(**payload)
         record_routing_decision_log_from_download(payload)

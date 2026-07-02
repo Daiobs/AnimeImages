@@ -280,6 +280,13 @@ class DownloadRequestLog(models.Model):
     policy_active = models.BooleanField(default=False, db_index=True)
     policy_decision_source = models.CharField(max_length=80, blank=True, default="", db_index=True)
     policy_estimated_savings_bytes = models.BigIntegerField(default=0)
+    recovery_count = models.PositiveSmallIntegerField(default=0)
+    fallback_count = models.PositiveSmallIntegerField(default=0)
+    recovery_action = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    recovery_reason = models.CharField(max_length=200, blank=True, default="")
+    fallback_from_route = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    fallback_to_route = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    failure_type = models.CharField(max_length=64, blank=True, default="", db_index=True)
 
     class Meta:
         ordering = ("-created_at",)
@@ -288,6 +295,9 @@ class DownloadRequestLog(models.Model):
             models.Index(fields=("download_type", "created_at")),
             models.Index(fields=("provider", "created_at")),
             models.Index(fields=("final_policy_route", "created_at")),
+            models.Index(fields=("recovery_action", "created_at")),
+            models.Index(fields=("fallback_to_route", "created_at")),
+            models.Index(fields=("failure_type", "created_at")),
         )
         verbose_name = "下载请求日志"
         verbose_name_plural = "下载请求日志"

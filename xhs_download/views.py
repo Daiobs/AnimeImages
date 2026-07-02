@@ -111,6 +111,11 @@ from .services.observability import (
     record_provider_admin_audit_log,
     sanitize_observability_text,
 )
+from .services.recovery_engine import (
+    proxy_failure_recovery,
+    safe_routing_decision,
+    zip_failure_recovery,
+)
 from .services.youtube_merge import build_youtube_merge_plan, get_youtube_merge_health
 from .services.admin_console import build_admin_console_context
 from .services.rollout_guard import build_rollout_guard_context
@@ -1860,6 +1865,7 @@ def log_download_request_event(
                 logger.exception("policy_shadow_evaluation_failed")
                 policy_shadow = {}
     policy_scores = policy_shadow.get("policy_scores") or {}
+    recovery = route_info.get("recovery") or {}
     record_download_request_log(
         request,
         download_type=download_type,
@@ -1889,6 +1895,13 @@ def log_download_request_event(
         policy_active=bool(policy_shadow.get("active")),
         policy_decision_source=policy_shadow.get("decision_source", ""),
         policy_estimated_savings_bytes=policy_shadow.get("estimated_savings_bytes", 0),
+        recovery_count=recovery.get("recovery_count", 0),
+        fallback_count=recovery.get("fallback_count", 0),
+        recovery_action=recovery.get("recovery_action", ""),
+        recovery_reason=recovery.get("recovery_reason", ""),
+        fallback_from_route=recovery.get("fallback_from_route", ""),
+        fallback_to_route=recovery.get("fallback_to_route", ""),
+        failure_type=recovery.get("failure_type", ""),
     )
 
 
@@ -1908,10 +1921,15 @@ def blocked_download_route_info(media_items, reason, error_code=""):
 
 
 def zip_download_route_info(request, media_items, reason="默认兼容旧 ZIP 下载流程"):
-    route_info = decide_download_route(
+    route_info = safe_routing_decision(
         request,
         media_items,
-        requested_mode="zip",
+        lambda: decide_download_route(
+            request,
+            media_items,
+            requested_mode="zip",
+        ),
+        reason="ZIP 兼容路由异常，已降级为 ZIP 下载",
     )
     if route_info.get("route_type") == ROUTE_BLOCKED:
         route_info["route_reason"] = sanitize_observability_text(reason, limit=200)
@@ -2852,29 +2870,38 @@ def download_images_api(request):
     runtime_setting = get_download_runtime_setting()
     routed_download_modes = {"auto", "browser", "proxy", "server_single"}
     if download_mode in routed_download_modes:
-        route_info = decide_download_route(
-            request,
-            media_items,
-            requested_mode=download_mode,
-            platform_key=data.get("platform_key", ""),
-        )
-        if download_mode == "auto":
-            route_info = apply_route_v3_metadata(
+        def route_decision():
+            decided = decide_download_route(
                 request,
                 media_items,
-                route_info,
-                requested_mode="auto",
-                platform_key=data.get("platform_key", ""),
-            )
-        if download_mode in {"auto", "browser"}:
-            route_info = apply_policy_decision_to_route(
-                request,
-                media_items,
-                route_info,
                 requested_mode=download_mode,
                 platform_key=data.get("platform_key", ""),
-                provider_hint=route_info.get("provider", ""),
             )
+            if download_mode == "auto":
+                decided = apply_route_v3_metadata(
+                    request,
+                    media_items,
+                    decided,
+                    requested_mode="auto",
+                    platform_key=data.get("platform_key", ""),
+                )
+            if download_mode in {"auto", "browser"}:
+                decided = apply_policy_decision_to_route(
+                    request,
+                    media_items,
+                    decided,
+                    requested_mode=download_mode,
+                    platform_key=data.get("platform_key", ""),
+                    provider_hint=decided.get("provider", ""),
+                )
+            return decided
+
+        route_info = safe_routing_decision(
+            request,
+            media_items,
+            route_decision,
+            reason="下载路由异常，已降级为 ZIP 下载",
+        )
     guard_result = check_download_cost_preflight(request, media_items, runtime_setting)
     if guard_result:
         error_code, message, status_code = guard_result
@@ -3026,10 +3053,65 @@ def download_images_api(request):
 
     try:
         if route_info.get("download_strategy") == "server_single_attachment":
-            single_response, actual_bytes = build_single_attachment_response(
-                media_items[0],
-                data.get("base_filename", "xhs"),
-            )
+            try:
+                single_response, actual_bytes = build_single_attachment_response(
+                    media_items[0],
+                    data.get("base_filename", "xhs"),
+                )
+            except Exception as error:
+                recovery_decision = proxy_failure_recovery(media_items, route_info, error)
+                recovered_route = recovery_decision.route_info
+                if recovered_route and recovered_route.get("route_type") == ROUTE_DIRECT:
+                    recovered_route["recovery"] = recovery_decision.log_fields()
+                    log_download_request_event(
+                        request,
+                        download_type=ROUTE_DIRECT,
+                        media_items=media_items,
+                        status=ObservabilityStatus.SUCCESS,
+                        started_at=started_at,
+                        actual_bytes=0,
+                        route_info=recovered_route,
+                    )
+                    return JsonResponse(
+                        {
+                            "status": "routed",
+                            "route_type": recovered_route.get("route_type"),
+                            "route_reason": recovered_route.get("route_reason"),
+                            "download_strategy": recovered_route.get("download_strategy"),
+                            "items": recovered_route.get("items", []),
+                            "warnings": recovered_route.get("warnings", []),
+                            "estimated_bytes": recovered_route.get("estimated_bytes", 0),
+                            "server_egress_estimated_bytes": recovered_route.get("server_egress_estimated_bytes", 0),
+                            "browser_egress_estimated_bytes": recovered_route.get("browser_egress_estimated_bytes", 0),
+                            "strategy_version": recovered_route.get("strategy_version", "recovery"),
+                            "confidence": recovered_route.get("confidence", 0),
+                            "routing_score": recovered_route.get("routing_score", 0),
+                        }
+                    )
+
+                blocked_route = blocked_download_route_info(
+                    media_items,
+                    "单文件代理失败，且没有安全的自动降级路径",
+                    "PROXY_FAILED_RECOVERY_BLOCKED",
+                )
+                blocked_route["recovery"] = recovery_decision.log_fields()
+                log_download_request_event(
+                    request,
+                    download_type="single_file",
+                    media_items=media_items,
+                    status=ObservabilityStatus.BLOCKED,
+                    started_at=started_at,
+                    actual_bytes=0,
+                    error_code="PROXY_FAILED_RECOVERY_BLOCKED",
+                    error=error,
+                    error_message_short=public_download_error_message(error),
+                    route_info=blocked_route,
+                )
+                return JsonResponse(
+                    {"status": "error", "message": "单文件下载失败，请重新解析后再试。"},
+                    status=400,
+                )
+
             within_limit, bytes_error_code = record_download_archive_bytes(
                 identity,
                 None,
@@ -3108,13 +3190,112 @@ def download_images_api(request):
                 **result,
             })
 
-        archive = build_download_archive_file(
-            media_items=media_items,
-            base_filename=data.get("base_filename", "xhs"),
-            save_format=data.get("save_format", "original"),
-            quality=data.get("quality", 95),
-            video_save_mode=data.get("video_save_mode", "video"),
-        )
+        try:
+            archive = build_download_archive_file(
+                media_items=media_items,
+                base_filename=data.get("base_filename", "xhs"),
+                save_format=data.get("save_format", "original"),
+                quality=data.get("quality", 95),
+                video_save_mode=data.get("video_save_mode", "video"),
+            )
+        except Exception as error:
+            recovery_decision = zip_failure_recovery(media_items, route_info, error)
+            recovered_route = recovery_decision.route_info
+            if recovered_route and recovered_route.get("route_type") == ROUTE_PROXY:
+                recovered_route["recovery"] = recovery_decision.log_fields()
+                try:
+                    single_response, actual_bytes = build_single_attachment_response(
+                        media_items[0],
+                        data.get("base_filename", "xhs"),
+                    )
+                except Exception as proxy_error:
+                    proxy_recovery = proxy_failure_recovery(media_items, recovered_route, proxy_error)
+                    blocked_route = blocked_download_route_info(
+                        media_items,
+                        "ZIP 打包失败后单文件降级仍失败",
+                        "ZIP_RECOVERY_PROXY_FAILED",
+                    )
+                    blocked_route["recovery"] = proxy_recovery.log_fields()
+                    log_download_request_event(
+                        request,
+                        download_type="zip",
+                        media_items=media_items,
+                        status=ObservabilityStatus.BLOCKED,
+                        started_at=started_at,
+                        actual_bytes=0,
+                        error_code="ZIP_RECOVERY_PROXY_FAILED",
+                        error=proxy_error,
+                        error_message_short=public_download_error_message(proxy_error),
+                        route_info=blocked_route,
+                    )
+                    return JsonResponse(
+                        {"status": "error", "message": "资源下载失败，自动降级仍未成功，请重新解析后再试。"},
+                        status=400,
+                    )
+
+                within_limit, bytes_error_code = record_download_archive_bytes(
+                    identity,
+                    None,
+                    actual_bytes,
+                )
+                if not within_limit:
+                    single_response.close()
+                    blocked_route = blocked_download_route_info(
+                        media_items,
+                        "今日下载流量已达到限制",
+                        bytes_error_code or "RATE_LIMITED",
+                    )
+                    blocked_route["recovery"] = recovery_decision.log_fields()
+                    log_download_request_event(
+                        request,
+                        download_type="single_file",
+                        media_items=media_items,
+                        status=ObservabilityStatus.RATE_LIMITED,
+                        started_at=started_at,
+                        actual_bytes=actual_bytes,
+                        error_code=bytes_error_code or "RATE_LIMITED",
+                        route_info=blocked_route,
+                    )
+                    return limit_error_response(
+                        "今日下载流量已达到限制，请稍后再试。",
+                        error_code=bytes_error_code or "RATE_LIMITED",
+                    )
+
+                recovered_route["recovery"] = recovery_decision.log_fields()
+                log_download_request_event(
+                    request,
+                    download_type="single_file",
+                    media_items=media_items,
+                    status=ObservabilityStatus.SUCCESS,
+                    started_at=started_at,
+                    actual_bytes=actual_bytes,
+                    route_info=recovered_route,
+                )
+                return single_response
+
+            blocked_route = blocked_download_route_info(
+                media_items,
+                "ZIP 打包失败，且没有可用降级路径",
+                "ZIP_FAILED_RECOVERY_BLOCKED",
+            )
+            blocked_route["recovery"] = recovery_decision.log_fields()
+            log_download_request_event(
+                request,
+                download_type="zip",
+                media_items=media_items,
+                status=ObservabilityStatus.BLOCKED,
+                started_at=started_at,
+                actual_bytes=0,
+                error_code="ZIP_FAILED_RECOVERY_BLOCKED",
+                error=error,
+                error_message_short=public_download_error_message(error),
+                route_info=blocked_route,
+            )
+            return JsonResponse(
+                {"status": "error", "message": "ZIP 打包失败，请减少资源数量或重新解析后再试。"},
+                status=400,
+            )
+
         try:
             archive_size = file_size_for_observability(archive["file"])
             actual_size_guard = check_single_archive_actual_size(
