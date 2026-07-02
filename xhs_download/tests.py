@@ -70,6 +70,7 @@ from .services.provider_settings import (
 )
 from .services.provider_manifest import build_provider_manifest_token
 from .services.observability import record_download_request_log, record_provider_admin_audit_log
+from .services.production_intelligence import build_observability_v2_context
 from .policy.healing_policy import (
     HEAL_ACTION_BLOCK_GRACEFULLY,
     HEAL_ACTION_SWITCH_PROVIDER,
@@ -7357,6 +7358,75 @@ class PolicyEngineEvolutionTests(TestCase):
         self.assertAlmostEqual(diagnostics["weights"]["cost"], 0.4)
         self.assertLess(diagnostics["confidence"], 0.99)
 
+    def test_observability_v2_metrics_are_computed_from_policy_feedback(self):
+        DownloadRequestLog.objects.create(
+            request_id="rid-intel-direct",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="auto",
+            route_type=ROUTE_DIRECT,
+            final_policy_route=ROUTE_DIRECT,
+            policy_cost_score=0.9,
+            policy_provider_score=0.8,
+            policy_routing_score=0.7,
+            policy_confidence=0.8,
+            provider="native",
+            estimated_bytes=1000,
+            actual_bytes=900,
+            browser_egress_estimated_bytes=1000,
+        )
+        DownloadRequestLog.objects.create(
+            request_id="rid-intel-conflict",
+            status=ObservabilityStatus.FAILED,
+            download_type="zip",
+            route_type=ROUTE_ZIP,
+            final_policy_route=ROUTE_DIRECT,
+            policy_cost_score=0.4,
+            policy_provider_score=0.5,
+            policy_routing_score=0.6,
+            policy_confidence=0.5,
+            provider="yt_dlp_generic",
+            estimated_bytes=1000,
+            actual_bytes=500,
+            server_egress_estimated_bytes=1000,
+            fallback_count=1,
+            failure_type=FAILURE_PROVIDER_TIMEOUT,
+        )
+        DownloadRequestLog.objects.create(
+            request_id="rid-intel-proxy",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="proxy",
+            route_type=ROUTE_PROXY,
+            final_policy_route=ROUTE_PROXY,
+            policy_cost_score=0.7,
+            policy_provider_score=0.6,
+            policy_routing_score=0.8,
+            policy_confidence=0.72,
+            provider="yt_dlp_generic",
+            estimated_bytes=1000,
+            actual_bytes=1000,
+            server_egress_estimated_bytes=1000,
+        )
+
+        context = build_observability_v2_context(window_hours=24)
+
+        self.assertEqual(context["download_count"], 3)
+        self.assertAlmostEqual(context["metrics"]["policy_conflict_rate"], 1 / 3, places=3)
+        self.assertAlmostEqual(context["metrics"]["fallback_frequency"], 1 / 3, places=3)
+        self.assertAlmostEqual(context["metrics"]["provider_reliability"], 2 / 3, places=3)
+        self.assertAlmostEqual(context["metrics"]["routing_efficiency"], 0.4444, places=3)
+        self.assertAlmostEqual(context["metrics"]["cost_accuracy"], 0.8, places=3)
+        self.assertFalse(context["recommendation"]["automatic_execution"])
+        self.assertEqual(context["recommendation"]["mode"], "recommendation_only")
+        self.assertEqual(context["policy"]["policy_count"], 3)
+        self.assertEqual(context["policy"]["policy_conflict_rate_label"], "33.3%")
+        self.assertTrue(
+            any(
+                row["provider"] == "yt_dlp_generic"
+                and row["failure_type"] == FAILURE_PROVIDER_TIMEOUT
+                for row in context["provider"]["failure_heatmap"]
+            )
+        )
+
 
 class RuntimeHealthViewTests(SimpleTestCase):
     @override_settings(
@@ -9169,6 +9239,37 @@ class AdminObservabilityMvpTests(TestCase):
         self.assertContains(super_response, "运营看板")
         self.assertContains(permitted_response, "今日解析次数")
         self.assertContains(permitted_response, "PROVIDER_TIMEOUT")
+
+    def test_observability_v2_access_and_metrics_render(self):
+        DownloadRequestLog.objects.create(
+            request_id="rid-intel-page",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="auto",
+            route_type=ROUTE_DIRECT,
+            final_policy_route=ROUTE_DIRECT,
+            policy_confidence=0.8,
+            provider="native",
+            estimated_bytes=1024,
+            actual_bytes=1024,
+            browser_egress_estimated_bytes=1024,
+        )
+        client = Client()
+        client.force_login(self.staff)
+        super_client = Client()
+        super_client.force_login(self.superuser)
+
+        self.assertEqual(Client().get("/admin/observability-v2/").status_code, 404)
+        self.assertEqual(client.get("/admin/observability-v2/").status_code, 404)
+        self.assertContains(super_client.get("/admin/observability-v2/"), "Observability v2")
+        self.assertContains(super_client.get("/admin/observability-v2/"), "policy_conflict_rate")
+        self.assertContains(super_client.get("/admin/observability-v2/"), "recommendation_only")
+
+        self.grant_xhs_view_permission(self.staff, "view_downloadrequestlog")
+        permitted_response = client.get("/admin/observability-v2/")
+
+        self.assertContains(permitted_response, "Observability v2")
+        self.assertContains(permitted_response, "routing_efficiency")
+        self.assertNotContains(permitted_response, "rid-intel-page")
 
     def test_policy_engine_page_requires_specific_permission(self):
         client = Client()

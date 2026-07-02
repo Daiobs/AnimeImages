@@ -121,6 +121,7 @@ from .services.recovery_engine import (
 from .services.self_healing_engine import SelfHealingEngine, attach_healing_to_route_info
 from .services.youtube_merge import build_youtube_merge_plan, get_youtube_merge_health
 from .services.admin_console import build_admin_console_context
+from .services.production_intelligence import build_observability_v2_context
 from .services.rollout_guard import build_rollout_guard_context
 from .services.routing_v3 import decide_route_v3
 from .services.rate_limits import (
@@ -884,6 +885,15 @@ def admin_ops_required(request):
     )
 
 
+def observability_v2_required(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_downloadrequestlog",
+        "xhs_download.view_parserequestlog",
+        "xhs_download.view_routingdecisionlog",
+    )
+
+
 def observability_access_allowed(request, *permissions):
     user = getattr(request, "user", None)
     if not (
@@ -1528,6 +1538,16 @@ def ops_dashboard_view(request):
         ],
     }
     return render(request, "admin/ops_dashboard.html", context)
+
+
+@require_GET
+def observability_v2_view(request):
+    if not observability_v2_required(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+    context = build_observability_v2_context(
+        window_hours=request.GET.get("window") or 24,
+    )
+    return render(request, "admin/observability_v2.html", context)
 
 
 def filtered_log_queryset(model, request, filter_fields):

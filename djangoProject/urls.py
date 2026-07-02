@@ -35,6 +35,7 @@ urlpatterns = [
                   path("admin/provider-health-tests/", download_views.provider_health_tests_view, name="provider_health_tests"),
                   path("admin/self-healing/run/", download_views.self_healing_run_view, name="self_healing_run"),
                   path("admin/ops-dashboard/", download_views.ops_dashboard_view, name="ops_dashboard"),
+                  path("admin/observability-v2/", download_views.observability_v2_view, name="observability_v2"),
                   path("admin/parse-logs/", download_views.parse_logs_view, name="parse_logs"),
                   path("admin/download-logs/", download_views.download_logs_view, name="download_logs"),
                   path("admin/provider-audit-logs/", download_views.provider_audit_logs_view, name="provider_audit_logs"),
