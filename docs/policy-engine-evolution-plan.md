@@ -133,15 +133,17 @@ Execution safety:
 
 ## Phase 3: Policy Engine v4
 
-Status: adaptive feedback loop implemented with safe runtime gate.
+Status: recommendation-only Safety Guard implemented.
 
-Default behavior is still shadow-only. v4 does not change Provider settings and
-does not change Cost Guard behavior.
+Default behavior is still recommendation-only. v4 does not change Provider
+settings, Routing Engine behavior, or Cost Guard behavior.
 
 Purpose:
 
 - analyze success rate, server cost, provider diversity, and route failure
 - recommend adaptive weights
+- validate suggestions through Safety Guard
+- classify suggestions as `approve`, `review`, or `reject`
 - keep humans/admin gates in control
 - optionally feed adaptive weights into v3.5 conflict resolution when explicitly enabled
 
@@ -171,6 +173,7 @@ Runtime gate:
 Admin diagnostics:
 
 - `/admin/policy-engine/` shows current v3.5 mode, rollout, v4 weight source, adaptive confidence, feedback sample count, and recent `actual route` vs `recommended route` rows.
+- `/admin/policy-engine/` also shows v4 Safety Guard suggestions. These are advisory only and include safety decision, risk, confidence, sample count, and reason chain.
 - superuser can view and edit.
 - staff with `view_policyruntimesetting` can view.
 - staff with `change_policyruntimesetting` can save changes.
@@ -180,6 +183,7 @@ Constraints:
 - no AI model
 - no external ML service
 - no Celery/queue dependency for decisions
+- no automatic production mutation
 - no automatic ProviderRuntimeSetting changes
 - no Cost Guard behavior changes
 

@@ -43,6 +43,7 @@ from .policy.engine import (
     evaluate_policy_shadow,
     policy_weight_diagnostics,
 )
+from .policy.evolution import build_policy_evolution_recommendation
 from .policy.learning import build_policy_learning_snapshot
 from .services.common import (
     XhsDownloadError,
@@ -501,6 +502,10 @@ def build_policy_engine_context(request, runtime_setting):
     adaptive = build_adaptive_weight_recommendation(
         window_hours=runtime_setting.v4_adaptive_window_hours,
     )
+    evolution = build_policy_evolution_recommendation(
+        window_hours=runtime_setting.v4_adaptive_window_hours,
+        runtime_setting=runtime_setting,
+    )
     feedback = adaptive.get("feedback_summary") or {}
     recent_decisions = [
         {
@@ -525,6 +530,7 @@ def build_policy_engine_context(request, runtime_setting):
         "can_change_policy": policy_engine_change_allowed(request),
         "weight_info": weight_info,
         "adaptive": adaptive,
+        "evolution": evolution,
         "feedback": feedback,
         "learning_cards": [
             policy_learning_card(build_policy_learning_snapshot(window_hours=24)),

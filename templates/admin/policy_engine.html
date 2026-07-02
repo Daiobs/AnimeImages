@@ -339,6 +339,40 @@
         </section>
 
         <section class="policy-panel">
+            <h2>v4 Safety Guard 建议</h2>
+            <p class="policy-muted">{{ evolution.safety_note }}</p>
+            <table class="policy-table">
+                <thead>
+                <tr>
+                    <th>建议</th>
+                    <th>安全结论</th>
+                    <th>风险</th>
+                    <th>置信度</th>
+                    <th>样本</th>
+                    <th>原因链</th>
+                </tr>
+                </thead>
+                <tbody>
+                {% for item in evolution.suggestions %}
+                    <tr>
+                        <td>
+                            <strong>{{ item.title }}</strong>
+                            <div class="policy-muted">{{ item.body }}</div>
+                        </td>
+                        <td>{{ item.safety.decision }}</td>
+                        <td>{{ item.safety.risk }}</td>
+                        <td>{{ item.confidence }}</td>
+                        <td>{{ item.sample_count }}</td>
+                        <td>{{ item.safety.reason_chain|join:", " }}</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="6">暂无 v4 策略建议。</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+
+        <section class="policy-panel">
             <h2>最近 Policy 决策反馈</h2>
             <table class="policy-table">
                 <thead>

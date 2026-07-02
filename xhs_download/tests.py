@@ -98,6 +98,13 @@ from .policy.engine import (
     evaluate_policy_shadow,
     policy_weight_diagnostics,
 )
+from .policy.evolution import (
+    SAFETY_APPROVE,
+    SAFETY_REJECT,
+    SAFETY_REVIEW,
+    build_policy_evolution_recommendation,
+    validate_policy_suggestion,
+)
 from .policy.learning import build_policy_learning_snapshot, record_policy_learning_run
 from .policy.policies import CostPolicy, ProviderPolicy, RoutingPolicy
 from .services.provider_access import (
@@ -7448,6 +7455,65 @@ class PolicyEngineEvolutionTests(TestCase):
         self.assertEqual(diagnostics["source"], "static_adaptive_confidence_too_low")
         self.assertAlmostEqual(diagnostics["weights"]["cost"], 0.4)
         self.assertLess(diagnostics["confidence"], 0.99)
+
+    def test_policy_v4_evolution_generates_review_suggestion_without_execution(self):
+        item = {"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg", "size_bytes": 321}
+        before = decide_download_route(self.request, [item], requested_mode="auto")
+
+        recommendation = build_policy_evolution_recommendation(window_hours=24)
+
+        after = decide_download_route(self.request, [item], requested_mode="auto")
+        self.assertEqual(before["route_type"], after["route_type"])
+        self.assertEqual(recommendation["version"], "v4")
+        self.assertEqual(recommendation["mode"], "recommendation_only")
+        self.assertFalse(recommendation["automatic_execution"])
+        self.assertFalse(recommendation["production_behavior_changed"])
+        self.assertEqual(recommendation["suggestions"][0]["safety"]["decision"], SAFETY_REVIEW)
+        self.assertIn(
+            "insufficient-feedback-sample",
+            recommendation["suggestions"][0]["safety"]["reason_chain"],
+        )
+
+    def test_policy_v4_safety_guard_can_approve_low_risk_adaptive_suggestion(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v4_adaptive_min_confidence = 0.1
+        setting.save(update_fields=["v4_adaptive_min_confidence", "updated_at"])
+        for index in range(8):
+            DownloadRequestLog.objects.create(
+                request_id=f"rid-v4-approve-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="auto",
+                route_type=ROUTE_DIRECT,
+                final_policy_route=ROUTE_DIRECT,
+                provider="native",
+                estimated_bytes=1000,
+                actual_bytes=900,
+                browser_egress_estimated_bytes=1000,
+            )
+
+        recommendation = build_policy_evolution_recommendation(
+            window_hours=24,
+            runtime_setting=setting,
+        )
+
+        suggestion = recommendation["suggestions"][0]
+        self.assertEqual(suggestion["safety"]["decision"], SAFETY_APPROVE)
+        self.assertEqual(suggestion["safety"]["risk"], "low")
+        self.assertFalse(suggestion["automatic_execution"])
+        self.assertEqual(recommendation["safety_summary"][SAFETY_APPROVE], 1)
+
+    def test_policy_v4_safety_guard_rejects_automatic_execution(self):
+        safety = validate_policy_suggestion({
+            "kind": "adaptive_policy_weights",
+            "automatic_execution": True,
+            "proposed_change": {
+                "weights": {"cost": 0.4, "provider": 0.4, "routing": 0.2},
+            },
+        })
+
+        self.assertEqual(safety["decision"], SAFETY_REJECT)
+        self.assertEqual(safety["risk"], "high")
+        self.assertIn("automatic-execution-is-not-allowed-in-v4", safety["reason_chain"])
 
     def test_observability_v2_metrics_are_computed_from_policy_feedback(self):
         DownloadRequestLog.objects.create(

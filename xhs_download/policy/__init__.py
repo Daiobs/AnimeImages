@@ -4,6 +4,7 @@ from .engine import (
     decide_final_policy,
     evaluate_policy_shadow,
 )
+from .evolution import build_policy_evolution_recommendation
 from .learning import build_policy_learning_snapshot, record_policy_learning_run
 from .types import PolicyContext, PolicyDecision, PolicyResult
 
@@ -15,6 +16,7 @@ __all__ = [
     "apply_policy_decision_to_route",
     "decide_final_policy",
     "evaluate_policy_shadow",
+    "build_policy_evolution_recommendation",
     "build_policy_learning_snapshot",
     "record_policy_learning_run",
 ]
