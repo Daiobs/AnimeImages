@@ -3545,7 +3545,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertContains(response, "js/xhs_download.js?v=")
         self.assertContains(response, "data-download-task-url")
 
-    @override_settings(DEBUG=False, XHS_ALLOW_SERVER_SAVE=True)
+    @override_settings(DEBUG=False, XHS_ALLOW_SERVER_SAVE=True, XHS_ENABLE_SERVER_SAVE_MODE=False)
     def test_production_page_hides_server_save_mode(self):
         response = Client().get("/")
 
@@ -3553,7 +3553,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertNotContains(response, 'value="server"')
         self.assertNotContains(response, "开发保存模式：保存到服务端路径")
 
-    @override_settings(DEBUG=True, XHS_ALLOW_SERVER_SAVE=True)
+    @override_settings(DEBUG=True, XHS_ALLOW_SERVER_SAVE=True, XHS_ENABLE_SERVER_SAVE_MODE=True)
     def test_debug_page_can_show_server_save_mode(self):
         response = Client().get("/")
 
@@ -6636,7 +6636,21 @@ class XhsDownloadViewTests(TestCase):
 
     @patch("xhs_download.views.save_media_items_to_server")
     def test_production_server_save_mode_falls_back_to_auto_download(self, mock_save):
-        with override_settings(DEBUG=False, XHS_ALLOW_SERVER_SAVE=True):
+        with override_settings(DEBUG=False, XHS_ALLOW_SERVER_SAVE=True, XHS_ENABLE_SERVER_SAVE_MODE=False):
+            response = Client().post(
+                "/media/download-images/",
+                data='{"download_mode":"server","media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a.jpg"}]}',
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "routed")
+        self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
+        self.assertEqual(mock_save.call_count, 0)
+
+    @patch("xhs_download.views.save_media_items_to_server")
+    def test_debug_server_save_mode_without_hard_gate_falls_back_to_auto_download(self, mock_save):
+        with override_settings(DEBUG=True, XHS_ALLOW_SERVER_SAVE=True, XHS_ENABLE_SERVER_SAVE_MODE=False):
             response = Client().post(
                 "/media/download-images/",
                 data='{"download_mode":"server","media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a.jpg"}]}',
@@ -6657,7 +6671,7 @@ class XhsDownloadViewTests(TestCase):
             "failed_files": [],
         }
 
-        with override_settings(DEBUG=True, XHS_ALLOW_SERVER_SAVE=True):
+        with override_settings(DEBUG=True, XHS_ALLOW_SERVER_SAVE=True, XHS_ENABLE_SERVER_SAVE_MODE=True):
             response = Client().post(
                 "/media/download-images/",
                 data='{"download_mode":"server","media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a.jpg"}]}',
