@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 from zipfile import ZipFile
 
 import requests
-from django.contrib.auth.models import Permission
+from django.contrib.auth.models import Permission, User
 from django.core.cache import cache
 from django.core.checks import Error as CheckError, Warning as CheckWarning, run_checks
 from django.core.management import call_command
@@ -75,7 +75,20 @@ from .services.feedback_loop import (
     build_insights,
     build_suggestions,
 )
+from .services.approval_gate import (
+    CONTROL_AUTO_APPLY,
+    CONTROL_REJECT,
+    CONTROL_REQUIRE_APPROVAL,
+    approve_policy_change,
+    reject_policy_change,
+    rollback_policy_change,
+)
 from .services.observability import record_download_request_log, record_provider_admin_audit_log
+from .services.policy_control_layer import (
+    create_controlled_policy_proposals,
+    evaluate_policy_control_layer,
+)
+from .services.policy_risk_engine import score_policy_risk
 from .services.production_intelligence import build_observability_v2_context
 from .policy.healing_policy import (
     HEAL_ACTION_BLOCK_GRACEFULLY,
@@ -7681,6 +7694,208 @@ class PolicyEngineEvolutionTests(TestCase):
 
         self.assertEqual(proposal.status, PolicyOptimizationStatus.REJECTED)
         self.assertFalse(proposal.automatic_execution)
+
+    def test_policy_control_risk_scoring_classifies_impact_areas(self):
+        provider_risk = score_policy_risk({
+            "kind": "provider_priority_change",
+            "policy_area": "provider",
+            "proposed_change": {"provider": "kukutool"},
+            "sample_count": 20,
+            "safety": {"decision": SAFETY_APPROVE, "risk": "low"},
+        })
+        routing_risk = score_policy_risk({
+            "kind": "routing_weight_change",
+            "policy_area": "routing",
+            "proposed_change": {
+                "delta": {"cost": 0.02, "provider": -0.01, "routing": -0.01},
+            },
+            "sample_count": 20,
+            "safety": {"decision": SAFETY_APPROVE, "risk": "low"},
+        })
+        cost_risk = score_policy_risk({
+            "kind": "cost_limit_adjustment",
+            "policy_area": "cost",
+            "proposed_change": {"estimated_cost_bytes": 1024 * 1024 * 1024},
+            "sample_count": 20,
+            "safety": {"decision": SAFETY_APPROVE, "risk": "low"},
+        })
+
+        self.assertEqual(provider_risk["impact_area"], "provider")
+        self.assertEqual(provider_risk["risk_level"], "high")
+        self.assertEqual(routing_risk["impact_area"], "routing")
+        self.assertEqual(routing_risk["risk_level"], "medium")
+        self.assertEqual(cost_risk["impact_area"], "cost")
+        self.assertEqual(cost_risk["risk_level"], "high")
+
+    def test_policy_control_layer_decides_auto_apply_approval_and_reject(self):
+        low_risk = {
+            "kind": "adaptive_policy_weights",
+            "policy_area": "policy_weights",
+            "title": "low",
+            "proposed_change": {
+                "weights": {"cost": 0.41, "provider": 0.39, "routing": 0.2},
+                "delta": {"cost": 0.01, "provider": -0.01, "routing": 0},
+            },
+            "sample_count": 20,
+            "safety": {"decision": SAFETY_APPROVE, "risk": "low"},
+        }
+        provider_change = {
+            "kind": "provider_priority_change",
+            "policy_area": "provider",
+            "title": "provider",
+            "proposed_change": {"provider": "kukutool"},
+            "sample_count": 20,
+            "safety": {"decision": SAFETY_APPROVE, "risk": "low"},
+        }
+        unsafe = {
+            "kind": "adaptive_policy_weights",
+            "policy_area": "policy_weights",
+            "title": "unsafe",
+            "proposed_change": {},
+            "automatic_execution": True,
+            "sample_count": 20,
+            "safety": {"decision": SAFETY_REJECT, "risk": "high"},
+        }
+
+        low_result = evaluate_policy_control_layer([low_risk])
+        provider_result = evaluate_policy_control_layer([provider_change])
+        unsafe_result = evaluate_policy_control_layer([unsafe])
+
+        self.assertEqual(low_result["decision"], CONTROL_AUTO_APPLY)
+        self.assertEqual(provider_result["decision"], CONTROL_REQUIRE_APPROVAL)
+        self.assertEqual(unsafe_result["decision"], CONTROL_REJECT)
+
+    def test_policy_control_generates_proposals_without_runtime_mutation(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v4_adaptive_min_confidence = 0.1
+        setting.v4_auto_weights_enabled = False
+        setting.save(update_fields=[
+            "v4_adaptive_min_confidence",
+            "v4_auto_weights_enabled",
+            "updated_at",
+        ])
+        for index in range(8):
+            DownloadRequestLog.objects.create(
+                request_id=f"rid-control-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="auto",
+                route_type=ROUTE_DIRECT,
+                final_policy_route=ROUTE_DIRECT,
+                provider="native",
+                estimated_bytes=1000,
+                actual_bytes=900,
+                browser_egress_estimated_bytes=1000,
+            )
+
+        result = create_controlled_policy_proposals(window_hours=24)
+
+        proposal = PolicyOptimizationProposal.objects.get()
+        setting.refresh_from_db()
+        self.assertEqual(result["proposal_count"], 1)
+        self.assertEqual(proposal.control_decision, CONTROL_AUTO_APPLY)
+        self.assertEqual(proposal.status, PolicyOptimizationStatus.AUTO_APPLIED)
+        self.assertFalse(proposal.runtime_mutated)
+        self.assertFalse(setting.v4_auto_weights_enabled)
+        self.assertFalse(proposal.application_result["behavior_changed"])
+
+    def test_policy_approval_flow_and_rollback(self):
+        proposal = PolicyOptimizationProposal.objects.create(
+            source_version="v5",
+            status=PolicyOptimizationStatus.NEEDS_APPROVAL,
+            kind="adaptive_policy_weights",
+            policy_area="policy_weights",
+            title="review",
+            risk="medium",
+            risk_score=0.5,
+            impact_area="routing",
+            control_decision=CONTROL_REQUIRE_APPROVAL,
+            safety_decision=SAFETY_REVIEW,
+            confidence=0.8,
+            sample_count=20,
+            proposed_change={"weights": {"cost": 0.42, "provider": 0.39, "routing": 0.19}},
+            safety={"decision": SAFETY_REVIEW, "risk": "medium"},
+            drift={},
+            signature="a" * 64,
+            drift_key="policy_weights:adaptive_policy_weights",
+        )
+
+        approved = approve_policy_change(proposal, actor_username="admin")
+        proposal.refresh_from_db()
+        self.assertTrue(approved["ok"])
+        self.assertEqual(proposal.status, PolicyOptimizationStatus.APPROVED)
+        self.assertEqual(proposal.actor_username, "admin")
+
+        rejected = reject_policy_change(proposal, actor_username="admin", reason="not-needed")
+        proposal.refresh_from_db()
+        self.assertTrue(rejected["ok"])
+        self.assertEqual(proposal.status, PolicyOptimizationStatus.REJECTED)
+
+    def test_policy_control_rollback_restores_runtime_setting(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v4_auto_weights_enabled = True
+        setting.v4_adaptive_shadow_enabled = True
+        setting.save(update_fields=[
+            "v4_auto_weights_enabled",
+            "v4_adaptive_shadow_enabled",
+            "updated_at",
+        ])
+        proposal = PolicyOptimizationProposal.objects.create(
+            source_version="v5",
+            status=PolicyOptimizationStatus.APPROVED,
+            kind="adaptive_policy_weights",
+            policy_area="policy_weights",
+            title="applied",
+            risk="low",
+            risk_score=0.2,
+            impact_area="routing",
+            control_decision=CONTROL_AUTO_APPLY,
+            safety_decision=SAFETY_APPROVE,
+            confidence=0.8,
+            sample_count=20,
+            proposed_change={"weights": {"cost": 0.42, "provider": 0.39, "routing": 0.19}},
+            safety={"decision": SAFETY_APPROVE, "risk": "low"},
+            drift={},
+            signature="b" * 64,
+            drift_key="policy_weights:adaptive_policy_weights",
+            runtime_mutated=True,
+            application_result={
+                "before": {
+                    "v4_auto_weights_enabled": False,
+                    "v4_adaptive_shadow_enabled": True,
+                },
+                "after": {
+                    "v4_auto_weights_enabled": True,
+                    "v4_adaptive_shadow_enabled": True,
+                },
+            },
+        )
+
+        result = rollback_policy_change(proposal, actor_username="admin")
+
+        proposal.refresh_from_db()
+        setting.refresh_from_db()
+        self.assertTrue(result["behavior_changed"])
+        self.assertFalse(setting.v4_auto_weights_enabled)
+        self.assertEqual(proposal.status, PolicyOptimizationStatus.ROLLED_BACK)
+        self.assertFalse(proposal.runtime_mutated)
+
+    def test_policy_control_admin_page_requires_permission_and_superuser_can_generate(self):
+        response = Client().get("/admin/policy-control/")
+        self.assertEqual(response.status_code, 404)
+
+        user = User.objects.create_superuser(
+            username="policy-admin",
+            email="policy@example.com",
+            password="pw",
+        )
+        client = Client()
+        client.force_login(user)
+
+        get_response = client.get("/admin/policy-control/")
+        self.assertEqual(get_response.status_code, 200)
+        post_response = client.post("/admin/policy-control/", {"action": "generate", "window": "24"})
+        self.assertEqual(post_response.status_code, 302)
+        self.assertEqual(post_response["Location"], "/admin/policy-control/")
 
     def test_observability_v2_metrics_are_computed_from_policy_feedback(self):
         DownloadRequestLog.objects.create(

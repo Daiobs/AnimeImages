@@ -212,6 +212,33 @@ Rollback:
 - set `PolicyRuntimeSetting.v4_auto_weights_enabled=False`
 - keep proposal rows as audit history or delete them as superuser
 
+## Phase 5: Production Control Layer
+
+Status: Policy Control Layer MVP implemented on top of v5.
+
+Purpose:
+
+- receive v5 policy suggestions
+- score production risk by impact area
+- route changes through Approval Gate
+- keep medium/high risk changes human-in-the-loop
+- support approve, reject, and rollback from `/admin/policy-control/`
+
+Modules:
+
+- `policy_risk_engine.py`: cost/provider/routing risk scoring.
+- `approval_gate.py`: `auto_apply`, `require_approval`, `reject`, approve/reject/rollback actions.
+- `policy_control_layer.py`: combines v5 suggestions, risk, approval gate, and controlled proposal persistence.
+
+Safety:
+
+- generating controlled proposals does not mutate production settings
+- provider changes are high risk
+- routing changes are medium risk
+- cost changes are medium/high risk
+- rollback only restores explicitly recorded runtime mutations
+- Routing Engine, Provider runtime gates, and Cost Guard core logic are unchanged
+
 ## Fallback
 
 Fallback is built into v3.5:

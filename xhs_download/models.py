@@ -206,6 +206,7 @@ class PolicyOptimizationStatus(models.TextChoices):
     APPROVED = "approved", "已批准"
     REJECTED = "rejected", "已拒绝"
     APPLIED = "applied", "已应用"
+    ROLLED_BACK = "rolled_back", "已回滚"
 
 
 class ParseRequestLog(models.Model):
@@ -443,7 +444,10 @@ class PolicyOptimizationProposal(models.Model):
     title = models.CharField(max_length=160, blank=True, default="")
     body = models.TextField(blank=True, default="")
     risk = models.CharField(max_length=16, blank=True, default="", db_index=True)
+    risk_score = models.FloatField(default=0, db_index=True)
+    impact_area = models.CharField(max_length=32, blank=True, default="", db_index=True)
     safety_decision = models.CharField(max_length=16, blank=True, default="", db_index=True)
+    control_decision = models.CharField(max_length=32, blank=True, default="", db_index=True)
     confidence = models.FloatField(default=0)
     sample_count = models.PositiveIntegerField(default=0)
     proposed_change = models.JSONField(default=dict, blank=True)
@@ -455,7 +459,11 @@ class PolicyOptimizationProposal(models.Model):
     automatic_execution = models.BooleanField(default=False, db_index=True)
     runtime_mutated = models.BooleanField(default=False, db_index=True)
     application_result = models.JSONField(default=dict, blank=True)
+    rollback_result = models.JSONField(default=dict, blank=True)
     applied_at = models.DateTimeField(null=True, blank=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    rejected_at = models.DateTimeField(null=True, blank=True)
+    rolled_back_at = models.DateTimeField(null=True, blank=True)
     actor_username = models.CharField(max_length=150, blank=True, default="", db_index=True)
 
     class Meta:
@@ -465,6 +473,8 @@ class PolicyOptimizationProposal(models.Model):
             models.Index(fields=("kind", "created_at")),
             models.Index(fields=("policy_area", "created_at")),
             models.Index(fields=("drift_key", "created_at")),
+            models.Index(fields=("control_decision", "created_at")),
+            models.Index(fields=("impact_area", "created_at")),
         )
         verbose_name = "Policy 优化队列"
         verbose_name_plural = "Policy 优化队列"

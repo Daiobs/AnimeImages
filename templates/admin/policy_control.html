@@ -1,0 +1,230 @@
+{% extends "admin/base_site.html" %}
+
+{% block content_title %}{% endblock %}
+
+{% block content %}
+<style>
+    #content { padding: 0; }
+    .control-page {
+        min-height: calc(100vh - 96px);
+        margin: -20px -20px 0;
+        padding: 34px clamp(18px, 4vw, 54px) 56px;
+        background: #f8fbff;
+        color: #111827;
+    }
+    .control-shell { max-width: 1180px; margin: 0 auto; }
+    .control-hero {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 20px;
+    }
+    .control-eyebrow {
+        display: inline-flex;
+        min-height: 28px;
+        align-items: center;
+        padding: 4px 10px;
+        border-radius: 8px;
+        background: #ecfeff;
+        color: #0e7490;
+        font-size: 12px;
+        font-weight: 800;
+    }
+    .control-title {
+        margin: 10px 0 0;
+        color: #111827;
+        font-size: clamp(28px, 4vw, 42px);
+        font-weight: 900;
+        line-height: 1.12;
+        letter-spacing: 0;
+    }
+    .control-subtitle {
+        max-width: 760px;
+        margin: 10px 0 0;
+        color: #6b7280;
+        font-size: 15px;
+        line-height: 1.7;
+    }
+    .control-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    .control-link,
+    .control-button {
+        display: inline-flex;
+        min-height: 40px;
+        align-items: center;
+        justify-content: center;
+        padding: 0 14px;
+        border: 1px solid #d8dde8;
+        border-radius: 8px;
+        background: #fff;
+        color: #111827;
+        font-size: 14px;
+        font-weight: 800;
+        text-decoration: none;
+        cursor: pointer;
+    }
+    .control-button { border-color: #0e7490; background: #0e7490; color: #fff; }
+    .control-link:hover { color: #0e7490; border-color: #67e8f9; text-decoration: none; }
+    .control-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 16px;
+    }
+    .control-card,
+    .control-panel {
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: 0 4px 12px rgba(17, 24, 39, .05);
+    }
+    .control-card { min-height: 96px; padding: 16px; }
+    .control-card strong {
+        display: block;
+        color: #6b7280;
+        font-size: 13px;
+        font-weight: 800;
+    }
+    .control-card span {
+        display: block;
+        margin-top: 8px;
+        color: #111827;
+        font-size: 20px;
+        font-weight: 900;
+        overflow-wrap: anywhere;
+    }
+    .control-panel { margin-bottom: 16px; padding: 18px; }
+    .control-panel h2 { margin: 0 0 14px; font-size: 18px; font-weight: 900; }
+    .control-muted { color: #6b7280; font-size: 13px; line-height: 1.6; }
+    .control-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .control-table th,
+    .control-table td {
+        padding: 10px 8px;
+        border-bottom: 1px solid #eef2f7;
+        text-align: left;
+        vertical-align: top;
+    }
+    .control-table th {
+        color: #6b7280;
+        font-size: 12px;
+        font-weight: 900;
+        text-transform: uppercase;
+    }
+    .control-inline-form { display: inline-flex; gap: 6px; margin: 0 4px 4px 0; }
+    .control-mini-button {
+        min-height: 30px;
+        border: 1px solid #d8dde8;
+        border-radius: 8px;
+        background: #fff;
+        color: #111827;
+        font-size: 12px;
+        font-weight: 800;
+        cursor: pointer;
+    }
+    .control-danger { border-color: #fecaca; color: #b91c1c; }
+    @media (max-width: 960px) { .control-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 640px) { .control-grid { grid-template-columns: 1fr; } }
+</style>
+
+<div class="control-page">
+    <div class="control-shell">
+        <section class="control-hero">
+            <div>
+                <span class="control-eyebrow">Production Control Layer</span>
+                <h1 class="control-title">Policy Control 生产控制层</h1>
+                <p class="control-subtitle">把 v5 建议接入风险评分和审批门。低风险只进入受控队列，中高风险需要人工确认；页面不会绕过 Approval Gate，也不会自动修改 Routing、Provider 或 Cost Guard。</p>
+            </div>
+            <div class="control-actions">
+                <a class="control-link" href="{% url 'policy_engine' %}">Policy Engine</a>
+                <a class="control-link" href="{% url 'ops_dashboard' %}">运营看板</a>
+                <a class="control-link" href="{% url 'download_logs' %}">下载日志</a>
+            </div>
+        </section>
+
+        <section class="control-grid">
+            <div class="control-card"><strong>当前决策</strong><span>{{ control.decision }}</span></div>
+            <div class="control-card"><strong>最高风险分</strong><span>{{ control.risk_score }}</span></div>
+            <div class="control-card"><strong>待审批</strong><span>{{ status_counts.pending }}</span></div>
+            <div class="control-card"><strong>已拒绝</strong><span>{{ status_counts.rejected }}</span></div>
+        </section>
+
+        <section class="control-panel">
+            <h2>生成受控建议</h2>
+            <p class="control-muted">生成操作会把当前 v5 suggestion 转成 PolicyOptimizationProposal。低风险记录为 auto_applied，但默认不修改生产配置。</p>
+            {% if can_change_policy_control %}
+                <form method="post">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="generate">
+                    <input type="hidden" name="window" value="{{ window_hours }}">
+                    <button class="control-button" type="submit">生成受控建议</button>
+                </form>
+            {% else %}
+                <p class="control-muted">当前账号只有查看权限，不能生成或审批。</p>
+            {% endif %}
+        </section>
+
+        <section class="control-panel">
+            <h2>Policy Suggestions 与风险评分</h2>
+            <table class="control-table">
+                <thead><tr><th>建议</th><th>Impact</th><th>Risk</th><th>Gate</th><th>原因</th></tr></thead>
+                <tbody>
+                {% for item in control.items %}
+                    <tr>
+                        <td><strong>{{ item.suggestion.title }}</strong><div class="control-muted">{{ item.suggestion.body }}</div></td>
+                        <td>{{ item.impact_area }}</td>
+                        <td>{{ item.risk.risk_level }} / {{ item.risk_score }}</td>
+                        <td>{{ item.decision }}</td>
+                        <td>{{ item.risk.reason_chain|join:", " }}</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="5">暂无 Policy suggestion。</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+
+        <section class="control-panel">
+            <h2>最近 50 条控制记录</h2>
+            <table class="control-table">
+                <thead><tr><th>时间</th><th>建议</th><th>状态</th><th>风险</th><th>控制决策</th><th>运行时变更</th><th>操作</th></tr></thead>
+                <tbody>
+                {% for item in recent_proposals %}
+                    <tr>
+                        <td>{{ item.created_at }}</td>
+                        <td>{{ item.title }}<div class="control-muted">{{ item.kind }}</div></td>
+                        <td>{{ item.status }}</td>
+                        <td>{{ item.risk }} / {{ item.risk_score }}</td>
+                        <td>{{ item.control_decision }}</td>
+                        <td>{% if item.runtime_mutated %}是{% else %}否{% endif %}</td>
+                        <td>
+                            {% if can_change_policy_control %}
+                                <form class="control-inline-form" method="post">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="proposal_id" value="{{ item.id }}">
+                                    <button class="control-mini-button" name="action" value="approve" type="submit">批准</button>
+                                </form>
+                                <form class="control-inline-form" method="post">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="proposal_id" value="{{ item.id }}">
+                                    <button class="control-mini-button control-danger" name="action" value="reject" type="submit">拒绝</button>
+                                </form>
+                                <form class="control-inline-form" method="post">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="proposal_id" value="{{ item.id }}">
+                                    <button class="control-mini-button" name="action" value="rollback" type="submit">回滚</button>
+                                </form>
+                            {% else %}
+                                <span class="control-muted">只读</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="7">暂无控制记录。</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+    </div>
+</div>
+{% endblock %}

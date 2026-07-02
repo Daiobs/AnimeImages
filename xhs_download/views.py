@@ -28,6 +28,7 @@ from .models import (
     ObservabilityStatus,
     ParseRequestLog,
     PolicyOptimizationProposal,
+    PolicyOptimizationStatus,
     PolicyRuntimeMode,
     PolicyRuntimeSetting,
     ProviderAccessMode,
@@ -62,6 +63,11 @@ from .services.download_tasks import (
     serialize_task,
 )
 from .services.feedback_loop import build_feedback_loop_context
+from .services.approval_gate import (
+    approve_policy_change,
+    reject_policy_change,
+    rollback_policy_change,
+)
 from .services.download_routing import (
     ROUTE_BLOCKED,
     ROUTE_DIRECT,
@@ -125,6 +131,10 @@ from .services.self_healing_engine import SelfHealingEngine, attach_healing_to_r
 from .services.youtube_merge import build_youtube_merge_plan, get_youtube_merge_health
 from .services.admin_console import build_admin_console_context
 from .services.production_intelligence import build_observability_v2_context
+from .services.policy_control_layer import (
+    build_policy_control_preview,
+    create_controlled_policy_proposals,
+)
 from .services.rollout_guard import build_rollout_guard_context
 from .services.routing_v3 import decide_route_v3
 from .services.rate_limits import (
@@ -927,6 +937,26 @@ def feedback_loop_required(request):
     )
 
 
+def policy_control_view_allowed(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_policyoptimizationproposal",
+        "xhs_download.change_policyoptimizationproposal",
+    )
+
+
+def policy_control_change_allowed(request):
+    user = getattr(request, "user", None)
+    return bool(
+        getattr(user, "is_active", False)
+        and getattr(user, "is_staff", False)
+        and (
+            getattr(user, "is_superuser", False)
+            or user.has_perm("xhs_download.change_policyoptimizationproposal")
+        )
+    )
+
+
 def observability_access_allowed(request, *permissions):
     user = getattr(request, "user", None)
     if not (
@@ -1591,6 +1621,75 @@ def feedback_loop_view(request):
         window_hours=request.GET.get("window") or 24,
     )
     return render(request, "admin/feedback_loop.html", context)
+
+
+@csrf_protect
+def policy_control_view(request):
+    if not policy_control_view_allowed(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+
+    if request.method == "POST":
+        if not policy_control_change_allowed(request):
+            return JsonResponse({"detail": "Not found."}, status=404)
+        action = str(request.POST.get("action") or "").strip()
+        proposal_id = request.POST.get("proposal_id")
+        actor_username = str(getattr(request.user, "username", "") or "")
+        if action == "generate":
+            result = create_controlled_policy_proposals(
+                window_hours=clamp_int(request.POST.get("window"), minimum=1, maximum=168, default=24),
+                actor_username=actor_username,
+            )
+            messages.success(
+                request,
+                f"Policy Control 已生成 {result['proposal_count']} 条受控建议。",
+            )
+        elif action in {"approve", "reject", "rollback"}:
+            try:
+                proposal = PolicyOptimizationProposal.objects.get(pk=proposal_id)
+            except (PolicyOptimizationProposal.DoesNotExist, TypeError, ValueError):
+                messages.error(request, "Policy 优化记录不存在。")
+                return redirect("policy_control")
+            if action == "approve":
+                result = approve_policy_change(proposal, actor_username=actor_username)
+                messages.success(request, f"审批结果：{result['reason']}")
+            elif action == "reject":
+                result = reject_policy_change(proposal, actor_username=actor_username)
+                messages.success(request, f"拒绝结果：{result['reason']}")
+            else:
+                result = rollback_policy_change(proposal, actor_username=actor_username)
+                messages.success(request, f"回滚结果：{result['reason']}")
+        return redirect("policy_control")
+
+    window_hours = clamp_int(request.GET.get("window"), minimum=1, maximum=168, default=24)
+    preview = build_policy_control_preview(window_hours=window_hours)
+    proposals = PolicyOptimizationProposal.objects.all()
+    context = {
+        "title": "Policy Control",
+        "window_hours": int(preview["window_hours"]),
+        "preview": preview,
+        "control": preview["control"],
+        "can_change_policy_control": policy_control_change_allowed(request),
+        "pending_approvals": proposals.filter(status=PolicyOptimizationStatus.NEEDS_APPROVAL)[:20],
+        "approved_changes": proposals.filter(status__in=[
+            PolicyOptimizationStatus.AUTO_APPLIED,
+            PolicyOptimizationStatus.APPROVED,
+            PolicyOptimizationStatus.APPLIED,
+        ])[:20],
+        "rejected_changes": proposals.filter(status=PolicyOptimizationStatus.REJECTED)[:20],
+        "rolled_back_changes": proposals.filter(status=PolicyOptimizationStatus.ROLLED_BACK)[:20],
+        "recent_proposals": proposals[:50],
+        "status_counts": {
+            "pending": proposals.filter(status=PolicyOptimizationStatus.NEEDS_APPROVAL).count(),
+            "approved": proposals.filter(status__in=[
+                PolicyOptimizationStatus.AUTO_APPLIED,
+                PolicyOptimizationStatus.APPROVED,
+                PolicyOptimizationStatus.APPLIED,
+            ]).count(),
+            "rejected": proposals.filter(status=PolicyOptimizationStatus.REJECTED).count(),
+            "rolled_back": proposals.filter(status=PolicyOptimizationStatus.ROLLED_BACK).count(),
+        },
+    }
+    return render(request, "admin/policy_control.html", context)
 
 
 def filtered_log_queryset(model, request, filter_fields):
