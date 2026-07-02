@@ -100,6 +100,11 @@ from .services.control_state_machine import (
     record_control_decision_for_proposal,
     transition_control_record,
 )
+from .services.stabilization_engine import (
+    feedback_stabilizer,
+    policy_convergence_engine,
+    stabilization_engine,
+)
 from .services.production_intelligence import build_observability_v2_context
 from .policy.healing_policy import (
     HEAL_ACTION_BLOCK_GRACEFULLY,
@@ -8096,6 +8101,158 @@ class PolicyEngineEvolutionTests(TestCase):
         response = client.get("/admin/control-convergence/")
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Control Convergence")
+
+    def test_stabilization_v6_outputs_converged_stable_decision(self):
+        downloads = []
+        for index in range(6):
+            downloads.append(DownloadRequestLog.objects.create(
+                request_id=f"rid-stable-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="auto",
+                route_type=ROUTE_DIRECT,
+                final_policy_route=ROUTE_DIRECT,
+                policy_confidence=0.9,
+                provider="native",
+                estimated_bytes=1000,
+                actual_bytes=900,
+            ))
+        downloads.append(DownloadRequestLog.objects.create(
+            request_id="rid-stable-noise",
+            status=ObservabilityStatus.FAILED,
+            download_type="zip",
+            route_type=ROUTE_ZIP,
+            final_policy_route=ROUTE_DIRECT,
+            provider="native",
+            failure_type="download_failed",
+        ))
+
+        result = stabilization_engine(
+            downloads=downloads,
+            control_records=[],
+            feedback={"signals": {"failure_rate": 0.05, "failure_rate_delta": 0}},
+        )
+
+        self.assertEqual(result["stable_route"], ROUTE_DIRECT)
+        self.assertGreater(result["stability_score"], 0.7)
+        self.assertIn(result["conflict_level"], {"low", "medium"})
+        self.assertFalse(result["automatic_execution"])
+        self.assertFalse(result["production_behavior_changed"])
+
+    def test_stabilization_v6_conflict_reduction_merges_multiple_policies(self):
+        downloads = [
+            DownloadRequestLog.objects.create(
+                request_id="rid-conflict-a",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="auto",
+                route_type=ROUTE_DIRECT,
+                final_policy_route=ROUTE_DIRECT,
+                provider="native",
+                actual_bytes=100,
+            ),
+            DownloadRequestLog.objects.create(
+                request_id="rid-conflict-b",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="auto",
+                route_type=ROUTE_DIRECT,
+                final_policy_route=ROUTE_ZIP,
+                provider="native",
+                actual_bytes=100,
+            ),
+            DownloadRequestLog.objects.create(
+                request_id="rid-conflict-c",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="auto",
+                route_type=ROUTE_DIRECT,
+                final_policy_route=ROUTE_PROXY,
+                provider="native",
+                actual_bytes=100,
+            ),
+        ]
+
+        policy_result = policy_convergence_engine(downloads)
+
+        self.assertEqual(policy_result["stable_route"], ROUTE_DIRECT)
+        self.assertGreater(policy_result["policy_drift_rate"], 0)
+        self.assertGreaterEqual(policy_result["convergence_score"], 0)
+        self.assertLessEqual(policy_result["convergence_score"], 1)
+
+    def test_stabilization_v6_feedback_smoothing_limits_extreme_changes(self):
+        feedback = {
+            "signals": {
+                "failure_rate": 0.7,
+                "failure_rate_delta": 0.9,
+                "fallback_rate": 0.4,
+                "server_egress_ratio": 4.0,
+                "provider_signals": [
+                    {"provider": "kukutool", "failure_rate": 0.8},
+                    {"provider": "native", "failure_rate": 0.2},
+                ],
+            }
+        }
+
+        result = feedback_stabilizer(feedback)
+
+        self.assertTrue(result["suppressed_extreme_change"])
+        self.assertEqual(result["smoothed_failure_delta"], 0.15)
+        self.assertLess(result["smoothed_feedback_volatility"], result["feedback_volatility"])
+        self.assertGreater(result["provider_instability"], 0)
+
+    def test_stabilization_v6_execution_consistency_same_input_same_output(self):
+        downloads = [
+            DownloadRequestLog.objects.create(
+                request_id=f"rid-consistency-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="auto",
+                route_type=ROUTE_PROXY,
+                final_policy_route=ROUTE_PROXY,
+                provider="native",
+                actual_bytes=200,
+            )
+            for index in range(4)
+        ]
+        controls = [
+            create_control_record(
+                request_id=f"rid-consistency-control-{index}",
+                policy_decision=ROUTE_PROXY,
+                control_decision="download_policy_observed",
+                state=PolicyControlState.EXECUTED,
+                provider="native",
+                route=ROUTE_PROXY,
+                cost=200,
+            )
+            for index in range(2)
+        ]
+
+        first = stabilization_engine(
+            downloads=downloads,
+            control_records=controls,
+            feedback={"signals": {"failure_rate": 0, "failure_rate_delta": 0}},
+        )
+        second = stabilization_engine(
+            downloads=downloads,
+            control_records=controls,
+            feedback={"signals": {"failure_rate": 0, "failure_rate_delta": 0}},
+        )
+
+        self.assertEqual(first["stable_route"], second["stable_route"])
+        self.assertEqual(first["stability_score"], second["stability_score"])
+        self.assertEqual(first["metrics"], second["metrics"])
+
+    def test_stability_v6_admin_page_requires_permission(self):
+        response = Client().get("/admin/stability-v6/")
+        self.assertEqual(response.status_code, 404)
+
+        user = User.objects.create_superuser(
+            username="stability-admin",
+            email="stability@example.com",
+            password="pw",
+        )
+        client = Client()
+        client.force_login(user)
+
+        response = client.get("/admin/stability-v6/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Stability v6")
 
     def test_observability_v2_metrics_are_computed_from_policy_feedback(self):
         DownloadRequestLog.objects.create(

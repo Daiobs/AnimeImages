@@ -269,6 +269,36 @@ Safety:
 - no change to Cost Guard limits
 - convergence suggestions remain human-reviewed
 
+## Phase 7: System Stabilization Layer v6
+
+Status: Stabilization v6 MVP implemented on top of Policy, Control, Feedback,
+and Execution observability.
+
+Purpose:
+
+- converge policy, control, feedback, and execution signals into one stable decision view
+- reduce route and policy oscillation
+- simplify duplicate control decisions
+- smooth volatile feedback spikes
+- keep the system focused on stable behavior rather than automatic optimization
+
+Module:
+
+- `stabilization_engine.py`: Policy Convergence, Control Simplifier, Feedback Stabilizer, and unified stabilization output.
+
+Admin:
+
+- `/admin/stability-v6/` provides the read-only stability dashboard.
+
+Safety:
+
+- no production policy mutation
+- no Routing Engine core change
+- no Provider gate change
+- no Cost Guard limit change
+- no automatic rollout
+- no queue or AI/ML model
+
 ## Fallback
 
 Fallback is built into v3.5:

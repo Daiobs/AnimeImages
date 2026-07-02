@@ -136,6 +136,7 @@ from .services.policy_control_layer import (
     create_controlled_policy_proposals,
 )
 from .services.control_convergence_engine import build_control_convergence_context
+from .services.stabilization_engine import build_stability_v6_context
 from .services.rollout_guard import build_rollout_guard_context
 from .services.routing_v3 import decide_route_v3
 from .services.rate_limits import (
@@ -966,6 +967,15 @@ def control_convergence_view_allowed(request):
     )
 
 
+def stability_v6_view_allowed(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_downloadrequestlog",
+        "xhs_download.view_policycontrolrecord",
+        "xhs_download.view_routingdecisionlog",
+    )
+
+
 def observability_access_allowed(request, *permissions):
     user = getattr(request, "user", None)
     if not (
@@ -1710,6 +1720,18 @@ def control_convergence_view(request):
         request,
         "admin/control_convergence.html",
         build_control_convergence_context(window_hours=window_hours),
+    )
+
+
+@csrf_protect
+def stability_v6_view(request):
+    if not stability_v6_view_allowed(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+    window_hours = clamp_int(request.GET.get("window"), minimum=1, maximum=168, default=24)
+    return render(
+        request,
+        "admin/stability_v6.html",
+        build_stability_v6_context(window_hours=window_hours),
     )
 
 
