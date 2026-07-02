@@ -2817,6 +2817,8 @@ def download_images_api(request):
     if image_urls and not media_items:
         media_items = [{"type": "image", "url": url} for url in image_urls]
     download_mode = (data.get("download_mode") or "browser").lower().strip()
+    if download_mode == "server" and not (settings.DEBUG and settings.XHS_ALLOW_SERVER_SAVE):
+        download_mode = "auto"
     route_info = zip_download_route_info(
         request,
         media_items,

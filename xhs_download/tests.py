@@ -6634,15 +6634,40 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertIn("同步下载接口", response.json()["message"])
 
-    def test_server_save_mode_is_forbidden_when_disabled(self):
-        with override_settings(XHS_ALLOW_SERVER_SAVE=False):
+    @patch("xhs_download.views.save_media_items_to_server")
+    def test_production_server_save_mode_falls_back_to_auto_download(self, mock_save):
+        with override_settings(DEBUG=False, XHS_ALLOW_SERVER_SAVE=True):
             response = Client().post(
                 "/media/download-images/",
-                data='{"download_mode":"server","media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a"}]}',
+                data='{"download_mode":"server","media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a.jpg"}]}',
                 content_type="application/json",
             )
 
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "routed")
+        self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
+        self.assertEqual(mock_save.call_count, 0)
+
+    @patch("xhs_download.views.save_media_items_to_server")
+    def test_debug_server_save_mode_can_save_to_server(self, mock_save):
+        mock_save.return_value = {
+            "saved_count": 1,
+            "failed_count": 0,
+            "saved_files": ["xhs/a.jpg"],
+            "failed_files": [],
+        }
+
+        with override_settings(DEBUG=True, XHS_ALLOW_SERVER_SAVE=True):
+            response = Client().post(
+                "/media/download-images/",
+                data='{"download_mode":"server","media_items":[{"type":"image","url":"https://ci.xiaohongshu.com/a.jpg"}]}',
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "success")
+        self.assertIn("服务端保存完成", response.json()["message"])
+        self.assertEqual(mock_save.call_count, 1)
 
     @patch("xhs_download.services.downloads.fetch_media_response")
     def test_archive_progress_updates_during_large_file_download(self, mock_fetch):
