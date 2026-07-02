@@ -152,22 +152,21 @@
         return "已交给浏览器下载";
     }
 
-    function downloadDirectItems(items) {
-        (items || []).forEach((item, index) => {
-            if (!item || !item.url) {
-                return;
-            }
-            window.setTimeout(() => {
-                const link = document.createElement("a");
-                link.href = item.url;
-                link.rel = "noopener noreferrer";
-                link.target = "_blank";
-                link.download = item.filename || "";
-                document.body.appendChild(link);
-                link.click();
-                link.remove();
-            }, index * 120);
-        });
+    function extensionFromContentType(contentType, itemType) {
+        const normalized = String(contentType || "").toLowerCase();
+        if (normalized.includes("video/mp4")) {
+            return "mp4";
+        }
+        if (normalized.includes("image/jpeg")) {
+            return "jpg";
+        }
+        if (normalized.includes("image/png")) {
+            return "png";
+        }
+        if (normalized.includes("image/webp")) {
+            return "webp";
+        }
+        return itemType === "video" ? "mp4" : "jpg";
     }
 
     function routeWarningText(warnings) {
@@ -620,6 +619,103 @@
             return new Blob(chunks, {type: response.headers.get("Content-Type") || "application/zip"});
         }
 
+        function directDownloadFilename(item, response, index, total) {
+            const fallbackBase = getBaseFilename();
+            const suffix = total > 1 ? `_${index + 1}` : "";
+            const extension = extensionFromContentType(
+                response.headers.get("Content-Type") || "",
+                item.type || "video",
+            );
+            return getDownloadFilename(
+                response,
+                item.filename || `${fallbackBase}${suffix}.${extension}`,
+            );
+        }
+
+        async function writeResponseToFileWithProgress(response, fileHandle, startPercent, endPercent) {
+            const contentLength = Number.parseInt(response.headers.get("Content-Length") || "0", 10);
+            if (!response.body || !contentLength) {
+                const blob = await response.blob();
+                const writable = await fileHandle.createWritable();
+                try {
+                    await writable.write(blob);
+                } finally {
+                    await writable.close();
+                }
+                setProgress(endPercent);
+                return;
+            }
+
+            const reader = response.body.getReader();
+            const writable = await fileHandle.createWritable();
+            let received = 0;
+
+            try {
+                while (true) {
+                    const {done, value} = await reader.read();
+                    if (done) {
+                        break;
+                    }
+                    await writable.write(value);
+                    received += value.length;
+                    const ratio = received / contentLength;
+                    setProgress(startPercent + (endPercent - startPercent) * ratio);
+                }
+            } finally {
+                await writable.close();
+            }
+            setProgress(endPercent);
+        }
+
+        async function downloadDirectItem(item, index, total) {
+            const startPercent = total > 1 ? (index / total) * 100 : 0;
+            const endPercent = total > 1 ? ((index + 1) / total) * 100 : 100;
+            const response = await fetch(item.url, {
+                cache: "no-store",
+                credentials: "omit",
+            });
+
+            if (!response.ok) {
+                throw new Error(`直链下载失败（${response.status}）`);
+            }
+
+            const filename = directDownloadFilename(item, response, index, total);
+            if (useFilePicker && window.showSaveFilePicker) {
+                const extension = filename.split(".").pop() || "mp4";
+                const handle = await window.showSaveFilePicker({
+                    suggestedName: filename,
+                    types: [
+                        {
+                            description: item.type === "image" ? "Image file" : "Media file",
+                            accept: item.type === "image"
+                                ? {"image/*": [`.${extension}`]}
+                                : {"video/mp4": [`.${extension}`], "application/octet-stream": [`.${extension}`]},
+                        },
+                    ],
+                });
+                await writeResponseToFileWithProgress(response, handle, startPercent, endPercent);
+                return filename;
+            }
+
+            const blob = await readResponseBlobWithProgress(response, startPercent, endPercent);
+            await saveZipBlob(blob, filename, false);
+            return filename;
+        }
+
+        async function downloadDirectRouteItems(items) {
+            const directItems = (items || []).filter((item) => item && item.url);
+            if (directItems.length === 0) {
+                throw new Error("没有可下载的直链资源");
+            }
+
+            setStatus(getStatusElement(), "正在通过浏览器直接下载源文件...");
+            const filenames = [];
+            for (let index = 0; index < directItems.length; index += 1) {
+                filenames.push(await downloadDirectItem(directItems[index], index, directItems.length));
+            }
+            return filenames;
+        }
+
         async function waitForDownloadTask(taskStatusUrl) {
             while (true) {
                 const response = await fetch(taskStatusUrl, {cache: "no-store"});
@@ -746,11 +842,11 @@
                 if (contentType.includes("application/json")) {
                     const data = await response.json();
                     if (data.status === "routed" && data.route_type === "direct") {
-                        downloadDirectItems(data.items || []);
+                        const filenames = await downloadDirectRouteItems(data.items || []);
                         setProgress(100);
                         setStatus(
                             getStatusElement(),
-                            `${data.route_reason || "已使用浏览器直链下载"}${routeWarningText(data.warnings)}`,
+                            `${data.route_reason || "已使用浏览器直链下载"}：${filenames.join("、")}${routeWarningText(data.warnings)}`,
                             "text-success",
                         );
                         return;
