@@ -207,12 +207,12 @@
                         <label class="form-label" for="download-mode">下载处理方式</label>
                         <select id="download-mode" class="form-select">
                             <option value="browser" selected>生产安全模式：单视频直连，其他 ZIP</option>
-                            {% if xhs_allow_server_save %}
+                            {% if xhs_show_server_save_mode %}
                                 <option value="server">开发保存模式：保存到服务端路径</option>
                             {% endif %}
                         </select>
                         <div class="form-text">
-                            生产安全模式会交给浏览器保存；开发保存模式仅在当前环境开启服务端保存时可用。
+                            下载按钮会自动选择直链、单文件代理或 ZIP；开发保存模式仅在本地调试环境显示。
                         </div>
 
                         <div class="settings-subsection" id="browser-download-settings">
@@ -232,7 +232,7 @@
                             </div>
                         </div>
 
-                        {% if xhs_allow_server_save %}
+                        {% if xhs_show_server_save_mode %}
                             <div class="settings-subsection" id="server-save-settings">
                                 <label class="form-label" for="save-dir">开发保存路径</label>
                                 <input
