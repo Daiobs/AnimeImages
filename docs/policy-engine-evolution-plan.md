@@ -299,6 +299,37 @@ Safety:
 - no automatic rollout
 - no queue or AI/ML model
 
+## Phase 8: Autonomous Optimization System v7
+
+Status: Safe autonomous evolution MVP implemented on top of v6 stabilization.
+
+Purpose:
+
+- detect optimization opportunities from historical download and feedback data
+- generate routing adjustment proposals with expected gain and confidence
+- run shadow experiments without production traffic mutation
+- decide `allow_apply`, `reject`, or `delay` through a mutation safety gate
+- produce rollback plans for bad policy outcomes
+
+Module:
+
+- `autonomous_evolution_engine.py`: opportunity detection, shadow experiment,
+  policy mutation controller, rollback engine, and admin context builder.
+
+Admin:
+
+- `/admin/autonomous-evolution/` provides the read-only autonomous evolution dashboard.
+
+Safety:
+
+- no direct production policy mutation
+- no unverified apply
+- no Routing Engine core change
+- no Provider gate change
+- no Cost Guard limit change
+- no automatic rollout
+- no queue or AI/ML model
+
 ## Fallback
 
 Fallback is built into v3.5:

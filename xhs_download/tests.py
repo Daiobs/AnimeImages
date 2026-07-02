@@ -105,6 +105,13 @@ from .services.stabilization_engine import (
     policy_convergence_engine,
     stabilization_engine,
 )
+from .services.autonomous_evolution_engine import (
+    autonomous_evolution_engine,
+    detect_optimization_opportunities,
+    policy_mutation_controller,
+    rollback_engine,
+    shadow_experiment,
+)
 from .services.production_intelligence import build_observability_v2_context
 from .policy.healing_policy import (
     HEAL_ACTION_BLOCK_GRACEFULLY,
@@ -8253,6 +8260,154 @@ class PolicyEngineEvolutionTests(TestCase):
         response = client.get("/admin/stability-v6/")
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Stability v6")
+
+    def test_autonomous_v7_shadow_safety_does_not_change_production_traffic(self):
+        for index in range(3):
+            DownloadRequestLog.objects.create(
+                request_id=f"rid-v7-zip-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="zip",
+                route_type=ROUTE_ZIP,
+                provider="native",
+                actual_bytes=1_000_000,
+                duration_ms=1000,
+            )
+            DownloadRequestLog.objects.create(
+                request_id=f"rid-v7-proxy-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="proxy",
+                route_type=ROUTE_PROXY,
+                provider="native",
+                actual_bytes=500_000,
+                duration_ms=800,
+            )
+        before_count = DownloadRequestLog.objects.count()
+        proposal = {
+            "type": "routing_adjustment",
+            "from": ROUTE_ZIP,
+            "to": ROUTE_PROXY,
+            "confidence": 0.85,
+        }
+
+        shadow = shadow_experiment(proposal, list(DownloadRequestLog.objects.all()))
+
+        self.assertEqual(DownloadRequestLog.objects.count(), before_count)
+        self.assertFalse(shadow["production_traffic_changed"])
+        self.assertEqual(shadow["shadow_result"], "better")
+
+    def test_autonomous_v7_rollback_bad_policy(self):
+        result = rollback_engine(
+            {"route": ROUTE_PROXY},
+            {
+                "success_rate_delta": -0.05,
+                "cost_delta": 0.12,
+                "latency_delta": 0.1,
+                "error_spike": 0.06,
+            },
+            previous_policy={"route": ROUTE_ZIP},
+        )
+
+        self.assertTrue(result["rollback_needed"])
+        self.assertEqual(result["action"], "restore_previous_stable_policy")
+        self.assertEqual(result["restore_policy"]["route"], ROUTE_ZIP)
+        self.assertIn("success-rate-drop", result["triggers"])
+        self.assertFalse(result["production_behavior_changed"])
+
+    def test_autonomous_v7_mutation_safety_rejects_low_confidence(self):
+        proposal = {
+            "type": "routing_adjustment",
+            "from": ROUTE_ZIP,
+            "to": ROUTE_PROXY,
+            "confidence": 0.5,
+        }
+        shadow = {"shadow_result": "better"}
+
+        decision = policy_mutation_controller(proposal, shadow)
+
+        self.assertEqual(decision["decision"], "delay")
+        self.assertFalse(decision["allowed"])
+        self.assertFalse(decision["production_behavior_changed"])
+
+    def test_autonomous_v7_performance_gain_detects_measurable_improvement(self):
+        downloads = []
+        for index in range(4):
+            downloads.append(DownloadRequestLog.objects.create(
+                request_id=f"rid-v7-gain-zip-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="zip",
+                route_type=ROUTE_ZIP,
+                provider="native",
+                actual_bytes=2_000_000,
+                duration_ms=1500,
+            ))
+            downloads.append(DownloadRequestLog.objects.create(
+                request_id=f"rid-v7-gain-proxy-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="proxy",
+                route_type=ROUTE_PROXY,
+                provider="native",
+                actual_bytes=1_000_000,
+                duration_ms=900,
+            ))
+
+        control_records = [
+            PolicyControlRecord.objects.create(
+                policy_decision="route:zip->proxy",
+                control_decision="allow",
+                state=PolicyControlState.EXECUTED,
+                provider="native",
+                route=ROUTE_PROXY,
+            ),
+            PolicyControlRecord.objects.create(
+                policy_decision="route:direct->zip",
+                control_decision="reject",
+                state=PolicyControlState.FAILED,
+                provider="native",
+                route=ROUTE_ZIP,
+                failure_pattern="latency-increase",
+            ),
+        ]
+        opportunities = detect_optimization_opportunities(
+            downloads,
+            feedback={"signals": {"failure_rate": 0.02, "provider_signals": []}},
+            stability_snapshot={"stability_score": 0.95},
+        )
+        result = autonomous_evolution_engine(
+            downloads=downloads,
+            feedback={"signals": {"failure_rate": 0.02, "failure_rate_delta": 0}},
+            stability_snapshot={"stability_score": 0.95},
+            control_records=control_records,
+        )
+
+        self.assertTrue(opportunities["proposals"])
+        first = opportunities["proposals"][0]
+        self.assertEqual(first["from"], ROUTE_ZIP)
+        self.assertEqual(first["to"], ROUTE_PROXY)
+        self.assertLess(first["expected_gain"]["cost"], 0)
+        self.assertTrue(result["shadow_results"])
+        self.assertGreaterEqual(result["system_gain_metrics"]["better_count"], 1)
+        self.assertEqual(result["provider_metrics"][0]["provider"], "native")
+        self.assertEqual(result["provider_metrics"][0]["count"], 8)
+        self.assertEqual(result["policy_execution_history"]["total"], 2)
+        self.assertEqual(result["policy_execution_history"]["failed"], 1)
+        self.assertGreater(result["feedback_risk_score"], 0)
+        self.assertFalse(result["production_behavior_changed"])
+
+    def test_autonomous_v7_admin_page_requires_permission(self):
+        response = Client().get("/admin/autonomous-evolution/")
+        self.assertEqual(response.status_code, 404)
+
+        user = User.objects.create_superuser(
+            username="evolution-admin",
+            email="evolution@example.com",
+            password="pw",
+        )
+        client = Client()
+        client.force_login(user)
+
+        response = client.get("/admin/autonomous-evolution/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Autonomous Evolution")
 
     def test_observability_v2_metrics_are_computed_from_policy_feedback(self):
         DownloadRequestLog.objects.create(
