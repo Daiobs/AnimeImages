@@ -23,7 +23,8 @@ SERVER_SIDE_PROVIDERS = {
     "youtube_merge",
     "yt_dlp_merge",
 }
-BROWSER_DIRECT_VIDEO_PROVIDERS = {
+BROWSER_DIRECT_VIDEO_PROVIDERS = set()
+SERVER_PROXY_VIDEO_PROVIDERS = {
     "kukutool",
 }
 MOBILE_USER_AGENT_MARKERS = (
@@ -170,7 +171,7 @@ def single_video_can_server_proxy_download(item):
     if not provider:
         return True
     return (
-        provider in BROWSER_DIRECT_VIDEO_PROVIDERS
+        provider in SERVER_PROXY_VIDEO_PROVIDERS
         and provider_manifest_allows_public_download(item)
     )
 
@@ -335,7 +336,10 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
         if (
             requested_mode == "browser"
             and len(normalized_items) == 1
-            and single_item_can_attachment_download(normalized_items[0])
+            and (
+                single_item_can_attachment_download(normalized_items[0])
+                or single_video_can_server_proxy_download(normalized_items[0])
+            )
         ):
             return route_payload(
                 route_type=ROUTE_PROXY,
@@ -390,6 +394,15 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
                 route_type=ROUTE_DIRECT,
                 route_reason="单个视频资源优先使用浏览器直连下载，减少服务器中转等待",
                 download_strategy="browser_direct_provider_video",
+                media_items=normalized_items,
+                estimated_bytes=estimated_bytes,
+                warnings=warnings,
+            )
+        if single_video_can_server_proxy_download(normalized_items[0]):
+            return route_payload(
+                route_type=ROUTE_PROXY,
+                route_reason="KuKuTool 视频使用服务器单文件下载，避免浏览器直链拦截或签名 URL 失效",
+                download_strategy="server_single_attachment",
                 media_items=normalized_items,
                 estimated_bytes=estimated_bytes,
                 warnings=warnings,
