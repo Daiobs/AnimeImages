@@ -193,9 +193,6 @@ def single_video_can_browser_direct_attempt(item):
         return False
     if not is_http_url(item_url(item)):
         return False
-    provider = item_provider(item)
-    if not provider:
-        return True
     return single_video_can_browser_direct_download(item)
 
 
@@ -398,19 +395,19 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
                 estimated_bytes=estimated_bytes,
                 warnings=warnings,
             )
-        if single_video_can_server_proxy_download(normalized_items[0]):
+        if single_video_can_attachment_download(normalized_items[0]):
             return route_payload(
                 route_type=ROUTE_PROXY,
-                route_reason="KuKuTool 视频使用服务器单文件下载，避免浏览器直链拦截或签名 URL 失效",
+                route_reason="单个资源使用单文件下载，不打包 ZIP",
                 download_strategy="server_single_attachment",
                 media_items=normalized_items,
                 estimated_bytes=estimated_bytes,
                 warnings=warnings,
             )
-        if single_video_can_attachment_download(normalized_items[0]):
+        if single_video_can_server_proxy_download(normalized_items[0]):
             return route_payload(
                 route_type=ROUTE_PROXY,
-                route_reason="单个资源使用单文件下载，不打包 ZIP",
+                route_reason="KuKuTool 视频使用服务器单文件下载，避免浏览器直链拦截或签名 URL 失效",
                 download_strategy="server_single_attachment",
                 media_items=normalized_items,
                 estimated_bytes=estimated_bytes,

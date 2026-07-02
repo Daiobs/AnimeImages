@@ -5749,10 +5749,10 @@ class XhsDownloadViewTests(TestCase):
             requested_mode="auto",
         )
 
-        self.assertEqual(route["route_type"], ROUTE_DIRECT)
-        self.assertEqual(route["download_strategy"], "browser_direct_provider_video")
-        self.assertEqual(route["server_egress_estimated_bytes"], 0)
-        self.assertEqual(route["browser_egress_estimated_bytes"], 456)
+        self.assertEqual(route["route_type"], ROUTE_PROXY)
+        self.assertEqual(route["download_strategy"], "server_single_attachment")
+        self.assertEqual(route["server_egress_estimated_bytes"], 456)
+        self.assertEqual(route["browser_egress_estimated_bytes"], 0)
 
     def test_download_route_browser_single_video_attachment(self):
         request = RequestFactory().post("/media/download-images/")
@@ -5762,10 +5762,10 @@ class XhsDownloadViewTests(TestCase):
             requested_mode="browser",
         )
 
-        self.assertEqual(route["route_type"], ROUTE_DIRECT)
-        self.assertEqual(route["download_strategy"], "browser_direct_provider_video")
-        self.assertEqual(route["server_egress_estimated_bytes"], 0)
-        self.assertEqual(route["browser_egress_estimated_bytes"], 456)
+        self.assertEqual(route["route_type"], ROUTE_PROXY)
+        self.assertEqual(route["download_strategy"], "server_single_attachment")
+        self.assertEqual(route["server_egress_estimated_bytes"], 456)
+        self.assertEqual(route["browser_egress_estimated_bytes"], 0)
 
     def test_download_route_proxy_single_video_forces_server_attachment(self):
         request = RequestFactory().post("/media/download-images/")
@@ -5894,7 +5894,7 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(image_route["route_type"], ROUTE_DIRECT)
-        self.assertEqual(video_route["route_type"], ROUTE_DIRECT)
+        self.assertEqual(video_route["route_type"], ROUTE_PROXY)
         self.assertEqual(mixed_route["route_type"], ROUTE_ZIP)
         self.assertEqual(image_route["strategy_version"], "v3")
         self.assertIn("estimated_cost", image_route)
@@ -6022,7 +6022,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(get_daily_total("download-requests-ip", get_client_identity(first.wsgi_request)), 0)
 
     @patch("xhs_download.views.fetch_media_response")
-    def test_download_auto_video_returns_direct_route(self, mock_fetch):
+    def test_download_auto_video_returns_server_single_file(self, mock_fetch):
         mock_fetch.return_value = FakeStreamingResponse(
             b"video-content",
             url="https://sns-video-hw.xhscdn.com/a.mp4",
@@ -6042,13 +6042,14 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "application/json")
-        self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
-        self.assertEqual(mock_fetch.call_count, 0)
+        self.assertEqual(response["Content-Type"], "video/mp4")
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertEqual(b"".join(response.streaming_content), b"video-content")
+        self.assertEqual(mock_fetch.call_count, 1)
         log = DownloadRequestLog.objects.get()
-        self.assertEqual(log.route_type, ROUTE_DIRECT)
-        self.assertEqual(log.server_egress_estimated_bytes, 0)
-        self.assertEqual(log.browser_egress_estimated_bytes, 654)
+        self.assertEqual(log.route_type, ROUTE_PROXY)
+        self.assertEqual(log.server_egress_estimated_bytes, 654)
+        self.assertEqual(log.browser_egress_estimated_bytes, 0)
 
     @patch("xhs_download.views.fetch_media_response")
     def test_download_proxy_video_returns_single_file_response(self, mock_fetch):
@@ -6080,7 +6081,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(log.server_egress_estimated_bytes, 654)
 
     @patch("xhs_download.views.fetch_media_response")
-    def test_download_single_video_ssl_error_falls_back_to_direct_route(self, mock_fetch):
+    def test_download_single_video_ssl_error_returns_short_error(self, mock_fetch):
         long_error = (
             "HTTPSConnectionPool(host='v11-default.365yg.com', port=443): "
             "Max retries exceeded with url: /video/tos/cn/demo.mp4?token=secret "
@@ -6101,22 +6102,19 @@ class XhsDownloadViewTests(TestCase):
             content_type="application/json",
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 400)
         payload = response.json()
-        self.assertEqual(payload["status"], "routed")
-        self.assertEqual(payload["route_type"], ROUTE_DIRECT)
-        self.assertNotIn("365yg.com", payload["route_reason"])
-        self.assertNotIn("token=secret", payload["route_reason"])
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["message"], "单文件下载失败，请重新解析后再试。")
         log = DownloadRequestLog.objects.get()
-        self.assertEqual(log.status, ObservabilityStatus.SUCCESS)
-        self.assertEqual(log.route_type, ROUTE_DIRECT)
-        self.assertEqual(log.recovery_count, 1)
-        self.assertEqual(log.fallback_count, 1)
+        self.assertEqual(log.status, ObservabilityStatus.BLOCKED)
+        self.assertEqual(log.route_type, ROUTE_BLOCKED)
+        self.assertEqual(log.error_code, "PROXY_FAILED_RECOVERY_BLOCKED")
         self.assertEqual(log.fallback_from_route, ROUTE_PROXY)
-        self.assertEqual(log.fallback_to_route, ROUTE_DIRECT)
+        self.assertEqual(log.fallback_to_route, ROUTE_BLOCKED)
         self.assertEqual(log.failure_type, FAILURE_PROXY_FAILED)
-        self.assertNotIn("365yg.com", log.recovery_reason)
-        self.assertNotIn("token=secret", log.recovery_reason)
+        self.assertNotIn("365yg.com", log.error_message_short)
+        self.assertNotIn("token=secret", log.error_message_short)
 
     @patch("xhs_download.views.fetch_media_response")
     def test_download_signed_kukutool_video_uses_server_single_file(self, mock_fetch):
@@ -6505,7 +6503,7 @@ class XhsDownloadViewTests(TestCase):
 
     @patch("xhs_download.views.fetch_media_response")
     @patch("xhs_download.views.build_download_archive_file")
-    def test_staff_can_download_video_direct_when_visitor_video_disabled(self, mock_archive, mock_fetch):
+    def test_staff_can_download_video_single_file_when_visitor_video_disabled(self, mock_archive, mock_fetch):
         from django.contrib.auth import get_user_model
 
         setting = DownloadRuntimeSetting.load()
@@ -6539,10 +6537,11 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "application/json")
-        self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
+        self.assertEqual(response["Content-Type"], "video/mp4")
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertEqual(b"".join(response.streaming_content), b"video-content")
         self.assertEqual(mock_archive.call_count, 0)
-        self.assertEqual(mock_fetch.call_count, 0)
+        self.assertEqual(mock_fetch.call_count, 1)
 
     def test_download_endpoint_blocks_single_video_size_limit(self):
         setting = DownloadRuntimeSetting.load()
@@ -6624,7 +6623,7 @@ class XhsDownloadViewTests(TestCase):
 
     @patch("xhs_download.views.fetch_media_response")
     @patch("xhs_download.views.build_download_archive_file")
-    def test_staff_large_download_exempt_allows_single_video_direct(self, mock_archive, mock_fetch):
+    def test_staff_large_download_exempt_allows_single_video_file(self, mock_archive, mock_fetch):
         from django.contrib.auth import get_user_model
 
         setting = DownloadRuntimeSetting.load()
@@ -6665,10 +6664,11 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "application/json")
-        self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
+        self.assertEqual(response["Content-Type"], "video/mp4")
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertEqual(b"".join(response.streaming_content), b"video-content")
         self.assertEqual(mock_archive.call_count, 0)
-        self.assertEqual(mock_fetch.call_count, 0)
+        self.assertEqual(mock_fetch.call_count, 1)
 
     @patch("xhs_download.views.build_download_archive_file")
     def test_staff_large_download_exempt_does_not_bypass_global_daily_bytes(self, mock_archive):
