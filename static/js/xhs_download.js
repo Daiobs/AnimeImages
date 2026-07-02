@@ -668,6 +668,14 @@
             return filename;
         }
 
+        function directRouteShouldUseNativeBrowserDownload(items) {
+            const directItems = (items || []).filter((item) => item && item.url);
+            if (directItems.length !== 1) {
+                return false;
+            }
+            return String(directItems[0].type || "").toLowerCase() === "video";
+        }
+
         async function writeResponseToFileWithProgress(response, fileHandle, startPercent, endPercent) {
             const contentLength = Number.parseInt(response.headers.get("Content-Length") || "0", 10);
             if (!response.body || !contentLength) {
@@ -924,6 +932,16 @@
                     setProgress(0);
                     const data = await response.json();
                     if (data.status === "routed" && data.route_type === "direct") {
+                        if (directRouteShouldUseNativeBrowserDownload(data.items || [])) {
+                            const filenames = handoffDirectRouteItemsToBrowser(data.items || []);
+                            setProgress(100);
+                            setStatus(
+                                getStatusElement(),
+                                `${data.route_reason || "已交给浏览器直接下载源文件"}：${filenames.join("、")}${routeWarningText(data.warnings)}`,
+                                "text-success",
+                            );
+                            return;
+                        }
                         try {
                             const filenames = await downloadDirectRouteItems(data.items || []);
                             setProgress(100);
