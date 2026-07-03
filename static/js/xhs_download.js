@@ -695,6 +695,46 @@
             return frame;
         }
 
+        function getServerDownloadFrame() {
+            let frame = document.getElementById("xhs-server-download-frame");
+            if (frame) {
+                return frame;
+            }
+
+            frame = document.createElement("iframe");
+            frame.id = "xhs-server-download-frame";
+            frame.name = "xhs-server-download-frame";
+            frame.hidden = true;
+            frame.style.display = "none";
+            document.body.appendChild(frame);
+            return frame;
+        }
+
+        function submitBrowserManagedServerDownload(payload) {
+            const frame = getServerDownloadFrame();
+            const form = document.createElement("form");
+            form.method = "POST";
+            form.action = downloadUrl;
+            form.target = frame ? frame.name : "_blank";
+            form.hidden = true;
+
+            const csrfInput = document.createElement("input");
+            csrfInput.type = "hidden";
+            csrfInput.name = "csrfmiddlewaretoken";
+            csrfInput.value = getCookie("csrftoken") || "";
+            form.appendChild(csrfInput);
+
+            const payloadInput = document.createElement("input");
+            payloadInput.type = "hidden";
+            payloadInput.name = "payload_json";
+            payloadInput.value = JSON.stringify(payload);
+            form.appendChild(payloadInput);
+
+            document.body.appendChild(form);
+            form.submit();
+            form.remove();
+        }
+
         function directRouteShouldUseNativeBrowserDownload(items) {
             const directItems = (items || []).filter((item) => item && item.url);
             if (directItems.length !== 1) {
@@ -825,6 +865,17 @@
             });
         }
 
+        async function fetchRouteOnly(payload) {
+            const response = await postDownloadPayload({
+                ...payload,
+                route_only: true,
+            });
+            if (!response.ok) {
+                throw new Error(await parseErrorResponse(response));
+            }
+            return response.json();
+        }
+
         async function saveDownloadResponse(response, fallbackName, startPercent, endPercent) {
             const filename = getDownloadFilename(response, fallbackName);
             const blob = await readResponseBlobWithProgress(response, startPercent, endPercent);
@@ -950,6 +1001,45 @@
                     quality: qualityInput ? qualityInput.value || 95 : 95,
                     video_save_mode: videoSaveModeInput ? videoSaveModeInput.value : "video",
                 };
+
+                if (!useFilePicker && selectedSingleItem(selected)) {
+                    const routePreview = await fetchRouteOnly(payload);
+                    if (
+                        routePreview
+                        && routePreview.status === "routed"
+                        && routePreview.route_type === "proxy"
+                        && routePreview.download_strategy === "server_single_attachment"
+                        && routePreview.native_browser_download
+                    ) {
+                        setProgressPending("浏览器下载");
+                        submitBrowserManagedServerDownload(payload);
+                        setProgress(100);
+                        setStatus(
+                            getStatusElement(),
+                            `${routePreview.route_reason || "已交给浏览器下载管理器"}。请查看浏览器下载栏。${routeWarningText(routePreview.warnings)}`,
+                            "text-success",
+                        );
+                        return;
+                    }
+                    if (
+                        routePreview
+                        && routePreview.status === "routed"
+                        && routePreview.route_type === "direct"
+                    ) {
+                        const handoffKey = directRouteHandoffKey(routePreview.items || []);
+                        if (handoffKey && !directHandoffAttemptKeys.has(handoffKey)) {
+                            directHandoffAttemptKeys.add(handoffKey);
+                            const filenames = handoffDirectRouteItemsToBrowser(routePreview.items || []);
+                            setProgress(100);
+                            setStatus(
+                                getStatusElement(),
+                                `${routePreview.route_reason || "已交给浏览器直接下载源文件"}：${filenames.join("、")}。${directRouteRetryHint()}${routeWarningText(routePreview.warnings)}`,
+                                "text-muted",
+                            );
+                            return;
+                        }
+                    }
+                }
 
                 if (retryDirectViaServer) {
                     setStatus(getStatusElement(), "正在切换服务器单文件下载，请稍候...");

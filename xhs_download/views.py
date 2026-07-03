@@ -3348,7 +3348,13 @@ def proxy_image_view(request):
 def download_images_api(request):
     started_at = time.monotonic()
     try:
-        data = json.loads(request.body.decode("utf-8"))
+        if request.content_type and request.content_type.startswith("application/json"):
+            data = json.loads(request.body.decode("utf-8"))
+        else:
+            payload_json = request.POST.get("payload_json", "")
+            if not payload_json:
+                raise json.JSONDecodeError("missing payload_json", "", 0)
+            data = json.loads(payload_json)
     except json.JSONDecodeError:
         log_download_request_event(
             request,
@@ -3361,6 +3367,7 @@ def download_images_api(request):
         return JsonResponse({"status": "error", "message": "请求数据不是有效 JSON。"}, status=400)
 
     media_items = data.get("media_items", [])
+    route_only = bool(data.get("route_only"))
     image_urls = data.get("image_urls", [])
     if image_urls and not media_items:
         media_items = [{"type": "image", "url": url} for url in image_urls]
@@ -3506,6 +3513,34 @@ def download_images_api(request):
                 "strategy_version": route_info.get("strategy_version", "v3"),
                 "confidence": route_info.get("confidence", 0),
                 "routing_score": route_info.get("routing_score", 0),
+            }
+        )
+
+    if route_only and download_mode in routed_download_modes:
+        log_download_request_event(
+            request,
+            download_type=route_info.get("route_type", "auto"),
+            media_items=media_items,
+            status=ObservabilityStatus.SUCCESS,
+            started_at=started_at,
+            actual_bytes=0,
+            route_info=route_info,
+        )
+        return JsonResponse(
+            {
+                "status": "routed",
+                "route_type": route_info.get("route_type"),
+                "route_reason": route_info.get("route_reason"),
+                "download_strategy": route_info.get("download_strategy"),
+                "items": route_info.get("items", []),
+                "warnings": route_info.get("warnings", []),
+                "estimated_bytes": route_info.get("estimated_bytes", 0),
+                "server_egress_estimated_bytes": route_info.get("server_egress_estimated_bytes", 0),
+                "browser_egress_estimated_bytes": route_info.get("browser_egress_estimated_bytes", 0),
+                "strategy_version": route_info.get("strategy_version", "v3"),
+                "confidence": route_info.get("confidence", 0),
+                "routing_score": route_info.get("routing_score", 0),
+                "native_browser_download": route_info.get("download_strategy") == "server_single_attachment",
             }
         )
 
