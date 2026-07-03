@@ -81,6 +81,7 @@ from .services.downloads import (
     MAX_IMAGE_BYTES,
     MAX_VIDEO_BYTES,
     build_download_archive_file,
+    fetch_item_to_temp_path,
     fetch_media_response,
     guess_image_extension,
     guess_video_extension_from_response,
@@ -2433,6 +2434,40 @@ def build_single_attachment_response(item, base_filename):
                 maximum=180.0,
             ),
         )
+        temp_result = fetch_item_to_temp_path(
+            item,
+            url=url,
+            timeout=request_timeout,
+            max_bytes=max_bytes,
+            expected_type=media_type,
+        )
+        temp_path = Path(temp_result["path"])
+        content_type = temp_result.get("content_type", "") or "application/octet-stream"
+        final_url = temp_result.get("final_url", "") or url
+        actual_size = int(temp_result.get("size") or 0)
+        filename = single_attachment_download_filename(
+            item,
+            base_filename,
+            final_url=final_url,
+            content_type=content_type,
+        )
+        try:
+            temp_file = open(temp_path, "rb")
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
+        response = FileResponse(
+            temp_file,
+            as_attachment=True,
+            filename=filename,
+            content_type=content_type,
+        )
+        response._resource_closers.append(lambda path=temp_path: path.unlink(missing_ok=True))
+        if actual_size:
+            response["Content-Length"] = str(actual_size)
+        response["X-Saved-Count"] = "1"
+        response["X-Failed-Count"] = "0"
+        return response, actual_size or estimated_media_items_bytes([item])
     upstream = fetch_media_response(
         url,
         timeout=request_timeout,

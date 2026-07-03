@@ -287,6 +287,21 @@ def make_kukutool_download_item(url, aweme_id="7647533902413173321"):
     return item
 
 
+def make_temp_download_result(content=b"video-content", final_url="https://v11-default.365yg.com/video/demo.mp4", content_type="video/mp4"):
+    temp_file = NamedTemporaryFile(delete=False)
+    try:
+        temp_file.write(content)
+        temp_file.flush()
+    finally:
+        temp_file.close()
+    return {
+        "path": temp_file.name,
+        "content_type": content_type,
+        "final_url": final_url,
+        "size": len(content),
+    }
+
+
 def make_third_party_download_item(
     url,
     platform="kuaishou",
@@ -6178,13 +6193,13 @@ class XhsDownloadViewTests(TestCase):
         self.assertNotIn("365yg.com", log.error_message_short)
         self.assertNotIn("token=secret", log.error_message_short)
 
-    @patch("xhs_download.views.fetch_media_response")
-    def test_download_signed_kukutool_video_uses_server_single_file(self, mock_fetch):
+    @patch("xhs_download.views.fetch_item_to_temp_path")
+    def test_download_signed_kukutool_video_uses_server_single_file(self, mock_fetch_to_temp):
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
-        mock_fetch.return_value = FakeStreamingResponse(
+        mock_fetch_to_temp.return_value = make_temp_download_result(
             b"video-content",
-            url=item["url"],
+            final_url=item["url"],
             content_type="video/mp4",
         )
 
@@ -6198,27 +6213,28 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(mock_fetch.call_args.kwargs["timeout"], 60)
+        self.assertEqual(mock_fetch_to_temp.call_args.kwargs["timeout"], 60)
         self.assertEqual(response["Content-Type"], "video/mp4")
         self.assertIn("attachment", response["Content-Disposition"])
         self.assertEqual(b"".join(response.streaming_content), b"video-content")
+        response.close()
         log = DownloadRequestLog.objects.get()
         self.assertEqual(log.download_type, "single_file")
         self.assertEqual(log.route_type, ROUTE_PROXY)
         self.assertEqual(log.server_egress_estimated_bytes, 2000)
         self.assertEqual(log.browser_egress_estimated_bytes, 0)
 
-    @patch("xhs_download.views.fetch_media_response")
-    def test_download_signed_kukutool_video_uses_runtime_timeout_override(self, mock_fetch):
+    @patch("xhs_download.views.fetch_item_to_temp_path")
+    def test_download_signed_kukutool_video_uses_runtime_timeout_override(self, mock_fetch_to_temp):
         setting = ProviderRuntimeSetting.load()
         setting.kukutool_download_timeout_seconds = 120
         setting.save(update_fields=["kukutool_download_timeout_seconds", "updated_at"])
 
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
-        mock_fetch.return_value = FakeStreamingResponse(
+        mock_fetch_to_temp.return_value = make_temp_download_result(
             b"video-content",
-            url=item["url"],
+            final_url=item["url"],
             content_type="video/mp4",
         )
 
@@ -6232,15 +6248,16 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(mock_fetch.call_args.kwargs["timeout"], 120)
+        self.assertEqual(mock_fetch_to_temp.call_args.kwargs["timeout"], 120)
+        response.close()
 
-    @patch("xhs_download.views.fetch_media_response")
-    def test_download_proxy_signed_kukutool_video_returns_single_file_response(self, mock_fetch):
+    @patch("xhs_download.views.fetch_item_to_temp_path")
+    def test_download_proxy_signed_kukutool_video_returns_single_file_response(self, mock_fetch_to_temp):
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
-        mock_fetch.return_value = FakeStreamingResponse(
+        mock_fetch_to_temp.return_value = make_temp_download_result(
             b"video-content",
-            url=item["url"],
+            final_url=item["url"],
             content_type="video/mp4",
         )
 
@@ -6257,10 +6274,37 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(response["Content-Type"], "video/mp4")
         self.assertIn("attachment", response["Content-Disposition"])
         self.assertEqual(b"".join(response.streaming_content), b"video-content")
+        response.close()
         log = DownloadRequestLog.objects.get()
         self.assertEqual(log.download_type, "single_file")
         self.assertEqual(log.route_type, ROUTE_PROXY)
         self.assertEqual(log.server_egress_estimated_bytes, 2000)
+
+    @patch("xhs_download.views.fetch_item_to_temp_path")
+    def test_download_signed_kukutool_video_cleans_up_temp_file(self, mock_fetch_to_temp):
+        item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
+        item["size_bytes"] = 2000
+        temp_result = make_temp_download_result(
+            b"video-content",
+            final_url=item["url"],
+            content_type="video/mp4",
+        )
+        temp_path = Path(temp_result["path"])
+        mock_fetch_to_temp.return_value = temp_result
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "proxy",
+                "media_items": [item],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertTrue(temp_path.exists())
+        self.assertEqual(b"".join(response.streaming_content), b"video-content")
+        response.close()
+        self.assertFalse(temp_path.exists())
 
     @patch("xhs_download.views.fetch_media_response")
     def test_download_proxy_single_video_returns_single_file_response(self, mock_fetch):
@@ -6451,15 +6495,15 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(outcome.fallback_to_route, ROUTE_BLOCKED)
         self.assertEqual(SelfHealingEvent.objects.get().depth, 3)
 
-    @patch("xhs_download.views.fetch_media_response")
+    @patch("xhs_download.views.fetch_item_to_temp_path")
     @patch("xhs_download.views.build_download_archive_file")
-    def test_provider_timeout_during_zip_falls_back_to_proxy(self, mock_archive, mock_fetch):
+    def test_provider_timeout_during_zip_falls_back_to_proxy(self, mock_archive, mock_fetch_to_temp):
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
         mock_archive.side_effect = XhsProviderTimeoutError("provider timeout")
-        mock_fetch.return_value = FakeStreamingResponse(
+        mock_fetch_to_temp.return_value = make_temp_download_result(
             b"video-content",
-            url=item["url"],
+            final_url=item["url"],
             content_type="video/mp4",
         )
 
@@ -6476,6 +6520,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(response["Content-Type"], "video/mp4")
         self.assertIn("attachment", response["Content-Disposition"])
         self.assertEqual(b"".join(response.streaming_content), b"video-content")
+        response.close()
         log = DownloadRequestLog.objects.get()
         self.assertEqual(log.download_type, "single_file")
         self.assertEqual(log.route_type, ROUTE_PROXY)
