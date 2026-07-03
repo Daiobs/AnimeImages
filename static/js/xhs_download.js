@@ -200,13 +200,18 @@
         return ["kukutool_generic", "youtube_merge", "yt_dlp_merge"].includes(provider);
     }
 
+    function itemRequiresServerProcessing(item) {
+        const provider = item ? String(item.provider || "") : "";
+        return ["kukutool", "kukutool_generic", "youtube_merge", "yt_dlp_merge"].includes(provider);
+    }
+
     function selectedNeedsZipTask(items) {
         const selectedItems = items || [];
         return selectedItems.length > 1 || selectedItems.some(itemRequiresZipTask);
     }
 
     function selectedRequiresProviderProcessing(items) {
-        return (items || []).some(itemRequiresZipTask);
+        return (items || []).some(itemRequiresServerProcessing);
     }
 
     async function parseSearchResponse(response) {

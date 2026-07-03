@@ -112,6 +112,7 @@ from .services.provider_access import (
     provider_is_allowed_for_request,
     third_party_public_access_summary,
 )
+from .services.provider_runtime_config import runtime_float
 from .services.registry import get_adapter_for_url, parse_media_page
 from .services.provider_manifest import build_provider_manifest_token
 from .services.observability import (
@@ -2420,9 +2421,21 @@ def build_single_attachment_response(item, base_filename):
 
     max_bytes = MAX_IMAGE_BYTES if media_type == "image" else MAX_VIDEO_BYTES
     provider_signed = item if provider_manifest_allows_public_download(item) else False
+    request_timeout = 20 if media_type == "image" else 60
+    if provider_signed and media_type == "video":
+        request_timeout = max(
+            request_timeout,
+            runtime_float(
+                "kukutool_download_timeout_seconds",
+                getattr(settings, "KUKUTOOL_DOWNLOAD_TIMEOUT_SECONDS", 8.0)
+                or 8.0,
+                minimum=1.0,
+                maximum=180.0,
+            ),
+        )
     upstream = fetch_media_response(
         url,
-        timeout=20 if media_type == "image" else 60,
+        timeout=request_timeout,
         retries=1 if provider_signed else 3,
         provider_signed=provider_signed,
     )
