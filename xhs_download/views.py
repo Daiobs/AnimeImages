@@ -761,6 +761,30 @@ def provider_settings_view(request):
             except (TypeError, ValueError):
                 rollout_percent = 0
             setattr(runtime_setting, field_name, min(100, max(0, rollout_percent)))
+        runtime_setting.douyin_ultra_total_timeout_seconds = clamp_float(
+            request.POST.get("douyin_ultra_total_timeout_seconds"),
+            minimum=1.0,
+            maximum=30.0,
+            default=runtime_setting.douyin_ultra_total_timeout_seconds,
+        )
+        runtime_setting.douyin_ultra_kukutool_grace_seconds = clamp_float(
+            request.POST.get("douyin_ultra_kukutool_grace_seconds"),
+            minimum=0.0,
+            maximum=10.0,
+            default=runtime_setting.douyin_ultra_kukutool_grace_seconds,
+        )
+        runtime_setting.kukutool_download_timeout_seconds = clamp_float(
+            request.POST.get("kukutool_download_timeout_seconds"),
+            minimum=1.0,
+            maximum=180.0,
+            default=runtime_setting.kukutool_download_timeout_seconds,
+        )
+        runtime_setting.youtube_frontend_timeout_seconds = clamp_float(
+            request.POST.get("youtube_frontend_timeout_seconds"),
+            minimum=3.0,
+            maximum=60.0,
+            default=runtime_setting.youtube_frontend_timeout_seconds,
+        )
         for field_name in (
             "douyin_ultra_disabled_reason",
             "youtube_merge_disabled_reason",
@@ -788,6 +812,10 @@ def provider_settings_view(request):
                 "third_party_allowed_public_platforms",
                 "third_party_blocked_platforms",
                 "kukutool_disabled",
+                "douyin_ultra_total_timeout_seconds",
+                "douyin_ultra_kukutool_grace_seconds",
+                "kukutool_download_timeout_seconds",
+                "youtube_frontend_timeout_seconds",
                 "updated_at",
             ]
         )

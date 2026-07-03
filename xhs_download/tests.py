@@ -221,7 +221,11 @@ from .services.platforms.external_tools import (
     run_external_command,
     safe_subprocess_env,
 )
-from .services.platforms.third_party import third_party_media_url_is_allowed
+from .services.platforms.third_party import (
+    frontend_budget_seconds,
+    get_third_party_rule,
+    third_party_media_url_is_allowed,
+)
 from .services.platforms.bilibili import BILIBILI_HEADERS
 from .services.platforms.douyin import DOUYIN_HEADERS, extract_aweme_id, get_video_candidates
 from .services.platforms.douyin_kukutool import (
@@ -9422,6 +9426,10 @@ class ProviderSettingsAdminViewTests(TestCase):
                 "third_party_blocked_platforms": "reddit",
                 "third_party_blocked_hosts": "youtube.com.evil.com",
                 "kukutool_disabled": "1",
+                "douyin_ultra_total_timeout_seconds": "7.5",
+                "douyin_ultra_kukutool_grace_seconds": "2.5",
+                "kukutool_download_timeout_seconds": "11",
+                "youtube_frontend_timeout_seconds": "14",
             },
         )
 
@@ -9441,6 +9449,10 @@ class ProviderSettingsAdminViewTests(TestCase):
         self.assertEqual(setting.third_party_blocked_platforms, "reddit")
         self.assertEqual(setting.third_party_blocked_hosts, "youtube.com.evil.com")
         self.assertTrue(setting.kukutool_disabled)
+        self.assertEqual(setting.douyin_ultra_total_timeout_seconds, 7.5)
+        self.assertEqual(setting.douyin_ultra_kukutool_grace_seconds, 2.5)
+        self.assertEqual(setting.kukutool_download_timeout_seconds, 11)
+        self.assertEqual(setting.youtube_frontend_timeout_seconds, 14)
 
     def test_provider_runtime_defaults_are_conservative(self):
         setting = ProviderRuntimeSetting.load()
@@ -9456,6 +9468,32 @@ class ProviderSettingsAdminViewTests(TestCase):
         self.assertEqual(setting.third_party_allowed_public_hosts, "")
         self.assertEqual(setting.third_party_blocked_platforms, "")
         self.assertEqual(setting.third_party_blocked_hosts, "")
+        self.assertEqual(setting.douyin_ultra_total_timeout_seconds, 5.0)
+        self.assertEqual(setting.douyin_ultra_kukutool_grace_seconds, 1.0)
+        self.assertEqual(setting.kukutool_download_timeout_seconds, 8.0)
+        self.assertEqual(setting.youtube_frontend_timeout_seconds, 8.0)
+
+    def test_runtime_budget_overrides_are_used_by_provider_paths(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.douyin_ultra_total_timeout_seconds = 9.0
+        setting.douyin_ultra_kukutool_grace_seconds = 3.0
+        setting.youtube_frontend_timeout_seconds = 13.0
+        setting.save(
+            update_fields=[
+                "douyin_ultra_total_timeout_seconds",
+                "douyin_ultra_kukutool_grace_seconds",
+                "youtube_frontend_timeout_seconds",
+                "updated_at",
+            ]
+        )
+
+        provider_settings = get_platform_provider_settings("douyin")
+        self.assertEqual(provider_settings.ultra_total_timeout_seconds, 9.0)
+        self.assertEqual(provider_settings.ultra_kukutool_grace_seconds, 3.0)
+        self.assertEqual(
+            frontend_budget_seconds(get_third_party_rule("youtube")),
+            13.0,
+        )
 
     @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
     def test_capability_enabled_admin_disabled_is_not_available(self):

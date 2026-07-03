@@ -13,6 +13,7 @@ from ..common import (
     host_matches,
     is_blocked_hostname,
 )
+from ..provider_runtime_config import runtime_float
 from .base import BasePlatformAdapter, PlatformCapabilities, ProviderPolicy
 from .gallerydl_generic import GalleryDlGenericProvider, GalleryDlResultNormalizer
 from .kukutool_generic import KukutoolGenericProvider, KukutoolResultNormalizer
@@ -315,7 +316,12 @@ def frontend_budget_seconds(rule=None):
     if getattr(rule, "platform_id", "") == "youtube":
         return max(
             base_budget,
-            float(getattr(settings, "YOUTUBE_FRONTEND_TIMEOUT_SECONDS", 8.0) or 8.0),
+            runtime_float(
+                "youtube_frontend_timeout_seconds",
+                getattr(settings, "YOUTUBE_FRONTEND_TIMEOUT_SECONDS", 8.0) or 8.0,
+                minimum=3.0,
+                maximum=60.0,
+            ),
         )
     return base_budget
 

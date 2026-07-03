@@ -45,6 +45,10 @@ PROVIDER_RUNTIME_AUDIT_FIELDS = (
     "third_party_allowed_public_platforms",
     "third_party_blocked_platforms",
     "kukutool_disabled",
+    "douyin_ultra_total_timeout_seconds",
+    "douyin_ultra_kukutool_grace_seconds",
+    "kukutool_download_timeout_seconds",
+    "youtube_frontend_timeout_seconds",
 )
 
 

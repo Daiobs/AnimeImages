@@ -2,6 +2,8 @@ from dataclasses import dataclass
 
 from django.conf import settings
 
+from .provider_runtime_config import load_provider_runtime_setting_readonly, runtime_float
+
 
 @dataclass(frozen=True)
 class ProviderSettings:
@@ -87,6 +89,7 @@ def normalize_provider_order(value, default=("native",)):
 
 def get_platform_provider_settings(platform_id):
     platform_id = normalize_provider_name(platform_id)
+    runtime_setting = load_provider_runtime_setting_readonly()
     if platform_id == "douyin":
         raw_order = ("kukutool", "native")
     elif platform_id in {"xiaohongshu", "xhs"}:
@@ -211,9 +214,21 @@ def get_platform_provider_settings(platform_id):
         ),
         tikhub_region=getattr(settings, "TIKHUB_REGION", "CN") or "CN",
         tikhub_daily_limit=int(getattr(settings, "TIKHUB_DAILY_LIMIT", 0) or 0),
-        ultra_total_timeout_seconds=float(getattr(settings, "DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS", 5.0) or 0),
+        ultra_total_timeout_seconds=runtime_float(
+            "douyin_ultra_total_timeout_seconds",
+            getattr(settings, "DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS", 5.0) or 5.0,
+            minimum=1.0,
+            maximum=30.0,
+            setting=runtime_setting,
+        ),
         ultra_native_timeout_seconds=float(getattr(settings, "DOUYIN_ULTRA_NATIVE_TIMEOUT_SECONDS", 3.0) or 0),
-        ultra_kukutool_grace_seconds=float(getattr(settings, "DOUYIN_ULTRA_KUKUTOOL_GRACE_SECONDS", 1.0) or 0),
+        ultra_kukutool_grace_seconds=runtime_float(
+            "douyin_ultra_kukutool_grace_seconds",
+            getattr(settings, "DOUYIN_ULTRA_KUKUTOOL_GRACE_SECONDS", 1.0) or 1.0,
+            minimum=0.0,
+            maximum=10.0,
+            setting=runtime_setting,
+        ),
         tikhub_connect_timeout_seconds=float(getattr(settings, "TIKHUB_CONNECT_TIMEOUT_SECONDS", 1.0) or 0),
         tikhub_read_timeout_seconds=float(getattr(settings, "TIKHUB_READ_TIMEOUT_SECONDS", 6.5) or 0),
         tikhub_max_attempts=max(1, int(getattr(settings, "TIKHUB_MAX_ATTEMPTS", 2) or 1)),

@@ -713,6 +713,61 @@
 
             <section class="provider-emergency">
                 <div>
+                    <div class="provider-emergency-title">Provider 运行预算</div>
+                    <div class="provider-emergency-help">
+                        日常排障和灰度调参使用这里；.env 只保留服务器能力、密钥和兜底默认值。
+                    </div>
+                </div>
+                <div class="provider-field-grid" style="flex: 1 1 720px;">
+                    <label class="provider-field">
+                        <span>抖音超清前台总预算（秒）</span>
+                        <input
+                            type="number"
+                            name="douyin_ultra_total_timeout_seconds"
+                            min="1"
+                            max="30"
+                            step="0.5"
+                            value="{{ runtime_setting.douyin_ultra_total_timeout_seconds }}"
+                        >
+                    </label>
+                    <label class="provider-field">
+                        <span>KuKuTool 近完成等待（秒）</span>
+                        <input
+                            type="number"
+                            name="douyin_ultra_kukutool_grace_seconds"
+                            min="0"
+                            max="10"
+                            step="0.5"
+                            value="{{ runtime_setting.douyin_ultra_kukutool_grace_seconds }}"
+                        >
+                    </label>
+                    <label class="provider-field">
+                        <span>KuKuTool 恢复下载超时（秒）</span>
+                        <input
+                            type="number"
+                            name="kukutool_download_timeout_seconds"
+                            min="1"
+                            max="180"
+                            step="1"
+                            value="{{ runtime_setting.kukutool_download_timeout_seconds }}"
+                        >
+                    </label>
+                    <label class="provider-field">
+                        <span>YouTube 前台解析预算（秒）</span>
+                        <input
+                            type="number"
+                            name="youtube_frontend_timeout_seconds"
+                            min="3"
+                            max="60"
+                            step="1"
+                            value="{{ runtime_setting.youtube_frontend_timeout_seconds }}"
+                        >
+                    </label>
+                </div>
+            </section>
+
+            <section class="provider-emergency">
+                <div>
                     <div class="provider-emergency-title">第三方公开平台白名单</div>
                     <div class="provider-emergency-help">allowlist 为空时，通用第三方 Provider 不向访客开放；blocked 优先级高于 allowed。</div>
                 </div>

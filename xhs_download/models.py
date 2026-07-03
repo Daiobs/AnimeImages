@@ -115,6 +115,30 @@ class ProviderRuntimeSetting(models.Model):
         default=False,
         verbose_name="临时禁用 KuKuTool",
     )
+    douyin_ultra_total_timeout_seconds = models.FloatField(
+        default=5.0,
+        validators=(MinValueValidator(1.0), MaxValueValidator(30.0)),
+        verbose_name="抖音超清前台总预算（秒）",
+        help_text="只影响抖音超清解析等待时间，不改变下载链路。",
+    )
+    douyin_ultra_kukutool_grace_seconds = models.FloatField(
+        default=1.0,
+        validators=(MinValueValidator(0.0), MaxValueValidator(10.0)),
+        verbose_name="KuKuTool 近完成等待（秒）",
+        help_text="native 已完成时额外等待 KuKuTool 的时间。",
+    )
+    kukutool_download_timeout_seconds = models.FloatField(
+        default=8.0,
+        validators=(MinValueValidator(1.0), MaxValueValidator(180.0)),
+        verbose_name="KuKuTool 下载恢复超时（秒）",
+        help_text="用于 KuKuTool 签名资源下载失败后的恢复/打包路径；单文件流式下载保持现有快速路径。",
+    )
+    youtube_frontend_timeout_seconds = models.FloatField(
+        default=8.0,
+        validators=(MinValueValidator(3.0), MaxValueValidator(60.0)),
+        verbose_name="YouTube 前台解析预算（秒）",
+        help_text="服务器访问 YouTube 较慢时可临时调高。",
+    )
     updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
 
     class Meta:
