@@ -753,6 +753,14 @@
                         >
                     </label>
                     <label class="provider-field">
+                        <span>KuKuTool 下载交付策略</span>
+                        <select name="kukutool_download_delivery_mode">
+                            <option value="server_stream" {% if runtime_setting.kukutool_download_delivery_mode == "server_stream" %}selected{% endif %}>服务端 attachment 流优先</option>
+                            <option value="browser_first" {% if runtime_setting.kukutool_download_delivery_mode == "browser_first" %}selected{% endif %}>浏览器优先，失败后服务端</option>
+                            <option value="server_only" {% if runtime_setting.kukutool_download_delivery_mode == "server_only" %}selected{% endif %}>仅服务端下载</option>
+                        </select>
+                    </label>
+                    <label class="provider-field">
                         <span>YouTube 前台解析预算（秒）</span>
                         <input
                             type="number"

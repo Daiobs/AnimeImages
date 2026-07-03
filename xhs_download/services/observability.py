@@ -48,6 +48,7 @@ PROVIDER_RUNTIME_AUDIT_FIELDS = (
     "douyin_ultra_total_timeout_seconds",
     "douyin_ultra_kukutool_grace_seconds",
     "kukutool_download_timeout_seconds",
+    "kukutool_download_delivery_mode",
     "youtube_frontend_timeout_seconds",
 )
 

@@ -25,6 +25,7 @@ from djangoProject.health import get_runtime_readiness
 
 from .models import (
     DownloadRequestLog,
+    KukuToolDownloadDeliveryMode,
     ObservabilityStatus,
     ParseRequestLog,
     PolicyOptimizationProposal,
@@ -97,6 +98,7 @@ from .services.downloads import (
 )
 from .services.platforms.douyin_kukutool import (
     get_kukutool_provider_health,
+    is_byte_cdn_url,
     set_kukutool_admin_disabled,
 )
 from .services.platforms.gallerydl_generic import GalleryDlGenericProvider
@@ -113,6 +115,10 @@ from .services.provider_access import (
     third_party_public_access_summary,
 )
 from .services.provider_runtime_config import runtime_float
+from .services.provider_recovery import (
+    get_kukutool_manifest_identity,
+    iter_kukutool_download_recovery_urls,
+)
 from .services.registry import get_adapter_for_url, parse_media_page
 from .services.provider_manifest import build_provider_manifest_token
 from .services.observability import (
@@ -741,6 +747,7 @@ def provider_settings_view(request):
 
     runtime_setting = ProviderRuntimeSetting.load()
     valid_modes = {choice[0] for choice in ProviderAccessMode.choices}
+    valid_kukutool_delivery_modes = {choice[0] for choice in KukuToolDownloadDeliveryMode.choices}
     if request.method == "POST":
         before_snapshot = provider_runtime_snapshot(runtime_setting)
         for field_name in (
@@ -780,6 +787,13 @@ def provider_settings_view(request):
             maximum=180.0,
             default=runtime_setting.kukutool_download_timeout_seconds,
         )
+        kukutool_delivery_mode = request.POST.get(
+            "kukutool_download_delivery_mode",
+            runtime_setting.kukutool_download_delivery_mode,
+        )
+        if kukutool_delivery_mode not in valid_kukutool_delivery_modes:
+            kukutool_delivery_mode = KukuToolDownloadDeliveryMode.SERVER_STREAM
+        runtime_setting.kukutool_download_delivery_mode = kukutool_delivery_mode
         runtime_setting.youtube_frontend_timeout_seconds = clamp_float(
             request.POST.get("youtube_frontend_timeout_seconds"),
             minimum=3.0,
@@ -816,6 +830,7 @@ def provider_settings_view(request):
                 "douyin_ultra_total_timeout_seconds",
                 "douyin_ultra_kukutool_grace_seconds",
                 "kukutool_download_timeout_seconds",
+                "kukutool_download_delivery_mode",
                 "youtube_frontend_timeout_seconds",
                 "updated_at",
             ]
@@ -2410,19 +2425,69 @@ def single_attachment_download_filename(item, base_filename, final_url="", conte
     return clean_filename(f"{stem}.{ext}")
 
 
+def open_single_attachment_upstream(item, media_type, request_timeout):
+    url = item.get("url")
+    if not url:
+        raise XhsDownloadError("资源 URL 为空")
+
+    recovery_enabled = bool(
+        media_type == "video"
+        and isinstance(item, dict)
+        and get_kukutool_manifest_identity(item)
+    )
+    provider_item = item if provider_manifest_allows_public_download(item) else None
+    attempted_urls = set()
+    candidates = [url]
+    recovery_urls = None
+    last_error = None
+
+    while candidates or recovery_urls is not None:
+        if not candidates:
+            try:
+                candidates.append(next(recovery_urls))
+            except StopIteration:
+                recovery_urls = None
+                continue
+
+        candidate_url = candidates.pop(0)
+        if not candidate_url or candidate_url in attempted_urls:
+            continue
+        attempted_urls.add(candidate_url)
+
+        candidate_provider_item = provider_item
+        if recovery_enabled and not is_byte_cdn_url(candidate_url):
+            candidate_provider_item = None
+
+        try:
+            return fetch_media_response(
+                candidate_url,
+                timeout=request_timeout,
+                retries=1 if recovery_enabled else 3,
+                provider_signed=candidate_provider_item,
+            )
+        except Exception as error:
+            last_error = error
+            if provider_item and is_recoverable_provider_download_error(error):
+                invalidate_external_provider_caches(provider_item)
+            if (
+                recovery_enabled
+                and recovery_urls is None
+                and len(attempted_urls) == 1
+                and is_recoverable_provider_download_error(error)
+            ):
+                recovery_urls = iter(iter_kukutool_download_recovery_urls(item) or ())
+
+    raise last_error or XhsDownloadError("资源下载失败")
+
+
 def build_single_attachment_response(item, base_filename):
     media_type = str(item.get("type") or "").lower() if isinstance(item, dict) else ""
     if media_type not in {"image", "video"}:
         raise XhsDownloadError("单文件下载仅支持图片或视频资源")
 
-    url = item.get("url")
-    if not url:
-        raise XhsDownloadError("资源 URL 为空")
-
     max_bytes = MAX_IMAGE_BYTES if media_type == "image" else MAX_VIDEO_BYTES
-    provider_signed = item if provider_manifest_allows_public_download(item) else False
     request_timeout = 20 if media_type == "image" else 60
-    if provider_signed and media_type == "video":
+    if provider_manifest_allows_public_download(item) and media_type == "video":
         request_timeout = max(
             request_timeout,
             runtime_float(
@@ -2433,12 +2498,7 @@ def build_single_attachment_response(item, base_filename):
                 maximum=180.0,
             ),
         )
-    upstream = fetch_media_response(
-        url,
-        timeout=request_timeout,
-        retries=1 if provider_signed else 3,
-        provider_signed=provider_signed,
-    )
+    upstream = open_single_attachment_upstream(item, media_type, request_timeout)
     try:
         content_type = upstream.headers.get("Content-Type", "")
         validate_response_content_type(content_type, media_type)
@@ -2476,7 +2536,7 @@ def build_single_attachment_response(item, base_filename):
         filename = single_attachment_download_filename(
             item,
             base_filename,
-            final_url=getattr(upstream, "url", "") or url,
+            final_url=getattr(upstream, "url", "") or item.get("url", ""),
             content_type=content_type,
         )
         response = StreamingHttpResponse(

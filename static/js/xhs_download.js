@@ -202,7 +202,7 @@
 
     function itemRequiresServerProcessing(item) {
         const provider = item ? String(item.provider || "") : "";
-        return ["kukutool", "kukutool_generic", "youtube_merge", "yt_dlp_merge"].includes(provider);
+        return ["kukutool_generic", "youtube_merge", "yt_dlp_merge"].includes(provider);
     }
 
     function selectedNeedsZipTask(items) {

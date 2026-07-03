@@ -16,6 +16,12 @@ class ProviderAccessMode(models.TextChoices):
     PUBLIC = "public", "全站开放"
 
 
+class KukuToolDownloadDeliveryMode(models.TextChoices):
+    BROWSER_FIRST = "browser_first", "浏览器优先，失败后服务端"
+    SERVER_STREAM = "server_stream", "服务端 attachment 流优先"
+    SERVER_ONLY = "server_only", "仅服务端下载"
+
+
 class PolicyRuntimeMode(models.TextChoices):
     SHADOW = "shadow", "影子观察"
     STAFF = "staff", "仅管理员启用"
@@ -132,6 +138,13 @@ class ProviderRuntimeSetting(models.Model):
         validators=(MinValueValidator(1.0), MaxValueValidator(180.0)),
         verbose_name="KuKuTool 下载恢复超时（秒）",
         help_text="用于 KuKuTool 签名资源下载失败后的恢复/打包路径；单文件流式下载保持现有快速路径。",
+    )
+    kukutool_download_delivery_mode = models.CharField(
+        max_length=24,
+        choices=KukuToolDownloadDeliveryMode.choices,
+        default=KukuToolDownloadDeliveryMode.SERVER_STREAM,
+        verbose_name="KuKuTool 下载交付策略",
+        help_text="server_stream 会直接使用服务端 attachment 单文件下载；browser_first 仅作为直链实验模式保留。",
     )
     youtube_frontend_timeout_seconds = models.FloatField(
         default=8.0,

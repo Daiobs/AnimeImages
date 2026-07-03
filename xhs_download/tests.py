@@ -164,6 +164,7 @@ from .services.provider_access import (
 )
 from .models import (
     DownloadRequestLog,
+    KukuToolDownloadDeliveryMode,
     ObservabilityStatus,
     ParseRequestLog,
     PolicyControlRecord,
@@ -5868,7 +5869,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(youtube_route["route_type"], ROUTE_ZIP)
         self.assertEqual(kukutool_route["route_type"], ROUTE_ZIP)
 
-    def test_download_route_signed_kukutool_cdn_video_uses_server_attachment(self):
+    def test_download_route_signed_kukutool_cdn_video_defaults_to_server_attachment(self):
         request = RequestFactory().post("/media/download-images/")
         item = make_kukutool_download_item("https://v6-default.365yg.com/a.mp4")
         item["size_bytes"] = 2000
@@ -5880,7 +5881,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(route["server_egress_estimated_bytes"], 2000)
         self.assertEqual(route["browser_egress_estimated_bytes"], 0)
 
-    def test_download_route_browser_signed_kukutool_cdn_video_uses_server_attachment(self):
+    def test_download_route_browser_signed_kukutool_cdn_video_defaults_to_server_attachment(self):
         request = RequestFactory().post("/media/download-images/")
         item = make_kukutool_download_item("https://v6-default.365yg.com/a.mp4")
         item["size_bytes"] = 2000
@@ -5891,6 +5892,22 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(route["download_strategy"], "server_single_attachment")
         self.assertEqual(route["server_egress_estimated_bytes"], 2000)
         self.assertEqual(route["browser_egress_estimated_bytes"], 0)
+
+    def test_download_route_signed_kukutool_cdn_video_browser_first_mode_uses_browser_direct(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.kukutool_download_delivery_mode = KukuToolDownloadDeliveryMode.BROWSER_FIRST
+        setting.save(update_fields=["kukutool_download_delivery_mode", "updated_at"])
+        request = RequestFactory().post("/media/download-images/")
+        item = make_kukutool_download_item("https://v6-default.365yg.com/a.mp4")
+        item["size_bytes"] = 2000
+
+        route = decide_download_route(request, [item], requested_mode="auto")
+
+        self.assertEqual(route["route_type"], ROUTE_DIRECT)
+        self.assertEqual(route["download_strategy"], "browser_direct_provider_video")
+        self.assertEqual(route["server_egress_estimated_bytes"], 0)
+        self.assertEqual(route["browser_egress_estimated_bytes"], 2000)
+        self.assertIn("浏览器", route["route_reason"])
 
     def test_download_route_proxy_signed_kukutool_cdn_video_forces_server_attachment(self):
         request = RequestFactory().post("/media/download-images/")
@@ -6179,7 +6196,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertNotIn("token=secret", log.error_message_short)
 
     @patch("xhs_download.views.fetch_media_response")
-    def test_download_signed_kukutool_video_uses_server_single_file(self, mock_fetch):
+    def test_download_signed_kukutool_video_defaults_to_server_single_file(self, mock_fetch):
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
         mock_fetch.return_value = FakeStreamingResponse(
@@ -6208,11 +6225,81 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(log.server_egress_estimated_bytes, 2000)
         self.assertEqual(log.browser_egress_estimated_bytes, 0)
 
+    @patch("xhs_download.views.invalidate_external_provider_caches")
+    @patch("xhs_download.views.iter_kukutool_download_recovery_urls")
+    @patch("xhs_download.views.fetch_media_response")
+    def test_download_signed_kukutool_video_server_single_file_recovers_with_refreshed_url(
+        self,
+        mock_fetch,
+        mock_recovery_urls,
+        mock_invalidate_caches,
+    ):
+        item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
+        item["size_bytes"] = 2000
+        refreshed_url = "https://v6-default.365yg.com/video/refreshed.mp4"
+        mock_fetch.side_effect = [
+            requests.exceptions.SSLError("EOF occurred in violation of protocol"),
+            FakeStreamingResponse(
+                b"video-content",
+                url=refreshed_url,
+                content_type="video/mp4",
+            ),
+        ]
+        mock_recovery_urls.return_value = [refreshed_url]
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "auto",
+                "media_items": [item],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "video/mp4")
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertEqual(b"".join(response.streaming_content), b"video-content")
+        self.assertEqual(mock_fetch.call_count, 2)
+        self.assertEqual(mock_fetch.call_args_list[1].kwargs["provider_signed"], item)
+        mock_recovery_urls.assert_called_once_with(item)
+        mock_invalidate_caches.assert_called()
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_download_signed_kukutool_video_browser_first_mode_returns_direct_route(self, mock_fetch):
+        setting = ProviderRuntimeSetting.load()
+        setting.kukutool_download_delivery_mode = KukuToolDownloadDeliveryMode.BROWSER_FIRST
+        setting.save(update_fields=["kukutool_download_delivery_mode", "updated_at"])
+        item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
+        item["size_bytes"] = 2000
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "auto",
+                "media_items": [item],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "routed")
+        self.assertEqual(payload["route_type"], ROUTE_DIRECT)
+        self.assertEqual(payload["download_strategy"], "browser_direct_provider_video")
+        self.assertIn("浏览器下载管理器", payload["route_reason"])
+        self.assertEqual(mock_fetch.call_count, 0)
+
     @patch("xhs_download.views.fetch_media_response")
     def test_download_signed_kukutool_video_uses_runtime_timeout_override(self, mock_fetch):
         setting = ProviderRuntimeSetting.load()
         setting.kukutool_download_timeout_seconds = 120
-        setting.save(update_fields=["kukutool_download_timeout_seconds", "updated_at"])
+        setting.kukutool_download_delivery_mode = KukuToolDownloadDeliveryMode.SERVER_STREAM
+        setting.save(update_fields=[
+            "kukutool_download_timeout_seconds",
+            "kukutool_download_delivery_mode",
+            "updated_at",
+        ])
 
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
@@ -9456,6 +9543,7 @@ class ProviderSettingsAdminViewTests(TestCase):
                 "douyin_ultra_total_timeout_seconds": "7.5",
                 "douyin_ultra_kukutool_grace_seconds": "2.5",
                 "kukutool_download_timeout_seconds": "11",
+                "kukutool_download_delivery_mode": KukuToolDownloadDeliveryMode.SERVER_STREAM,
                 "youtube_frontend_timeout_seconds": "14",
             },
         )
@@ -9479,6 +9567,7 @@ class ProviderSettingsAdminViewTests(TestCase):
         self.assertEqual(setting.douyin_ultra_total_timeout_seconds, 7.5)
         self.assertEqual(setting.douyin_ultra_kukutool_grace_seconds, 2.5)
         self.assertEqual(setting.kukutool_download_timeout_seconds, 11)
+        self.assertEqual(setting.kukutool_download_delivery_mode, KukuToolDownloadDeliveryMode.SERVER_STREAM)
         self.assertEqual(setting.youtube_frontend_timeout_seconds, 14)
 
     def test_provider_runtime_defaults_are_conservative(self):
@@ -9498,6 +9587,7 @@ class ProviderSettingsAdminViewTests(TestCase):
         self.assertEqual(setting.douyin_ultra_total_timeout_seconds, 5.0)
         self.assertEqual(setting.douyin_ultra_kukutool_grace_seconds, 1.0)
         self.assertEqual(setting.kukutool_download_timeout_seconds, 8.0)
+        self.assertEqual(setting.kukutool_download_delivery_mode, KukuToolDownloadDeliveryMode.SERVER_STREAM)
         self.assertEqual(setting.youtube_frontend_timeout_seconds, 8.0)
 
     def test_runtime_budget_overrides_are_used_by_provider_paths(self):
