@@ -39,6 +39,7 @@ from .provider_recovery import (
     get_kukutool_manifest_identity,
     iter_kukutool_download_recovery_urls,
 )
+from .provider_runtime_config import runtime_float
 from .provider_manifest import build_provider_manifest_token, provider_manifest_is_valid
 from .platforms.third_party import third_party_manifest_item_is_allowed
 from .platforms.ytdlp_merge import (
@@ -724,9 +725,12 @@ def fetch_item_to_temp_path(
     provider_download_timeout = timeout
     if recovery_enabled:
         try:
-            configured_timeout = float(
+            configured_timeout = runtime_float(
+                "kukutool_download_timeout_seconds",
                 getattr(settings, "KUKUTOOL_DOWNLOAD_TIMEOUT_SECONDS", 8.0)
-                or 8.0
+                or 8.0,
+                minimum=1.0,
+                maximum=180.0,
             )
         except (TypeError, ValueError):
             configured_timeout = 8.0

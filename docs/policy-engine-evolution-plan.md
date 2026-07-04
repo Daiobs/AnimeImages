@@ -133,15 +133,17 @@ Execution safety:
 
 ## Phase 3: Policy Engine v4
 
-Status: adaptive feedback loop implemented with safe runtime gate.
+Status: recommendation-only Safety Guard implemented.
 
-Default behavior is still shadow-only. v4 does not change Provider settings and
-does not change Cost Guard behavior.
+Default behavior is still recommendation-only. v4 does not change Provider
+settings, Routing Engine behavior, or Cost Guard behavior.
 
 Purpose:
 
 - analyze success rate, server cost, provider diversity, and route failure
 - recommend adaptive weights
+- validate suggestions through Safety Guard
+- classify suggestions as `approve`, `review`, or `reject`
 - keep humans/admin gates in control
 - optionally feed adaptive weights into v3.5 conflict resolution when explicitly enabled
 
@@ -171,6 +173,7 @@ Runtime gate:
 Admin diagnostics:
 
 - `/admin/policy-engine/` shows current v3.5 mode, rollout, v4 weight source, adaptive confidence, feedback sample count, and recent `actual route` vs `recommended route` rows.
+- `/admin/policy-engine/` also shows v4 Safety Guard suggestions. These are advisory only and include safety decision, risk, confidence, sample count, and reason chain.
 - superuser can view and edit.
 - staff with `view_policyruntimesetting` can view.
 - staff with `change_policyruntimesetting` can save changes.
@@ -180,8 +183,185 @@ Constraints:
 - no AI model
 - no external ML service
 - no Celery/queue dependency for decisions
+- no automatic production mutation
 - no automatic ProviderRuntimeSetting changes
 - no Cost Guard behavior changes
+
+## Phase 4: Policy Engine v5
+
+Status: human-in-the-loop optimization queue MVP implemented.
+
+Purpose:
+
+- turn v4 suggestions into persistent `PolicyOptimizationProposal` records
+- auto-apply low-risk suggestions into the queue
+- require human approval for medium-risk or drift-sensitive suggestions
+- reject high-risk suggestions
+- prevent repeated low-risk changes from accumulating through Drift Control
+
+Default behavior:
+
+- queue generation is explicit
+- admin page displays recent proposals but does not create them
+- runtime mutation is disabled unless trusted code passes `allow_runtime_mutation=True`
+- Provider gates, Cost Guard, and Routing Engine are not modified by queue creation
+
+Rollback:
+
+- stop generating v5 proposals
+- set `PolicyRuntimeSetting.v4_auto_weights_enabled=False`
+- keep proposal rows as audit history or delete them as superuser
+
+## Phase 5: Production Control Layer
+
+Status: Policy Control Layer MVP implemented on top of v5.
+
+Purpose:
+
+- receive v5 policy suggestions
+- score production risk by impact area
+- route changes through Approval Gate
+- keep medium/high risk changes human-in-the-loop
+- support approve, reject, and rollback from `/admin/policy-control/`
+
+Modules:
+
+- `policy_risk_engine.py`: cost/provider/routing risk scoring.
+- `approval_gate.py`: `auto_apply`, `require_approval`, `reject`, approve/reject/rollback actions.
+- `policy_control_layer.py`: combines v5 suggestions, risk, approval gate, and controlled proposal persistence.
+
+Safety:
+
+- generating controlled proposals does not mutate production settings
+- provider changes are high risk
+- routing changes are medium risk
+- cost changes are medium/high risk
+- rollback only restores explicitly recorded runtime mutations
+- Routing Engine, Provider runtime gates, and Cost Guard core logic are unchanged
+
+## Phase 6: Control Convergence System
+
+Status: Control convergence MVP implemented on top of Production Control Layer.
+
+Purpose:
+
+- create a traceable control lifecycle for policy decisions
+- record approval, rejection, auto-apply, execution, and failure states
+- bind execution observations to request, route, provider, and cost
+- write feedback summaries back to control records
+- expose convergence metrics without automatic production mutation
+
+Modules:
+
+- `control_state_machine.py`: validates `pending -> approved/rejected/auto_applied -> executed/failed` lifecycle transitions.
+- `control_execution_tracker.py`: writes execution traces from download observability.
+- `control_convergence_engine.py`: computes state distribution, success rate, approval rate, failure patterns, drift score, and consistency score.
+
+Admin:
+
+- `/admin/control-convergence/` provides the read-only convergence dashboard.
+
+Safety:
+
+- no automatic policy execution
+- no change to Routing Engine core logic
+- no change to Provider runtime gate logic
+- no change to Cost Guard limits
+- convergence suggestions remain human-reviewed
+
+## Phase 7: System Stabilization Layer v6
+
+Status: Stabilization v6 MVP implemented on top of Policy, Control, Feedback,
+and Execution observability.
+
+Purpose:
+
+- converge policy, control, feedback, and execution signals into one stable decision view
+- reduce route and policy oscillation
+- simplify duplicate control decisions
+- smooth volatile feedback spikes
+- keep the system focused on stable behavior rather than automatic optimization
+
+Module:
+
+- `stabilization_engine.py`: Policy Convergence, Control Simplifier, Feedback Stabilizer, and unified stabilization output.
+
+Admin:
+
+- `/admin/stability-v6/` provides the read-only stability dashboard.
+
+Safety:
+
+- no production policy mutation
+- no Routing Engine core change
+- no Provider gate change
+- no Cost Guard limit change
+- no automatic rollout
+- no queue or AI/ML model
+
+## Phase 8: Autonomous Optimization System v7
+
+Status: Safe autonomous evolution MVP implemented on top of v6 stabilization.
+
+Purpose:
+
+- detect optimization opportunities from historical download and feedback data
+- generate routing adjustment proposals with expected gain and confidence
+- run shadow experiments without production traffic mutation
+- decide `allow_apply`, `reject`, or `delay` through a mutation safety gate
+- produce rollback plans for bad policy outcomes
+
+Module:
+
+- `autonomous_evolution_engine.py`: opportunity detection, shadow experiment,
+  policy mutation controller, rollback engine, and admin context builder.
+
+Admin:
+
+- `/admin/autonomous-evolution/` provides the read-only autonomous evolution dashboard.
+
+Safety:
+
+- no direct production policy mutation
+- no unverified apply
+- no Routing Engine core change
+- no Provider gate change
+- no Cost Guard limit change
+- no automatic rollout
+- no queue or AI/ML model
+
+## Phase 9: Autonomous Governance System v8
+
+Status: Governance and risk control MVP implemented on top of v7 autonomous
+optimization.
+
+Purpose:
+
+- take over v7 evolution proposals before any production consideration
+- score cost spike risk, routing instability, provider volatility, and traffic anomaly
+- cap policy change magnitude to 10%
+- enforce daily mutation limits and rollback-aware blocking
+- produce `allow`, `deny`, or `partial_allow` decisions
+- provide explicit audit recording through existing `PolicyControlRecord`
+
+Module:
+
+- `governance_engine.py`: governance engine, risk governor, evolution limiter,
+  policy guard, audit writer, and admin context builder.
+
+Admin:
+
+- `/admin/governance-v8/` provides the read-only governance dashboard.
+
+Safety:
+
+- no direct production policy mutation
+- no automatic unlimited optimization
+- no AI/ML model
+- no Routing Engine core change
+- no Provider gate change
+- no Cost Guard change
+- audit writes require explicit function calls and are not triggered by page rendering
 
 ## Fallback
 

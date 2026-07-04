@@ -206,13 +206,13 @@
 
                         <label class="form-label" for="download-mode">下载处理方式</label>
                         <select id="download-mode" class="form-select">
-                            <option value="browser" selected>智能下载：直链优先，多资源自动 ZIP</option>
+                            <option value="browser" selected>智能下载：单图直链，单视频直下，多资源自动 ZIP</option>
                             {% if xhs_show_server_save_mode %}
                                 <option value="server">开发保存模式：保存到服务端路径</option>
                             {% endif %}
                         </select>
                         <div class="form-text">
-                            图片优先浏览器直链；单视频优先交给浏览器保存；多资源自动打包 ZIP。YouTube 合并和需要签名恢复的 Provider 资源由服务端完成处理。
+                            图片优先浏览器直链；单视频优先直接下载；多资源自动打包 ZIP。YouTube 合并和需要签名恢复的 Provider 资源由服务端完成处理。
                         </div>
 
                         <div class="settings-subsection" id="browser-download-settings">

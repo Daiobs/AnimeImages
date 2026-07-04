@@ -148,6 +148,7 @@
                 <p class="console-subtitle">集中查看下载流量、成本风险、Provider 状态和上线后最常用的后台入口。当前展示时区：{{ admin_time_zone }}</p>
             </div>
             <div class="console-actions">
+                <a class="console-link" href="{% url 'control_plane' %}">控制平面</a>
                 <a class="console-link" href="{% url 'admin:download_console_downloadruntimesetting_changelist' %}">Download 设置</a>
                 <a class="console-link" href="{% url 'rollout_guard' %}">放量守卫</a>
                 <a class="console-link" href="{% url 'provider_settings' %}">Provider 设置</a>

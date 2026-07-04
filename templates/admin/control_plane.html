@@ -1,0 +1,322 @@
+{% extends "admin/base_site.html" %}
+
+{% block content_title %}{% endblock %}
+
+{% block content %}
+<style>
+    #content { padding: 0; }
+    .control-plane {
+        min-height: calc(100vh - 96px);
+        margin: -20px -20px 0;
+        padding: 34px clamp(18px, 4vw, 54px) 56px;
+        background: #f8fbff;
+        color: #111827;
+    }
+    .control-shell { max-width: 1280px; margin: 0 auto; }
+    .control-hero {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 18px;
+    }
+    .control-eyebrow {
+        display: inline-flex;
+        min-height: 28px;
+        align-items: center;
+        padding: 4px 10px;
+        border-radius: 8px;
+        background: #ecfeff;
+        color: #0e7490;
+        font-size: 12px;
+        font-weight: 900;
+    }
+    .control-title {
+        margin: 10px 0 0;
+        font-size: clamp(28px, 4vw, 44px);
+        font-weight: 900;
+        letter-spacing: 0;
+        line-height: 1.12;
+    }
+    .control-subtitle { max-width: 840px; margin: 10px 0 0; color: #6b7280; line-height: 1.7; }
+    .control-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    .control-link {
+        display: inline-flex;
+        min-height: 40px;
+        align-items: center;
+        justify-content: center;
+        padding: 0 14px;
+        border: 1px solid #d8dde8;
+        border-radius: 8px;
+        background: #fff;
+        color: #111827;
+        text-decoration: none;
+        font-size: 14px;
+        font-weight: 800;
+    }
+    .control-link:hover { border-color: #67e8f9; color: #0e7490; text-decoration: none; }
+    .status-strip {
+        display: grid;
+        grid-template-columns: repeat(7, minmax(0, 1fr));
+        gap: 10px;
+        margin: 0 0 16px;
+        padding: 14px;
+        border: 1px solid #d8dde8;
+        border-radius: 8px;
+        background: #fff;
+    }
+    .status-strip-normal { border-color: #bbf7d0; background: #f0fdf4; }
+    .status-strip-warning { border-color: #fde68a; background: #fffbeb; }
+    .status-strip-danger { border-color: #fecaca; background: #fff1f2; }
+    .status-item span { display: block; color: #6b7280; font-size: 12px; font-weight: 800; }
+    .status-item strong { display: block; margin-top: 4px; font-size: 14px; word-break: break-word; }
+    .control-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 16px;
+    }
+    .control-card,
+    .control-panel {
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: 0 4px 12px rgba(17, 24, 39, .05);
+    }
+    .control-card { min-height: 96px; padding: 16px; }
+    .control-card strong { display: block; color: #6b7280; font-size: 13px; font-weight: 800; }
+    .control-card span { display: block; margin-top: 8px; font-size: 22px; font-weight: 900; overflow-wrap: anywhere; }
+    .panel-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .control-panel { margin-bottom: 16px; padding: 18px; overflow: hidden; }
+    .control-panel h2 { margin: 0 0 14px; font-size: 18px; font-weight: 900; }
+    .control-muted { color: #6b7280; font-size: 13px; line-height: 1.6; }
+    .control-table-wrap { overflow: auto; }
+    .control-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .control-table th,
+    .control-table td {
+        padding: 10px 8px;
+        border-bottom: 1px solid #eef2f7;
+        text-align: left;
+        vertical-align: top;
+    }
+    .control-table th { color: #6b7280; font-size: 12px; font-weight: 900; text-transform: uppercase; }
+    .badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        padding: 2px 8px;
+        border-radius: 8px;
+        background: #f3f4f6;
+        color: #374151;
+        font-size: 12px;
+        font-weight: 900;
+    }
+    .badge-normal,
+    .badge-success { background: #dcfce7; color: #166534; }
+    .badge-warning,
+    .badge-unavailable,
+    .badge-skipped { background: #fef3c7; color: #92400e; }
+    .badge-danger,
+    .badge-failed,
+    .badge-blocked,
+    .badge-rate_limited { background: #fee2e2; color: #991b1b; }
+    .action-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+    .action-list li { padding: 12px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
+    .action-list strong { display: block; margin-bottom: 4px; }
+    .action-list p { margin: 0; color: #6b7280; line-height: 1.6; }
+    @media (max-width: 1120px) {
+        .status-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .control-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .panel-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 640px) {
+        .status-strip,
+        .control-grid { grid-template-columns: 1fr; }
+    }
+</style>
+
+<div class="control-plane">
+    <div class="control-shell">
+        <section class="control-hero">
+            <div>
+                <span class="control-eyebrow">Production Control Plane v1</span>
+                <h1 class="control-title">统一生产控制平面</h1>
+                <p class="control-subtitle">聚合健康状态、下载成本、Provider、Policy / Feedback / Governance 和关键操作入口。本页只读，不修改生产配置，不运行外部 Provider 测试。</p>
+            </div>
+            <div class="control-actions">
+                {% if links.console %}<a class="control-link" href="{{ links.console }}">运维首页</a>{% endif %}
+                {% if links.ops_dashboard %}<a class="control-link" href="{{ links.ops_dashboard }}">运营看板</a>{% endif %}
+                {% if links.provider_settings %}<a class="control-link" href="{{ links.provider_settings }}">Provider 设置</a>{% endif %}
+                {% if links.provider_health_tests %}<a class="control-link" href="{{ links.provider_health_tests }}">Provider 测试</a>{% endif %}
+            </div>
+        </section>
+
+        <section class="status-strip status-strip-{{ system_status.risk_level }}">
+            <div class="status-item"><span>环境</span><strong>{{ system_status.environment|default:"暂无数据" }}</strong></div>
+            <div class="status-item"><span>Commit</span><strong>{{ system_status.commit_hash|default:"暂无数据" }}</strong></div>
+            <div class="status-item"><span>当前时间</span><strong>{{ system_status.current_time|default:"暂无数据" }}</strong></div>
+            <div class="status-item"><span>Health Ready</span><strong>{% if system_status.health_ready %}ready{% else %}unavailable{% endif %}</strong></div>
+            <div class="status-item"><span>Database</span><strong>{% if system_status.database_ready %}ready{% else %}unavailable{% endif %}</strong></div>
+            <div class="status-item"><span>Cache</span><strong>{% if system_status.cache_ready %}ready{% else %}unavailable{% endif %}</strong></div>
+            <div class="status-item"><span>Risk</span><strong><span class="badge badge-{{ system_status.risk_level }}">{{ system_status.risk_level }}</span></strong></div>
+        </section>
+
+        <section class="control-grid">
+            <div class="control-card"><strong>今日解析次数</strong><span>{{ core_metrics.today_parse_count|default:"暂无数据" }}</span></div>
+            <div class="control-card"><strong>今日下载次数</strong><span>{{ core_metrics.today_download_count|default:"暂无数据" }}</span></div>
+            <div class="control-card"><strong>今日下载成功率</strong><span>{{ core_metrics.today_download_success_rate|default:0 }}%</span></div>
+            <div class="control-card"><strong>今日下载实际流量</strong><span>{{ core_metrics.today_actual_bytes_label|default:"暂无数据" }}</span></div>
+            <div class="control-card"><strong>今日 blocked / 限流</strong><span>{{ core_metrics.today_blocked_count|default:"暂无数据" }}</span></div>
+            <div class="control-card"><strong>24h Provider 失败</strong><span>{{ core_metrics.provider_failed_24h|default:"暂无数据" }}</span></div>
+            <div class="control-card"><strong>24h fallback</strong><span>{{ core_metrics.fallback_count_24h|default:"暂无数据" }}</span></div>
+            <div class="control-card"><strong>全站流量使用率</strong><span>{{ core_metrics.global_daily_bytes_usage_label|default:"暂无数据" }}</span></div>
+        </section>
+
+        <section class="control-panel">
+            <h2>Action Center</h2>
+            <ul class="action-list">
+            {% for item in actions.items %}
+                <li>
+                    <strong><span class="badge badge-{{ item.level }}">{{ item.level }}</span> {{ item.title }}</strong>
+                    <p>{{ item.body }}</p>
+                    {% if item.url %}<p><a href="{{ item.url }}">前往处理</a></p>{% endif %}
+                </li>
+            {% empty %}
+                <li><strong>暂无建议</strong><p>系统暂未生成建议。</p></li>
+            {% endfor %}
+            </ul>
+        </section>
+
+        <section class="control-panel">
+            <h2>Provider 状态</h2>
+            <div class="control-table-wrap">
+                <table class="control-table">
+                    <thead><tr><th>Provider</th><th>Runtime</th><th>Capability</th><th>最近健康</th><th>24h 成功率</th><th>平均耗时</th><th>最近失败</th><th>入口</th></tr></thead>
+                    <tbody>
+                    {% for row in provider_status.rows %}
+                        <tr>
+                            <td>{{ row.name }}</td>
+                            <td>{{ row.runtime_label }} / {{ row.rollout_percent }}%</td>
+                            <td>{% if row.hard_enabled %}<span class="badge badge-success">enabled</span>{% else %}<span class="badge badge-warning">disabled</span>{% endif %}</td>
+                            <td><span class="badge badge-{{ row.last_health_status|default:'skipped' }}">{{ row.last_health_status_label }}</span><br><span class="control-muted">{{ row.last_health_at|default:"暂无数据" }}</span></td>
+                            <td>{{ row.success_rate_24h }}%</td>
+                            <td>{{ row.average_duration_ms_24h }}ms</td>
+                            <td>{{ row.recent_failure }}</td>
+                            <td>
+                                {% if row.settings_url %}<a href="{{ row.settings_url }}">设置</a>{% endif %}
+                                {% if row.health_url %} · <a href="{{ row.health_url }}">测试</a>{% endif %}
+                                {% if row.parse_logs_url %} · <a href="{{ row.parse_logs_url }}">日志</a>{% endif %}
+                            </td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="8">暂无数据</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <div class="panel-grid">
+            <section class="control-panel">
+                <h2>下载成本与路由</h2>
+                <div class="control-table-wrap">
+                    <table class="control-table">
+                        <tbody>
+                            <tr><th>server egress</th><td>{{ download_cost.server_egress_estimated_label|default:"暂无数据" }}</td></tr>
+                            <tr><th>browser egress</th><td>{{ download_cost.browser_egress_estimated_label|default:"暂无数据" }}</td></tr>
+                            <tr><th>actual bytes</th><td>{{ download_cost.actual_bytes_label|default:"暂无数据" }}</td></tr>
+                            <tr><th>ZIP 占比</th><td>{{ download_cost.zip_ratio|default:0 }}%</td></tr>
+                            <tr><th>Mobile 占比</th><td>{{ download_cost.mobile_ratio_label|default:"暂无数据" }}</td></tr>
+                            <tr><th>全站日流量限制</th><td>{{ download_cost.runtime.global_daily_bytes_limit_label|default:"暂无数据" }}</td></tr>
+                            <tr><th>单 ZIP 限制</th><td>{{ download_cost.runtime.single_archive_bytes_limit_label|default:"暂无数据" }}</td></tr>
+                            <tr><th>单视频限制</th><td>{{ download_cost.runtime.single_video_bytes_limit_label|default:"暂无数据" }}</td></tr>
+                            <tr><th>访客视频下载</th><td>{{ download_cost.runtime.visitor_video_download_enabled_label|default:"未初始化" }}</td></tr>
+                            <tr><th>staff 大文件豁免</th><td>{{ download_cost.runtime.staff_large_download_exempt_label|default:"未初始化" }}</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="control-panel">
+                <h2>Route 分布</h2>
+                <table class="control-table">
+                    <thead><tr><th>Route</th><th>Count</th><th>Percent</th></tr></thead>
+                    <tbody>
+                    {% for row in download_cost.route_distribution %}
+                        <tr><td>{{ row.route_type }}</td><td>{{ row.count }}</td><td>{{ row.percent }}%</td></tr>
+                    {% empty %}
+                        <tr><td colspan="3">暂无数据</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </section>
+        </div>
+
+        <div class="panel-grid">
+            <section class="control-panel">
+                <h2>今日大文件 Top 5</h2>
+                <table class="control-table">
+                    <thead><tr><th>Time</th><th>Type</th><th>Route</th><th>Provider</th><th>Size</th></tr></thead>
+                    <tbody>
+                    {% for item in download_cost.big_files %}
+                        <tr><td>{{ item.created_at_label }}</td><td>{{ item.download_type }}</td><td>{{ item.route_type }}</td><td>{{ item.provider }}</td><td>{{ item.actual_bytes_label }}</td></tr>
+                    {% empty %}
+                        <tr><td colspan="5">暂无数据</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </section>
+
+            <section class="control-panel">
+                <h2>限制触发</h2>
+                <table class="control-table">
+                    <thead><tr><th>Error Code</th><th>Count</th></tr></thead>
+                    <tbody>
+                    {% for item in download_cost.limit_hits %}
+                        <tr><td>{{ item.error_code|default:"unknown" }}</td><td>{{ item.count }}</td></tr>
+                    {% empty %}
+                        <tr><td colspan="2">暂无数据</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </section>
+        </div>
+
+        <section class="control-panel">
+            <h2>Policy / Feedback / Governance</h2>
+            <div class="control-grid">
+                <div class="control-card"><strong>Feedback 生成时间</strong><span>{{ policy_governance.feedback_generated_at|default:"暂无数据" }}</span></div>
+                <div class="control-card"><strong>Insights / Suggestions</strong><span>{{ policy_governance.insight_count|default:"暂无数据" }} / {{ policy_governance.suggestion_count|default:"暂无数据" }}</span></div>
+                <div class="control-card"><strong>Learning 状态</strong><span>{{ policy_governance.latest_learning_status|default:"暂无数据" }}</span></div>
+                <div class="control-card"><strong>Pending approvals</strong><span>{{ policy_governance.pending_approvals|default:0 }}</span></div>
+                <div class="control-card"><strong>Governance decisions</strong><span>{{ policy_governance.governance_decision_count|default:0 }}</span></div>
+                <div class="control-card"><strong>Stability</strong><span>{{ policy_governance.stability_index_label|default:"暂无数据" }}</span></div>
+                <div class="control-card"><strong>Risk</strong><span>{{ policy_governance.risk_label|default:"normal" }} / {{ policy_governance.risk_score|default:0 }}</span></div>
+                <div class="control-card"><strong>最新 Learning</strong><span>{{ policy_governance.latest_learning_at|default:"暂无数据" }}</span></div>
+            </div>
+            <div class="control-actions">
+                {% if policy_governance.feedback_url %}<a class="control-link" href="{{ policy_governance.feedback_url }}">Feedback Loop</a>{% endif %}
+                {% if policy_governance.policy_url %}<a class="control-link" href="{{ policy_governance.policy_url }}">Policy Engine</a>{% endif %}
+                {% if policy_governance.policy_control_url %}<a class="control-link" href="{{ policy_governance.policy_control_url }}">Policy Control</a>{% endif %}
+                {% if policy_governance.governance_url %}<a class="control-link" href="{{ policy_governance.governance_url }}">Governance v8</a>{% endif %}
+                {% if policy_governance.rollout_url %}<a class="control-link" href="{{ policy_governance.rollout_url }}">Rollout Guard</a>{% endif %}
+            </div>
+        </section>
+
+        <section class="control-panel">
+            <h2>最近 Policy / Governance / Control 事件</h2>
+            <table class="control-table">
+                <thead><tr><th>Time</th><th>Policy</th><th>Decision</th><th>State</th><th>Source</th></tr></thead>
+                <tbody>
+                {% for item in policy_governance.recent_events %}
+                    <tr><td>{{ item.created_at_label }}</td><td>{{ item.policy_decision }}</td><td>{{ item.control_decision }}</td><td>{{ item.state }}</td><td>{{ item.source }}</td></tr>
+                {% empty %}
+                    <tr><td colspan="5">暂无数据</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+    </div>
+</div>
+{% endblock %}

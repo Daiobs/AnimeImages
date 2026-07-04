@@ -16,6 +16,12 @@ class ProviderAccessMode(models.TextChoices):
     PUBLIC = "public", "全站开放"
 
 
+class KukuToolDownloadDeliveryMode(models.TextChoices):
+    BROWSER_FIRST = "browser_first", "浏览器优先，失败后服务端"
+    SERVER_STREAM = "server_stream", "服务端 attachment 流优先"
+    SERVER_ONLY = "server_only", "仅服务端下载"
+
+
 class PolicyRuntimeMode(models.TextChoices):
     SHADOW = "shadow", "影子观察"
     STAFF = "staff", "仅管理员启用"
@@ -115,6 +121,37 @@ class ProviderRuntimeSetting(models.Model):
         default=False,
         verbose_name="临时禁用 KuKuTool",
     )
+    douyin_ultra_total_timeout_seconds = models.FloatField(
+        default=5.0,
+        validators=(MinValueValidator(1.0), MaxValueValidator(30.0)),
+        verbose_name="抖音超清前台总预算（秒）",
+        help_text="只影响抖音超清解析等待时间，不改变下载链路。",
+    )
+    douyin_ultra_kukutool_grace_seconds = models.FloatField(
+        default=1.0,
+        validators=(MinValueValidator(0.0), MaxValueValidator(10.0)),
+        verbose_name="KuKuTool 近完成等待（秒）",
+        help_text="native 已完成时额外等待 KuKuTool 的时间。",
+    )
+    kukutool_download_timeout_seconds = models.FloatField(
+        default=8.0,
+        validators=(MinValueValidator(1.0), MaxValueValidator(180.0)),
+        verbose_name="KuKuTool 下载恢复超时（秒）",
+        help_text="用于 KuKuTool 签名资源下载失败后的恢复/打包路径；单文件流式下载保持现有快速路径。",
+    )
+    kukutool_download_delivery_mode = models.CharField(
+        max_length=24,
+        choices=KukuToolDownloadDeliveryMode.choices,
+        default=KukuToolDownloadDeliveryMode.SERVER_STREAM,
+        verbose_name="KuKuTool 下载交付策略",
+        help_text="server_stream 会直接使用服务端 attachment 单文件下载；browser_first 仅作为直链实验模式保留。",
+    )
+    youtube_frontend_timeout_seconds = models.FloatField(
+        default=8.0,
+        validators=(MinValueValidator(3.0), MaxValueValidator(60.0)),
+        verbose_name="YouTube 前台解析预算（秒）",
+        help_text="服务器访问 YouTube 较慢时可临时调高。",
+    )
     updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
 
     class Meta:
@@ -197,6 +234,25 @@ class ProviderHealthTestStatus(models.TextChoices):
     FAILED = "failed", "失败"
     SKIPPED = "skipped", "跳过"
     UNAVAILABLE = "unavailable", "不可用"
+
+
+class PolicyOptimizationStatus(models.TextChoices):
+    QUEUED = "queued", "已入队"
+    NEEDS_APPROVAL = "needs_approval", "等待审批"
+    AUTO_APPLIED = "auto_applied", "已自动应用"
+    APPROVED = "approved", "已批准"
+    REJECTED = "rejected", "已拒绝"
+    APPLIED = "applied", "已应用"
+    ROLLED_BACK = "rolled_back", "已回滚"
+
+
+class PolicyControlState(models.TextChoices):
+    PENDING = "pending", "等待处理"
+    APPROVED = "approved", "已批准"
+    REJECTED = "rejected", "已拒绝"
+    AUTO_APPLIED = "auto_applied", "低风险自动通过"
+    EXECUTED = "executed", "已执行"
+    FAILED = "failed", "执行失败"
 
 
 class ParseRequestLog(models.Model):
@@ -416,6 +472,112 @@ class PolicyLearningRun(models.Model):
 
     def __str__(self):
         return f"{local_datetime_label(self.created_at)} {self.window_hours}h {self.status}"
+
+
+class PolicyOptimizationProposal(models.Model):
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    source_version = models.CharField(max_length=16, default="v5", db_index=True)
+    source_window_hours = models.PositiveSmallIntegerField(default=24, db_index=True)
+    status = models.CharField(
+        max_length=32,
+        choices=PolicyOptimizationStatus.choices,
+        default=PolicyOptimizationStatus.QUEUED,
+        db_index=True,
+    )
+    kind = models.CharField(max_length=80, db_index=True)
+    policy_area = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    title = models.CharField(max_length=160, blank=True, default="")
+    body = models.TextField(blank=True, default="")
+    risk = models.CharField(max_length=16, blank=True, default="", db_index=True)
+    risk_score = models.FloatField(default=0, db_index=True)
+    impact_area = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    safety_decision = models.CharField(max_length=16, blank=True, default="", db_index=True)
+    control_decision = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    confidence = models.FloatField(default=0)
+    sample_count = models.PositiveIntegerField(default=0)
+    proposed_change = models.JSONField(default=dict, blank=True)
+    safety = models.JSONField(default=dict, blank=True)
+    drift = models.JSONField(default=dict, blank=True)
+    reason_chain = models.JSONField(default=list, blank=True)
+    signature = models.CharField(max_length=64, db_index=True)
+    drift_key = models.CharField(max_length=120, blank=True, default="", db_index=True)
+    automatic_execution = models.BooleanField(default=False, db_index=True)
+    runtime_mutated = models.BooleanField(default=False, db_index=True)
+    application_result = models.JSONField(default=dict, blank=True)
+    rollback_result = models.JSONField(default=dict, blank=True)
+    applied_at = models.DateTimeField(null=True, blank=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    rejected_at = models.DateTimeField(null=True, blank=True)
+    rolled_back_at = models.DateTimeField(null=True, blank=True)
+    actor_username = models.CharField(max_length=150, blank=True, default="", db_index=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = (
+            models.Index(fields=("status", "created_at")),
+            models.Index(fields=("kind", "created_at")),
+            models.Index(fields=("policy_area", "created_at")),
+            models.Index(fields=("drift_key", "created_at")),
+            models.Index(fields=("control_decision", "created_at")),
+            models.Index(fields=("impact_area", "created_at")),
+        )
+        verbose_name = "Policy 优化队列"
+        verbose_name_plural = "Policy 优化队列"
+
+    def __str__(self):
+        return f"{local_datetime_label(self.created_at)} {self.kind} {self.status}"
+
+
+class PolicyControlRecord(models.Model):
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    proposal = models.ForeignKey(
+        PolicyOptimizationProposal,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="control_records",
+    )
+    request_id = models.CharField(max_length=128, blank=True, default="", db_index=True)
+    policy_decision = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    policy_snapshot = models.JSONField(default=dict, blank=True)
+    control_decision = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    state = models.CharField(
+        max_length=32,
+        choices=PolicyControlState.choices,
+        default=PolicyControlState.PENDING,
+        db_index=True,
+    )
+    execution_result = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    execution_snapshot = models.JSONField(default=dict, blank=True)
+    provider = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    route = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    cost = models.PositiveBigIntegerField(default=0)
+    control_confidence = models.FloatField(default=0)
+    feedback_summary = models.JSONField(default=dict, blank=True)
+    failure_pattern = models.CharField(max_length=160, blank=True, default="", db_index=True)
+    drift_score = models.FloatField(default=0)
+    consistency_score = models.FloatField(default=1)
+    transition_history = models.JSONField(default=list, blank=True)
+    source = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    actor_username = models.CharField(max_length=150, blank=True, default="", db_index=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = (
+            models.Index(fields=("state", "created_at")),
+            models.Index(fields=("control_decision", "created_at")),
+            models.Index(fields=("policy_decision", "created_at")),
+            models.Index(fields=("provider", "created_at")),
+            models.Index(fields=("route", "created_at")),
+            models.Index(fields=("failure_pattern", "created_at")),
+        )
+        verbose_name = "Policy 控制闭环记录"
+        verbose_name_plural = "Policy 控制闭环记录"
+
+    def __str__(self):
+        return f"{local_datetime_label(self.created_at)} {self.state} {self.policy_decision or self.control_decision}"
 
 
 class ProviderAdminAuditLog(models.Model):

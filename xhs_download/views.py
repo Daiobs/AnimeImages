@@ -25,8 +25,11 @@ from djangoProject.health import get_runtime_readiness
 
 from .models import (
     DownloadRequestLog,
+    KukuToolDownloadDeliveryMode,
     ObservabilityStatus,
     ParseRequestLog,
+    PolicyOptimizationProposal,
+    PolicyOptimizationStatus,
     PolicyRuntimeMode,
     PolicyRuntimeSetting,
     ProviderAccessMode,
@@ -43,6 +46,7 @@ from .policy.engine import (
     evaluate_policy_shadow,
     policy_weight_diagnostics,
 )
+from .policy.evolution import build_policy_evolution_recommendation
 from .policy.learning import build_policy_learning_snapshot
 from .services.common import (
     XhsDownloadError,
@@ -60,6 +64,11 @@ from .services.download_tasks import (
     serialize_task,
 )
 from .services.feedback_loop import build_feedback_loop_context
+from .services.approval_gate import (
+    approve_policy_change,
+    reject_policy_change,
+    rollback_policy_change,
+)
 from .services.download_routing import (
     ROUTE_BLOCKED,
     ROUTE_DIRECT,
@@ -89,6 +98,7 @@ from .services.downloads import (
 )
 from .services.platforms.douyin_kukutool import (
     get_kukutool_provider_health,
+    is_byte_cdn_url,
     set_kukutool_admin_disabled,
 )
 from .services.platforms.gallerydl_generic import GalleryDlGenericProvider
@@ -103,6 +113,11 @@ from .services.provider_access import (
     provider_access_summary,
     provider_is_allowed_for_request,
     third_party_public_access_summary,
+)
+from .services.provider_runtime_config import runtime_float
+from .services.provider_recovery import (
+    get_kukutool_manifest_identity,
+    iter_kukutool_download_recovery_urls,
 )
 from .services.registry import get_adapter_for_url, parse_media_page
 from .services.provider_manifest import build_provider_manifest_token
@@ -123,6 +138,15 @@ from .services.self_healing_engine import SelfHealingEngine, attach_healing_to_r
 from .services.youtube_merge import build_youtube_merge_plan, get_youtube_merge_health
 from .services.admin_console import build_admin_console_context
 from .services.production_intelligence import build_observability_v2_context
+from .services.policy_control_layer import (
+    build_policy_control_preview,
+    create_controlled_policy_proposals,
+)
+from .services.control_convergence_engine import build_control_convergence_context
+from .services.stabilization_engine import build_stability_v6_context
+from .services.autonomous_evolution_engine import build_autonomous_evolution_context
+from .services.governance_engine import build_governance_v8_context
+from .services.control_plane import build_control_plane_context
 from .services.rollout_guard import build_rollout_guard_context
 from .services.routing_v3 import decide_route_v3
 from .services.rate_limits import (
@@ -501,6 +525,10 @@ def build_policy_engine_context(request, runtime_setting):
     adaptive = build_adaptive_weight_recommendation(
         window_hours=runtime_setting.v4_adaptive_window_hours,
     )
+    evolution = build_policy_evolution_recommendation(
+        window_hours=runtime_setting.v4_adaptive_window_hours,
+        runtime_setting=runtime_setting,
+    )
     feedback = adaptive.get("feedback_summary") or {}
     recent_decisions = [
         {
@@ -518,6 +546,20 @@ def build_policy_engine_context(request, runtime_setting):
         for item in DownloadRequestLog.objects.exclude(final_policy_route="")
         .order_by("-created_at")[:10]
     ]
+    recent_optimizations = [
+        {
+            "created_at": format_admin_datetime(item.created_at),
+            "kind": item.kind,
+            "status": item.status,
+            "risk": item.risk or "-",
+            "safety_decision": item.safety_decision or "-",
+            "confidence": item.confidence,
+            "sample_count": item.sample_count,
+            "automatic_execution": item.automatic_execution,
+            "runtime_mutated": item.runtime_mutated,
+        }
+        for item in PolicyOptimizationProposal.objects.order_by("-created_at")[:10]
+    ]
     return {
         "title": "Policy Engine",
         "runtime_setting": runtime_setting,
@@ -525,12 +567,14 @@ def build_policy_engine_context(request, runtime_setting):
         "can_change_policy": policy_engine_change_allowed(request),
         "weight_info": weight_info,
         "adaptive": adaptive,
+        "evolution": evolution,
         "feedback": feedback,
         "learning_cards": [
             policy_learning_card(build_policy_learning_snapshot(window_hours=24)),
             policy_learning_card(build_policy_learning_snapshot(window_hours=24 * 7)),
         ],
         "recent_decisions": recent_decisions,
+        "recent_optimizations": recent_optimizations,
     }
 
 
@@ -703,6 +747,7 @@ def provider_settings_view(request):
 
     runtime_setting = ProviderRuntimeSetting.load()
     valid_modes = {choice[0] for choice in ProviderAccessMode.choices}
+    valid_kukutool_delivery_modes = {choice[0] for choice in KukuToolDownloadDeliveryMode.choices}
     if request.method == "POST":
         before_snapshot = provider_runtime_snapshot(runtime_setting)
         for field_name in (
@@ -724,6 +769,37 @@ def provider_settings_view(request):
             except (TypeError, ValueError):
                 rollout_percent = 0
             setattr(runtime_setting, field_name, min(100, max(0, rollout_percent)))
+        runtime_setting.douyin_ultra_total_timeout_seconds = clamp_float(
+            request.POST.get("douyin_ultra_total_timeout_seconds"),
+            minimum=1.0,
+            maximum=30.0,
+            default=runtime_setting.douyin_ultra_total_timeout_seconds,
+        )
+        runtime_setting.douyin_ultra_kukutool_grace_seconds = clamp_float(
+            request.POST.get("douyin_ultra_kukutool_grace_seconds"),
+            minimum=0.0,
+            maximum=10.0,
+            default=runtime_setting.douyin_ultra_kukutool_grace_seconds,
+        )
+        runtime_setting.kukutool_download_timeout_seconds = clamp_float(
+            request.POST.get("kukutool_download_timeout_seconds"),
+            minimum=1.0,
+            maximum=180.0,
+            default=runtime_setting.kukutool_download_timeout_seconds,
+        )
+        kukutool_delivery_mode = request.POST.get(
+            "kukutool_download_delivery_mode",
+            runtime_setting.kukutool_download_delivery_mode,
+        )
+        if kukutool_delivery_mode not in valid_kukutool_delivery_modes:
+            kukutool_delivery_mode = KukuToolDownloadDeliveryMode.SERVER_STREAM
+        runtime_setting.kukutool_download_delivery_mode = kukutool_delivery_mode
+        runtime_setting.youtube_frontend_timeout_seconds = clamp_float(
+            request.POST.get("youtube_frontend_timeout_seconds"),
+            minimum=3.0,
+            maximum=60.0,
+            default=runtime_setting.youtube_frontend_timeout_seconds,
+        )
         for field_name in (
             "douyin_ultra_disabled_reason",
             "youtube_merge_disabled_reason",
@@ -751,6 +827,11 @@ def provider_settings_view(request):
                 "third_party_allowed_public_platforms",
                 "third_party_blocked_platforms",
                 "kukutool_disabled",
+                "douyin_ultra_total_timeout_seconds",
+                "douyin_ultra_kukutool_grace_seconds",
+                "kukutool_download_timeout_seconds",
+                "kukutool_download_delivery_mode",
+                "youtube_frontend_timeout_seconds",
                 "updated_at",
             ]
         )
@@ -905,6 +986,61 @@ def feedback_loop_required(request):
     )
 
 
+def policy_control_view_allowed(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_policyoptimizationproposal",
+        "xhs_download.change_policyoptimizationproposal",
+    )
+
+
+def policy_control_change_allowed(request):
+    user = getattr(request, "user", None)
+    return bool(
+        getattr(user, "is_active", False)
+        and getattr(user, "is_staff", False)
+        and (
+            getattr(user, "is_superuser", False)
+            or user.has_perm("xhs_download.change_policyoptimizationproposal")
+        )
+    )
+
+
+def control_convergence_view_allowed(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_policycontrolrecord",
+        "xhs_download.view_policyoptimizationproposal",
+    )
+
+
+def stability_v6_view_allowed(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_downloadrequestlog",
+        "xhs_download.view_policycontrolrecord",
+        "xhs_download.view_routingdecisionlog",
+    )
+
+
+def autonomous_evolution_view_allowed(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_downloadrequestlog",
+        "xhs_download.view_policycontrolrecord",
+        "xhs_download.view_policyoptimizationproposal",
+    )
+
+
+def governance_v8_view_allowed(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_downloadrequestlog",
+        "xhs_download.view_policycontrolrecord",
+        "xhs_download.view_policyoptimizationproposal",
+    )
+
+
 def observability_access_allowed(request, *permissions):
     user = getattr(request, "user", None)
     if not (
@@ -926,6 +1062,50 @@ def admin_console_required(request):
         "xhs_download.view_provideradminauditlog",
         "xhs_download.view_selfhealingevent",
     )
+
+
+def control_plane_required(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_parserequestlog",
+        "xhs_download.view_downloadrequestlog",
+        "xhs_download.view_providerhealthtestrun",
+        "xhs_download.view_provideradminauditlog",
+    )
+
+
+@require_GET
+def control_plane_view(request):
+    if not control_plane_required(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+    try:
+        context = build_control_plane_context(request)
+    except Exception as error:
+        logger.exception("control_plane_view_failed")
+        context = {
+            "title": "Production Control Plane",
+            "version": "production_control_plane_v1",
+            "request_id": str(getattr(request, "request_id", "") or ""),
+            "system_status": {
+                "available": False,
+                "risk_level": "danger",
+                "error": type(error).__name__,
+            },
+            "core_metrics": {"available": False},
+            "provider_status": {"available": False, "rows": []},
+            "download_cost": {"available": False, "route_distribution": [], "runtime": {}},
+            "policy_governance": {"available": False, "recent_events": []},
+            "actions": {
+                "items": [{
+                    "level": "danger",
+                    "title": "控制平面加载失败",
+                    "body": "请查看 Django 日志中的 control_plane_view_failed。",
+                    "url": "",
+                }]
+            },
+            "links": {},
+        }
+    return render(request, "admin/control_plane.html", context)
 
 
 @require_GET
@@ -1571,6 +1751,123 @@ def feedback_loop_view(request):
     return render(request, "admin/feedback_loop.html", context)
 
 
+@csrf_protect
+def policy_control_view(request):
+    if not policy_control_view_allowed(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+
+    if request.method == "POST":
+        if not policy_control_change_allowed(request):
+            return JsonResponse({"detail": "Not found."}, status=404)
+        action = str(request.POST.get("action") or "").strip()
+        proposal_id = request.POST.get("proposal_id")
+        actor_username = str(getattr(request.user, "username", "") or "")
+        if action == "generate":
+            result = create_controlled_policy_proposals(
+                window_hours=clamp_int(request.POST.get("window"), minimum=1, maximum=168, default=24),
+                actor_username=actor_username,
+            )
+            messages.success(
+                request,
+                f"Policy Control 已生成 {result['proposal_count']} 条受控建议。",
+            )
+        elif action in {"approve", "reject", "rollback"}:
+            try:
+                proposal = PolicyOptimizationProposal.objects.get(pk=proposal_id)
+            except (PolicyOptimizationProposal.DoesNotExist, TypeError, ValueError):
+                messages.error(request, "Policy 优化记录不存在。")
+                return redirect("policy_control")
+            if action == "approve":
+                result = approve_policy_change(proposal, actor_username=actor_username)
+                messages.success(request, f"审批结果：{result['reason']}")
+            elif action == "reject":
+                result = reject_policy_change(proposal, actor_username=actor_username)
+                messages.success(request, f"拒绝结果：{result['reason']}")
+            else:
+                result = rollback_policy_change(proposal, actor_username=actor_username)
+                messages.success(request, f"回滚结果：{result['reason']}")
+        return redirect("policy_control")
+
+    window_hours = clamp_int(request.GET.get("window"), minimum=1, maximum=168, default=24)
+    preview = build_policy_control_preview(window_hours=window_hours)
+    proposals = PolicyOptimizationProposal.objects.all()
+    context = {
+        "title": "Policy Control",
+        "window_hours": int(preview["window_hours"]),
+        "preview": preview,
+        "control": preview["control"],
+        "can_change_policy_control": policy_control_change_allowed(request),
+        "pending_approvals": proposals.filter(status=PolicyOptimizationStatus.NEEDS_APPROVAL)[:20],
+        "approved_changes": proposals.filter(status__in=[
+            PolicyOptimizationStatus.AUTO_APPLIED,
+            PolicyOptimizationStatus.APPROVED,
+            PolicyOptimizationStatus.APPLIED,
+        ])[:20],
+        "rejected_changes": proposals.filter(status=PolicyOptimizationStatus.REJECTED)[:20],
+        "rolled_back_changes": proposals.filter(status=PolicyOptimizationStatus.ROLLED_BACK)[:20],
+        "recent_proposals": proposals[:50],
+        "status_counts": {
+            "pending": proposals.filter(status=PolicyOptimizationStatus.NEEDS_APPROVAL).count(),
+            "approved": proposals.filter(status__in=[
+                PolicyOptimizationStatus.AUTO_APPLIED,
+                PolicyOptimizationStatus.APPROVED,
+                PolicyOptimizationStatus.APPLIED,
+            ]).count(),
+            "rejected": proposals.filter(status=PolicyOptimizationStatus.REJECTED).count(),
+            "rolled_back": proposals.filter(status=PolicyOptimizationStatus.ROLLED_BACK).count(),
+        },
+    }
+    return render(request, "admin/policy_control.html", context)
+
+
+@csrf_protect
+def control_convergence_view(request):
+    if not control_convergence_view_allowed(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+    window_hours = clamp_int(request.GET.get("window"), minimum=1, maximum=168, default=24)
+    return render(
+        request,
+        "admin/control_convergence.html",
+        build_control_convergence_context(window_hours=window_hours),
+    )
+
+
+@csrf_protect
+def stability_v6_view(request):
+    if not stability_v6_view_allowed(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+    window_hours = clamp_int(request.GET.get("window"), minimum=1, maximum=168, default=24)
+    return render(
+        request,
+        "admin/stability_v6.html",
+        build_stability_v6_context(window_hours=window_hours),
+    )
+
+
+@csrf_protect
+def autonomous_evolution_view(request):
+    if not autonomous_evolution_view_allowed(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+    window_hours = clamp_int(request.GET.get("window"), minimum=1, maximum=168, default=24)
+    return render(
+        request,
+        "admin/autonomous_evolution.html",
+        build_autonomous_evolution_context(window_hours=window_hours),
+    )
+
+
+@csrf_protect
+def governance_v8_view(request):
+    if not governance_v8_view_allowed(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+    window_hours = clamp_int(request.GET.get("window"), minimum=1, maximum=168, default=24)
+    return render(
+        request,
+        "admin/governance_v8.html",
+        build_governance_v8_context(window_hours=window_hours),
+    )
+
+
 def filtered_log_queryset(model, request, filter_fields):
     queryset = model.objects.all()
     for field in filter_fields:
@@ -2128,23 +2425,80 @@ def single_attachment_download_filename(item, base_filename, final_url="", conte
     return clean_filename(f"{stem}.{ext}")
 
 
+def open_single_attachment_upstream(item, media_type, request_timeout):
+    url = item.get("url")
+    if not url:
+        raise XhsDownloadError("资源 URL 为空")
+
+    recovery_enabled = bool(
+        media_type == "video"
+        and isinstance(item, dict)
+        and get_kukutool_manifest_identity(item)
+    )
+    provider_item = item if provider_manifest_allows_public_download(item) else None
+    attempted_urls = set()
+    candidates = [url]
+    recovery_urls = None
+    last_error = None
+
+    while candidates or recovery_urls is not None:
+        if not candidates:
+            try:
+                candidates.append(next(recovery_urls))
+            except StopIteration:
+                recovery_urls = None
+                continue
+
+        candidate_url = candidates.pop(0)
+        if not candidate_url or candidate_url in attempted_urls:
+            continue
+        attempted_urls.add(candidate_url)
+
+        candidate_provider_item = provider_item
+        if recovery_enabled and not is_byte_cdn_url(candidate_url):
+            candidate_provider_item = None
+
+        try:
+            return fetch_media_response(
+                candidate_url,
+                timeout=request_timeout,
+                retries=1 if recovery_enabled else 3,
+                provider_signed=candidate_provider_item,
+            )
+        except Exception as error:
+            last_error = error
+            if provider_item and is_recoverable_provider_download_error(error):
+                invalidate_external_provider_caches(provider_item)
+            if (
+                recovery_enabled
+                and recovery_urls is None
+                and len(attempted_urls) == 1
+                and is_recoverable_provider_download_error(error)
+            ):
+                recovery_urls = iter(iter_kukutool_download_recovery_urls(item) or ())
+
+    raise last_error or XhsDownloadError("资源下载失败")
+
+
 def build_single_attachment_response(item, base_filename):
     media_type = str(item.get("type") or "").lower() if isinstance(item, dict) else ""
     if media_type not in {"image", "video"}:
         raise XhsDownloadError("单文件下载仅支持图片或视频资源")
 
-    url = item.get("url")
-    if not url:
-        raise XhsDownloadError("资源 URL 为空")
-
     max_bytes = MAX_IMAGE_BYTES if media_type == "image" else MAX_VIDEO_BYTES
-    provider_signed = item if provider_manifest_allows_public_download(item) else False
-    upstream = fetch_media_response(
-        url,
-        timeout=20 if media_type == "image" else 60,
-        retries=1 if provider_signed else 3,
-        provider_signed=provider_signed,
-    )
+    request_timeout = 20 if media_type == "image" else 60
+    if provider_manifest_allows_public_download(item) and media_type == "video":
+        request_timeout = max(
+            request_timeout,
+            runtime_float(
+                "kukutool_download_timeout_seconds",
+                getattr(settings, "KUKUTOOL_DOWNLOAD_TIMEOUT_SECONDS", 8.0)
+                or 8.0,
+                minimum=1.0,
+                maximum=180.0,
+            ),
+        )
+    upstream = open_single_attachment_upstream(item, media_type, request_timeout)
     try:
         content_type = upstream.headers.get("Content-Type", "")
         validate_response_content_type(content_type, media_type)
@@ -2182,7 +2536,7 @@ def build_single_attachment_response(item, base_filename):
         filename = single_attachment_download_filename(
             item,
             base_filename,
-            final_url=getattr(upstream, "url", "") or url,
+            final_url=getattr(upstream, "url", "") or item.get("url", ""),
             content_type=content_type,
         )
         response = StreamingHttpResponse(
@@ -2994,7 +3348,13 @@ def proxy_image_view(request):
 def download_images_api(request):
     started_at = time.monotonic()
     try:
-        data = json.loads(request.body.decode("utf-8"))
+        if request.content_type and request.content_type.startswith("application/json"):
+            data = json.loads(request.body.decode("utf-8"))
+        else:
+            payload_json = request.POST.get("payload_json", "")
+            if not payload_json:
+                raise json.JSONDecodeError("missing payload_json", "", 0)
+            data = json.loads(payload_json)
     except json.JSONDecodeError:
         log_download_request_event(
             request,
@@ -3007,13 +3367,14 @@ def download_images_api(request):
         return JsonResponse({"status": "error", "message": "请求数据不是有效 JSON。"}, status=400)
 
     media_items = data.get("media_items", [])
+    route_only = bool(data.get("route_only"))
     image_urls = data.get("image_urls", [])
     if image_urls and not media_items:
         media_items = [{"type": "image", "url": url} for url in image_urls]
     download_mode = (data.get("download_mode") or "browser").lower().strip()
     if download_mode == "server" and not server_save_mode_is_enabled():
         download_mode = "auto"
-    routed_download_modes = {"auto", "browser", "proxy", "server_single"}
+    routed_download_modes = {"auto", "browser", "proxy", "server_single", "zip"}
     route_info = zip_download_route_info(
         request,
         media_items,
@@ -3058,15 +3419,14 @@ def download_images_api(request):
                     requested_mode="auto",
                     platform_key=data.get("platform_key", ""),
                 )
-            if download_mode in {"auto", "browser"}:
-                decided = apply_policy_decision_to_route(
-                    request,
-                    media_items,
-                    decided,
-                    requested_mode=download_mode,
-                    platform_key=data.get("platform_key", ""),
-                    provider_hint=decided.get("provider", ""),
-                )
+            decided = apply_policy_decision_to_route(
+                request,
+                media_items,
+                decided,
+                requested_mode=download_mode,
+                platform_key=data.get("platform_key", ""),
+                provider_hint=decided.get("provider", ""),
+            )
             return decided
 
         route_info = safe_routing_decision(
@@ -3153,6 +3513,34 @@ def download_images_api(request):
                 "strategy_version": route_info.get("strategy_version", "v3"),
                 "confidence": route_info.get("confidence", 0),
                 "routing_score": route_info.get("routing_score", 0),
+            }
+        )
+
+    if route_only and download_mode in routed_download_modes:
+        log_download_request_event(
+            request,
+            download_type=route_info.get("route_type", "auto"),
+            media_items=media_items,
+            status=ObservabilityStatus.SUCCESS,
+            started_at=started_at,
+            actual_bytes=0,
+            route_info=route_info,
+        )
+        return JsonResponse(
+            {
+                "status": "routed",
+                "route_type": route_info.get("route_type"),
+                "route_reason": route_info.get("route_reason"),
+                "download_strategy": route_info.get("download_strategy"),
+                "items": route_info.get("items", []),
+                "warnings": route_info.get("warnings", []),
+                "estimated_bytes": route_info.get("estimated_bytes", 0),
+                "server_egress_estimated_bytes": route_info.get("server_egress_estimated_bytes", 0),
+                "browser_egress_estimated_bytes": route_info.get("browser_egress_estimated_bytes", 0),
+                "strategy_version": route_info.get("strategy_version", "v3"),
+                "confidence": route_info.get("confidence", 0),
+                "routing_score": route_info.get("routing_score", 0),
+                "native_browser_download": route_info.get("download_strategy") == "server_single_attachment",
             }
         )
 

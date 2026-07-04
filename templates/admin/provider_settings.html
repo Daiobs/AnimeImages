@@ -534,6 +534,9 @@
                 </p>
             </div>
             <div class="provider-hero-actions">
+                <a class="provider-link-btn" href="{% url 'control_plane' %}">
+                    控制平面
+                </a>
                 <a class="provider-link-btn" href="{% url 'admin_console' %}">
                     运维首页
                 </a>
@@ -707,6 +710,69 @@
                     </article>
                 {% endfor %}
             </div>
+
+            <section class="provider-emergency">
+                <div>
+                    <div class="provider-emergency-title">Provider 运行预算</div>
+                    <div class="provider-emergency-help">
+                        日常排障和灰度调参使用这里；.env 只保留服务器能力、密钥和兜底默认值。
+                    </div>
+                </div>
+                <div class="provider-field-grid" style="flex: 1 1 720px;">
+                    <label class="provider-field">
+                        <span>抖音超清前台总预算（秒）</span>
+                        <input
+                            type="number"
+                            name="douyin_ultra_total_timeout_seconds"
+                            min="1"
+                            max="30"
+                            step="0.5"
+                            value="{{ runtime_setting.douyin_ultra_total_timeout_seconds }}"
+                        >
+                    </label>
+                    <label class="provider-field">
+                        <span>KuKuTool 近完成等待（秒）</span>
+                        <input
+                            type="number"
+                            name="douyin_ultra_kukutool_grace_seconds"
+                            min="0"
+                            max="10"
+                            step="0.5"
+                            value="{{ runtime_setting.douyin_ultra_kukutool_grace_seconds }}"
+                        >
+                    </label>
+                    <label class="provider-field">
+                        <span>KuKuTool 下载超时（秒）</span>
+                        <input
+                            type="number"
+                            name="kukutool_download_timeout_seconds"
+                            min="1"
+                            max="180"
+                            step="1"
+                            value="{{ runtime_setting.kukutool_download_timeout_seconds }}"
+                        >
+                    </label>
+                    <label class="provider-field">
+                        <span>KuKuTool 下载交付策略</span>
+                        <select name="kukutool_download_delivery_mode">
+                            <option value="server_stream" {% if runtime_setting.kukutool_download_delivery_mode == "server_stream" %}selected{% endif %}>服务端 attachment 流优先</option>
+                            <option value="browser_first" {% if runtime_setting.kukutool_download_delivery_mode == "browser_first" %}selected{% endif %}>浏览器优先，失败后服务端</option>
+                            <option value="server_only" {% if runtime_setting.kukutool_download_delivery_mode == "server_only" %}selected{% endif %}>仅服务端下载</option>
+                        </select>
+                    </label>
+                    <label class="provider-field">
+                        <span>YouTube 前台解析预算（秒）</span>
+                        <input
+                            type="number"
+                            name="youtube_frontend_timeout_seconds"
+                            min="3"
+                            max="60"
+                            step="1"
+                            value="{{ runtime_setting.youtube_frontend_timeout_seconds }}"
+                        >
+                    </label>
+                </div>
+            </section>
 
             <section class="provider-emergency">
                 <div>

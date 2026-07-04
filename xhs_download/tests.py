@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 from zipfile import ZipFile
 
 import requests
-from django.contrib.auth.models import Permission
+from django.contrib.auth.models import Permission, User
 from django.core.cache import cache
 from django.core.checks import Error as CheckError, Warning as CheckWarning, run_checks
 from django.core.management import call_command
@@ -75,7 +75,49 @@ from .services.feedback_loop import (
     build_insights,
     build_suggestions,
 )
+from .services.approval_gate import (
+    CONTROL_AUTO_APPLY,
+    CONTROL_REJECT,
+    CONTROL_REQUIRE_APPROVAL,
+    approve_policy_change,
+    reject_policy_change,
+    rollback_policy_change,
+)
 from .services.observability import record_download_request_log, record_provider_admin_audit_log
+from .services.policy_control_layer import (
+    create_controlled_policy_proposals,
+    evaluate_policy_control_layer,
+)
+from .services.policy_risk_engine import score_policy_risk
+from .services.control_convergence_engine import (
+    apply_control_feedback_to_records,
+    build_control_convergence_snapshot,
+    find_orphan_control_decisions,
+)
+from .services.control_execution_tracker import record_control_execution
+from .services.control_state_machine import (
+    create_control_record,
+    record_control_decision_for_proposal,
+    transition_control_record,
+)
+from .services.stabilization_engine import (
+    feedback_stabilizer,
+    policy_convergence_engine,
+    stabilization_engine,
+)
+from .services.autonomous_evolution_engine import (
+    autonomous_evolution_engine,
+    detect_optimization_opportunities,
+    policy_mutation_controller,
+    rollback_engine,
+    shadow_experiment,
+)
+from .services.governance_engine import (
+    DAILY_MUTATION_LIMIT,
+    governance_engine,
+    record_governance_audit_decision,
+)
+from .services.policy_constants import GOVERNANCE_VERSION
 from .services.production_intelligence import build_observability_v2_context
 from .policy.healing_policy import (
     HEAL_ACTION_BLOCK_GRACEFULLY,
@@ -98,7 +140,19 @@ from .policy.engine import (
     evaluate_policy_shadow,
     policy_weight_diagnostics,
 )
+from .policy.evolution import (
+    SAFETY_APPROVE,
+    SAFETY_REJECT,
+    SAFETY_REVIEW,
+    build_policy_evolution_recommendation,
+    validate_policy_suggestion,
+)
 from .policy.learning import build_policy_learning_snapshot, record_policy_learning_run
+from .policy.optimization import (
+    build_policy_optimization_queue,
+    create_policy_optimization_proposal,
+    evaluate_policy_drift,
+)
 from .policy.policies import CostPolicy, ProviderPolicy, RoutingPolicy
 from .services.provider_access import (
     PROVIDER_DOUYIN_ULTRA,
@@ -110,9 +164,14 @@ from .services.provider_access import (
 )
 from .models import (
     DownloadRequestLog,
+    KukuToolDownloadDeliveryMode,
     ObservabilityStatus,
     ParseRequestLog,
+    PolicyControlRecord,
+    PolicyControlState,
     PolicyLearningRun,
+    PolicyOptimizationProposal,
+    PolicyOptimizationStatus,
     PolicyRuntimeMode,
     PolicyRuntimeSetting,
     ProviderAccessMode,
@@ -163,7 +222,11 @@ from .services.platforms.external_tools import (
     run_external_command,
     safe_subprocess_env,
 )
-from .services.platforms.third_party import third_party_media_url_is_allowed
+from .services.platforms.third_party import (
+    frontend_budget_seconds,
+    get_third_party_rule,
+    third_party_media_url_is_allowed,
+)
 from .services.platforms.bilibili import BILIBILI_HEADERS
 from .services.platforms.douyin import DOUYIN_HEADERS, extract_aweme_id, get_video_candidates
 from .services.platforms.douyin_kukutool import (
@@ -5806,7 +5869,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(youtube_route["route_type"], ROUTE_ZIP)
         self.assertEqual(kukutool_route["route_type"], ROUTE_ZIP)
 
-    def test_download_route_signed_kukutool_cdn_video_uses_server_attachment(self):
+    def test_download_route_signed_kukutool_cdn_video_defaults_to_server_attachment(self):
         request = RequestFactory().post("/media/download-images/")
         item = make_kukutool_download_item("https://v6-default.365yg.com/a.mp4")
         item["size_bytes"] = 2000
@@ -5818,7 +5881,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(route["server_egress_estimated_bytes"], 2000)
         self.assertEqual(route["browser_egress_estimated_bytes"], 0)
 
-    def test_download_route_browser_signed_kukutool_cdn_video_uses_server_attachment(self):
+    def test_download_route_browser_signed_kukutool_cdn_video_defaults_to_server_attachment(self):
         request = RequestFactory().post("/media/download-images/")
         item = make_kukutool_download_item("https://v6-default.365yg.com/a.mp4")
         item["size_bytes"] = 2000
@@ -5829,6 +5892,22 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(route["download_strategy"], "server_single_attachment")
         self.assertEqual(route["server_egress_estimated_bytes"], 2000)
         self.assertEqual(route["browser_egress_estimated_bytes"], 0)
+
+    def test_download_route_signed_kukutool_cdn_video_browser_first_mode_uses_browser_direct(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.kukutool_download_delivery_mode = KukuToolDownloadDeliveryMode.BROWSER_FIRST
+        setting.save(update_fields=["kukutool_download_delivery_mode", "updated_at"])
+        request = RequestFactory().post("/media/download-images/")
+        item = make_kukutool_download_item("https://v6-default.365yg.com/a.mp4")
+        item["size_bytes"] = 2000
+
+        route = decide_download_route(request, [item], requested_mode="auto")
+
+        self.assertEqual(route["route_type"], ROUTE_DIRECT)
+        self.assertEqual(route["download_strategy"], "browser_direct_provider_video")
+        self.assertEqual(route["server_egress_estimated_bytes"], 0)
+        self.assertEqual(route["browser_egress_estimated_bytes"], 2000)
+        self.assertIn("浏览器", route["route_reason"])
 
     def test_download_route_proxy_signed_kukutool_cdn_video_forces_server_attachment(self):
         request = RequestFactory().post("/media/download-images/")
@@ -6117,7 +6196,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertNotIn("token=secret", log.error_message_short)
 
     @patch("xhs_download.views.fetch_media_response")
-    def test_download_signed_kukutool_video_uses_server_single_file(self, mock_fetch):
+    def test_download_signed_kukutool_video_defaults_to_server_single_file(self, mock_fetch):
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
         mock_fetch.return_value = FakeStreamingResponse(
@@ -6136,6 +6215,7 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_fetch.call_args.kwargs["timeout"], 60)
         self.assertEqual(response["Content-Type"], "video/mp4")
         self.assertIn("attachment", response["Content-Disposition"])
         self.assertEqual(b"".join(response.streaming_content), b"video-content")
@@ -6144,6 +6224,150 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(log.route_type, ROUTE_PROXY)
         self.assertEqual(log.server_egress_estimated_bytes, 2000)
         self.assertEqual(log.browser_egress_estimated_bytes, 0)
+
+    @patch("xhs_download.views.invalidate_external_provider_caches")
+    @patch("xhs_download.views.iter_kukutool_download_recovery_urls")
+    @patch("xhs_download.views.fetch_media_response")
+    def test_download_signed_kukutool_video_server_single_file_recovers_with_refreshed_url(
+        self,
+        mock_fetch,
+        mock_recovery_urls,
+        mock_invalidate_caches,
+    ):
+        item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
+        item["size_bytes"] = 2000
+        refreshed_url = "https://v6-default.365yg.com/video/refreshed.mp4"
+        mock_fetch.side_effect = [
+            requests.exceptions.SSLError("EOF occurred in violation of protocol"),
+            FakeStreamingResponse(
+                b"video-content",
+                url=refreshed_url,
+                content_type="video/mp4",
+            ),
+        ]
+        mock_recovery_urls.return_value = [refreshed_url]
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "auto",
+                "media_items": [item],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "video/mp4")
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertEqual(b"".join(response.streaming_content), b"video-content")
+        self.assertEqual(mock_fetch.call_count, 2)
+        self.assertEqual(mock_fetch.call_args_list[1].kwargs["provider_signed"], item)
+        mock_recovery_urls.assert_called_once_with(item)
+        mock_invalidate_caches.assert_called()
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_download_signed_kukutool_video_browser_first_mode_returns_direct_route(self, mock_fetch):
+        setting = ProviderRuntimeSetting.load()
+        setting.kukutool_download_delivery_mode = KukuToolDownloadDeliveryMode.BROWSER_FIRST
+        setting.save(update_fields=["kukutool_download_delivery_mode", "updated_at"])
+        item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
+        item["size_bytes"] = 2000
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "auto",
+                "media_items": [item],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "routed")
+        self.assertEqual(payload["route_type"], ROUTE_DIRECT)
+        self.assertEqual(payload["download_strategy"], "browser_direct_provider_video")
+        self.assertIn("浏览器下载管理器", payload["route_reason"])
+        self.assertEqual(mock_fetch.call_count, 0)
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_download_signed_kukutool_video_route_only_returns_proxy_json(self, mock_fetch):
+        item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
+        item["size_bytes"] = 2000
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "auto",
+                "route_only": True,
+                "media_items": [item],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "routed")
+        self.assertEqual(payload["route_type"], ROUTE_PROXY)
+        self.assertEqual(payload["download_strategy"], "server_single_attachment")
+        self.assertTrue(payload["native_browser_download"])
+        self.assertEqual(mock_fetch.call_count, 0)
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_download_signed_kukutool_video_uses_runtime_timeout_override(self, mock_fetch):
+        setting = ProviderRuntimeSetting.load()
+        setting.kukutool_download_timeout_seconds = 120
+        setting.kukutool_download_delivery_mode = KukuToolDownloadDeliveryMode.SERVER_STREAM
+        setting.save(update_fields=[
+            "kukutool_download_timeout_seconds",
+            "kukutool_download_delivery_mode",
+            "updated_at",
+        ])
+
+        item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
+        item["size_bytes"] = 2000
+        mock_fetch.return_value = FakeStreamingResponse(
+            b"video-content",
+            url=item["url"],
+            content_type="video/mp4",
+        )
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "auto",
+                "media_items": [item],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_fetch.call_args.kwargs["timeout"], 120)
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_download_form_payload_json_returns_single_file_response(self, mock_fetch):
+        item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
+        item["size_bytes"] = 2000
+        mock_fetch.return_value = FakeStreamingResponse(
+            b"video-content",
+            url=item["url"],
+            content_type="video/mp4",
+        )
+
+        response = Client(enforce_csrf_checks=False).post(
+            "/media/download-images/",
+            data={
+                "payload_json": json.dumps({
+                    "download_mode": "auto",
+                    "media_items": [item],
+                }),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "video/mp4")
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertEqual(b"".join(response.streaming_content), b"video-content")
 
     @patch("xhs_download.views.fetch_media_response")
     def test_download_proxy_signed_kukutool_video_returns_single_file_response(self, mock_fetch):
@@ -7234,6 +7458,87 @@ class PolicyEngineEvolutionTests(TestCase):
         self.assertEqual(log.policy_decision_source, "policy_v3_5")
         self.assertGreaterEqual(log.policy_estimated_savings_bytes, 0)
 
+    def test_policy_v35_active_can_override_explicit_zip_mode(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v35_mode = PolicyRuntimeMode.PUBLIC
+        setting.save(update_fields=["v35_mode", "updated_at"])
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "zip",
+                "media_items": [{
+                    "type": "image",
+                    "url": "https://ci.xiaohongshu.com/a.jpg",
+                    "size_bytes": 321,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/json")
+        self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.route_type, ROUTE_DIRECT)
+        self.assertEqual(log.final_policy_route, ROUTE_DIRECT)
+        self.assertTrue(log.policy_active)
+        self.assertEqual(log.policy_decision_source, "policy_v3_5")
+
+    def test_policy_v35_active_can_override_explicit_proxy_mode(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v35_mode = PolicyRuntimeMode.PUBLIC
+        setting.save(update_fields=["v35_mode", "updated_at"])
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "proxy",
+                "media_items": [{
+                    "type": "image",
+                    "url": "https://ci.xiaohongshu.com/a.jpg",
+                    "size_bytes": 321,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/json")
+        self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.route_type, ROUTE_DIRECT)
+        self.assertEqual(log.final_policy_route, ROUTE_DIRECT)
+        self.assertTrue(log.policy_active)
+        self.assertEqual(log.policy_decision_source, "policy_v3_5")
+
+    def test_policy_v35_active_can_override_explicit_server_single_mode(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v35_mode = PolicyRuntimeMode.PUBLIC
+        setting.save(update_fields=["v35_mode", "updated_at"])
+
+        response = Client().post(
+            "/media/download-images/",
+            data=json.dumps({
+                "download_mode": "server_single",
+                "media_items": [{
+                    "type": "image",
+                    "url": "https://ci.xiaohongshu.com/a.jpg",
+                    "size_bytes": 321,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/json")
+        self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.route_type, ROUTE_DIRECT)
+        self.assertEqual(log.final_policy_route, ROUTE_DIRECT)
+        self.assertTrue(log.policy_active)
+        self.assertEqual(log.policy_decision_source, "policy_v3_5")
+
     def test_cost_guard_still_blocks_unsafe_request(self):
         setting = DownloadRuntimeSetting.load()
         setting.visitor_video_download_enabled = False
@@ -7367,6 +7672,1101 @@ class PolicyEngineEvolutionTests(TestCase):
         self.assertEqual(diagnostics["source"], "static_adaptive_confidence_too_low")
         self.assertAlmostEqual(diagnostics["weights"]["cost"], 0.4)
         self.assertLess(diagnostics["confidence"], 0.99)
+
+    def test_policy_v4_evolution_generates_review_suggestion_without_execution(self):
+        item = {"type": "image", "url": "https://ci.xiaohongshu.com/a.jpg", "size_bytes": 321}
+        before = decide_download_route(self.request, [item], requested_mode="auto")
+
+        recommendation = build_policy_evolution_recommendation(window_hours=24)
+
+        after = decide_download_route(self.request, [item], requested_mode="auto")
+        self.assertEqual(before["route_type"], after["route_type"])
+        self.assertEqual(recommendation["version"], "v4")
+        self.assertEqual(recommendation["mode"], "recommendation_only")
+        self.assertFalse(recommendation["automatic_execution"])
+        self.assertFalse(recommendation["production_behavior_changed"])
+        self.assertEqual(recommendation["suggestions"][0]["safety"]["decision"], SAFETY_REVIEW)
+        self.assertIn(
+            "insufficient-feedback-sample",
+            recommendation["suggestions"][0]["safety"]["reason_chain"],
+        )
+
+    def test_policy_v4_safety_guard_can_approve_low_risk_adaptive_suggestion(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v4_adaptive_min_confidence = 0.1
+        setting.save(update_fields=["v4_adaptive_min_confidence", "updated_at"])
+        for index in range(8):
+            DownloadRequestLog.objects.create(
+                request_id=f"rid-v4-approve-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="auto",
+                route_type=ROUTE_DIRECT,
+                final_policy_route=ROUTE_DIRECT,
+                provider="native",
+                estimated_bytes=1000,
+                actual_bytes=900,
+                browser_egress_estimated_bytes=1000,
+            )
+
+        recommendation = build_policy_evolution_recommendation(
+            window_hours=24,
+            runtime_setting=setting,
+        )
+
+        suggestion = recommendation["suggestions"][0]
+        self.assertEqual(suggestion["safety"]["decision"], SAFETY_APPROVE)
+        self.assertEqual(suggestion["safety"]["risk"], "low")
+        self.assertFalse(suggestion["automatic_execution"])
+        self.assertEqual(recommendation["safety_summary"][SAFETY_APPROVE], 1)
+
+    def test_policy_v4_safety_guard_rejects_automatic_execution(self):
+        safety = validate_policy_suggestion({
+            "kind": "adaptive_policy_weights",
+            "automatic_execution": True,
+            "proposed_change": {
+                "weights": {"cost": 0.4, "provider": 0.4, "routing": 0.2},
+            },
+        })
+
+        self.assertEqual(safety["decision"], SAFETY_REJECT)
+        self.assertEqual(safety["risk"], "high")
+        self.assertIn("automatic-execution-is-not-allowed-in-v4", safety["reason_chain"])
+
+    def test_policy_v5_queue_auto_applies_low_risk_without_runtime_mutation_by_default(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v4_adaptive_min_confidence = 0.1
+        setting.v4_auto_weights_enabled = False
+        setting.save(update_fields=[
+            "v4_adaptive_min_confidence",
+            "v4_auto_weights_enabled",
+            "updated_at",
+        ])
+        for index in range(8):
+            DownloadRequestLog.objects.create(
+                request_id=f"rid-v5-auto-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="auto",
+                route_type=ROUTE_DIRECT,
+                final_policy_route=ROUTE_DIRECT,
+                provider="native",
+                estimated_bytes=1000,
+                actual_bytes=900,
+                browser_egress_estimated_bytes=1000,
+            )
+
+        result = build_policy_optimization_queue(
+            window_hours=24,
+            auto_apply_low_risk=True,
+            allow_runtime_mutation=False,
+        )
+
+        proposal = PolicyOptimizationProposal.objects.get()
+        setting.refresh_from_db()
+        self.assertEqual(result["version"], "v5")
+        self.assertEqual(result["auto_applied_count"], 1)
+        self.assertEqual(proposal.status, PolicyOptimizationStatus.AUTO_APPLIED)
+        self.assertTrue(proposal.automatic_execution)
+        self.assertFalse(proposal.runtime_mutated)
+        self.assertFalse(setting.v4_auto_weights_enabled)
+        self.assertFalse(result["production_behavior_changed"])
+
+    def test_policy_v5_queue_can_mutate_runtime_when_explicitly_allowed(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v4_adaptive_min_confidence = 0.1
+        setting.v4_auto_weights_enabled = False
+        setting.save(update_fields=[
+            "v4_adaptive_min_confidence",
+            "v4_auto_weights_enabled",
+            "updated_at",
+        ])
+        for index in range(8):
+            DownloadRequestLog.objects.create(
+                request_id=f"rid-v5-mutate-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="auto",
+                route_type=ROUTE_DIRECT,
+                final_policy_route=ROUTE_DIRECT,
+                provider="native",
+                estimated_bytes=1000,
+                actual_bytes=900,
+                browser_egress_estimated_bytes=1000,
+            )
+
+        result = build_policy_optimization_queue(
+            window_hours=24,
+            auto_apply_low_risk=True,
+            allow_runtime_mutation=True,
+        )
+
+        proposal = PolicyOptimizationProposal.objects.get()
+        setting.refresh_from_db()
+        self.assertEqual(proposal.status, PolicyOptimizationStatus.AUTO_APPLIED)
+        self.assertTrue(proposal.runtime_mutated)
+        self.assertTrue(setting.v4_auto_weights_enabled)
+        self.assertTrue(result["production_behavior_changed"])
+
+    def test_policy_v5_queue_requires_approval_when_auto_apply_disabled(self):
+        suggestion = {
+            "kind": "adaptive_policy_weights",
+            "policy_area": "policy_weights",
+            "title": "调整 Policy Engine 权重",
+            "body": "low risk",
+            "proposed_change": {
+                "weights": {"cost": 0.42, "provider": 0.39, "routing": 0.19},
+                "delta": {"cost": 0.02, "provider": -0.01, "routing": -0.01},
+            },
+            "confidence": 0.8,
+            "sample_count": 20,
+            "reason_chain": ["test-low-risk"],
+            "automatic_execution": False,
+            "safety": {"decision": SAFETY_APPROVE, "risk": "low"},
+        }
+
+        proposal = create_policy_optimization_proposal(
+            suggestion,
+            auto_apply_low_risk=False,
+        )
+
+        self.assertEqual(proposal.status, PolicyOptimizationStatus.NEEDS_APPROVAL)
+        self.assertFalse(proposal.automatic_execution)
+
+    def test_policy_v5_drift_control_forces_human_review(self):
+        for index in range(3):
+            PolicyOptimizationProposal.objects.create(
+                source_version="v5",
+                status=PolicyOptimizationStatus.AUTO_APPLIED,
+                kind="adaptive_policy_weights",
+                policy_area="policy_weights",
+                title="existing",
+                risk="low",
+                safety_decision=SAFETY_APPROVE,
+                confidence=0.8,
+                sample_count=20,
+                proposed_change={"weights": {"cost": 0.42, "provider": 0.39, "routing": 0.19}},
+                safety={"decision": SAFETY_APPROVE, "risk": "low"},
+                drift={},
+                signature=f"{index}".zfill(64),
+                drift_key="policy_weights:adaptive_policy_weights",
+                automatic_execution=True,
+            )
+        suggestion = {
+            "kind": "adaptive_policy_weights",
+            "policy_area": "policy_weights",
+            "title": "调整 Policy Engine 权重",
+            "body": "low risk",
+            "proposed_change": {
+                "weights": {"cost": 0.42, "provider": 0.39, "routing": 0.19},
+                "delta": {"cost": 0.02, "provider": -0.01, "routing": -0.01},
+            },
+            "confidence": 0.8,
+            "sample_count": 20,
+            "reason_chain": ["test-drift"],
+            "automatic_execution": False,
+            "safety": {"decision": SAFETY_APPROVE, "risk": "low"},
+        }
+
+        drift = evaluate_policy_drift(suggestion)
+        proposal = create_policy_optimization_proposal(suggestion)
+
+        self.assertEqual(drift["decision"], SAFETY_REVIEW)
+        self.assertEqual(proposal.status, PolicyOptimizationStatus.NEEDS_APPROVAL)
+        self.assertIn("policy-drift-threshold", proposal.drift["reason"])
+
+    def test_policy_v5_queue_rejects_high_risk_suggestion(self):
+        suggestion = {
+            "kind": "adaptive_policy_weights",
+            "policy_area": "policy_weights",
+            "title": "unsafe",
+            "body": "unsafe",
+            "proposed_change": {
+                "weights": {"cost": 0.4, "provider": 0.4, "routing": 0.2},
+            },
+            "confidence": 1.0,
+            "sample_count": 20,
+            "automatic_execution": True,
+            "safety": {"decision": SAFETY_REJECT, "risk": "high"},
+        }
+
+        proposal = create_policy_optimization_proposal(suggestion)
+
+        self.assertEqual(proposal.status, PolicyOptimizationStatus.REJECTED)
+        self.assertFalse(proposal.automatic_execution)
+
+    def test_policy_control_risk_scoring_classifies_impact_areas(self):
+        provider_risk = score_policy_risk({
+            "kind": "provider_priority_change",
+            "policy_area": "provider",
+            "proposed_change": {"provider": "kukutool"},
+            "sample_count": 20,
+            "safety": {"decision": SAFETY_APPROVE, "risk": "low"},
+        })
+        routing_risk = score_policy_risk({
+            "kind": "routing_weight_change",
+            "policy_area": "routing",
+            "proposed_change": {
+                "delta": {"cost": 0.02, "provider": -0.01, "routing": -0.01},
+            },
+            "sample_count": 20,
+            "safety": {"decision": SAFETY_APPROVE, "risk": "low"},
+        })
+        cost_risk = score_policy_risk({
+            "kind": "cost_limit_adjustment",
+            "policy_area": "cost",
+            "proposed_change": {"estimated_cost_bytes": 1024 * 1024 * 1024},
+            "sample_count": 20,
+            "safety": {"decision": SAFETY_APPROVE, "risk": "low"},
+        })
+
+        self.assertEqual(provider_risk["impact_area"], "provider")
+        self.assertEqual(provider_risk["risk_level"], "high")
+        self.assertEqual(routing_risk["impact_area"], "routing")
+        self.assertEqual(routing_risk["risk_level"], "medium")
+        self.assertEqual(cost_risk["impact_area"], "cost")
+        self.assertEqual(cost_risk["risk_level"], "high")
+
+    def test_policy_control_layer_decides_auto_apply_approval_and_reject(self):
+        low_risk = {
+            "kind": "adaptive_policy_weights",
+            "policy_area": "policy_weights",
+            "title": "low",
+            "proposed_change": {
+                "weights": {"cost": 0.41, "provider": 0.39, "routing": 0.2},
+                "delta": {"cost": 0.01, "provider": -0.01, "routing": 0},
+            },
+            "sample_count": 20,
+            "safety": {"decision": SAFETY_APPROVE, "risk": "low"},
+        }
+        provider_change = {
+            "kind": "provider_priority_change",
+            "policy_area": "provider",
+            "title": "provider",
+            "proposed_change": {"provider": "kukutool"},
+            "sample_count": 20,
+            "safety": {"decision": SAFETY_APPROVE, "risk": "low"},
+        }
+        unsafe = {
+            "kind": "adaptive_policy_weights",
+            "policy_area": "policy_weights",
+            "title": "unsafe",
+            "proposed_change": {},
+            "automatic_execution": True,
+            "sample_count": 20,
+            "safety": {"decision": SAFETY_REJECT, "risk": "high"},
+        }
+
+        low_result = evaluate_policy_control_layer([low_risk])
+        provider_result = evaluate_policy_control_layer([provider_change])
+        unsafe_result = evaluate_policy_control_layer([unsafe])
+
+        self.assertEqual(low_result["decision"], CONTROL_AUTO_APPLY)
+        self.assertEqual(provider_result["decision"], CONTROL_REQUIRE_APPROVAL)
+        self.assertEqual(unsafe_result["decision"], CONTROL_REJECT)
+
+    def test_policy_control_generates_proposals_without_runtime_mutation(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v4_adaptive_min_confidence = 0.1
+        setting.v4_auto_weights_enabled = False
+        setting.save(update_fields=[
+            "v4_adaptive_min_confidence",
+            "v4_auto_weights_enabled",
+            "updated_at",
+        ])
+        for index in range(8):
+            DownloadRequestLog.objects.create(
+                request_id=f"rid-control-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="auto",
+                route_type=ROUTE_DIRECT,
+                final_policy_route=ROUTE_DIRECT,
+                provider="native",
+                estimated_bytes=1000,
+                actual_bytes=900,
+                browser_egress_estimated_bytes=1000,
+            )
+
+        result = create_controlled_policy_proposals(window_hours=24)
+
+        proposal = PolicyOptimizationProposal.objects.get()
+        setting.refresh_from_db()
+        self.assertEqual(result["proposal_count"], 1)
+        self.assertEqual(proposal.control_decision, CONTROL_AUTO_APPLY)
+        self.assertEqual(proposal.status, PolicyOptimizationStatus.AUTO_APPLIED)
+        self.assertFalse(proposal.runtime_mutated)
+        self.assertFalse(setting.v4_auto_weights_enabled)
+        self.assertFalse(proposal.application_result["behavior_changed"])
+
+    def test_policy_approval_flow_and_rollback(self):
+        proposal = PolicyOptimizationProposal.objects.create(
+            source_version="v5",
+            status=PolicyOptimizationStatus.NEEDS_APPROVAL,
+            kind="adaptive_policy_weights",
+            policy_area="policy_weights",
+            title="review",
+            risk="medium",
+            risk_score=0.5,
+            impact_area="routing",
+            control_decision=CONTROL_REQUIRE_APPROVAL,
+            safety_decision=SAFETY_REVIEW,
+            confidence=0.8,
+            sample_count=20,
+            proposed_change={"weights": {"cost": 0.42, "provider": 0.39, "routing": 0.19}},
+            safety={"decision": SAFETY_REVIEW, "risk": "medium"},
+            drift={},
+            signature="a" * 64,
+            drift_key="policy_weights:adaptive_policy_weights",
+        )
+
+        approved = approve_policy_change(proposal, actor_username="admin")
+        proposal.refresh_from_db()
+        self.assertTrue(approved["ok"])
+        self.assertEqual(proposal.status, PolicyOptimizationStatus.APPROVED)
+        self.assertEqual(proposal.actor_username, "admin")
+
+        rejected = reject_policy_change(proposal, actor_username="admin", reason="not-needed")
+        proposal.refresh_from_db()
+        self.assertTrue(rejected["ok"])
+        self.assertEqual(proposal.status, PolicyOptimizationStatus.REJECTED)
+
+    def test_policy_control_rollback_restores_runtime_setting(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v4_auto_weights_enabled = True
+        setting.v4_adaptive_shadow_enabled = True
+        setting.save(update_fields=[
+            "v4_auto_weights_enabled",
+            "v4_adaptive_shadow_enabled",
+            "updated_at",
+        ])
+        proposal = PolicyOptimizationProposal.objects.create(
+            source_version="v5",
+            status=PolicyOptimizationStatus.APPROVED,
+            kind="adaptive_policy_weights",
+            policy_area="policy_weights",
+            title="applied",
+            risk="low",
+            risk_score=0.2,
+            impact_area="routing",
+            control_decision=CONTROL_AUTO_APPLY,
+            safety_decision=SAFETY_APPROVE,
+            confidence=0.8,
+            sample_count=20,
+            proposed_change={"weights": {"cost": 0.42, "provider": 0.39, "routing": 0.19}},
+            safety={"decision": SAFETY_APPROVE, "risk": "low"},
+            drift={},
+            signature="b" * 64,
+            drift_key="policy_weights:adaptive_policy_weights",
+            runtime_mutated=True,
+            application_result={
+                "before": {
+                    "v4_auto_weights_enabled": False,
+                    "v4_adaptive_shadow_enabled": True,
+                },
+                "after": {
+                    "v4_auto_weights_enabled": True,
+                    "v4_adaptive_shadow_enabled": True,
+                },
+            },
+        )
+
+        result = rollback_policy_change(proposal, actor_username="admin")
+
+        proposal.refresh_from_db()
+        setting.refresh_from_db()
+        self.assertTrue(result["behavior_changed"])
+        self.assertFalse(setting.v4_auto_weights_enabled)
+        self.assertEqual(proposal.status, PolicyOptimizationStatus.ROLLED_BACK)
+        self.assertFalse(proposal.runtime_mutated)
+
+    def test_policy_control_admin_page_requires_permission_and_superuser_can_generate(self):
+        response = Client().get("/admin/policy-control/")
+        self.assertEqual(response.status_code, 404)
+
+        user = User.objects.create_superuser(
+            username="policy-admin",
+            email="policy@example.com",
+            password="pw",
+        )
+        client = Client()
+        client.force_login(user)
+
+        get_response = client.get("/admin/policy-control/")
+        self.assertEqual(get_response.status_code, 200)
+        post_response = client.post("/admin/policy-control/", {"action": "generate", "window": "24"})
+        self.assertEqual(post_response.status_code, 302)
+        self.assertEqual(post_response["Location"], "/admin/policy-control/")
+
+    def test_control_state_machine_transition_correctness(self):
+        record = create_control_record(
+            policy_decision=ROUTE_DIRECT,
+            control_decision=CONTROL_REQUIRE_APPROVAL,
+            source="test",
+        )
+
+        self.assertEqual(record.state, PolicyControlState.PENDING)
+        transition_control_record(record, PolicyControlState.APPROVED, reason="approved")
+        record.refresh_from_db()
+        self.assertEqual(record.state, PolicyControlState.APPROVED)
+        transition_control_record(record, PolicyControlState.EXECUTED, reason="executed")
+        record.refresh_from_db()
+        self.assertEqual(record.state, PolicyControlState.EXECUTED)
+        self.assertGreaterEqual(len(record.transition_history), 3)
+        with self.assertRaises(ValueError):
+            transition_control_record(record, PolicyControlState.APPROVED, reason="invalid")
+
+    def test_control_approval_execution_feedback_loop(self):
+        proposal = PolicyOptimizationProposal.objects.create(
+            source_version="v5",
+            status=PolicyOptimizationStatus.NEEDS_APPROVAL,
+            kind="adaptive_policy_weights",
+            policy_area="policy_weights",
+            title="review",
+            risk="medium",
+            risk_score=0.5,
+            impact_area="routing",
+            control_decision=CONTROL_REQUIRE_APPROVAL,
+            safety_decision=SAFETY_REVIEW,
+            confidence=0.8,
+            sample_count=20,
+            proposed_change={"weights": {"cost": 0.42, "provider": 0.39, "routing": 0.19}},
+            safety={"decision": SAFETY_REVIEW, "risk": "medium"},
+            drift={},
+            signature="c" * 64,
+            drift_key="policy_weights:adaptive_policy_weights",
+        )
+        control_record = record_control_decision_for_proposal(
+            proposal,
+            risk={"risk_score": 0.5, "risk_level": "medium"},
+            gate={"reason": "human-approval-required"},
+        )
+
+        self.assertEqual(control_record.state, PolicyControlState.PENDING)
+        approve_policy_change(proposal, actor_username="admin")
+        control_record.refresh_from_db()
+        self.assertEqual(control_record.state, PolicyControlState.APPROVED)
+
+        executed = record_control_execution(
+            proposal=proposal,
+            request_id="rid-control-loop",
+            policy_decision=ROUTE_DIRECT,
+            control_decision=CONTROL_REQUIRE_APPROVAL,
+            status=ObservabilityStatus.SUCCESS,
+            provider="native",
+            route=ROUTE_DIRECT,
+            cost=900,
+            policy_confidence=0.8,
+        )
+        self.assertEqual(executed.id, control_record.id)
+        self.assertEqual(executed.state, PolicyControlState.EXECUTED)
+
+        feedback = apply_control_feedback_to_records(window_hours=24)
+        executed.refresh_from_db()
+        self.assertEqual(feedback["updated"], 1)
+        self.assertEqual(executed.feedback_summary["route_success_rate"], 1.0)
+        self.assertGreater(executed.control_confidence, 0)
+
+    def test_control_execution_cannot_bypass_pending_approval(self):
+        proposal = PolicyOptimizationProposal.objects.create(
+            source_version="v5",
+            status=PolicyOptimizationStatus.NEEDS_APPROVAL,
+            kind="provider_priority_change",
+            policy_area="provider",
+            title="provider review",
+            risk="high",
+            risk_score=0.7,
+            impact_area="provider",
+            control_decision=CONTROL_REQUIRE_APPROVAL,
+            safety_decision=SAFETY_REVIEW,
+            confidence=0.8,
+            sample_count=20,
+            proposed_change={"provider": "kukutool"},
+            safety={"decision": SAFETY_REVIEW, "risk": "medium"},
+            drift={},
+            signature="d" * 64,
+            drift_key="provider:provider_priority_change",
+        )
+        record_control_decision_for_proposal(
+            proposal,
+            risk={"risk_score": 0.7, "risk_level": "high"},
+            gate={"reason": "human-approval-required"},
+        )
+
+        with self.assertRaises(ValueError):
+            record_control_execution(
+                proposal=proposal,
+                request_id="rid-control-bypass",
+                policy_decision=ROUTE_DIRECT,
+                control_decision=CONTROL_REQUIRE_APPROVAL,
+                status=ObservabilityStatus.SUCCESS,
+                provider="kukutool",
+                route=ROUTE_DIRECT,
+                cost=1000,
+            )
+
+    def test_control_failure_execution_tracking(self):
+        record = record_control_execution(
+            request_id="rid-control-failure",
+            policy_decision=ROUTE_PROXY,
+            control_decision="download_policy_observed",
+            status=ObservabilityStatus.FAILED,
+            provider="kukutool",
+            route=ROUTE_PROXY,
+            cost=1234,
+            error_type="TimeoutError",
+            failure_type="provider_timeout",
+        )
+
+        self.assertEqual(record.state, PolicyControlState.FAILED)
+        self.assertEqual(record.execution_result, "failed")
+        self.assertIn("provider_timeout", record.failure_pattern)
+
+    def test_control_convergence_detects_policy_drift(self):
+        record_control_execution(
+            request_id="rid-control-drift",
+            policy_decision=ROUTE_DIRECT,
+            control_decision="policy_v5",
+            status=ObservabilityStatus.SUCCESS,
+            provider="native",
+            route=ROUTE_ZIP,
+            cost=5000,
+            policy_confidence=0.9,
+        )
+
+        snapshot = build_control_convergence_snapshot(window_hours=24)
+
+        self.assertEqual(snapshot["total_records"], 1)
+        self.assertLess(snapshot["control_drift_score"], 1.0)
+        self.assertEqual(snapshot["policy_consistency_score"], 1.0)
+        self.assertTrue(snapshot["suggestions"])
+
+    def test_control_no_orphan_decision_after_control_generation(self):
+        setting = PolicyRuntimeSetting.load()
+        setting.v4_adaptive_min_confidence = 0.1
+        setting.v4_auto_weights_enabled = False
+        setting.save(update_fields=[
+            "v4_adaptive_min_confidence",
+            "v4_auto_weights_enabled",
+            "updated_at",
+        ])
+        for index in range(8):
+            DownloadRequestLog.objects.create(
+                request_id=f"rid-control-no-orphan-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="auto",
+                route_type=ROUTE_DIRECT,
+                final_policy_route=ROUTE_DIRECT,
+                provider="native",
+                estimated_bytes=1000,
+                actual_bytes=900,
+                browser_egress_estimated_bytes=1000,
+            )
+
+        result = create_controlled_policy_proposals(window_hours=24)
+
+        self.assertEqual(result["proposal_count"], 1)
+        self.assertEqual(PolicyControlRecord.objects.count(), 1)
+        self.assertEqual(find_orphan_control_decisions(window_hours=24), [])
+
+    def test_control_convergence_admin_page_requires_permission(self):
+        response = Client().get("/admin/control-convergence/")
+        self.assertEqual(response.status_code, 404)
+
+        user = User.objects.create_superuser(
+            username="control-admin",
+            email="control@example.com",
+            password="pw",
+        )
+        client = Client()
+        client.force_login(user)
+
+        response = client.get("/admin/control-convergence/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Control Convergence")
+
+    def test_stabilization_v6_outputs_converged_stable_decision(self):
+        downloads = []
+        for index in range(6):
+            downloads.append(DownloadRequestLog.objects.create(
+                request_id=f"rid-stable-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="auto",
+                route_type=ROUTE_DIRECT,
+                final_policy_route=ROUTE_DIRECT,
+                policy_confidence=0.9,
+                provider="native",
+                estimated_bytes=1000,
+                actual_bytes=900,
+            ))
+        downloads.append(DownloadRequestLog.objects.create(
+            request_id="rid-stable-noise",
+            status=ObservabilityStatus.FAILED,
+            download_type="zip",
+            route_type=ROUTE_ZIP,
+            final_policy_route=ROUTE_DIRECT,
+            provider="native",
+            failure_type="download_failed",
+        ))
+
+        result = stabilization_engine(
+            downloads=downloads,
+            control_records=[],
+            feedback={"signals": {"failure_rate": 0.05, "failure_rate_delta": 0}},
+        )
+
+        self.assertEqual(result["stable_route"], ROUTE_DIRECT)
+        self.assertGreater(result["stability_score"], 0.7)
+        self.assertIn(result["conflict_level"], {"low", "medium"})
+        self.assertFalse(result["automatic_execution"])
+        self.assertFalse(result["production_behavior_changed"])
+
+    def test_stabilization_v6_conflict_reduction_merges_multiple_policies(self):
+        downloads = [
+            DownloadRequestLog.objects.create(
+                request_id="rid-conflict-a",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="auto",
+                route_type=ROUTE_DIRECT,
+                final_policy_route=ROUTE_DIRECT,
+                provider="native",
+                actual_bytes=100,
+            ),
+            DownloadRequestLog.objects.create(
+                request_id="rid-conflict-b",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="auto",
+                route_type=ROUTE_DIRECT,
+                final_policy_route=ROUTE_ZIP,
+                provider="native",
+                actual_bytes=100,
+            ),
+            DownloadRequestLog.objects.create(
+                request_id="rid-conflict-c",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="auto",
+                route_type=ROUTE_DIRECT,
+                final_policy_route=ROUTE_PROXY,
+                provider="native",
+                actual_bytes=100,
+            ),
+        ]
+
+        policy_result = policy_convergence_engine(downloads)
+
+        self.assertEqual(policy_result["stable_route"], ROUTE_DIRECT)
+        self.assertGreater(policy_result["policy_drift_rate"], 0)
+        self.assertGreaterEqual(policy_result["convergence_score"], 0)
+        self.assertLessEqual(policy_result["convergence_score"], 1)
+
+    def test_stabilization_v6_feedback_smoothing_limits_extreme_changes(self):
+        feedback = {
+            "signals": {
+                "failure_rate": 0.7,
+                "failure_rate_delta": 0.9,
+                "fallback_rate": 0.4,
+                "server_egress_ratio": 4.0,
+                "provider_signals": [
+                    {"provider": "kukutool", "failure_rate": 0.8},
+                    {"provider": "native", "failure_rate": 0.2},
+                ],
+            }
+        }
+
+        result = feedback_stabilizer(feedback)
+
+        self.assertTrue(result["suppressed_extreme_change"])
+        self.assertEqual(result["smoothed_failure_delta"], 0.15)
+        self.assertLess(result["smoothed_feedback_volatility"], result["feedback_volatility"])
+        self.assertGreater(result["provider_instability"], 0)
+
+    def test_stabilization_v6_execution_consistency_same_input_same_output(self):
+        downloads = [
+            DownloadRequestLog.objects.create(
+                request_id=f"rid-consistency-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="auto",
+                route_type=ROUTE_PROXY,
+                final_policy_route=ROUTE_PROXY,
+                provider="native",
+                actual_bytes=200,
+            )
+            for index in range(4)
+        ]
+        controls = [
+            create_control_record(
+                request_id=f"rid-consistency-control-{index}",
+                policy_decision=ROUTE_PROXY,
+                control_decision="download_policy_observed",
+                state=PolicyControlState.EXECUTED,
+                provider="native",
+                route=ROUTE_PROXY,
+                cost=200,
+            )
+            for index in range(2)
+        ]
+
+        first = stabilization_engine(
+            downloads=downloads,
+            control_records=controls,
+            feedback={"signals": {"failure_rate": 0, "failure_rate_delta": 0}},
+        )
+        second = stabilization_engine(
+            downloads=downloads,
+            control_records=controls,
+            feedback={"signals": {"failure_rate": 0, "failure_rate_delta": 0}},
+        )
+
+        self.assertEqual(first["stable_route"], second["stable_route"])
+        self.assertEqual(first["stability_score"], second["stability_score"])
+        self.assertEqual(first["metrics"], second["metrics"])
+
+    def test_stability_v6_admin_page_requires_permission(self):
+        response = Client().get("/admin/stability-v6/")
+        self.assertEqual(response.status_code, 404)
+
+        user = User.objects.create_superuser(
+            username="stability-admin",
+            email="stability@example.com",
+            password="pw",
+        )
+        client = Client()
+        client.force_login(user)
+
+        response = client.get("/admin/stability-v6/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Stability v6")
+
+    def test_autonomous_v7_shadow_safety_does_not_change_production_traffic(self):
+        for index in range(3):
+            DownloadRequestLog.objects.create(
+                request_id=f"rid-v7-zip-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="zip",
+                route_type=ROUTE_ZIP,
+                provider="native",
+                actual_bytes=1_000_000,
+                duration_ms=1000,
+            )
+            DownloadRequestLog.objects.create(
+                request_id=f"rid-v7-proxy-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="proxy",
+                route_type=ROUTE_PROXY,
+                provider="native",
+                actual_bytes=500_000,
+                duration_ms=800,
+            )
+        before_count = DownloadRequestLog.objects.count()
+        proposal = {
+            "type": "routing_adjustment",
+            "from": ROUTE_ZIP,
+            "to": ROUTE_PROXY,
+            "confidence": 0.85,
+        }
+
+        shadow = shadow_experiment(proposal, list(DownloadRequestLog.objects.all()))
+
+        self.assertEqual(DownloadRequestLog.objects.count(), before_count)
+        self.assertFalse(shadow["production_traffic_changed"])
+        self.assertEqual(shadow["shadow_result"], "better")
+
+    def test_autonomous_v7_rollback_bad_policy(self):
+        result = rollback_engine(
+            {"route": ROUTE_PROXY},
+            {
+                "success_rate_delta": -0.05,
+                "cost_delta": 0.12,
+                "latency_delta": 0.1,
+                "error_spike": 0.06,
+            },
+            previous_policy={"route": ROUTE_ZIP},
+        )
+
+        self.assertTrue(result["rollback_needed"])
+        self.assertEqual(result["action"], "restore_previous_stable_policy")
+        self.assertEqual(result["restore_policy"]["route"], ROUTE_ZIP)
+        self.assertIn("success-rate-drop", result["triggers"])
+        self.assertFalse(result["production_behavior_changed"])
+
+    def test_autonomous_v7_mutation_safety_rejects_low_confidence(self):
+        proposal = {
+            "type": "routing_adjustment",
+            "from": ROUTE_ZIP,
+            "to": ROUTE_PROXY,
+            "confidence": 0.5,
+        }
+        shadow = {"shadow_result": "better"}
+
+        decision = policy_mutation_controller(proposal, shadow)
+
+        self.assertEqual(decision["decision"], "delay")
+        self.assertFalse(decision["allowed"])
+        self.assertFalse(decision["production_behavior_changed"])
+
+    def test_autonomous_v7_performance_gain_detects_measurable_improvement(self):
+        downloads = []
+        for index in range(4):
+            downloads.append(DownloadRequestLog.objects.create(
+                request_id=f"rid-v7-gain-zip-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="zip",
+                route_type=ROUTE_ZIP,
+                provider="native",
+                actual_bytes=2_000_000,
+                duration_ms=1500,
+            ))
+            downloads.append(DownloadRequestLog.objects.create(
+                request_id=f"rid-v7-gain-proxy-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                download_type="proxy",
+                route_type=ROUTE_PROXY,
+                provider="native",
+                actual_bytes=1_000_000,
+                duration_ms=900,
+            ))
+
+        control_records = [
+            PolicyControlRecord.objects.create(
+                policy_decision="route:zip->proxy",
+                control_decision="allow",
+                state=PolicyControlState.EXECUTED,
+                provider="native",
+                route=ROUTE_PROXY,
+            ),
+            PolicyControlRecord.objects.create(
+                policy_decision="route:direct->zip",
+                control_decision="reject",
+                state=PolicyControlState.FAILED,
+                provider="native",
+                route=ROUTE_ZIP,
+                failure_pattern="latency-increase",
+            ),
+        ]
+        opportunities = detect_optimization_opportunities(
+            downloads,
+            feedback={"signals": {"failure_rate": 0.02, "provider_signals": []}},
+            stability_snapshot={"stability_score": 0.95},
+        )
+        result = autonomous_evolution_engine(
+            downloads=downloads,
+            feedback={"signals": {"failure_rate": 0.02, "failure_rate_delta": 0}},
+            stability_snapshot={"stability_score": 0.95},
+            control_records=control_records,
+        )
+
+        self.assertTrue(opportunities["proposals"])
+        first = opportunities["proposals"][0]
+        self.assertEqual(first["from"], ROUTE_ZIP)
+        self.assertEqual(first["to"], ROUTE_PROXY)
+        self.assertLess(first["expected_gain"]["cost"], 0)
+        self.assertTrue(result["shadow_results"])
+        self.assertGreaterEqual(result["system_gain_metrics"]["better_count"], 1)
+        self.assertEqual(result["provider_metrics"][0]["provider"], "native")
+        self.assertEqual(result["provider_metrics"][0]["count"], 8)
+        self.assertEqual(result["policy_execution_history"]["total"], 2)
+        self.assertEqual(result["policy_execution_history"]["failed"], 1)
+        self.assertGreater(result["feedback_risk_score"], 0)
+        self.assertFalse(result["production_behavior_changed"])
+
+    def test_autonomous_v7_admin_page_requires_permission(self):
+        response = Client().get("/admin/autonomous-evolution/")
+        self.assertEqual(response.status_code, 404)
+
+        user = User.objects.create_superuser(
+            username="evolution-admin",
+            email="evolution@example.com",
+            password="pw",
+        )
+        client = Client()
+        client.force_login(user)
+
+        response = client.get("/admin/autonomous-evolution/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Autonomous Evolution")
+
+    def test_governance_v8_high_risk_must_block(self):
+        proposal = {
+            "type": "routing_adjustment",
+            "from": ROUTE_ZIP,
+            "to": ROUTE_PROXY,
+            "expected_gain": {"cost": 0.12, "latency": 0.18, "success_rate": -0.06},
+            "confidence": 0.92,
+        }
+        evolution = {
+            "proposals": [proposal],
+            "shadow_results": [{
+                "shadow_result": "worse",
+                "delta_cost": 0.12,
+                "delta_latency": 0.18,
+                "delta_success_rate": -0.06,
+            }],
+            "mutation_decisions": [{
+                "decision": "reject",
+                "allowed": False,
+                "production_behavior_changed": False,
+            }],
+            "provider_metrics": [{
+                "provider": "native",
+                "count": 4,
+                "failure_rate": 0.75,
+            }],
+            "policy_execution_history": {"failure_rate": 0.4},
+            "feedback_risk_score": 0.8,
+            "system_gain_metrics": {"better_rate": 0},
+            "stability": {"stability_score": 0.25},
+        }
+
+        result = governance_engine(evolution_result=evolution, control_records=[])
+        decision = result["governance_decisions"][0]
+
+        self.assertEqual(decision["decision"], "deny")
+        self.assertIn(decision["risk_classification"], {"high", "critical"})
+        self.assertFalse(decision["production_behavior_changed"])
+        self.assertEqual(result["system_safety_status"]["system_autonomy_level"], "guarded_manual")
+
+    def test_governance_v8_low_risk_large_change_is_partial_allow(self):
+        proposal = {
+            "type": "routing_adjustment",
+            "from": ROUTE_ZIP,
+            "to": ROUTE_PROXY,
+            "expected_gain": {"cost": -0.2, "latency": -0.02, "success_rate": 0.01},
+            "confidence": 0.95,
+        }
+        evolution = {
+            "proposals": [proposal],
+            "shadow_results": [{
+                "shadow_result": "better",
+                "delta_cost": -0.2,
+                "delta_latency": -0.02,
+                "delta_success_rate": 0.01,
+            }],
+            "mutation_decisions": [{
+                "decision": "allow_apply",
+                "allowed": True,
+                "production_behavior_changed": False,
+            }],
+            "provider_metrics": [{"provider": "native", "count": 10, "failure_rate": 0}],
+            "policy_execution_history": {"failure_rate": 0},
+            "feedback_risk_score": 0,
+            "system_gain_metrics": {"better_rate": 1},
+            "stability": {"stability_score": 0.99},
+        }
+
+        result = governance_engine(evolution_result=evolution, control_records=[])
+        decision = result["governance_decisions"][0]
+
+        self.assertEqual(decision["decision"], "partial_allow")
+        self.assertEqual(decision["allowed_change"], 0.1)
+        self.assertEqual(decision["limits_applied"][0]["key"], "max_policy_change")
+        self.assertLess(decision["risk_score"], 0.4)
+
+    def test_governance_v8_blocked_change_does_not_affect_production_and_can_audit(self):
+        before_count = PolicyControlRecord.objects.count()
+        proposal = {
+            "type": "routing_adjustment",
+            "from": ROUTE_DIRECT,
+            "to": ROUTE_ZIP,
+            "expected_gain": {"cost": 0.2, "latency": 0.2, "success_rate": -0.05},
+            "confidence": 0.9,
+        }
+        evolution = {
+            "proposals": [proposal],
+            "shadow_results": [{"shadow_result": "worse"}],
+            "mutation_decisions": [{"decision": "reject", "allowed": False}],
+            "provider_metrics": [{"provider": "native", "count": 1, "failure_rate": 1}],
+            "policy_execution_history": {"failure_rate": 0.5},
+            "feedback_risk_score": 0.5,
+            "system_gain_metrics": {"better_rate": 0},
+            "stability": {"stability_score": 0.3},
+        }
+
+        result = governance_engine(evolution_result=evolution, control_records=[])
+        decision = result["governance_decisions"][0]
+
+        self.assertEqual(PolicyControlRecord.objects.count(), before_count)
+        self.assertEqual(decision["decision"], "deny")
+        self.assertFalse(decision["production_behavior_changed"])
+
+        record = record_governance_audit_decision(decision, actor_username="governance-admin")
+        self.assertEqual(record.source, GOVERNANCE_VERSION)
+        self.assertEqual(record.state, PolicyControlState.REJECTED)
+        self.assertFalse(record.policy_snapshot["production_behavior_changed"])
+
+    def test_governance_v8_autonomy_limit_blocks_daily_mutation_over_threshold(self):
+        for index in range(DAILY_MUTATION_LIMIT):
+            PolicyControlRecord.objects.create(
+                policy_decision=f"governance:allow:{index}",
+                control_decision="allow",
+                state=PolicyControlState.PENDING,
+                source=GOVERNANCE_VERSION,
+            )
+        proposal = {
+            "type": "routing_adjustment",
+            "from": ROUTE_ZIP,
+            "to": ROUTE_PROXY,
+            "expected_gain": {"cost": -0.05, "latency": -0.03, "success_rate": 0.01},
+            "confidence": 0.92,
+        }
+        evolution = {
+            "proposals": [proposal],
+            "shadow_results": [{"shadow_result": "better"}],
+            "mutation_decisions": [{"decision": "allow_apply", "allowed": True}],
+            "provider_metrics": [{"provider": "native", "count": 10, "failure_rate": 0}],
+            "policy_execution_history": {"failure_rate": 0},
+            "feedback_risk_score": 0,
+            "system_gain_metrics": {"better_rate": 1},
+            "stability": {"stability_score": 0.99},
+        }
+
+        result = governance_engine(
+            evolution_result=evolution,
+            control_records=list(PolicyControlRecord.objects.all()),
+        )
+        decision = result["governance_decisions"][0]
+
+        self.assertEqual(decision["decision"], "deny")
+        self.assertIn("evolution-limiter-blocked", decision["reason"])
+        self.assertEqual(decision["limits_applied"][0]["key"], "daily_mutation_limit")
+        self.assertEqual(result["system_safety_status"]["mutation_rate"], 0)
+
+    def test_governance_v8_missing_shadow_or_mutation_defaults_to_denied(self):
+        evolution = {
+            "proposals": [
+                {
+                    "type": "routing_adjustment",
+                    "from": ROUTE_ZIP,
+                    "to": ROUTE_PROXY,
+                    "expected_gain": {"cost": -0.05, "latency": -0.03, "success_rate": 0.01},
+                    "confidence": 0.92,
+                }
+            ],
+            "shadow_results": [],
+            "mutation_decisions": [],
+            "provider_metrics": [],
+            "policy_execution_history": {"failure_rate": 0},
+            "feedback_risk_score": 0,
+            "system_gain_metrics": {"better_rate": 1},
+            "stability": {"stability_score": 0.99},
+        }
+
+        result = governance_engine(evolution_result=evolution, control_records=[])
+
+        self.assertEqual(len(result["governance_decisions"]), 1)
+        self.assertEqual(result["governance_decisions"][0]["decision"], "deny")
+        self.assertIn("shadow-not-better", result["governance_decisions"][0]["reason"])
+
+    def test_governance_v8_admin_page_requires_permission(self):
+        response = Client().get("/admin/governance-v8/")
+        self.assertEqual(response.status_code, 404)
+
+        user = User.objects.create_superuser(
+            username="governance-admin",
+            email="governance@example.com",
+            password="pw",
+        )
+        client = Client()
+        client.force_login(user)
+
+        response = client.get("/admin/governance-v8/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Governance v8")
 
     def test_observability_v2_metrics_are_computed_from_policy_feedback(self):
         DownloadRequestLog.objects.create(
@@ -8188,6 +9588,11 @@ class ProviderSettingsAdminViewTests(TestCase):
                 "third_party_blocked_platforms": "reddit",
                 "third_party_blocked_hosts": "youtube.com.evil.com",
                 "kukutool_disabled": "1",
+                "douyin_ultra_total_timeout_seconds": "7.5",
+                "douyin_ultra_kukutool_grace_seconds": "2.5",
+                "kukutool_download_timeout_seconds": "11",
+                "kukutool_download_delivery_mode": KukuToolDownloadDeliveryMode.SERVER_STREAM,
+                "youtube_frontend_timeout_seconds": "14",
             },
         )
 
@@ -8207,6 +9612,11 @@ class ProviderSettingsAdminViewTests(TestCase):
         self.assertEqual(setting.third_party_blocked_platforms, "reddit")
         self.assertEqual(setting.third_party_blocked_hosts, "youtube.com.evil.com")
         self.assertTrue(setting.kukutool_disabled)
+        self.assertEqual(setting.douyin_ultra_total_timeout_seconds, 7.5)
+        self.assertEqual(setting.douyin_ultra_kukutool_grace_seconds, 2.5)
+        self.assertEqual(setting.kukutool_download_timeout_seconds, 11)
+        self.assertEqual(setting.kukutool_download_delivery_mode, KukuToolDownloadDeliveryMode.SERVER_STREAM)
+        self.assertEqual(setting.youtube_frontend_timeout_seconds, 14)
 
     def test_provider_runtime_defaults_are_conservative(self):
         setting = ProviderRuntimeSetting.load()
@@ -8222,6 +9632,33 @@ class ProviderSettingsAdminViewTests(TestCase):
         self.assertEqual(setting.third_party_allowed_public_hosts, "")
         self.assertEqual(setting.third_party_blocked_platforms, "")
         self.assertEqual(setting.third_party_blocked_hosts, "")
+        self.assertEqual(setting.douyin_ultra_total_timeout_seconds, 5.0)
+        self.assertEqual(setting.douyin_ultra_kukutool_grace_seconds, 1.0)
+        self.assertEqual(setting.kukutool_download_timeout_seconds, 8.0)
+        self.assertEqual(setting.kukutool_download_delivery_mode, KukuToolDownloadDeliveryMode.SERVER_STREAM)
+        self.assertEqual(setting.youtube_frontend_timeout_seconds, 8.0)
+
+    def test_runtime_budget_overrides_are_used_by_provider_paths(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.douyin_ultra_total_timeout_seconds = 9.0
+        setting.douyin_ultra_kukutool_grace_seconds = 3.0
+        setting.youtube_frontend_timeout_seconds = 13.0
+        setting.save(
+            update_fields=[
+                "douyin_ultra_total_timeout_seconds",
+                "douyin_ultra_kukutool_grace_seconds",
+                "youtube_frontend_timeout_seconds",
+                "updated_at",
+            ]
+        )
+
+        provider_settings = get_platform_provider_settings("douyin")
+        self.assertEqual(provider_settings.ultra_total_timeout_seconds, 9.0)
+        self.assertEqual(provider_settings.ultra_kukutool_grace_seconds, 3.0)
+        self.assertEqual(
+            frontend_budget_seconds(get_third_party_rule("youtube")),
+            13.0,
+        )
 
     @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True)
     def test_capability_enabled_admin_disabled_is_not_available(self):
@@ -8942,6 +10379,253 @@ class ProviderHealthTestPanelTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response["Location"], "/admin/provider-health-tests/")
+
+
+class ProductionControlPlaneTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.staff = User.objects.create_user(
+            username="control-staff",
+            password="test-password",
+            is_staff=True,
+        )
+        self.superuser = User.objects.create_superuser(
+            username="control-root",
+            password="test-password",
+        )
+
+    def grant_xhs_permission(self, user, codename):
+        permission = Permission.objects.get(
+            content_type__app_label="xhs_download",
+            codename=codename,
+        )
+        user.user_permissions.add(permission)
+        for cache_name in ("_perm_cache", "_user_perm_cache", "_group_perm_cache"):
+            if hasattr(user, cache_name):
+                delattr(user, cache_name)
+
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_control_plane_permissions(self, _mock_readiness):
+        staff_client = Client()
+        staff_client.force_login(self.staff)
+        super_client = Client()
+        super_client.force_login(self.superuser)
+
+        self.assertEqual(Client().get("/admin/control-plane/").status_code, 404)
+        self.assertEqual(staff_client.get("/admin/control-plane/").status_code, 404)
+        self.assertContains(super_client.get("/admin/control-plane/"), "统一生产控制平面")
+
+        self.grant_xhs_permission(self.staff, "view_downloadrequestlog")
+        self.assertContains(staff_client.get("/admin/control-plane/"), "Action Center")
+
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_control_plane_empty_data_renders(self, _mock_readiness):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "今日解析次数")
+        self.assertContains(response, "暂无数据")
+        self.assertContains(response, "系统状态正常")
+
+    @patch("xhs_download.views.build_stability_v6_context", side_effect=AssertionError("stability should not run"))
+    @patch("xhs_download.views.build_autonomous_evolution_context", side_effect=AssertionError("evolution should not run"))
+    @patch("xhs_download.services.governance_engine.build_governance_v8_context", side_effect=AssertionError("governance should not run"))
+    @patch("xhs_download.services.feedback_loop.build_feedback", side_effect=AssertionError("feedback should not run"))
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_control_plane_does_not_call_feedback_or_governance_engines(
+        self,
+        _mock_readiness,
+        mock_feedback,
+        mock_governance,
+        mock_evolution,
+        mock_stability,
+    ):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        self.assertEqual(response.status_code, 200)
+        mock_feedback.assert_not_called()
+        mock_governance.assert_not_called()
+        mock_evolution.assert_not_called()
+        mock_stability.assert_not_called()
+
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_control_plane_does_not_create_runtime_settings(self, _mock_readiness):
+        DownloadRuntimeSetting.objects.all().delete()
+        ProviderRuntimeSetting.objects.all().delete()
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "未初始化")
+        self.assertEqual(DownloadRuntimeSetting.objects.count(), 0)
+        self.assertEqual(ProviderRuntimeSetting.objects.count(), 0)
+
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_control_plane_shows_download_route_and_provider_metrics(self, _mock_readiness):
+        ParseRequestLog.objects.create(
+            request_id="parse-control-1",
+            status=ObservabilityStatus.SUCCESS,
+            query_host="www.douyin.com",
+            selected_provider="native",
+        )
+        DownloadRequestLog.objects.create(
+            request_id="download-control-1",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="video",
+            item_count=1,
+            video_count=1,
+            actual_bytes=1024,
+            route_type="direct",
+            provider="kukutool",
+            duration_ms=120,
+            browser_egress_estimated_bytes=1024,
+        )
+        DownloadRequestLog.objects.create(
+            request_id="download-control-2",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="archive",
+            item_count=3,
+            image_count=3,
+            actual_bytes=2048,
+            route_type="zip",
+            provider="native",
+            duration_ms=240,
+            server_egress_estimated_bytes=2048,
+        )
+        DownloadRequestLog.objects.create(
+            request_id="download-control-3",
+            status=ObservabilityStatus.BLOCKED,
+            download_type="video",
+            item_count=1,
+            video_count=1,
+            route_type="blocked",
+            error_code="SINGLE_VIDEO_SIZE_LIMIT",
+            provider="native",
+        )
+        ProviderHealthTestRun.objects.create(
+            request_id="health-control-1",
+            test_key="douyin_kukutool_ultra",
+            status=ProviderHealthTestStatus.SUCCESS,
+            provider="kukutool",
+            duration_ms=88,
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        self.assertContains(response, "3.0 KB")
+        self.assertContains(response, "direct")
+        self.assertContains(response, "zip")
+        self.assertContains(response, "blocked")
+        self.assertContains(response, "SINGLE_VIDEO_SIZE_LIMIT")
+        self.assertContains(response, "抖音 KuKuTool 超清")
+        self.assertContains(response, "成功")
+
+    @patch("xhs_download.services.control_plane.cache.set", side_effect=RuntimeError("cache down"))
+    @patch("xhs_download.services.control_plane.cache.get", side_effect=RuntimeError("cache down"))
+    @patch(
+        "xhs_download.services.control_plane.build_policy_governance_status",
+        side_effect=RuntimeError("missing governance model"),
+    )
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": False}},
+    )
+    def test_control_plane_degrades_when_cache_or_policy_section_fails(
+        self,
+        _mock_readiness,
+        _mock_policy,
+        _mock_cache_get,
+        _mock_cache_set,
+    ):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "统一生产控制平面")
+        self.assertContains(response, "Policy / Feedback / Governance")
+
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_control_plane_action_center_warns_when_traffic_exceeds_70_percent(self, _mock_readiness):
+        DownloadRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={"global_daily_bytes_limit": 1000},
+        )
+        DownloadRequestLog.objects.create(
+            request_id="download-control-traffic",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="video",
+            actual_bytes=800,
+            route_type="zip",
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        self.assertContains(response, "今日全站下载流量偏高")
+        self.assertContains(response, "warning")
+
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_control_plane_action_center_warns_when_provider_health_failed(self, _mock_readiness):
+        ProviderHealthTestRun.objects.create(
+            request_id="health-control-failed",
+            test_key="youtube_merge",
+            status=ProviderHealthTestStatus.FAILED,
+            provider="youtube_merge",
+            error_type="ProviderFailed",
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        self.assertContains(response, "YouTube merge 最近健康测试异常")
+        self.assertContains(response, "建议运行 Provider 健康测试")
+
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_control_plane_action_center_normal_state(self, _mock_readiness):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        self.assertContains(response, "系统状态正常")
 
 
 class AdminObservabilityMvpTests(TestCase):

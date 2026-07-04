@@ -22,7 +22,7 @@ from ..services.download_routing import (
     provider_item_can_direct_download,
     route_payload,
     single_item_can_attachment_download,
-    single_video_can_browser_direct_attempt,
+    single_video_prefers_browser_direct,
     single_video_can_server_proxy_download,
 )
 from ..services.routing_v3 import infer_provider
@@ -292,7 +292,7 @@ def route_can_be_browser_direct(media_items):
             and not item_provider(item)
             and provider_item_can_direct_download(item)
         )
-    return single_video_can_browser_direct_attempt(item)
+    return single_video_prefers_browser_direct(item)
 
 
 def build_policy_route_payload(context, decision):

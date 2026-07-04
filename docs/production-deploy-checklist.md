@@ -143,6 +143,7 @@ cd /srv/animeimages
 - [ ] Gunicorn is only bound to localhost, for example `127.0.0.1:8000`.
 - [ ] Nginx forwards `X-Forwarded-Proto $scheme`, `Host $host`, and `X-Request-ID $request_id`.
 - [ ] `/admin/ops-dashboard/` can be opened by a superuser or staff with observability view permissions.
+- [ ] `/admin/control-plane/` can be opened by a superuser or staff with any observability view permission.
 - [ ] `/admin/parse-logs/` can be opened by a user with `xhs_download.view_parserequestlog`.
 - [ ] `/admin/provider-health-tests/` can be opened by a superuser or staff with `xhs_download.view_providerhealthtestrun`.
 - [ ] A normal parse request writes a new `ParseRequestLog`.
@@ -181,6 +182,7 @@ access_log /var/log/nginx/animeimages.access.log animeimages;
 ```
 
 See `docs/admin-observability.md` for request_id tracing, privacy guarantees, and daily checks.
+See `docs/production-control-plane.md` for the unified production control center, risk levels, and Action Center workflow.
 
 ## 6. Download Cost Guard
 
@@ -251,6 +253,14 @@ set +a
 ```bash
 /srv/animeimages/.venv/bin/python manage.py collectstatic --noinput
 ```
+
+- [ ] Open the production control plane after restart:
+
+```text
+/admin/control-plane/
+```
+
+Confirm it shows the current environment, commit hash, risk level, Provider state, download traffic, Policy/Governance state, and Action Center without triggering external Provider tests.
 
 - [ ] Run tests:
 

@@ -45,6 +45,11 @@ PROVIDER_RUNTIME_AUDIT_FIELDS = (
     "third_party_allowed_public_platforms",
     "third_party_blocked_platforms",
     "kukutool_disabled",
+    "douyin_ultra_total_timeout_seconds",
+    "douyin_ultra_kukutool_grace_seconds",
+    "kukutool_download_timeout_seconds",
+    "kukutool_download_delivery_mode",
+    "youtube_frontend_timeout_seconds",
 )
 
 
@@ -261,6 +266,12 @@ def record_download_request_log(request, **fields):
         }
         log = DownloadRequestLog.objects.create(**payload)
         record_routing_decision_log_from_download(payload)
+        try:
+            from .control_execution_tracker import track_control_execution_from_download_log
+
+            track_control_execution_from_download_log(log)
+        except Exception:
+            logger.exception("policy_control_execution_track_failed")
         return log
     except Exception:
         logger.exception("download_request_log_write_failed")

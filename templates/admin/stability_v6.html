@@ -1,0 +1,240 @@
+{% extends "admin/base_site.html" %}
+
+{% block content_title %}{% endblock %}
+
+{% block content %}
+<style>
+    #content { padding: 0; }
+    .stability-page {
+        min-height: calc(100vh - 96px);
+        margin: -20px -20px 0;
+        padding: 34px clamp(18px, 4vw, 54px) 56px;
+        background: #f8fbff;
+        color: #111827;
+    }
+    .stability-shell { max-width: 1180px; margin: 0 auto; }
+    .stability-hero {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 20px;
+    }
+    .stability-eyebrow {
+        display: inline-flex;
+        min-height: 28px;
+        align-items: center;
+        padding: 4px 10px;
+        border-radius: 8px;
+        background: #ecfeff;
+        color: #0e7490;
+        font-size: 12px;
+        font-weight: 800;
+    }
+    .stability-title {
+        margin: 10px 0 0;
+        color: #111827;
+        font-size: clamp(28px, 4vw, 42px);
+        font-weight: 900;
+        line-height: 1.12;
+        letter-spacing: 0;
+    }
+    .stability-subtitle {
+        max-width: 780px;
+        margin: 10px 0 0;
+        color: #6b7280;
+        font-size: 15px;
+        line-height: 1.7;
+    }
+    .stability-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    .stability-link {
+        display: inline-flex;
+        min-height: 40px;
+        align-items: center;
+        justify-content: center;
+        padding: 0 14px;
+        border: 1px solid #d8dde8;
+        border-radius: 8px;
+        background: #fff;
+        color: #111827;
+        font-size: 14px;
+        font-weight: 800;
+        text-decoration: none;
+    }
+    .stability-link:hover { color: #0e7490; border-color: #67e8f9; text-decoration: none; }
+    .stability-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 16px;
+    }
+    .stability-card,
+    .stability-panel {
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: 0 4px 12px rgba(17, 24, 39, .05);
+    }
+    .stability-card { min-height: 96px; padding: 16px; }
+    .stability-card strong {
+        display: block;
+        color: #6b7280;
+        font-size: 13px;
+        font-weight: 800;
+    }
+    .stability-card span {
+        display: block;
+        margin-top: 8px;
+        color: #111827;
+        font-size: 20px;
+        font-weight: 900;
+        overflow-wrap: anywhere;
+    }
+    .stability-panel { margin-bottom: 16px; padding: 18px; }
+    .stability-panel h2 { margin: 0 0 14px; font-size: 18px; font-weight: 900; }
+    .stability-muted { color: #6b7280; font-size: 13px; line-height: 1.6; }
+    .stability-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .stability-table th,
+    .stability-table td {
+        padding: 10px 8px;
+        border-bottom: 1px solid #eef2f7;
+        text-align: left;
+        vertical-align: top;
+    }
+    .stability-table th {
+        color: #6b7280;
+        font-size: 12px;
+        font-weight: 900;
+        text-transform: uppercase;
+    }
+    .stability-reason {
+        display: inline-flex;
+        margin: 0 6px 6px 0;
+        padding: 4px 8px;
+        border-radius: 8px;
+        background: #f3f4f6;
+        color: #374151;
+        font-size: 12px;
+        font-weight: 800;
+    }
+    @media (max-width: 960px) { .stability-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 640px) { .stability-grid { grid-template-columns: 1fr; } }
+</style>
+
+<div class="stability-page">
+    <div class="stability-shell">
+        <section class="stability-hero">
+            <div>
+                <span class="stability-eyebrow">System Stabilization Layer v6</span>
+                <h1 class="stability-title">Stability v6 单稳定决策系统</h1>
+                <p class="stability-subtitle">把 Policy、Control、Feedback 和 Execution 汇总成稳定决策视图。v6 关注稳定行为而不是自动优化；页面只读，不会修改生产策略。</p>
+                <p class="stability-muted">生成时间：{{ generated_at }} · 窗口：{{ window_hours }} 小时 · {{ safety_note }}</p>
+            </div>
+            <div class="stability-actions">
+                <a class="stability-link" href="{% url 'control_plane' %}">控制平面</a>
+                <a class="stability-link" href="{% url 'autonomous_evolution' %}">Autonomous v7</a>
+                <a class="stability-link" href="{% url 'governance_v8' %}">Governance v8</a>
+                <a class="stability-link" href="{% url 'policy_engine' %}">Policy Engine</a>
+                <a class="stability-link" href="{% url 'control_convergence' %}">Control Convergence</a>
+                <a class="stability-link" href="{% url 'feedback_loop' %}">Feedback Loop</a>
+            </div>
+        </section>
+
+        <section class="stability-grid">
+            <div class="stability-card"><strong>Stable Route</strong><span>{{ stable_route }}</span></div>
+            <div class="stability-card"><strong>Stability Score</strong><span>{{ stability_score_label }}</span></div>
+            <div class="stability-card"><strong>Conflict Level</strong><span>{{ conflict_level }}</span></div>
+            <div class="stability-card"><strong>Conflict Rate</strong><span>{{ conflict_rate_label }}</span></div>
+            <div class="stability-card"><strong>Policy Drift</strong><span>{{ metrics.policy_drift_rate|floatformat:3 }}</span></div>
+            <div class="stability-card"><strong>Decision Fluctuation</strong><span>{{ metrics.decision_fluctuation_rate|floatformat:3 }}</span></div>
+            <div class="stability-card"><strong>Execution Consistency</strong><span>{{ metrics.execution_consistency_score|floatformat:3 }}</span></div>
+            <div class="stability-card"><strong>Feedback Volatility</strong><span>{{ metrics.feedback_volatility|floatformat:3 }}</span></div>
+        </section>
+
+        <section class="stability-panel">
+            <h2>稳定原因链</h2>
+            {% for item in reason %}
+                <span class="stability-reason">{{ item }}</span>
+            {% empty %}
+                <span class="stability-muted">暂无原因。</span>
+            {% endfor %}
+        </section>
+
+        <section class="stability-panel">
+            <h2>Policy Convergence</h2>
+            <table class="stability-table">
+                <thead><tr><th>Route</th><th>Count</th><th>Success</th><th>Fallback</th><th>Stable Score</th></tr></thead>
+                <tbody>
+                {% for row in policy_convergence.route_scores %}
+                    <tr>
+                        <td>{{ row.route }}</td>
+                        <td>{{ row.count }}</td>
+                        <td>{{ row.success_rate|floatformat:3 }}</td>
+                        <td>{{ row.fallback_rate|floatformat:3 }}</td>
+                        <td>{{ row.stable_score|floatformat:3 }}</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="5">暂无路由样本。</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+
+        <section class="stability-panel">
+            <h2>Control Simplifier</h2>
+            <table class="stability-table">
+                <thead><tr><th>Policy</th><th>Control</th><th>Provider</th><th>Route</th><th>Count</th></tr></thead>
+                <tbody>
+                {% for row in control_simplifier.duplicate_groups %}
+                    <tr>
+                        <td>{{ row.policy_decision|default:"-" }}</td>
+                        <td>{{ row.control_decision|default:"-" }}</td>
+                        <td>{{ row.provider|default:"-" }}</td>
+                        <td>{{ row.route|default:"-" }}</td>
+                        <td>{{ row.count }}</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="5">暂无重复控制决策。</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+
+        <section class="stability-panel">
+            <h2>Feedback Stabilizer</h2>
+            <table class="stability-table">
+                <tbody>
+                    <tr><th>Raw Volatility</th><td>{{ feedback_stabilizer.feedback_volatility|floatformat:3 }}</td></tr>
+                    <tr><th>Smoothed Volatility</th><td>{{ feedback_stabilizer.smoothed_feedback_volatility|floatformat:3 }}</td></tr>
+                    <tr><th>Failure Delta</th><td>{{ feedback_stabilizer.failure_rate_delta|floatformat:3 }}</td></tr>
+                    <tr><th>Smoothed Failure Delta</th><td>{{ feedback_stabilizer.smoothed_failure_delta|floatformat:3 }}</td></tr>
+                    <tr><th>Provider Instability</th><td>{{ feedback_stabilizer.provider_instability|floatformat:3 }}</td></tr>
+                    <tr><th>Suppressed Extreme Change</th><td>{% if feedback_stabilizer.suppressed_extreme_change %}是{% else %}否{% endif %}</td></tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section class="stability-panel">
+            <h2>System Stability Trend</h2>
+            <table class="stability-table">
+                <thead><tr><th>窗口</th><th>稳定分</th><th>冲突</th><th>Stable Route</th><th>下载样本</th><th>控制样本</th></tr></thead>
+                <tbody>
+                {% for row in trend %}
+                    <tr>
+                        <td>{{ row.label }}</td>
+                        <td>{{ row.stability_score_label }}</td>
+                        <td>{{ row.conflict_level }}</td>
+                        <td>{{ row.stable_route }}</td>
+                        <td>{{ row.download_count }}</td>
+                        <td>{{ row.control_record_count }}</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="6">暂无趋势样本。</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+    </div>
+</div>
+{% endblock %}

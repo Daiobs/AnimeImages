@@ -1,0 +1,270 @@
+{% extends "admin/base_site.html" %}
+
+{% block content_title %}{% endblock %}
+
+{% block content %}
+<style>
+    #content { padding: 0; }
+    .evolution-page {
+        min-height: calc(100vh - 96px);
+        margin: -20px -20px 0;
+        padding: 34px clamp(18px, 4vw, 54px) 56px;
+        background: #f8fbff;
+        color: #111827;
+    }
+    .evolution-shell { max-width: 1180px; margin: 0 auto; }
+    .evolution-hero {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 20px;
+    }
+    .evolution-eyebrow {
+        display: inline-flex;
+        min-height: 28px;
+        align-items: center;
+        padding: 4px 10px;
+        border-radius: 8px;
+        background: #ecfeff;
+        color: #0e7490;
+        font-size: 12px;
+        font-weight: 800;
+    }
+    .evolution-title {
+        margin: 10px 0 0;
+        color: #111827;
+        font-size: clamp(28px, 4vw, 42px);
+        font-weight: 900;
+        line-height: 1.12;
+        letter-spacing: 0;
+    }
+    .evolution-subtitle {
+        max-width: 790px;
+        margin: 10px 0 0;
+        color: #6b7280;
+        font-size: 15px;
+        line-height: 1.7;
+    }
+    .evolution-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    .evolution-link {
+        display: inline-flex;
+        min-height: 40px;
+        align-items: center;
+        justify-content: center;
+        padding: 0 14px;
+        border: 1px solid #d8dde8;
+        border-radius: 8px;
+        background: #fff;
+        color: #111827;
+        font-size: 14px;
+        font-weight: 800;
+        text-decoration: none;
+    }
+    .evolution-link:hover { color: #0e7490; border-color: #67e8f9; text-decoration: none; }
+    .evolution-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 16px;
+    }
+    .evolution-card,
+    .evolution-panel {
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: 0 4px 12px rgba(17, 24, 39, .05);
+    }
+    .evolution-card { min-height: 96px; padding: 16px; }
+    .evolution-card strong {
+        display: block;
+        color: #6b7280;
+        font-size: 13px;
+        font-weight: 800;
+    }
+    .evolution-card span {
+        display: block;
+        margin-top: 8px;
+        color: #111827;
+        font-size: 20px;
+        font-weight: 900;
+        overflow-wrap: anywhere;
+    }
+    .evolution-panel { margin-bottom: 16px; padding: 18px; }
+    .evolution-panel h2 { margin: 0 0 14px; font-size: 18px; font-weight: 900; }
+    .evolution-muted { color: #6b7280; font-size: 13px; line-height: 1.6; }
+    .evolution-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .evolution-table th,
+    .evolution-table td {
+        padding: 10px 8px;
+        border-bottom: 1px solid #eef2f7;
+        text-align: left;
+        vertical-align: top;
+    }
+    .evolution-table th {
+        color: #6b7280;
+        font-size: 12px;
+        font-weight: 900;
+        text-transform: uppercase;
+    }
+    @media (max-width: 960px) { .evolution-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 640px) { .evolution-grid { grid-template-columns: 1fr; } }
+</style>
+
+<div class="evolution-page">
+    <div class="evolution-shell">
+        <section class="evolution-hero">
+            <div>
+                <span class="evolution-eyebrow">Autonomous Optimization System v7</span>
+                <h1 class="evolution-title">Autonomous Evolution 安全自治优化</h1>
+                <p class="evolution-subtitle">从历史下载、Feedback、v6 稳定层中发现优化机会，执行 shadow experiment，并通过 mutation safety gate 产生 allow / reject / delay 决策。本页不直接修改生产配置。</p>
+                <p class="evolution-muted">生成时间：{{ generated_at }} · 窗口：{{ window_hours }} 小时 · {{ safety_note }}</p>
+            </div>
+            <div class="evolution-actions">
+                <a class="evolution-link" href="{% url 'control_plane' %}">控制平面</a>
+                <a class="evolution-link" href="{% url 'stability_v6' %}">Stability v6</a>
+                <a class="evolution-link" href="{% url 'governance_v8' %}">Governance v8</a>
+                <a class="evolution-link" href="{% url 'control_convergence' %}">Control Convergence</a>
+                <a class="evolution-link" href="{% url 'policy_engine' %}">Policy Engine</a>
+            </div>
+        </section>
+
+        <section class="evolution-grid">
+            <div class="evolution-card"><strong>Proposals</strong><span>{{ proposals|length }}</span></div>
+            <div class="evolution-card"><strong>Shadow Better</strong><span>{{ system_gain_metrics.better_count }}</span></div>
+            <div class="evolution-card"><strong>Better Rate</strong><span>{{ system_gain_metrics.better_rate_label }}</span></div>
+            <div class="evolution-card"><strong>Applied Decisions</strong><span>{{ applied_policies|length }}</span></div>
+            <div class="evolution-card"><strong>Rejected/Delayed</strong><span>{{ rejected_policies|length }}</span></div>
+            <div class="evolution-card"><strong>Avg Cost Delta</strong><span>{{ system_gain_metrics.average_delta_cost|floatformat:3 }}</span></div>
+            <div class="evolution-card"><strong>Avg Latency Delta</strong><span>{{ system_gain_metrics.average_delta_latency|floatformat:3 }}</span></div>
+            <div class="evolution-card"><strong>Avg Success Delta</strong><span>{{ system_gain_metrics.average_delta_success_rate|floatformat:3 }}</span></div>
+            <div class="evolution-card"><strong>Feedback Risk</strong><span>{{ feedback_risk_score|floatformat:3 }}</span></div>
+            <div class="evolution-card"><strong>Policy Controls</strong><span>{{ policy_execution_history.total }}</span></div>
+            <div class="evolution-card"><strong>Control Executed</strong><span>{{ policy_execution_history.executed }}</span></div>
+            <div class="evolution-card"><strong>Control Failed</strong><span>{{ policy_execution_history.failed }}</span></div>
+        </section>
+
+        <section class="evolution-panel">
+            <h2>Evolution Proposals</h2>
+            <table class="evolution-table">
+                <thead><tr><th>Type</th><th>From</th><th>To</th><th>Expected Gain</th><th>Confidence</th><th>Gain Score</th></tr></thead>
+                <tbody>
+                {% for item in proposals %}
+                    <tr>
+                        <td>{{ item.type }}</td>
+                        <td>{{ item.from }}</td>
+                        <td>{{ item.to }}</td>
+                        <td>cost {{ item.expected_gain.cost|floatformat:3 }} / latency {{ item.expected_gain.latency|floatformat:3 }} / success {{ item.expected_gain.success_rate|floatformat:3 }}</td>
+                        <td>{{ item.confidence|floatformat:3 }}</td>
+                        <td>{{ item.gain_score|floatformat:3 }}</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="6">暂无可优化 proposal。</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+
+        <section class="evolution-panel">
+            <h2>Provider Stats</h2>
+            <table class="evolution-table">
+                <thead><tr><th>Provider</th><th>Count</th><th>Success</th><th>Failure</th><th>Avg Cost</th><th>Avg Latency</th></tr></thead>
+                <tbody>
+                {% for item in provider_metrics %}
+                    <tr>
+                        <td>{{ item.provider }}</td>
+                        <td>{{ item.count }}</td>
+                        <td>{{ item.success_rate|floatformat:3 }}</td>
+                        <td>{{ item.failure_rate|floatformat:3 }}</td>
+                        <td>{{ item.average_cost|floatformat:0 }}</td>
+                        <td>{{ item.average_latency_ms|floatformat:0 }}ms</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="6">暂无 Provider 指标。</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+
+        <section class="evolution-panel">
+            <h2>Policy Execution History</h2>
+            <table class="evolution-table">
+                <thead><tr><th>Total</th><th>Pending</th><th>Approved</th><th>Auto Applied</th><th>Executed</th><th>Failed</th><th>Execution Success</th></tr></thead>
+                <tbody>
+                    <tr>
+                        <td>{{ policy_execution_history.total }}</td>
+                        <td>{{ policy_execution_history.pending }}</td>
+                        <td>{{ policy_execution_history.approved }}</td>
+                        <td>{{ policy_execution_history.auto_applied }}</td>
+                        <td>{{ policy_execution_history.executed }}</td>
+                        <td>{{ policy_execution_history.failed }}</td>
+                        <td>{{ policy_execution_history.execution_success_rate|floatformat:3 }}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section class="evolution-panel">
+            <h2>Shadow Experiment Results</h2>
+            <table class="evolution-table">
+                <thead><tr><th>From</th><th>To</th><th>Result</th><th>Cost</th><th>Latency</th><th>Success</th><th>Sample</th><th>Production Changed</th></tr></thead>
+                <tbody>
+                {% for item in shadow_results %}
+                    <tr>
+                        <td>{{ item.from }}</td>
+                        <td>{{ item.to }}</td>
+                        <td>{{ item.shadow_result }}</td>
+                        <td>{{ item.delta_cost|floatformat:3 }}</td>
+                        <td>{{ item.delta_latency|floatformat:3 }}</td>
+                        <td>{{ item.delta_success_rate|floatformat:3 }}</td>
+                        <td>{{ item.sample_count }}</td>
+                        <td>{% if item.production_traffic_changed %}是{% else %}否{% endif %}</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="8">暂无 shadow experiment。</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+
+        <section class="evolution-panel">
+            <h2>Mutation Gate Decisions</h2>
+            <table class="evolution-table">
+                <thead><tr><th>Decision</th><th>Allowed</th><th>Reason</th><th>Production Changed</th></tr></thead>
+                <tbody>
+                {% for item in mutation_decisions %}
+                    <tr>
+                        <td>{{ item.decision }}</td>
+                        <td>{% if item.allowed %}是{% else %}否{% endif %}</td>
+                        <td>{{ item.reason }}</td>
+                        <td>{% if item.production_behavior_changed %}是{% else %}否{% endif %}</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="4">暂无 mutation gate 决策。</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+
+        <section class="evolution-panel">
+            <h2>Rollback History</h2>
+            <table class="evolution-table">
+                <thead><tr><th>Needed</th><th>Action</th><th>Triggers</th><th>Production Changed</th></tr></thead>
+                <tbody>
+                {% for item in rollback_history %}
+                    <tr>
+                        <td>{% if item.rollback_needed %}是{% else %}否{% endif %}</td>
+                        <td>{{ item.action }}</td>
+                        <td>{{ item.triggers|join:", " }}</td>
+                        <td>{% if item.production_behavior_changed %}是{% else %}否{% endif %}</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="4">暂无 rollback 记录。</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+    </div>
+</div>
+{% endblock %}

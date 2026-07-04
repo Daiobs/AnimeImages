@@ -1,6 +1,7 @@
 from urllib.parse import urlparse
 
 from download_console.models import DownloadRuntimeSetting
+from ..models import KukuToolDownloadDeliveryMode, ProviderRuntimeSetting
 
 from .downloads import provider_manifest_allows_public_download
 
@@ -62,6 +63,10 @@ def item_url(item):
 
 def item_provider(item):
     return str(item.get("provider") or "")
+
+
+def item_is_kukutool_video(item):
+    return item_provider(item) == "kukutool" and item_is_video(item)
 
 
 def item_is_image(item):
@@ -188,12 +193,38 @@ def single_video_can_browser_direct_download(item):
     return item_can_browser_direct_video(item)
 
 
+def kukutool_browser_first_enabled(runtime_setting):
+    mode = str(
+        getattr(
+            runtime_setting,
+            "kukutool_download_delivery_mode",
+            KukuToolDownloadDeliveryMode.SERVER_STREAM,
+        )
+        or KukuToolDownloadDeliveryMode.SERVER_STREAM
+    )
+    return mode == KukuToolDownloadDeliveryMode.BROWSER_FIRST
+
+
 def single_video_can_browser_direct_attempt(item):
     if not isinstance(item, dict) or not item_is_video(item):
         return False
     if not is_http_url(item_url(item)):
         return False
     return single_video_can_browser_direct_download(item)
+
+
+def single_video_prefers_browser_direct(item, runtime_setting=None):
+    if single_video_can_browser_direct_attempt(item):
+        return True
+    if not isinstance(item, dict) or not item_is_kukutool_video(item):
+        return False
+    if not is_http_url(item_url(item)):
+        return False
+    runtime_setting = runtime_setting or ProviderRuntimeSetting.load()
+    return (
+        kukutool_browser_first_enabled(runtime_setting)
+        and provider_manifest_allows_public_download(item)
+    )
 
 
 def single_image_can_attachment_download(item):
@@ -320,7 +351,7 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
         if (
             requested_mode == "browser"
             and len(normalized_items) == 1
-            and single_video_can_browser_direct_attempt(normalized_items[0])
+            and single_video_prefers_browser_direct(normalized_items[0])
         ):
             return route_payload(
                 route_type=ROUTE_DIRECT,
@@ -386,10 +417,10 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
         )
 
     if all_videos and len(normalized_items) == 1:
-        if single_video_can_browser_direct_attempt(normalized_items[0]):
+        if single_video_prefers_browser_direct(normalized_items[0]):
             return route_payload(
                 route_type=ROUTE_DIRECT,
-                route_reason="单个视频资源优先使用浏览器直连下载，减少服务器中转等待",
+                route_reason="KuKuTool 视频优先交给浏览器下载管理器，减少服务器中转等待",
                 download_strategy="browser_direct_provider_video",
                 media_items=normalized_items,
                 estimated_bytes=estimated_bytes,

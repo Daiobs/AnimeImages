@@ -4,7 +4,9 @@ from django.shortcuts import redirect
 from .models import (
     DownloadRequestLog,
     ParseRequestLog,
+    PolicyControlRecord,
     PolicyLearningRun,
+    PolicyOptimizationProposal,
     PolicyRuntimeSetting,
     ProviderAdminAuditLog,
     ProviderHealthTestRun,
@@ -171,6 +173,67 @@ class PolicyLearningRunAdmin(ReadOnlyLogAdmin):
     )
     list_filter = ("window_hours", "status", "created_at")
     search_fields = ("status",)
+
+
+@admin.register(PolicyOptimizationProposal)
+class PolicyOptimizationProposalAdmin(ReadOnlyLogAdmin):
+    list_display = (
+        "created_at",
+        "kind",
+        "policy_area",
+        "status",
+        "risk",
+        "risk_score",
+        "impact_area",
+        "control_decision",
+        "safety_decision",
+        "confidence",
+        "sample_count",
+        "automatic_execution",
+        "runtime_mutated",
+    )
+    list_filter = (
+        "status",
+        "kind",
+        "policy_area",
+        "risk",
+        "impact_area",
+        "control_decision",
+        "safety_decision",
+        "automatic_execution",
+        "runtime_mutated",
+        "created_at",
+    )
+    search_fields = ("kind", "policy_area", "title", "signature", "drift_key", "actor_username")
+
+
+@admin.register(PolicyControlRecord)
+class PolicyControlRecordAdmin(ReadOnlyLogAdmin):
+    list_display = (
+        "created_at",
+        "state",
+        "policy_decision",
+        "control_decision",
+        "execution_result",
+        "route",
+        "provider",
+        "cost",
+        "control_confidence",
+        "failure_pattern",
+        "request_id",
+    )
+    list_filter = (
+        "state",
+        "control_decision",
+        "policy_decision",
+        "execution_result",
+        "route",
+        "provider",
+        "failure_pattern",
+        "source",
+        "created_at",
+    )
+    search_fields = ("request_id", "policy_decision", "control_decision", "provider", "route", "failure_pattern")
 
 
 @admin.register(PolicyRuntimeSetting)
