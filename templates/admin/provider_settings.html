@@ -535,24 +535,6 @@
                 </p>
             </div>
             <div class="provider-hero-actions">
-                <a class="provider-link-btn" href="{% url 'control_plane' %}">
-                    控制平面
-                </a>
-                <a class="provider-link-btn" href="{% url 'admin_console' %}">
-                    运维首页
-                </a>
-                <a class="provider-link-btn" href="{% url 'rollout_guard' %}">
-                    放量守卫
-                </a>
-                <a class="provider-link-btn" href="{% url 'ops_dashboard' %}">
-                    运营看板
-                </a>
-                <a class="provider-link-btn" href="{% url 'parse_logs' %}">
-                    解析日志
-                </a>
-                <a class="provider-link-btn" href="{% url 'download_logs' %}">
-                    下载日志
-                </a>
                 <a class="provider-link-btn" href="{% url 'provider_audit_logs' %}">
                     Provider 审计
                 </a>
@@ -561,9 +543,6 @@
                 </a>
                 <a class="provider-link-btn" href="{% url 'provider_health' %}" target="_blank" rel="noopener">
                     JSON 健康状态
-                </a>
-                <a class="provider-link-btn" href="{% url 'admin:index' %}">
-                    Django 后台
                 </a>
             </div>
         </section>
@@ -850,9 +829,8 @@
             </section>
 
             <div class="provider-actions">
-                <a class="provider-link-btn" href="{% url 'admin_console' %}">返回运维首页</a>
-                <a class="provider-link-btn" href="{% url 'rollout_guard' %}">放量守卫</a>
-                <a class="provider-link-btn" href="{% url 'admin:index' %}">返回后台首页</a>
+                <a class="provider-link-btn" href="{% url 'provider_health_tests' %}">Provider 测试</a>
+                <a class="provider-link-btn" href="{% url 'provider_audit_logs' %}">Provider 审计日志</a>
                 <button type="submit" class="provider-btn provider-btn-primary">保存 Provider 设置</button>
             </div>
         </form>

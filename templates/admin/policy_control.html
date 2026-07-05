@@ -137,11 +137,9 @@
                 <p class="control-subtitle">把 v5 建议接入风险评分和审批门。低风险只进入受控队列，中高风险需要人工确认；页面不会绕过 Approval Gate，也不会自动修改 Routing、Provider 或 Cost Guard。</p>
             </div>
             <div class="control-actions">
-                <a class="control-link" href="{% url 'control_plane' %}">控制平面</a>
-                <a class="control-link" href="{% url 'control_convergence' %}">Control Convergence</a>
+                <a class="control-link" href="{% url 'feedback_loop' %}">Feedback Loop</a>
                 <a class="control-link" href="{% url 'policy_engine' %}">Policy Engine</a>
-                <a class="control-link" href="{% url 'ops_dashboard' %}">运营看板</a>
-                <a class="control-link" href="{% url 'download_logs' %}">下载日志</a>
+                <a class="control-link" href="{% url 'governance_v8' %}">Governance v8</a>
             </div>
         </section>
 

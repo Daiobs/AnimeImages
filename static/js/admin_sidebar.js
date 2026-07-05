@@ -77,7 +77,16 @@
             }
             const stored = storageGet(groupStorageKey(group));
             const hasActiveItem = group.classList.contains("is-active-group");
-            setGroupCollapsed(group, stored === "0" && !hasActiveItem);
+            const isOverviewGroup = group.getAttribute("data-sidebar-group") === "group-0";
+            if (stored === "0" && !hasActiveItem) {
+                setGroupCollapsed(group, true);
+                return;
+            }
+            if (stored === "1" || hasActiveItem || isOverviewGroup) {
+                setGroupCollapsed(group, false);
+                return;
+            }
+            setGroupCollapsed(group, true);
         });
     }
 

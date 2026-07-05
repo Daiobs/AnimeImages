@@ -10651,6 +10651,8 @@ class ProductionControlPlaneTests(TestCase):
         self.assertContains(response, "下载限流")
         self.assertContains(response, "Policy Engine")
         self.assertNotContains(response, "admin-global-nav")
+        self.assertNotContains(response, 'title="Provider 管理"')
+        self.assertContains(response, 'data-tooltip="Provider 管理"')
 
     @patch(
         "xhs_download.services.control_plane.get_runtime_readiness",
@@ -10661,10 +10663,19 @@ class ProductionControlPlaneTests(TestCase):
         client.force_login(self.superuser)
 
         response = client.get("/admin/control-plane/")
+        content = response.content.decode("utf-8")
 
         self.assertContains(response, 'admin-sidebar-link is-active')
         self.assertContains(response, 'is-active-group')
         self.assertContains(response, "控制平面")
+        self.assertEqual(content.count("admin-sidebar-link is-active"), 1)
+
+    def test_admin_sidebar_core_pages_render(self):
+        client = Client()
+        client.force_login(self.superuser)
+
+        self.assertEqual(client.get("/admin/").status_code, 200)
+        self.assertEqual(client.get("/admin/provider-settings/").status_code, 200)
 
     @patch(
         "xhs_download.services.control_plane.get_runtime_readiness",

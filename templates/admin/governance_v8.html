@@ -123,10 +123,9 @@
                 <p class="governance-muted">生成时间：{{ generated_at }} · 窗口：{{ window_hours }} 小时 · {{ governance.safety_note }}</p>
             </div>
             <div class="governance-actions">
-                <a class="governance-link" href="{% url 'control_plane' %}">控制平面</a>
-                <a class="governance-link" href="{% url 'autonomous_evolution' %}">Autonomous v7</a>
-                <a class="governance-link" href="{% url 'stability_v6' %}">Stability v6</a>
                 <a class="governance-link" href="{% url 'policy_engine' %}">Policy Engine</a>
+                <a class="governance-link" href="{% url 'feedback_loop' %}">Feedback Loop</a>
+                <a class="governance-link" href="{% url 'policy_control' %}">Policy Control</a>
             </div>
         </section>
 

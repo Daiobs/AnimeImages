@@ -96,12 +96,9 @@
     <div class="ops-shell">
         <h1 class="ops-title">{{ nav_title }}</h1>
         <div class="ops-actions">
-            <a href="{% url 'admin_console' %}">运维首页</a>
-            <a href="{% url 'ops_dashboard' %}">运营看板</a>
             <a href="{% url 'parse_logs' %}">解析日志</a>
             <a href="{% url 'download_logs' %}">下载日志</a>
             <a href="{% url 'provider_audit_logs' %}">Provider 审计</a>
-            <a href="{% url 'provider_settings' %}">Provider 设置</a>
         </div>
         <form class="ops-filter" method="get">
             <input type="search" name="q" value="{{ request.GET.q }}" placeholder="{{ search_placeholder }}">

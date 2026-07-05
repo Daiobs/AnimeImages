@@ -96,6 +96,25 @@ body {
     flex: 1 1 auto;
     overflow: auto;
     padding: 14px 12px 24px;
+    scrollbar-color: #dbe4ea transparent;
+    scrollbar-width: thin;
+}
+
+.admin-sidebar-nav::-webkit-scrollbar {
+    width: 6px;
+}
+
+.admin-sidebar-nav::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.admin-sidebar-nav::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: #dbe4ea;
+}
+
+.admin-sidebar-nav::-webkit-scrollbar-thumb:hover {
+    background: #c8d3db;
 }
 
 .admin-sidebar-footer {
@@ -174,6 +193,7 @@ body {
 }
 
 .admin-sidebar-link {
+    position: relative;
     display: flex;
     min-height: 40px;
     align-items: center;
@@ -187,14 +207,21 @@ body {
 }
 
 .admin-sidebar-link:hover {
-    background: #f3f8f8;
-    color: #0f766e;
+    background: #f8fafc;
+    color: #115e59;
     text-decoration: none;
 }
 
 .admin-sidebar-link.is-active {
     background: var(--admin-shell-active);
-    color: var(--admin-shell-active-text);
+    color: #0b5f59;
+    box-shadow: inset 3px 0 0 #14b8a6;
+    font-weight: 900;
+}
+
+.admin-sidebar-link.is-active:hover {
+    background: var(--admin-shell-active);
+    color: #0b5f59;
 }
 
 .admin-sidebar-icon {
@@ -212,8 +239,8 @@ body {
 }
 
 .admin-sidebar-link.is-active .admin-sidebar-icon {
-    background: #ccfbf1;
-    color: #0f766e;
+    background: #99f6e4;
+    color: #0b5f59;
 }
 
 .admin-topbar {
@@ -427,6 +454,32 @@ body.dashboard .main {
 }
 
 .admin-sidebar-collapsed .admin-sidebar-group.is-collapsed .admin-sidebar-list {
+    display: block;
+}
+
+.admin-sidebar-collapsed .admin-sidebar-link::after {
+    position: absolute;
+    z-index: 60;
+    top: 50%;
+    left: calc(100% + 10px);
+    display: none;
+    min-width: max-content;
+    max-width: 220px;
+    padding: 6px 9px;
+    border: 1px solid #dbe4ea;
+    border-radius: 8px;
+    background: #111827;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1.3;
+    white-space: nowrap;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, .18);
+    content: attr(data-tooltip);
+    transform: translateY(-50%);
+}
+
+.admin-sidebar-collapsed .admin-sidebar-link:hover::after {
     display: block;
 }
 

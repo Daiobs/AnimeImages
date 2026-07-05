@@ -11,7 +11,7 @@
         <ul class="admin-sidebar-list" id="admin-sidebar-list-{{ group.key }}">
             {% for item in group.items %}
                 <li>
-                    <a class="admin-sidebar-link{% if item.active %} is-active{% endif %}" href="{{ item.url }}" title="{{ item.label }}">
+                    <a class="admin-sidebar-link{% if item.active %} is-active{% endif %}" href="{{ item.url }}" data-tooltip="{{ item.label }}">
                         <span class="admin-sidebar-icon" aria-hidden="true">{{ item.short_label }}</span>
                         <span class="admin-sidebar-label">{{ item.label }}</span>
                     </a>
