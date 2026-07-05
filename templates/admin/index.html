@@ -1,0 +1,99 @@
+{% extends "admin/base_site.html" %}
+
+{% block bodyclass %}{{ block.super }} dashboard admin-home{% endblock %}
+{% block nav-breadcrumbs %}{% endblock %}
+{% block nav-sidebar %}{% endblock %}
+{% block content_title %}{% endblock %}
+
+{% block content %}
+<div class="admin-home-shell">
+    <section class="admin-home-hero">
+        <div>
+            <span class="admin-home-eyebrow">Admin Overview</span>
+            <h1>后台首页</h1>
+            <p>从这里进入生产控制、Provider、下载限流、日志、策略和健康测试。数据模型入口保留在下方。</p>
+        </div>
+    </section>
+
+    <section class="admin-home-grid" aria-label="后台核心入口">
+        <article class="admin-home-card admin-home-card-primary">
+            <span>总览</span>
+            <h2>控制平面</h2>
+            <p>统一查看生产健康、Provider 状态、下载成本和关键风险。</p>
+            <a href="{% url 'control_plane' %}">进入控制平面</a>
+        </article>
+        <article class="admin-home-card admin-home-card-primary">
+            <span>Provider</span>
+            <h2>Provider 管理</h2>
+            <p>控制抖音超清、YouTube 合并和长尾平台 Provider 的运行时开放策略。</p>
+            <a href="{% url 'provider_settings' %}">管理 Provider</a>
+        </article>
+        <article class="admin-home-card admin-home-card-primary">
+            <span>下载</span>
+            <h2>日志中心</h2>
+            <p>进入解析日志、下载日志、Provider 审计和健康测试记录。</p>
+            <a href="{% url 'download_logs' %}">查看下载日志</a>
+        </article>
+        <article class="admin-home-card">
+            <span>下载安全</span>
+            <h2>下载限流</h2>
+            <p>调整单文件、ZIP、全站流量和并发等下载安全边界。</p>
+            <a href="{% url 'admin:download_console_downloadruntimesetting_changelist' %}">查看下载限流</a>
+        </article>
+        <article class="admin-home-card">
+            <span>策略</span>
+            <h2>策略中心</h2>
+            <p>进入 Policy、Feedback、放量守卫和 Governance 相关后台入口。</p>
+            <a href="{% url 'policy_engine' %}">进入 Policy Engine</a>
+        </article>
+        <article class="admin-home-card">
+            <span>诊断</span>
+            <h2>健康测试</h2>
+            <p>上线后快速验证 Provider capability、runtime gate 和轻量解析链路。</p>
+            <a href="{% url 'provider_health_tests' %}">运行健康测试</a>
+        </article>
+    </section>
+
+    <section class="admin-data-models">
+        <h2>数据模型</h2>
+        {% if app_list %}
+            <div class="admin-model-grid">
+                {% for app in app_list %}
+                    <section class="admin-model-panel">
+                        <h3>{{ app.name }}</h3>
+                        <table>
+                            <tbody>
+                            {% for model in app.models %}
+                                <tr>
+                                    <th scope="row">
+                                        {% if model.admin_url %}
+                                            <a href="{{ model.admin_url }}">{{ model.name }}</a>
+                                        {% else %}
+                                            {{ model.name }}
+                                        {% endif %}
+                                    </th>
+                                    <td>
+                                        {% if model.add_url %}
+                                            <a href="{{ model.add_url }}">Add</a>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if model.admin_url %}
+                                            <a href="{{ model.admin_url }}">
+                                                {% if model.view_only %}View{% else %}Change{% endif %}
+                                            </a>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                            </tbody>
+                        </table>
+                    </section>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="admin-empty-state">暂无可访问的数据模型。</div>
+        {% endif %}
+    </section>
+</div>
+{% endblock %}

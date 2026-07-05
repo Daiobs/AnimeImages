@@ -6,46 +6,19 @@
 {% block extrastyle %}
     {{ block.super }}
     <link rel="stylesheet" href="{% static 'css/admin_theme.css' %}">
+    <link rel="stylesheet" href="{% static 'css/admin_sidebar.css' %}">
+{% endblock %}
+
+{% block extrahead %}
+    {{ block.super }}
+    <script src="{% static 'js/admin_sidebar.js' %}" defer></script>
 {% endblock %}
 
 {% block dark-mode-vars %}{% endblock %}
 
-{% block branding %}
-    <div id="site-name" class="admin-site-brand">
-        <a href="{% url 'admin:index' %}">星空的高清下载小站</a>
-    </div>
+{% block header %}
+    {% include "admin/sidebar_layout.html" %}
 {% endblock %}
 
-{% block usertools %}
-    {% if has_permission %}
-        <div id="user-tools" class="admin-account-tools">
-            <span class="admin-account-user">
-                {% firstof user.get_short_name user.get_username %}
-            </span>
-            {% if site_url %}
-                <a href="{{ site_url }}">前台</a>
-            {% endif %}
-            {% if user.has_usable_password %}
-                <a href="{% url 'admin:password_change' %}">改密码</a>
-            {% endif %}
-            <form id="logout-form" method="post" action="{% url 'admin:logout' %}">
-                {% csrf_token %}
-                <button type="submit" class="admin-logout-button">退出</button>
-            </form>
-        </div>
-    {% endif %}
-{% endblock %}
-
-{% block nav-global %}
-    <nav class="admin-global-nav" aria-label="后台快捷导航">
-        <a href="{% url 'admin:index' %}">后台首页</a>
-        <a href="{% url 'control_plane' %}">控制平面</a>
-        <a href="{% url 'admin_console' %}">运维首页</a>
-        <a href="{% url 'rollout_guard' %}">放量守卫</a>
-        <a href="{% url 'ops_dashboard' %}">运营看板</a>
-        <a href="{% url 'observability_v2' %}">Observability v2</a>
-        <a href="{% url 'feedback_loop' %}">Feedback Loop</a>
-        <a href="{% url 'provider_settings' %}">Provider 管理</a>
-        <a href="{% url 'policy_engine' %}">Policy Engine</a>
-    </nav>
+{% block nav-sidebar %}
 {% endblock %}

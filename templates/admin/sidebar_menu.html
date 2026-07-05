@@ -1,0 +1,22 @@
+{% for group in sidebar_groups %}
+    <section class="admin-sidebar-group{% if group.active %} is-active-group{% endif %}" data-sidebar-group="{{ group.key }}">
+        <button type="button"
+                class="admin-sidebar-group-title"
+                data-sidebar-group-toggle
+                aria-expanded="true"
+                aria-controls="admin-sidebar-list-{{ group.key }}">
+            <span>{{ group.label }}</span>
+            <span class="admin-sidebar-group-caret" aria-hidden="true">⌄</span>
+        </button>
+        <ul class="admin-sidebar-list" id="admin-sidebar-list-{{ group.key }}">
+            {% for item in group.items %}
+                <li>
+                    <a class="admin-sidebar-link{% if item.active %} is-active{% endif %}" href="{{ item.url }}" title="{{ item.label }}">
+                        <span class="admin-sidebar-icon" aria-hidden="true">{{ item.short_label }}</span>
+                        <span class="admin-sidebar-label">{{ item.label }}</span>
+                    </a>
+                </li>
+            {% endfor %}
+        </ul>
+    </section>
+{% endfor %}

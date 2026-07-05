@@ -10627,6 +10627,74 @@ class ProductionControlPlaneTests(TestCase):
 
         self.assertContains(response, "系统状态正常")
 
+    def test_admin_shell_renders_collapsible_sidebar_and_topbar(self):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/")
+
+        self.assertContains(response, 'class="admin-sidebar"')
+        self.assertContains(response, 'class="admin-sidebar-footer"')
+        self.assertContains(response, 'data-admin-sidebar-toggle')
+        self.assertContains(response, "data-sidebar-group-toggle")
+        self.assertContains(response, "aria-controls")
+        self.assertContains(response, 'class="admin-topbar"')
+        self.assertContains(response, "css/admin_sidebar.css")
+        self.assertContains(response, "js/admin_sidebar.js")
+        self.assertContains(response, "Health")
+        self.assertContains(response, "总览")
+        self.assertContains(response, "Provider")
+        self.assertContains(response, "下载")
+        self.assertContains(response, "策略")
+        self.assertContains(response, "运维")
+        self.assertContains(response, "Provider 管理")
+        self.assertContains(response, "下载限流")
+        self.assertContains(response, "Policy Engine")
+        self.assertNotContains(response, "admin-global-nav")
+
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_admin_sidebar_highlights_current_page(self, _mock_readiness):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        self.assertContains(response, 'admin-sidebar-link is-active')
+        self.assertContains(response, 'is-active-group')
+        self.assertContains(response, "控制平面")
+
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_custom_admin_pages_hide_breadcrumbs_but_native_admin_keeps_them(self, _mock_readiness):
+        client = Client()
+        client.force_login(self.superuser)
+
+        custom_response = client.get("/admin/control-plane/")
+        native_response = client.get("/admin/auth/user/")
+
+        self.assertNotContains(custom_response, 'class="breadcrumbs"')
+        self.assertContains(native_response, 'class="breadcrumbs"')
+
+    def test_admin_index_is_operational_home_and_keeps_data_models(self):
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/")
+
+        self.assertContains(response, "后台首页")
+        self.assertContains(response, "控制平面")
+        self.assertContains(response, "Provider 管理")
+        self.assertContains(response, "日志中心")
+        self.assertContains(response, "策略中心")
+        self.assertContains(response, "健康测试")
+        self.assertContains(response, "数据模型")
+        self.assertContains(response, "下载限流配置")
+
 
 class AdminObservabilityMvpTests(TestCase):
     def setUp(self):
