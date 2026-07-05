@@ -10404,6 +10404,17 @@ class ProductionControlPlaneTests(TestCase):
             if hasattr(user, cache_name):
                 delattr(user, cache_name)
 
+    def sidebar_html(self, response):
+        content = response.content.decode("utf-8")
+        self.assertIn('class="admin-sidebar"', content)
+        return content.split('<aside class="admin-sidebar"', 1)[1].split("</aside>", 1)[0]
+
+    def assert_sidebar_active_item(self, response, label):
+        sidebar = self.sidebar_html(response)
+        self.assertEqual(sidebar.count("admin-sidebar-link is-active"), 1)
+        active_fragment = sidebar.split("admin-sidebar-link is-active", 1)[1].split("</a>", 1)[0]
+        self.assertIn(label, active_fragment)
+
     @patch(
         "xhs_download.services.control_plane.get_runtime_readiness",
         return_value={"ready": True, "components": {"database": True, "cache": True}},
@@ -10653,11 +10664,21 @@ class ProductionControlPlaneTests(TestCase):
         self.assertContains(response, "策略中心")
         self.assertContains(response, "Policy Engine")
         self.assertNotContains(response, "admin-global-nav")
-        self.assertNotContains(response, "Stability v6")
-        self.assertNotContains(response, "Autonomous Evolution")
-        self.assertNotContains(response, "Governance v8")
+        sidebar = self.sidebar_html(response)
+        self.assertIn("日志中心", sidebar)
+        self.assertIn("策略中心", sidebar)
+        self.assertNotIn("Feedback Loop", sidebar)
+        self.assertNotIn("Control Convergence", sidebar)
+        self.assertNotIn("Stability v6", sidebar)
+        self.assertNotIn("Autonomous Evolution", sidebar)
+        self.assertNotIn("Governance v8", sidebar)
+        self.assertNotIn("Observability v2", sidebar)
         self.assertNotContains(response, 'title="Provider 管理"')
         self.assertContains(response, 'data-tooltip="Provider 管理"')
+        content = response.content.decode("utf-8")
+        topbar_heading = content.split('class="admin-topbar-heading"', 1)[1].split("</div>", 1)[0]
+        self.assertIn("后台首页", topbar_heading)
+        self.assertNotIn("Site administration", topbar_heading)
 
     @patch(
         "xhs_download.services.control_plane.get_runtime_readiness",
@@ -10673,7 +10694,25 @@ class ProductionControlPlaneTests(TestCase):
         self.assertContains(response, 'admin-sidebar-link is-active')
         self.assertContains(response, 'is-active-group')
         self.assertContains(response, "控制平面")
-        self.assertEqual(content.count("admin-sidebar-link is-active"), 1)
+        self.assert_sidebar_active_item(response, "控制平面")
+
+    def test_admin_sidebar_active_state_for_core_routes(self):
+        client = Client()
+        client.force_login(self.superuser)
+
+        expected = (
+            ("/admin/", "后台首页"),
+            ("/admin/control-plane/", "控制平面"),
+            ("/admin/logs/", "日志中心"),
+            ("/admin/policy-center/", "策略中心"),
+            ("/admin/policy-engine/", "Policy Engine"),
+            ("/admin/policy-control/", "Policy Control"),
+        )
+        for url, label in expected:
+            with self.subTest(url=url):
+                response = client.get(url)
+                self.assertEqual(response.status_code, 200)
+                self.assert_sidebar_active_item(response, label)
 
     def test_admin_sidebar_core_pages_render(self):
         client = Client()
@@ -10706,7 +10745,9 @@ class ProductionControlPlaneTests(TestCase):
         client.force_login(self.superuser)
 
         with (
+            patch("xhs_download.views.build_policy_engine_context", side_effect=AssertionError("heavy policy called")),
             patch("xhs_download.views.build_feedback_loop_context", side_effect=AssertionError("heavy feedback called")),
+            patch("xhs_download.views.build_control_convergence_context", side_effect=AssertionError("heavy convergence called")),
             patch("xhs_download.views.build_stability_v6_context", side_effect=AssertionError("heavy stability called")),
             patch("xhs_download.views.build_autonomous_evolution_context", side_effect=AssertionError("heavy evolution called")),
             patch("xhs_download.views.build_governance_v8_context", side_effect=AssertionError("heavy governance called")),
@@ -10728,6 +10769,28 @@ class ProductionControlPlaneTests(TestCase):
 
         self.assertNotContains(custom_response, 'class="breadcrumbs"')
         self.assertContains(native_response, 'class="breadcrumbs"')
+
+    def test_native_admin_pages_keep_sidebar_layout(self):
+        client = Client()
+        client.force_login(self.superuser)
+
+        pages = (
+            "/admin/auth/user/",
+            f"/admin/auth/user/{self.superuser.pk}/change/",
+            "/admin/download_console/downloadruntimesetting/",
+        )
+        for url in pages:
+            with self.subTest(url=url):
+                response = client.get(url)
+                self.assertEqual(response.status_code, 200)
+                self.assertContains(response, 'class="admin-sidebar"')
+                self.assertContains(response, 'class="admin-topbar"')
+                self.assertContains(response, 'class="breadcrumbs"')
+
+        popup_response = client.get("/admin/auth/user/?_popup=1")
+        self.assertEqual(popup_response.status_code, 200)
+        self.assertNotContains(popup_response, 'class="admin-sidebar"')
+        self.assertNotContains(popup_response, 'class="admin-topbar"')
 
     def test_admin_index_is_operational_home_and_keeps_data_models(self):
         client = Client()
