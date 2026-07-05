@@ -21,7 +21,9 @@
     <header id="header" class="admin-topbar">
         <div class="admin-topbar-title">
             <div class="admin-topbar-kicker">Admin Console</div>
-            <div class="admin-topbar-heading">{% firstof title "后台首页" %}</div>
+            <div class="admin-topbar-heading">
+                {% if title == "Site administration" %}后台首页{% else %}{% firstof title "后台首页" %}{% endif %}
+            </div>
             {% if subtitle %}
                 <div class="admin-topbar-subtitle">{{ subtitle }}</div>
             {% endif %}

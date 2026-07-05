@@ -1,0 +1,129 @@
+{% extends "admin/base_site.html" %}
+
+{% block content_title %}{% endblock %}
+{% block nav-breadcrumbs %}{% endblock %}
+
+{% block content %}
+<style>
+    #content { padding: 0; }
+    .center-page {
+        min-height: calc(100vh - 96px);
+        margin: -20px -20px 0;
+        padding: 34px clamp(18px, 4vw, 54px) 56px;
+        background: #f8fbff;
+        color: #111827;
+    }
+    .center-shell { max-width: 1180px; margin: 0 auto; }
+    .center-hero { margin-bottom: 22px; }
+    .center-eyebrow {
+        display: inline-flex;
+        min-height: 28px;
+        align-items: center;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: #e7f8f5;
+        color: #0f766e;
+        font-size: 12px;
+        font-weight: 900;
+    }
+    .center-title {
+        margin: 12px 0 0;
+        color: #111827;
+        font-size: clamp(30px, 4vw, 44px);
+        font-weight: 900;
+        letter-spacing: 0;
+        line-height: 1.12;
+    }
+    .center-subtitle {
+        max-width: 760px;
+        margin: 12px 0 0;
+        color: #6b7280;
+        line-height: 1.7;
+    }
+    .center-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 16px;
+    }
+    .center-card {
+        display: flex;
+        min-height: 220px;
+        flex-direction: column;
+        border: 1px solid #e5e7eb;
+        border-radius: 14px;
+        background: #fff;
+        padding: 18px;
+        box-shadow: 0 6px 18px rgba(15, 23, 42, .05);
+    }
+    .center-card h2 {
+        margin: 0;
+        border: 0;
+        background: transparent;
+        color: #111827;
+        font-size: 20px;
+        font-weight: 900;
+        word-break: keep-all;
+        overflow-wrap: normal;
+    }
+    .center-card p {
+        margin: 10px 0 14px;
+        color: #6b7280;
+        line-height: 1.65;
+    }
+    .center-stats {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: auto;
+    }
+    .center-stat {
+        padding: 10px;
+        border-radius: 10px;
+        background: #f8fafc;
+    }
+    .center-stat span { display: block; color: #6b7280; font-size: 12px; font-weight: 800; }
+    .center-stat strong { display: block; margin-top: 4px; color: #111827; font-size: 18px; font-weight: 900; }
+    .center-card a {
+        display: inline-flex;
+        min-height: 38px;
+        align-items: center;
+        justify-content: center;
+        width: max-content;
+        margin-top: 14px;
+        padding: 0 14px;
+        border-radius: 10px;
+        background: #0f766e;
+        color: #fff;
+        font-weight: 900;
+        text-decoration: none;
+    }
+    @media (max-width: 1120px) {
+        .center-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 720px) {
+        .center-grid { grid-template-columns: 1fr; }
+    }
+</style>
+<div class="center-page">
+    <div class="center-shell">
+        <section class="center-hero">
+            <span class="center-eyebrow">Logs Center</span>
+            <h1 class="center-title">日志中心</h1>
+            <p class="center-subtitle">集中进入解析、下载、Provider 审计、健康测试和自愈相关记录。本页只做轻量统计，不运行外部 Provider。</p>
+        </section>
+        <section class="center-grid" aria-label="日志入口">
+            {% for card in cards %}
+                <article class="center-card">
+                    <h2>{{ card.title }}</h2>
+                    <p>{{ card.description }}</p>
+                    <div class="center-stats">
+                        <div class="center-stat"><span>最近 24h</span><strong>{{ card.count_label }}</strong></div>
+                        <div class="center-stat"><span>{{ card.warning_label|default:"异常" }}</span><strong>{{ card.warning_count_label }}</strong></div>
+                    </div>
+                    <a href="{{ card.url }}">打开</a>
+                </article>
+            {% endfor %}
+        </section>
+    </div>
+</div>
+{% endblock %}

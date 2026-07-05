@@ -10649,8 +10649,13 @@ class ProductionControlPlaneTests(TestCase):
         self.assertContains(response, "运维")
         self.assertContains(response, "Provider 管理")
         self.assertContains(response, "下载限流")
+        self.assertContains(response, "日志中心")
+        self.assertContains(response, "策略中心")
         self.assertContains(response, "Policy Engine")
         self.assertNotContains(response, "admin-global-nav")
+        self.assertNotContains(response, "Stability v6")
+        self.assertNotContains(response, "Autonomous Evolution")
+        self.assertNotContains(response, "Governance v8")
         self.assertNotContains(response, 'title="Provider 管理"')
         self.assertContains(response, 'data-tooltip="Provider 管理"')
 
@@ -10675,7 +10680,40 @@ class ProductionControlPlaneTests(TestCase):
         client.force_login(self.superuser)
 
         self.assertEqual(client.get("/admin/").status_code, 200)
+        self.assertEqual(client.get("/admin/control-plane/").status_code, 200)
         self.assertEqual(client.get("/admin/provider-settings/").status_code, 200)
+        self.assertEqual(client.get("/admin/logs/").status_code, 200)
+        self.assertEqual(client.get("/admin/policy-center/").status_code, 200)
+
+    def test_admin_center_pages_render_empty_state(self):
+        client = Client()
+        client.force_login(self.superuser)
+
+        logs_response = client.get("/admin/logs/")
+        policy_response = client.get("/admin/policy-center/")
+
+        self.assertContains(logs_response, "日志中心")
+        self.assertContains(logs_response, "解析日志")
+        self.assertContains(logs_response, "Provider 健康测试记录")
+        self.assertContains(logs_response, "最近 24h")
+        self.assertContains(policy_response, "策略中心")
+        self.assertContains(policy_response, "Policy Engine")
+        self.assertContains(policy_response, "Governance v8")
+        self.assertContains(policy_response, "最近 24h")
+
+    def test_policy_center_does_not_call_heavy_context_builders(self):
+        client = Client()
+        client.force_login(self.superuser)
+
+        with (
+            patch("xhs_download.views.build_feedback_loop_context", side_effect=AssertionError("heavy feedback called")),
+            patch("xhs_download.views.build_stability_v6_context", side_effect=AssertionError("heavy stability called")),
+            patch("xhs_download.views.build_autonomous_evolution_context", side_effect=AssertionError("heavy evolution called")),
+            patch("xhs_download.views.build_governance_v8_context", side_effect=AssertionError("heavy governance called")),
+        ):
+            response = client.get("/admin/policy-center/")
+
+        self.assertEqual(response.status_code, 200)
 
     @patch(
         "xhs_download.services.control_plane.get_runtime_readiness",

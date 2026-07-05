@@ -24,28 +24,21 @@ SIDEBAR_GROUPS = (
         "下载",
         (
             ("下载限流", "admin:download_console_downloadruntimesetting_changelist", "限"),
-            ("下载日志", "download_logs", "下"),
-            ("解析日志", "parse_logs", "解"),
+            ("日志中心", "logs_center", "志"),
         ),
     ),
     (
         "策略",
         (
+            ("策略中心", "policy_center", "策"),
             ("Policy Engine", "policy_engine", "E"),
-            ("Feedback Loop", "feedback_loop", "F"),
             ("Policy Control", "policy_control", "C"),
-            ("Control Convergence", "control_convergence", "收"),
-            ("Stability v6", "stability_v6", "稳"),
-            ("Autonomous Evolution", "autonomous_evolution", "自"),
-            ("Governance v8", "governance_v8", "治"),
         ),
     ),
     (
         "运维",
         (
-            ("运维首页", "admin_console", "运"),
             ("运营看板", "ops_dashboard", "看"),
-            ("Observability v2", "observability_v2", "O"),
             ("放量守卫", "rollout_guard", "放"),
             ("Self-Healing", "self_healing_run", "愈"),
         ),
