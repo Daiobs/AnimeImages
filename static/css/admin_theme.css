@@ -194,8 +194,9 @@ div.breadcrumbs a {
 .module h2,
 .module caption,
 .inline-group h2 {
-    background: linear-gradient(135deg, #855be8, #7447dd);
-    color: #fff;
+    border-bottom: 1px solid var(--hairline-color);
+    background: #f9fafb;
+    color: #111827;
     font-weight: 900;
     letter-spacing: 0;
 }

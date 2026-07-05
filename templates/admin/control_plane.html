@@ -1,6 +1,7 @@
 {% extends "admin/base_site.html" %}
 
 {% block content_title %}{% endblock %}
+{% block nav-breadcrumbs %}{% endblock %}
 
 {% block content %}
 <style>
@@ -145,10 +146,9 @@
                 <p class="control-subtitle">聚合健康状态、下载成本、Provider、Policy / Feedback / Governance 和关键操作入口。本页只读，不修改生产配置，不运行外部 Provider 测试。</p>
             </div>
             <div class="control-actions">
-                {% if links.console %}<a class="control-link" href="{{ links.console }}">运维首页</a>{% endif %}
-                {% if links.ops_dashboard %}<a class="control-link" href="{{ links.ops_dashboard }}">运营看板</a>{% endif %}
-                {% if links.provider_settings %}<a class="control-link" href="{{ links.provider_settings }}">Provider 设置</a>{% endif %}
                 {% if links.provider_health_tests %}<a class="control-link" href="{{ links.provider_health_tests }}">Provider 测试</a>{% endif %}
+                {% if links.download_logs %}<a class="control-link" href="{{ links.download_logs }}">下载日志</a>{% endif %}
+                {% if policy_governance.policy_engine_url %}<a class="control-link" href="{{ policy_governance.policy_engine_url }}">Policy Engine</a>{% endif %}
             </div>
         </section>
 

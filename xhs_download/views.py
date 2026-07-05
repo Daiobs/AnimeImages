@@ -28,6 +28,8 @@ from .models import (
     KukuToolDownloadDeliveryMode,
     ObservabilityStatus,
     ParseRequestLog,
+    PolicyControlRecord,
+    PolicyLearningRun,
     PolicyOptimizationProposal,
     PolicyOptimizationStatus,
     PolicyRuntimeMode,
@@ -38,6 +40,7 @@ from .models import (
     ProviderHealthTestRun,
     ProviderHealthTestStatus,
     ProviderRuntimeSetting,
+    RoutingDecisionLog,
     SelfHealingEvent,
 )
 from .policy.adaptive import build_adaptive_weight_recommendation
@@ -1898,6 +1901,186 @@ def filtered_log_queryset(model, request, filter_fields):
 
 def filter_values_for_request(request, filter_fields):
     return {field: str(request.GET.get(field, "") or "").strip() for field in filter_fields}
+
+
+def logs_center_required(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_parserequestlog",
+        "xhs_download.view_downloadrequestlog",
+        "xhs_download.view_provideradminauditlog",
+        "xhs_download.view_providerhealthtestrun",
+        "xhs_download.view_selfhealingevent",
+        "xhs_download.view_routingdecisionlog",
+    )
+
+
+def policy_center_required(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_policylearningrun",
+        "xhs_download.view_policycontrolrecord",
+        "xhs_download.view_policyoptimizationproposal",
+        "xhs_download.view_downloadrequestlog",
+        "xhs_download.view_routingdecisionlog",
+    )
+
+
+def safe_recent_count(model, since, **filters):
+    try:
+        return model.objects.filter(created_at__gte=since, **filters).count()
+    except Exception:
+        logger.exception("admin_center_count_failed", extra={"model": getattr(model, "__name__", "")})
+        return None
+
+
+def center_count_label(value):
+    return "暂无数据" if value is None else str(value)
+
+
+@require_GET
+def logs_center_view(request):
+    if not logs_center_required(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+    since = timezone.now() - timezone.timedelta(hours=24)
+    cards = (
+        {
+            "title": "解析日志",
+            "description": "查看解析入口、平台识别、Provider 选择和失败原因。",
+            "url_name": "parse_logs",
+            "count": safe_recent_count(ParseRequestLog, since),
+            "warning_count": safe_recent_count(ParseRequestLog, since, status=ObservabilityStatus.FAILED),
+            "warning_label": "失败",
+        },
+        {
+            "title": "下载日志",
+            "description": "查看下载路由、服务端流量、失败类型和恢复情况。",
+            "url_name": "download_logs",
+            "count": safe_recent_count(DownloadRequestLog, since),
+            "warning_count": safe_recent_count(DownloadRequestLog, since, status=ObservabilityStatus.FAILED),
+            "warning_label": "失败",
+        },
+        {
+            "title": "Provider 审计日志",
+            "description": "查看 Provider runtime 设置变更和后台操作审计。",
+            "url_name": "provider_audit_logs",
+            "count": safe_recent_count(ProviderAdminAuditLog, since),
+            "warning_count": None,
+            "warning_label": "",
+        },
+        {
+            "title": "Provider 健康测试记录",
+            "description": "查看后台手动健康测试结果和 Provider 可用性诊断。",
+            "url_name": "provider_health_tests",
+            "count": safe_recent_count(ProviderHealthTestRun, since),
+            "warning_count": safe_recent_count(ProviderHealthTestRun, since, status=ProviderHealthTestStatus.FAILED),
+            "warning_label": "失败",
+        },
+        {
+            "title": "Self-Healing Events",
+            "description": "查看下载失败恢复、Provider fallback 和自愈动作记录。",
+            "url_name": "self_healing_run",
+            "count": safe_recent_count(SelfHealingEvent, since),
+            "warning_count": safe_recent_count(SelfHealingEvent, since, healed=False),
+            "warning_label": "未恢复",
+        },
+        {
+            "title": "Observability v2",
+            "description": "进入观察面板，关联 request_id、路由和关键运行信号。",
+            "url_name": "observability_v2",
+            "count": safe_recent_count(RoutingDecisionLog, since),
+            "warning_count": safe_recent_count(RoutingDecisionLog, since, success=False),
+            "warning_label": "失败路由",
+        },
+    )
+    return render(
+        request,
+        "admin/logs_center.html",
+        {
+            "title": "日志中心",
+            "cards": [
+                {
+                    **card,
+                    "count_label": center_count_label(card["count"]),
+                    "warning_count_label": center_count_label(card["warning_count"]),
+                    "url": reverse(card["url_name"]),
+                }
+                for card in cards
+            ],
+        },
+    )
+
+
+@require_GET
+def policy_center_view(request):
+    if not policy_center_required(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+    since = timezone.now() - timezone.timedelta(hours=24)
+    cards = (
+        {
+            "title": "Policy Engine",
+            "description": "查看策略决策、shadow learning 和当前策略运行态。",
+            "url_name": "policy_engine",
+            "count": safe_recent_count(PolicyLearningRun, since),
+        },
+        {
+            "title": "Feedback Loop",
+            "description": "查看 Observation → Feedback → Insight → Suggestion 的闭环入口。",
+            "url_name": "feedback_loop",
+            "count": safe_recent_count(DownloadRequestLog, since),
+        },
+        {
+            "title": "Policy Control",
+            "description": "查看策略审批、风险控制和受控执行记录。",
+            "url_name": "policy_control",
+            "count": safe_recent_count(PolicyControlRecord, since),
+        },
+        {
+            "title": "Control Convergence",
+            "description": "查看控制面收敛和策略一致性入口。",
+            "url_name": "control_convergence",
+            "count": safe_recent_count(PolicyControlRecord, since),
+        },
+        {
+            "title": "Stability v6",
+            "description": "查看稳定性观察入口，低频诊断集中放在这里。",
+            "url_name": "stability_v6",
+            "count": safe_recent_count(RoutingDecisionLog, since),
+        },
+        {
+            "title": "Autonomous Evolution",
+            "description": "查看自治演进提案入口，不在中心页执行演进计算。",
+            "url_name": "autonomous_evolution",
+            "count": safe_recent_count(PolicyOptimizationProposal, since),
+        },
+        {
+            "title": "Governance v8",
+            "description": "查看治理判断入口，不在中心页执行 Governance 重计算。",
+            "url_name": "governance_v8",
+            "count": safe_recent_count(PolicyOptimizationProposal, since),
+        },
+        {
+            "title": "Rollout Guard",
+            "description": "查看放量守卫和公开灰度相关入口。",
+            "url_name": "rollout_guard",
+            "count": safe_recent_count(ProviderAdminAuditLog, since),
+        },
+    )
+    return render(
+        request,
+        "admin/policy_center.html",
+        {
+            "title": "策略中心",
+            "cards": [
+                {
+                    **card,
+                    "count_label": center_count_label(card["count"]),
+                    "url": reverse(card["url_name"]),
+                }
+                for card in cards
+            ],
+        },
+    )
 
 
 @require_GET

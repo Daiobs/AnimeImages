@@ -1,0 +1,53 @@
+{% load admin_sidebar %}
+
+{% if not is_popup %}
+    {% admin_url_optional "admin:index" as admin_index_url %}
+    {% admin_url_optional "health_ready" as health_ready_url %}
+    <aside class="admin-sidebar" aria-label="后台菜单">
+        <div class="admin-sidebar-brand">
+            <a href="{{ admin_index_url|default:'/admin/' }}" class="admin-sidebar-logo" aria-label="后台首页">星</a>
+            <a href="{{ admin_index_url|default:'/admin/' }}" class="admin-sidebar-brand-text">星空的高清下载小站</a>
+        </div>
+        <nav class="admin-sidebar-nav">
+            {% admin_sidebar_menu %}
+        </nav>
+        <div class="admin-sidebar-footer">
+            <button type="button" class="admin-sidebar-toggle" data-admin-sidebar-toggle aria-expanded="true">
+                <span class="admin-sidebar-toggle-icon" aria-hidden="true">≡</span>
+                <span class="admin-sidebar-toggle-text">折叠菜单</span>
+            </button>
+        </div>
+    </aside>
+    <header id="header" class="admin-topbar">
+        <div class="admin-topbar-title">
+            <div class="admin-topbar-kicker">Admin Console</div>
+            {% admin_display_title title as display_title %}
+            <div class="admin-topbar-heading">
+                {{ display_title }}
+            </div>
+            {% if subtitle %}
+                <div class="admin-topbar-subtitle">{{ subtitle }}</div>
+            {% endif %}
+        </div>
+        {% if has_permission %}
+            <div id="user-tools" class="admin-account-tools">
+                {% if site_url %}
+                    <a href="{{ site_url }}">前台</a>
+                {% endif %}
+                {% if health_ready_url %}
+                    <a class="admin-health-badge" href="{{ health_ready_url }}">Health</a>
+                {% endif %}
+                <span class="admin-account-user">
+                    {% firstof user.get_short_name user.get_username %}
+                </span>
+                {% if user.has_usable_password %}
+                    <a href="{% url 'admin:password_change' %}">改密码</a>
+                {% endif %}
+                <form id="logout-form" method="post" action="{% url 'admin:logout' %}">
+                    {% csrf_token %}
+                    <button type="submit" class="admin-logout-button">退出</button>
+                </form>
+            </div>
+        {% endif %}
+    </header>
+{% endif %}
