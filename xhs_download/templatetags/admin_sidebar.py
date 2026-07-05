@@ -45,6 +45,15 @@ SIDEBAR_GROUPS = (
     ),
 )
 
+ADMIN_TITLE_MAP = {
+    "Site administration": "后台首页",
+    "Django site admin": "后台首页",
+    "Django administration": "后台首页",
+    "Log in": "登录后台",
+    "Password change": "修改密码",
+    "Password change successful": "密码修改成功",
+}
+
 
 def reverse_optional(name):
     try:
@@ -53,7 +62,14 @@ def reverse_optional(name):
         return ""
 
 
-def item_is_active(path, url):
+def current_view_name(request):
+    resolver_match = getattr(request, "resolver_match", None)
+    return str(getattr(resolver_match, "view_name", "") or "")
+
+
+def item_is_active(path, url, *, url_name="", view_name=""):
+    if view_name and url_name and view_name == url_name:
+        return True
     if not path or not url:
         return False
     if path == url:
@@ -67,6 +83,7 @@ def item_is_active(path, url):
 def admin_sidebar_menu(context):
     request = context.get("request")
     path = getattr(request, "path", "") or ""
+    view_name = current_view_name(request)
     groups = []
     for group_index, (group_label, items) in enumerate(SIDEBAR_GROUPS):
         resolved_items = []
@@ -75,7 +92,7 @@ def admin_sidebar_menu(context):
             url = reverse_optional(url_name)
             if not url:
                 continue
-            active = item_is_active(path, url)
+            active = item_is_active(path, url, url_name=url_name, view_name=view_name)
             group_active = group_active or active
             resolved_items.append(
                 {
@@ -100,3 +117,9 @@ def admin_sidebar_menu(context):
 @register.simple_tag
 def admin_url_optional(name):
     return reverse_optional(name)
+
+
+@register.simple_tag
+def admin_display_title(title):
+    value = str(title or "").strip()
+    return ADMIN_TITLE_MAP.get(value, value or "后台首页")
