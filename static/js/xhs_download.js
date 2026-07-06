@@ -753,8 +753,25 @@
             return `${item.provider || "native"}:${identity}`;
         }
 
+        function directRouteNeedsServerFallback(items) {
+            if (!directRouteShouldUseNativeBrowserDownload(items)) {
+                return false;
+            }
+
+            const item = (items || []).find((candidate) => candidate && candidate.url) || {};
+            return ["kukutool", "tiantianjiexi"].includes(String(item.provider || ""));
+        }
+
         function directRouteRetryHint() {
             return "如果浏览器拦截、只打开直链或未开始下载，请再次点击下载，系统会改用服务器单文件下载。";
+        }
+
+        function submitAutomaticServerSingleFallback(payload) {
+            const fallbackPayload = {
+                ...payload,
+                download_mode: "server_single",
+            };
+            submitBrowserManagedServerDownload(fallbackPayload);
         }
 
         async function writeResponseToFileWithProgress(response, fileHandle, startPercent, endPercent) {
@@ -1026,10 +1043,23 @@
                         && routePreview.status === "routed"
                         && routePreview.route_type === "direct"
                     ) {
+                        const previewItems = routePreview.items || [];
                         const handoffKey = directRouteHandoffKey(routePreview.items || []);
                         if (handoffKey && !directHandoffAttemptKeys.has(handoffKey)) {
                             directHandoffAttemptKeys.add(handoffKey);
-                            const filenames = handoffDirectRouteItemsToBrowser(routePreview.items || []);
+                            const filenames = handoffDirectRouteItemsToBrowser(previewItems);
+                            if (directRouteNeedsServerFallback(previewItems)) {
+                                setProgressPending("浏览器下载");
+                                setStatus(
+                                    getStatusElement(),
+                                    `${routePreview.route_reason || "已尝试交给浏览器下载管理器"}：${filenames.join("、")}。若浏览器未直接开始下载，正在自动切换服务器单文件下载...${routeWarningText(routePreview.warnings)}`,
+                                    "text-muted",
+                                );
+                                window.setTimeout(() => {
+                                    submitAutomaticServerSingleFallback(payload);
+                                }, 800);
+                                return;
+                            }
                             setProgress(100);
                             setStatus(
                                 getStatusElement(),
@@ -1079,10 +1109,23 @@
                     setProgress(0);
                     const data = await response.json();
                     if (data.status === "routed" && data.route_type === "direct") {
-                        const handoffKey = directRouteHandoffKey(data.items || []);
+                        const directItems = data.items || [];
+                        const handoffKey = directRouteHandoffKey(directItems);
                         if (handoffKey && !directHandoffAttemptKeys.has(handoffKey)) {
                             directHandoffAttemptKeys.add(handoffKey);
-                            const filenames = handoffDirectRouteItemsToBrowser(data.items || []);
+                            const filenames = handoffDirectRouteItemsToBrowser(directItems);
+                            if (directRouteNeedsServerFallback(directItems)) {
+                                setProgressPending("浏览器下载");
+                                setStatus(
+                                    getStatusElement(),
+                                    `${data.route_reason || "已尝试交给浏览器下载管理器"}：${filenames.join("、")}。若浏览器未直接开始下载，正在自动切换服务器单文件下载...${routeWarningText(data.warnings)}`,
+                                    "text-muted",
+                                );
+                                window.setTimeout(() => {
+                                    submitAutomaticServerSingleFallback(payload);
+                                }, 800);
+                                return;
+                            }
                             setProgress(100);
                             setStatus(
                                 getStatusElement(),
