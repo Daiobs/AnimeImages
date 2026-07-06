@@ -1374,17 +1374,17 @@ class XhsParserTests(SimpleTestCase):
         )
         self.assertEqual(
             third_party_rules_by_id["tiktok"]["provider_ids"],
-            ("kukutool_generic", "tiantianjiexi_generic", "yt_dlp_generic", "gallery_dl_generic"),
+            ("tiantianjiexi_generic", "kukutool_generic", "yt_dlp_generic", "gallery_dl_generic"),
         )
         self.assertEqual(
             third_party_rules_by_id["imgur"]["provider_ids"],
-            ("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
+            ("tiantianjiexi_generic", "kukutool_generic", "gallery_dl_generic"),
         )
         self.assertEqual(
             platforms["third_party"]["provider_policy"]["third_party_providers"],
             (
-                "kukutool_generic",
                 "tiantianjiexi_generic",
+                "kukutool_generic",
                 "yt_dlp_generic",
                 "gallery_dl_generic",
                 "youtube_merge",

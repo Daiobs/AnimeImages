@@ -1,7 +1,12 @@
 (function () {
     const SETTINGS_KEY = "xhsDownloadSettings";
     const MAX_IMAGE_RETRIES = 3;
-    const PROVIDER_BROWSER_BLOB_PROVIDERS = new Set(["kukutool", "tiantianjiexi"]);
+    const PROVIDER_BROWSER_BLOB_PROVIDERS = new Set([
+        "kukutool",
+        "tiantianjiexi",
+        "kukutool_generic",
+        "tiantianjiexi_generic",
+    ]);
     const PROVIDER_BROWSER_BLOB_MAX_BYTES = 1024 * 1024 * 1024;
 
     function getCookie(name) {
@@ -75,6 +80,11 @@
             provider_resource_id: card.dataset.providerResourceId || "",
             provider_cache_key: card.dataset.providerCacheKey || "",
             provider_manifest_token: card.dataset.providerManifestToken || "",
+            download_strategy: card.dataset.downloadStrategy || "",
+            fallback_strategy: card.dataset.fallbackStrategy || "",
+            cors_expected: card.dataset.corsExpected === "true",
+            requires_merge: card.dataset.requiresMerge === "true",
+            requires_cookie: card.dataset.requiresCookie === "true",
         };
 
         if (type === "video") {
@@ -761,6 +771,9 @@
             }
 
             const item = (items || []).find((candidate) => candidate && candidate.url) || {};
+            if (String(item.download_strategy || "").toLowerCase() === "browser_blob") {
+                return true;
+            }
             return PROVIDER_BROWSER_BLOB_PROVIDERS.has(String(item.provider || "").toLowerCase());
         }
 

@@ -97,7 +97,12 @@
                              data-provider="{{ item.provider|default:'' }}"
                              data-provider-resource-id="{{ item.provider_resource_id|default:'' }}"
                              data-provider-cache-key="{{ item.provider_cache_key|default:'' }}"
-                             data-provider-manifest-token="{{ item.provider_manifest_token|default:'' }}">
+                             data-provider-manifest-token="{{ item.provider_manifest_token|default:'' }}"
+                             data-download-strategy="{{ item.download_strategy|default:'' }}"
+                             data-fallback-strategy="{{ item.fallback_strategy|default:'' }}"
+                             data-cors-expected="{{ item.cors_expected|yesno:'true,false' }}"
+                             data-requires-merge="{{ item.requires_merge|yesno:'true,false' }}"
+                             data-requires-cookie="{{ item.requires_cookie|yesno:'true,false' }}">
                             <span class="asset-check">
                                 <i class="bi bi-check-lg"></i>
                             </span>
@@ -128,6 +133,9 @@
 
                             <div class="position-absolute bottom-0 start-0 end-0 p-2 bg-dark bg-opacity-50 text-white small">
                                 视频资源 · {{ item.size_label|default:"大小未知" }}
+                                {% if item.strategy_label %}
+                                    · {{ item.strategy_label }}
+                                {% endif %}
                             </div>
                         </div>
                     {% endfor %}
@@ -150,7 +158,12 @@
                              data-provider="{{ item.provider|default:'' }}"
                              data-provider-resource-id="{{ item.provider_resource_id|default:'' }}"
                              data-provider-cache-key="{{ item.provider_cache_key|default:'' }}"
-                             data-provider-manifest-token="{{ item.provider_manifest_token|default:'' }}">
+                             data-provider-manifest-token="{{ item.provider_manifest_token|default:'' }}"
+                             data-download-strategy="{{ item.download_strategy|default:'' }}"
+                             data-fallback-strategy="{{ item.fallback_strategy|default:'' }}"
+                             data-cors-expected="{{ item.cors_expected|yesno:'true,false' }}"
+                             data-requires-merge="{{ item.requires_merge|yesno:'true,false' }}"
+                             data-requires-cookie="{{ item.requires_cookie|yesno:'true,false' }}">
                             <span class="asset-check">
                                 <i class="bi bi-check-lg"></i>
                             </span>

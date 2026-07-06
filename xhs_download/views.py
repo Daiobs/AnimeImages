@@ -118,6 +118,10 @@ from .services.provider_access import (
     provider_is_allowed_for_request,
     third_party_public_access_summary,
 )
+from .services.provider_strategy import (
+    build_download_strategy,
+    build_download_strategy_matrix,
+)
 from .services.provider_runtime_config import runtime_float
 from .services.provider_recovery import (
     get_kukutool_manifest_identity,
@@ -2917,6 +2921,74 @@ def get_page_payload(platform_key):
     }
 
 
+def build_asset_strategy_fields(asset, result):
+    return build_download_strategy(
+        asset,
+        result_platform=getattr(result, "platform", ""),
+        result_metadata=getattr(result, "metadata", None) or {},
+    )
+
+
+def build_image_item(asset, result):
+    return {
+        **asset.to_download_item(),
+        **build_asset_strategy_fields(asset, result),
+        "type": "image",
+        "url": asset.url,
+        "encoded_url": encode_url(asset.url),
+        "encoded_preview_url": encode_url(asset.preview_url or asset.url),
+        "preview_provider_query": build_provider_preview_query(
+            asset,
+            asset.preview_url or asset.url,
+        ),
+    }
+
+
+def build_video_item(asset, result):
+    size_bytes = get_video_size_bytes(asset)
+    return {
+        **asset.to_download_item(),
+        **build_asset_strategy_fields(asset, result),
+        "type": "video",
+        "video_url": asset.url,
+        "cover_url": asset.cover_url,
+        "size_bytes": size_bytes,
+        "size_label": format_file_size(size_bytes),
+        "encoded_cover_url": encode_url(asset.cover_url) if asset.cover_url else "",
+        "encoded_preview_cover_url": (
+            encode_url(asset.cover_preview_url or asset.cover_url)
+            if asset.cover_url
+            else ""
+        ),
+        "cover_preview_provider_query": build_provider_preview_query(
+            asset,
+            asset.cover_preview_url or asset.cover_url,
+            "cover",
+        ),
+    }
+
+
+def build_result_display_context(result, *, platform_key="home"):
+    result_metadata = result.metadata or {}
+    return {
+        "platform": result.platform,
+        "platform_name": (
+            result_metadata.get("source_platform_name")
+            or PLATFORM_DISPLAY_NAMES.get(result.platform, result.platform or "未知平台")
+        ),
+        "result_theme": get_result_theme(
+            platform_key,
+            result.platform,
+            result_metadata,
+        ),
+        "post_type": result.post_type,
+        "base_filename": result.base_filename,
+        "image_items": [build_image_item(asset, result) for asset in result.image_assets],
+        "video_items": [build_video_item(asset, result) for asset in result.video_assets],
+        "metadata": result_metadata,
+    }
+
+
 def query_uses_third_party_provider(query):
     try:
         return getattr(get_adapter_for_url(query), "platform_id", "") == "third_party"
@@ -3317,6 +3389,7 @@ def build_search_results_context(request, platform_key="home"):
             parse_options["client_country_code"] = client_country_code
         result = parse_media_page(query, **parse_options)
         result_metadata = result.metadata or {}
+        display_context = build_result_display_context(result, platform_key=platform_key)
         context["platform"] = result.platform
         target_platform_key = get_platform_key_for_result(result.platform, result_metadata)
         if (
@@ -3325,15 +3398,8 @@ def build_search_results_context(request, platform_key="home"):
             and target_platform_key != platform_key
         ):
             context["target_page"] = get_page_payload(target_platform_key)
-        context["result_theme"] = get_result_theme(
-            platform_key,
-            result.platform,
-            result_metadata,
-        )
-        context["platform_name"] = (
-            result_metadata.get("source_platform_name")
-            or PLATFORM_DISPLAY_NAMES.get(result.platform, result.platform or "未知平台")
-        )
+        context["result_theme"] = display_context["result_theme"]
+        context["platform_name"] = display_context["platform_name"]
         if context["page_platform_id"] and context["page_platform_id"] != result.platform:
             context["platform_notice"] = f"你粘贴的是{context['platform_name']}链接，已自动使用对应解析器。"
         if result.platform == "third_party":
@@ -3363,44 +3429,10 @@ def build_search_results_context(request, platform_key="home"):
                 )
             else:
                 context["provider_notice"] = "本次未命中超高清上游，已自动回退本地解析。"
-        context["post_type"] = result.post_type
-        context["base_filename"] = result.base_filename
-        context["image_items"] = [
-            {
-                **asset.to_download_item(),
-                "type": "image",
-                "url": asset.url,
-                "encoded_url": encode_url(asset.url),
-                "encoded_preview_url": encode_url(asset.preview_url or asset.url),
-                "preview_provider_query": build_provider_preview_query(
-                    asset,
-                    asset.preview_url or asset.url,
-                ),
-            }
-            for asset in result.image_assets
-        ]
-        context["video_items"] = [
-            {
-                **asset.to_download_item(),
-                "type": "video",
-                "video_url": asset.url,
-                "cover_url": asset.cover_url,
-                "size_bytes": (size_bytes := get_video_size_bytes(asset)),
-                "size_label": format_file_size(size_bytes),
-                "encoded_cover_url": encode_url(asset.cover_url) if asset.cover_url else "",
-                "encoded_preview_cover_url": (
-                    encode_url(asset.cover_preview_url or asset.cover_url)
-                    if asset.cover_url
-                    else ""
-                ),
-                "cover_preview_provider_query": build_provider_preview_query(
-                    asset,
-                    asset.cover_preview_url or asset.cover_url,
-                    "cover",
-                ),
-            }
-            for asset in result.video_assets
-        ]
+        context["post_type"] = display_context["post_type"]
+        context["base_filename"] = display_context["base_filename"]
+        context["image_items"] = display_context["image_items"]
+        context["video_items"] = display_context["video_items"]
 
         if not context["image_items"] and not context["video_items"]:
             context["error_message"] = "没有解析到图片或视频。"
@@ -3515,6 +3547,113 @@ def search_results_view(request, platform_key="home"):
     if context.get("retry_after"):
         response["Retry-After"] = str(context["retry_after"])
     return response
+
+
+BATCH_PARSE_MAX_LINKS = 20
+
+
+def split_batch_links(value):
+    links = []
+    seen = set()
+    for raw_line in str(value or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line in seen:
+            continue
+        seen.add(line)
+        links.append(line)
+        if len(links) >= BATCH_PARSE_MAX_LINKS:
+            break
+    return links
+
+
+def build_batch_result_row(request, source_text, *, prefer_ultra_hd, prefer_youtube_merge):
+    started_at = time.monotonic()
+    try:
+        if query_uses_third_party_provider(source_text) and not third_party_provider_is_available(request):
+            raise XhsParseError("第三方通用解析暂未开放。")
+        result = parse_media_page(
+            source_text,
+            prefer_ultra_hd=prefer_ultra_hd,
+            client_country_code=get_request_country_code(request) if prefer_ultra_hd else "",
+            prefer_youtube_merge=prefer_youtube_merge,
+        )
+        display_context = build_result_display_context(result, platform_key="home")
+        metadata = result.metadata or {}
+        return {
+            "status": "success",
+            "source_text": source_text,
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+            "provider_label": metadata.get("provider_label") or metadata.get("selected_provider") or "",
+            "selected_provider": metadata.get("selected_provider") or metadata.get("source_provider") or "",
+            **display_context,
+        }
+    except XhsProviderTimeoutError as error:
+        return {
+            "status": "failed",
+            "source_text": source_text,
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+            "error_message": str(error),
+        }
+    except XhsError as error:
+        return {
+            "status": "failed",
+            "source_text": source_text,
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+            "error_message": f"解析失败：{error}",
+        }
+    except requests.RequestException as error:
+        return {
+            "status": "failed",
+            "source_text": source_text,
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+            "error_message": f"请求失败：{error}",
+        }
+
+
+def batch_parse_view(request):
+    raw_links = request.POST.get("links", "") if request.method == "POST" else ""
+    prefer_ultra_hd = (
+        request.method == "POST"
+        and request_flag(request.POST.get("ultra_hd"))
+        and ultra_hd_is_available(request)
+    )
+    prefer_youtube_merge = (
+        request.method == "POST"
+        and request_flag(request.POST.get("youtube_merge"))
+        and youtube_merge_mode_is_available(request)
+    )
+    links = split_batch_links(raw_links)
+    rows = []
+    if request.method == "POST":
+        rows = [
+            build_batch_result_row(
+                request,
+                link,
+                prefer_ultra_hd=prefer_ultra_hd,
+                prefer_youtube_merge=prefer_youtube_merge,
+            )
+            for link in links
+        ]
+
+    return render(
+        request,
+        "batch_parse.html",
+        {
+            "theme_class": "theme-home",
+            "page_title": "批量解析",
+            "links_text": raw_links,
+            "links": links,
+            "rows": rows,
+            "max_links": BATCH_PARSE_MAX_LINKS,
+            "prefer_ultra_hd": prefer_ultra_hd,
+            "prefer_youtube_merge": prefer_youtube_merge,
+            "ultra_hd_available": ultra_hd_is_available(request),
+            "youtube_merge_mode_available": youtube_merge_mode_is_available(request),
+            "strategy_matrix": build_download_strategy_matrix(),
+        },
+    )
 
 
 def placeholder_image_response(status=200, retry_after=0):

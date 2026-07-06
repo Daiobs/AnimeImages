@@ -58,8 +58,8 @@ class ThirdPartyPlatformRule:
     host_suffixes: tuple[str, ...]
     media_types: tuple[str, ...] = ("image", "video")
     provider_ids: tuple[str, ...] = (
-        "kukutool_generic",
         "tiantianjiexi_generic",
+        "kukutool_generic",
         "yt_dlp_generic",
         "gallery_dl_generic",
     )
@@ -156,7 +156,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="Imgur",
         host_suffixes=("imgur.com",),
         media_types=("image", "video"),
-        provider_ids=("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
+        provider_ids=("tiantianjiexi_generic", "kukutool_generic", "gallery_dl_generic"),
         media_host_suffixes=("imgur.com",),
         risk_level=RISK_NORMAL,
         notes="图片/动图平台，公开仍需后台 allowlist。",
@@ -166,7 +166,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="Reddit",
         host_suffixes=("reddit.com", "redd.it"),
         media_types=("image",),
-        provider_ids=("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
+        provider_ids=("tiantianjiexi_generic", "kukutool_generic", "gallery_dl_generic"),
         media_host_suffixes=("redd.it", "redditmedia.com"),
         risk_level=RISK_SENSITIVE,
         notes="社区内容风险较高，默认不公开。",
@@ -176,7 +176,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="Tumblr",
         host_suffixes=("tumblr.com",),
         media_types=("image",),
-        provider_ids=("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
+        provider_ids=("tiantianjiexi_generic", "kukutool_generic", "gallery_dl_generic"),
         media_host_suffixes=("tumblr.com",),
         risk_level=RISK_SENSITIVE,
         notes="社区内容风险较高，默认不公开。",
@@ -186,7 +186,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="Flickr",
         host_suffixes=("flickr.com",),
         media_types=("image",),
-        provider_ids=("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
+        provider_ids=("tiantianjiexi_generic", "kukutool_generic", "gallery_dl_generic"),
         media_host_suffixes=("staticflickr.com",),
         risk_level=RISK_SAFE,
         notes="图片平台，可作为公开灰度候选，但仍必须命中后台 allowlist。",
@@ -196,7 +196,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="DeviantArt",
         host_suffixes=("deviantart.com",),
         media_types=("image",),
-        provider_ids=("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
+        provider_ids=("tiantianjiexi_generic", "kukutool_generic", "gallery_dl_generic"),
         media_host_suffixes=("wixmp.com", "deviantart.net"),
         risk_level=RISK_SENSITIVE,
         notes="社区内容风险较高，默认不公开。",
@@ -442,8 +442,8 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
     provider_policy = ProviderPolicy(
         primary_provider="third_party",
         third_party_providers=(
-            "kukutool_generic",
             "tiantianjiexi_generic",
+            "kukutool_generic",
             "yt_dlp_generic",
             "gallery_dl_generic",
             YOUTUBE_MERGE_PROVIDER_ID,
