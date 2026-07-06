@@ -1,6 +1,8 @@
 (function () {
     const SETTINGS_KEY = "xhsDownloadSettings";
     const MAX_IMAGE_RETRIES = 3;
+    const PROVIDER_BROWSER_BLOB_PROVIDERS = new Set(["kukutool", "tiantianjiexi"]);
+    const PROVIDER_BROWSER_BLOB_MAX_BYTES = 1024 * 1024 * 1024;
 
     function getCookie(name) {
         let cookieValue = null;
@@ -759,7 +761,21 @@
             }
 
             const item = (items || []).find((candidate) => candidate && candidate.url) || {};
-            return ["kukutool", "tiantianjiexi"].includes(String(item.provider || ""));
+            return PROVIDER_BROWSER_BLOB_PROVIDERS.has(String(item.provider || "").toLowerCase());
+        }
+
+        function directRouteCanUseProviderBlobDownload(items) {
+            if (!directRouteNeedsServerFallback(items)) {
+                return false;
+            }
+
+            const item = (items || []).find((candidate) => candidate && candidate.url) || {};
+            const url = String(item.url || "");
+            const sizeBytes = Number.parseInt(item.size_bytes || item.sizeBytes || "0", 10) || 0;
+            return (
+                /^https?:\/\//i.test(url)
+                && (!sizeBytes || sizeBytes <= PROVIDER_BROWSER_BLOB_MAX_BYTES)
+            );
         }
 
         function directRouteRetryHint() {
@@ -869,6 +885,12 @@
                 filenames.push(await downloadDirectItem(directItems[index], index, directItems.length));
             }
             return filenames;
+        }
+
+        async function downloadProviderBlobRouteItems(items) {
+            setProgressPending("浏览器下载");
+            setStatus(getStatusElement(), "正在通过浏览器直连下载 Provider 源文件...");
+            return downloadDirectRouteItems(items);
         }
 
         async function postDownloadPayload(payload) {
@@ -1044,6 +1066,30 @@
                         && routePreview.route_type === "direct"
                     ) {
                         const previewItems = routePreview.items || [];
+                        if (directRouteCanUseProviderBlobDownload(previewItems)) {
+                            try {
+                                const filenames = await downloadProviderBlobRouteItems(previewItems);
+                                setProgress(100);
+                                setStatus(
+                                    getStatusElement(),
+                                    `${routePreview.route_reason || "已通过浏览器直连保存 Provider 源文件"}：${filenames.join("、")}${routeWarningText(routePreview.warnings)}`,
+                                    "text-success",
+                                );
+                            } catch (directError) {
+                                if (directError && directError.name === "AbortError") {
+                                    throw directError;
+                                }
+                                console.warn("Provider browser blob download failed, falling back to server single attachment", directError);
+                                setProgressPending("服务端处理");
+                                setStatus(
+                                    getStatusElement(),
+                                    `浏览器直连下载不可用，正在切换服务器单文件下载...${routeWarningText(routePreview.warnings)}`,
+                                    "text-muted",
+                                );
+                                submitAutomaticServerSingleFallback(payload);
+                            }
+                            return;
+                        }
                         const handoffKey = directRouteHandoffKey(routePreview.items || []);
                         if (handoffKey && !directHandoffAttemptKeys.has(handoffKey)) {
                             directHandoffAttemptKeys.add(handoffKey);
@@ -1110,6 +1156,30 @@
                     const data = await response.json();
                     if (data.status === "routed" && data.route_type === "direct") {
                         const directItems = data.items || [];
+                        if (directRouteCanUseProviderBlobDownload(directItems)) {
+                            try {
+                                const filenames = await downloadProviderBlobRouteItems(directItems);
+                                setProgress(100);
+                                setStatus(
+                                    getStatusElement(),
+                                    `${data.route_reason || "已通过浏览器直连保存 Provider 源文件"}：${filenames.join("、")}${routeWarningText(data.warnings)}`,
+                                    "text-success",
+                                );
+                            } catch (directError) {
+                                if (directError && directError.name === "AbortError") {
+                                    throw directError;
+                                }
+                                console.warn("Provider browser blob download failed, falling back to server single attachment", directError);
+                                setProgressPending("服务端处理");
+                                setStatus(
+                                    getStatusElement(),
+                                    `浏览器直连下载不可用，正在切换服务器单文件下载...${routeWarningText(data.warnings)}`,
+                                    "text-muted",
+                                );
+                                submitAutomaticServerSingleFallback(payload);
+                            }
+                            return;
+                        }
                         const handoffKey = directRouteHandoffKey(directItems);
                         if (handoffKey && !directHandoffAttemptKeys.has(handoffKey)) {
                             directHandoffAttemptKeys.add(handoffKey);
