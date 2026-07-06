@@ -8,7 +8,7 @@ from django.core.management import call_command
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
-from .models import ProviderHealthTestStatus
+from .models import BatchParseRuntimeSetting, ProviderAccessMode, ProviderHealthTestStatus
 from .services.assets import MediaAsset, ParseResult
 from .services.common import XhsProviderTimeoutError
 from .services.platforms.douyin_providers import (
@@ -254,6 +254,45 @@ class BatchParseViewTests(TestCase):
         self.assertNotIn("22163", message)
 
     def test_batch_parse_non_staff_default_not_accessible(self):
+        response = self.client.get(reverse("batch_parse"))
+
+        self.assertEqual(response.status_code, 404)
+
+    @patch("xhs_download.views.parse_media_page")
+    def test_batch_runtime_setting_public_mode_overrides_env(self, mock_parse):
+        BatchParseRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={
+                "access_mode": ProviderAccessMode.PUBLIC,
+                "public_max_links": 2,
+                "max_links": 20,
+                "ip_interval_seconds": 0,
+                "global_minute_limit": 0,
+                "daily_ip_limit": 0,
+            },
+        )
+        mock_parse.return_value = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="public_video",
+            assets=(),
+        )
+
+        response = self.client.post(
+            reverse("batch_parse"),
+            {"links": "\n".join(f"https://example.com/{index}" for index in range(5))},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "总链接 2")
+
+    def test_batch_runtime_setting_disabled_blocks_staff(self):
+        BatchParseRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={"access_mode": ProviderAccessMode.DISABLED},
+        )
+        self.client.force_login(self.staff_user)
+
         response = self.client.get(reverse("batch_parse"))
 
         self.assertEqual(response.status_code, 404)

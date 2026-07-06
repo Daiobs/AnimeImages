@@ -24,6 +24,7 @@ SIDEBAR_GROUPS = (
         "下载",
         (
             ("下载限流", "admin:download_console_downloadruntimesetting_changelist", "限"),
+            ("批量解析配置", "admin:xhs_download_batchparseruntimesetting_changelist", "批"),
             ("日志中心", "logs_center", "志"),
         ),
     ),

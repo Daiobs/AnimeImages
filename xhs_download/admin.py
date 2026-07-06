@@ -2,6 +2,7 @@ from django.contrib import admin
 from django.shortcuts import redirect
 
 from .models import (
+    BatchParseRuntimeSetting,
     DownloadRequestLog,
     ParseRequestLog,
     PolicyControlRecord,
@@ -14,6 +15,43 @@ from .models import (
     RoutingDecisionLog,
     SelfHealingEvent,
 )
+
+
+@admin.register(BatchParseRuntimeSetting)
+class BatchParseRuntimeSettingAdmin(admin.ModelAdmin):
+    list_display = (
+        "__str__",
+        "access_mode",
+        "rollout_percent",
+        "max_links",
+        "staff_max_links",
+        "public_max_links",
+        "ip_interval_seconds",
+        "daily_ip_limit",
+        "updated_at",
+    )
+    readonly_fields = ("singleton_key", "updated_at")
+    fields = (
+        "singleton_key",
+        "access_mode",
+        "rollout_percent",
+        "max_links",
+        "staff_max_links",
+        "public_max_links",
+        "per_link_timeout_seconds",
+        "total_timeout_seconds",
+        "ip_interval_seconds",
+        "global_minute_limit",
+        "daily_ip_limit",
+        "public_ultra_hd_enabled",
+        "public_youtube_merge_enabled",
+        "updated_at",
+    )
+
+    def has_add_permission(self, request):
+        if BatchParseRuntimeSetting.objects.exists():
+            return False
+        return super().has_add_permission(request)
 
 
 @admin.register(ProviderRuntimeSetting)
