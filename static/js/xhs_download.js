@@ -838,9 +838,12 @@
             setProgress(endPercent);
         }
 
-        async function downloadDirectItem(item, index, total) {
+        async function downloadDirectItem(item, index, total, onStatus) {
             const startPercent = total > 1 ? (index / total) * 100 : 0;
             const endPercent = total > 1 ? ((index + 1) / total) * 100 : 100;
+            if (onStatus) {
+                onStatus("正在连接资源...");
+            }
             const response = await fetch(item.url, {
                 cache: "no-store",
                 credentials: "omit",
@@ -851,6 +854,9 @@
             }
 
             const filename = directDownloadFilename(item, response, index, total);
+            if (onStatus) {
+                onStatus("下载通道已建立，正在读取文件...");
+            }
             if (useFilePicker && window.showSaveFilePicker) {
                 const extension = filename.split(".").pop() || "mp4";
                 const handle = await window.showSaveFilePicker({
@@ -869,6 +875,9 @@
             }
 
             const blob = await readResponseBlobWithProgress(response, startPercent, endPercent);
+            if (onStatus) {
+                onStatus("正在唤起浏览器下载...");
+            }
             await saveZipBlob(blob, filename, false);
             return filename;
         }
@@ -886,24 +895,28 @@
             return filenames;
         }
 
-        async function downloadDirectRouteItems(items) {
+        async function downloadDirectRouteItems(items, options) {
             const directItems = (items || []).filter((item) => item && item.url);
             if (directItems.length === 0) {
                 throw new Error("没有可下载的直链资源");
             }
 
-            setStatus(getStatusElement(), "正在通过浏览器直接下载源文件...");
+            const statusPrefix = options && options.providerBlob ? "Provider 源文件" : "源文件";
+            const onStatus = (message) => {
+                setStatus(getStatusElement(), `${statusPrefix}${message}`);
+            };
+            onStatus("正在连接资源...");
             const filenames = [];
             for (let index = 0; index < directItems.length; index += 1) {
-                filenames.push(await downloadDirectItem(directItems[index], index, directItems.length));
+                filenames.push(await downloadDirectItem(directItems[index], index, directItems.length, onStatus));
             }
             return filenames;
         }
 
         async function downloadProviderBlobRouteItems(items) {
             setProgressPending("浏览器下载");
-            setStatus(getStatusElement(), "正在通过浏览器直连下载 Provider 源文件...");
-            return downloadDirectRouteItems(items);
+            setStatus(getStatusElement(), "Provider 源文件正在连接资源...");
+            return downloadDirectRouteItems(items, {providerBlob: true});
         }
 
         async function postDownloadPayload(payload) {

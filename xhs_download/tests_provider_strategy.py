@@ -33,9 +33,12 @@ from .services.provider_strategy import (
     DOWNLOAD_STRATEGY_SERVER_MERGE,
     build_download_strategy,
 )
+from .services.rate_limits import LimitResult
 from .services.downloads import provider_manifest_allows_public_download
 from .views import (
     PROVIDER_HEALTH_TESTS,
+    batch_parse_limit_error_message,
+    batch_parse_total_timeout_seconds,
     get_video_size_bytes,
     provider_health_test_by_key,
     run_provider_health_test,
@@ -166,6 +169,7 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
 
 
 @override_settings(
+    BATCH_PARSE_IP_INTERVAL_SECONDS=0,
     BATCH_PARSE_MINUTE_IP_LIMIT=0,
     BATCH_PARSE_GLOBAL_MINUTE_LIMIT=0,
     BATCH_PARSE_DAILY_IP_LIMIT=0,
@@ -196,6 +200,58 @@ class BatchParseViewTests(TestCase):
         self.assertGreater(content.index("高级说明：下载策略矩阵"), content.index("batch-form"))
         self.assertGreater(content.index('name="ultra_hd"'), content.index("batch-settings-panel"))
         self.assertGreater(content.index('name="youtube_merge"'), content.index("batch-settings-panel"))
+
+    @override_settings(BATCH_PARSE_TOTAL_TIMEOUT_SECONDS="")
+    def test_batch_parse_total_timeout_defaults_to_thirty_seconds(self):
+        self.assertEqual(batch_parse_total_timeout_seconds(), 30.0)
+
+    @override_settings(BATCH_PARSE_PUBLIC_ENABLED=True, BATCH_PARSE_IP_INTERVAL_SECONDS=20)
+    @patch("xhs_download.views.parse_media_page")
+    def test_batch_parse_public_click_interval_uses_twenty_second_message(self, mock_parse):
+        mock_parse.return_value = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="first",
+            assets=(),
+        )
+
+        first = self.client.post(reverse("batch_parse"), {"links": "https://example.com/1"})
+        second = self.client.post(reverse("batch_parse"), {"links": "https://example.com/2"})
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertContains(second, "批量解析请求过于频繁，请约")
+        self.assertContains(second, "秒后再试")
+        self.assertNotContains(second, "今日额度已用尽")
+
+    @override_settings(BATCH_PARSE_IP_INTERVAL_SECONDS=20, BATCH_PARSE_DAILY_IP_LIMIT=1)
+    @patch("xhs_download.views.parse_media_page")
+    def test_batch_parse_staff_bypasses_rate_limits(self, mock_parse):
+        self.client.force_login(self.staff_user)
+        mock_parse.return_value = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="staff_video",
+            assets=(),
+        )
+
+        first = self.client.post(reverse("batch_parse"), {"links": "https://example.com/1"})
+        second = self.client.post(reverse("batch_parse"), {"links": "https://example.com/2"})
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertNotContains(second, "批量解析请求过于频繁")
+        self.assertNotContains(second, "今日额度已用尽")
+
+    def test_batch_parse_daily_limit_message_avoids_huge_seconds(self):
+        message = batch_parse_limit_error_message(
+            "daily_ip",
+            LimitResult(allowed=False, current=21, limit=20, retry_after=22163),
+        )
+
+        self.assertIn("今日额度已用尽", message)
+        self.assertIn("21/20", message)
+        self.assertNotIn("22163", message)
 
     def test_batch_parse_non_staff_default_not_accessible(self):
         response = self.client.get(reverse("batch_parse"))
@@ -247,7 +303,10 @@ class BatchParseViewTests(TestCase):
         self.assertContains(response, "打开直链")
         self.assertContains(response, "浏览器下载")
         self.assertContains(response, "data-batch-direct-download")
-        self.assertContains(response, "浏览器 Blob 优先")
+        self.assertContains(response, "data-batch-download-progress")
+        self.assertNotContains(response, "v5-default.365yg.com</span>")
+        self.assertNotContains(response, "质量未知")
+        self.assertNotContains(response, "浏览器 Blob 优先</small>")
         self.assertNotContains(response, 'target="_blank" rel="noopener noreferrer">\n                                                                    浏览器下载')
         content = response.content.decode()
         self.assertGreater(content.index("高级说明：下载策略矩阵"), content.index("解析结果"))

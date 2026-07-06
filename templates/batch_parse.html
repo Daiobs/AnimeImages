@@ -225,11 +225,13 @@
                                                 {% for item in row.video_items %}
                                                     <div class="batch-direct-item">
                                                         <div class="batch-direct-summary">
-                                                            <i class="bi bi-play-circle"></i>
-                                                            <span>{{ item.direct_host|default:"视频直链" }}</span>
-                                                            <span>{{ item.quality_label|default:"质量未知" }}</span>
-                                                            <span>{{ item.size_label|default:"大小未知" }}</span>
-                                                            <small>{{ item.strategy_label|default:item.download_strategy }}</small>
+                                                            <span class="batch-direct-icon">
+                                                                <i class="bi bi-file-earmark-play"></i>
+                                                            </span>
+                                                            <span class="batch-direct-text">
+                                                                <strong>视频文件</strong>
+                                                                <small>{{ item.size_label|default:"大小未知" }}</small>
+                                                            </span>
                                                         </div>
                                                         {% if batch_direct_links_allowed %}
                                                             <div class="batch-result-actions">
@@ -248,6 +250,16 @@
                                                                     <i class="bi bi-download me-1 batch-download-icon"></i>
                                                                     <span class="batch-download-label">浏览器下载</span>
                                                                 </button>
+                                                            </div>
+                                                            <div class="batch-download-progress"
+                                                                 data-batch-download-progress
+                                                                 hidden>
+                                                                <div class="batch-download-progress-track">
+                                                                    <div class="batch-download-progress-bar"
+                                                                         data-batch-download-progress-bar></div>
+                                                                </div>
+                                                                <div class="batch-download-progress-label"
+                                                                     data-batch-download-progress-label>准备下载...</div>
                                                             </div>
                                                             <details class="batch-direct-url">
                                                                 <summary>展开链接</summary>

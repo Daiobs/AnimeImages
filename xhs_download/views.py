@@ -3753,30 +3753,55 @@ def batch_parse_per_link_timeout_seconds():
 
 
 def batch_parse_rate_limit_results(request, link_count):
+    if batch_parse_user_is_staff(request):
+        return ()
+
     identity = get_client_identity(request)
     amount = max(1, int(link_count or 1))
+    ip_interval_seconds = env_runtime_int("BATCH_PARSE_IP_INTERVAL_SECONDS", 20)
     return (
-        consume_fixed_window(
-            "batch-parse-minute-ip",
-            identity,
-            env_runtime_int("BATCH_PARSE_MINUTE_IP_LIMIT", 3),
-            60,
-            amount=amount,
+        (
+            "ip_interval",
+            consume_fixed_window(
+                "batch-parse-ip-interval",
+                identity,
+                1 if ip_interval_seconds > 0 else 0,
+                max(1, ip_interval_seconds),
+                amount=1,
+            ),
         ),
-        consume_fixed_window(
-            "batch-parse-global-minute",
-            "global",
-            env_runtime_int("BATCH_PARSE_GLOBAL_MINUTE_LIMIT", 30),
-            60,
-            amount=amount,
+        (
+            "global_minute",
+            consume_fixed_window(
+                "batch-parse-global-minute",
+                "global",
+                env_runtime_int("BATCH_PARSE_GLOBAL_MINUTE_LIMIT", 30),
+                60,
+                amount=amount,
+            ),
         ),
-        consume_daily(
-            "batch-parse-daily-ip",
-            identity,
-            env_runtime_int("BATCH_PARSE_DAILY_IP_LIMIT", 20),
-            amount=amount,
+        (
+            "daily_ip",
+            consume_daily(
+                "batch-parse-daily-ip",
+                identity,
+                env_runtime_int("BATCH_PARSE_DAILY_IP_LIMIT", 100),
+                amount=amount,
+            ),
         ),
     )
+
+
+def batch_parse_limit_error_message(scope, limit):
+    if scope == "daily_ip":
+        if limit.limit:
+            return f"批量解析今日额度已用尽（{limit.current}/{limit.limit}），请明天再试。"
+        return "批量解析今日额度已用尽，请明天再试。"
+    if scope == "global_minute":
+        retry_after = max(1, min(int(limit.retry_after or 1), 60))
+        return f"当前批量解析请求较多，请约 {retry_after} 秒后再试。"
+    retry_after = max(1, int(limit.retry_after or 1))
+    return f"批量解析请求过于频繁，请约 {retry_after} 秒后再试。"
 
 
 def split_batch_links(value, max_links=None):
@@ -3944,9 +3969,10 @@ def batch_parse_view(request):
     batch_error = ""
     if request.method == "POST":
         limits = batch_parse_rate_limit_results(request, len(links) or 1)
-        blocked_limit = next((limit for limit in limits if not limit.allowed), None)
+        blocked = next(((scope, limit) for scope, limit in limits if not limit.allowed), None)
+        blocked_scope, blocked_limit = blocked or (None, None)
         if blocked_limit:
-            batch_error = f"批量解析请求过于频繁，请约 {blocked_limit.retry_after} 秒后再试。"
+            batch_error = batch_parse_limit_error_message(blocked_scope, blocked_limit)
         else:
             deadline = time.monotonic() + batch_parse_total_timeout_seconds()
             for link in links:

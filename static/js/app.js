@@ -70,7 +70,37 @@
         window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
-    async function downloadBatchDirectUrl(url, filename) {
+    async function readBlobWithProgress(response, onProgress) {
+        const contentLength = Number.parseInt(response.headers.get("Content-Length") || "0", 10);
+        if (!response.body || !contentLength) {
+            if (onProgress) {
+                onProgress(null, "正在接收文件...");
+            }
+            return response.blob();
+        }
+
+        const reader = response.body.getReader();
+        const chunks = [];
+        let received = 0;
+
+        while (true) {
+            const {done, value} = await reader.read();
+            if (done) {
+                break;
+            }
+            chunks.push(value);
+            received += value.length;
+            if (onProgress) {
+                onProgress(Math.min(100, Math.round((received / contentLength) * 100)));
+            }
+        }
+        return new Blob(chunks, {type: response.headers.get("Content-Type") || "application/octet-stream"});
+    }
+
+    async function downloadBatchDirectUrl(url, filename, onStatus, onProgress) {
+        if (onStatus) {
+            onStatus("正在连接资源...");
+        }
         const response = await fetch(url, {
             method: "GET",
             credentials: "omit",
@@ -83,7 +113,13 @@
         if (contentType.toLowerCase().includes("text/html")) {
             throw new Error("上游返回了网页而不是媒体文件");
         }
-        const blob = await response.blob();
+        if (onStatus) {
+            onStatus("下载通道已建立...");
+        }
+        const blob = await readBlobWithProgress(response, onProgress);
+        if (onStatus) {
+            onStatus("正在唤起浏览器下载...");
+        }
         saveBlob(filename, blob);
     }
 
@@ -116,6 +152,46 @@
                 labelNode.textContent = original;
             }
         }, 1300);
+    }
+
+    function getBatchDownloadProgressElements(button) {
+        const item = button ? button.closest(".batch-direct-item") : null;
+        const progress = item ? item.querySelector("[data-batch-download-progress]") : null;
+        return {
+            progress,
+            bar: progress ? progress.querySelector("[data-batch-download-progress-bar]") : null,
+            label: progress ? progress.querySelector("[data-batch-download-progress-label]") : null,
+        };
+    }
+
+    function updateBatchDownloadProgress(button, percent, label) {
+        const elements = getBatchDownloadProgressElements(button);
+        if (!elements.progress) {
+            return;
+        }
+        elements.progress.hidden = false;
+        const hasPercent = typeof percent === "number" && Number.isFinite(percent);
+        elements.progress.classList.toggle("is-indeterminate", !hasPercent);
+        if (elements.bar) {
+            elements.bar.style.width = hasPercent ? `${Math.max(0, Math.min(100, percent))}%` : "45%";
+        }
+        if (elements.label) {
+            elements.label.textContent = label || (hasPercent ? `${percent}%` : "正在下载...");
+        }
+    }
+
+    function resetBatchDownloadProgress(button, label) {
+        const elements = getBatchDownloadProgressElements(button);
+        if (!elements.progress) {
+            return;
+        }
+        elements.progress.classList.remove("is-indeterminate");
+        if (elements.bar) {
+            elements.bar.style.width = "0%";
+        }
+        if (elements.label) {
+            elements.label.textContent = label || "准备下载...";
+        }
     }
 
     function collectBatchVideoLinks() {
@@ -288,13 +364,25 @@
                     showBatchDownloadButtonMessage(directDownloadButton, "无直链");
                     return;
                 }
-                setBatchDownloadButtonLoading(directDownloadButton, true, "下载中...");
+                setBatchDownloadButtonLoading(directDownloadButton, true, "正在连接资源...");
+                updateBatchDownloadProgress(directDownloadButton, 0, "正在连接资源...");
                 try {
-                    await downloadBatchDirectUrl(url, filename);
+                    await downloadBatchDirectUrl(url, filename, (label) => {
+                        setBatchDownloadButtonLoading(directDownloadButton, true, label);
+                        updateBatchDownloadProgress(directDownloadButton, null, label);
+                    }, (percent, label) => {
+                        if (typeof percent === "number") {
+                            updateBatchDownloadProgress(directDownloadButton, percent, `${percent}%`);
+                            return;
+                        }
+                        updateBatchDownloadProgress(directDownloadButton, null, label || "正在下载...");
+                    });
+                    updateBatchDownloadProgress(directDownloadButton, 100, "100%");
                     setBatchDownloadButtonLoading(directDownloadButton, false);
-                    showBatchDownloadButtonMessage(directDownloadButton, "已开始下载");
+                    showBatchDownloadButtonMessage(directDownloadButton, "已交给浏览器");
                 } catch (error) {
                     console.warn("Batch direct browser download failed", error);
+                    resetBatchDownloadProgress(directDownloadButton, "下载失败");
                     setBatchDownloadButtonLoading(directDownloadButton, false);
                     showBatchDownloadButtonMessage(directDownloadButton, "下载失败");
                 }
