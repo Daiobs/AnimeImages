@@ -253,6 +253,7 @@ from .services.platforms.douyin_providers import (
     DouyinNativeEnhancedProvider,
     DouyinNativeProvider,
     DouyinTikHubProvider,
+    DouyinTianTianJieXiProvider,
     ValidatedProviderCandidate,
     build_tikhub_validated_cache_key,
     build_tikhub_provider_response,
@@ -290,6 +291,28 @@ def make_kukutool_download_item(url, aweme_id="7647533902413173321"):
     item["provider_manifest_token"] = build_provider_manifest_token(
         asset_id=asset_id,
         provider="kukutool",
+        provider_resource_id=aweme_id,
+        provider_cache_key=cache_key,
+        url=url,
+        media_type="video",
+    )
+    return item
+
+
+def make_douyin_tiantianjiexi_download_item(url, aweme_id="7647533902413173321"):
+    asset_id = f"douyin:{aweme_id}:video:tiantianjiexi"
+    cache_key = f"douyin:tiantianjiexi:validated:{aweme_id}"
+    item = {
+        "type": "video",
+        "url": url,
+        "asset_id": asset_id,
+        "provider": "tiantianjiexi",
+        "provider_resource_id": aweme_id,
+        "provider_cache_key": cache_key,
+    }
+    item["provider_manifest_token"] = build_provider_manifest_token(
+        asset_id=asset_id,
+        provider="tiantianjiexi",
         provider_resource_id=aweme_id,
         provider_cache_key=cache_key,
         url=url,
@@ -999,7 +1022,7 @@ class XhsUtilityTests(SimpleTestCase):
     def test_provider_settings_use_fixed_douyin_order_with_ultra_disabled(self):
         provider_settings = get_platform_provider_settings("douyin")
 
-        self.assertEqual(provider_settings.provider_order, ("kukutool", "native"))
+        self.assertEqual(provider_settings.provider_order, ("tiantianjiexi", "kukutool", "native"))
         self.assertEqual(provider_settings.enabled_provider_order, ("native",))
 
     def test_provider_settings_enable_tikhub_when_configured(self):
@@ -1327,7 +1350,7 @@ class XhsParserTests(SimpleTestCase):
         )
         self.assertEqual(
             platforms["douyin"]["provider_policy"]["fallback_providers"],
-            ("kukutool", "tikhub"),
+            ("tiantianjiexi", "kukutool", "tikhub"),
         )
         self.assertEqual(
             platforms["bilibili"]["provider_policy"]["provider_ids"],
@@ -1668,6 +1691,7 @@ class TianTianJieXiProviderTests(TestCase):
         self.assertEqual(client.calls, 0)
 
     @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
         TIANTIANJIEXI_PROVIDER_ENABLED=True,
         TIANTIANJIEXI_PHONE="13800000000",
         TIANTIANJIEXI_PASSWORD="secret",
@@ -1730,6 +1754,7 @@ class TianTianJieXiProviderTests(TestCase):
         self.assertEqual(kwargs["data"]["link"], self.source_url)
 
     @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
         TIANTIANJIEXI_PROVIDER_ENABLED=True,
         TIANTIANJIEXI_PHONE="13800000000",
         TIANTIANJIEXI_PASSWORD="secret",
@@ -1989,6 +2014,11 @@ class DouyinAdapterTests(SimpleTestCase):
         self.assertEqual(len(providers), 1)
         self.assertIsInstance(providers[0], DouyinNativeProvider)
 
+    @override_settings(
+        TIANTIANJIEXI_PROVIDER_ENABLED=False,
+        TIANTIANJIEXI_PHONE="",
+        TIANTIANJIEXI_PASSWORD="",
+    )
     def test_douyin_provider_builder_removes_enhanced_from_web_request_path(self):
         providers = build_douyin_result_providers(ProviderSettings(
             ultra_hd_enabled=True,
@@ -1999,6 +2029,11 @@ class DouyinAdapterTests(SimpleTestCase):
         self.assertIsInstance(providers[0], DouyinKukuToolProvider)
         self.assertIsInstance(providers[1], DouyinNativeProvider)
 
+    @override_settings(
+        TIANTIANJIEXI_PROVIDER_ENABLED=False,
+        TIANTIANJIEXI_PHONE="",
+        TIANTIANJIEXI_PASSWORD="",
+    )
     def test_douyin_provider_builder_uses_kukutool_as_only_ultra_upstream(self):
         providers = build_douyin_result_providers(ProviderSettings(
             ultra_hd_enabled=True,
@@ -2011,6 +2046,11 @@ class DouyinAdapterTests(SimpleTestCase):
         self.assertIsInstance(providers[1], DouyinNativeProvider)
         self.assertFalse(any(isinstance(provider, DouyinTikHubProvider) for provider in providers))
 
+    @override_settings(
+        TIANTIANJIEXI_PROVIDER_ENABLED=False,
+        TIANTIANJIEXI_PHONE="",
+        TIANTIANJIEXI_PASSWORD="",
+    )
     def test_douyin_provider_builder_ignores_configured_tikhub_order(self):
         providers = build_douyin_result_providers(ProviderSettings(
             ultra_hd_enabled=True,
@@ -2022,6 +2062,11 @@ class DouyinAdapterTests(SimpleTestCase):
         self.assertIsInstance(providers[0], DouyinKukuToolProvider)
         self.assertIsInstance(providers[1], DouyinNativeProvider)
 
+    @override_settings(
+        TIANTIANJIEXI_PROVIDER_ENABLED=False,
+        TIANTIANJIEXI_PHONE="",
+        TIANTIANJIEXI_PASSWORD="",
+    )
     def test_douyin_provider_builder_injects_current_kukutool_ultra_upstream(self):
         providers = build_douyin_result_providers(ProviderSettings(
             ultra_hd_enabled=True,
@@ -2033,6 +2078,68 @@ class DouyinAdapterTests(SimpleTestCase):
         self.assertEqual(len(providers), 2)
         self.assertIsInstance(providers[0], DouyinKukuToolProvider)
         self.assertIsInstance(providers[1], DouyinNativeProvider)
+
+    @override_settings(
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="13800000000",
+        TIANTIANJIEXI_PASSWORD="secret",
+    )
+    def test_douyin_provider_builder_prefers_tiantianjiexi_before_kukutool(self):
+        providers = build_douyin_result_providers(ProviderSettings(
+            ultra_hd_enabled=True,
+            provider_order=("kukutool", "native"),
+        ))
+
+        self.assertEqual(len(providers), 3)
+        self.assertIsInstance(providers[0], DouyinTianTianJieXiProvider)
+        self.assertIsInstance(providers[1], DouyinKukuToolProvider)
+        self.assertIsInstance(providers[2], DouyinNativeProvider)
+
+    @override_settings(
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="13800000000",
+        TIANTIANJIEXI_PASSWORD="secret",
+    )
+    def test_douyin_tiantianjiexi_provider_selects_highest_quality_video(self):
+        class FakeTianTianProvider:
+            def parse(self, url, timeout_seconds=None):
+                return {
+                    "title": "天天解析视频",
+                    "cover": "https://p3.douyinpic.com/cover.jpeg",
+                    "videos": [
+                        {
+                            "url": "https://v6-default.365yg.com/low.mp4",
+                            "quality": "1080P",
+                            "size": 2_000,
+                        },
+                        {
+                            "url": "https://v26-default.365yg.com/high.mp4",
+                            "quality": "4K",
+                            "size": 90_000_000,
+                        },
+                    ],
+                }
+
+        context = DouyinParseContext(
+            url="https://www.douyin.com/video/7539896907901062452",
+            final_url="https://www.douyin.com/video/7539896907901062452",
+            aweme_id="7539896907901062452",
+        )
+        provider = DouyinTianTianJieXiProvider(
+            provider_settings=ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tiantianjiexi", "kukutool", "native"),
+            ),
+            provider=FakeTianTianProvider(),
+        )
+
+        result = provider.parse(DouyinAdapter(), context)
+
+        self.assertEqual(result.assets[0].provider, "tiantianjiexi")
+        self.assertEqual(result.assets[0].url, "https://v26-default.365yg.com/high.mp4")
+        self.assertEqual(result.assets[0].quality_label, "4K")
+        self.assertEqual(result.metadata["selected_provider"], "tiantianjiexi")
+        self.assertTrue(result.assets[0].provider_manifest_token)
 
     def test_douyin_provider_builder_uses_fast_native_path_without_request_switch(self):
         providers = build_douyin_result_providers(
@@ -3990,6 +4097,11 @@ class XhsDownloadArchiveTests(SimpleTestCase):
             self.assertTrue(Path(result["saved_files"][0]).exists())
 
 
+@override_settings(
+    TIANTIANJIEXI_PROVIDER_ENABLED=False,
+    TIANTIANJIEXI_PHONE="",
+    TIANTIANJIEXI_PASSWORD="",
+)
 class XhsDownloadViewTests(TestCase):
     def setUp(self):
         cache.clear()
@@ -4348,6 +4460,18 @@ class XhsDownloadViewTests(TestCase):
     def test_provider_manifest_allows_signed_douyin_kukutool_video(self):
         media_url = "https://v26-default.365yg.com/path/video/tos/cn/source.mp4"
         item = make_kukutool_download_item(media_url)
+
+        self.assertTrue(provider_manifest_allows_public_download(item))
+        self.assertFalse(
+            provider_manifest_allows_public_download({
+                **item,
+                "url": "https://evil.example.com/source.mp4",
+            })
+        )
+
+    def test_provider_manifest_allows_signed_douyin_tiantianjiexi_video(self):
+        media_url = "https://v26-default.365yg.com/path/video/tos/cn/source.mp4"
+        item = make_douyin_tiantianjiexi_download_item(media_url)
 
         self.assertTrue(provider_manifest_allows_public_download(item))
         self.assertFalse(
@@ -6240,6 +6364,18 @@ class XhsDownloadViewTests(TestCase):
     def test_download_route_signed_kukutool_cdn_video_defaults_to_server_attachment(self):
         request = RequestFactory().post("/media/download-images/")
         item = make_kukutool_download_item("https://v6-default.365yg.com/a.mp4")
+        item["size_bytes"] = 2000
+
+        route = decide_download_route(request, [item], requested_mode="auto")
+
+        self.assertEqual(route["route_type"], ROUTE_PROXY)
+        self.assertEqual(route["download_strategy"], "server_single_attachment")
+        self.assertEqual(route["server_egress_estimated_bytes"], 2000)
+        self.assertEqual(route["browser_egress_estimated_bytes"], 0)
+
+    def test_download_route_signed_tiantianjiexi_douyin_video_defaults_to_server_attachment(self):
+        request = RequestFactory().post("/media/download-images/")
+        item = make_douyin_tiantianjiexi_download_item("https://v6-default.365yg.com/a.mp4")
         item["size_bytes"] = 2000
 
         route = decide_download_route(request, [item], requested_mode="auto")
@@ -9681,6 +9817,11 @@ class RuntimeHealthCheckTests(TestCase):
         self.assertIn("xhs_download.E011", issue_ids)
 
 
+@override_settings(
+    TIANTIANJIEXI_PROVIDER_ENABLED=False,
+    TIANTIANJIEXI_PHONE="",
+    TIANTIANJIEXI_PASSWORD="",
+)
 class ProviderControlViewTests(TestCase):
     def setUp(self):
         from django.contrib.auth import get_user_model

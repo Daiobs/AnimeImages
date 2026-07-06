@@ -605,6 +605,11 @@ class YouTubeMergePlannerTests(SimpleTestCase):
         mock_download.assert_not_called()
 
 
+@override_settings(
+    TIANTIANJIEXI_PROVIDER_ENABLED=False,
+    TIANTIANJIEXI_PHONE="",
+    TIANTIANJIEXI_PASSWORD="",
+)
 class GenericThirdPartyProviderTests(SimpleTestCase):
     def setUp(self):
         cache.clear()

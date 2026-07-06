@@ -19,6 +19,11 @@ from ..diagnostics import select_best_media_candidate
 from ..provider_settings import get_platform_provider_settings
 from ..provider_manifest import build_provider_manifest_token
 from .douyin_kukutool import DouyinKukuToolProvider
+from .tiantianjiexi_generic import (
+    TianTianJieXiGenericProvider,
+    quality_rank as tiantianjiexi_quality_rank,
+    size_value as tiantianjiexi_size_value,
+)
 
 
 DEFAULT_TIKHUB_BASE_URL = "https://api.tikhub.io"
@@ -584,22 +589,25 @@ def build_external_parse_result(
     candidate,
     reference_result=None,
     provider_name="",
+    base_filename="",
+    cover_url="",
 ):
     reference_asset = get_reference_video_asset(reference_result)
-    base_filename = getattr(reference_result, "base_filename", "")
+    reference_filename = getattr(reference_result, "base_filename", "")
+    base_filename = reference_filename or base_filename
     if not base_filename:
         base_filename = f"douyin_{context.aweme_id}" if context.aweme_id else "douyin"
     provider_fields = {"provider": provider_name}
-    if provider_name == "kukutool":
-        asset_id = f"douyin:{context.aweme_id}:video:kukutool"
-        provider_cache_key = f"douyin:kukutool:validated:{context.aweme_id}"
+    if provider_name in {"kukutool", "tiantianjiexi"}:
+        asset_id = f"douyin:{context.aweme_id}:video:{provider_name}"
+        provider_cache_key = f"douyin:{provider_name}:validated:{context.aweme_id}"
         provider_fields.update(
             asset_id=asset_id,
             provider_resource_id=context.aweme_id,
             provider_cache_key=provider_cache_key,
             provider_manifest_token=build_provider_manifest_token(
                 asset_id=asset_id,
-                provider="kukutool",
+                provider=provider_name,
                 provider_resource_id=context.aweme_id,
                 provider_cache_key=provider_cache_key,
                 url=candidate.url,
@@ -615,8 +623,16 @@ def build_external_parse_result(
                 media_type="video",
                 url=candidate.url,
                 platform=adapter.platform_id,
-                cover_url=getattr(reference_asset, "cover_url", "") if reference_asset else "",
-                cover_preview_url=getattr(reference_asset, "cover_preview_url", "") if reference_asset else "",
+                cover_url=(
+                    getattr(reference_asset, "cover_url", "")
+                    if reference_asset
+                    else cover_url
+                ),
+                cover_preview_url=(
+                    getattr(reference_asset, "cover_preview_url", "")
+                    if reference_asset
+                    else cover_url
+                ),
                 quality_label=candidate.quality_label,
                 size_bytes=candidate.size_bytes,
                 headers=adapter.headers,
@@ -625,6 +641,130 @@ def build_external_parse_result(
             ),
         ),
     )
+
+
+class DouyinTianTianJieXiProvider(DouyinResultProvider):
+    name = "tiantianjiexi"
+
+    def __init__(self, provider_settings=None, provider=None):
+        self.provider_settings = provider_settings or get_platform_provider_settings("douyin")
+        self.provider = provider or TianTianJieXiGenericProvider()
+
+    def remaining_budget(self, context, fallback):
+        if not context.deadline_monotonic:
+            return max(0.1, fallback)
+        return max(0.0, context.deadline_monotonic - monotonic())
+
+    def build_candidates(self, payload, adapter):
+        candidates = []
+        for index, resource in enumerate(payload.get("videos") or (), start=1):
+            if not isinstance(resource, dict):
+                continue
+            url = str(resource.get("url") or "").strip()
+            if not url:
+                continue
+            try:
+                validate_external_url(
+                    url,
+                    adapter.media_host_suffixes,
+                    "天天解析返回了不受信任的抖音媒体域名",
+                )
+            except (TypeError, ValueError):
+                continue
+            quality_label = str(
+                resource.get("quality")
+                or resource.get("quality_label")
+                or "原始上传画质"
+            )
+            size_bytes = tiantianjiexi_size_value(resource.get("size"))
+            candidates.append(
+                MediaCandidate(
+                    url=url,
+                    quality_label=quality_label,
+                    size_bytes=size_bytes,
+                    priority=tiantianjiexi_quality_rank(quality_label) + index,
+                    source="tiantianjiexi.official_api",
+                )
+            )
+        return tuple(
+            sorted(
+                candidates,
+                key=lambda item: (
+                    tiantianjiexi_quality_rank(item.quality_label),
+                    item.size_bytes,
+                    item.priority,
+                ),
+                reverse=True,
+            )
+        )
+
+    def clean_cover_url(self, payload, adapter):
+        cover_url = str(payload.get("cover") or "").strip()
+        if not cover_url:
+            return ""
+        try:
+            validate_external_url(
+                cover_url,
+                adapter.media_host_suffixes,
+                "天天解析封面 URL 不在允许的抖音媒体域名内",
+            )
+        except (TypeError, ValueError):
+            return ""
+        return cover_url
+
+    def parse(self, adapter, context):
+        if not self.provider_settings.provider_is_enabled(self.name):
+            return None
+
+        source_url = context.final_url or context.url
+        if not source_url:
+            return None
+
+        parse_started_at = time()
+        timeout_seconds = min(
+            max(0.1, self.provider_settings.ultra_total_timeout_seconds),
+            self.remaining_budget(
+                context,
+                self.provider_settings.ultra_total_timeout_seconds,
+            ),
+        )
+        payload = self.provider.parse(source_url, timeout_seconds=timeout_seconds)
+        candidates = self.build_candidates(payload, adapter)
+        if not candidates:
+            raise ValueError("天天解析未返回可用抖音视频资源")
+
+        reference_result = get_cached_douyin_metadata(context.aweme_id)
+        candidate = candidates[0]
+        result = build_external_parse_result(
+            adapter,
+            context,
+            candidate,
+            reference_result,
+            provider_name=self.name,
+            base_filename=str(payload.get("title") or ""),
+            cover_url=self.clean_cover_url(payload, adapter),
+        )
+        result = with_parse_metadata(
+            result,
+            selected_provider=self.name,
+            fallback_reason="tiantianjiexi_official_api",
+            source_provider=self.name,
+            provider_label="天天解析",
+            tiantianjiexi_candidate_count=len(candidates),
+            tiantianjiexi_size_bytes=candidate.size_bytes,
+            tiantianjiexi_quality_label=candidate.quality_label,
+        )
+        log_provider_event(
+            "douyin_provider_selected",
+            self.name,
+            context,
+            parse_started_at,
+            fallback_reason="tiantianjiexi_official_api",
+            selected_size_bytes=candidate.size_bytes,
+            candidate_count=len(candidates),
+            quality_label=candidate.quality_label,
+        )
+        return result
 
 
 class DouyinTikHubProvider(DouyinResultProvider):
@@ -1181,13 +1321,14 @@ def build_douyin_result_providers(provider_settings=None, prefer_ultra_hd=True):
     else:
         provider_settings = replace(
             provider_settings,
-            # The current ultra-HD phase intentionally has one external
-            # upstream. TikHub and enhanced native remain available for
-            # diagnostics but do not enter the synchronous web request path.
-            provider_order=("kukutool", "native"),
+            # The current ultra-HD path prefers the official TianTianJieXi
+            # API, keeps KuKuTool as fallback, and leaves TikHub/enhanced
+            # native for diagnostics outside the synchronous request path.
+            provider_order=("tiantianjiexi", "kukutool", "native"),
         )
 
     provider_map = {
+        "tiantianjiexi": lambda: DouyinTianTianJieXiProvider(provider_settings=provider_settings),
         "kukutool": lambda: DouyinKukuToolProvider(provider_settings=provider_settings),
         "tikhub": lambda: DouyinTikHubProvider(provider_settings=provider_settings),
         "native_enhanced": DouyinNativeEnhancedProvider,

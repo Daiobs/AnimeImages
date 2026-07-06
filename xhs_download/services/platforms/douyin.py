@@ -609,7 +609,7 @@ class DouyinAdapter(BasePlatformAdapter):
     )
     provider_policy = ProviderPolicy(
         primary_provider="native",
-        fallback_providers=("kukutool", "tikhub"),
+        fallback_providers=("tiantianjiexi", "kukutool", "tikhub"),
         enhanced_provider_enabled_by="ULTRA_HD_PROVIDER_ENABLED",
     )
     parse_option_names = ("prefer_ultra_hd", "client_country_code")

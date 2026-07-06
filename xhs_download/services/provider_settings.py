@@ -56,6 +56,14 @@ class ProviderSettings:
             return self.ultra_hd_enabled
         if name == "kukutool":
             return self.ultra_hd_enabled and self.kukutool_enabled
+        if name == "tiantianjiexi":
+            return bool(
+                self.ultra_hd_enabled
+                and getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False)
+                and getattr(settings, "TIANTIANJIEXI_PROVIDER_ENABLED", False)
+                and str(getattr(settings, "TIANTIANJIEXI_PHONE", "") or "").strip()
+                and str(getattr(settings, "TIANTIANJIEXI_PASSWORD", "") or "").strip()
+            )
         if name == "tikhub":
             return self.ultra_hd_enabled and bool(self.tikhub_api_key)
         return self.ultra_hd_enabled
@@ -91,7 +99,7 @@ def get_platform_provider_settings(platform_id):
     platform_id = normalize_provider_name(platform_id)
     runtime_setting = load_provider_runtime_setting_readonly()
     if platform_id == "douyin":
-        raw_order = ("kukutool", "native")
+        raw_order = ("tiantianjiexi", "kukutool", "native")
     elif platform_id in {"xiaohongshu", "xhs"}:
         raw_order = getattr(settings, "XHS_PROVIDER_ORDER", ("native",))
     else:
