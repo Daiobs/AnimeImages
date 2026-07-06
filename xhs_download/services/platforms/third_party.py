@@ -13,6 +13,7 @@ from ..common import (
     host_matches,
     is_blocked_hostname,
 )
+from ..env_config import runtime_bool, runtime_list, runtime_str
 from ..provider_runtime_config import runtime_float
 from .base import BasePlatformAdapter, PlatformCapabilities, ProviderPolicy
 from .gallerydl_generic import GalleryDlGenericProvider, GalleryDlResultNormalizer
@@ -415,9 +416,9 @@ def provider_is_enabled(provider_id):
         )
     if provider_id == "tiantianjiexi_generic":
         return bool(
-            getattr(settings, "TIANTIANJIEXI_PROVIDER_ENABLED", False)
-            and getattr(settings, "TIANTIANJIEXI_PHONE", "")
-            and getattr(settings, "TIANTIANJIEXI_PASSWORD", "")
+            runtime_bool("TIANTIANJIEXI_PROVIDER_ENABLED", False)
+            and runtime_str("TIANTIANJIEXI_PHONE")
+            and runtime_str("TIANTIANJIEXI_PASSWORD")
         )
     if provider_id == "gallery_dl_generic":
         return bool(getattr(settings, "GALLERYDL_PROVIDER_ENABLED", False))
@@ -457,14 +458,12 @@ def configured_third_party_provider_order(rule):
         )
     configured_order = tuple(
         normalize_provider_id(provider_id)
-        for provider_id in (getattr(settings, setting_name, ()) or ())
+        for provider_id in runtime_list(setting_name, ())
     )
     if not configured_order:
         configured_order = tuple(
             normalize_provider_id(provider_id)
-            for provider_id in (
-                getattr(settings, "THIRD_PARTY_PROVIDER_ORDER", ()) or ()
-            )
+            for provider_id in runtime_list("THIRD_PARTY_PROVIDER_ORDER", ())
         )
     if not configured_order:
         configured_order = fallback_order
@@ -606,7 +605,7 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         self.require_supported_url(source_url)
         rule = self.get_rule_for_url(source_url)
         platform_name = rule.display_name if rule else self.display_name
-        if not getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False):
+        if not runtime_bool("THIRD_PARTY_PROVIDER_ENABLED", False):
             raise XhsParseError("第三方通用解析 Provider 当前未启用。")
         providers = list(self.iter_provider_specs(rule, respect_enabled=True))
         failures = []

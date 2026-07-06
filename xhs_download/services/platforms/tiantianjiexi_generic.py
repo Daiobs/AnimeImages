@@ -4,11 +4,16 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 import requests
-from django.conf import settings
 from django.core.cache import cache
 
 from ..assets import MediaAsset, ParseResult
 from ..common import XhsProviderTimeoutError, clean_filename
+from ..env_config import (
+    runtime_bool,
+    runtime_float,
+    runtime_int,
+    runtime_str,
+)
 from ..provider_manifest import build_provider_manifest_token
 from ..rate_limits import acquire_concurrency, consume_fixed_window, release_concurrency
 from .kukutool_generic import (
@@ -61,19 +66,19 @@ def build_circuit_failure_key(window):
 
 def provider_configured():
     return bool(
-        getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False)
-        and getattr(settings, "TIANTIANJIEXI_PROVIDER_ENABLED", False)
-        and str(getattr(settings, "TIANTIANJIEXI_API_BASE_URL", "") or "").strip()
-        and str(getattr(settings, "TIANTIANJIEXI_PHONE", "") or "").strip()
-        and str(getattr(settings, "TIANTIANJIEXI_PASSWORD", "") or "").strip()
+        runtime_bool("THIRD_PARTY_PROVIDER_ENABLED", False)
+        and runtime_bool("TIANTIANJIEXI_PROVIDER_ENABLED", False)
+        and runtime_str("TIANTIANJIEXI_API_BASE_URL", "https://tiantianjiexi.com/ajax/detail.php")
+        and runtime_str("TIANTIANJIEXI_PHONE")
+        and runtime_str("TIANTIANJIEXI_PASSWORD")
     )
 
 
 def api_configured():
     return bool(
-        str(getattr(settings, "TIANTIANJIEXI_API_BASE_URL", "") or "").strip()
-        and str(getattr(settings, "TIANTIANJIEXI_PHONE", "") or "").strip()
-        and str(getattr(settings, "TIANTIANJIEXI_PASSWORD", "") or "").strip()
+        runtime_str("TIANTIANJIEXI_API_BASE_URL", "https://tiantianjiexi.com/ajax/detail.php")
+        and runtime_str("TIANTIANJIEXI_PHONE")
+        and runtime_str("TIANTIANJIEXI_PASSWORD")
     )
 
 
@@ -269,20 +274,20 @@ class TianTianJieXiApiClient:
 
     @property
     def base_url(self):
-        return str(getattr(settings, "TIANTIANJIEXI_API_BASE_URL", "") or "").strip()
+        return runtime_str("TIANTIANJIEXI_API_BASE_URL", "https://tiantianjiexi.com/ajax/detail.php")
 
     @property
     def phone(self):
-        return str(getattr(settings, "TIANTIANJIEXI_PHONE", "") or "").strip()
+        return runtime_str("TIANTIANJIEXI_PHONE")
 
     @property
     def password(self):
-        return str(getattr(settings, "TIANTIANJIEXI_PASSWORD", "") or "").strip()
+        return runtime_str("TIANTIANJIEXI_PASSWORD")
 
     def parse_url(self, url, timeout_seconds=None):
         if not api_configured():
             raise TianTianJieXiAuthError("天天解析账号未配置")
-        timeout = float(timeout_seconds if timeout_seconds is not None else getattr(settings, "TIANTIANJIEXI_TIMEOUT_SECONDS", 15) or 15)
+        timeout = float(timeout_seconds if timeout_seconds is not None else runtime_float("TIANTIANJIEXI_TIMEOUT_SECONDS", 15) or 15)
         try:
             response = self.session.post(
                 self.base_url,
@@ -312,12 +317,12 @@ class TianTianJieXiApiClient:
                 "error_type": "TianTianJieXiAuthError",
                 "error": "api_not_configured",
             }
-        ttl_seconds = int(getattr(settings, "TIANTIANJIEXI_ACCOUNT_STATUS_CACHE_TTL_SECONDS", 300) or 0)
+        ttl_seconds = runtime_int("TIANTIANJIEXI_ACCOUNT_STATUS_CACHE_TTL_SECONDS", 300)
         if ttl_seconds > 0:
             cached = cache.get(ACCOUNT_STATUS_CACHE_KEY)
             if isinstance(cached, dict):
                 return {**cached, "cached": True}
-        timeout = float(getattr(settings, "TIANTIANJIEXI_TIMEOUT_SECONDS", 15) or 15)
+        timeout = runtime_float("TIANTIANJIEXI_TIMEOUT_SECONDS", 15)
         try:
             response = self.session.get(
                 self.base_url,
@@ -363,7 +368,7 @@ class TianTianJieXiGenericProvider:
         return payload if isinstance(payload, dict) else None
 
     def cache_payload(self, source_key, payload):
-        ttl_seconds = int(getattr(settings, "TIANTIANJIEXI_PAYLOAD_CACHE_TTL_SECONDS", 120) or 0)
+        ttl_seconds = runtime_int("TIANTIANJIEXI_PAYLOAD_CACHE_TTL_SECONDS", 120)
         if ttl_seconds <= 0 or not isinstance(payload, dict):
             return
         try:
@@ -386,7 +391,7 @@ class TianTianJieXiGenericProvider:
         return bool(reason)
 
     def cache_failure(self, source_key, reason):
-        ttl_seconds = int(getattr(settings, "TIANTIANJIEXI_FAILURE_CACHE_TTL_SECONDS", 30) or 0)
+        ttl_seconds = runtime_int("TIANTIANJIEXI_FAILURE_CACHE_TTL_SECONDS", 30)
         if ttl_seconds <= 0:
             return
         try:
@@ -414,7 +419,7 @@ class TianTianJieXiGenericProvider:
 
     def record_success(self):
         now = int(time.time())
-        window_seconds = max(1, int(getattr(settings, "TIANTIANJIEXI_CIRCUIT_WINDOW_SECONDS", 60) or 60))
+        window_seconds = max(1, runtime_int("TIANTIANJIEXI_CIRCUIT_WINDOW_SECONDS", 60))
         window = now // window_seconds
         try:
             cache.delete_many((build_circuit_open_key(), build_circuit_failure_key(window)))
@@ -423,9 +428,9 @@ class TianTianJieXiGenericProvider:
 
     def record_failure(self):
         now = int(time.time())
-        window_seconds = max(1, int(getattr(settings, "TIANTIANJIEXI_CIRCUIT_WINDOW_SECONDS", 60) or 60))
-        threshold = max(1, int(getattr(settings, "TIANTIANJIEXI_CIRCUIT_FAILURE_THRESHOLD", 5) or 5))
-        open_seconds = max(1, int(getattr(settings, "TIANTIANJIEXI_CIRCUIT_OPEN_SECONDS", 120) or 120))
+        window_seconds = max(1, runtime_int("TIANTIANJIEXI_CIRCUIT_WINDOW_SECONDS", 60))
+        threshold = max(1, runtime_int("TIANTIANJIEXI_CIRCUIT_FAILURE_THRESHOLD", 5))
+        open_seconds = max(1, runtime_int("TIANTIANJIEXI_CIRCUIT_OPEN_SECONDS", 120))
         window = now // window_seconds
         try:
             key = build_circuit_failure_key(window)
@@ -464,12 +469,12 @@ class TianTianJieXiGenericProvider:
         if self.failure_cache_hit(source_key):
             raise XhsProviderTimeoutError("天天解析刚刚失败，请稍后再试")
 
-        timeout_seconds = float(timeout_seconds if timeout_seconds is not None else getattr(settings, "THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS", 3.0) or 3.0)
+        timeout_seconds = float(timeout_seconds if timeout_seconds is not None else runtime_float("THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS", 3.0) or 3.0)
         lock_key = build_single_flight_key(source_key)
         lock_token = uuid4().hex
         lock_ttl = max(
             int(timeout_seconds) + 5,
-            int(getattr(settings, "TIANTIANJIEXI_TIMEOUT_SECONDS", 15) or 15) + 5,
+            runtime_int("TIANTIANJIEXI_TIMEOUT_SECONDS", 15) + 5,
         )
         try:
             lock_acquired = cache.add(lock_key, lock_token, timeout=lock_ttl)
@@ -487,7 +492,7 @@ class TianTianJieXiGenericProvider:
             request_limit = consume_fixed_window(
                 "third-party-tiantianjiexi",
                 "all",
-                getattr(settings, "TIANTIANJIEXI_REQUEST_LIMIT_PER_MINUTE", 20),
+                runtime_int("TIANTIANJIEXI_REQUEST_LIMIT_PER_MINUTE", 20),
                 60,
             )
             if not request_limit.allowed:
@@ -495,13 +500,13 @@ class TianTianJieXiGenericProvider:
             concurrency = acquire_concurrency(
                 "third-party-tiantianjiexi-global",
                 "all",
-                getattr(settings, "TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY", 2),
+                runtime_int("TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY", 2),
             )
             if not concurrency.allowed:
                 raise TianTianJieXiRateLimitError("天天解析并发受限")
             concurrency_acquired = True
 
-            attempts = max(1, int(getattr(settings, "TIANTIANJIEXI_RETRIES", 2) or 1))
+            attempts = max(1, runtime_int("TIANTIANJIEXI_RETRIES", 2))
             deadline = time.monotonic() + max(0.1, timeout_seconds)
             last_error = None
             for attempt in range(attempts):
@@ -513,7 +518,7 @@ class TianTianJieXiGenericProvider:
                         url,
                         timeout_seconds=min(
                             max(0.1, remaining_timeout),
-                            float(getattr(settings, "TIANTIANJIEXI_TIMEOUT_SECONDS", 15) or 15),
+                            runtime_float("TIANTIANJIEXI_TIMEOUT_SECONDS", 15),
                         ),
                     )
                     if not isinstance(payload, dict):
@@ -543,7 +548,7 @@ class TianTianJieXiGenericProvider:
 
     def health(self, source_key=""):
         now = int(time.time())
-        window_seconds = max(1, int(getattr(settings, "TIANTIANJIEXI_CIRCUIT_WINDOW_SECONDS", 60) or 60))
+        window_seconds = max(1, runtime_int("TIANTIANJIEXI_CIRCUIT_WINDOW_SECONDS", 60))
         window = now // window_seconds
         circuit_open_until = 0
         circuit_failure_count = 0
@@ -565,8 +570,8 @@ class TianTianJieXiGenericProvider:
             cache_error = type(error).__name__
             logger.debug("tiantianjiexi_health_cache_read_failed", extra={"provider": PROVIDER_ID}, exc_info=True)
         if (
-            bool(getattr(settings, "TIANTIANJIEXI_PROVIDER_ENABLED", False))
-            and bool(getattr(settings, "TIANTIANJIEXI_HEALTH_QUERY_ACCOUNT_STATUS_ENABLED", True))
+            runtime_bool("TIANTIANJIEXI_PROVIDER_ENABLED", False)
+            and runtime_bool("TIANTIANJIEXI_HEALTH_QUERY_ACCOUNT_STATUS_ENABLED", True)
             and api_configured()
         ):
             try:
@@ -578,9 +583,9 @@ class TianTianJieXiGenericProvider:
             "provider": PROVIDER_ID,
             "label": PROVIDER_LABEL,
             "enabled": provider_configured(),
-            "provider_enabled": bool(getattr(settings, "TIANTIANJIEXI_PROVIDER_ENABLED", False)),
+            "provider_enabled": runtime_bool("TIANTIANJIEXI_PROVIDER_ENABLED", False),
             "api_configured": api_configured(),
-            "api_base_url_configured": bool(str(getattr(settings, "TIANTIANJIEXI_API_BASE_URL", "") or "").strip()),
+            "api_base_url_configured": bool(runtime_str("TIANTIANJIEXI_API_BASE_URL", "https://tiantianjiexi.com/ajax/detail.php")),
             "account_status_cached": account_status_cached,
             "account_status_available": bool(account_status.get("available")),
             "account_status": account_status,

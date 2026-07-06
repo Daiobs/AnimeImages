@@ -60,6 +60,11 @@ from .services.common import (
     encode_url,
     validate_media_url,
 )
+from .services.env_config import (
+    runtime_bool as env_runtime_bool,
+    runtime_float as env_runtime_float,
+    runtime_int as env_runtime_int,
+)
 from .services.download_tasks import (
     create_download_task,
     get_download_task,
@@ -1536,7 +1541,7 @@ def run_provider_health_test(request, item):
             )
 
         if item["key"] == "tiantianjiexi_account_status":
-            if not getattr(settings, "TIANTIANJIEXI_PROVIDER_ENABLED", False):
+            if not env_runtime_bool("TIANTIANJIEXI_PROVIDER_ENABLED", False):
                 return record(
                     ProviderHealthTestStatus.UNAVAILABLE,
                     error_type="CapabilityDisabled",
@@ -1597,8 +1602,8 @@ def run_provider_health_test(request, item):
         if item["key"] == "douyin_tiantianjiexi_ultra":
             if not (
                 getattr(settings, "ULTRA_HD_PROVIDER_ENABLED", False)
-                and getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False)
-                and getattr(settings, "TIANTIANJIEXI_PROVIDER_ENABLED", False)
+                and env_runtime_bool("THIRD_PARTY_PROVIDER_ENABLED", False)
+                and env_runtime_bool("TIANTIANJIEXI_PROVIDER_ENABLED", False)
             ):
                 return record(
                     ProviderHealthTestStatus.UNAVAILABLE,
@@ -1654,7 +1659,7 @@ def run_provider_health_test(request, item):
             )
 
         if item["key"] == "third_party_ytdlp":
-            if not getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False):
+            if not env_runtime_bool("THIRD_PARTY_PROVIDER_ENABLED", False):
                 return record(
                     ProviderHealthTestStatus.UNAVAILABLE,
                     error_type="CapabilityDisabled",
@@ -1677,7 +1682,7 @@ def run_provider_health_test(request, item):
             )
 
         if item["key"] == "gallery_dl":
-            if not getattr(settings, "GALLERYDL_PROVIDER_ENABLED", False):
+            if not env_runtime_bool("GALLERYDL_PROVIDER_ENABLED", False):
                 return record(
                     ProviderHealthTestStatus.UNAVAILABLE,
                     error_type="CapabilityDisabled",
@@ -1701,8 +1706,8 @@ def run_provider_health_test(request, item):
 
         if item["key"] == "third_party_tiantianjiexi":
             if not (
-                getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False)
-                and getattr(settings, "TIANTIANJIEXI_PROVIDER_ENABLED", False)
+                env_runtime_bool("THIRD_PARTY_PROVIDER_ENABLED", False)
+                and env_runtime_bool("TIANTIANJIEXI_PROVIDER_ENABLED", False)
             ):
                 return record(
                     ProviderHealthTestStatus.UNAVAILABLE,
@@ -3714,21 +3719,21 @@ def batch_parse_user_is_staff(request):
 
 def batch_parse_access_allowed(request):
     return batch_parse_user_is_staff(request) or bool(
-        getattr(settings, "BATCH_PARSE_PUBLIC_ENABLED", False)
+        env_runtime_bool("BATCH_PARSE_PUBLIC_ENABLED", False)
     )
 
 
 def batch_parse_max_links(request):
-    global_max = max(1, int(getattr(settings, "BATCH_PARSE_MAX_LINKS", 20) or 20))
+    global_max = max(1, env_runtime_int("BATCH_PARSE_MAX_LINKS", 20))
     if batch_parse_user_is_staff(request):
         staff_max = max(
             1,
-            int(getattr(settings, "BATCH_PARSE_STAFF_MAX_LINKS", global_max) or global_max),
+            env_runtime_int("BATCH_PARSE_STAFF_MAX_LINKS", global_max),
         )
         return min(global_max, staff_max)
     public_max = max(
         1,
-        int(getattr(settings, "BATCH_PARSE_PUBLIC_MAX_LINKS", 3) or 3),
+        env_runtime_int("BATCH_PARSE_PUBLIC_MAX_LINKS", 3),
     )
     return min(global_max, public_max)
 
@@ -3736,14 +3741,14 @@ def batch_parse_max_links(request):
 def batch_parse_total_timeout_seconds():
     return max(
         1.0,
-        float(getattr(settings, "BATCH_PARSE_TOTAL_TIMEOUT_SECONDS", 30.0) or 30.0),
+        env_runtime_float("BATCH_PARSE_TOTAL_TIMEOUT_SECONDS", 30.0),
     )
 
 
 def batch_parse_per_link_timeout_seconds():
     return max(
         0.5,
-        float(getattr(settings, "BATCH_PARSE_PER_LINK_TIMEOUT_SECONDS", 8.0) or 8.0),
+        env_runtime_float("BATCH_PARSE_PER_LINK_TIMEOUT_SECONDS", 8.0),
     )
 
 
@@ -3754,28 +3759,28 @@ def batch_parse_rate_limit_results(request, link_count):
         consume_fixed_window(
             "batch-parse-minute-ip",
             identity,
-            getattr(settings, "BATCH_PARSE_MINUTE_IP_LIMIT", 3),
+            env_runtime_int("BATCH_PARSE_MINUTE_IP_LIMIT", 3),
             60,
             amount=amount,
         ),
         consume_fixed_window(
             "batch-parse-global-minute",
             "global",
-            getattr(settings, "BATCH_PARSE_GLOBAL_MINUTE_LIMIT", 30),
+            env_runtime_int("BATCH_PARSE_GLOBAL_MINUTE_LIMIT", 30),
             60,
             amount=amount,
         ),
         consume_daily(
             "batch-parse-daily-ip",
             identity,
-            getattr(settings, "BATCH_PARSE_DAILY_IP_LIMIT", 20),
+            env_runtime_int("BATCH_PARSE_DAILY_IP_LIMIT", 20),
             amount=amount,
         ),
     )
 
 
 def split_batch_links(value, max_links=None):
-    max_links = max(1, int(max_links or getattr(settings, "BATCH_PARSE_MAX_LINKS", 20) or 20))
+    max_links = max(1, int(max_links or env_runtime_int("BATCH_PARSE_MAX_LINKS", 20) or 20))
     links = []
     seen = set()
     for raw_line in str(value or "").splitlines():
@@ -3919,7 +3924,7 @@ def batch_parse_view(request):
             "rows": rows,
             "max_links": max_links,
             "batch_error": batch_error,
-            "batch_staff_only": not bool(getattr(settings, "BATCH_PARSE_PUBLIC_ENABLED", False)),
+            "batch_staff_only": not env_runtime_bool("BATCH_PARSE_PUBLIC_ENABLED", False),
             "batch_direct_links_allowed": batch_parse_user_is_staff(request),
             "prefer_ultra_hd": prefer_ultra_hd,
             "prefer_youtube_merge": prefer_youtube_merge,

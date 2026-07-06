@@ -22,6 +22,7 @@ from ..assets import MediaAsset, ParseResult
 from ..candidates import MediaCandidate
 from ..common import XhsProviderTimeoutError, validate_external_url
 from ..diagnostics import select_best_media_candidate
+from ..env_config import runtime_bool
 from ..provider_settings import get_platform_provider_settings
 from ..provider_manifest import build_provider_manifest_token
 from .douyin_kukutool import DouyinKukuToolProvider
@@ -1674,7 +1675,7 @@ def build_douyin_result_providers(provider_settings=None, prefer_ultra_hd=True):
     else:
         configured_order = tuple(provider_settings.provider_order or ())
         if (
-            getattr(settings, "DOUYIN_ULTRA_RACE_ENABLED", True)
+            runtime_bool("DOUYIN_ULTRA_RACE_ENABLED", True)
             and "tiantianjiexi" in configured_order
             and "kukutool" in configured_order
             and provider_settings.provider_is_enabled("tiantianjiexi")

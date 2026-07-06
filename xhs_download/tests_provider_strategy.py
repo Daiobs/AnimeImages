@@ -351,7 +351,11 @@ class TianTianJieXiHealthHardeningTests(TestCase):
         request = self.build_request()
         item = provider_health_test_by_key("tiantianjiexi_account_status")
 
-        with override_settings(TIANTIANJIEXI_PROVIDER_ENABLED=True):
+        with override_settings(
+            TIANTIANJIEXI_PROVIDER_ENABLED=True,
+            TIANTIANJIEXI_PHONE="phone",
+            TIANTIANJIEXI_PASSWORD="password",
+        ):
             with patch.object(
                 TianTianJieXiGenericProvider,
                 "query_account_status",
@@ -573,6 +577,7 @@ class TianTianJieXiHealthHardeningTests(TestCase):
 class DouyinUltraRaceSettingsTests(SimpleTestCase):
     @override_settings(
         DOUYIN_ULTRA_RACE_ENABLED=True,
+        THIRD_PARTY_PROVIDER_ENABLED=True,
         TIANTIANJIEXI_PROVIDER_ENABLED=True,
         TIANTIANJIEXI_PHONE="phone",
         TIANTIANJIEXI_PASSWORD="password",
@@ -602,6 +607,7 @@ class DouyinUltraRaceSettingsTests(SimpleTestCase):
 
     @override_settings(
         DOUYIN_ULTRA_RACE_ENABLED=False,
+        THIRD_PARTY_PROVIDER_ENABLED=True,
         TIANTIANJIEXI_PROVIDER_ENABLED=True,
         TIANTIANJIEXI_PHONE="phone",
         TIANTIANJIEXI_PASSWORD="password",
@@ -624,6 +630,7 @@ class DouyinUltraRaceSettingsTests(SimpleTestCase):
 
     @override_settings(
         DOUYIN_ULTRA_RACE_ENABLED=True,
+        THIRD_PARTY_PROVIDER_ENABLED=True,
         TIANTIANJIEXI_PROVIDER_ENABLED=False,
         TIANTIANJIEXI_PHONE="",
         TIANTIANJIEXI_PASSWORD="",
@@ -643,6 +650,12 @@ class DouyinUltraRaceSettingsTests(SimpleTestCase):
         self.assertIsInstance(providers[-1], DouyinNativeProvider)
 
 
+@override_settings(
+    THIRD_PARTY_PROVIDER_ENABLED=True,
+    TIANTIANJIEXI_PROVIDER_ENABLED=True,
+    TIANTIANJIEXI_PHONE="phone",
+    TIANTIANJIEXI_PASSWORD="password",
+)
 class DouyinUltraRaceBudgetTests(SimpleTestCase):
     class Adapter:
         platform_id = "douyin"
