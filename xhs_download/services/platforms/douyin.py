@@ -923,6 +923,7 @@ class DouyinAdapter(BasePlatformAdapter):
         )
         context.client_country_code = client_country_code
 
+        last_timeout_error = None
         for provider in self.get_result_providers(prefer_ultra_hd=prefer_ultra_hd):
             provider_started_at = time()
             try:
@@ -942,8 +943,20 @@ class DouyinAdapter(BasePlatformAdapter):
                         },
                     )
                     return result
-            except XhsProviderTimeoutError:
-                raise
+            except XhsProviderTimeoutError as error:
+                last_timeout_error = error
+                logger.info(
+                    "douyin_provider_failed",
+                    extra={
+                        "provider": getattr(provider, "name", type(provider).__name__),
+                        "aweme_id": context.aweme_id,
+                        "error_type": type(error).__name__,
+                        "error": str(error),
+                        "duration_ms": int((time() - provider_started_at) * 1000),
+                        "prefer_ultra_hd": prefer_ultra_hd,
+                    },
+                )
+                continue
             except Exception as error:
                 logger.info(
                     "douyin_provider_failed",
@@ -965,6 +978,8 @@ class DouyinAdapter(BasePlatformAdapter):
             return context.direct_result
         if context.direct_error:
             raise context.direct_error
+        if last_timeout_error:
+            raise last_timeout_error
 
         return ParseResult(
             platform=self.platform_id,

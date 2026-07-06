@@ -462,13 +462,20 @@ class TianTianJieXiGenericProvider:
             concurrency_acquired = True
 
             attempts = max(1, int(getattr(settings, "TIANTIANJIEXI_RETRIES", 2) or 1))
+            deadline = time.monotonic() + max(0.1, timeout_seconds)
             last_error = None
             for attempt in range(attempts):
                 try:
-                    payload = self.client.parse_url(url, timeout_seconds=min(
-                        max(0.1, timeout_seconds),
-                        float(getattr(settings, "TIANTIANJIEXI_TIMEOUT_SECONDS", 15) or 15),
-                    ))
+                    remaining_timeout = deadline - time.monotonic()
+                    if remaining_timeout <= 0:
+                        raise XhsProviderTimeoutError("天天解析接口超时")
+                    payload = self.client.parse_url(
+                        url,
+                        timeout_seconds=min(
+                            max(0.1, remaining_timeout),
+                            float(getattr(settings, "TIANTIANJIEXI_TIMEOUT_SECONDS", 15) or 15),
+                        ),
+                    )
                     if not isinstance(payload, dict):
                         raise TianTianJieXiApiError("天天解析返回格式无效")
                     self.cache_payload(source_key, payload)

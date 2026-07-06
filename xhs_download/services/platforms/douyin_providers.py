@@ -721,13 +721,29 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             return None
 
         parse_started_at = time()
+        remaining_budget = self.remaining_budget(
+            context,
+            self.provider_settings.ultra_total_timeout_seconds,
+        )
+        fallback_grace = (
+            max(
+                self.provider_settings.ultra_kukutool_grace_seconds,
+                self.provider_settings.kukutool_sidecar_timeout_seconds,
+            )
+            if self.provider_settings.provider_is_enabled("kukutool")
+            else 0
+        )
+        provider_budget = (
+            max(0.1, remaining_budget - fallback_grace)
+            if remaining_budget > fallback_grace
+            else remaining_budget
+        )
         timeout_seconds = min(
             max(0.1, self.provider_settings.ultra_total_timeout_seconds),
-            self.remaining_budget(
-                context,
-                self.provider_settings.ultra_total_timeout_seconds,
-            ),
+            provider_budget,
         )
+        if timeout_seconds <= 0:
+            raise XhsProviderTimeoutError("天天解析接口超时")
         payload = self.provider.parse(source_url, timeout_seconds=timeout_seconds)
         candidates = self.build_candidates(payload, adapter)
         if not candidates:

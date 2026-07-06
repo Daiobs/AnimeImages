@@ -1645,6 +1645,37 @@ class TianTianJieXiProviderTests(TestCase):
         TIANTIANJIEXI_PROVIDER_ENABLED=True,
         TIANTIANJIEXI_PHONE="13800000000",
         TIANTIANJIEXI_PASSWORD="secret",
+        TIANTIANJIEXI_FAILURE_CACHE_TTL_SECONDS=60,
+        TIANTIANJIEXI_RETRIES=2,
+    )
+    @patch(
+        "xhs_download.services.platforms.tiantianjiexi_generic.time.monotonic",
+        side_effect=(100.0, 101.0, 106.0),
+    )
+    def test_tiantianjiexi_timeout_budget_is_total_not_per_attempt(self, _mock_monotonic):
+        class TimeoutClient:
+            calls = 0
+            seen_timeouts = []
+
+            def parse_url(self, url, timeout_seconds=None):
+                self.calls += 1
+                self.seen_timeouts.append(timeout_seconds)
+                raise XhsProviderTimeoutError("timeout")
+
+        client = TimeoutClient()
+        provider = TianTianJieXiGenericProvider(client=client)
+
+        with self.assertRaises(XhsProviderTimeoutError):
+            provider.parse(self.source_url, timeout_seconds=5)
+
+        self.assertEqual(client.calls, 1)
+        self.assertEqual(client.seen_timeouts, [4.0])
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="13800000000",
+        TIANTIANJIEXI_PASSWORD="secret",
     )
     def test_tiantianjiexi_circuit_open_skips_api(self):
         class CountingClient:
@@ -2140,6 +2171,43 @@ class DouyinAdapterTests(SimpleTestCase):
         self.assertEqual(result.assets[0].quality_label, "4K")
         self.assertEqual(result.metadata["selected_provider"], "tiantianjiexi")
         self.assertTrue(result.assets[0].provider_manifest_token)
+
+    @patch("xhs_download.services.platforms.douyin.build_douyin_result_providers")
+    def test_douyin_adapter_falls_back_when_tiantianjiexi_times_out(self, mock_providers):
+        class TimeoutProvider:
+            name = "tiantianjiexi"
+
+            def parse(self, adapter, context):
+                raise XhsProviderTimeoutError("天天解析接口超时")
+
+        class SuccessProvider:
+            name = "kukutool"
+
+            def parse(self, adapter, context):
+                return ParseResult(
+                    platform="douyin",
+                    post_type="video",
+                    base_filename="fallback",
+                    assets=(
+                        MediaAsset(
+                            media_type="video",
+                            url="https://v11-default.365yg.com/fallback.mp4",
+                            platform="douyin",
+                            provider="kukutool",
+                        ),
+                    ),
+                    metadata={"selected_provider": "kukutool"},
+                )
+
+        mock_providers.return_value = (TimeoutProvider(), SuccessProvider())
+
+        result = DouyinAdapter().parse_url(
+            "https://www.douyin.com/video/7643011784572403387",
+            prefer_ultra_hd=True,
+        )
+
+        self.assertEqual(result.metadata["selected_provider"], "kukutool")
+        self.assertEqual(result.assets[0].url, "https://v11-default.365yg.com/fallback.mp4")
 
     def test_douyin_provider_builder_uses_fast_native_path_without_request_switch(self):
         providers = build_douyin_result_providers(
