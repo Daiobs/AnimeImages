@@ -1,6 +1,13 @@
 (function () {
     const SETTINGS_KEY = "xhsDownloadSettings";
     const MAX_IMAGE_RETRIES = 3;
+    const PROVIDER_BROWSER_BLOB_PROVIDERS = new Set([
+        "kukutool",
+        "tiantianjiexi",
+        "kukutool_generic",
+        "tiantianjiexi_generic",
+    ]);
+    const PROVIDER_BROWSER_BLOB_MAX_BYTES = 1024 * 1024 * 1024;
 
     function getCookie(name) {
         let cookieValue = null;
@@ -73,6 +80,11 @@
             provider_resource_id: card.dataset.providerResourceId || "",
             provider_cache_key: card.dataset.providerCacheKey || "",
             provider_manifest_token: card.dataset.providerManifestToken || "",
+            download_strategy: card.dataset.downloadStrategy || "",
+            fallback_strategy: card.dataset.fallbackStrategy || "",
+            cors_expected: card.dataset.corsExpected === "true",
+            requires_merge: card.dataset.requiresMerge === "true",
+            requires_cookie: card.dataset.requiresCookie === "true",
         };
 
         if (type === "video") {
@@ -753,8 +765,42 @@
             return `${item.provider || "native"}:${identity}`;
         }
 
+        function directRouteNeedsServerFallback(items) {
+            if (!directRouteShouldUseNativeBrowserDownload(items)) {
+                return false;
+            }
+
+            const item = (items || []).find((candidate) => candidate && candidate.url) || {};
+            if (String(item.download_strategy || "").toLowerCase() === "browser_blob") {
+                return true;
+            }
+            return PROVIDER_BROWSER_BLOB_PROVIDERS.has(String(item.provider || "").toLowerCase());
+        }
+
+        function directRouteCanUseProviderBlobDownload(items) {
+            if (!directRouteNeedsServerFallback(items)) {
+                return false;
+            }
+
+            const item = (items || []).find((candidate) => candidate && candidate.url) || {};
+            const url = String(item.url || "");
+            const sizeBytes = Number.parseInt(item.size_bytes || item.sizeBytes || "0", 10) || 0;
+            return (
+                /^https?:\/\//i.test(url)
+                && (!sizeBytes || sizeBytes <= PROVIDER_BROWSER_BLOB_MAX_BYTES)
+            );
+        }
+
         function directRouteRetryHint() {
             return "如果浏览器拦截、只打开直链或未开始下载，请再次点击下载，系统会改用服务器单文件下载。";
+        }
+
+        function submitAutomaticServerSingleFallback(payload) {
+            const fallbackPayload = {
+                ...payload,
+                download_mode: "server_single",
+            };
+            submitBrowserManagedServerDownload(fallbackPayload);
         }
 
         async function writeResponseToFileWithProgress(response, fileHandle, startPercent, endPercent) {
@@ -852,6 +898,12 @@
                 filenames.push(await downloadDirectItem(directItems[index], index, directItems.length));
             }
             return filenames;
+        }
+
+        async function downloadProviderBlobRouteItems(items) {
+            setProgressPending("浏览器下载");
+            setStatus(getStatusElement(), "正在通过浏览器直连下载 Provider 源文件...");
+            return downloadDirectRouteItems(items);
         }
 
         async function postDownloadPayload(payload) {
@@ -1026,10 +1078,47 @@
                         && routePreview.status === "routed"
                         && routePreview.route_type === "direct"
                     ) {
+                        const previewItems = routePreview.items || [];
+                        if (directRouteCanUseProviderBlobDownload(previewItems)) {
+                            try {
+                                const filenames = await downloadProviderBlobRouteItems(previewItems);
+                                setProgress(100);
+                                setStatus(
+                                    getStatusElement(),
+                                    `${routePreview.route_reason || "已通过浏览器直连保存 Provider 源文件"}：${filenames.join("、")}${routeWarningText(routePreview.warnings)}`,
+                                    "text-success",
+                                );
+                            } catch (directError) {
+                                if (directError && directError.name === "AbortError") {
+                                    throw directError;
+                                }
+                                console.warn("Provider browser blob download failed, falling back to server single attachment", directError);
+                                setProgressPending("服务端处理");
+                                setStatus(
+                                    getStatusElement(),
+                                    `浏览器直连下载不可用，正在切换服务器单文件下载...${routeWarningText(routePreview.warnings)}`,
+                                    "text-muted",
+                                );
+                                submitAutomaticServerSingleFallback(payload);
+                            }
+                            return;
+                        }
                         const handoffKey = directRouteHandoffKey(routePreview.items || []);
                         if (handoffKey && !directHandoffAttemptKeys.has(handoffKey)) {
                             directHandoffAttemptKeys.add(handoffKey);
-                            const filenames = handoffDirectRouteItemsToBrowser(routePreview.items || []);
+                            const filenames = handoffDirectRouteItemsToBrowser(previewItems);
+                            if (directRouteNeedsServerFallback(previewItems)) {
+                                setProgressPending("浏览器下载");
+                                setStatus(
+                                    getStatusElement(),
+                                    `${routePreview.route_reason || "已尝试交给浏览器下载管理器"}：${filenames.join("、")}。若浏览器未直接开始下载，正在自动切换服务器单文件下载...${routeWarningText(routePreview.warnings)}`,
+                                    "text-muted",
+                                );
+                                window.setTimeout(() => {
+                                    submitAutomaticServerSingleFallback(payload);
+                                }, 800);
+                                return;
+                            }
                             setProgress(100);
                             setStatus(
                                 getStatusElement(),
@@ -1079,10 +1168,47 @@
                     setProgress(0);
                     const data = await response.json();
                     if (data.status === "routed" && data.route_type === "direct") {
-                        const handoffKey = directRouteHandoffKey(data.items || []);
+                        const directItems = data.items || [];
+                        if (directRouteCanUseProviderBlobDownload(directItems)) {
+                            try {
+                                const filenames = await downloadProviderBlobRouteItems(directItems);
+                                setProgress(100);
+                                setStatus(
+                                    getStatusElement(),
+                                    `${data.route_reason || "已通过浏览器直连保存 Provider 源文件"}：${filenames.join("、")}${routeWarningText(data.warnings)}`,
+                                    "text-success",
+                                );
+                            } catch (directError) {
+                                if (directError && directError.name === "AbortError") {
+                                    throw directError;
+                                }
+                                console.warn("Provider browser blob download failed, falling back to server single attachment", directError);
+                                setProgressPending("服务端处理");
+                                setStatus(
+                                    getStatusElement(),
+                                    `浏览器直连下载不可用，正在切换服务器单文件下载...${routeWarningText(data.warnings)}`,
+                                    "text-muted",
+                                );
+                                submitAutomaticServerSingleFallback(payload);
+                            }
+                            return;
+                        }
+                        const handoffKey = directRouteHandoffKey(directItems);
                         if (handoffKey && !directHandoffAttemptKeys.has(handoffKey)) {
                             directHandoffAttemptKeys.add(handoffKey);
-                            const filenames = handoffDirectRouteItemsToBrowser(data.items || []);
+                            const filenames = handoffDirectRouteItemsToBrowser(directItems);
+                            if (directRouteNeedsServerFallback(directItems)) {
+                                setProgressPending("浏览器下载");
+                                setStatus(
+                                    getStatusElement(),
+                                    `${data.route_reason || "已尝试交给浏览器下载管理器"}：${filenames.join("、")}。若浏览器未直接开始下载，正在自动切换服务器单文件下载...${routeWarningText(data.warnings)}`,
+                                    "text-muted",
+                                );
+                                window.setTimeout(() => {
+                                    submitAutomaticServerSingleFallback(payload);
+                                }, 800);
+                                return;
+                            }
                             setProgress(100);
                             setStatus(
                                 getStatusElement(),

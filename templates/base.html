@@ -47,6 +47,11 @@
                    href="{% url 'bilibili_home' %}">
                     哔哩哔哩
                 </a>
+                <a class="site-nav-link {% if request.resolver_match.url_name == 'batch_parse' %}active{% endif %}"
+                   data-nav-platform-key="batch"
+                   href="{% url 'batch_parse' %}">
+                    批量解析
+                </a>
             </div>
         </div>
 

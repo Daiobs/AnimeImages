@@ -605,6 +605,11 @@ class YouTubeMergePlannerTests(SimpleTestCase):
         mock_download.assert_not_called()
 
 
+@override_settings(
+    TIANTIANJIEXI_PROVIDER_ENABLED=False,
+    TIANTIANJIEXI_PHONE="",
+    TIANTIANJIEXI_PASSWORD="",
+)
 class GenericThirdPartyProviderTests(SimpleTestCase):
     def setUp(self):
         cache.clear()
@@ -1256,7 +1261,7 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=True,
         YTDLP_PROVIDER_ENABLED=True,
     )
-    def test_generic_third_party_respects_rule_provider_order(self):
+    def test_generic_third_party_uses_youtube_provider_order(self):
         provider = Mock()
         ytdlp_provider = Mock()
         ytdlp_provider.parse.return_value = {

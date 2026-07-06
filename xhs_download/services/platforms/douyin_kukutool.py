@@ -1033,10 +1033,18 @@ def call_kukutool_runner(runner, aweme_id, **options):
 class DouyinKukuToolProvider:
     name = "kukutool"
 
-    def __init__(self, provider_settings=None, runner=None, quality_probe=None):
+    def __init__(
+        self,
+        provider_settings=None,
+        runner=None,
+        quality_probe=None,
+        *,
+        suppress_selected_log=False,
+    ):
         self.provider_settings = provider_settings or get_platform_provider_settings("douyin")
         self.runner = runner or run_kukutool_upstream
         self.quality_probe = quality_probe
+        self.suppress_selected_log = bool(suppress_selected_log)
 
     def remaining_budget(self, context, fallback):
         if not context.deadline_monotonic:
@@ -1540,17 +1548,18 @@ class DouyinKukuToolProvider:
             kukutool_object_key=validated.object_key,
             kukutool_signed_url_expires_at=validated.signed_url_expires_at,
         )
-        log_provider_event(
-            "douyin_provider_selected",
-            self.name,
-            context,
-            parse_started_at,
-            fallback_reason="kukutool_validated",
-            selected_size_bytes=validated.candidate.size_bytes,
-            candidate_count=validated.candidate_count,
-            cache_hit=validated.cache_hit,
-            probe_duration_ms=validated.probe_duration_ms,
-        )
+        if not self.suppress_selected_log:
+            log_provider_event(
+                "douyin_provider_selected",
+                self.name,
+                context,
+                parse_started_at,
+                fallback_reason="kukutool_validated",
+                selected_size_bytes=validated.candidate.size_bytes,
+                candidate_count=validated.candidate_count,
+                cache_hit=validated.cache_hit,
+                probe_duration_ms=validated.probe_duration_ms,
+            )
         return result
 
     def get_finished_native_result(self, native_future, context):

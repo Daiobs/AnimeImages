@@ -25,8 +25,13 @@ SERVER_SIDE_PROVIDERS = {
     "yt_dlp_merge",
 }
 BROWSER_DIRECT_VIDEO_PROVIDERS = set()
+BROWSER_FIRST_VIDEO_PROVIDERS = {
+    "kukutool",
+    "tiantianjiexi",
+}
 SERVER_PROXY_VIDEO_PROVIDERS = {
     "kukutool",
+    "tiantianjiexi",
 }
 MOBILE_USER_AGENT_MARKERS = (
     "android",
@@ -67,6 +72,10 @@ def item_provider(item):
 
 def item_is_kukutool_video(item):
     return item_provider(item) == "kukutool" and item_is_video(item)
+
+
+def item_is_browser_first_provider_video(item):
+    return item_provider(item) in BROWSER_FIRST_VIDEO_PROVIDERS and item_is_video(item)
 
 
 def item_is_image(item):
@@ -216,7 +225,7 @@ def single_video_can_browser_direct_attempt(item):
 def single_video_prefers_browser_direct(item, runtime_setting=None):
     if single_video_can_browser_direct_attempt(item):
         return True
-    if not isinstance(item, dict) or not item_is_kukutool_video(item):
+    if not isinstance(item, dict) or not item_is_browser_first_provider_video(item):
         return False
     if not is_http_url(item_url(item)):
         return False
@@ -420,7 +429,7 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
         if single_video_prefers_browser_direct(normalized_items[0]):
             return route_payload(
                 route_type=ROUTE_DIRECT,
-                route_reason="KuKuTool 视频优先交给浏览器下载管理器，减少服务器中转等待",
+                route_reason="Provider 视频优先交给浏览器下载管理器，减少服务器中转等待",
                 download_strategy="browser_direct_provider_video",
                 media_items=normalized_items,
                 estimated_bytes=estimated_bytes,
@@ -438,7 +447,7 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
         if single_video_can_server_proxy_download(normalized_items[0]):
             return route_payload(
                 route_type=ROUTE_PROXY,
-                route_reason="KuKuTool 视频使用服务器单文件下载，避免浏览器直链拦截或签名 URL 失效",
+                route_reason="Provider 视频使用服务器单文件下载，避免浏览器直链拦截或签名 URL 失效",
                 download_strategy="server_single_attachment",
                 media_items=normalized_items,
                 estimated_bytes=estimated_bytes,

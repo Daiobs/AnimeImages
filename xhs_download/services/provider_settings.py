@@ -2,6 +2,9 @@ from dataclasses import dataclass
 
 from django.conf import settings
 
+from .env_config import runtime_bool as env_runtime_bool
+from .env_config import runtime_list as env_runtime_list
+from .env_config import runtime_str as env_runtime_str
 from .provider_runtime_config import load_provider_runtime_setting_readonly, runtime_float
 
 
@@ -56,6 +59,14 @@ class ProviderSettings:
             return self.ultra_hd_enabled
         if name == "kukutool":
             return self.ultra_hd_enabled and self.kukutool_enabled
+        if name == "tiantianjiexi":
+            return bool(
+                self.ultra_hd_enabled
+                and env_runtime_bool("THIRD_PARTY_PROVIDER_ENABLED", False)
+                and env_runtime_bool("TIANTIANJIEXI_PROVIDER_ENABLED", False)
+                and env_runtime_str("TIANTIANJIEXI_PHONE")
+                and env_runtime_str("TIANTIANJIEXI_PASSWORD")
+            )
         if name == "tikhub":
             return self.ultra_hd_enabled and bool(self.tikhub_api_key)
         return self.ultra_hd_enabled
@@ -91,7 +102,10 @@ def get_platform_provider_settings(platform_id):
     platform_id = normalize_provider_name(platform_id)
     runtime_setting = load_provider_runtime_setting_readonly()
     if platform_id == "douyin":
-        raw_order = ("kukutool", "native")
+        raw_order = env_runtime_list(
+            "DOUYIN_ULTRA_PROVIDER_ORDER",
+            ("tiantianjiexi", "kukutool", "native"),
+        )
     elif platform_id in {"xiaohongshu", "xhs"}:
         raw_order = getattr(settings, "XHS_PROVIDER_ORDER", ("native",))
     else:

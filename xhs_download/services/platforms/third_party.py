@@ -13,10 +13,15 @@ from ..common import (
     host_matches,
     is_blocked_hostname,
 )
+from ..env_config import runtime_bool, runtime_list, runtime_str
 from ..provider_runtime_config import runtime_float
 from .base import BasePlatformAdapter, PlatformCapabilities, ProviderPolicy
 from .gallerydl_generic import GalleryDlGenericProvider, GalleryDlResultNormalizer
 from .kukutool_generic import KukutoolGenericProvider, KukutoolResultNormalizer
+from .tiantianjiexi_generic import (
+    TianTianJieXiGenericProvider,
+    TianTianJieXiResultNormalizer,
+)
 from .ytdlp_generic import YtDlpGenericProvider, YtDlpResultNormalizer
 from .ytdlp_merge import (
     PROVIDER_ID as YTDLP_MERGE_PROVIDER_ID,
@@ -55,6 +60,7 @@ class ThirdPartyPlatformRule:
     media_types: tuple[str, ...] = ("image", "video")
     provider_ids: tuple[str, ...] = (
         "kukutool_generic",
+        "tiantianjiexi_generic",
         "yt_dlp_generic",
         "gallery_dl_generic",
     )
@@ -130,7 +136,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="YouTube",
         host_suffixes=("youtube.com", "youtu.be"),
         media_types=("video",),
-        provider_ids=("yt_dlp_generic", "kukutool_generic"),
+        provider_ids=("yt_dlp_generic", "kukutool_generic", "tiantianjiexi_generic"),
         media_host_suffixes=("googlevideo.com", "ytimg.com"),
         image_media_host_suffixes=("ytimg.com",),
         video_media_host_suffixes=("googlevideo.com",),
@@ -151,7 +157,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="Imgur",
         host_suffixes=("imgur.com",),
         media_types=("image", "video"),
-        provider_ids=("kukutool_generic", "gallery_dl_generic"),
+        provider_ids=("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
         media_host_suffixes=("imgur.com",),
         risk_level=RISK_NORMAL,
         notes="图片/动图平台，公开仍需后台 allowlist。",
@@ -161,7 +167,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="Reddit",
         host_suffixes=("reddit.com", "redd.it"),
         media_types=("image",),
-        provider_ids=("kukutool_generic", "gallery_dl_generic"),
+        provider_ids=("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
         media_host_suffixes=("redd.it", "redditmedia.com"),
         risk_level=RISK_SENSITIVE,
         notes="社区内容风险较高，默认不公开。",
@@ -171,7 +177,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="Tumblr",
         host_suffixes=("tumblr.com",),
         media_types=("image",),
-        provider_ids=("kukutool_generic", "gallery_dl_generic"),
+        provider_ids=("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
         media_host_suffixes=("tumblr.com",),
         risk_level=RISK_SENSITIVE,
         notes="社区内容风险较高，默认不公开。",
@@ -181,7 +187,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="Flickr",
         host_suffixes=("flickr.com",),
         media_types=("image",),
-        provider_ids=("kukutool_generic", "gallery_dl_generic"),
+        provider_ids=("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
         media_host_suffixes=("staticflickr.com",),
         risk_level=RISK_SAFE,
         notes="图片平台，可作为公开灰度候选，但仍必须命中后台 allowlist。",
@@ -191,7 +197,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="DeviantArt",
         host_suffixes=("deviantart.com",),
         media_types=("image",),
-        provider_ids=("kukutool_generic", "gallery_dl_generic"),
+        provider_ids=("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
         media_host_suffixes=("wixmp.com", "deviantart.net"),
         risk_level=RISK_SENSITIVE,
         notes="社区内容风险较高，默认不公开。",
@@ -408,11 +414,69 @@ def provider_is_enabled(provider_id):
         return bool(
             getattr(settings, "THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED", False)
         )
+    if provider_id == "tiantianjiexi_generic":
+        return bool(
+            runtime_bool("TIANTIANJIEXI_PROVIDER_ENABLED", False)
+            and runtime_str("TIANTIANJIEXI_PHONE")
+            and runtime_str("TIANTIANJIEXI_PASSWORD")
+        )
     if provider_id == "gallery_dl_generic":
         return bool(getattr(settings, "GALLERYDL_PROVIDER_ENABLED", False))
     if provider_id == "yt_dlp_generic":
         return bool(getattr(settings, "YTDLP_PROVIDER_ENABLED", False))
     return False
+
+
+def normalize_provider_id(value):
+    return str(value or "").strip().lower().replace("-", "_")
+
+
+def configured_third_party_provider_order(rule):
+    platform_id = getattr(rule, "platform_id", "")
+    if platform_id == "youtube":
+        setting_name = "THIRD_PARTY_PROVIDER_ORDER_YOUTUBE"
+        fallback_order = (
+            "yt_dlp_generic",
+            "kukutool_generic",
+            "tiantianjiexi_generic",
+        )
+    elif platform_id in {"tiktok", "kuaishou"}:
+        setting_name = "THIRD_PARTY_PROVIDER_ORDER_SHORT_VIDEO"
+        fallback_order = (
+            "kukutool_generic",
+            "tiantianjiexi_generic",
+            "yt_dlp_generic",
+            "gallery_dl_generic",
+        )
+    else:
+        setting_name = "THIRD_PARTY_PROVIDER_ORDER_DEFAULT"
+        fallback_order = (
+            "kukutool_generic",
+            "tiantianjiexi_generic",
+            "yt_dlp_generic",
+            "gallery_dl_generic",
+        )
+    configured_order = tuple(
+        normalize_provider_id(provider_id)
+        for provider_id in runtime_list(setting_name, ())
+    )
+    if not configured_order:
+        configured_order = tuple(
+            normalize_provider_id(provider_id)
+            for provider_id in runtime_list("THIRD_PARTY_PROVIDER_ORDER", ())
+        )
+    if not configured_order:
+        configured_order = fallback_order
+    allowed = tuple(getattr(rule, "provider_ids", ()) or ())
+    allowed_set = set(allowed)
+    ordered = []
+    seen = set()
+    for provider_id in configured_order:
+        if provider_id not in allowed_set or provider_id in seen:
+            continue
+        seen.add(provider_id)
+        ordered.append(provider_id)
+    return tuple(ordered)
 
 
 class GenericThirdPartyAdapter(BasePlatformAdapter):
@@ -432,13 +496,18 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         primary_provider="third_party",
         third_party_providers=(
             "kukutool_generic",
-            "gallery_dl_generic",
+            "tiantianjiexi_generic",
             "yt_dlp_generic",
+            "gallery_dl_generic",
             YOUTUBE_MERGE_PROVIDER_ID,
         ),
     )
     platform_rules = THIRD_PARTY_PLATFORM_RULES
-    parse_option_names = ("prefer_youtube_merge",)
+    parse_option_names = (
+        "prefer_youtube_merge",
+        "timeout_seconds",
+        "deadline_monotonic",
+    )
 
     def __init__(
         self,
@@ -447,6 +516,8 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         normalizer=None,
         gallerydl_provider=None,
         gallerydl_normalizer=None,
+        tiantianjiexi_provider=None,
+        tiantianjiexi_normalizer=None,
         ytdlp_provider=None,
         ytdlp_normalizer=None,
     ):
@@ -457,6 +528,13 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         self.gallerydl_provider = gallerydl_provider or GalleryDlGenericProvider()
         self.gallerydl_normalizer = gallerydl_normalizer or GalleryDlResultNormalizer(
             platform_id=self.platform_id
+        )
+        self.tiantianjiexi_provider = (
+            tiantianjiexi_provider or TianTianJieXiGenericProvider()
+        )
+        self.tiantianjiexi_normalizer = (
+            tiantianjiexi_normalizer
+            or TianTianJieXiResultNormalizer(platform_id=self.platform_id)
         )
         self.ytdlp_provider = ytdlp_provider or YtDlpGenericProvider()
         self.ytdlp_normalizer = ytdlp_normalizer or YtDlpResultNormalizer(
@@ -470,11 +548,15 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
                 self.gallerydl_provider,
                 self.gallerydl_normalizer,
             ),
+            "tiantianjiexi_generic": (
+                self.tiantianjiexi_provider,
+                self.tiantianjiexi_normalizer,
+            ),
             "yt_dlp_generic": (self.ytdlp_provider, self.ytdlp_normalizer),
         }
 
     def iter_provider_specs(self, rule, *, respect_enabled=True):
-        provider_ids = tuple(getattr(rule, "provider_ids", ()) or ())
+        provider_ids = configured_third_party_provider_order(rule)
         allowed_provider_ids = set(self.provider_policy.third_party_providers)
         specs = self.provider_specs()
         for provider_id in provider_ids:
@@ -512,18 +594,29 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
             rule.platform_id == platform_id for rule in self.platform_rules
         )
 
-    def parse_url(self, url, prefer_youtube_merge=False):
+    def parse_url(
+        self,
+        url,
+        prefer_youtube_merge=False,
+        timeout_seconds=None,
+        deadline_monotonic=None,
+    ):
         source_url = self.normalize_source_url(url)
         self.require_supported_url(source_url)
         rule = self.get_rule_for_url(source_url)
         platform_name = rule.display_name if rule else self.display_name
-        if not getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False):
+        if not runtime_bool("THIRD_PARTY_PROVIDER_ENABLED", False):
             raise XhsParseError("第三方通用解析 Provider 当前未启用。")
         providers = list(self.iter_provider_specs(rule, respect_enabled=True))
         failures = []
         attempts = []
         parse_started_at = time.monotonic()
-        deadline = parse_started_at + frontend_budget_seconds(rule)
+        if deadline_monotonic:
+            deadline = float(deadline_monotonic)
+        elif timeout_seconds is not None:
+            deadline = parse_started_at + max(0.1, float(timeout_seconds or 0))
+        else:
+            deadline = parse_started_at + frontend_budget_seconds(rule)
         if prefer_youtube_merge and getattr(rule, "platform_id", "") == "youtube":
             health = get_youtube_merge_health()
             if (

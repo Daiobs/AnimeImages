@@ -56,6 +56,7 @@ urlpatterns = [
                   path("tiktok/results/", download_views.search_results_view, {"platform_key": "tiktok"}, name="tiktok_results"),
                   path("bilibili/", download_views.search_view, {"platform_key": "bilibili"}, name="bilibili_home"),
                   path("bilibili/results/", download_views.search_results_view, {"platform_key": "bilibili"}, name="bilibili_results"),
+                  path("batch/", download_views.batch_parse_view, name="batch_parse"),
                   path("media/proxy-image/", download_views.proxy_image_view, name="media_proxy_image"),
                   path("media/download-images/", download_views.download_images_api, name="media_download_images_api"),
                   path("media/download-tasks/", download_views.create_download_task_api, name="media_download_task_create"),

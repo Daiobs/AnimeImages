@@ -11,7 +11,7 @@ from django.contrib import messages
 from django.core.paginator import Paginator
 from django.db.models import Avg, Count, Q, Sum
 from django.db.models.functions import TruncHour
-from django.http import FileResponse, HttpResponse, JsonResponse, StreamingHttpResponse
+from django.http import FileResponse, Http404, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import redirect, render
 from django.template.loader import render_to_string
 from django.utils import timezone
@@ -60,6 +60,11 @@ from .services.common import (
     encode_url,
     validate_media_url,
 )
+from .services.env_config import (
+    runtime_bool as env_runtime_bool,
+    runtime_float as env_runtime_float,
+    runtime_int as env_runtime_int,
+)
 from .services.download_tasks import (
     create_download_task,
     get_download_task,
@@ -106,8 +111,17 @@ from .services.platforms.douyin_kukutool import (
 )
 from .services.platforms.gallerydl_generic import GalleryDlGenericProvider
 from .services.platforms.kukutool_generic import KukutoolGenericProvider
-from .services.platforms.third_party import build_third_party_rollout_status
-from .services.platforms.third_party import THIRD_PARTY_PLATFORM_RULES
+from .services.platforms.douyin import DouyinAdapter
+from .services.platforms.douyin_providers import DouyinTianTianJieXiProvider
+from .services.platforms.tiantianjiexi_generic import (
+    TianTianJieXiGenericProvider,
+    TianTianJieXiResultNormalizer,
+)
+from .services.platforms.third_party import (
+    GenericThirdPartyAdapter,
+    THIRD_PARTY_PLATFORM_RULES,
+    build_third_party_rollout_status,
+)
 from .services.platforms.ytdlp_generic import YtDlpGenericProvider
 from .services.provider_access import (
     PROVIDER_DOUYIN_ULTRA,
@@ -116,6 +130,10 @@ from .services.provider_access import (
     provider_access_summary,
     provider_is_allowed_for_request,
     third_party_public_access_summary,
+)
+from .services.provider_strategy import (
+    build_download_strategy,
+    build_download_strategy_matrix,
 )
 from .services.provider_runtime_config import runtime_float
 from .services.provider_recovery import (
@@ -192,6 +210,7 @@ def paginate_admin_queryset(request, queryset, page_size=ADMIN_LOG_PAGE_SIZE):
 PREVIEW_MAX_IMAGE_BYTES = 8 * 1024 * 1024
 SIGNED_THIRD_PARTY_VIDEO_PROVIDERS = {
     "kukutool_generic",
+    "tiantianjiexi_generic",
     "gallery_dl_generic",
     "yt_dlp_generic",
     "youtube_merge",
@@ -383,7 +402,12 @@ def third_party_provider_is_available(request):
     return provider_is_allowed_for_request(PROVIDER_THIRD_PARTY, request)
 
 
-def build_third_party_provider_summary(kukutool_health, gallerydl_health, ytdlp_health):
+def build_third_party_provider_summary(
+    kukutool_health,
+    tiantianjiexi_health,
+    gallerydl_health,
+    ytdlp_health,
+):
     kukutool_enabled = bool(kukutool_health.get("provider_enabled"))
     kukutool_circuit_open = bool((kukutool_health.get("circuit") or {}).get("open"))
     provider_states = {
@@ -391,6 +415,22 @@ def build_third_party_provider_summary(kukutool_health, gallerydl_health, ytdlp_
             "enabled": kukutool_enabled,
             "ready": bool(kukutool_enabled and not kukutool_circuit_open),
             "issue": "circuit_open" if kukutool_circuit_open else "",
+        },
+        "tiantianjiexi_generic": {
+            "enabled": bool(tiantianjiexi_health.get("enabled")),
+            "ready": bool(
+                tiantianjiexi_health.get("enabled")
+                and not (tiantianjiexi_health.get("circuit") or {}).get("open")
+            ),
+            "issue": (
+                "circuit_open"
+                if (tiantianjiexi_health.get("circuit") or {}).get("open")
+                else (
+                    ""
+                    if tiantianjiexi_health.get("api_configured")
+                    else "api_not_configured"
+                )
+            ),
         },
         "gallery_dl_generic": {
             "enabled": bool(gallerydl_health.get("enabled")),
@@ -652,11 +692,13 @@ def policy_engine_view(request):
 def build_provider_dashboard_rows(runtime_setting, request):
     kukutool_health = get_kukutool_provider_health()
     third_party_health = KukutoolGenericProvider().health()
+    tiantianjiexi_health = TianTianJieXiGenericProvider().health()
     gallerydl_health = GalleryDlGenericProvider().health()
     ytdlp_health = YtDlpGenericProvider().health()
     youtube_health = get_youtube_merge_health()
     third_party_summary = build_third_party_provider_summary(
         third_party_health,
+        tiantianjiexi_health,
         gallerydl_health,
         ytdlp_health,
     )
@@ -681,17 +723,34 @@ def build_provider_dashboard_rows(runtime_setting, request):
         {
             "id": PROVIDER_DOUYIN_ULTRA,
             "name": "抖音超高清",
-            "description": "使用 KuKuTool 上游获取抖音超高清 / 4K 候选资源。",
+            "description": "优先使用天天解析，并与 KuKuTool 竞速获取抖音原画 / 超高清候选资源。",
             "mode_field": "douyin_ultra_mode",
             "rollout_field": "douyin_ultra_rollout_percent",
             "disabled_reason_field": "douyin_ultra_disabled_reason",
             "current_mode": runtime_setting.douyin_ultra_mode,
             "current_rollout_percent": runtime_setting.douyin_ultra_rollout_percent,
             "disabled_reason": runtime_setting.douyin_ultra_disabled_reason,
-            "health_ready": bool(kukutool_health.get("available")),
-            "health_label": "可用" if kukutool_health.get("available") else "不可用",
+            "health_ready": bool(
+                kukutool_health.get("available")
+                or tiantianjiexi_health.get("enabled")
+            ),
+            "health_label": (
+                "可用"
+                if (
+                    kukutool_health.get("available")
+                    or tiantianjiexi_health.get("enabled")
+                )
+                else "不可用"
+            ),
             "issue": (
-                "熔断中"
+                "天天解析和 KuKuTool 均不可用"
+                if (
+                    not tiantianjiexi_health.get("enabled")
+                    and not kukutool_health.get("available")
+                )
+                else "天天解析熔断中"
+                if (tiantianjiexi_health.get("circuit") or {}).get("open")
+                else "KuKuTool 熔断中"
                 if (kukutool_health.get("circuit") or {}).get("open")
                 else (kukutool_health.get("runtime") or {}).get("error")
                 or (kukutool_health.get("sidecar") or {}).get("error")
@@ -738,8 +797,10 @@ def build_provider_dashboard_rows(runtime_setting, request):
     ]
     return rows, {
         "kukutool": kukutool_health,
+        "tiantianjiexi": tiantianjiexi_health,
         "youtube_merge": youtube_health,
         "third_party": third_party_summary,
+        "third_party_tiantianjiexi": tiantianjiexi_health,
     }
 
 
@@ -874,14 +935,19 @@ def provider_health_view(request):
     third_party_health = KukutoolGenericProvider().health(
         source_key=request.GET.get("source_key", "")
     )
+    tiantianjiexi_health = TianTianJieXiGenericProvider().health(
+        source_key=request.GET.get("source_key", "")
+    )
     gallerydl_health = GalleryDlGenericProvider().health()
     ytdlp_health = YtDlpGenericProvider().health()
     health["third_party"] = third_party_health
+    health["third_party_tiantianjiexi"] = tiantianjiexi_health
     health["third_party_gallerydl"] = gallerydl_health
     health["third_party_ytdlp"] = ytdlp_health
     health["youtube_merge"] = get_youtube_merge_health()
     health["third_party_summary"] = build_third_party_provider_summary(
         third_party_health,
+        tiantianjiexi_health,
         gallerydl_health,
         ytdlp_health,
     )
@@ -927,14 +993,17 @@ def provider_control_view(request):
     set_kukutool_admin_disabled(action == "disable")
     health = get_kukutool_provider_health()
     third_party_health = KukutoolGenericProvider().health()
+    tiantianjiexi_health = TianTianJieXiGenericProvider().health()
     gallerydl_health = GalleryDlGenericProvider().health()
     ytdlp_health = YtDlpGenericProvider().health()
     health["third_party"] = third_party_health
+    health["third_party_tiantianjiexi"] = tiantianjiexi_health
     health["third_party_gallerydl"] = gallerydl_health
     health["third_party_ytdlp"] = ytdlp_health
     health["youtube_merge"] = get_youtube_merge_health()
     health["third_party_summary"] = build_third_party_provider_summary(
         third_party_health,
+        tiantianjiexi_health,
         gallerydl_health,
         ytdlp_health,
     )
@@ -1236,6 +1305,22 @@ PROVIDER_HEALTH_TESTS = (
         "url_field": "douyin_url",
     },
     {
+        "key": "tiantianjiexi_account_status",
+        "name": "天天解析账号状态",
+        "description": "只查询天天解析账号状态，不解析真实视频，不消耗解析额度。",
+        "provider": "tiantianjiexi_generic",
+        "provider_access_id": PROVIDER_THIRD_PARTY,
+        "url_field": "",
+    },
+    {
+        "key": "douyin_tiantianjiexi_ultra",
+        "name": "抖音天天解析超清",
+        "description": "手动调用天天解析解析抖音测试 URL，用于超清链路 smoke。",
+        "provider": "tiantianjiexi",
+        "provider_access_id": PROVIDER_DOUYIN_ULTRA,
+        "url_field": "douyin_url",
+    },
+    {
         "key": "youtube_merge",
         "name": "YouTube 高清合并",
         "description": "验证 yt-dlp + ffmpeg health，并只做候选规划，不下载大文件。",
@@ -1248,6 +1333,14 @@ PROVIDER_HEALTH_TESTS = (
         "name": "第三方 yt-dlp",
         "description": "验证通用 yt-dlp provider health，并轻量解析测试 URL。",
         "provider": "yt_dlp_generic",
+        "provider_access_id": PROVIDER_THIRD_PARTY,
+        "url_field": "third_party_url",
+    },
+    {
+        "key": "third_party_tiantianjiexi",
+        "name": "第三方天天解析",
+        "description": "手动调用天天解析解析第三方测试 URL。",
+        "provider": "tiantianjiexi_generic",
         "provider_access_id": PROVIDER_THIRD_PARTY,
         "url_field": "third_party_url",
     },
@@ -1370,6 +1463,50 @@ def provider_health_test_record(
     )
 
 
+def provider_asset_manifest_validation_error(result, allowed_providers, *, require_video=True):
+    if not result or not getattr(result, "assets", ()):
+        return "未生成 ParseResult 资源"
+    assets = tuple(result.assets or ())
+    if require_video:
+        assets = tuple(asset for asset in assets if asset.media_type == "video")
+        if not assets:
+            return "未生成视频资源"
+    matching_assets = tuple(
+        asset for asset in assets if str(asset.provider or "") in allowed_providers
+    )
+    if not matching_assets:
+        return "资源 provider 与预期不一致"
+    asset = matching_assets[0]
+    if not asset.provider_manifest_token:
+        return "资源缺少 provider_manifest_token"
+    if not asset.provider_resource_id:
+        return "资源缺少 provider_resource_id"
+    if not asset.provider_cache_key:
+        return "资源缺少 provider_cache_key"
+    item = asset.to_download_item()
+    if not provider_manifest_allows_public_download(item):
+        return "Provider manifest 未通过下载校验"
+    return ""
+
+
+def build_tiantianjiexi_third_party_parse_result(test_url, timeout_seconds=10.0):
+    adapter = GenericThirdPartyAdapter()
+    rule = adapter.get_rule_for_url(test_url)
+    if not rule:
+        raise XhsParseError("第三方测试 URL 不在支持的平台规则内")
+    payload = TianTianJieXiGenericProvider().parse(
+        test_url,
+        timeout_seconds=timeout_seconds,
+    )
+    normalizer = TianTianJieXiResultNormalizer(platform_id=adapter.platform_id)
+    return normalizer.normalize(
+        rule=rule,
+        platform_name=rule.display_name,
+        source_url=test_url,
+        payload=payload,
+    )
+
+
 def run_provider_health_test(request, item):
     started_at = time.monotonic()
     runtime_setting = ProviderRuntimeSetting.load()
@@ -1401,6 +1538,22 @@ def run_provider_health_test(request, item):
                 ProviderHealthTestStatus.UNAVAILABLE,
                 error_type="RuntimeUnavailable",
                 error_message=json.dumps(readiness.get("components", {}), ensure_ascii=False),
+            )
+
+        if item["key"] == "tiantianjiexi_account_status":
+            if not env_runtime_bool("TIANTIANJIEXI_PROVIDER_ENABLED", False):
+                return record(
+                    ProviderHealthTestStatus.UNAVAILABLE,
+                    error_type="CapabilityDisabled",
+                    error_message="TIANTIANJIEXI_PROVIDER_ENABLED 未启用",
+                )
+            health = TianTianJieXiGenericProvider().health()
+            if health.get("account_status_available"):
+                return record(ProviderHealthTestStatus.SUCCESS)
+            return record(
+                ProviderHealthTestStatus.UNAVAILABLE,
+                error_type="AccountStatusUnavailable",
+                error_message=json.dumps(health, ensure_ascii=False),
             )
 
         if not test_url:
@@ -1446,6 +1599,41 @@ def run_provider_health_test(request, item):
                 error_message="未解析到超清资源",
             )
 
+        if item["key"] == "douyin_tiantianjiexi_ultra":
+            if not (
+                getattr(settings, "ULTRA_HD_PROVIDER_ENABLED", False)
+                and env_runtime_bool("THIRD_PARTY_PROVIDER_ENABLED", False)
+                and env_runtime_bool("TIANTIANJIEXI_PROVIDER_ENABLED", False)
+            ):
+                return record(
+                    ProviderHealthTestStatus.UNAVAILABLE,
+                    error_type="CapabilityDisabled",
+                    error_message="ULTRA_HD_PROVIDER_ENABLED、THIRD_PARTY_PROVIDER_ENABLED 或 TIANTIANJIEXI_PROVIDER_ENABLED 未启用",
+                )
+            adapter = DouyinAdapter()
+            deadline = time.monotonic() + 10.0
+            context = adapter.build_parse_context(
+                test_url,
+                fetch_direct_page=not bool(adapter.supports_url(test_url)),
+                fast_short_link=True,
+                request_deadline=deadline,
+            )
+            result = DouyinTianTianJieXiProvider().parse(adapter, context)
+            validation_error = provider_asset_manifest_validation_error(
+                result,
+                {"tiantianjiexi", "tiantianjiexi_generic"},
+                require_video=True,
+            )
+            metadata = result.metadata or {} if result else {}
+            selected_provider = metadata.get("selected_provider") or metadata.get("source_provider")
+            if not validation_error and selected_provider in {"tiantianjiexi", "tiantianjiexi_generic"}:
+                return record(ProviderHealthTestStatus.SUCCESS)
+            return record(
+                ProviderHealthTestStatus.UNAVAILABLE,
+                error_type="InvalidParseResult",
+                error_message=validation_error or "天天解析 ParseResult provider 不匹配",
+            )
+
         if item["key"] == "youtube_merge":
             health = get_youtube_merge_health()
             if not (health.get("implemented") and health.get("ready")):
@@ -1471,7 +1659,7 @@ def run_provider_health_test(request, item):
             )
 
         if item["key"] == "third_party_ytdlp":
-            if not getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False):
+            if not env_runtime_bool("THIRD_PARTY_PROVIDER_ENABLED", False):
                 return record(
                     ProviderHealthTestStatus.UNAVAILABLE,
                     error_type="CapabilityDisabled",
@@ -1494,7 +1682,7 @@ def run_provider_health_test(request, item):
             )
 
         if item["key"] == "gallery_dl":
-            if not getattr(settings, "GALLERYDL_PROVIDER_ENABLED", False):
+            if not env_runtime_bool("GALLERYDL_PROVIDER_ENABLED", False):
                 return record(
                     ProviderHealthTestStatus.UNAVAILABLE,
                     error_type="CapabilityDisabled",
@@ -1514,6 +1702,33 @@ def run_provider_health_test(request, item):
                 ProviderHealthTestStatus.UNAVAILABLE,
                 error_type="EmptyPayload",
                 error_message="gallery-dl 返回空结果",
+            )
+
+        if item["key"] == "third_party_tiantianjiexi":
+            if not (
+                env_runtime_bool("THIRD_PARTY_PROVIDER_ENABLED", False)
+                and env_runtime_bool("TIANTIANJIEXI_PROVIDER_ENABLED", False)
+            ):
+                return record(
+                    ProviderHealthTestStatus.UNAVAILABLE,
+                    error_type="CapabilityDisabled",
+                    error_message="THIRD_PARTY_PROVIDER_ENABLED 或 TIANTIANJIEXI_PROVIDER_ENABLED 未启用",
+                )
+            result = build_tiantianjiexi_third_party_parse_result(
+                test_url,
+                timeout_seconds=10.0,
+            )
+            validation_error = provider_asset_manifest_validation_error(
+                result,
+                {"tiantianjiexi_generic"},
+                require_video=False,
+            )
+            if not validation_error:
+                return record(ProviderHealthTestStatus.SUCCESS)
+            return record(
+                ProviderHealthTestStatus.UNAVAILABLE,
+                error_type="InvalidParseResult",
+                error_message=validation_error,
             )
 
         return record(
@@ -2866,6 +3081,74 @@ def get_page_payload(platform_key):
     }
 
 
+def build_asset_strategy_fields(asset, result):
+    return build_download_strategy(
+        asset,
+        result_platform=getattr(result, "platform", ""),
+        result_metadata=getattr(result, "metadata", None) or {},
+    )
+
+
+def build_image_item(asset, result):
+    return {
+        **asset.to_download_item(),
+        **build_asset_strategy_fields(asset, result),
+        "type": "image",
+        "url": asset.url,
+        "encoded_url": encode_url(asset.url),
+        "encoded_preview_url": encode_url(asset.preview_url or asset.url),
+        "preview_provider_query": build_provider_preview_query(
+            asset,
+            asset.preview_url or asset.url,
+        ),
+    }
+
+
+def build_video_item(asset, result):
+    size_bytes = get_video_size_bytes(asset)
+    return {
+        **asset.to_download_item(),
+        **build_asset_strategy_fields(asset, result),
+        "type": "video",
+        "video_url": asset.url,
+        "cover_url": asset.cover_url,
+        "size_bytes": size_bytes,
+        "size_label": format_file_size(size_bytes),
+        "encoded_cover_url": encode_url(asset.cover_url) if asset.cover_url else "",
+        "encoded_preview_cover_url": (
+            encode_url(asset.cover_preview_url or asset.cover_url)
+            if asset.cover_url
+            else ""
+        ),
+        "cover_preview_provider_query": build_provider_preview_query(
+            asset,
+            asset.cover_preview_url or asset.cover_url,
+            "cover",
+        ),
+    }
+
+
+def build_result_display_context(result, *, platform_key="home"):
+    result_metadata = result.metadata or {}
+    return {
+        "platform": result.platform,
+        "platform_name": (
+            result_metadata.get("source_platform_name")
+            or PLATFORM_DISPLAY_NAMES.get(result.platform, result.platform or "未知平台")
+        ),
+        "result_theme": get_result_theme(
+            platform_key,
+            result.platform,
+            result_metadata,
+        ),
+        "post_type": result.post_type,
+        "base_filename": result.base_filename,
+        "image_items": [build_image_item(asset, result) for asset in result.image_assets],
+        "video_items": [build_video_item(asset, result) for asset in result.video_assets],
+        "metadata": result_metadata,
+    }
+
+
 def query_uses_third_party_provider(query):
     try:
         return getattr(get_adapter_for_url(query), "platform_id", "") == "third_party"
@@ -3266,6 +3549,7 @@ def build_search_results_context(request, platform_key="home"):
             parse_options["client_country_code"] = client_country_code
         result = parse_media_page(query, **parse_options)
         result_metadata = result.metadata or {}
+        display_context = build_result_display_context(result, platform_key=platform_key)
         context["platform"] = result.platform
         target_platform_key = get_platform_key_for_result(result.platform, result_metadata)
         if (
@@ -3274,15 +3558,8 @@ def build_search_results_context(request, platform_key="home"):
             and target_platform_key != platform_key
         ):
             context["target_page"] = get_page_payload(target_platform_key)
-        context["result_theme"] = get_result_theme(
-            platform_key,
-            result.platform,
-            result_metadata,
-        )
-        context["platform_name"] = (
-            result_metadata.get("source_platform_name")
-            or PLATFORM_DISPLAY_NAMES.get(result.platform, result.platform or "未知平台")
-        )
+        context["result_theme"] = display_context["result_theme"]
+        context["platform_name"] = display_context["platform_name"]
         if context["page_platform_id"] and context["page_platform_id"] != result.platform:
             context["platform_notice"] = f"你粘贴的是{context['platform_name']}链接，已自动使用对应解析器。"
         if result.platform == "third_party":
@@ -3293,45 +3570,29 @@ def build_search_results_context(request, platform_key="home"):
             elif result_metadata.get("selected_provider") == "yt_dlp_merge":
                 context["provider_notice"] = "本次使用 yt-dlp 高清合并；默认优先 1080p，下载时将在服务端合并音频和视频。"
         if prefer_ultra_hd and result.platform == "douyin":
-            context["provider_notice"] = "本次优先使用 KuKuTool 超高清上游；若不可用会自动回退本地解析。"
-        context["post_type"] = result.post_type
-        context["base_filename"] = result.base_filename
-        context["image_items"] = [
-            {
-                **asset.to_download_item(),
-                "type": "image",
-                "url": asset.url,
-                "encoded_url": encode_url(asset.url),
-                "encoded_preview_url": encode_url(asset.preview_url or asset.url),
-                "preview_provider_query": build_provider_preview_query(
-                    asset,
-                    asset.preview_url or asset.url,
-                ),
-            }
-            for asset in result.image_assets
-        ]
-        context["video_items"] = [
-            {
-                **asset.to_download_item(),
-                "type": "video",
-                "video_url": asset.url,
-                "cover_url": asset.cover_url,
-                "size_bytes": (size_bytes := get_video_size_bytes(asset)),
-                "size_label": format_file_size(size_bytes),
-                "encoded_cover_url": encode_url(asset.cover_url) if asset.cover_url else "",
-                "encoded_preview_cover_url": (
-                    encode_url(asset.cover_preview_url or asset.cover_url)
-                    if asset.cover_url
-                    else ""
-                ),
-                "cover_preview_provider_query": build_provider_preview_query(
-                    asset,
-                    asset.cover_preview_url or asset.cover_url,
-                    "cover",
-                ),
-            }
-            for asset in result.video_assets
-        ]
+            ultra_provider = (
+                result_metadata.get("ultra_race_winner")
+                or result_metadata.get("selected_provider")
+                or result_metadata.get("source_provider")
+            )
+            ultra_provider_label = {
+                "tiantianjiexi": "天天解析",
+                "kukutool": "KuKuTool",
+                "native": "本地解析",
+                "mobile_feed": "本地解析",
+                "mobile_share": "本地解析",
+            }.get(ultra_provider, "")
+            if ultra_provider_label in {"天天解析", "KuKuTool"}:
+                context["provider_notice"] = (
+                    f"本次由 {ultra_provider_label} 返回抖音原画 / 超高清资源；"
+                    "若上游不可用会自动回退本地解析。"
+                )
+            else:
+                context["provider_notice"] = "本次未命中超高清上游，已自动回退本地解析。"
+        context["post_type"] = display_context["post_type"]
+        context["base_filename"] = display_context["base_filename"]
+        context["image_items"] = display_context["image_items"]
+        context["video_items"] = display_context["video_items"]
 
         if not context["image_items"] and not context["video_items"]:
             context["error_message"] = "没有解析到图片或视频。"
@@ -3446,6 +3707,232 @@ def search_results_view(request, platform_key="home"):
     if context.get("retry_after"):
         response["Retry-After"] = str(context["retry_after"])
     return response
+
+
+def batch_parse_user_is_staff(request):
+    user = getattr(request, "user", None)
+    return bool(
+        getattr(user, "is_active", False)
+        and getattr(user, "is_staff", False)
+    )
+
+
+def batch_parse_access_allowed(request):
+    return batch_parse_user_is_staff(request) or bool(
+        env_runtime_bool("BATCH_PARSE_PUBLIC_ENABLED", False)
+    )
+
+
+def batch_parse_max_links(request):
+    global_max = max(1, env_runtime_int("BATCH_PARSE_MAX_LINKS", 20))
+    if batch_parse_user_is_staff(request):
+        staff_max = max(
+            1,
+            env_runtime_int("BATCH_PARSE_STAFF_MAX_LINKS", global_max),
+        )
+        return min(global_max, staff_max)
+    public_max = max(
+        1,
+        env_runtime_int("BATCH_PARSE_PUBLIC_MAX_LINKS", 3),
+    )
+    return min(global_max, public_max)
+
+
+def batch_parse_total_timeout_seconds():
+    return max(
+        1.0,
+        env_runtime_float("BATCH_PARSE_TOTAL_TIMEOUT_SECONDS", 30.0),
+    )
+
+
+def batch_parse_per_link_timeout_seconds():
+    return max(
+        0.5,
+        env_runtime_float("BATCH_PARSE_PER_LINK_TIMEOUT_SECONDS", 8.0),
+    )
+
+
+def batch_parse_rate_limit_results(request, link_count):
+    identity = get_client_identity(request)
+    amount = max(1, int(link_count or 1))
+    return (
+        consume_fixed_window(
+            "batch-parse-minute-ip",
+            identity,
+            env_runtime_int("BATCH_PARSE_MINUTE_IP_LIMIT", 3),
+            60,
+            amount=amount,
+        ),
+        consume_fixed_window(
+            "batch-parse-global-minute",
+            "global",
+            env_runtime_int("BATCH_PARSE_GLOBAL_MINUTE_LIMIT", 30),
+            60,
+            amount=amount,
+        ),
+        consume_daily(
+            "batch-parse-daily-ip",
+            identity,
+            env_runtime_int("BATCH_PARSE_DAILY_IP_LIMIT", 20),
+            amount=amount,
+        ),
+    )
+
+
+def split_batch_links(value, max_links=None):
+    max_links = max(1, int(max_links or env_runtime_int("BATCH_PARSE_MAX_LINKS", 20) or 20))
+    links = []
+    seen = set()
+    for raw_line in str(value or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line in seen:
+            continue
+        seen.add(line)
+        links.append(line)
+        if len(links) >= max_links:
+            break
+    return links
+
+
+def build_batch_skipped_row(source_text, reason, started_at=None):
+    started_at = started_at or time.monotonic()
+    return {
+        "status": "skipped",
+        "source_text": source_text,
+        "duration_ms": int((time.monotonic() - started_at) * 1000),
+        "error_message": reason,
+    }
+
+
+def build_batch_result_row(request, source_text, *, prefer_ultra_hd, prefer_youtube_merge, deadline=None):
+    started_at = time.monotonic()
+    if deadline is not None and time.monotonic() >= deadline:
+        return build_batch_skipped_row(source_text, "批量解析总预算已用尽，本条已跳过。", started_at)
+    try:
+        remaining_timeout = batch_parse_per_link_timeout_seconds()
+        if deadline is not None:
+            remaining_timeout = min(
+                remaining_timeout,
+                max(0.0, deadline - time.monotonic()),
+            )
+        if remaining_timeout <= 0:
+            return build_batch_skipped_row(source_text, "批量解析总预算已用尽，本条已跳过。", started_at)
+        if query_uses_third_party_provider(source_text) and not third_party_provider_is_available(request):
+            raise XhsParseError("第三方通用解析暂未开放。")
+        result = parse_media_page(
+            source_text,
+            prefer_ultra_hd=prefer_ultra_hd,
+            client_country_code=get_request_country_code(request) if prefer_ultra_hd else "",
+            prefer_youtube_merge=prefer_youtube_merge,
+            timeout_seconds=remaining_timeout,
+            deadline_monotonic=(
+                time.monotonic() + remaining_timeout
+                if deadline is None
+                else min(deadline, time.monotonic() + remaining_timeout)
+            ),
+        )
+        display_context = build_result_display_context(result, platform_key="home")
+        metadata = result.metadata or {}
+        return {
+            "status": "success",
+            "source_text": source_text,
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+            "provider_label": metadata.get("provider_label") or metadata.get("selected_provider") or "",
+            "selected_provider": metadata.get("selected_provider") or metadata.get("source_provider") or "",
+            **display_context,
+        }
+    except XhsProviderTimeoutError as error:
+        return {
+            "status": "failed",
+            "source_text": source_text,
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+            "error_message": str(error),
+        }
+    except XhsError as error:
+        return {
+            "status": "failed",
+            "source_text": source_text,
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+            "error_message": f"解析失败：{error}",
+        }
+    except requests.RequestException as error:
+        return {
+            "status": "failed",
+            "source_text": source_text,
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+            "error_message": f"请求失败：{error}",
+        }
+    except Exception as error:
+        return {
+            "status": "failed",
+            "source_text": source_text,
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+            "error_message": f"{type(error).__name__}: {error}",
+        }
+
+
+def batch_parse_view(request):
+    if not batch_parse_access_allowed(request):
+        raise Http404("Batch parse is not available.")
+
+    raw_links = request.POST.get("links", "") if request.method == "POST" else ""
+    prefer_ultra_hd = (
+        request.method == "POST"
+        and request_flag(request.POST.get("ultra_hd"))
+        and ultra_hd_is_available(request)
+    )
+    prefer_youtube_merge = (
+        request.method == "POST"
+        and request_flag(request.POST.get("youtube_merge"))
+        and youtube_merge_mode_is_available(request)
+    )
+    max_links = batch_parse_max_links(request)
+    links = split_batch_links(raw_links, max_links=max_links)
+    rows = []
+    batch_error = ""
+    if request.method == "POST":
+        limits = batch_parse_rate_limit_results(request, len(links) or 1)
+        blocked_limit = next((limit for limit in limits if not limit.allowed), None)
+        if blocked_limit:
+            batch_error = f"批量解析请求过于频繁，请约 {blocked_limit.retry_after} 秒后再试。"
+        else:
+            deadline = time.monotonic() + batch_parse_total_timeout_seconds()
+            for link in links:
+                if time.monotonic() >= deadline:
+                    rows.append(build_batch_skipped_row(link, "批量解析总预算已用尽，本条已跳过。"))
+                    continue
+                rows.append(
+                    build_batch_result_row(
+                        request,
+                        link,
+                        prefer_ultra_hd=prefer_ultra_hd,
+                        prefer_youtube_merge=prefer_youtube_merge,
+                        deadline=deadline,
+                    )
+                )
+
+    return render(
+        request,
+        "batch_parse.html",
+        {
+            "theme_class": "theme-home",
+            "page_title": "批量解析",
+            "links_text": raw_links,
+            "links": links,
+            "rows": rows,
+            "max_links": max_links,
+            "batch_error": batch_error,
+            "batch_staff_only": not env_runtime_bool("BATCH_PARSE_PUBLIC_ENABLED", False),
+            "batch_direct_links_allowed": batch_parse_user_is_staff(request),
+            "prefer_ultra_hd": prefer_ultra_hd,
+            "prefer_youtube_merge": prefer_youtube_merge,
+            "ultra_hd_available": ultra_hd_is_available(request),
+            "youtube_merge_mode_available": youtube_merge_mode_is_available(request),
+            "strategy_matrix": build_download_strategy_matrix(),
+        },
+    )
 
 
 def placeholder_image_response(status=200, retry_after=0):

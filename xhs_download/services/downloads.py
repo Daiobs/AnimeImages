@@ -20,6 +20,7 @@ from .common import (
     clean_filename,
     host_matches,
     request_get_with_retry,
+    validate_external_url,
     validate_media_url,
     validate_public_download_url,
     validate_public_url,
@@ -326,12 +327,39 @@ def is_recoverable_provider_download_error(error):
     return message.startswith("HTTP ") or message.startswith("资源类型异常：")
 
 
+def tiantianjiexi_douyin_manifest_is_allowed(item):
+    if not isinstance(item, dict) or item.get("provider") != "tiantianjiexi":
+        return False
+    if not provider_manifest_is_valid(item):
+        return False
+    aweme_id = str(item.get("provider_resource_id") or "")
+    if not aweme_id.isdigit():
+        return False
+    expected_cache_key = f"douyin:tiantianjiexi:validated:{aweme_id}"
+    if str(item.get("provider_cache_key") or "") != expected_cache_key:
+        return False
+    expected_asset_id = f"douyin:{aweme_id}:video:tiantianjiexi"
+    if str(item.get("asset_id") or "") != expected_asset_id:
+        return False
+    try:
+        validate_external_url(
+            item.get("url"),
+            DOUYIN_MEDIA_HOST_SUFFIXES,
+            "天天解析抖音 Provider URL 不允许请求",
+        )
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def provider_manifest_allows_public_download(item):
     if not isinstance(item, dict):
         return False
     if item.get("provider") not in {
         "kukutool",
+        "tiantianjiexi",
         "kukutool_generic",
+        "tiantianjiexi_generic",
         "gallery_dl_generic",
         "yt_dlp_generic",
         YOUTUBE_MERGE_PROVIDER_ID,
@@ -340,6 +368,8 @@ def provider_manifest_allows_public_download(item):
         return False
     if item.get("provider") == "kukutool":
         return bool(get_kukutool_manifest_identity(item))
+    if item.get("provider") == "tiantianjiexi":
+        return tiantianjiexi_douyin_manifest_is_allowed(item)
     if item.get("provider") == YOUTUBE_MERGE_PROVIDER_ID:
         return provider_manifest_allows_youtube_merge(item)
     if item.get("provider") == YTDLP_MERGE_PROVIDER_ID:
@@ -444,6 +474,8 @@ def validate_provider_signed_download_url(provider_item, url, message):
         allowed = ytdlp_merge_manifest_item_is_allowed(signed_url_item)
     elif provider == "kukutool":
         allowed = bool(get_kukutool_manifest_identity(provider_item)) and is_byte_cdn_url(url)
+    elif provider == "tiantianjiexi":
+        allowed = tiantianjiexi_douyin_manifest_is_allowed(signed_url_item)
     else:
         allowed = third_party_manifest_item_is_allowed(signed_url_item)
     if not allowed:
