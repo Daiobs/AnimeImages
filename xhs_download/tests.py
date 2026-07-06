@@ -2161,6 +2161,7 @@ class DouyinAdapterTests(SimpleTestCase):
         self.assertIsInstance(providers[1], DouyinNativeProvider)
 
     @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
         TIANTIANJIEXI_PROVIDER_ENABLED=True,
         TIANTIANJIEXI_PHONE="13800000000",
         TIANTIANJIEXI_PASSWORD="secret",
