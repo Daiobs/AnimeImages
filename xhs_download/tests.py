@@ -1374,17 +1374,17 @@ class XhsParserTests(SimpleTestCase):
         )
         self.assertEqual(
             third_party_rules_by_id["tiktok"]["provider_ids"],
-            ("tiantianjiexi_generic", "kukutool_generic", "yt_dlp_generic", "gallery_dl_generic"),
+            ("kukutool_generic", "tiantianjiexi_generic", "yt_dlp_generic", "gallery_dl_generic"),
         )
         self.assertEqual(
             third_party_rules_by_id["imgur"]["provider_ids"],
-            ("tiantianjiexi_generic", "kukutool_generic", "gallery_dl_generic"),
+            ("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
         )
         self.assertEqual(
             platforms["third_party"]["provider_policy"]["third_party_providers"],
             (
-                "tiantianjiexi_generic",
                 "kukutool_generic",
+                "tiantianjiexi_generic",
                 "yt_dlp_generic",
                 "gallery_dl_generic",
                 "youtube_merge",
@@ -2093,11 +2093,7 @@ class DouyinAdapterTests(SimpleTestCase):
         ))
 
         self.assertEqual(len(providers), 2)
-        self.assertIsInstance(providers[0], DouyinUltraRaceProvider)
-        self.assertEqual(
-            [type(provider) for provider in providers[0].providers],
-            [DouyinTianTianJieXiProvider, DouyinKukuToolProvider],
-        )
+        self.assertIsInstance(providers[0], DouyinNativeEnhancedProvider)
         self.assertIsInstance(providers[1], DouyinNativeProvider)
 
     @override_settings(
@@ -2105,7 +2101,7 @@ class DouyinAdapterTests(SimpleTestCase):
         TIANTIANJIEXI_PHONE="",
         TIANTIANJIEXI_PASSWORD="",
     )
-    def test_douyin_provider_builder_uses_kukutool_as_only_ultra_upstream(self):
+    def test_douyin_provider_builder_allows_explicit_tikhub_order(self):
         providers = build_douyin_result_providers(ProviderSettings(
             ultra_hd_enabled=True,
             provider_order=("tikhub",),
@@ -2113,16 +2109,15 @@ class DouyinAdapterTests(SimpleTestCase):
         ))
 
         self.assertEqual(len(providers), 2)
-        self.assertIsInstance(providers[0], DouyinUltraRaceProvider)
+        self.assertIsInstance(providers[0], DouyinTikHubProvider)
         self.assertIsInstance(providers[1], DouyinNativeProvider)
-        self.assertFalse(any(isinstance(provider, DouyinTikHubProvider) for provider in providers))
 
     @override_settings(
         TIANTIANJIEXI_PROVIDER_ENABLED=False,
         TIANTIANJIEXI_PHONE="",
         TIANTIANJIEXI_PASSWORD="",
     )
-    def test_douyin_provider_builder_ignores_configured_tikhub_order(self):
+    def test_douyin_provider_builder_respects_configured_native_first_order(self):
         providers = build_douyin_result_providers(ProviderSettings(
             ultra_hd_enabled=True,
             provider_order=("native", "tikhub"),
@@ -2130,15 +2125,15 @@ class DouyinAdapterTests(SimpleTestCase):
         ))
 
         self.assertEqual(len(providers), 2)
-        self.assertIsInstance(providers[0], DouyinUltraRaceProvider)
-        self.assertIsInstance(providers[1], DouyinNativeProvider)
+        self.assertIsInstance(providers[0], DouyinNativeProvider)
+        self.assertIsInstance(providers[1], DouyinTikHubProvider)
 
     @override_settings(
         TIANTIANJIEXI_PROVIDER_ENABLED=False,
         TIANTIANJIEXI_PHONE="",
         TIANTIANJIEXI_PASSWORD="",
     )
-    def test_douyin_provider_builder_injects_current_kukutool_ultra_upstream(self):
+    def test_douyin_provider_builder_native_order_uses_native_only(self):
         providers = build_douyin_result_providers(ProviderSettings(
             ultra_hd_enabled=True,
             provider_order=("native",),
@@ -2146,25 +2141,22 @@ class DouyinAdapterTests(SimpleTestCase):
         ))
 
         self.assertFalse(any(isinstance(provider, DouyinTikHubProvider) for provider in providers))
-        self.assertEqual(len(providers), 2)
-        self.assertIsInstance(providers[0], DouyinUltraRaceProvider)
-        self.assertIsInstance(providers[1], DouyinNativeProvider)
+        self.assertEqual(len(providers), 1)
+        self.assertIsInstance(providers[0], DouyinNativeProvider)
 
     @override_settings(
         TIANTIANJIEXI_PROVIDER_ENABLED=True,
         TIANTIANJIEXI_PHONE="13800000000",
         TIANTIANJIEXI_PASSWORD="secret",
     )
-    def test_douyin_provider_builder_prefers_tiantianjiexi_before_kukutool(self):
+    def test_douyin_provider_builder_respects_explicit_kukutool_first_order(self):
         providers = build_douyin_result_providers(ProviderSettings(
             ultra_hd_enabled=True,
             provider_order=("kukutool", "native"),
         ))
 
         self.assertEqual(len(providers), 2)
-        self.assertIsInstance(providers[0], DouyinUltraRaceProvider)
-        self.assertIsInstance(providers[0].providers[0], DouyinTianTianJieXiProvider)
-        self.assertIsInstance(providers[0].providers[1], DouyinKukuToolProvider)
+        self.assertIsInstance(providers[0], DouyinKukuToolProvider)
         self.assertIsInstance(providers[1], DouyinNativeProvider)
 
     @override_settings(
@@ -10802,15 +10794,18 @@ class ProviderHealthTestPanelTests(TestCase):
         response = client.post("/admin/provider-health-tests/", data={"action": "run_all_tests"})
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(ProviderHealthTestRun.objects.count(), 6)
+        self.assertEqual(ProviderHealthTestRun.objects.count(), 9)
         statuses = dict(
             ProviderHealthTestRun.objects.values_list("test_key", "status")
         )
         self.assertEqual(statuses["health_ready"], ProviderHealthTestStatus.SUCCESS)
         self.assertEqual(statuses["douyin_native_parse"], ProviderHealthTestStatus.SKIPPED)
         self.assertEqual(statuses["douyin_kukutool_ultra"], ProviderHealthTestStatus.SKIPPED)
+        self.assertIn("tiantianjiexi_account_status", statuses)
+        self.assertEqual(statuses["douyin_tiantianjiexi_ultra"], ProviderHealthTestStatus.SKIPPED)
         self.assertEqual(statuses["youtube_merge"], ProviderHealthTestStatus.SKIPPED)
         self.assertEqual(statuses["third_party_ytdlp"], ProviderHealthTestStatus.SKIPPED)
+        self.assertEqual(statuses["third_party_tiantianjiexi"], ProviderHealthTestStatus.SKIPPED)
         self.assertEqual(statuses["gallery_dl"], ProviderHealthTestStatus.SKIPPED)
 
     @patch("xhs_download.views.get_runtime_readiness", return_value={"ready": True, "components": {"database": True, "cache": True}})
@@ -10844,7 +10839,7 @@ class ProviderHealthTestPanelTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("Location", response)
         self.assertContains(response, "Provider 一键测试完成")
-        self.assertEqual(ProviderHealthTestRun.objects.count(), 6)
+        self.assertEqual(ProviderHealthTestRun.objects.count(), 9)
 
     def test_provider_health_test_empty_url_returns_skipped(self):
         client = Client()

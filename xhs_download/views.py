@@ -11,7 +11,7 @@ from django.contrib import messages
 from django.core.paginator import Paginator
 from django.db.models import Avg, Count, Q, Sum
 from django.db.models.functions import TruncHour
-from django.http import FileResponse, HttpResponse, JsonResponse, StreamingHttpResponse
+from django.http import FileResponse, Http404, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import redirect, render
 from django.template.loader import render_to_string
 from django.utils import timezone
@@ -197,6 +197,7 @@ def paginate_admin_queryset(request, queryset, page_size=ADMIN_LOG_PAGE_SIZE):
 PREVIEW_MAX_IMAGE_BYTES = 8 * 1024 * 1024
 SIGNED_THIRD_PARTY_VIDEO_PROVIDERS = {
     "kukutool_generic",
+    "tiantianjiexi_generic",
     "gallery_dl_generic",
     "yt_dlp_generic",
     "youtube_merge",
@@ -1291,6 +1292,22 @@ PROVIDER_HEALTH_TESTS = (
         "url_field": "douyin_url",
     },
     {
+        "key": "tiantianjiexi_account_status",
+        "name": "天天解析账号状态",
+        "description": "只查询天天解析账号状态，不解析真实视频，不消耗解析额度。",
+        "provider": "tiantianjiexi_generic",
+        "provider_access_id": PROVIDER_THIRD_PARTY,
+        "url_field": "",
+    },
+    {
+        "key": "douyin_tiantianjiexi_ultra",
+        "name": "抖音天天解析超清",
+        "description": "手动调用天天解析解析抖音测试 URL，用于超清链路 smoke。",
+        "provider": "tiantianjiexi",
+        "provider_access_id": PROVIDER_DOUYIN_ULTRA,
+        "url_field": "douyin_url",
+    },
+    {
         "key": "youtube_merge",
         "name": "YouTube 高清合并",
         "description": "验证 yt-dlp + ffmpeg health，并只做候选规划，不下载大文件。",
@@ -1303,6 +1320,14 @@ PROVIDER_HEALTH_TESTS = (
         "name": "第三方 yt-dlp",
         "description": "验证通用 yt-dlp provider health，并轻量解析测试 URL。",
         "provider": "yt_dlp_generic",
+        "provider_access_id": PROVIDER_THIRD_PARTY,
+        "url_field": "third_party_url",
+    },
+    {
+        "key": "third_party_tiantianjiexi",
+        "name": "第三方天天解析",
+        "description": "手动调用天天解析解析第三方测试 URL。",
+        "provider": "tiantianjiexi_generic",
         "provider_access_id": PROVIDER_THIRD_PARTY,
         "url_field": "third_party_url",
     },
@@ -1458,6 +1483,22 @@ def run_provider_health_test(request, item):
                 error_message=json.dumps(readiness.get("components", {}), ensure_ascii=False),
             )
 
+        if item["key"] == "tiantianjiexi_account_status":
+            if not getattr(settings, "TIANTIANJIEXI_PROVIDER_ENABLED", False):
+                return record(
+                    ProviderHealthTestStatus.UNAVAILABLE,
+                    error_type="CapabilityDisabled",
+                    error_message="TIANTIANJIEXI_PROVIDER_ENABLED 未启用",
+                )
+            health = TianTianJieXiGenericProvider().health()
+            if health.get("account_status_available"):
+                return record(ProviderHealthTestStatus.SUCCESS)
+            return record(
+                ProviderHealthTestStatus.UNAVAILABLE,
+                error_type="AccountStatusUnavailable",
+                error_message=json.dumps(health, ensure_ascii=False),
+            )
+
         if not test_url:
             return record(
                 ProviderHealthTestStatus.SKIPPED,
@@ -1499,6 +1540,27 @@ def run_provider_health_test(request, item):
                 ProviderHealthTestStatus.UNAVAILABLE,
                 error_type="NoAssets",
                 error_message="未解析到超清资源",
+            )
+
+        if item["key"] == "douyin_tiantianjiexi_ultra":
+            if not (
+                getattr(settings, "ULTRA_HD_PROVIDER_ENABLED", False)
+                and getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False)
+                and getattr(settings, "TIANTIANJIEXI_PROVIDER_ENABLED", False)
+            ):
+                return record(
+                    ProviderHealthTestStatus.UNAVAILABLE,
+                    error_type="CapabilityDisabled",
+                    error_message="ULTRA_HD_PROVIDER_ENABLED、THIRD_PARTY_PROVIDER_ENABLED 或 TIANTIANJIEXI_PROVIDER_ENABLED 未启用",
+                )
+            payload = TianTianJieXiGenericProvider().parse(test_url, timeout_seconds=10.0)
+            normalized = payload if isinstance(payload, dict) else {}
+            if normalized.get("videos") or normalized.get("images"):
+                return record(ProviderHealthTestStatus.SUCCESS)
+            return record(
+                ProviderHealthTestStatus.UNAVAILABLE,
+                error_type="NoAssets",
+                error_message="天天解析未返回媒体资源",
             )
 
         if item["key"] == "youtube_merge":
@@ -1569,6 +1631,26 @@ def run_provider_health_test(request, item):
                 ProviderHealthTestStatus.UNAVAILABLE,
                 error_type="EmptyPayload",
                 error_message="gallery-dl 返回空结果",
+            )
+
+        if item["key"] == "third_party_tiantianjiexi":
+            if not (
+                getattr(settings, "THIRD_PARTY_PROVIDER_ENABLED", False)
+                and getattr(settings, "TIANTIANJIEXI_PROVIDER_ENABLED", False)
+            ):
+                return record(
+                    ProviderHealthTestStatus.UNAVAILABLE,
+                    error_type="CapabilityDisabled",
+                    error_message="THIRD_PARTY_PROVIDER_ENABLED 或 TIANTIANJIEXI_PROVIDER_ENABLED 未启用",
+                )
+            payload = TianTianJieXiGenericProvider().parse(test_url, timeout_seconds=10.0)
+            normalized = payload if isinstance(payload, dict) else {}
+            if normalized.get("videos") or normalized.get("images"):
+                return record(ProviderHealthTestStatus.SUCCESS)
+            return record(
+                ProviderHealthTestStatus.UNAVAILABLE,
+                error_type="NoAssets",
+                error_message="天天解析未返回媒体资源",
             )
 
         return record(
@@ -3549,10 +3631,71 @@ def search_results_view(request, platform_key="home"):
     return response
 
 
-BATCH_PARSE_MAX_LINKS = 20
+def batch_parse_user_is_staff(request):
+    user = getattr(request, "user", None)
+    return bool(
+        getattr(user, "is_active", False)
+        and getattr(user, "is_staff", False)
+    )
 
 
-def split_batch_links(value):
+def batch_parse_access_allowed(request):
+    return batch_parse_user_is_staff(request) or bool(
+        getattr(settings, "BATCH_PARSE_PUBLIC_ENABLED", False)
+    )
+
+
+def batch_parse_max_links(request):
+    global_max = max(1, int(getattr(settings, "BATCH_PARSE_MAX_LINKS", 20) or 20))
+    if batch_parse_user_is_staff(request):
+        staff_max = max(
+            1,
+            int(getattr(settings, "BATCH_PARSE_STAFF_MAX_LINKS", global_max) or global_max),
+        )
+        return min(global_max, staff_max)
+    public_max = max(
+        1,
+        int(getattr(settings, "BATCH_PARSE_PUBLIC_MAX_LINKS", 3) or 3),
+    )
+    return min(global_max, public_max)
+
+
+def batch_parse_total_timeout_seconds():
+    return max(
+        1.0,
+        float(getattr(settings, "BATCH_PARSE_TOTAL_TIMEOUT_SECONDS", 30.0) or 30.0),
+    )
+
+
+def batch_parse_rate_limit_results(request, link_count):
+    identity = get_client_identity(request)
+    amount = max(1, int(link_count or 1))
+    return (
+        consume_fixed_window(
+            "batch-parse-minute-ip",
+            identity,
+            getattr(settings, "BATCH_PARSE_MINUTE_IP_LIMIT", 3),
+            60,
+            amount=amount,
+        ),
+        consume_fixed_window(
+            "batch-parse-global-minute",
+            "global",
+            getattr(settings, "BATCH_PARSE_GLOBAL_MINUTE_LIMIT", 30),
+            60,
+            amount=amount,
+        ),
+        consume_daily(
+            "batch-parse-daily-ip",
+            identity,
+            getattr(settings, "BATCH_PARSE_DAILY_IP_LIMIT", 20),
+            amount=amount,
+        ),
+    )
+
+
+def split_batch_links(value, max_links=None):
+    max_links = max(1, int(max_links or getattr(settings, "BATCH_PARSE_MAX_LINKS", 20) or 20))
     links = []
     seen = set()
     for raw_line in str(value or "").splitlines():
@@ -3563,13 +3706,25 @@ def split_batch_links(value):
             continue
         seen.add(line)
         links.append(line)
-        if len(links) >= BATCH_PARSE_MAX_LINKS:
+        if len(links) >= max_links:
             break
     return links
 
 
-def build_batch_result_row(request, source_text, *, prefer_ultra_hd, prefer_youtube_merge):
+def build_batch_skipped_row(source_text, reason, started_at=None):
+    started_at = started_at or time.monotonic()
+    return {
+        "status": "skipped",
+        "source_text": source_text,
+        "duration_ms": int((time.monotonic() - started_at) * 1000),
+        "error_message": reason,
+    }
+
+
+def build_batch_result_row(request, source_text, *, prefer_ultra_hd, prefer_youtube_merge, deadline=None):
     started_at = time.monotonic()
+    if deadline is not None and time.monotonic() >= deadline:
+        return build_batch_skipped_row(source_text, "批量解析总预算已用尽，本条已跳过。", started_at)
     try:
         if query_uses_third_party_provider(source_text) and not third_party_provider_is_available(request):
             raise XhsParseError("第三方通用解析暂未开放。")
@@ -3610,9 +3765,19 @@ def build_batch_result_row(request, source_text, *, prefer_ultra_hd, prefer_yout
             "duration_ms": int((time.monotonic() - started_at) * 1000),
             "error_message": f"请求失败：{error}",
         }
+    except Exception as error:
+        return {
+            "status": "failed",
+            "source_text": source_text,
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+            "error_message": f"{type(error).__name__}: {error}",
+        }
 
 
 def batch_parse_view(request):
+    if not batch_parse_access_allowed(request):
+        raise Http404("Batch parse is not available.")
+
     raw_links = request.POST.get("links", "") if request.method == "POST" else ""
     prefer_ultra_hd = (
         request.method == "POST"
@@ -3624,18 +3789,30 @@ def batch_parse_view(request):
         and request_flag(request.POST.get("youtube_merge"))
         and youtube_merge_mode_is_available(request)
     )
-    links = split_batch_links(raw_links)
+    max_links = batch_parse_max_links(request)
+    links = split_batch_links(raw_links, max_links=max_links)
     rows = []
+    batch_error = ""
     if request.method == "POST":
-        rows = [
-            build_batch_result_row(
-                request,
-                link,
-                prefer_ultra_hd=prefer_ultra_hd,
-                prefer_youtube_merge=prefer_youtube_merge,
-            )
-            for link in links
-        ]
+        limits = batch_parse_rate_limit_results(request, len(links) or 1)
+        blocked_limit = next((limit for limit in limits if not limit.allowed), None)
+        if blocked_limit:
+            batch_error = f"批量解析请求过于频繁，请约 {blocked_limit.retry_after} 秒后再试。"
+        else:
+            deadline = time.monotonic() + batch_parse_total_timeout_seconds()
+            for link in links:
+                if time.monotonic() >= deadline:
+                    rows.append(build_batch_skipped_row(link, "批量解析总预算已用尽，本条已跳过。"))
+                    continue
+                rows.append(
+                    build_batch_result_row(
+                        request,
+                        link,
+                        prefer_ultra_hd=prefer_ultra_hd,
+                        prefer_youtube_merge=prefer_youtube_merge,
+                        deadline=deadline,
+                    )
+                )
 
     return render(
         request,
@@ -3646,7 +3823,10 @@ def batch_parse_view(request):
             "links_text": raw_links,
             "links": links,
             "rows": rows,
-            "max_links": BATCH_PARSE_MAX_LINKS,
+            "max_links": max_links,
+            "batch_error": batch_error,
+            "batch_staff_only": not bool(getattr(settings, "BATCH_PARSE_PUBLIC_ENABLED", False)),
+            "batch_direct_links_allowed": batch_parse_user_is_staff(request),
             "prefer_ultra_hd": prefer_ultra_hd,
             "prefer_youtube_merge": prefer_youtube_merge,
             "ultra_hd_available": ultra_hd_is_available(request),

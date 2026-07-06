@@ -179,8 +179,11 @@ TIANTIANJIEXI_RETRIES=2
 TIANTIANJIEXI_PAYLOAD_CACHE_TTL_SECONDS=120
 TIANTIANJIEXI_FAILURE_CACHE_TTL_SECONDS=30
 TIANTIANJIEXI_ACCOUNT_STATUS_CACHE_TTL_SECONDS=300
+TIANTIANJIEXI_HEALTH_QUERY_ACCOUNT_STATUS_ENABLED=True
 TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY=2
 TIANTIANJIEXI_REQUEST_LIMIT_PER_MINUTE=20
+THIRD_PARTY_PROVIDER_ORDER=kukutool_generic,tiantianjiexi_generic,yt_dlp_generic,gallery_dl_generic
+DOUYIN_ULTRA_PROVIDER_ORDER=tiantianjiexi,kukutool,native
 ```
 
 For user-facing Douyin ultra-HD parsing, keep a strict frontend budget and race
@@ -194,8 +197,30 @@ ultra-HD provider and KuKuTool as fallback. Both providers can race in the
 user-facing path. TianTianJieXi results must be normalized by expanding nested
 `streams[]` candidates before ranking.
 
+## Smoke Test
+
+After credentials are configured in `.env` or `.env.production`, run:
+
+```bash
+python manage.py smoke_tiantianjiexi_provider --url "<douyin test url>"
+```
+
+The command prints provider availability, asset counts, selected quality,
+selected media host, and duration. It does not print phone/password or complete
+media URLs.
+
+Provider health tests also include:
+
+- `tiantianjiexi_account_status`: account status only, cached, no real video
+  parse and no parse quota consumption.
+- `douyin_tiantianjiexi_ultra`: manual Douyin smoke, consumes a real parse.
+- `third_party_tiantianjiexi`: manual third-party smoke, consumes a real parse.
+
+`TIANTIANJIEXI_HEALTH_QUERY_ACCOUNT_STATUS_ENABLED=False` disables account
+status requests from health checks. In that mode, health only reports local
+configuration, cache, circuit and failure-cache state.
+
 For the sample Douyin item `modal_id=7611146072161047526`, the parent
 `videos[0].url` was low bitrate, while the nested `streams[]` entry with
 `qualityLabel=原画`, `sizeInBytes=86980828`, `br=58919`, and `qs=13` was the
 actual original-quality video.
-

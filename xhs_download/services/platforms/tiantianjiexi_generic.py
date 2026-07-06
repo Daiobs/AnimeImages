@@ -548,7 +548,11 @@ class TianTianJieXiGenericProvider:
         except Exception as error:
             cache_error = type(error).__name__
             logger.debug("tiantianjiexi_health_cache_read_failed", extra={"provider": PROVIDER_ID}, exc_info=True)
-        if bool(getattr(settings, "TIANTIANJIEXI_PROVIDER_ENABLED", False)) and api_configured():
+        if (
+            bool(getattr(settings, "TIANTIANJIEXI_PROVIDER_ENABLED", False))
+            and bool(getattr(settings, "TIANTIANJIEXI_HEALTH_QUERY_ACCOUNT_STATUS_ENABLED", True))
+            and api_configured()
+        ):
             try:
                 account_status = self.query_account_status()
                 account_status_cached = account_status_cached or bool(account_status.get("cached"))

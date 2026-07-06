@@ -58,8 +58,8 @@ class ThirdPartyPlatformRule:
     host_suffixes: tuple[str, ...]
     media_types: tuple[str, ...] = ("image", "video")
     provider_ids: tuple[str, ...] = (
-        "tiantianjiexi_generic",
         "kukutool_generic",
+        "tiantianjiexi_generic",
         "yt_dlp_generic",
         "gallery_dl_generic",
     )
@@ -156,7 +156,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="Imgur",
         host_suffixes=("imgur.com",),
         media_types=("image", "video"),
-        provider_ids=("tiantianjiexi_generic", "kukutool_generic", "gallery_dl_generic"),
+        provider_ids=("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
         media_host_suffixes=("imgur.com",),
         risk_level=RISK_NORMAL,
         notes="图片/动图平台，公开仍需后台 allowlist。",
@@ -166,7 +166,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="Reddit",
         host_suffixes=("reddit.com", "redd.it"),
         media_types=("image",),
-        provider_ids=("tiantianjiexi_generic", "kukutool_generic", "gallery_dl_generic"),
+        provider_ids=("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
         media_host_suffixes=("redd.it", "redditmedia.com"),
         risk_level=RISK_SENSITIVE,
         notes="社区内容风险较高，默认不公开。",
@@ -176,7 +176,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="Tumblr",
         host_suffixes=("tumblr.com",),
         media_types=("image",),
-        provider_ids=("tiantianjiexi_generic", "kukutool_generic", "gallery_dl_generic"),
+        provider_ids=("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
         media_host_suffixes=("tumblr.com",),
         risk_level=RISK_SENSITIVE,
         notes="社区内容风险较高，默认不公开。",
@@ -186,7 +186,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="Flickr",
         host_suffixes=("flickr.com",),
         media_types=("image",),
-        provider_ids=("tiantianjiexi_generic", "kukutool_generic", "gallery_dl_generic"),
+        provider_ids=("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
         media_host_suffixes=("staticflickr.com",),
         risk_level=RISK_SAFE,
         notes="图片平台，可作为公开灰度候选，但仍必须命中后台 allowlist。",
@@ -196,7 +196,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="DeviantArt",
         host_suffixes=("deviantart.com",),
         media_types=("image",),
-        provider_ids=("tiantianjiexi_generic", "kukutool_generic", "gallery_dl_generic"),
+        provider_ids=("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
         media_host_suffixes=("wixmp.com", "deviantart.net"),
         risk_level=RISK_SENSITIVE,
         notes="社区内容风险较高，默认不公开。",
@@ -426,6 +426,36 @@ def provider_is_enabled(provider_id):
     return False
 
 
+def normalize_provider_id(value):
+    return str(value or "").strip().lower().replace("-", "_")
+
+
+def configured_third_party_provider_order(rule):
+    configured_order = tuple(
+        normalize_provider_id(provider_id)
+        for provider_id in (
+            getattr(settings, "THIRD_PARTY_PROVIDER_ORDER", ()) or ()
+        )
+    )
+    if not configured_order:
+        configured_order = (
+            "kukutool_generic",
+            "tiantianjiexi_generic",
+            "yt_dlp_generic",
+            "gallery_dl_generic",
+        )
+    allowed = tuple(getattr(rule, "provider_ids", ()) or ())
+    allowed_set = set(allowed)
+    ordered = []
+    seen = set()
+    for provider_id in configured_order:
+        if provider_id not in allowed_set or provider_id in seen:
+            continue
+        seen.add(provider_id)
+        ordered.append(provider_id)
+    return tuple(ordered)
+
+
 class GenericThirdPartyAdapter(BasePlatformAdapter):
     platform_id = "third_party"
     display_name = "第三方通用平台"
@@ -442,8 +472,8 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
     provider_policy = ProviderPolicy(
         primary_provider="third_party",
         third_party_providers=(
-            "tiantianjiexi_generic",
             "kukutool_generic",
+            "tiantianjiexi_generic",
             "yt_dlp_generic",
             "gallery_dl_generic",
             YOUTUBE_MERGE_PROVIDER_ID,
@@ -499,7 +529,7 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         }
 
     def iter_provider_specs(self, rule, *, respect_enabled=True):
-        provider_ids = tuple(getattr(rule, "provider_ids", ()) or ())
+        provider_ids = configured_third_party_provider_order(rule)
         allowed_provider_ids = set(self.provider_policy.third_party_providers)
         specs = self.provider_specs()
         for provider_id in provider_ids:

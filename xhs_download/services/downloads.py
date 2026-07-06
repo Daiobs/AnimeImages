@@ -359,6 +359,7 @@ def provider_manifest_allows_public_download(item):
         "kukutool",
         "tiantianjiexi",
         "kukutool_generic",
+        "tiantianjiexi_generic",
         "gallery_dl_generic",
         "yt_dlp_generic",
         YOUTUBE_MERGE_PROVIDER_ID,

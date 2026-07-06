@@ -13,10 +13,24 @@
                         <p class="hero-subtitle">
                             一行一个链接，适合批量测试天天解析、KuKuTool、yt-dlp 与 gallery-dl 支持的平台。
                         </p>
+                        <div class="alert alert-warning text-start mt-3 mb-0">
+                            <i class="bi bi-shield-lock me-1"></i>
+                            {% if batch_staff_only %}
+                                当前批量解析仅管理员可用；结果中的直链仅用于调试，不会进入下载统计、成本守卫或交付日志。
+                            {% else %}
+                                公开批量解析已开启；公开用户不会看到裸直链，且会受到更严格的条数与频率限制。
+                            {% endif %}
+                        </div>
                     </div>
 
                     <form method="post" class="batch-form">
                         {% csrf_token %}
+                        {% if batch_error %}
+                            <div class="alert alert-danger">
+                                <i class="bi bi-exclamation-triangle me-1"></i>
+                                {{ batch_error }}
+                            </div>
+                        {% endif %}
                         <label class="form-label fw-bold" for="batch-links">素材链接</label>
                         <textarea
                                 id="batch-links"
@@ -117,7 +131,7 @@
                                 </div>
                             </div>
 
-                            {% if row.status == "failed" %}
+                            {% if row.status == "failed" or row.status == "skipped" %}
                                 <div class="alert alert-warning mb-0">
                                     <i class="bi bi-exclamation-triangle me-1"></i>
                                     {{ row.error_message|default:"解析失败" }}
@@ -136,11 +150,19 @@
                                 {% if row.video_items %}
                                     <div class="batch-assets">
                                         {% for item in row.video_items %}
-                                            <a class="batch-asset-link" href="{{ item.video_url }}" target="_blank" rel="noopener noreferrer">
-                                                <i class="bi bi-play-circle"></i>
-                                                <span>视频 · {{ item.size_label|default:"大小未知" }}</span>
-                                                <small>{{ item.strategy_label|default:item.download_strategy }}</small>
-                                            </a>
+                                            {% if batch_direct_links_allowed %}
+                                                <a class="batch-asset-link" href="{{ item.video_url }}" target="_blank" rel="noopener noreferrer">
+                                                    <i class="bi bi-play-circle"></i>
+                                                    <span>视频 · {{ item.size_label|default:"大小未知" }}</span>
+                                                    <small>{{ item.strategy_label|default:item.download_strategy }}</small>
+                                                </a>
+                                            {% else %}
+                                                <div class="batch-asset-link">
+                                                    <i class="bi bi-play-circle"></i>
+                                                    <span>视频 · {{ item.size_label|default:"大小未知" }}</span>
+                                                    <small>{{ item.strategy_label|default:item.download_strategy }}</small>
+                                                </div>
+                                            {% endif %}
                                         {% endfor %}
                                     </div>
                                 {% endif %}
@@ -148,11 +170,19 @@
                                 {% if row.image_items %}
                                     <div class="batch-assets">
                                         {% for item in row.image_items %}
-                                            <a class="batch-asset-link" href="{{ item.url }}" target="_blank" rel="noopener noreferrer">
-                                                <i class="bi bi-image"></i>
-                                                <span>图片 {{ forloop.counter }}</span>
-                                                <small>{{ item.strategy_label|default:item.download_strategy }}</small>
-                                            </a>
+                                            {% if batch_direct_links_allowed %}
+                                                <a class="batch-asset-link" href="{{ item.url }}" target="_blank" rel="noopener noreferrer">
+                                                    <i class="bi bi-image"></i>
+                                                    <span>图片 {{ forloop.counter }}</span>
+                                                    <small>{{ item.strategy_label|default:item.download_strategy }}</small>
+                                                </a>
+                                            {% else %}
+                                                <div class="batch-asset-link">
+                                                    <i class="bi bi-image"></i>
+                                                    <span>图片 {{ forloop.counter }}</span>
+                                                    <small>{{ item.strategy_label|default:item.download_strategy }}</small>
+                                                </div>
+                                            {% endif %}
                                         {% endfor %}
                                     </div>
                                 {% endif %}

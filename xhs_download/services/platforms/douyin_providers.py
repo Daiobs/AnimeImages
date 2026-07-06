@@ -1491,13 +1491,14 @@ def build_douyin_result_providers(provider_settings=None, prefer_ultra_hd=True):
             provider_order=("native",),
         )
     else:
-        provider_settings = replace(
-            provider_settings,
-            # The current ultra-HD path races TianTianJieXi against KuKuTool
-            # so a slow primary provider does not block the user-facing parse.
-            # TikHub and enhanced native remain diagnostics-only.
-            provider_order=("ultra_race", "native"),
-        )
+        configured_order = tuple(provider_settings.provider_order or ())
+        if configured_order == ("tiantianjiexi", "kukutool", "native"):
+            provider_settings = replace(
+                provider_settings,
+                # Default ultra-HD path races TianTianJieXi against KuKuTool
+                # so a slow primary provider does not block user-facing parse.
+                provider_order=("ultra_race", "native"),
+            )
 
     provider_map = {
         "ultra_race": lambda: DouyinUltraRaceProvider(provider_settings=provider_settings),

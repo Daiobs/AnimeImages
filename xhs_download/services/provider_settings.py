@@ -99,7 +99,11 @@ def get_platform_provider_settings(platform_id):
     platform_id = normalize_provider_name(platform_id)
     runtime_setting = load_provider_runtime_setting_readonly()
     if platform_id == "douyin":
-        raw_order = ("tiantianjiexi", "kukutool", "native")
+        raw_order = getattr(
+            settings,
+            "DOUYIN_ULTRA_PROVIDER_ORDER",
+            ("tiantianjiexi", "kukutool", "native"),
+        )
     elif platform_id in {"xiaohongshu", "xhs"}:
         raw_order = getattr(settings, "XHS_PROVIDER_ORDER", ("native",))
     else:
