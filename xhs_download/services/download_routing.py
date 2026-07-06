@@ -25,6 +25,10 @@ SERVER_SIDE_PROVIDERS = {
     "yt_dlp_merge",
 }
 BROWSER_DIRECT_VIDEO_PROVIDERS = set()
+BROWSER_FIRST_VIDEO_PROVIDERS = {
+    "kukutool",
+    "tiantianjiexi",
+}
 SERVER_PROXY_VIDEO_PROVIDERS = {
     "kukutool",
     "tiantianjiexi",
@@ -71,7 +75,7 @@ def item_is_kukutool_video(item):
 
 
 def item_is_browser_first_provider_video(item):
-    return item_provider(item) == "kukutool" and item_is_video(item)
+    return item_provider(item) in BROWSER_FIRST_VIDEO_PROVIDERS and item_is_video(item)
 
 
 def item_is_image(item):

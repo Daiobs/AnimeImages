@@ -142,9 +142,9 @@ class ProviderRuntimeSetting(models.Model):
     kukutool_download_delivery_mode = models.CharField(
         max_length=24,
         choices=KukuToolDownloadDeliveryMode.choices,
-        default=KukuToolDownloadDeliveryMode.SERVER_STREAM,
-        verbose_name="KuKuTool 下载交付策略",
-        help_text="server_stream 会直接使用服务端 attachment 单文件下载；browser_first 仅作为直链实验模式保留。",
+        default=KukuToolDownloadDeliveryMode.BROWSER_FIRST,
+        verbose_name="抖音超清下载交付策略",
+        help_text="browser_first 会优先交给浏览器下载管理器；server_stream 仅在直链不可用时作为服务端 attachment 兜底。",
     )
     youtube_frontend_timeout_seconds = models.FloatField(
         default=8.0,
