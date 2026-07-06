@@ -195,7 +195,7 @@ def size_value(value):
 
 def quality_rank(label):
     text = str(label or "").lower()
-    if any(marker in text for marker in ("原画", "无压缩", "source", "original", "ultra")):
+    if any(marker in text for marker in ("原画", "无压缩", "source", "original", "ultra", "超高清", "超清")):
         return 700
     if "4k" in text or "2160" in text:
         return 600

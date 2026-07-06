@@ -1,4 +1,9 @@
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    ThreadPoolExecutor,
+    TimeoutError as FutureTimeoutError,
+    wait,
+)
 from dataclasses import dataclass, replace
 import hashlib
 import inspect
@@ -14,7 +19,7 @@ from django.utils import timezone
 
 from ..assets import MediaAsset, ParseResult
 from ..candidates import MediaCandidate
-from ..common import validate_external_url
+from ..common import XhsProviderTimeoutError, validate_external_url
 from ..diagnostics import select_best_media_candidate
 from ..provider_settings import get_platform_provider_settings
 from ..provider_manifest import build_provider_manifest_token
@@ -783,6 +788,157 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
         return result
 
 
+class DouyinUltraRaceProvider(DouyinResultProvider):
+    name = "ultra_race"
+    weak_candidate_settle_seconds = 1.0
+    strong_candidate_min_size_bytes = 50 * 1024 * 1024
+    strong_candidate_min_quality_rank = 500
+
+    def __init__(self, provider_settings=None, providers=None):
+        self.provider_settings = provider_settings or get_platform_provider_settings("douyin")
+        self.providers = tuple(providers or (
+            DouyinTianTianJieXiProvider(provider_settings=self.provider_settings),
+            DouyinKukuToolProvider(provider_settings=self.provider_settings),
+        ))
+
+    def result_score(self, result):
+        video_assets = getattr(result, "video_assets", ())
+        if not video_assets:
+            return (0, 0)
+        best_asset = max(
+            video_assets,
+            key=lambda asset: (
+                tiantianjiexi_quality_rank(getattr(asset, "quality_label", "")),
+                int(getattr(asset, "size_bytes", 0) or 0),
+            ),
+        )
+        return (
+            tiantianjiexi_quality_rank(getattr(best_asset, "quality_label", "")),
+            int(getattr(best_asset, "size_bytes", 0) or 0),
+        )
+
+    def result_is_strong_candidate(self, result):
+        quality_score, size_bytes = self.result_score(result)
+        return (
+            quality_score >= self.strong_candidate_min_quality_rank
+            or size_bytes >= self.strong_candidate_min_size_bytes
+        )
+
+    def finalize_result(self, result, provider_name, enabled_count, context, started_at):
+        log_provider_event(
+            "douyin_ultra_race_selected",
+            provider_name,
+            context,
+            started_at,
+            race_provider_count=enabled_count,
+        )
+        return with_parse_metadata(
+            result,
+            ultra_race_winner=provider_name,
+            ultra_race_provider_count=enabled_count,
+        )
+
+    def parse(self, adapter, context):
+        enabled_providers = tuple(
+            provider
+            for provider in self.providers
+            if self.provider_settings.provider_is_enabled(getattr(provider, "name", ""))
+        )
+        if not enabled_providers:
+            return None
+
+        deadline = context.deadline_monotonic or (
+            monotonic() + max(0.1, self.provider_settings.ultra_total_timeout_seconds)
+        )
+        if deadline <= monotonic():
+            raise XhsProviderTimeoutError("抖音超清 Provider 超时")
+
+        race_started_at = time()
+        future_to_provider = {
+            DOUYIN_ULTRA_EXECUTOR.submit(provider.parse, adapter, context): provider
+            for provider in enabled_providers
+        }
+        last_timeout_error = None
+        best_result = None
+        best_provider_name = ""
+        best_score = (0, 0)
+        weak_settle_deadline = 0
+        try:
+            while future_to_provider:
+                now = monotonic()
+                if best_result and weak_settle_deadline and now >= weak_settle_deadline:
+                    break
+                active_deadline = (
+                    min(deadline, weak_settle_deadline)
+                    if best_result and weak_settle_deadline
+                    else deadline
+                )
+                remaining_budget = active_deadline - now
+                if remaining_budget <= 0:
+                    break
+                done, _pending = wait(
+                    future_to_provider,
+                    timeout=max(0, remaining_budget),
+                    return_when=FIRST_COMPLETED,
+                )
+                if not done:
+                    break
+                for future in done:
+                    provider = future_to_provider.pop(future)
+                    provider_name = getattr(provider, "name", type(provider).__name__)
+                    try:
+                        result = future.result()
+                        if result and result.assets:
+                            score = self.result_score(result)
+                            if not best_result or score > best_score:
+                                best_result = result
+                                best_provider_name = provider_name
+                                best_score = score
+                            if self.result_is_strong_candidate(result):
+                                for pending_future in future_to_provider:
+                                    pending_future.cancel()
+                                return self.finalize_result(
+                                    result,
+                                    provider_name,
+                                    len(enabled_providers),
+                                    context,
+                                    race_started_at,
+                                )
+                            if not weak_settle_deadline:
+                                weak_settle_deadline = min(
+                                    deadline,
+                                    monotonic() + self.weak_candidate_settle_seconds,
+                                )
+                    except XhsProviderTimeoutError as error:
+                        last_timeout_error = error
+                        log_provider_failure(provider_name, context, error)
+                    except Exception as error:
+                        log_provider_failure(provider_name, context, error)
+        finally:
+            for future in future_to_provider:
+                future.cancel()
+
+        if best_result:
+            return self.finalize_result(
+                best_result,
+                best_provider_name,
+                len(enabled_providers),
+                context,
+                race_started_at,
+            )
+
+        log_provider_event(
+            "douyin_ultra_race_exhausted",
+            self.name,
+            context,
+            race_started_at,
+            race_provider_count=len(enabled_providers),
+        )
+        if last_timeout_error:
+            raise last_timeout_error
+        return None
+
+
 class DouyinTikHubProvider(DouyinResultProvider):
     name = "tikhub"
 
@@ -1337,13 +1493,14 @@ def build_douyin_result_providers(provider_settings=None, prefer_ultra_hd=True):
     else:
         provider_settings = replace(
             provider_settings,
-            # The current ultra-HD path prefers the official TianTianJieXi
-            # API, keeps KuKuTool as fallback, and leaves TikHub/enhanced
-            # native for diagnostics outside the synchronous request path.
-            provider_order=("tiantianjiexi", "kukutool", "native"),
+            # The current ultra-HD path races TianTianJieXi against KuKuTool
+            # so a slow primary provider does not block the user-facing parse.
+            # TikHub and enhanced native remain diagnostics-only.
+            provider_order=("ultra_race", "native"),
         )
 
     provider_map = {
+        "ultra_race": lambda: DouyinUltraRaceProvider(provider_settings=provider_settings),
         "tiantianjiexi": lambda: DouyinTianTianJieXiProvider(provider_settings=provider_settings),
         "kukutool": lambda: DouyinKukuToolProvider(provider_settings=provider_settings),
         "tikhub": lambda: DouyinTikHubProvider(provider_settings=provider_settings),

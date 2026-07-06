@@ -254,6 +254,7 @@ from .services.platforms.douyin_providers import (
     DouyinNativeProvider,
     DouyinTikHubProvider,
     DouyinTianTianJieXiProvider,
+    DouyinUltraRaceProvider,
     ValidatedProviderCandidate,
     build_tikhub_validated_cache_key,
     build_tikhub_provider_response,
@@ -2057,7 +2058,11 @@ class DouyinAdapterTests(SimpleTestCase):
         ))
 
         self.assertEqual(len(providers), 2)
-        self.assertIsInstance(providers[0], DouyinKukuToolProvider)
+        self.assertIsInstance(providers[0], DouyinUltraRaceProvider)
+        self.assertEqual(
+            [type(provider) for provider in providers[0].providers],
+            [DouyinTianTianJieXiProvider, DouyinKukuToolProvider],
+        )
         self.assertIsInstance(providers[1], DouyinNativeProvider)
 
     @override_settings(
@@ -2073,7 +2078,7 @@ class DouyinAdapterTests(SimpleTestCase):
         ))
 
         self.assertEqual(len(providers), 2)
-        self.assertIsInstance(providers[0], DouyinKukuToolProvider)
+        self.assertIsInstance(providers[0], DouyinUltraRaceProvider)
         self.assertIsInstance(providers[1], DouyinNativeProvider)
         self.assertFalse(any(isinstance(provider, DouyinTikHubProvider) for provider in providers))
 
@@ -2090,7 +2095,7 @@ class DouyinAdapterTests(SimpleTestCase):
         ))
 
         self.assertEqual(len(providers), 2)
-        self.assertIsInstance(providers[0], DouyinKukuToolProvider)
+        self.assertIsInstance(providers[0], DouyinUltraRaceProvider)
         self.assertIsInstance(providers[1], DouyinNativeProvider)
 
     @override_settings(
@@ -2107,7 +2112,7 @@ class DouyinAdapterTests(SimpleTestCase):
 
         self.assertFalse(any(isinstance(provider, DouyinTikHubProvider) for provider in providers))
         self.assertEqual(len(providers), 2)
-        self.assertIsInstance(providers[0], DouyinKukuToolProvider)
+        self.assertIsInstance(providers[0], DouyinUltraRaceProvider)
         self.assertIsInstance(providers[1], DouyinNativeProvider)
 
     @override_settings(
@@ -2121,10 +2126,11 @@ class DouyinAdapterTests(SimpleTestCase):
             provider_order=("kukutool", "native"),
         ))
 
-        self.assertEqual(len(providers), 3)
-        self.assertIsInstance(providers[0], DouyinTianTianJieXiProvider)
-        self.assertIsInstance(providers[1], DouyinKukuToolProvider)
-        self.assertIsInstance(providers[2], DouyinNativeProvider)
+        self.assertEqual(len(providers), 2)
+        self.assertIsInstance(providers[0], DouyinUltraRaceProvider)
+        self.assertIsInstance(providers[0].providers[0], DouyinTianTianJieXiProvider)
+        self.assertIsInstance(providers[0].providers[1], DouyinKukuToolProvider)
+        self.assertIsInstance(providers[1], DouyinNativeProvider)
 
     @override_settings(
         TIANTIANJIEXI_PROVIDER_ENABLED=True,
@@ -2171,6 +2177,128 @@ class DouyinAdapterTests(SimpleTestCase):
         self.assertEqual(result.assets[0].quality_label, "4K")
         self.assertEqual(result.metadata["selected_provider"], "tiantianjiexi")
         self.assertTrue(result.assets[0].provider_manifest_token)
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="13800000000",
+        TIANTIANJIEXI_PASSWORD="secret",
+    )
+    def test_douyin_ultra_race_uses_kukutool_when_tiantianjiexi_times_out(self):
+        class TimeoutProvider:
+            name = "tiantianjiexi"
+
+            def parse(self, adapter, context):
+                raise XhsProviderTimeoutError("天天解析接口超时")
+
+        class SuccessProvider:
+            name = "kukutool"
+
+            def parse(self, adapter, context):
+                return ParseResult(
+                    platform="douyin",
+                    post_type="video",
+                    base_filename="race",
+                    assets=(
+                        MediaAsset(
+                            media_type="video",
+                            url="https://v11-default.365yg.com/race.mp4",
+                            platform="douyin",
+                            provider="kukutool",
+                        ),
+                    ),
+                    metadata={"selected_provider": "kukutool"},
+                )
+
+        context = DouyinParseContext(
+            url="https://www.douyin.com/video/7643011784572403387",
+            final_url="https://www.douyin.com/video/7643011784572403387",
+            aweme_id="7643011784572403387",
+            deadline_monotonic=time.monotonic() + 1,
+        )
+        provider = DouyinUltraRaceProvider(
+            provider_settings=ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("ultra_race", "native"),
+            ),
+            providers=(TimeoutProvider(), SuccessProvider()),
+        )
+
+        result = provider.parse(DouyinAdapter(), context)
+
+        self.assertEqual(result.metadata["selected_provider"], "kukutool")
+        self.assertEqual(result.metadata["ultra_race_winner"], "kukutool")
+        self.assertEqual(result.assets[0].url, "https://v11-default.365yg.com/race.mp4")
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="13800000000",
+        TIANTIANJIEXI_PASSWORD="secret",
+    )
+    def test_douyin_ultra_race_waits_for_stronger_candidate_after_weak_first_result(self):
+        class WeakProvider:
+            name = "tiantianjiexi"
+
+            def parse(self, adapter, context):
+                return ParseResult(
+                    platform="douyin",
+                    post_type="video",
+                    base_filename="weak",
+                    assets=(
+                        MediaAsset(
+                            media_type="video",
+                            url="https://v11-default.365yg.com/weak.mp4",
+                            platform="douyin",
+                            provider="tiantianjiexi",
+                            quality_label="video",
+                            size_bytes=0,
+                        ),
+                    ),
+                    metadata={"selected_provider": "tiantianjiexi"},
+                )
+
+        class StrongProvider:
+            name = "kukutool"
+
+            def parse(self, adapter, context):
+                time.sleep(0.02)
+                return ParseResult(
+                    platform="douyin",
+                    post_type="video",
+                    base_filename="strong",
+                    assets=(
+                        MediaAsset(
+                            media_type="video",
+                            url="https://v11-default.365yg.com/strong.mp4",
+                            platform="douyin",
+                            provider="kukutool",
+                            quality_label="超高清",
+                            size_bytes=90_000_000,
+                        ),
+                    ),
+                    metadata={"selected_provider": "kukutool"},
+                )
+
+        context = DouyinParseContext(
+            url="https://www.douyin.com/video/7643011784572403387",
+            final_url="https://www.douyin.com/video/7643011784572403387",
+            aweme_id="7643011784572403387",
+            deadline_monotonic=time.monotonic() + 1,
+        )
+        provider = DouyinUltraRaceProvider(
+            provider_settings=ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("ultra_race", "native"),
+            ),
+            providers=(WeakProvider(), StrongProvider()),
+        )
+
+        result = provider.parse(DouyinAdapter(), context)
+
+        self.assertEqual(result.metadata["selected_provider"], "kukutool")
+        self.assertEqual(result.metadata["ultra_race_winner"], "kukutool")
+        self.assertEqual(result.assets[0].url, "https://v11-default.365yg.com/strong.mp4")
 
     @patch("xhs_download.services.platforms.douyin.build_douyin_result_providers")
     def test_douyin_adapter_falls_back_when_tiantianjiexi_times_out(self, mock_providers):
