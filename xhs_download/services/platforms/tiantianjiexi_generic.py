@@ -1,5 +1,6 @@
 import logging
 import time
+from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 import requests
@@ -208,6 +209,29 @@ def quality_rank(label):
     if "480" in text:
         return 200
     return 100
+
+
+def infer_quality_from_url(url):
+    parsed = urlsplit(str(url or ""))
+    params = parse_qs(parsed.query)
+
+    def int_param(name):
+        try:
+            return int((params.get(name) or ["0"])[0] or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    br = max(int_param("br"), int_param("bt"))
+    qs = str((params.get("qs") or [""])[0] or "")
+    if qs == "13" or br >= 20000:
+        return "原画"
+    if br >= 10000:
+        return "2K"
+    if br >= 2500:
+        return "1080P"
+    if br >= 1500:
+        return "720P"
+    return ""
 
 
 def safe_metadata_value(value):
@@ -608,10 +632,43 @@ class TianTianJieXiResultNormalizer:
                 return
             quality = field_value(
                 raw,
-                ("quality", "quality_label", "qualityLabel", "type", "name", "resolution", "clarity"),
-            ) or "video"
-            size = field_value(raw, ("size", "file_size", "fileSize", "filesize"))
+                (
+                    "quality",
+                    "quality_label",
+                    "qualityLabel",
+                    "type",
+                    "name",
+                    "resolution",
+                    "clarity",
+                ),
+            ) or infer_quality_from_url(url) or "video"
+            size = field_value(
+                raw,
+                (
+                    "size",
+                    "file_size",
+                    "fileSize",
+                    "filesize",
+                    "size_in_bytes",
+                    "sizeInBytes",
+                    "bytes",
+                ),
+            )
             resources.append({"url": url, "quality": str(quality), "size": size_value(size)})
+            for nested_key in (
+                "streams",
+                "stream",
+                "video_list",
+                "videoList",
+                "download_url_list",
+                "downloadUrlList",
+                "url_list",
+                "urlList",
+                "play_addr",
+                "playAddr",
+            ):
+                for nested_item in normalize_list(raw.get(nested_key)):
+                    add(nested_item)
 
         for key in ("videos", "video", "video_url", "videoUrl", "url", "download_url", "downloadUrl", "play_url", "playUrl"):
             value = payload.get(key)

@@ -1584,6 +1584,41 @@ class TianTianJieXiProviderTests(TestCase):
         self.assertEqual(result.assets[0].quality_label, "4K")
         self.assertEqual(result.metadata["candidate_count"], 3)
 
+    def test_tiantianjiexi_nested_streams_selects_original_quality(self):
+        result = self.normalize({
+            "title": "streams",
+            "videos": [
+                {
+                    "url": "https://v16.tiktokcdn.com/demo-1080.mp4?br=1999&bt=1999&qs=0",
+                    "streams": [
+                        {
+                            "url": "https://v16.tiktokcdn.com/demo-540.mp4?br=1264&bt=1264&qs=1",
+                            "qualityLabel": "540p",
+                            "sizeInBytes": 1_871_762,
+                        },
+                        {
+                            "url": "https://v16.tiktokcdn.com/demo-original.mp4?br=58919&bt=58919&qs=13",
+                            "qualityLabel": "原画",
+                            "sizeInBytes": 86_980_828,
+                        },
+                    ],
+                },
+            ],
+        })
+
+        self.assertEqual(result.assets[0].url, "https://v16.tiktokcdn.com/demo-original.mp4?br=58919&bt=58919&qs=13")
+        self.assertEqual(result.assets[0].quality_label, "原画")
+        self.assertEqual(result.assets[0].size_bytes, 86_980_828)
+        self.assertEqual(result.metadata["candidate_count"], 3)
+
+    def test_tiantianjiexi_infers_original_quality_from_video_url_params(self):
+        normalized_payload = TianTianJieXiResultNormalizer.normalize_payload({
+            "title": "params",
+            "video_url": "https://v16.tiktokcdn.com/demo.mp4?br=58919&bt=58919&qs=13",
+        })
+
+        self.assertEqual(normalized_payload["videos"][0]["quality"], "原画")
+
     def test_tiantianjiexi_image_json_generates_image_parse_result(self):
         result = self.normalize({
             "title": "image post",
