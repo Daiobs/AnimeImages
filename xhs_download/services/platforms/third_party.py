@@ -17,6 +17,10 @@ from ..provider_runtime_config import runtime_float
 from .base import BasePlatformAdapter, PlatformCapabilities, ProviderPolicy
 from .gallerydl_generic import GalleryDlGenericProvider, GalleryDlResultNormalizer
 from .kukutool_generic import KukutoolGenericProvider, KukutoolResultNormalizer
+from .tiantianjiexi_generic import (
+    TianTianJieXiGenericProvider,
+    TianTianJieXiResultNormalizer,
+)
 from .ytdlp_generic import YtDlpGenericProvider, YtDlpResultNormalizer
 from .ytdlp_merge import (
     PROVIDER_ID as YTDLP_MERGE_PROVIDER_ID,
@@ -55,6 +59,7 @@ class ThirdPartyPlatformRule:
     media_types: tuple[str, ...] = ("image", "video")
     provider_ids: tuple[str, ...] = (
         "kukutool_generic",
+        "tiantianjiexi_generic",
         "yt_dlp_generic",
         "gallery_dl_generic",
     )
@@ -130,7 +135,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="YouTube",
         host_suffixes=("youtube.com", "youtu.be"),
         media_types=("video",),
-        provider_ids=("yt_dlp_generic", "kukutool_generic"),
+        provider_ids=("yt_dlp_generic", "kukutool_generic", "tiantianjiexi_generic"),
         media_host_suffixes=("googlevideo.com", "ytimg.com"),
         image_media_host_suffixes=("ytimg.com",),
         video_media_host_suffixes=("googlevideo.com",),
@@ -151,7 +156,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="Imgur",
         host_suffixes=("imgur.com",),
         media_types=("image", "video"),
-        provider_ids=("kukutool_generic", "gallery_dl_generic"),
+        provider_ids=("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
         media_host_suffixes=("imgur.com",),
         risk_level=RISK_NORMAL,
         notes="图片/动图平台，公开仍需后台 allowlist。",
@@ -161,7 +166,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="Reddit",
         host_suffixes=("reddit.com", "redd.it"),
         media_types=("image",),
-        provider_ids=("kukutool_generic", "gallery_dl_generic"),
+        provider_ids=("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
         media_host_suffixes=("redd.it", "redditmedia.com"),
         risk_level=RISK_SENSITIVE,
         notes="社区内容风险较高，默认不公开。",
@@ -171,7 +176,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="Tumblr",
         host_suffixes=("tumblr.com",),
         media_types=("image",),
-        provider_ids=("kukutool_generic", "gallery_dl_generic"),
+        provider_ids=("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
         media_host_suffixes=("tumblr.com",),
         risk_level=RISK_SENSITIVE,
         notes="社区内容风险较高，默认不公开。",
@@ -181,7 +186,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="Flickr",
         host_suffixes=("flickr.com",),
         media_types=("image",),
-        provider_ids=("kukutool_generic", "gallery_dl_generic"),
+        provider_ids=("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
         media_host_suffixes=("staticflickr.com",),
         risk_level=RISK_SAFE,
         notes="图片平台，可作为公开灰度候选，但仍必须命中后台 allowlist。",
@@ -191,7 +196,7 @@ THIRD_PARTY_PLATFORM_RULES = (
         display_name="DeviantArt",
         host_suffixes=("deviantart.com",),
         media_types=("image",),
-        provider_ids=("kukutool_generic", "gallery_dl_generic"),
+        provider_ids=("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
         media_host_suffixes=("wixmp.com", "deviantart.net"),
         risk_level=RISK_SENSITIVE,
         notes="社区内容风险较高，默认不公开。",
@@ -408,6 +413,12 @@ def provider_is_enabled(provider_id):
         return bool(
             getattr(settings, "THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED", False)
         )
+    if provider_id == "tiantianjiexi_generic":
+        return bool(
+            getattr(settings, "TIANTIANJIEXI_PROVIDER_ENABLED", False)
+            and getattr(settings, "TIANTIANJIEXI_PHONE", "")
+            and getattr(settings, "TIANTIANJIEXI_PASSWORD", "")
+        )
     if provider_id == "gallery_dl_generic":
         return bool(getattr(settings, "GALLERYDL_PROVIDER_ENABLED", False))
     if provider_id == "yt_dlp_generic":
@@ -432,8 +443,9 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         primary_provider="third_party",
         third_party_providers=(
             "kukutool_generic",
-            "gallery_dl_generic",
+            "tiantianjiexi_generic",
             "yt_dlp_generic",
+            "gallery_dl_generic",
             YOUTUBE_MERGE_PROVIDER_ID,
         ),
     )
@@ -447,6 +459,8 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         normalizer=None,
         gallerydl_provider=None,
         gallerydl_normalizer=None,
+        tiantianjiexi_provider=None,
+        tiantianjiexi_normalizer=None,
         ytdlp_provider=None,
         ytdlp_normalizer=None,
     ):
@@ -457,6 +471,13 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         self.gallerydl_provider = gallerydl_provider or GalleryDlGenericProvider()
         self.gallerydl_normalizer = gallerydl_normalizer or GalleryDlResultNormalizer(
             platform_id=self.platform_id
+        )
+        self.tiantianjiexi_provider = (
+            tiantianjiexi_provider or TianTianJieXiGenericProvider()
+        )
+        self.tiantianjiexi_normalizer = (
+            tiantianjiexi_normalizer
+            or TianTianJieXiResultNormalizer(platform_id=self.platform_id)
         )
         self.ytdlp_provider = ytdlp_provider or YtDlpGenericProvider()
         self.ytdlp_normalizer = ytdlp_normalizer or YtDlpResultNormalizer(
@@ -469,6 +490,10 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
             "gallery_dl_generic": (
                 self.gallerydl_provider,
                 self.gallerydl_normalizer,
+            ),
+            "tiantianjiexi_generic": (
+                self.tiantianjiexi_provider,
+                self.tiantianjiexi_normalizer,
             ),
             "yt_dlp_generic": (self.ytdlp_provider, self.ytdlp_normalizer),
         }

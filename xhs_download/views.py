@@ -106,6 +106,7 @@ from .services.platforms.douyin_kukutool import (
 )
 from .services.platforms.gallerydl_generic import GalleryDlGenericProvider
 from .services.platforms.kukutool_generic import KukutoolGenericProvider
+from .services.platforms.tiantianjiexi_generic import TianTianJieXiGenericProvider
 from .services.platforms.third_party import build_third_party_rollout_status
 from .services.platforms.third_party import THIRD_PARTY_PLATFORM_RULES
 from .services.platforms.ytdlp_generic import YtDlpGenericProvider
@@ -383,7 +384,12 @@ def third_party_provider_is_available(request):
     return provider_is_allowed_for_request(PROVIDER_THIRD_PARTY, request)
 
 
-def build_third_party_provider_summary(kukutool_health, gallerydl_health, ytdlp_health):
+def build_third_party_provider_summary(
+    kukutool_health,
+    tiantianjiexi_health,
+    gallerydl_health,
+    ytdlp_health,
+):
     kukutool_enabled = bool(kukutool_health.get("provider_enabled"))
     kukutool_circuit_open = bool((kukutool_health.get("circuit") or {}).get("open"))
     provider_states = {
@@ -391,6 +397,22 @@ def build_third_party_provider_summary(kukutool_health, gallerydl_health, ytdlp_
             "enabled": kukutool_enabled,
             "ready": bool(kukutool_enabled and not kukutool_circuit_open),
             "issue": "circuit_open" if kukutool_circuit_open else "",
+        },
+        "tiantianjiexi_generic": {
+            "enabled": bool(tiantianjiexi_health.get("enabled")),
+            "ready": bool(
+                tiantianjiexi_health.get("enabled")
+                and not (tiantianjiexi_health.get("circuit") or {}).get("open")
+            ),
+            "issue": (
+                "circuit_open"
+                if (tiantianjiexi_health.get("circuit") or {}).get("open")
+                else (
+                    ""
+                    if tiantianjiexi_health.get("api_configured")
+                    else "api_not_configured"
+                )
+            ),
         },
         "gallery_dl_generic": {
             "enabled": bool(gallerydl_health.get("enabled")),
@@ -652,11 +674,13 @@ def policy_engine_view(request):
 def build_provider_dashboard_rows(runtime_setting, request):
     kukutool_health = get_kukutool_provider_health()
     third_party_health = KukutoolGenericProvider().health()
+    tiantianjiexi_health = TianTianJieXiGenericProvider().health()
     gallerydl_health = GalleryDlGenericProvider().health()
     ytdlp_health = YtDlpGenericProvider().health()
     youtube_health = get_youtube_merge_health()
     third_party_summary = build_third_party_provider_summary(
         third_party_health,
+        tiantianjiexi_health,
         gallerydl_health,
         ytdlp_health,
     )
@@ -740,6 +764,7 @@ def build_provider_dashboard_rows(runtime_setting, request):
         "kukutool": kukutool_health,
         "youtube_merge": youtube_health,
         "third_party": third_party_summary,
+        "third_party_tiantianjiexi": tiantianjiexi_health,
     }
 
 
@@ -874,14 +899,19 @@ def provider_health_view(request):
     third_party_health = KukutoolGenericProvider().health(
         source_key=request.GET.get("source_key", "")
     )
+    tiantianjiexi_health = TianTianJieXiGenericProvider().health(
+        source_key=request.GET.get("source_key", "")
+    )
     gallerydl_health = GalleryDlGenericProvider().health()
     ytdlp_health = YtDlpGenericProvider().health()
     health["third_party"] = third_party_health
+    health["third_party_tiantianjiexi"] = tiantianjiexi_health
     health["third_party_gallerydl"] = gallerydl_health
     health["third_party_ytdlp"] = ytdlp_health
     health["youtube_merge"] = get_youtube_merge_health()
     health["third_party_summary"] = build_third_party_provider_summary(
         third_party_health,
+        tiantianjiexi_health,
         gallerydl_health,
         ytdlp_health,
     )
@@ -927,14 +957,17 @@ def provider_control_view(request):
     set_kukutool_admin_disabled(action == "disable")
     health = get_kukutool_provider_health()
     third_party_health = KukutoolGenericProvider().health()
+    tiantianjiexi_health = TianTianJieXiGenericProvider().health()
     gallerydl_health = GalleryDlGenericProvider().health()
     ytdlp_health = YtDlpGenericProvider().health()
     health["third_party"] = third_party_health
+    health["third_party_tiantianjiexi"] = tiantianjiexi_health
     health["third_party_gallerydl"] = gallerydl_health
     health["third_party_ytdlp"] = ytdlp_health
     health["youtube_merge"] = get_youtube_merge_health()
     health["third_party_summary"] = build_third_party_provider_summary(
         third_party_health,
+        tiantianjiexi_health,
         gallerydl_health,
         ytdlp_health,
     )

@@ -236,6 +236,16 @@ from .services.platforms.douyin_kukutool import (
 from .services.platforms.kukutool_generic import (
     build_failure_cache_key as build_generic_kukutool_failure_cache_key,
     build_payload_cache_key as build_generic_kukutool_payload_cache_key,
+    source_key_for_url,
+)
+from .services.platforms.tiantianjiexi_generic import (
+    PROVIDER_ID as TIANTIANJIEXI_PROVIDER_ID,
+    TianTianJieXiApiClient,
+    TianTianJieXiGenericProvider,
+    TianTianJieXiResultNormalizer,
+    build_circuit_open_key as build_tiantianjiexi_circuit_open_key,
+    build_failure_cache_key as build_tiantianjiexi_failure_cache_key,
+    build_payload_cache_key as build_tiantianjiexi_payload_cache_key,
 )
 from .services.provider_recovery import iter_kukutool_download_recovery_urls
 from .services.platforms.douyin_providers import (
@@ -1336,22 +1346,23 @@ class XhsParserTests(SimpleTestCase):
         }
         self.assertEqual(
             third_party_rules_by_id["youtube"]["provider_ids"],
-            ("yt_dlp_generic", "kukutool_generic"),
+            ("yt_dlp_generic", "kukutool_generic", "tiantianjiexi_generic"),
         )
         self.assertEqual(
             third_party_rules_by_id["tiktok"]["provider_ids"],
-            ("kukutool_generic", "yt_dlp_generic", "gallery_dl_generic"),
+            ("kukutool_generic", "tiantianjiexi_generic", "yt_dlp_generic", "gallery_dl_generic"),
         )
         self.assertEqual(
             third_party_rules_by_id["imgur"]["provider_ids"],
-            ("kukutool_generic", "gallery_dl_generic"),
+            ("kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"),
         )
         self.assertEqual(
             platforms["third_party"]["provider_policy"]["third_party_providers"],
             (
                 "kukutool_generic",
-                "gallery_dl_generic",
+                "tiantianjiexi_generic",
                 "yt_dlp_generic",
+                "gallery_dl_generic",
                 "youtube_merge",
             ),
         )
@@ -1479,6 +1490,363 @@ class XhsParserTests(SimpleTestCase):
         self.assertEqual(result["post_type"], "video")
         self.assertEqual(result["video_items"][0]["video_url"], "https://sns-video-bd.xhscdn.com/video-key-123456789")
         self.assertEqual(result["video_items"][0]["cover_url"], "https://ci.xiaohongshu.com/spectrum/cover123?imageView2/format/jpg")
+
+
+class TianTianJieXiProviderTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.rule = get_third_party_rule("tiktok")
+        self.source_url = "https://www.tiktok.com/@demo/video/123"
+
+    def normalize(self, payload):
+        normalized_payload = TianTianJieXiResultNormalizer.normalize_payload(payload)
+        return TianTianJieXiResultNormalizer().normalize(
+            rule=self.rule,
+            platform_name="TikTok",
+            source_url=self.source_url,
+            payload=normalized_payload,
+        )
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="",
+        TIANTIANJIEXI_PASSWORD="",
+    )
+    def test_tiantianjiexi_disabled_without_credentials(self):
+        health = TianTianJieXiGenericProvider().health()
+
+        self.assertFalse(health["enabled"])
+        self.assertFalse(health["api_configured"])
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=False,
+        TIANTIANJIEXI_PHONE="13800000000",
+        TIANTIANJIEXI_PASSWORD="secret",
+    )
+    def test_tiantianjiexi_disabled_when_capability_off(self):
+        health = TianTianJieXiGenericProvider().health()
+
+        self.assertFalse(health["enabled"])
+        self.assertTrue(health["api_configured"])
+
+    def test_tiantianjiexi_video_json_generates_video_parse_result(self):
+        result = self.normalize({
+            "title": "demo video",
+            "cover": "https://p16.tiktokcdn.com/cover.jpg",
+            "video_url": "https://v16.tiktokcdn.com/demo-1080.mp4",
+            "quality": "1080P",
+        })
+
+        self.assertEqual(result.platform, "third_party")
+        self.assertEqual(result.post_type, "video")
+        self.assertEqual(result.assets[0].media_type, "video")
+        self.assertEqual(result.assets[0].provider, TIANTIANJIEXI_PROVIDER_ID)
+        self.assertEqual(result.assets[0].quality_label, "1080P")
+        self.assertEqual(result.metadata["source_provider"], TIANTIANJIEXI_PROVIDER_ID)
+
+    def test_tiantianjiexi_multi_quality_selects_highest_quality(self):
+        result = self.normalize({
+            "title": "multi",
+            "videos": [
+                {"url": "https://v16.tiktokcdn.com/demo-720.mp4", "quality": "720P", "size": 1_000},
+                {"url": "https://v16.tiktokcdn.com/demo-4k.mp4", "quality": "4K", "size": 2_000},
+                {"url": "https://v16.tiktokcdn.com/demo-1080.mp4", "quality": "1080P", "size": 3_000},
+            ],
+        })
+
+        self.assertEqual(result.assets[0].url, "https://v16.tiktokcdn.com/demo-4k.mp4")
+        self.assertEqual(result.assets[0].quality_label, "4K")
+        self.assertEqual(result.metadata["candidate_count"], 3)
+
+    def test_tiantianjiexi_image_json_generates_image_parse_result(self):
+        result = self.normalize({
+            "title": "image post",
+            "pics": [
+                "https://p16.tiktokcdn.com/a.jpg",
+                "https://p16.tiktokcdn.com/b.jpg",
+            ],
+        })
+
+        self.assertEqual(result.post_type, "image")
+        self.assertEqual(len(result.assets), 2)
+        self.assertEqual(result.assets[0].media_type, "image")
+        self.assertEqual(result.assets[0].provider, TIANTIANJIEXI_PROVIDER_ID)
+
+    def test_tiantianjiexi_audio_url_is_preserved_in_metadata(self):
+        result = self.normalize({
+            "title": "audio",
+            "video_url": "https://v16.tiktokcdn.com/video.mp4",
+            "audio_url": "https://v16.tiktokcdn.com/audio.mp3",
+            "desc": "description text",
+        })
+
+        self.assertEqual(result.metadata["audio_url"], "https://v16.tiktokcdn.com/audio.mp3")
+        self.assertEqual(result.metadata["description"], "description text")
+
+    def test_tiantianjiexi_rejects_invalid_media_urls(self):
+        for url in (
+            "file:///tmp/a.mp4",
+            "http://127.0.0.1/a.mp4",
+            "http://localhost/a.mp4",
+            "http://192.168.1.8/a.mp4",
+            "https://evil.example.com/a.mp4",
+        ):
+            with self.subTest(url=url):
+                with self.assertRaises(ValueError):
+                    self.normalize({"video_url": url})
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="13800000000",
+        TIANTIANJIEXI_PASSWORD="secret",
+        TIANTIANJIEXI_FAILURE_CACHE_TTL_SECONDS=60,
+    )
+    def test_tiantianjiexi_timeout_writes_failure_cache(self):
+        class TimeoutClient:
+            def parse_url(self, url, timeout_seconds=None):
+                raise XhsProviderTimeoutError("timeout")
+
+        provider = TianTianJieXiGenericProvider(client=TimeoutClient())
+
+        with self.assertRaises(XhsProviderTimeoutError):
+            provider.parse(self.source_url, timeout_seconds=0.1)
+
+        failure_key = build_tiantianjiexi_failure_cache_key(source_key_for_url(self.source_url))
+        self.assertTrue(cache.get(failure_key))
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="13800000000",
+        TIANTIANJIEXI_PASSWORD="secret",
+    )
+    def test_tiantianjiexi_circuit_open_skips_api(self):
+        class CountingClient:
+            calls = 0
+
+            def parse_url(self, url, timeout_seconds=None):
+                self.calls += 1
+                return {}
+
+        cache.set(build_tiantianjiexi_circuit_open_key(), int(time.time()) + 60, timeout=60)
+        client = CountingClient()
+        provider = TianTianJieXiGenericProvider(client=client)
+
+        with self.assertRaises(XhsProviderTimeoutError):
+            provider.parse(self.source_url, timeout_seconds=0.1)
+
+        self.assertEqual(client.calls, 0)
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="13800000000",
+        TIANTIANJIEXI_PASSWORD="secret",
+    )
+    def test_tiantianjiexi_payload_cache_hit_skips_api(self):
+        class CountingClient:
+            calls = 0
+
+            def parse_url(self, url, timeout_seconds=None):
+                self.calls += 1
+                return {}
+
+        source_key = source_key_for_url(self.source_url)
+        cache.set(
+            build_tiantianjiexi_payload_cache_key(source_key),
+            {"title": "cached", "videos": [{"url": "https://v16.tiktokcdn.com/cached.mp4"}]},
+            timeout=60,
+        )
+        client = CountingClient()
+
+        payload = TianTianJieXiGenericProvider(client=client).parse(self.source_url, timeout_seconds=0.1)
+
+        self.assertEqual(payload["title"], "cached")
+        self.assertEqual(client.calls, 0)
+
+    @override_settings(
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="13800000000",
+        TIANTIANJIEXI_PASSWORD="secret",
+        TIANTIANJIEXI_ACCOUNT_STATUS_CACHE_TTL_SECONDS=60,
+    )
+    def test_tiantianjiexi_account_status_is_cached_and_sanitized(self):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"vip": True, "phone": "13800000000", "password": "secret"}
+
+        session = Mock()
+        session.get.return_value = Response()
+        client = TianTianJieXiApiClient(session=session)
+
+        first = client.query_account_status()
+        second = client.query_account_status()
+
+        self.assertTrue(first["available"])
+        self.assertTrue(second["cached"])
+        self.assertNotIn("password", first["metadata"])
+        self.assertNotIn("phone", first["metadata"])
+        self.assertEqual(session.get.call_count, 1)
+
+    @override_settings(
+        TIANTIANJIEXI_API_BASE_URL="https://tiantianjiexi.com/ajax/detail.php",
+        TIANTIANJIEXI_PHONE="13800000000",
+        TIANTIANJIEXI_PASSWORD="secret",
+    )
+    def test_tiantianjiexi_api_client_posts_official_form(self):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "code": 200,
+                    "data": {
+                        "title": "official",
+                        "video_url": "https://v16.tiktokcdn.com/official.mp4",
+                        "quality": "1080P",
+                    },
+                }
+
+        session = Mock()
+        session.post.return_value = Response()
+        client = TianTianJieXiApiClient(session=session)
+
+        payload = client.parse_url(self.source_url, timeout_seconds=1)
+
+        self.assertEqual(payload["title"], "official")
+        self.assertEqual(payload["videos"][0]["quality"], "1080P")
+        session.post.assert_called_once()
+        _args, kwargs = session.post.call_args
+        self.assertEqual(kwargs["headers"]["Content-Type"], "application/x-www-form-urlencoded")
+        self.assertEqual(kwargs["data"]["phone"], "13800000000")
+        self.assertEqual(kwargs["data"]["password"], "secret")
+        self.assertEqual(kwargs["data"]["link"], self.source_url)
+
+    @override_settings(
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="13800000000",
+        TIANTIANJIEXI_PASSWORD="secret",
+    )
+    def test_tiantianjiexi_health_does_not_parse_video(self):
+        class HealthClient:
+            parse_calls = 0
+
+            def parse_url(self, url, timeout_seconds=None):
+                self.parse_calls += 1
+                return {}
+
+            def query_account_status(self):
+                return {"available": True, "cached": False}
+
+        client = HealthClient()
+        health = TianTianJieXiGenericProvider(client=client).health()
+
+        self.assertEqual(client.parse_calls, 0)
+        self.assertEqual(health["provider"], TIANTIANJIEXI_PROVIDER_ID)
+        self.assertTrue(health["account_status_available"])
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="13800000000",
+        TIANTIANJIEXI_PASSWORD="secret",
+        YTDLP_PROVIDER_ENABLED=False,
+        GALLERYDL_PROVIDER_ENABLED=False,
+    )
+    def test_generic_adapter_falls_back_from_kukutool_to_tiantianjiexi(self):
+        class FailingProvider:
+            def parse(self, url, timeout_seconds=None):
+                raise RuntimeError("kukutool failed")
+
+        class SuccessfulProvider:
+            def parse(self, url, timeout_seconds=None):
+                return {
+                    "title": "ok",
+                    "videos": [{"url": "https://v16.tiktokcdn.com/ok.mp4", "quality": "1080P"}],
+                }
+
+        adapter = GenericThirdPartyAdapter(
+            provider=FailingProvider(),
+            tiantianjiexi_provider=SuccessfulProvider(),
+        )
+
+        result = adapter.parse_url(self.source_url)
+
+        self.assertEqual(result.assets[0].provider, TIANTIANJIEXI_PROVIDER_ID)
+        self.assertEqual(result.metadata["selected_provider"], TIANTIANJIEXI_PROVIDER_ID)
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="13800000000",
+        TIANTIANJIEXI_PASSWORD="secret",
+        YTDLP_PROVIDER_ENABLED=True,
+        GALLERYDL_PROVIDER_ENABLED=False,
+    )
+    def test_generic_adapter_falls_back_from_tiantianjiexi_to_ytdlp(self):
+        class FailingProvider:
+            def __init__(self, message):
+                self.message = message
+
+            def parse(self, url, timeout_seconds=None):
+                raise RuntimeError(self.message)
+
+        class SuccessfulYtdlpProvider:
+            def parse(self, url, timeout_seconds=None):
+                return {"title": "yt", "url": "https://v16.tiktokcdn.com/ytdlp.mp4"}
+
+        class SuccessfulNormalizer:
+            def normalize(self, *, rule, platform_name, source_url, payload):
+                asset = MediaAsset(
+                    media_type="video",
+                    url=payload["url"],
+                    platform="third_party",
+                    provider="yt_dlp_generic",
+                    provider_resource_id="abc",
+                    provider_cache_key="third_party:yt_dlp_generic:abc",
+                    asset_id="third_party:tiktok:abc:video:1",
+                    provider_manifest_token="token",
+                )
+                return ParseResult(
+                    platform="third_party",
+                    post_type="video",
+                    base_filename="yt",
+                    assets=(asset,),
+                    metadata={"source_provider": "yt_dlp_generic"},
+                )
+
+        adapter = GenericThirdPartyAdapter(
+            provider=FailingProvider("kukutool failed"),
+            tiantianjiexi_provider=FailingProvider("tiantian failed"),
+            ytdlp_provider=SuccessfulYtdlpProvider(),
+            ytdlp_normalizer=SuccessfulNormalizer(),
+        )
+
+        result = adapter.parse_url(self.source_url)
+
+        self.assertEqual(result.assets[0].provider, "yt_dlp_generic")
+        self.assertEqual(result.metadata["selected_provider"], "yt_dlp_generic")
+
+    def test_provider_health_includes_tiantianjiexi(self):
+        user = User.objects.create_superuser(username="provider-root", password="pw")
+        client = Client()
+        client.force_login(user)
+
+        response = client.get("/admin/provider-health/")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("third_party_tiantianjiexi", payload)
+        self.assertIn("tiantianjiexi_generic", payload["third_party_summary"]["provider_states"])
 
 
 class DouyinAdapterTests(SimpleTestCase):
