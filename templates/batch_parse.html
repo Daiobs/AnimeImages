@@ -13,14 +13,6 @@
                         <p class="hero-subtitle">
                             一行一个链接，适合批量测试天天解析、KuKuTool、yt-dlp 与 gallery-dl 支持的平台。
                         </p>
-                        <div class="alert alert-warning text-start mt-3 mb-0">
-                            <i class="bi bi-shield-lock me-1"></i>
-                            {% if batch_staff_only %}
-                                当前批量解析仅管理员可用；结果中的直链仅用于调试，不会进入下载统计、成本守卫或交付日志。
-                            {% else %}
-                                公开批量解析已开启；公开用户不会看到裸直链，且会受到更严格的条数与频率限制。
-                            {% endif %}
-                        </div>
                     </div>
 
                     <form method="post" class="batch-form">
