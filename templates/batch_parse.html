@@ -43,51 +43,73 @@
 
                         <div class="d-flex flex-wrap gap-2 align-items-center">
                             <button type="submit" class="btn btn-brand batch-submit-btn">
-                                <i class="bi bi-magic me-1"></i>
-                                开始批量解析
+                                <span class="spinner-border spinner-border-sm me-1 batch-submit-spinner" aria-hidden="true"></span>
+                                <i class="bi bi-magic me-1 batch-submit-icon"></i>
+                                <span class="batch-submit-label">开始批量解析</span>
                             </button>
-                            <details class="batch-settings">
-                                <summary class="btn btn-outline-secondary batch-settings-toggle">
-                                    <i class="bi bi-sliders me-1"></i>
-                                    解析设置
-                                </summary>
-                                <div class="batch-settings-panel">
-                                    <label class="form-check batch-option">
-                                        <input
-                                                class="form-check-input"
-                                                type="checkbox"
-                                                name="ultra_hd"
-                                                value="1"
-                                                {% if prefer_ultra_hd %}checked{% endif %}
-                                                {% if not ultra_hd_available %}disabled{% endif %}
-                                        >
-                                        <span class="form-check-label">
-                                            <strong>抖音原画/超清</strong>
-                                            <small>开启后会让天天解析与 KuKuTool 竞速获取原画/超清资源，失败时自动回退普通解析。</small>
-                                        </span>
-                                    </label>
-                                    <label class="form-check batch-option">
-                                        <input
-                                                class="form-check-input"
-                                                type="checkbox"
-                                                name="youtube_merge"
-                                                value="1"
-                                                {% if prefer_youtube_merge %}checked{% endif %}
-                                                {% if not youtube_merge_mode_available %}disabled{% endif %}
-                                        >
-                                        <span class="form-check-label">
-                                            <strong>YouTube 最高画质合并</strong>
-                                            <small>开启后会优先获取高画质音视频并在服务端合并，耗时可能更长。</small>
-                                        </span>
-                                    </label>
-                                    <div class="batch-limit-row">
-                                        <span>本次最多链接数：{{ max_links }}</span>
-                                        <span>每条链接超时：{{ batch_per_link_timeout_seconds }} 秒</span>
-                                        <span>总解析预算：{{ batch_total_timeout_seconds }} 秒</span>
+                            <button type="button"
+                                    class="btn btn-outline-secondary batch-settings-toggle"
+                                    data-bs-toggle="modal"
+                                    data-bs-target="#batchSettingsModal">
+                                <i class="bi bi-sliders me-1"></i>
+                                解析设置
+                            </button>
+                            <span class="text-muted small">解析结果会逐条展示，失败链接不会影响其他链接。</span>
+
+                            <div class="modal fade batch-settings-modal"
+                                 id="batchSettingsModal"
+                                 tabindex="-1"
+                                 aria-labelledby="batchSettingsModalLabel"
+                                 aria-hidden="true">
+                                <div class="modal-dialog modal-dialog-centered">
+                                    <div class="modal-content">
+                                        <div class="modal-header">
+                                            <h2 class="modal-title fs-5" id="batchSettingsModalLabel">解析设置</h2>
+                                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+                                        </div>
+                                        <div class="modal-body">
+                                            <div class="batch-settings-panel">
+                                                <label class="form-check batch-option">
+                                                    <input
+                                                            class="form-check-input"
+                                                            type="checkbox"
+                                                            name="ultra_hd"
+                                                            value="1"
+                                                            {% if prefer_ultra_hd %}checked{% endif %}
+                                                            {% if not ultra_hd_available %}disabled{% endif %}
+                                                    >
+                                                    <span class="form-check-label">
+                                                        <strong>抖音原画/超清</strong>
+                                                        <small>开启后会让天天解析与 KuKuTool 竞速获取原画/超清资源，失败时自动回退普通解析。</small>
+                                                    </span>
+                                                </label>
+                                                <label class="form-check batch-option">
+                                                    <input
+                                                            class="form-check-input"
+                                                            type="checkbox"
+                                                            name="youtube_merge"
+                                                            value="1"
+                                                            {% if prefer_youtube_merge %}checked{% endif %}
+                                                            {% if not youtube_merge_mode_available %}disabled{% endif %}
+                                                    >
+                                                    <span class="form-check-label">
+                                                        <strong>YouTube 最高画质合并</strong>
+                                                        <small>开启后会优先获取高画质音视频并在服务端合并，耗时可能更长。</small>
+                                                    </span>
+                                                </label>
+                                                <div class="batch-limit-row">
+                                                    <span>本次最多链接数：{{ max_links }}</span>
+                                                    <span>每条链接超时：{{ batch_per_link_timeout_seconds }} 秒</span>
+                                                    <span>总解析预算：{{ batch_total_timeout_seconds }} 秒</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="modal-footer">
+                                            <button type="button" class="btn btn-brand" data-bs-dismiss="modal">保存设置</button>
+                                        </div>
                                     </div>
                                 </div>
-                            </details>
-                            <span class="text-muted small">解析结果会逐条展示，失败链接不会影响其他链接。</span>
+                            </div>
                         </div>
                     </form>
                 </div>

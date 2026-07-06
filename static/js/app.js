@@ -85,6 +85,84 @@
         if (!batchPage) {
             return;
         }
+        const batchForm = batchPage.querySelector("form.batch-form");
+        const batchTextarea = batchPage.querySelector("#batch-links");
+        const submitButton = batchPage.querySelector(".batch-submit-btn");
+        const submitLabel = batchPage.querySelector(".batch-submit-label");
+        const ultraInput = batchPage.querySelector('input[name="ultra_hd"]');
+        const youtubeInput = batchPage.querySelector('input[name="youtube_merge"]');
+        const draftKey = "animeimages.batchParseDraft.v1";
+
+        function readDraft() {
+            try {
+                return JSON.parse(window.localStorage.getItem(draftKey) || "{}");
+            } catch (error) {
+                return {};
+            }
+        }
+
+        function writeDraft() {
+            try {
+                window.localStorage.setItem(draftKey, JSON.stringify({
+                    links: batchTextarea ? batchTextarea.value : "",
+                    ultra_hd: ultraInput ? ultraInput.checked : false,
+                    youtube_merge: youtubeInput ? youtubeInput.checked : false,
+                }));
+            } catch (error) {
+                // localStorage may be disabled; batch parsing still works without draft persistence.
+            }
+        }
+
+        function restoreDraft() {
+            const draft = readDraft();
+            if (batchTextarea && !batchTextarea.value && draft.links) {
+                batchTextarea.value = draft.links;
+            }
+            if (batchTextarea && batchTextarea.value) {
+                if (ultraInput && !ultraInput.disabled && typeof draft.ultra_hd === "boolean") {
+                    ultraInput.checked = draft.ultra_hd;
+                }
+                if (youtubeInput && !youtubeInput.disabled && typeof draft.youtube_merge === "boolean") {
+                    youtubeInput.checked = draft.youtube_merge;
+                }
+            }
+        }
+
+        restoreDraft();
+
+        if (batchTextarea) {
+            batchTextarea.addEventListener("input", writeDraft);
+        }
+        [ultraInput, youtubeInput].forEach((input) => {
+            if (input) {
+                input.addEventListener("change", writeDraft);
+            }
+        });
+
+        if (batchForm && submitButton) {
+            batchForm.addEventListener("submit", (event) => {
+                if (!batchForm.checkValidity()) {
+                    if (typeof batchForm.reportValidity === "function") {
+                        batchForm.reportValidity();
+                    }
+                    return;
+                }
+                event.preventDefault();
+                if (batchForm.dataset.submitting === "true") {
+                    return;
+                }
+                batchForm.dataset.submitting = "true";
+                writeDraft();
+                submitButton.disabled = true;
+                submitButton.classList.add("is-loading");
+                if (submitLabel) {
+                    submitLabel.textContent = "正在批量解析...";
+                }
+                window.setTimeout(() => {
+                    HTMLFormElement.prototype.submit.call(batchForm);
+                }, 120);
+            });
+        }
 
         batchPage.addEventListener("click", async (event) => {
             const copyButton = event.target.closest("[data-copy-text]");
@@ -96,9 +174,10 @@
 
             const retryButton = event.target.closest("[data-retry-link]");
             if (retryButton) {
-                const input = document.getElementById("batch-links");
+                const input = batchTextarea || document.getElementById("batch-links");
                 if (input) {
                     input.value = retryButton.getAttribute("data-retry-link") || "";
+                    writeDraft();
                     input.focus();
                     input.scrollIntoView({behavior: "smooth", block: "center"});
                 }

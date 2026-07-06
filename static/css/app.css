@@ -769,6 +769,18 @@ body {
     font-weight: 800;
 }
 
+.batch-submit-spinner {
+    display: none;
+}
+
+.batch-submit-btn.is-loading .batch-submit-spinner {
+    display: inline-block;
+}
+
+.batch-submit-btn.is-loading .batch-submit-icon {
+    display: none;
+}
+
 .batch-settings {
     position: relative;
 }
@@ -783,6 +795,12 @@ body {
     border-radius: 8px;
     font-weight: 800;
     list-style: none;
+}
+
+.batch-settings-modal .modal-content {
+    border: 0;
+    border-radius: 12px;
+    box-shadow: 0 18px 56px rgba(17, 24, 39, .18);
 }
 
 .batch-settings-toggle::-webkit-details-marker,

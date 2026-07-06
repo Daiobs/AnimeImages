@@ -184,7 +184,9 @@ class BatchParseViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "解析设置")
+        self.assertContains(response, "batchSettingsModal")
         self.assertContains(response, "batch-settings-panel")
+        self.assertContains(response, "batch-submit-spinner")
         self.assertContains(response, "高级说明：下载策略矩阵")
         self.assertContains(response, "批量解析")
         self.assertContains(response, "仅管理员可用")
