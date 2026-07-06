@@ -1,5 +1,6 @@
 import itertools
 from io import StringIO
+from time import monotonic, sleep
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -9,9 +10,11 @@ from django.urls import reverse
 
 from .models import ProviderHealthTestStatus
 from .services.assets import MediaAsset, ParseResult
+from .services.common import XhsProviderTimeoutError
 from .services.platforms.douyin_providers import (
     DouyinKukuToolProvider,
     DouyinNativeProvider,
+    DouyinParseContext,
     DouyinTianTianJieXiProvider,
     DouyinUltraRaceProvider,
     build_douyin_result_providers,
@@ -586,6 +589,16 @@ class DouyinUltraRaceSettingsTests(SimpleTestCase):
 
         self.assertIsInstance(providers[0], DouyinUltraRaceProvider)
         self.assertIsInstance(providers[-1], DouyinNativeProvider)
+        race_provider = providers[0]
+        tiantianjiexi_provider = next(
+            provider for provider in race_provider.providers if provider.name == "tiantianjiexi"
+        )
+        kukutool_provider = next(
+            provider for provider in race_provider.providers if provider.name == "kukutool"
+        )
+        self.assertFalse(tiantianjiexi_provider.reserve_fallback_grace)
+        self.assertTrue(tiantianjiexi_provider.suppress_selected_log)
+        self.assertTrue(kukutool_provider.suppress_selected_log)
 
     @override_settings(
         DOUYIN_ULTRA_RACE_ENABLED=False,
@@ -605,6 +618,8 @@ class DouyinUltraRaceSettingsTests(SimpleTestCase):
 
         self.assertIsInstance(providers[0], DouyinKukuToolProvider)
         self.assertIsInstance(providers[1], DouyinTianTianJieXiProvider)
+        self.assertTrue(providers[1].reserve_fallback_grace)
+        self.assertFalse(providers[1].suppress_selected_log)
         self.assertIsInstance(providers[-1], DouyinNativeProvider)
 
     @override_settings(
@@ -626,6 +641,197 @@ class DouyinUltraRaceSettingsTests(SimpleTestCase):
         self.assertFalse(any(isinstance(provider, DouyinTianTianJieXiProvider) for provider in providers))
         self.assertTrue(any(isinstance(provider, DouyinKukuToolProvider) for provider in providers))
         self.assertIsInstance(providers[-1], DouyinNativeProvider)
+
+
+class DouyinUltraRaceBudgetTests(SimpleTestCase):
+    class Adapter:
+        platform_id = "douyin"
+        headers = {}
+        media_host_suffixes = ("365yg.com", "douyinvod.com")
+
+    class CapturingOfficialProvider:
+        def __init__(self):
+            self.timeout_seconds = None
+
+        def parse(self, _url, timeout_seconds=None):
+            self.timeout_seconds = timeout_seconds
+            return {
+                "title": "天天解析预算测试",
+                "videos": [
+                    {
+                        "url": "https://v11-default.365yg.com/video/tos/demo.mp4",
+                        "quality": "原画",
+                        "size": 80 * 1024 * 1024,
+                    }
+                ],
+            }
+
+    class FakeRaceProvider:
+        def __init__(
+            self,
+            name,
+            *,
+            delay_seconds,
+            size_bytes=80 * 1024 * 1024,
+            quality_label="原画",
+            raises=None,
+        ):
+            self.name = name
+            self.delay_seconds = delay_seconds
+            self.size_bytes = size_bytes
+            self.quality_label = quality_label
+            self.raises = raises
+
+        def parse(self, _adapter, _context):
+            sleep(self.delay_seconds)
+            if self.raises:
+                raise self.raises
+            return ParseResult(
+                platform="douyin",
+                post_type="video",
+                base_filename=f"{self.name}_demo",
+                assets=(
+                    MediaAsset(
+                        media_type="video",
+                        url=f"https://v11-default.365yg.com/video/{self.name}.mp4",
+                        platform="douyin",
+                        provider=self.name,
+                        quality_label=self.quality_label,
+                        size_bytes=self.size_bytes,
+                    ),
+                ),
+                metadata={
+                    "selected_provider": self.name,
+                    "source_provider": self.name,
+                    f"{self.name}_candidate_count": 1,
+                },
+            )
+
+    def provider_settings(self):
+        return ProviderSettings(
+            ultra_hd_enabled=True,
+            provider_order=("tiantianjiexi", "kukutool", "native"),
+            kukutool_enabled=True,
+            ultra_total_timeout_seconds=5.0,
+            ultra_kukutool_grace_seconds=1.0,
+            kukutool_sidecar_timeout_seconds=3.0,
+        )
+
+    def context(self, budget_seconds=5.0):
+        return DouyinParseContext(
+            url="https://www.douyin.com/video/7611146072161047526?token=secret",
+            final_url="https://www.douyin.com/video/7611146072161047526?token=secret",
+            aweme_id="7611146072161047526",
+            deadline_monotonic=monotonic() + budget_seconds,
+        )
+
+    @override_settings(
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="phone",
+        TIANTIANJIEXI_PASSWORD="password",
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+    )
+    def test_race_tiantianjiexi_does_not_reserve_kukutool_grace(self):
+        official_provider = self.CapturingOfficialProvider()
+        provider = DouyinTianTianJieXiProvider(
+            provider_settings=self.provider_settings(),
+            provider=official_provider,
+            reserve_fallback_grace=False,
+        )
+
+        provider.parse(self.Adapter(), self.context())
+
+        self.assertGreaterEqual(official_provider.timeout_seconds, 4.5)
+
+    @override_settings(
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="phone",
+        TIANTIANJIEXI_PASSWORD="password",
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+    )
+    def test_sequential_tiantianjiexi_reserves_kukutool_grace(self):
+        official_provider = self.CapturingOfficialProvider()
+        provider = DouyinTianTianJieXiProvider(
+            provider_settings=self.provider_settings(),
+            provider=official_provider,
+            reserve_fallback_grace=True,
+        )
+
+        provider.parse(self.Adapter(), self.context())
+
+        self.assertLessEqual(official_provider.timeout_seconds, 2.2)
+
+    def test_race_tiantianjiexi_wins_when_it_returns_first(self):
+        provider = DouyinUltraRaceProvider(
+            provider_settings=self.provider_settings(),
+            providers=(
+                self.FakeRaceProvider("tiantianjiexi", delay_seconds=0.04),
+                self.FakeRaceProvider("kukutool", delay_seconds=0.08),
+            ),
+        )
+
+        result = provider.parse(self.Adapter(), self.context())
+
+        self.assertEqual(result.metadata["ultra_race_winner"], "tiantianjiexi")
+        self.assertEqual(result.metadata["selected_provider"], "tiantianjiexi")
+        self.assertEqual(result.metadata["source_provider"], "tiantianjiexi")
+
+    def test_race_kukutool_wins_when_it_returns_strong_candidate_first(self):
+        provider = DouyinUltraRaceProvider(
+            provider_settings=self.provider_settings(),
+            providers=(
+                self.FakeRaceProvider("kukutool", delay_seconds=0.04),
+                self.FakeRaceProvider("tiantianjiexi", delay_seconds=0.08),
+            ),
+        )
+
+        result = provider.parse(self.Adapter(), self.context())
+
+        self.assertEqual(result.metadata["ultra_race_winner"], "kukutool")
+        self.assertEqual(result.metadata["selected_provider"], "kukutool")
+        self.assertEqual(result.metadata["source_provider"], "kukutool")
+
+    def test_race_falls_back_to_kukutool_when_tiantianjiexi_times_out(self):
+        provider = DouyinUltraRaceProvider(
+            provider_settings=self.provider_settings(),
+            providers=(
+                self.FakeRaceProvider(
+                    "tiantianjiexi",
+                    delay_seconds=0.02,
+                    raises=XhsProviderTimeoutError(
+                        "timeout https://example.com/video.mp4?token=secret&phone=secret"
+                    ),
+                ),
+                self.FakeRaceProvider("kukutool", delay_seconds=0.04),
+            ),
+        )
+
+        with self.assertLogs(
+            "xhs_download.services.platforms.douyin_providers",
+            level="INFO",
+        ) as logs:
+            result = provider.parse(self.Adapter(), self.context())
+
+        output = "\n".join(logs.output)
+        self.assertEqual(result.metadata["ultra_race_winner"], "kukutool")
+        self.assertNotIn("https://example.com/video.mp4", output)
+        self.assertNotIn("token=secret", output)
+        self.assertNotIn("phone=secret", output)
+
+    def test_race_loser_does_not_override_winner_metadata(self):
+        provider = DouyinUltraRaceProvider(
+            provider_settings=self.provider_settings(),
+            providers=(
+                self.FakeRaceProvider("tiantianjiexi", delay_seconds=0.04),
+                self.FakeRaceProvider("kukutool", delay_seconds=0.08),
+            ),
+        )
+
+        result = provider.parse(self.Adapter(), self.context())
+
+        self.assertEqual(result.metadata["ultra_race_winner"], "tiantianjiexi")
+        self.assertEqual(result.metadata["selected_provider"], "tiantianjiexi")
+        self.assertEqual(result.video_assets[0].provider, "tiantianjiexi")
 
 
 class TianTianJieXiSmokeCommandTests(TestCase):

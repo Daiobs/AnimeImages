@@ -9,6 +9,7 @@ import hashlib
 import inspect
 import json
 import logging
+import re
 from time import monotonic, time
 from urllib.parse import urljoin, urlsplit
 
@@ -50,6 +51,17 @@ DOUYIN_ULTRA_EXECUTOR = ThreadPoolExecutor(
     thread_name_prefix="douyin-ultra",
 )
 logger = logging.getLogger(__name__)
+SENSITIVE_LOG_QUERY_RE = re.compile(
+    r"(?i)([?&](?:token|sign|signature|auth_key|x-signature|x_bogus|x-bogus|msToken|verifyFp|password|phone)=)[^&\s]+"
+)
+URL_LOG_RE = re.compile(r"https?://[^\s]+")
+
+
+def sanitize_provider_log_text(value):
+    text = str(value or "")
+    text = SENSITIVE_LOG_QUERY_RE.sub(r"\1[redacted]", text)
+    text = URL_LOG_RE.sub("[url-redacted]", text)
+    return text[:300]
 
 
 def build_douyin_metadata_cache_key(aweme_id):
@@ -152,7 +164,7 @@ def log_provider_failure(provider, context, error, started_at=None, **extra_fiel
         "provider": provider,
         **context_log_fields(context),
         "error_type": type(error).__name__,
-        "error": str(error),
+        "error": sanitize_provider_log_text(error),
         **extra_fields,
     }
     if started_at is not None:
@@ -651,9 +663,18 @@ def build_external_parse_result(
 class DouyinTianTianJieXiProvider(DouyinResultProvider):
     name = "tiantianjiexi"
 
-    def __init__(self, provider_settings=None, provider=None):
+    def __init__(
+        self,
+        provider_settings=None,
+        provider=None,
+        *,
+        reserve_fallback_grace=True,
+        suppress_selected_log=False,
+    ):
         self.provider_settings = provider_settings or get_platform_provider_settings("douyin")
         self.provider = provider or TianTianJieXiGenericProvider()
+        self.reserve_fallback_grace = bool(reserve_fallback_grace)
+        self.suppress_selected_log = bool(suppress_selected_log)
 
     def remaining_budget(self, context, fallback):
         if not context.deadline_monotonic:
@@ -730,14 +751,12 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             context,
             self.provider_settings.ultra_total_timeout_seconds,
         )
-        fallback_grace = (
-            max(
+        fallback_grace = 0
+        if self.reserve_fallback_grace and self.provider_settings.provider_is_enabled("kukutool"):
+            fallback_grace = max(
                 self.provider_settings.ultra_kukutool_grace_seconds,
                 self.provider_settings.kukutool_sidecar_timeout_seconds,
             )
-            if self.provider_settings.provider_is_enabled("kukutool")
-            else 0
-        )
         provider_budget = (
             max(0.1, remaining_budget - fallback_grace)
             if remaining_budget > fallback_grace
@@ -748,10 +767,58 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             provider_budget,
         )
         if timeout_seconds <= 0:
+            log_provider_event(
+                "douyin_provider_budget_exhausted",
+                self.name,
+                context,
+                parse_started_at,
+                remaining_budget_ms=int(max(0, remaining_budget) * 1000),
+                assigned_timeout_ms=0,
+                reserve_fallback_grace=self.reserve_fallback_grace,
+                fallback_grace_ms=int(max(0, fallback_grace) * 1000),
+                error_type="budget_exhausted",
+            )
             raise XhsProviderTimeoutError("天天解析接口超时")
-        payload = self.provider.parse(source_url, timeout_seconds=timeout_seconds)
+        log_provider_event(
+            "douyin_provider_budget_assigned",
+            self.name,
+            context,
+            parse_started_at,
+            remaining_budget_ms=int(max(0, remaining_budget) * 1000),
+            assigned_timeout_ms=int(max(0, timeout_seconds) * 1000),
+            reserve_fallback_grace=self.reserve_fallback_grace,
+            fallback_grace_ms=int(max(0, fallback_grace) * 1000),
+            cache_hit=False,
+        )
+        try:
+            payload = self.provider.parse(source_url, timeout_seconds=timeout_seconds)
+        except Exception as error:
+            log_provider_failure(
+                self.name,
+                context,
+                error,
+                parse_started_at,
+                remaining_budget_ms=int(max(0, remaining_budget) * 1000),
+                assigned_timeout_ms=int(max(0, timeout_seconds) * 1000),
+                reserve_fallback_grace=self.reserve_fallback_grace,
+                fallback_grace_ms=int(max(0, fallback_grace) * 1000),
+                cache_hit=False,
+            )
+            raise
         candidates = self.build_candidates(payload, adapter)
         if not candidates:
+            log_provider_event(
+                "douyin_provider_candidates_empty",
+                self.name,
+                context,
+                parse_started_at,
+                remaining_budget_ms=int(max(0, remaining_budget) * 1000),
+                assigned_timeout_ms=int(max(0, timeout_seconds) * 1000),
+                reserve_fallback_grace=self.reserve_fallback_grace,
+                fallback_grace_ms=int(max(0, fallback_grace) * 1000),
+                candidate_count=0,
+                error_type="empty_candidates",
+            )
             raise ValueError("天天解析未返回可用抖音视频资源")
 
         reference_result = get_cached_douyin_metadata(context.aweme_id)
@@ -775,16 +842,23 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             tiantianjiexi_size_bytes=candidate.size_bytes,
             tiantianjiexi_quality_label=candidate.quality_label,
         )
-        log_provider_event(
-            "douyin_provider_selected",
-            self.name,
-            context,
-            parse_started_at,
-            fallback_reason="tiantianjiexi_official_api",
-            selected_size_bytes=candidate.size_bytes,
-            candidate_count=len(candidates),
-            quality_label=candidate.quality_label,
-        )
+        if not self.suppress_selected_log:
+            log_provider_event(
+                "douyin_provider_selected",
+                self.name,
+                context,
+                parse_started_at,
+                fallback_reason="tiantianjiexi_official_api",
+                selected_size_bytes=candidate.size_bytes,
+                candidate_count=len(candidates),
+                quality_label=candidate.quality_label,
+                selected_quality=candidate.quality_label,
+                remaining_budget_ms=int(max(0, remaining_budget) * 1000),
+                assigned_timeout_ms=int(max(0, timeout_seconds) * 1000),
+                reserve_fallback_grace=self.reserve_fallback_grace,
+                fallback_grace_ms=int(max(0, fallback_grace) * 1000),
+                cache_hit=False,
+            )
         return result
 
 
@@ -797,8 +871,15 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
     def __init__(self, provider_settings=None, providers=None):
         self.provider_settings = provider_settings or get_platform_provider_settings("douyin")
         self.providers = tuple(providers or (
-            DouyinTianTianJieXiProvider(provider_settings=self.provider_settings),
-            DouyinKukuToolProvider(provider_settings=self.provider_settings),
+            DouyinTianTianJieXiProvider(
+                provider_settings=self.provider_settings,
+                reserve_fallback_grace=False,
+                suppress_selected_log=True,
+            ),
+            DouyinKukuToolProvider(
+                provider_settings=self.provider_settings,
+                suppress_selected_log=True,
+            ),
         ))
 
     def result_score(self, result):
@@ -824,16 +905,70 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
             or size_bytes >= self.strong_candidate_min_size_bytes
         )
 
+    def result_log_fields(self, result):
+        video_assets = getattr(result, "video_assets", ())
+        if not video_assets:
+            return {
+                "candidate_count": 0,
+                "selected_quality": "",
+                "selected_size_bytes": 0,
+                "cache_hit": False,
+            }
+        best_asset = max(
+            video_assets,
+            key=lambda asset: (
+                tiantianjiexi_quality_rank(getattr(asset, "quality_label", "")),
+                int(getattr(asset, "size_bytes", 0) or 0),
+            ),
+        )
+        metadata = getattr(result, "metadata", {}) or {}
+        provider_name = str(
+            metadata.get("selected_provider")
+            or metadata.get("source_provider")
+            or getattr(best_asset, "provider", "")
+            or ""
+        )
+        return {
+            "candidate_count": int(
+                metadata.get(f"{provider_name}_candidate_count")
+                or metadata.get("kukutool_candidate_count")
+                or metadata.get("tiantianjiexi_candidate_count")
+                or len(video_assets)
+            ),
+            "selected_quality": getattr(best_asset, "quality_label", "") or "",
+            "selected_size_bytes": int(getattr(best_asset, "size_bytes", 0) or 0),
+            "cache_hit": bool(
+                metadata.get(f"{provider_name}_cache_hit")
+                or metadata.get("kukutool_cache_hit")
+                or metadata.get("tiantianjiexi_cache_hit")
+            ),
+        }
+
     def finalize_result(self, result, provider_name, enabled_count, context, started_at):
+        result_fields = self.result_log_fields(result)
         log_provider_event(
             "douyin_ultra_race_selected",
             provider_name,
             context,
             started_at,
             race_provider_count=enabled_count,
+            race_winner=provider_name,
+            race_loser_count=max(0, enabled_count - 1),
+            **result_fields,
+        )
+        log_provider_event(
+            "douyin_ultra_race_winner",
+            provider_name,
+            context,
+            started_at,
+            race_winner=provider_name,
+            race_loser_count=max(0, enabled_count - 1),
+            **result_fields,
         )
         return with_parse_metadata(
             result,
+            selected_provider=provider_name,
+            source_provider=provider_name,
             ultra_race_winner=provider_name,
             ultra_race_provider_count=enabled_count,
         )
@@ -896,7 +1031,26 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
                                 best_score = score
                             if self.result_is_strong_candidate(result):
                                 for pending_future in future_to_provider:
-                                    pending_future.cancel()
+                                    pending_provider = future_to_provider[pending_future]
+                                    pending_provider_name = getattr(
+                                        pending_provider,
+                                        "name",
+                                        type(pending_provider).__name__,
+                                    )
+                                    cancelled = pending_future.cancel()
+                                    log_provider_event(
+                                        (
+                                            "douyin_ultra_race_loser_cancelled"
+                                            if cancelled
+                                            else "douyin_ultra_race_loser_completed"
+                                        ),
+                                        pending_provider_name,
+                                        context,
+                                        race_started_at,
+                                        race_winner=provider_name,
+                                        race_loser_count=max(0, len(enabled_providers) - 1),
+                                    )
+                                future_to_provider.clear()
                                 return self.finalize_result(
                                     result,
                                     provider_name,
@@ -911,12 +1065,39 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
                                 )
                     except XhsProviderTimeoutError as error:
                         last_timeout_error = error
-                        log_provider_failure(provider_name, context, error)
+                        log_provider_failure(
+                            provider_name,
+                            context,
+                            error,
+                            race_started_at,
+                            race_winner=best_provider_name,
+                            race_loser_count=max(0, len(enabled_providers) - 1),
+                        )
                     except Exception as error:
-                        log_provider_failure(provider_name, context, error)
+                        log_provider_failure(
+                            provider_name,
+                            context,
+                            error,
+                            race_started_at,
+                            race_winner=best_provider_name,
+                            race_loser_count=max(0, len(enabled_providers) - 1),
+                        )
         finally:
-            for future in future_to_provider:
-                future.cancel()
+            for future, provider in tuple(future_to_provider.items()):
+                provider_name = getattr(provider, "name", type(provider).__name__)
+                cancelled = future.cancel()
+                log_provider_event(
+                    (
+                        "douyin_ultra_race_loser_cancelled"
+                        if cancelled
+                        else "douyin_ultra_race_loser_completed"
+                    ),
+                    provider_name,
+                    context,
+                    race_started_at,
+                    race_winner=best_provider_name,
+                    race_loser_count=max(0, len(enabled_providers) - 1),
+                )
 
         if best_result:
             return self.finalize_result(
