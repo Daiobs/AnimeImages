@@ -1,18 +1,28 @@
 import itertools
+from io import StringIO
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
 from .models import ProviderHealthTestStatus
 from .services.assets import MediaAsset, ParseResult
+from .services.platforms.douyin_providers import (
+    DouyinKukuToolProvider,
+    DouyinNativeProvider,
+    DouyinTianTianJieXiProvider,
+    DouyinUltraRaceProvider,
+    build_douyin_result_providers,
+)
 from .services.platforms.third_party import (
     GenericThirdPartyAdapter,
     configured_third_party_provider_order,
     get_third_party_rule,
 )
 from .services.platforms.tiantianjiexi_generic import TianTianJieXiGenericProvider
+from .services.provider_settings import ProviderSettings
 from .services.provider_manifest import build_provider_manifest_token
 from .services.provider_strategy import (
     DOWNLOAD_STRATEGY_BROWSER_BLOB,
@@ -23,6 +33,7 @@ from .services.provider_strategy import (
 from .services.downloads import provider_manifest_allows_public_download
 from .views import (
     PROVIDER_HEALTH_TESTS,
+    get_video_size_bytes,
     provider_health_test_by_key,
     run_provider_health_test,
     split_batch_links,
@@ -76,12 +87,24 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
         self.assertIn("tiantianjiexi_generic", rule.provider_ids)
         self.assertIn("kukutool_generic", rule.provider_ids)
 
-    def test_configured_provider_order_filters_unknown_and_rule_unsupported(self):
+    def test_youtube_default_provider_order_prefers_ytdlp(self):
+        rule = get_third_party_rule("youtube")
+
+        self.assertIsNotNone(rule)
+        self.assertEqual(configured_third_party_provider_order(rule)[0], "yt_dlp_generic")
+
+    def test_short_video_default_provider_order_prefers_kukutool(self):
+        for platform_id in ("tiktok", "kuaishou"):
+            rule = get_third_party_rule(platform_id)
+            self.assertIsNotNone(rule)
+            self.assertEqual(configured_third_party_provider_order(rule)[0], "kukutool_generic")
+
+    def test_platform_order_filters_unknown_and_rule_unsupported(self):
         rule = get_third_party_rule("youtube")
 
         self.assertIsNotNone(rule)
         with override_settings(
-            THIRD_PARTY_PROVIDER_ORDER=(
+            THIRD_PARTY_PROVIDER_ORDER_YOUTUBE=(
                 "unknown_provider",
                 "gallery_dl_generic",
                 "tiantianjiexi_generic",
@@ -95,7 +118,7 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
             )
 
     @override_settings(
-        THIRD_PARTY_PROVIDER_ORDER=(
+        THIRD_PARTY_PROVIDER_ORDER_SHORT_VIDEO=(
             "yt_dlp_generic",
             "kukutool_generic",
             "tiantianjiexi_generic",
@@ -117,6 +140,17 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
         self.assertEqual(
             provider_ids,
             ["yt_dlp_generic", "kukutool_generic", "tiantianjiexi_generic", "gallery_dl_generic"],
+        )
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ORDER_YOUTUBE=("kukutool_generic", "yt_dlp_generic"),
+    )
+    def test_youtube_provider_order_can_be_overridden(self):
+        rule = get_third_party_rule("youtube")
+
+        self.assertEqual(
+            configured_third_party_provider_order(rule),
+            ("kukutool_generic", "yt_dlp_generic"),
         )
 
     def test_split_batch_links_dedupes_and_limits(self):
@@ -194,6 +228,25 @@ class BatchParseViewTests(TestCase):
         self.assertContains(response, "demo_video")
         self.assertContains(response, "浏览器 Blob 优先")
         mock_parse.assert_called_once()
+        call_kwargs = mock_parse.call_args.kwargs
+        self.assertLessEqual(call_kwargs["timeout_seconds"], 8.0)
+        self.assertGreater(call_kwargs["timeout_seconds"], 0)
+        self.assertIn("deadline_monotonic", call_kwargs)
+
+    @override_settings(BATCH_PARSE_PER_LINK_TIMEOUT_SECONDS=2)
+    @patch("xhs_download.views.parse_media_page")
+    def test_batch_parse_passes_per_link_timeout(self, mock_parse):
+        self.client.force_login(self.staff_user)
+        mock_parse.side_effect = RuntimeError("slow provider")
+
+        response = self.client.post(
+            reverse("batch_parse"),
+            {"links": "https://www.douyin.com/video/7611146072161047526"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "RuntimeError")
+        self.assertLessEqual(mock_parse.call_args.kwargs["timeout_seconds"], 2.0)
 
     @patch("xhs_download.views.parse_media_page")
     def test_batch_parse_single_failure_does_not_block_other_links(self, mock_parse):
@@ -282,13 +335,17 @@ class BatchParseViewTests(TestCase):
 
 
 class TianTianJieXiHealthHardeningTests(TestCase):
-    def test_account_health_test_does_not_parse_video(self):
+    def build_request(self):
         request = RequestFactory().post("/admin/provider-health-tests/run/")
         request.user = get_user_model().objects.create_superuser(
             username="admin",
             password="password",
         )
         request.request_id = "rid-health"
+        return request
+
+    def test_account_health_test_does_not_parse_video(self):
+        request = self.build_request()
         item = provider_health_test_by_key("tiantianjiexi_account_status")
 
         with override_settings(TIANTIANJIEXI_PROVIDER_ENABLED=True):
@@ -357,3 +414,300 @@ class TianTianJieXiHealthHardeningTests(TestCase):
         )
 
         self.assertTrue(provider_manifest_allows_public_download(item))
+
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+    )
+    @patch("xhs_download.views.DouyinTianTianJieXiProvider.parse")
+    def test_douyin_tiantianjiexi_health_validates_final_asset_manifest(self, mock_parse):
+        request = self.build_request()
+        from .models import ProviderHealthTestSetting
+
+        ProviderHealthTestSetting.objects.create(
+            singleton_key=1,
+            douyin_url="https://www.douyin.com/user/self?modal_id=7611146072161047526",
+        )
+        asset = MediaAsset(
+            media_type="video",
+            url="https://v5-default.365yg.com/demo.mp4",
+            platform="douyin",
+            provider="tiantianjiexi",
+            asset_id="douyin:7611146072161047526:video:tiantianjiexi",
+            provider_resource_id="7611146072161047526",
+            provider_cache_key="douyin:tiantianjiexi:validated:7611146072161047526",
+        )
+        asset = MediaAsset(
+            **{
+                **asset.__dict__,
+                "provider_manifest_token": build_provider_manifest_token(
+                    asset_id=asset.asset_id,
+                    provider=asset.provider,
+                    provider_resource_id=asset.provider_resource_id,
+                    provider_cache_key=asset.provider_cache_key,
+                    url=asset.url,
+                    media_type=asset.media_type,
+                ),
+            }
+        )
+        mock_parse.return_value = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="demo",
+            assets=(asset,),
+            metadata={"selected_provider": "tiantianjiexi", "source_provider": "tiantianjiexi"},
+        )
+
+        run = run_provider_health_test(
+            request,
+            provider_health_test_by_key("douyin_tiantianjiexi_ultra"),
+        )
+
+        self.assertEqual(run.status, ProviderHealthTestStatus.SUCCESS)
+
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+    )
+    @patch("xhs_download.views.DouyinTianTianJieXiProvider.parse")
+    def test_douyin_tiantianjiexi_health_rejects_missing_manifest(self, mock_parse):
+        request = self.build_request()
+        from .models import ProviderHealthTestSetting
+
+        ProviderHealthTestSetting.objects.create(
+            singleton_key=1,
+            douyin_url="https://www.douyin.com/user/self?modal_id=7611146072161047526",
+        )
+        mock_parse.return_value = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="demo",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url="https://v5-default.365yg.com/demo.mp4",
+                    platform="douyin",
+                    provider="tiantianjiexi",
+                ),
+            ),
+            metadata={"selected_provider": "tiantianjiexi"},
+        )
+
+        run = run_provider_health_test(
+            request,
+            provider_health_test_by_key("douyin_tiantianjiexi_ultra"),
+        )
+
+        self.assertEqual(run.status, ProviderHealthTestStatus.UNAVAILABLE)
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+    )
+    @patch.object(TianTianJieXiGenericProvider, "parse")
+    def test_third_party_tiantianjiexi_health_rejects_invalid_normalized_url(self, mock_parse):
+        request = self.build_request()
+        from .models import ProviderHealthTestSetting
+
+        ProviderHealthTestSetting.objects.create(
+            singleton_key=1,
+            third_party_url="https://www.kuaishou.com/short-video/demo",
+        )
+        mock_parse.return_value = {
+            "title": "bad",
+            "videos": [{"url": "https://evil.example.com/demo.mp4", "quality": "原画"}],
+        }
+
+        run = run_provider_health_test(
+            request,
+            provider_health_test_by_key("third_party_tiantianjiexi"),
+        )
+
+        self.assertEqual(run.status, ProviderHealthTestStatus.FAILED)
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+    )
+    @patch.object(TianTianJieXiGenericProvider, "parse")
+    def test_third_party_tiantianjiexi_health_validates_manifest(self, mock_parse):
+        request = self.build_request()
+        from .models import ProviderHealthTestSetting
+
+        ProviderHealthTestSetting.objects.create(
+            singleton_key=1,
+            third_party_url="https://www.kuaishou.com/short-video/demo",
+        )
+        mock_parse.return_value = {
+            "title": "ok",
+            "videos": [{"url": "https://tx2.a.kwimgs.com/demo.mp4", "quality": "原画"}],
+        }
+
+        run = run_provider_health_test(
+            request,
+            provider_health_test_by_key("third_party_tiantianjiexi"),
+        )
+
+        self.assertEqual(run.status, ProviderHealthTestStatus.SUCCESS)
+
+    @patch("xhs_download.views.probe_media_size")
+    def test_signed_tiantianjiexi_generic_video_size_does_not_probe(self, mock_probe):
+        size = get_video_size_bytes(
+            MediaAsset(
+                media_type="video",
+                platform="third_party",
+                url="https://tx2.a.kwimgs.com/demo.mp4",
+                provider="tiantianjiexi_generic",
+            )
+        )
+
+        self.assertEqual(size, 0)
+        mock_probe.assert_not_called()
+
+
+class DouyinUltraRaceSettingsTests(SimpleTestCase):
+    @override_settings(
+        DOUYIN_ULTRA_RACE_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="phone",
+        TIANTIANJIEXI_PASSWORD="password",
+        KUKUTOOL_PROVIDER_ENABLED=True,
+    )
+    def test_race_enabled_with_both_upstreams_uses_ultra_race(self):
+        providers = build_douyin_result_providers(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tiantianjiexi", "kukutool", "native"),
+                kukutool_enabled=True,
+            )
+        )
+
+        self.assertIsInstance(providers[0], DouyinUltraRaceProvider)
+        self.assertIsInstance(providers[-1], DouyinNativeProvider)
+
+    @override_settings(
+        DOUYIN_ULTRA_RACE_ENABLED=False,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="phone",
+        TIANTIANJIEXI_PASSWORD="password",
+        KUKUTOOL_PROVIDER_ENABLED=True,
+    )
+    def test_race_disabled_respects_provider_order(self):
+        providers = build_douyin_result_providers(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("kukutool", "tiantianjiexi", "native"),
+                kukutool_enabled=True,
+            )
+        )
+
+        self.assertIsInstance(providers[0], DouyinKukuToolProvider)
+        self.assertIsInstance(providers[1], DouyinTianTianJieXiProvider)
+        self.assertIsInstance(providers[-1], DouyinNativeProvider)
+
+    @override_settings(
+        DOUYIN_ULTRA_RACE_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=False,
+        TIANTIANJIEXI_PHONE="",
+        TIANTIANJIEXI_PASSWORD="",
+        KUKUTOOL_PROVIDER_ENABLED=True,
+    )
+    def test_unconfigured_tiantianjiexi_is_not_created(self):
+        providers = build_douyin_result_providers(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tiantianjiexi", "kukutool", "native"),
+                kukutool_enabled=True,
+            )
+        )
+
+        self.assertFalse(any(isinstance(provider, DouyinTianTianJieXiProvider) for provider in providers))
+        self.assertTrue(any(isinstance(provider, DouyinKukuToolProvider) for provider in providers))
+        self.assertIsInstance(providers[-1], DouyinNativeProvider)
+
+
+class TianTianJieXiSmokeCommandTests(TestCase):
+    @patch.object(TianTianJieXiGenericProvider, "parse")
+    def test_smoke_api_mode_hides_full_url_and_credentials(self, mock_parse):
+        mock_parse.return_value = {
+            "videos": [{"url": "https://tx2.a.kwimgs.com/path/video.mp4?token=secret", "quality": "原画"}],
+            "images": [],
+        }
+        out = StringIO()
+
+        with override_settings(
+            TIANTIANJIEXI_PROVIDER_ENABLED=True,
+            TIANTIANJIEXI_PHONE="phone-secret",
+            TIANTIANJIEXI_PASSWORD="password-secret",
+        ):
+            call_command(
+                "smoke_tiantianjiexi_provider",
+                "--url",
+                "https://www.kuaishou.com/short-video/demo",
+                "--mode",
+                "api",
+                stdout=out,
+            )
+
+        output = out.getvalue()
+        self.assertIn('"selected_video_host": "tx2.a.kwimgs.com"', output)
+        self.assertNotIn("phone-secret", output)
+        self.assertNotIn("password-secret", output)
+        self.assertNotIn("path/video.mp4", output)
+        self.assertNotIn("token=secret", output)
+
+    @patch.object(TianTianJieXiGenericProvider, "parse")
+    def test_smoke_parse_result_mode_generates_parse_result(self, mock_parse):
+        mock_parse.return_value = {
+            "title": "ok",
+            "videos": [{"url": "https://tx2.a.kwimgs.com/demo.mp4", "quality": "原画"}],
+        }
+        out = StringIO()
+
+        call_command(
+            "smoke_tiantianjiexi_provider",
+            "--url",
+            "https://www.kuaishou.com/short-video/demo",
+            "--mode",
+            "parse-result",
+            stdout=out,
+        )
+
+        output = out.getvalue()
+        self.assertIn('"post_type": "video"', output)
+        self.assertIn('"first_asset_provider": "tiantianjiexi_generic"', output)
+        self.assertIn('"provider_manifest_token_present": true', output)
+
+    @patch("xhs_download.management.commands.smoke_tiantianjiexi_provider.parse_media_page")
+    def test_smoke_douyin_ultra_mode_outputs_selected_provider(self, mock_parse):
+        mock_parse.return_value = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="demo",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url="https://v5-default.365yg.com/demo.mp4",
+                    platform="douyin",
+                    provider="tiantianjiexi",
+                    quality_label="原画",
+                ),
+            ),
+            metadata={"selected_provider": "tiantianjiexi", "ultra_race_winner": "tiantianjiexi"},
+        )
+        out = StringIO()
+
+        call_command(
+            "smoke_tiantianjiexi_provider",
+            "--url",
+            "https://www.douyin.com/user/self?modal_id=7611146072161047526",
+            "--mode",
+            "douyin-ultra",
+            stdout=out,
+        )
+
+        output = out.getvalue()
+        self.assertIn('"selected_provider": "tiantianjiexi"', output)
+        self.assertIn('"ultra_race_winner": "tiantianjiexi"', output)

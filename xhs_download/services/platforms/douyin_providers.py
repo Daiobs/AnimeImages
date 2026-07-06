@@ -1492,7 +1492,13 @@ def build_douyin_result_providers(provider_settings=None, prefer_ultra_hd=True):
         )
     else:
         configured_order = tuple(provider_settings.provider_order or ())
-        if configured_order == ("tiantianjiexi", "kukutool", "native"):
+        if (
+            getattr(settings, "DOUYIN_ULTRA_RACE_ENABLED", True)
+            and "tiantianjiexi" in configured_order
+            and "kukutool" in configured_order
+            and provider_settings.provider_is_enabled("tiantianjiexi")
+            and provider_settings.provider_is_enabled("kukutool")
+        ):
             provider_settings = replace(
                 provider_settings,
                 # Default ultra-HD path races TianTianJieXi against KuKuTool

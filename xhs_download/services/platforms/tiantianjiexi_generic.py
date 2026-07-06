@@ -238,7 +238,23 @@ def safe_metadata_value(value):
     if isinstance(value, dict):
         sanitized = {}
         for key, item in value.items():
-            if str(key).lower() in {"password", "phone", "token", "cookie", "authorization"}:
+            if str(key).lower() in {
+                "password",
+                "phone",
+                "token",
+                "sign",
+                "signature",
+                "auth_key",
+                "x-signature",
+                "x_bogus",
+                "x-bogus",
+                "mstoken",
+                "msToken".lower(),
+                "verifyfp",
+                "verifyFp".lower(),
+                "cookie",
+                "authorization",
+            }:
                 continue
             sanitized[key] = safe_metadata_value(item)
         return sanitized

@@ -42,6 +42,8 @@ class PlatformRegistry:
         prefer_ultra_hd=False,
         client_country_code="",
         prefer_youtube_merge=False,
+        timeout_seconds=None,
+        deadline_monotonic=None,
     ):
         url = extract_url_from_text(url)
         adapter = self.get_adapter_for_url(url)
@@ -50,6 +52,8 @@ class PlatformRegistry:
             prefer_ultra_hd=prefer_ultra_hd,
             client_country_code=client_country_code,
             prefer_youtube_merge=prefer_youtube_merge,
+            timeout_seconds=timeout_seconds,
+            deadline_monotonic=deadline_monotonic,
         )
 
 
@@ -73,10 +77,14 @@ def parse_media_page(
     prefer_ultra_hd=False,
     client_country_code="",
     prefer_youtube_merge=False,
+    timeout_seconds=None,
+    deadline_monotonic=None,
 ):
     return default_registry.parse_url(
         url,
         prefer_ultra_hd=prefer_ultra_hd,
         client_country_code=client_country_code,
         prefer_youtube_merge=prefer_youtube_merge,
+        timeout_seconds=timeout_seconds,
+        deadline_monotonic=deadline_monotonic,
     )

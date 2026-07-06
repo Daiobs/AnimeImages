@@ -183,7 +183,11 @@ TIANTIANJIEXI_HEALTH_QUERY_ACCOUNT_STATUS_ENABLED=True
 TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY=2
 TIANTIANJIEXI_REQUEST_LIMIT_PER_MINUTE=20
 THIRD_PARTY_PROVIDER_ORDER=kukutool_generic,tiantianjiexi_generic,yt_dlp_generic,gallery_dl_generic
+THIRD_PARTY_PROVIDER_ORDER_DEFAULT=kukutool_generic,tiantianjiexi_generic,yt_dlp_generic,gallery_dl_generic
+THIRD_PARTY_PROVIDER_ORDER_YOUTUBE=yt_dlp_generic,kukutool_generic,tiantianjiexi_generic
+THIRD_PARTY_PROVIDER_ORDER_SHORT_VIDEO=kukutool_generic,tiantianjiexi_generic,yt_dlp_generic,gallery_dl_generic
 DOUYIN_ULTRA_PROVIDER_ORDER=tiantianjiexi,kukutool,native
+DOUYIN_ULTRA_RACE_ENABLED=True
 ```
 
 For user-facing Douyin ultra-HD parsing, keep a strict frontend budget and race
@@ -202,7 +206,9 @@ user-facing path. TianTianJieXi results must be normalized by expanding nested
 After credentials are configured in `.env` or `.env.production`, run:
 
 ```bash
-python manage.py smoke_tiantianjiexi_provider --url "<douyin test url>"
+python manage.py smoke_tiantianjiexi_provider --url "<douyin test url>" --mode api
+python manage.py smoke_tiantianjiexi_provider --url "<douyin test url>" --mode parse-result
+python manage.py smoke_tiantianjiexi_provider --url "<douyin test url>" --mode douyin-ultra
 ```
 
 The command prints provider availability, asset counts, selected quality,

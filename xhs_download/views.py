@@ -106,9 +106,17 @@ from .services.platforms.douyin_kukutool import (
 )
 from .services.platforms.gallerydl_generic import GalleryDlGenericProvider
 from .services.platforms.kukutool_generic import KukutoolGenericProvider
-from .services.platforms.tiantianjiexi_generic import TianTianJieXiGenericProvider
-from .services.platforms.third_party import build_third_party_rollout_status
-from .services.platforms.third_party import THIRD_PARTY_PLATFORM_RULES
+from .services.platforms.douyin import DouyinAdapter
+from .services.platforms.douyin_providers import DouyinTianTianJieXiProvider
+from .services.platforms.tiantianjiexi_generic import (
+    TianTianJieXiGenericProvider,
+    TianTianJieXiResultNormalizer,
+)
+from .services.platforms.third_party import (
+    GenericThirdPartyAdapter,
+    THIRD_PARTY_PLATFORM_RULES,
+    build_third_party_rollout_status,
+)
 from .services.platforms.ytdlp_generic import YtDlpGenericProvider
 from .services.provider_access import (
     PROVIDER_DOUYIN_ULTRA,
@@ -1450,6 +1458,50 @@ def provider_health_test_record(
     )
 
 
+def provider_asset_manifest_validation_error(result, allowed_providers, *, require_video=True):
+    if not result or not getattr(result, "assets", ()):
+        return "未生成 ParseResult 资源"
+    assets = tuple(result.assets or ())
+    if require_video:
+        assets = tuple(asset for asset in assets if asset.media_type == "video")
+        if not assets:
+            return "未生成视频资源"
+    matching_assets = tuple(
+        asset for asset in assets if str(asset.provider or "") in allowed_providers
+    )
+    if not matching_assets:
+        return "资源 provider 与预期不一致"
+    asset = matching_assets[0]
+    if not asset.provider_manifest_token:
+        return "资源缺少 provider_manifest_token"
+    if not asset.provider_resource_id:
+        return "资源缺少 provider_resource_id"
+    if not asset.provider_cache_key:
+        return "资源缺少 provider_cache_key"
+    item = asset.to_download_item()
+    if not provider_manifest_allows_public_download(item):
+        return "Provider manifest 未通过下载校验"
+    return ""
+
+
+def build_tiantianjiexi_third_party_parse_result(test_url, timeout_seconds=10.0):
+    adapter = GenericThirdPartyAdapter()
+    rule = adapter.get_rule_for_url(test_url)
+    if not rule:
+        raise XhsParseError("第三方测试 URL 不在支持的平台规则内")
+    payload = TianTianJieXiGenericProvider().parse(
+        test_url,
+        timeout_seconds=timeout_seconds,
+    )
+    normalizer = TianTianJieXiResultNormalizer(platform_id=adapter.platform_id)
+    return normalizer.normalize(
+        rule=rule,
+        platform_name=rule.display_name,
+        source_url=test_url,
+        payload=payload,
+    )
+
+
 def run_provider_health_test(request, item):
     started_at = time.monotonic()
     runtime_setting = ProviderRuntimeSetting.load()
@@ -1553,14 +1605,28 @@ def run_provider_health_test(request, item):
                     error_type="CapabilityDisabled",
                     error_message="ULTRA_HD_PROVIDER_ENABLED、THIRD_PARTY_PROVIDER_ENABLED 或 TIANTIANJIEXI_PROVIDER_ENABLED 未启用",
                 )
-            payload = TianTianJieXiGenericProvider().parse(test_url, timeout_seconds=10.0)
-            normalized = payload if isinstance(payload, dict) else {}
-            if normalized.get("videos") or normalized.get("images"):
+            adapter = DouyinAdapter()
+            deadline = time.monotonic() + 10.0
+            context = adapter.build_parse_context(
+                test_url,
+                fetch_direct_page=not bool(adapter.supports_url(test_url)),
+                fast_short_link=True,
+                request_deadline=deadline,
+            )
+            result = DouyinTianTianJieXiProvider().parse(adapter, context)
+            validation_error = provider_asset_manifest_validation_error(
+                result,
+                {"tiantianjiexi", "tiantianjiexi_generic"},
+                require_video=True,
+            )
+            metadata = result.metadata or {} if result else {}
+            selected_provider = metadata.get("selected_provider") or metadata.get("source_provider")
+            if not validation_error and selected_provider in {"tiantianjiexi", "tiantianjiexi_generic"}:
                 return record(ProviderHealthTestStatus.SUCCESS)
             return record(
                 ProviderHealthTestStatus.UNAVAILABLE,
-                error_type="NoAssets",
-                error_message="天天解析未返回媒体资源",
+                error_type="InvalidParseResult",
+                error_message=validation_error or "天天解析 ParseResult provider 不匹配",
             )
 
         if item["key"] == "youtube_merge":
@@ -1643,14 +1709,21 @@ def run_provider_health_test(request, item):
                     error_type="CapabilityDisabled",
                     error_message="THIRD_PARTY_PROVIDER_ENABLED 或 TIANTIANJIEXI_PROVIDER_ENABLED 未启用",
                 )
-            payload = TianTianJieXiGenericProvider().parse(test_url, timeout_seconds=10.0)
-            normalized = payload if isinstance(payload, dict) else {}
-            if normalized.get("videos") or normalized.get("images"):
+            result = build_tiantianjiexi_third_party_parse_result(
+                test_url,
+                timeout_seconds=10.0,
+            )
+            validation_error = provider_asset_manifest_validation_error(
+                result,
+                {"tiantianjiexi_generic"},
+                require_video=False,
+            )
+            if not validation_error:
                 return record(ProviderHealthTestStatus.SUCCESS)
             return record(
                 ProviderHealthTestStatus.UNAVAILABLE,
-                error_type="NoAssets",
-                error_message="天天解析未返回媒体资源",
+                error_type="InvalidParseResult",
+                error_message=validation_error,
             )
 
         return record(
@@ -3667,6 +3740,13 @@ def batch_parse_total_timeout_seconds():
     )
 
 
+def batch_parse_per_link_timeout_seconds():
+    return max(
+        0.5,
+        float(getattr(settings, "BATCH_PARSE_PER_LINK_TIMEOUT_SECONDS", 8.0) or 8.0),
+    )
+
+
 def batch_parse_rate_limit_results(request, link_count):
     identity = get_client_identity(request)
     amount = max(1, int(link_count or 1))
@@ -3726,6 +3806,14 @@ def build_batch_result_row(request, source_text, *, prefer_ultra_hd, prefer_yout
     if deadline is not None and time.monotonic() >= deadline:
         return build_batch_skipped_row(source_text, "批量解析总预算已用尽，本条已跳过。", started_at)
     try:
+        remaining_timeout = batch_parse_per_link_timeout_seconds()
+        if deadline is not None:
+            remaining_timeout = min(
+                remaining_timeout,
+                max(0.0, deadline - time.monotonic()),
+            )
+        if remaining_timeout <= 0:
+            return build_batch_skipped_row(source_text, "批量解析总预算已用尽，本条已跳过。", started_at)
         if query_uses_third_party_provider(source_text) and not third_party_provider_is_available(request):
             raise XhsParseError("第三方通用解析暂未开放。")
         result = parse_media_page(
@@ -3733,6 +3821,12 @@ def build_batch_result_row(request, source_text, *, prefer_ultra_hd, prefer_yout
             prefer_ultra_hd=prefer_ultra_hd,
             client_country_code=get_request_country_code(request) if prefer_ultra_hd else "",
             prefer_youtube_merge=prefer_youtube_merge,
+            timeout_seconds=remaining_timeout,
+            deadline_monotonic=(
+                time.monotonic() + remaining_timeout
+                if deadline is None
+                else min(deadline, time.monotonic() + remaining_timeout)
+            ),
         )
         display_context = build_result_display_context(result, platform_key="home")
         metadata = result.metadata or {}

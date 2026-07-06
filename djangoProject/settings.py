@@ -566,15 +566,37 @@ THIRD_PARTY_PROVIDER_ORDER = env_list(
         "gallery_dl_generic",
     ],
 )
+THIRD_PARTY_PROVIDER_ORDER_DEFAULT = env_list(
+    "THIRD_PARTY_PROVIDER_ORDER_DEFAULT",
+    THIRD_PARTY_PROVIDER_ORDER,
+)
+THIRD_PARTY_PROVIDER_ORDER_YOUTUBE = env_list(
+    "THIRD_PARTY_PROVIDER_ORDER_YOUTUBE",
+    ["yt_dlp_generic", "kukutool_generic", "tiantianjiexi_generic"],
+)
+THIRD_PARTY_PROVIDER_ORDER_SHORT_VIDEO = env_list(
+    "THIRD_PARTY_PROVIDER_ORDER_SHORT_VIDEO",
+    [
+        "kukutool_generic",
+        "tiantianjiexi_generic",
+        "yt_dlp_generic",
+        "gallery_dl_generic",
+    ],
+)
 DOUYIN_ULTRA_PROVIDER_ORDER = env_list(
     "DOUYIN_ULTRA_PROVIDER_ORDER",
     ["tiantianjiexi", "kukutool", "native"],
 )
+DOUYIN_ULTRA_RACE_ENABLED = env_bool("DOUYIN_ULTRA_RACE_ENABLED", True)
 
 BATCH_PARSE_PUBLIC_ENABLED = env_bool("BATCH_PARSE_PUBLIC_ENABLED", False)
 BATCH_PARSE_MAX_LINKS = env_int("BATCH_PARSE_MAX_LINKS", 20)
 BATCH_PARSE_STAFF_MAX_LINKS = env_int("BATCH_PARSE_STAFF_MAX_LINKS", 20)
 BATCH_PARSE_PUBLIC_MAX_LINKS = env_int("BATCH_PARSE_PUBLIC_MAX_LINKS", 3)
+BATCH_PARSE_PER_LINK_TIMEOUT_SECONDS = env_float(
+    "BATCH_PARSE_PER_LINK_TIMEOUT_SECONDS",
+    8.0,
+)
 BATCH_PARSE_TOTAL_TIMEOUT_SECONDS = env_float(
     "BATCH_PARSE_TOTAL_TIMEOUT_SECONDS",
     30.0,

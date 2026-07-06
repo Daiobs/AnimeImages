@@ -3,20 +3,6 @@
 from django.db import migrations, models
 
 
-def move_server_stream_to_browser_first(apps, schema_editor):
-    ProviderRuntimeSetting = apps.get_model("xhs_download", "ProviderRuntimeSetting")
-    ProviderRuntimeSetting.objects.filter(
-        kukutool_download_delivery_mode="server_stream"
-    ).update(kukutool_download_delivery_mode="browser_first")
-
-
-def move_browser_first_to_server_stream(apps, schema_editor):
-    ProviderRuntimeSetting = apps.get_model("xhs_download", "ProviderRuntimeSetting")
-    ProviderRuntimeSetting.objects.filter(
-        kukutool_download_delivery_mode="browser_first"
-    ).update(kukutool_download_delivery_mode="server_stream")
-
-
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -38,9 +24,5 @@ class Migration(migrations.Migration):
                 max_length=24,
                 verbose_name="抖音超清下载交付策略",
             ),
-        ),
-        migrations.RunPython(
-            move_server_stream_to_browser_first,
-            move_browser_first_to_server_stream,
         ),
     ]

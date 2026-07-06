@@ -1261,7 +1261,7 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED=True,
         YTDLP_PROVIDER_ENABLED=True,
     )
-    def test_generic_third_party_uses_configured_provider_order(self):
+    def test_generic_third_party_uses_youtube_provider_order(self):
         provider = Mock()
         ytdlp_provider = Mock()
         ytdlp_provider.parse.return_value = {
@@ -1303,11 +1303,11 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
 
         self.assertEqual(
             tuple(attempt["provider"] for attempt in result.metadata["provider_attempts"]),
-            ("kukutool_generic", "yt_dlp_generic"),
+            ("yt_dlp_generic",),
         )
         self.assertEqual(result.video_assets[0].provider, "yt_dlp_generic")
         ytdlp_provider.parse.assert_called_once()
-        provider.parse.assert_called_once()
+        provider.parse.assert_not_called()
 
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,

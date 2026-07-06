@@ -431,19 +431,43 @@ def normalize_provider_id(value):
 
 
 def configured_third_party_provider_order(rule):
-    configured_order = tuple(
-        normalize_provider_id(provider_id)
-        for provider_id in (
-            getattr(settings, "THIRD_PARTY_PROVIDER_ORDER", ()) or ()
+    platform_id = getattr(rule, "platform_id", "")
+    if platform_id == "youtube":
+        setting_name = "THIRD_PARTY_PROVIDER_ORDER_YOUTUBE"
+        fallback_order = (
+            "yt_dlp_generic",
+            "kukutool_generic",
+            "tiantianjiexi_generic",
         )
-    )
-    if not configured_order:
-        configured_order = (
+    elif platform_id in {"tiktok", "kuaishou"}:
+        setting_name = "THIRD_PARTY_PROVIDER_ORDER_SHORT_VIDEO"
+        fallback_order = (
             "kukutool_generic",
             "tiantianjiexi_generic",
             "yt_dlp_generic",
             "gallery_dl_generic",
         )
+    else:
+        setting_name = "THIRD_PARTY_PROVIDER_ORDER_DEFAULT"
+        fallback_order = (
+            "kukutool_generic",
+            "tiantianjiexi_generic",
+            "yt_dlp_generic",
+            "gallery_dl_generic",
+        )
+    configured_order = tuple(
+        normalize_provider_id(provider_id)
+        for provider_id in (getattr(settings, setting_name, ()) or ())
+    )
+    if not configured_order:
+        configured_order = tuple(
+            normalize_provider_id(provider_id)
+            for provider_id in (
+                getattr(settings, "THIRD_PARTY_PROVIDER_ORDER", ()) or ()
+            )
+        )
+    if not configured_order:
+        configured_order = fallback_order
     allowed = tuple(getattr(rule, "provider_ids", ()) or ())
     allowed_set = set(allowed)
     ordered = []
@@ -480,7 +504,11 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         ),
     )
     platform_rules = THIRD_PARTY_PLATFORM_RULES
-    parse_option_names = ("prefer_youtube_merge",)
+    parse_option_names = (
+        "prefer_youtube_merge",
+        "timeout_seconds",
+        "deadline_monotonic",
+    )
 
     def __init__(
         self,
@@ -567,7 +595,13 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
             rule.platform_id == platform_id for rule in self.platform_rules
         )
 
-    def parse_url(self, url, prefer_youtube_merge=False):
+    def parse_url(
+        self,
+        url,
+        prefer_youtube_merge=False,
+        timeout_seconds=None,
+        deadline_monotonic=None,
+    ):
         source_url = self.normalize_source_url(url)
         self.require_supported_url(source_url)
         rule = self.get_rule_for_url(source_url)
@@ -578,7 +612,12 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         failures = []
         attempts = []
         parse_started_at = time.monotonic()
-        deadline = parse_started_at + frontend_budget_seconds(rule)
+        if deadline_monotonic:
+            deadline = float(deadline_monotonic)
+        elif timeout_seconds is not None:
+            deadline = parse_started_at + max(0.1, float(timeout_seconds or 0))
+        else:
+            deadline = parse_started_at + frontend_budget_seconds(rule)
         if prefer_youtube_merge and getattr(rule, "platform_id", "") == "youtube":
             health = get_youtube_merge_health()
             if (

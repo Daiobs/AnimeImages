@@ -612,7 +612,12 @@ class DouyinAdapter(BasePlatformAdapter):
         fallback_providers=("tiantianjiexi", "kukutool", "tikhub"),
         enhanced_provider_enabled_by="ULTRA_HD_PROVIDER_ENABLED",
     )
-    parse_option_names = ("prefer_ultra_hd", "client_country_code")
+    parse_option_names = (
+        "prefer_ultra_hd",
+        "client_country_code",
+        "timeout_seconds",
+        "deadline_monotonic",
+    )
 
     def parse_html(self, html, source_url=None, probe_video_candidates=False):
         aweme = find_aweme_in_html(html)
@@ -906,11 +911,15 @@ class DouyinAdapter(BasePlatformAdapter):
         url,
         prefer_ultra_hd=False,
         client_country_code="",
+        timeout_seconds=None,
+        deadline_monotonic=None,
     ):
         parse_started_at = time()
         self.require_supported_url(url)
-        request_deadline = 0
-        if prefer_ultra_hd:
+        request_deadline = float(deadline_monotonic or 0)
+        if not request_deadline and timeout_seconds is not None:
+            request_deadline = monotonic() + max(0.1, float(timeout_seconds or 0))
+        if prefer_ultra_hd and not request_deadline:
             request_deadline = monotonic() + max(
                 0.1,
                 float(getattr(settings, "DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS", 5.0) or 0),

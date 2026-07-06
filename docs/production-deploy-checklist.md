@@ -153,7 +153,7 @@ cd /srv/animeimages
 - [ ] Optional Provider smoke URLs are configured from `/admin/provider-health-tests/`, not `.env.production`.
 - [ ] `/batch/` remains staff-only unless `BATCH_PARSE_PUBLIC_ENABLED=True` is explicitly configured.
 - [ ] Batch parse limits are configured: `BATCH_PARSE_MAX_LINKS`, `BATCH_PARSE_TOTAL_TIMEOUT_SECONDS`, `BATCH_PARSE_MINUTE_IP_LIMIT`, `BATCH_PARSE_GLOBAL_MINUTE_LIMIT`, and `BATCH_PARSE_DAILY_IP_LIMIT`.
-- [ ] If deploying migration `xhs_download.0020_alter_provider_download_delivery_browser_first`, confirm that existing `server_stream` KuKuTool delivery settings will be moved to `browser_first`.
+- [ ] If deploying migration `xhs_download.0020_alter_provider_download_delivery_browser_first`, confirm it only changes choices/default; existing `server_stream` values are not rewritten by data migration.
 - [ ] TianTianJieXi smoke can run without leaking credentials:
 
 ```bash
