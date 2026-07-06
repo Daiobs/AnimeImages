@@ -781,6 +781,18 @@ body {
     display: none;
 }
 
+.batch-download-spinner {
+    display: none;
+}
+
+.batch-browser-download-btn.is-loading .batch-download-spinner {
+    display: inline-block;
+}
+
+.batch-browser-download-btn.is-loading .batch-download-icon {
+    display: none;
+}
+
 .batch-settings {
     position: relative;
 }
@@ -1090,19 +1102,6 @@ body {
     place-items: center;
     color: var(--brand);
     font-size: 2.4rem;
-}
-
-.batch-cover-badge {
-    position: absolute;
-    right: 10px;
-    bottom: 10px;
-    display: grid;
-    width: 38px;
-    height: 38px;
-    place-items: center;
-    border-radius: 999px;
-    background: rgba(17, 24, 39, .78);
-    color: #fff;
 }
 
 .batch-image-grid {

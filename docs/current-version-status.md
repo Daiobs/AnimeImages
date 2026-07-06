@@ -6,19 +6,19 @@ Date: 2026-06-26
 
 - The universal input still routes Xiaohongshu, Douyin, and Bilibili through platform adapters.
 - Normal Douyin parsing remains native-only and does not call any external provider.
-- When the settings-modal ultra-HD switch is enabled, KuKuTool is the only external upstream.
+- When the settings-modal ultra-HD switch is enabled, TianTianJieXi is the preferred official API upstream and KuKuTool remains the fallback/race backup.
 - Generic third-party parsing can optionally use disabled-by-default yt-dlp and gallery-dl providers; KuKuTool generic can be disabled independently for staged rollout.
 - YouTube server-side merge can be enabled as a controlled yt-dlp + ffmpeg task path; it remains disabled by default and should be gray-released before public traffic.
 - TikHub and `native_enhanced` remain in the codebase for research and diagnostics, but are ignored by the synchronous ultra-HD request path.
-- The request waits at most three seconds for KuKuTool while native runs concurrently.
-- A slow KuKuTool task continues in a bounded background pool and fills Redis cache after native fallback.
+- The request uses the configured Douyin ultra race budget while native remains available as fallback.
+- Slow provider tasks run in bounded pools and can fill Redis cache after a faster fallback returns.
 
-## KuKuTool Path
+## Douyin Ultra Provider Path
 
 1. Extract `aweme_id` from the submitted Douyin URL or controlled short-link redirect.
-2. Start native and KuKuTool in separate bounded executors.
+2. Start enabled ultra providers, such as TianTianJieXi and KuKuTool, under the configured provider order/race budget.
 3. Join or create a Redis single-flight task for the `aweme_id`.
-4. Read `videos[].video_fullinfo`.
+4. Normalize the returned original-video candidate metadata.
 5. Allow only ByteDance CDN URLs on `365yg.com` or `douyinvod.com`.
 6. Deduplicate rotating signed URLs by stable TOS object path.
 7. Rank by bitrate, declared size, quality score, and quality label.
@@ -51,21 +51,6 @@ KUKUTOOL_NODE_BINARY=/path/to/node
 KUKUTOOL_SIDECAR_BASE_URL=
 KUKUTOOL_SIDECAR_TIMEOUT_SECONDS=3.0
 KUKUTOOL_SIDECAR_HEALTH_TIMEOUT_SECONDS=0.5
-TIKHUB_API_KEY=
-TIKHUB_BASE_URL=https://api.tikhub.io
-TIKHUB_CHINA_BASE_URL=https://api.tikhub.dev
-TIKHUB_REGION=CN
-TIKHUB_DEFAULT_COUNTRY_CODE=CN
-TIKHUB_TRUST_COUNTRY_HEADER=False
-TIKHUB_COUNTRY_HEADER=HTTP_CF_IPCOUNTRY
-TIKHUB_GEOIP_DATABASE_PATH=
-TIKHUB_DAILY_LIMIT=0
-TIKHUB_CONNECT_TIMEOUT_SECONDS=1.0
-TIKHUB_READ_TIMEOUT_SECONDS=6.5
-TIKHUB_MAX_ATTEMPTS=2
-TIKHUB_PROBE_TIMEOUT_SECONDS=1.8
-TIKHUB_MAX_PROBE_CANDIDATES=1
-TIKHUB_VALIDATED_CACHE_TTL_SECONDS=600
 KUKUTOOL_TIMEOUT_SECONDS=12.0
 KUKUTOOL_PROBE_TIMEOUT_SECONDS=2.0
 KUKUTOOL_DOWNLOAD_TIMEOUT_SECONDS=8.0

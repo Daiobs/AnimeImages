@@ -239,13 +239,15 @@
                                                                 <a class="btn btn-outline-secondary btn-sm" href="{{ item.direct_url }}" target="_blank" rel="noopener noreferrer">
                                                                     打开直链
                                                                 </a>
-                                                                <a class="btn btn-brand btn-sm"
-                                                                   href="{{ item.direct_url }}"
-                                                                   download="{{ row.base_filename|default:'video' }}_{{ forloop.counter }}.mp4"
-                                                                   data-batch-direct-url="{{ item.direct_url }}"
-                                                                   data-batch-direct-filename="{{ row.base_filename|default:'video' }}_{{ forloop.counter }}.mp4">
-                                                                    浏览器下载
-                                                                </a>
+                                                                <button type="button"
+                                                                        class="btn btn-brand btn-sm batch-browser-download-btn"
+                                                                        data-batch-direct-download
+                                                                        data-batch-direct-url="{{ item.direct_url }}"
+                                                                        data-batch-direct-filename="{{ row.base_filename|default:'video' }}_{{ forloop.counter }}.mp4">
+                                                                    <span class="spinner-border spinner-border-sm me-1 batch-download-spinner" aria-hidden="true"></span>
+                                                                    <i class="bi bi-download me-1 batch-download-icon"></i>
+                                                                    <span class="batch-download-label">浏览器下载</span>
+                                                                </button>
                                                             </div>
                                                             <details class="batch-direct-url">
                                                                 <summary>展开链接</summary>
@@ -286,7 +288,6 @@
                                                     loading="lazy"
                                                     decoding="async"
                                             >
-                                            <span class="batch-cover-badge"><i class="bi bi-play-fill"></i></span>
                                         {% elif row.image_items %}
                                             <div class="batch-image-grid">
                                                 {% for item in row.image_items|slice:":4" %}
@@ -300,7 +301,7 @@
                                             </div>
                                         {% else %}
                                             <div class="batch-cover-placeholder">
-                                                <i class="bi bi-play-btn"></i>
+                                                <i class="bi bi-card-image"></i>
                                             </div>
                                         {% endif %}
                                     </div>

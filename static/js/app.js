@@ -50,6 +50,74 @@
         window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
+    function sanitizeFilename(filename) {
+        const fallback = "video.mp4";
+        const value = String(filename || fallback)
+            .replace(/[\\/:*?"<>|]+/g, "_")
+            .replace(/\s+/g, " ")
+            .trim();
+        return value || fallback;
+    }
+
+    function saveBlob(filename, blob) {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = sanitizeFilename(filename);
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    async function downloadBatchDirectUrl(url, filename) {
+        const response = await fetch(url, {
+            method: "GET",
+            credentials: "omit",
+            cache: "no-store",
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        const contentType = response.headers.get("Content-Type") || "";
+        if (contentType.toLowerCase().includes("text/html")) {
+            throw new Error("上游返回了网页而不是媒体文件");
+        }
+        const blob = await response.blob();
+        saveBlob(filename, blob);
+    }
+
+    function setBatchDownloadButtonLoading(button, loading, label) {
+        if (!button) {
+            return;
+        }
+        const labelNode = button.querySelector(".batch-download-label");
+        if (!button.dataset.originalLabel && labelNode) {
+            button.dataset.originalLabel = labelNode.textContent || "浏览器下载";
+        }
+        button.disabled = Boolean(loading);
+        button.classList.toggle("is-loading", Boolean(loading));
+        if (labelNode) {
+            labelNode.textContent = loading
+                ? (label || "下载中...")
+                : (button.dataset.originalLabel || "浏览器下载");
+        }
+    }
+
+    function showBatchDownloadButtonMessage(button, message) {
+        const labelNode = button ? button.querySelector(".batch-download-label") : null;
+        if (!labelNode) {
+            return;
+        }
+        const original = button.dataset.originalLabel || labelNode.textContent || "浏览器下载";
+        labelNode.textContent = message;
+        window.setTimeout(() => {
+            if (!button.classList.contains("is-loading")) {
+                labelNode.textContent = original;
+            }
+        }, 1300);
+    }
+
     function collectBatchVideoLinks() {
         return Array.from(document.querySelectorAll("[data-batch-direct-url]"))
             .map((node) => ({
@@ -205,6 +273,31 @@
                     return;
                 }
                 downloadTextFile("links.txt", links.map((item) => item.url).join("\n"));
+                return;
+            }
+
+            const directDownloadButton = event.target.closest("[data-batch-direct-download]");
+            if (directDownloadButton) {
+                event.preventDefault();
+                if (directDownloadButton.disabled) {
+                    return;
+                }
+                const url = directDownloadButton.getAttribute("data-batch-direct-url") || "";
+                const filename = directDownloadButton.getAttribute("data-batch-direct-filename") || "video.mp4";
+                if (!url) {
+                    showBatchDownloadButtonMessage(directDownloadButton, "无直链");
+                    return;
+                }
+                setBatchDownloadButtonLoading(directDownloadButton, true, "下载中...");
+                try {
+                    await downloadBatchDirectUrl(url, filename);
+                    setBatchDownloadButtonLoading(directDownloadButton, false);
+                    showBatchDownloadButtonMessage(directDownloadButton, "已开始下载");
+                } catch (error) {
+                    console.warn("Batch direct browser download failed", error);
+                    setBatchDownloadButtonLoading(directDownloadButton, false);
+                    showBatchDownloadButtonMessage(directDownloadButton, "下载失败");
+                }
                 return;
             }
 
