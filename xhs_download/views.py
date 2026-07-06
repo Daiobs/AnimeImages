@@ -3802,8 +3802,56 @@ def build_batch_skipped_row(source_text, reason, started_at=None):
         "status": "skipped",
         "source_text": source_text,
         "duration_ms": int((time.monotonic() - started_at) * 1000),
-        "error_message": reason,
+        "error_message": sanitize_observability_text(reason),
     }
+
+
+def batch_link_host(url):
+    try:
+        return urlparse(str(url or "")).hostname or ""
+    except Exception:
+        return ""
+
+
+def enrich_batch_media_items(row):
+    for item in row.get("video_items") or ():
+        item["direct_host"] = batch_link_host(item.get("video_url") or item.get("url"))
+        item["direct_url"] = item.get("video_url") or item.get("url") or ""
+    for item in row.get("image_items") or ():
+        item["direct_host"] = batch_link_host(item.get("url"))
+        item["direct_url"] = item.get("url") or ""
+
+
+def build_batch_summary(rows):
+    summary = {
+        "total_count": len(rows),
+        "success_count": 0,
+        "failed_count": 0,
+        "skipped_count": 0,
+        "video_count": 0,
+        "image_count": 0,
+        "total_duration_ms": 0,
+        "provider_counts": {},
+        "platform_counts": {},
+    }
+    for row in rows:
+        status = row.get("status") or ""
+        if status == "success":
+            summary["success_count"] += 1
+            videos = row.get("video_items") or ()
+            images = row.get("image_items") or ()
+            summary["video_count"] += len(videos)
+            summary["image_count"] += len(images)
+            provider = row.get("selected_provider") or row.get("provider_label") or "native"
+            platform = row.get("platform_name") or row.get("platform") or "未知平台"
+            summary["provider_counts"][provider] = summary["provider_counts"].get(provider, 0) + 1
+            summary["platform_counts"][platform] = summary["platform_counts"].get(platform, 0) + 1
+        elif status == "skipped":
+            summary["skipped_count"] += 1
+        else:
+            summary["failed_count"] += 1
+        summary["total_duration_ms"] += int(row.get("duration_ms") or 0)
+    return summary
 
 
 def build_batch_result_row(request, source_text, *, prefer_ultra_hd, prefer_youtube_merge, deadline=None):
@@ -3835,7 +3883,7 @@ def build_batch_result_row(request, source_text, *, prefer_ultra_hd, prefer_yout
         )
         display_context = build_result_display_context(result, platform_key="home")
         metadata = result.metadata or {}
-        return {
+        row = {
             "status": "success",
             "source_text": source_text,
             "duration_ms": int((time.monotonic() - started_at) * 1000),
@@ -3843,33 +3891,35 @@ def build_batch_result_row(request, source_text, *, prefer_ultra_hd, prefer_yout
             "selected_provider": metadata.get("selected_provider") or metadata.get("source_provider") or "",
             **display_context,
         }
+        enrich_batch_media_items(row)
+        return row
     except XhsProviderTimeoutError as error:
         return {
             "status": "failed",
             "source_text": source_text,
             "duration_ms": int((time.monotonic() - started_at) * 1000),
-            "error_message": str(error),
+            "error_message": sanitize_observability_text(str(error)),
         }
     except XhsError as error:
         return {
             "status": "failed",
             "source_text": source_text,
             "duration_ms": int((time.monotonic() - started_at) * 1000),
-            "error_message": f"解析失败：{error}",
+            "error_message": sanitize_observability_text(f"解析失败：{error}"),
         }
     except requests.RequestException as error:
         return {
             "status": "failed",
             "source_text": source_text,
             "duration_ms": int((time.monotonic() - started_at) * 1000),
-            "error_message": f"请求失败：{error}",
+            "error_message": sanitize_observability_text(f"请求失败：{error}"),
         }
     except Exception as error:
         return {
             "status": "failed",
             "source_text": source_text,
             "duration_ms": int((time.monotonic() - started_at) * 1000),
-            "error_message": f"{type(error).__name__}: {error}",
+            "error_message": sanitize_observability_text(f"{type(error).__name__}: {error}"),
         }
 
 
@@ -3922,7 +3972,10 @@ def batch_parse_view(request):
             "links_text": raw_links,
             "links": links,
             "rows": rows,
+            "batch_summary": build_batch_summary(rows),
             "max_links": max_links,
+            "batch_per_link_timeout_seconds": batch_parse_per_link_timeout_seconds(),
+            "batch_total_timeout_seconds": batch_parse_total_timeout_seconds(),
             "batch_error": batch_error,
             "batch_staff_only": not env_runtime_bool("BATCH_PARSE_PUBLIC_ENABLED", False),
             "batch_direct_links_allowed": batch_parse_user_is_staff(request),
@@ -3931,6 +3984,7 @@ def batch_parse_view(request):
             "ultra_hd_available": ultra_hd_is_available(request),
             "youtube_merge_mode_available": youtube_merge_mode_is_available(request),
             "strategy_matrix": build_download_strategy_matrix(),
+            "proxy_image_url": reverse("media_proxy_image"),
         },
     )
 

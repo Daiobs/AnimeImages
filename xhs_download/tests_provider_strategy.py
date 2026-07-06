@@ -183,9 +183,16 @@ class BatchParseViewTests(TestCase):
         response = self.client.get(reverse("batch_parse"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "下载策略矩阵")
+        self.assertContains(response, "解析设置")
+        self.assertContains(response, "batch-settings-panel")
+        self.assertContains(response, "高级说明：下载策略矩阵")
         self.assertContains(response, "批量解析")
         self.assertContains(response, "仅管理员可用")
+        self.assertNotContains(response, "batch-option-row")
+        content = response.content.decode()
+        self.assertGreater(content.index("高级说明：下载策略矩阵"), content.index("batch-form"))
+        self.assertGreater(content.index('name="ultra_hd"'), content.index("batch-settings-panel"))
+        self.assertGreater(content.index('name="youtube_merge"'), content.index("batch-settings-panel"))
 
     def test_batch_parse_non_staff_default_not_accessible(self):
         response = self.client.get(reverse("batch_parse"))
@@ -200,7 +207,7 @@ class BatchParseViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "本次提交 3 条链接")
+        self.assertContains(response, "总链接 3")
 
     @patch("xhs_download.views.parse_media_page")
     def test_batch_parse_post_renders_successful_result(self, mock_parse):
@@ -217,6 +224,7 @@ class BatchParseViewTests(TestCase):
                     provider="tiantianjiexi",
                     size_bytes=123456,
                     quality_label="原画",
+                    cover_url="https://p3.douyinpic.com/cover.jpeg",
                 ),
             ),
             metadata={"selected_provider": "tiantianjiexi"},
@@ -229,7 +237,15 @@ class BatchParseViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "demo_video")
+        self.assertContains(response, "Provider tiantianjiexi")
+        self.assertContains(response, "120.6 KB")
+        self.assertContains(response, "batch-result-cover")
+        self.assertContains(response, "复制直链")
+        self.assertContains(response, "打开直链")
+        self.assertContains(response, "浏览器下载")
         self.assertContains(response, "浏览器 Blob 优先")
+        content = response.content.decode()
+        self.assertGreater(content.index("高级说明：下载策略矩阵"), content.index("解析结果"))
         mock_parse.assert_called_once()
         call_kwargs = mock_parse.call_args.kwargs
         self.assertLessEqual(call_kwargs["timeout_seconds"], 8.0)
@@ -282,6 +298,11 @@ class BatchParseViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "ok_video")
         self.assertContains(response, "RuntimeError")
+        self.assertContains(response, "复制错误")
+        self.assertContains(response, "复制原链接")
+        self.assertContains(response, "重新解析此链接")
+        self.assertContains(response, "成功 1")
+        self.assertContains(response, "失败 1")
 
     @override_settings(BATCH_PARSE_TOTAL_TIMEOUT_SECONDS=1)
     @patch("xhs_download.views.time.monotonic")
@@ -335,6 +356,26 @@ class BatchParseViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "public_video")
         self.assertNotContains(response, 'href="https://v5-default.365yg.com/private-demo.mp4"')
+        self.assertNotContains(response, "复制全部成功视频直链")
+        self.assertNotContains(response, "data-batch-direct-url")
+
+    @override_settings(BATCH_PARSE_PUBLIC_ENABLED=True)
+    @patch("xhs_download.views.parse_media_page")
+    def test_batch_public_mode_sanitizes_error_and_hides_strategy_matrix(self, mock_parse):
+        mock_parse.side_effect = RuntimeError(
+            "failed https://v5-default.365yg.com/a.mp4?token=secret&signature=bad"
+        )
+
+        response = self.client.post(
+            reverse("batch_parse"),
+            {"links": "https://www.douyin.com/video/7611146072161047526"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "[url-redacted]")
+        self.assertNotContains(response, "token=secret")
+        self.assertNotContains(response, "signature=bad")
+        self.assertNotContains(response, "高级说明：下载策略矩阵")
 
 
 class TianTianJieXiHealthHardeningTests(TestCase):
