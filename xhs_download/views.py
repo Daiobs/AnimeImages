@@ -705,17 +705,34 @@ def build_provider_dashboard_rows(runtime_setting, request):
         {
             "id": PROVIDER_DOUYIN_ULTRA,
             "name": "抖音超高清",
-            "description": "使用 KuKuTool 上游获取抖音超高清 / 4K 候选资源。",
+            "description": "优先使用天天解析，并与 KuKuTool 竞速获取抖音原画 / 超高清候选资源。",
             "mode_field": "douyin_ultra_mode",
             "rollout_field": "douyin_ultra_rollout_percent",
             "disabled_reason_field": "douyin_ultra_disabled_reason",
             "current_mode": runtime_setting.douyin_ultra_mode,
             "current_rollout_percent": runtime_setting.douyin_ultra_rollout_percent,
             "disabled_reason": runtime_setting.douyin_ultra_disabled_reason,
-            "health_ready": bool(kukutool_health.get("available")),
-            "health_label": "可用" if kukutool_health.get("available") else "不可用",
+            "health_ready": bool(
+                kukutool_health.get("available")
+                or tiantianjiexi_health.get("enabled")
+            ),
+            "health_label": (
+                "可用"
+                if (
+                    kukutool_health.get("available")
+                    or tiantianjiexi_health.get("enabled")
+                )
+                else "不可用"
+            ),
             "issue": (
-                "熔断中"
+                "天天解析和 KuKuTool 均不可用"
+                if (
+                    not tiantianjiexi_health.get("enabled")
+                    and not kukutool_health.get("available")
+                )
+                else "天天解析熔断中"
+                if (tiantianjiexi_health.get("circuit") or {}).get("open")
+                else "KuKuTool 熔断中"
                 if (kukutool_health.get("circuit") or {}).get("open")
                 else (kukutool_health.get("runtime") or {}).get("error")
                 or (kukutool_health.get("sidecar") or {}).get("error")
@@ -762,6 +779,7 @@ def build_provider_dashboard_rows(runtime_setting, request):
     ]
     return rows, {
         "kukutool": kukutool_health,
+        "tiantianjiexi": tiantianjiexi_health,
         "youtube_merge": youtube_health,
         "third_party": third_party_summary,
         "third_party_tiantianjiexi": tiantianjiexi_health,
@@ -3326,7 +3344,25 @@ def build_search_results_context(request, platform_key="home"):
             elif result_metadata.get("selected_provider") == "yt_dlp_merge":
                 context["provider_notice"] = "本次使用 yt-dlp 高清合并；默认优先 1080p，下载时将在服务端合并音频和视频。"
         if prefer_ultra_hd and result.platform == "douyin":
-            context["provider_notice"] = "本次优先使用 KuKuTool 超高清上游；若不可用会自动回退本地解析。"
+            ultra_provider = (
+                result_metadata.get("ultra_race_winner")
+                or result_metadata.get("selected_provider")
+                or result_metadata.get("source_provider")
+            )
+            ultra_provider_label = {
+                "tiantianjiexi": "天天解析",
+                "kukutool": "KuKuTool",
+                "native": "本地解析",
+                "mobile_feed": "本地解析",
+                "mobile_share": "本地解析",
+            }.get(ultra_provider, "")
+            if ultra_provider_label in {"天天解析", "KuKuTool"}:
+                context["provider_notice"] = (
+                    f"本次由 {ultra_provider_label} 返回抖音原画 / 超高清资源；"
+                    "若上游不可用会自动回退本地解析。"
+                )
+            else:
+                context["provider_notice"] = "本次未命中超高清上游，已自动回退本地解析。"
         context["post_type"] = result.post_type
         context["base_filename"] = result.base_filename
         context["image_items"] = [

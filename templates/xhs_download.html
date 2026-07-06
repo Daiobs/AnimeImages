@@ -271,16 +271,16 @@
                                 <strong>抖音超高清</strong>
                                 <small>
                                     {% if ultra_hd_available %}
-                                        解析抖音时优先使用 KuKuTool 上游获取超高清资源。
+                                        解析抖音时优先尝试天天解析与 KuKuTool 上游获取原画 / 超高清资源。
                                     {% else %}
-                                        当前环境未启用 KuKuTool 超高清上游。
+                                        当前环境未启用抖音超高清上游。
                                     {% endif %}
                                 </small>
                             </span>
                         </label>
 
                         <div class="form-text">
-                            默认关闭，关闭时只使用本地解析；开启后仅对抖音视频尝试 KuKuTool，失败或超限会自动回退。
+                            默认关闭，关闭时只使用本地解析；开启后仅对抖音视频尝试超高清 Provider，失败或超限会自动回退。
                         </div>
 
                         <label class="settings-toggle{% if not youtube_merge_mode_available %} is-disabled{% endif %}">

@@ -564,6 +564,10 @@
 
         <div class="provider-summary">
             <div class="provider-summary-card">
+                <strong>天天解析</strong>
+                <span>{{ provider_health.tiantianjiexi.enabled|yesno:"可用,不可用" }}</span>
+            </div>
+            <div class="provider-summary-card">
                 <strong>KuKuTool</strong>
                 <span>{{ provider_health.kukutool.available|yesno:"可用,不可用" }}</span>
             </div>
@@ -652,7 +656,7 @@
                             </div>
                             <div class="provider-public-warning" data-public-warning hidden>
                                 {% if row.id == "douyin_ultra" %}
-                                    KuKuTool 依赖第三方上游，public / public_gray 风险较高，建议先使用 staff 完成 smoke test。
+                                    抖音超高清依赖天天解析与 KuKuTool 上游，public / public_gray 风险较高，建议先使用 staff 完成 smoke test。
                                 {% elif row.id == "third_party" %}
                                     <span data-third-party-public-warning>
                                         通用第三方 public / public_gray 会面向访客开放；请先确认平台/Host 白名单、输出大小限制和失败缓存。
@@ -711,7 +715,7 @@
                         >
                     </label>
                     <label class="provider-field">
-                        <span>KuKuTool 近完成等待（秒）</span>
+                        <span>KuKuTool 兜底等待（秒）</span>
                         <input
                             type="number"
                             name="douyin_ultra_kukutool_grace_seconds"
@@ -814,8 +818,8 @@
 
             <section class="provider-emergency">
                 <div>
-                    <div class="provider-emergency-title">KuKuTool 紧急开关</div>
-                    <div class="provider-emergency-help">用于上游异常、费用风险或线上排障时快速停用抖音超高清链路。</div>
+                    <div class="provider-emergency-title">KuKuTool 兜底紧急开关</div>
+                    <div class="provider-emergency-help">用于 KuKuTool 上游异常、费用风险或线上排障时快速停用该兜底链路；天天解析仍由环境 capability 控制。</div>
                 </div>
                 <label>
                     <input

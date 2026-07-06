@@ -5789,7 +5789,7 @@ class XhsDownloadViewTests(TestCase):
             prefer_ultra_hd=True,
             client_country_code="CN",
         )
-        self.assertContains(response, "本次优先使用 KuKuTool 超高清上游")
+        self.assertContains(response, "本次未命中超高清上游，已自动回退本地解析。")
         self.assertContains(response, 'id="ultra-hd-request-input"')
         self.assertContains(response, 'value="1"')
 
@@ -5807,7 +5807,7 @@ class XhsDownloadViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'id="ultra-hd-setting"')
-        self.assertContains(response, "当前环境未启用 KuKuTool 超高清上游")
+        self.assertContains(response, "当前环境未启用抖音超高清上游")
         mock_health.assert_not_called()
 
     @override_settings(
@@ -5824,7 +5824,7 @@ class XhsDownloadViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'id="ultra-hd-setting"')
-        self.assertContains(response, "当前环境未启用 KuKuTool 超高清上游")
+        self.assertContains(response, "当前环境未启用抖音超高清上游")
         mock_health.assert_not_called()
 
     @override_settings(
