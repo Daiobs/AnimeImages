@@ -184,10 +184,10 @@ from .services.region_routing import get_request_country_code
 from .services.batch_parse import (
     batch_link_host,
     batch_parse_access_allowed,
+    batch_parse_effective_per_link_timeout_seconds,
     batch_parse_limit_error_message,
     batch_parse_max_links,
     batch_parse_parallel_workers,
-    batch_parse_per_link_timeout_seconds,
     batch_parse_public_ultra_hd_allowed,
     batch_parse_public_youtube_merge_allowed,
     batch_parse_rate_limit_results,
@@ -3767,7 +3767,9 @@ def build_batch_result_rows(request, links, *, prefer_ultra_hd, prefer_youtube_m
         prefer_youtube_merge=prefer_youtube_merge,
         deadline=deadline,
         parallel_workers=batch_parse_parallel_workers(),
-        per_link_timeout_seconds=batch_parse_per_link_timeout_seconds(),
+        per_link_timeout_seconds=batch_parse_effective_per_link_timeout_seconds(
+            prefer_ultra_hd=prefer_ultra_hd,
+        ),
         row_builder=build_batch_result_row,
     )
 

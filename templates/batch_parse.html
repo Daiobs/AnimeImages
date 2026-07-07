@@ -302,6 +302,7 @@
                                                     alt="视频封面"
                                                     loading="lazy"
                                                     decoding="async"
+                                                    onerror="retryImage(this)"
                                             >
                                         {% elif row.image_items %}
                                             <div class="batch-image-grid">
@@ -311,6 +312,7 @@
                                                             alt="图片预览"
                                                             loading="lazy"
                                                             decoding="async"
+                                                            onerror="retryImage(this)"
                                                     >
                                                 {% endfor %}
                                             </div>

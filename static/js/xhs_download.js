@@ -290,6 +290,7 @@
         let activeParseController = null;
         let parseRequestId = 0;
         let downloadInProgress = false;
+        let lastDownloadProgress = 0;
         const directHandoffAttemptKeys = new Set();
 
         function getBaseFilename() {
@@ -490,8 +491,15 @@
             }
         }
 
-        function setProgress(percent) {
-            const value = Math.max(0, Math.min(100, Math.round(percent || 0)));
+        function resetDownloadProgressBaseline() {
+            lastDownloadProgress = 0;
+        }
+
+        function setProgress(percent, options) {
+            const rawValue = Math.max(0, Math.min(100, Math.round(percent || 0)));
+            const allowDecrease = Boolean(options && options.allowDecrease);
+            const value = allowDecrease ? rawValue : Math.max(rawValue, lastDownloadProgress);
+            lastDownloadProgress = value;
             const {progressWrap, progressTrack, progressBar, progressPercent} = getProgressElements();
             if (progressWrap) {
                 progressWrap.hidden = false;
@@ -1037,6 +1045,7 @@
             }
 
             downloadInProgress = true;
+            resetDownloadProgressBaseline();
             const busyLabel = forceAutoMode ? "智能处理中" : "保存中";
             setDownloadButtonsBusy(true, downloadBtn, busyLabel);
             setStatus(

@@ -1,21 +1,24 @@
 import re
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
+import requests
 from requests.utils import requote_uri
 
 from ..assets import MediaAsset, ParseResult
 from ..candidates import MediaCandidate, dedupe_candidates
 from ..common import (
     XhsParseError,
+    XhsProviderTimeoutError,
     clean_filename,
     normalize_text,
     request_get_with_retry,
+    validate_external_url,
 )
 from .base import BasePlatformAdapter, PlatformCapabilities, ProviderPolicy
 
 
 BILIBILI_PAGE_HOST_SUFFIXES = ("bilibili.com", "b23.tv")
-BILIBILI_MEDIA_HOST_SUFFIXES = ("bilivideo.com", "hdslb.com")
+BILIBILI_MEDIA_HOST_SUFFIXES = ("bilivideo.com", "bilivideo.cn", "hdslb.com")
 BILIBILI_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -70,14 +73,17 @@ def extract_page_number(value):
 def api_get_json(url, params, referer="https://www.bilibili.com/"):
     query = urlencode({key: value for key, value in params.items() if value is not None})
     request_url = f"{url}?{query}" if query else url
-    response = request_get_with_retry(
-        request_url,
-        headers={**BILIBILI_HEADERS, "Referer": requote_uri(referer)},
-        timeout=15,
-        retries=2,
-        allowed_final_host_suffixes=("bilibili.com",),
-        final_url_message="哔哩哔哩接口跳转到了不允许的域名",
-    )
+    try:
+        response = request_get_with_retry(
+            request_url,
+            headers={**BILIBILI_HEADERS, "Referer": requote_uri(referer)},
+            timeout=15,
+            retries=2,
+            allowed_final_host_suffixes=("bilibili.com",),
+            final_url_message="哔哩哔哩接口跳转到了不允许的域名",
+        )
+    except (requests.Timeout, requests.ConnectionError) as error:
+        raise XhsProviderTimeoutError("哔哩哔哩接口请求超时，请稍后重试") from error
     try:
         data = response.json()
     finally:
@@ -90,18 +96,40 @@ def api_get_json(url, params, referer="https://www.bilibili.com/"):
 
 
 def resolve_video_page(url):
-    response = request_get_with_retry(
-        url,
-        headers=BILIBILI_HEADERS,
-        timeout=15,
-        retries=2,
-        allowed_final_host_suffixes=BILIBILI_PAGE_HOST_SUFFIXES,
-        final_url_message="哔哩哔哩页面跳转到了不允许的域名",
-    )
-    try:
-        return response.url
-    finally:
-        response.close()
+    current_url = normalize_bilibili_url(url)
+    max_redirects = 5
+    for _ in range(max_redirects + 1):
+        validate_external_url(
+            current_url,
+            BILIBILI_PAGE_HOST_SUFFIXES,
+            "哔哩哔哩页面跳转到了不允许的域名",
+        )
+        response = requests.get(
+            current_url,
+            headers=BILIBILI_HEADERS,
+            timeout=5,
+            allow_redirects=False,
+            stream=True,
+        )
+        try:
+            if response.status_code not in {301, 302, 303, 307, 308}:
+                return response.url or current_url
+            location = response.headers.get("Location")
+            if not location:
+                return response.url or current_url
+            redirect_url = normalize_bilibili_url(urljoin(current_url, location))
+            validate_external_url(
+                redirect_url,
+                BILIBILI_PAGE_HOST_SUFFIXES,
+                "哔哩哔哩页面跳转到了不允许的域名",
+            )
+            if extract_bvid(redirect_url) or extract_aid(redirect_url):
+                return redirect_url
+            current_url = redirect_url
+        finally:
+            response.close()
+
+    raise XhsParseError("哔哩哔哩短链接跳转次数过多")
 
 
 def choose_page(view_data, page_number):
@@ -141,6 +169,66 @@ def build_play_params(view_data, page, preferred_qn=80):
     return params
 
 
+def build_dash_play_params(view_data, page, preferred_qn=80):
+    params = build_play_params(view_data, page, preferred_qn=preferred_qn)
+    params["fnval"] = 16
+    return params
+
+
+def normalize_dash_urls(item):
+    urls = []
+    for key in ("baseUrl", "base_url", "url"):
+        url = normalize_bilibili_url(item.get(key) or "")
+        if url:
+            urls.append(url)
+    for key in ("backupUrl", "backup_url", "backup_url_list"):
+        value = item.get(key)
+        if isinstance(value, str):
+            value = [value]
+        for url in value or ():
+            normalized = normalize_bilibili_url(url or "")
+            if normalized:
+                urls.append(normalized)
+    return urls
+
+
+def get_dash_play_items(play_data):
+    videos = ((play_data.get("dash") or {}).get("video")) or []
+    candidates = []
+    for index, item in enumerate(videos, start=1):
+        if not isinstance(item, dict):
+            continue
+        size = int(item.get("size") or 0)
+        width = int(item.get("width") or 0)
+        height = int(item.get("height") or 0)
+        bandwidth = int(item.get("bandwidth") or 0)
+        quality_id = item.get("id") or item.get("quality")
+        quality_label = f"{quality_id}P DASH" if quality_id else "DASH 视频"
+        for url in normalize_dash_urls(item):
+            candidates.append(
+                MediaCandidate(
+                    url=url,
+                    size_bytes=size,
+                    width=width,
+                    height=height,
+                    bit_rate=bandwidth,
+                    priority=max(0, len(videos) - index),
+                    quality_label=quality_label,
+                    source="dash.video",
+                )
+            )
+    return [
+        {
+            "url": candidate.url,
+            "size_bytes": candidate.size_bytes,
+            "quality_label": candidate.quality_label,
+        }
+        for candidate in dedupe_candidates(
+            sorted(candidates, key=lambda item: item.score, reverse=True)
+        )
+    ]
+
+
 def get_play_items(play_data):
     durls = play_data.get("durl") or []
     items = []
@@ -156,10 +244,16 @@ def get_play_items(play_data):
     candidates = []
     for _, url, size in items:
         candidates.append(MediaCandidate(url=url, size_bytes=size, source="durl"))
-    return [
-        {"url": candidate.url, "size_bytes": candidate.size_bytes}
-        for candidate in dedupe_candidates(candidates)
-    ]
+    if candidates:
+        return [
+            {
+                "url": candidate.url,
+                "size_bytes": candidate.size_bytes,
+                "quality_label": candidate.quality_label,
+            }
+            for candidate in dedupe_candidates(candidates)
+        ]
+    return get_dash_play_items(play_data)
 
 
 class BilibiliAdapter(BasePlatformAdapter):
@@ -201,6 +295,13 @@ class BilibiliAdapter(BasePlatformAdapter):
         )
         video_items = get_play_items(play_data)
         if not video_items:
+            play_data = api_get_json(
+                "https://api.bilibili.com/x/player/playurl",
+                build_dash_play_params(view_data, page),
+                referer=page_url,
+            )
+            video_items = get_play_items(play_data)
+        if not video_items:
             raise XhsParseError("没有解析到可直接下载的哔哩哔哩视频源")
 
         owner = view_data.get("owner") or {}
@@ -223,7 +324,10 @@ class BilibiliAdapter(BasePlatformAdapter):
                     cover_preview_url=cover_url,
                     headers=self.headers,
                     media_host_suffixes=self.media_host_suffixes,
-                    quality_label=f"{play_data.get('quality')}P" if play_data.get("quality") else "原始文件",
+                    quality_label=(
+                        video_item.get("quality_label")
+                        or (f"{play_data.get('quality')}P" if play_data.get("quality") else "原始文件")
+                    ),
                     size_bytes=video_item["size_bytes"],
                 )
                 for video_item in video_items

@@ -151,6 +151,16 @@ def batch_parse_per_link_timeout_seconds():
     )
 
 
+def batch_parse_effective_per_link_timeout_seconds(prefer_ultra_hd=False):
+    per_link_timeout = batch_parse_per_link_timeout_seconds()
+    if not prefer_ultra_hd:
+        return per_link_timeout
+    return max(
+        per_link_timeout,
+        env_runtime_float("BATCH_PARSE_ULTRA_PER_LINK_TIMEOUT_SECONDS", 12.0),
+    )
+
+
 def batch_parse_rate_limit_results(request, link_count):
     if batch_parse_user_is_staff(request):
         return ()

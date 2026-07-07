@@ -227,7 +227,7 @@ from .services.platforms.third_party import (
     get_third_party_rule,
     third_party_media_url_is_allowed,
 )
-from .services.platforms.bilibili import BILIBILI_HEADERS
+from .services.platforms.bilibili import BILIBILI_HEADERS, resolve_video_page
 from .services.platforms.douyin import DOUYIN_HEADERS, extract_aweme_id, get_video_candidates
 from .services.platforms.douyin_kukutool import (
     DouyinKukuToolProvider,
@@ -252,10 +252,12 @@ from .services.platforms.douyin_providers import (
     DouyinParseContext,
     DouyinNativeEnhancedProvider,
     DouyinNativeProvider,
+    DouyinMobileFeedProvider,
     DouyinTikHubProvider,
     DouyinTianTianJieXiProvider,
     DouyinUltraRaceProvider,
     ValidatedProviderCandidate,
+    build_external_parse_result,
     build_tikhub_validated_cache_key,
     build_tikhub_provider_response,
     build_douyin_result_providers,
@@ -1972,6 +1974,42 @@ class DouyinAdapterTests(SimpleTestCase):
         self.assertEqual(mock_get.call_count, 1)
         mock_retry_get.assert_not_called()
 
+    @patch("xhs_download.services.platforms.douyin.request_get_with_retry")
+    @patch("xhs_download.services.platforms.douyin.requests.get")
+    def test_ultra_short_link_falls_back_to_direct_page_fetch_when_redirect_fails(self, mock_get, mock_retry_get):
+        mock_get.side_effect = requests.Timeout("short link timeout")
+        data = {
+            "aweme_detail": {
+                "aweme_id": "7618531038729648354",
+                "desc": "视频标题",
+                "author": {"nickname": "作者"},
+                "video": {
+                    "play_addr": {
+                        "url_list": ["https://v3-web.douyinvod.com/video.mp4"],
+                    },
+                    "cover": {"url_list": ["https://p3-sign.douyinpic.com/cover.webp"]},
+                },
+            }
+        }
+        response = Mock()
+        response.url = "https://www.douyin.com/video/7618531038729648354"
+        response.text = f'<script id="RENDER_DATA" type="application/json">{json.dumps(data, ensure_ascii=False)}</script>'
+        response.close = Mock()
+        mock_retry_get.return_value = response
+
+        context = DouyinAdapter().build_parse_context(
+            "https://v.douyin.com/example/",
+            fast_short_link=True,
+            request_deadline=time.monotonic() + 5,
+            prefer_ultra_hd=True,
+        )
+
+        self.assertEqual(context.aweme_id, "7618531038729648354")
+        self.assertEqual(context.direct_result.base_filename, "作者_视频标题")
+        self.assertEqual(context.direct_result.video_assets[0].cover_url, "https://p3-sign.douyinpic.com/cover.webp")
+        mock_retry_get.assert_called_once()
+        self.assertEqual(mock_retry_get.call_args.kwargs["retries"], 1)
+
     @patch("xhs_download.services.platforms.douyin.requests.get")
     def test_short_link_stops_at_share_redirect_once_aweme_id_is_known(self, mock_get):
         response = Mock()
@@ -2033,7 +2071,7 @@ class DouyinAdapterTests(SimpleTestCase):
             )
 
         self.assertEqual(result.video_assets[0].url, "https://v3-web.douyinvod.com/native.mp4")
-        mock_feed.assert_called_once_with("7539896907901062452")
+        mock_feed.assert_called_once_with("7539896907901062452", probe_video_candidates=False)
         mock_request_get.assert_not_called()
 
     @patch("xhs_download.services.platforms.douyin.request_get_with_retry")
@@ -2206,6 +2244,51 @@ class DouyinAdapterTests(SimpleTestCase):
         self.assertEqual(result.assets[0].quality_label, "4K")
         self.assertEqual(result.metadata["selected_provider"], "tiantianjiexi")
         self.assertTrue(result.assets[0].provider_manifest_token)
+
+    def test_external_parse_result_does_not_use_url_as_base_filename(self):
+        context = DouyinParseContext(
+            url="https://v.douyin.com/example/",
+            aweme_id="7539896907901062452",
+        )
+        result = build_external_parse_result(
+            DouyinAdapter(),
+            context,
+            MediaCandidate(
+                url="https://v26-default.365yg.com/high.mp4",
+                quality_label="4K",
+                size_bytes=90_000_000,
+            ),
+            provider_name="tiantianjiexi",
+            base_filename="https://v.douyin.com/example/",
+        )
+
+        self.assertEqual(result.base_filename, "douyin_7539896907901062452")
+
+    def test_mobile_feed_provider_probes_video_candidates_for_ultra_hd(self):
+        expected = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="native",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url="https://v3-web.douyinvod.com/native.mp4",
+                    platform="douyin",
+                ),
+            ),
+        )
+        adapter = DouyinAdapter()
+        context = DouyinParseContext(
+            url="https://www.douyin.com/video/7539896907901062452",
+            aweme_id="7539896907901062452",
+            prefer_ultra_hd=True,
+        )
+
+        with patch.object(adapter, "fetch_mobile_feed_result", return_value=expected) as mock_feed:
+            result = DouyinMobileFeedProvider().parse(adapter, context)
+
+        self.assertIs(result, expected)
+        mock_feed.assert_called_once_with("7539896907901062452", probe_video_candidates=True)
 
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,
@@ -3742,12 +3825,34 @@ class BilibiliAdapterTests(SimpleTestCase):
         self.assertIn("x/web-interface/view?bvid=BV1xx411c7mD", mock_get.call_args_list[0].args[0])
         self.assertIn("x/player/playurl?", mock_get.call_args_list[1].args[0])
 
-    @patch("xhs_download.services.platforms.bilibili.request_get_with_retry")
-    def test_parse_url_resolves_b23_short_link(self, mock_get):
+    @patch("xhs_download.services.platforms.bilibili.requests.get")
+    def test_resolve_video_page_follows_b23_redirect_without_fetching_body(self, mock_get):
         resolve_response = Mock()
-        resolve_response.url = "https://www.bilibili.com/video/BV1xx411c7mD/?p=1"
+        resolve_response.status_code = 302
+        resolve_response.url = "https://b23.tv/abc123"
+        resolve_response.headers = {
+            "Location": "https://www.bilibili.com/video/BV1xx411c7mD/?p=1",
+        }
         resolve_response.close = Mock()
+        mock_get.return_value = resolve_response
 
+        resolved_url = resolve_video_page("https://b23.tv/abc123")
+
+        self.assertEqual(resolved_url, "https://www.bilibili.com/video/BV1xx411c7mD/?p=1")
+        self.assertEqual(mock_get.call_args.args[0], "https://b23.tv/abc123")
+        self.assertFalse(mock_get.call_args.kwargs["allow_redirects"])
+        self.assertTrue(mock_get.call_args.kwargs["stream"])
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], 5)
+        resolve_response.close.assert_called_once()
+
+    def test_parse_url_resolves_b23_short_link(self):
+        resolve_response = Mock()
+        resolve_response.status_code = 302
+        resolve_response.url = "https://b23.tv/abc123"
+        resolve_response.headers = {
+            "Location": "https://www.bilibili.com/video/BV1xx411c7mD/?p=1",
+        }
+        resolve_response.close = Mock()
         view_response = Mock()
         view_response.json.return_value = {
             "code": 0,
@@ -3771,13 +3876,95 @@ class BilibiliAdapterTests(SimpleTestCase):
             },
         }
         play_response.close = Mock()
-        mock_get.side_effect = [resolve_response, view_response, play_response]
 
-        result = BilibiliAdapter().parse_url("https://b23.tv/abc123")
+        with (
+            patch("xhs_download.services.platforms.bilibili.requests.get", return_value=resolve_response) as mock_redirect_get,
+            patch("xhs_download.services.platforms.bilibili.request_get_with_retry") as mock_get,
+        ):
+            mock_get.side_effect = [view_response, play_response]
+            result = BilibiliAdapter().parse_url("https://b23.tv/abc123")
 
         self.assertEqual(result.video_assets[0].url, "https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/video.mp4")
         self.assertEqual(result.video_assets[0].cover_url, "https://i0.hdslb.com/bfs/archive/cover.jpg")
-        self.assertEqual(mock_get.call_args_list[0].args[0], "https://b23.tv/abc123")
+        self.assertEqual(mock_redirect_get.call_args.args[0], "https://b23.tv/abc123")
+        self.assertIn("x/web-interface/view?bvid=BV1xx411c7mD", mock_get.call_args_list[0].args[0])
+        self.assertIn("fnval=0", mock_get.call_args_list[1].args[0])
+
+    @patch("xhs_download.services.platforms.bilibili.request_get_with_retry")
+    def test_parse_url_falls_back_to_dash_when_durl_is_missing(self, mock_get):
+        view_response = Mock()
+        view_response.json.return_value = {
+            "code": 0,
+            "data": {
+                "bvid": "BV1xx411c7mD",
+                "aid": 2,
+                "title": "测试标题",
+                "pic": "https://i0.hdslb.com/bfs/archive/cover.jpg",
+                "owner": {"name": "作者"},
+                "pages": [{"cid": 62131, "page": 1, "part": "P1"}],
+            },
+        }
+        view_response.close = Mock()
+
+        legacy_play_response = Mock()
+        legacy_play_response.json.return_value = {
+            "code": 0,
+            "data": {
+                "quality": 80,
+                "durl": [],
+            },
+        }
+        legacy_play_response.close = Mock()
+
+        dash_play_response = Mock()
+        dash_play_response.json.return_value = {
+            "code": 0,
+            "data": {
+                "quality": 80,
+                "dash": {
+                    "video": [
+                        {
+                            "id": 32,
+                            "size": 2_800_000,
+                            "width": 640,
+                            "height": 360,
+                            "bandwidth": 800_000,
+                            "baseUrl": "https://upos-sz-mirrorcosov.bilivideo.cn/upgcxcode/low.m4s",
+                        },
+                        {
+                            "id": 80,
+                            "size": 80_000_000,
+                            "width": 1920,
+                            "height": 1080,
+                            "bandwidth": 6_000_000,
+                            "baseUrl": "https://upos-sz-mirrorcosov.bilivideo.cn/upgcxcode/high.m4s",
+                        },
+                    ],
+                },
+            },
+        }
+        dash_play_response.close = Mock()
+        mock_get.side_effect = [view_response, legacy_play_response, dash_play_response]
+
+        result = BilibiliAdapter().parse_url("https://www.bilibili.com/video/BV1xx411c7mD/")
+
+        self.assertEqual(
+            result.video_assets[0].url,
+            "https://upos-sz-mirrorcosov.bilivideo.cn/upgcxcode/high.m4s",
+        )
+        self.assertEqual(result.video_assets[0].quality_label, "80P DASH")
+        self.assertEqual(result.video_assets[0].size_bytes, 80_000_000)
+        self.assertIn("fnval=0", mock_get.call_args_list[1].args[0])
+        self.assertIn("fnval=16", mock_get.call_args_list[2].args[0])
+
+    @patch("xhs_download.services.platforms.bilibili.request_get_with_retry")
+    def test_parse_url_reports_api_timeout_as_provider_timeout(self, mock_get):
+        mock_get.side_effect = requests.ReadTimeout("slow")
+
+        with self.assertRaises(XhsProviderTimeoutError) as error:
+            BilibiliAdapter().parse_url("https://www.bilibili.com/video/BV1xx411c7mD/")
+
+        self.assertIn("哔哩哔哩接口请求超时", str(error.exception))
 
     @patch("xhs_download.services.platforms.bilibili.request_get_with_retry")
     def test_parse_url_encodes_unicode_referer_for_api_headers(self, mock_get):

@@ -41,6 +41,7 @@ MEDIA_HOST_SUFFIXES = (
     "365yg.com",
     "zjcdn.com",
     "bilivideo.com",
+    "bilivideo.cn",
     "hdslb.com",
 )
 URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+")

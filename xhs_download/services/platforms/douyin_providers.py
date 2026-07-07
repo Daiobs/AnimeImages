@@ -23,7 +23,7 @@ from ..candidates import MediaCandidate
 from ..common import XhsProviderTimeoutError, validate_external_url
 from ..diagnostics import select_best_media_candidate
 from ..env_config import runtime_bool
-from ..provider_settings import get_platform_provider_settings
+from ..provider_settings import get_platform_provider_settings, normalize_provider_order
 from ..provider_manifest import build_provider_manifest_token
 from .douyin_kukutool import DouyinKukuToolProvider
 from .tiantianjiexi_generic import (
@@ -190,6 +190,7 @@ class DouyinParseContext:
     final_url: str = ""
     html: str = ""
     aweme_id: str = ""
+    prefer_ultra_hd: bool = False
     direct_result: object | None = None
     direct_error: Exception | None = None
     deadline_monotonic: float = 0
@@ -516,6 +517,9 @@ def with_parse_metadata(result, **metadata):
 
 
 def get_reference_result(adapter, context):
+    cached = get_cached_douyin_metadata(context.aweme_id)
+    if cached and cached.assets:
+        return cached
     if context.direct_result and context.direct_result.assets:
         return context.direct_result
     if context.aweme_id:
@@ -601,6 +605,16 @@ def get_reference_video_asset(result):
     return result.video_assets[0] if result.video_assets else None
 
 
+def safe_external_base_filename(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    parsed = urlsplit(value)
+    if parsed.scheme in {"http", "https"} and parsed.hostname:
+        return ""
+    return value
+
+
 def build_external_parse_result(
     adapter,
     context,
@@ -612,7 +626,7 @@ def build_external_parse_result(
 ):
     reference_asset = get_reference_video_asset(reference_result)
     reference_filename = getattr(reference_result, "base_filename", "")
-    base_filename = reference_filename or base_filename
+    base_filename = reference_filename or safe_external_base_filename(base_filename)
     if not base_filename:
         base_filename = f"douyin_{context.aweme_id}" if context.aweme_id else "douyin"
     provider_fields = {"provider": provider_name}
@@ -753,7 +767,10 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             self.provider_settings.ultra_total_timeout_seconds,
         )
         fallback_grace = 0
-        if self.reserve_fallback_grace and self.provider_settings.provider_is_enabled("kukutool"):
+        if (
+            self.reserve_fallback_grace
+            and "kukutool" in self.provider_settings.enabled_provider_order
+        ):
             fallback_grace = max(
                 self.provider_settings.ultra_kukutool_grace_seconds,
                 self.provider_settings.kukutool_sidecar_timeout_seconds,
@@ -822,7 +839,7 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             )
             raise ValueError("天天解析未返回可用抖音视频资源")
 
-        reference_result = get_cached_douyin_metadata(context.aweme_id)
+        reference_result = get_reference_result(adapter, context)
         candidate = candidates[0]
         result = build_external_parse_result(
             adapter,
@@ -1580,7 +1597,10 @@ class DouyinMobileFeedProvider(DouyinResultProvider):
     def parse(self, adapter, context):
         if not context.aweme_id:
             return None
-        return adapter.fetch_mobile_feed_result(context.aweme_id)
+        return adapter.fetch_mobile_feed_result(
+            context.aweme_id,
+            probe_video_candidates=bool(context.prefer_ultra_hd),
+        )
 
 
 class DouyinMobileShareProvider(DouyinResultProvider):
@@ -1589,7 +1609,10 @@ class DouyinMobileShareProvider(DouyinResultProvider):
     def parse(self, adapter, context):
         if not context.aweme_id:
             return None
-        return adapter.fetch_mobile_share_result(context.aweme_id)
+        return adapter.fetch_mobile_share_result(
+            context.aweme_id,
+            probe_video_candidates=bool(context.prefer_ultra_hd),
+        )
 
 
 class DouyinNativeProvider(DouyinResultProvider):
@@ -1665,8 +1688,17 @@ class DouyinNativeEnhancedProvider(DouyinResultProvider):
         return None
 
 
-def build_douyin_result_providers(provider_settings=None, prefer_ultra_hd=True):
+def build_douyin_result_providers(
+    provider_settings=None,
+    prefer_ultra_hd=True,
+    provider_order=None,
+):
     provider_settings = provider_settings or get_platform_provider_settings("douyin")
+    if provider_order is not None:
+        provider_settings = replace(
+            provider_settings,
+            provider_order=normalize_provider_order(provider_order),
+        )
     if not prefer_ultra_hd:
         provider_settings = replace(
             provider_settings,
@@ -1690,7 +1722,12 @@ def build_douyin_result_providers(provider_settings=None, prefer_ultra_hd=True):
 
     provider_map = {
         "ultra_race": lambda: DouyinUltraRaceProvider(provider_settings=provider_settings),
-        "tiantianjiexi": lambda: DouyinTianTianJieXiProvider(provider_settings=provider_settings),
+        "tiantianjiexi": lambda: DouyinTianTianJieXiProvider(
+            provider_settings=provider_settings,
+            reserve_fallback_grace=(
+                "kukutool" in provider_settings.enabled_provider_order
+            ),
+        ),
         "kukutool": lambda: DouyinKukuToolProvider(provider_settings=provider_settings),
         "tikhub": lambda: DouyinTikHubProvider(provider_settings=provider_settings),
         "native_enhanced": DouyinNativeEnhancedProvider,
