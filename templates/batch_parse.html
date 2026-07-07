@@ -213,10 +213,10 @@
 
                                         <div class="batch-meta-row">
                                             <span>{{ row.platform_name }}</span>
-                                            {% if row.selected_provider %}
-                                                <span>Provider {{ row.selected_provider }}</span>
-                                            {% elif row.provider_label %}
+                                            {% if row.provider_label %}
                                                 <span>Provider {{ row.provider_label }}</span>
+                                            {% elif row.selected_provider %}
+                                                <span>Provider {{ row.selected_provider }}</span>
                                             {% endif %}
                                             <span>{{ row.post_type }}</span>
                                             {% if row.video_items %}<span>视频 {{ row.video_items|length }}</span>{% endif %}

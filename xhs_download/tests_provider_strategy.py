@@ -444,7 +444,7 @@ class BatchParseViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "demo_video")
-        self.assertContains(response, "Provider tiantianjiexi")
+        self.assertContains(response, "Provider 天天解析")
         self.assertContains(response, "120.6 KB")
         self.assertContains(response, "batch-result-cover")
         self.assertContains(response, "复制直链")
@@ -466,6 +466,34 @@ class BatchParseViewTests(TestCase):
         self.assertGreater(call_kwargs["timeout_seconds"], 0)
         self.assertIn("deadline_monotonic", call_kwargs)
         self.assertEqual(call_kwargs["douyin_provider_order"], ("tiantianjiexi", "native"))
+
+    @patch("xhs_download.views.parse_media_page")
+    def test_batch_parse_labels_native_mobile_feed_provider_for_users(self, mock_parse):
+        self.client.force_login(self.staff_user)
+        mock_parse.return_value = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="native_fallback_video",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url="https://v5-default.365yg.com/demo.mp4",
+                    platform="douyin",
+                    provider="native",
+                ),
+            ),
+            metadata={"selected_provider": "mobile_feed"},
+        )
+
+        response = self.client.post(
+            reverse("batch_parse"),
+            {"links": "https://www.douyin.com/video/7611146072161047526"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Provider 本地解析")
+        self.assertNotContains(response, "Provider mobile_feed")
+        mock_parse.assert_called_once()
 
     @patch("xhs_download.views.parse_media_page")
     def test_batch_parse_uses_parallel_workers(self, mock_parse):

@@ -18,6 +18,32 @@ cd /srv/animeimages
 
 Do not run Git as root in `/srv/animeimages`. The working tree should remain owned by `ubuntu:ubuntu`, and production-only values should live in `/srv/animeimages/.env.production`, not in `djangoProject/settings.py`.
 
+## Production Git SSH
+
+Production uses a dedicated SSH host alias:
+
+```text
+git@github-animeimages:Daiobs/AnimeImages.git
+```
+
+The alias is configured in:
+
+```text
+~/.ssh/config
+```
+
+Example:
+
+```sshconfig
+Host github-animeimages
+  HostName github.com
+  User git
+  IdentityFile ~/.ssh/animeimages_deploy
+  IdentitiesOnly yes
+```
+
+Do not replace this remote with default github.com SSH unless the deploy key is configured.
+
 ## Production Filesystem Ownership
 
 Production deploys use a fixed application ownership model:
