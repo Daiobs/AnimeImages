@@ -172,18 +172,20 @@ PREVIEW_GLOBAL_DAILY_BYTES_LIMIT=21474836480
 
 These are initial safety defaults, not capacity guarantees. Tune them from observed traffic and server bandwidth. Redis failure makes protected preview requests fail closed with HTTP `503`.
 
-Ultra-HD access has two operator switches:
+Ultra-HD access has capability and runtime switches:
 
 ```text
 ULTRA_HD_PROVIDER_ENABLED=True
 ULTRA_HD_PUBLIC_ACCESS_ENABLED=False
+TIANTIANJIEXI_PROVIDER_ENABLED=True
+KUKUTOOL_PROVIDER_ENABLED=True
 ```
 
-Keep both `ULTRA_HD_PUBLIC_ACCESS_ENABLED` and `KUKUTOOL_PROVIDER_ENABLED` disabled until KuKuTool latency, limits, download recovery, and protocol stability have been validated in staging. Production must provide either Node.js 18 or newer through an explicit `KUKUTOOL_NODE_BINARY`, or an internal `douyin-source-resolver` endpoint through `KUKUTOOL_SIDECAR_BASE_URL`; it does not search the system `PATH` or a user's Codex runtime.
+TianTianJieXi is the preferred Douyin ultra provider when credentials are configured. Keep account credentials only in server environment configuration, never in source control or copied logs. KuKuTool remains fallback/race backup and still requires staging validation because it depends on an external upstream/protocol path. Production must provide either Node.js 18 or newer through an explicit `KUKUTOOL_NODE_BINARY`, or an internal `douyin-source-resolver` endpoint through `KUKUTOOL_SIDECAR_BASE_URL`; it does not search the system `PATH` or a user's Codex runtime.
 
-Production Redis is also used for KuKuTool single-flight, short failure caching, validated results, and the global upstream concurrency counter. Keep `DJANGO_CACHE_SOCKET_CONNECT_TIMEOUT` and `DJANGO_CACHE_SOCKET_TIMEOUT` below the four-second foreground budget so a cache outage cannot pin a request. The current bounded thread pools remain available as an interim deployment model. For sustained traffic, run the helper as the long-lived internal `douyin-source-resolver` sidecar or move resolution to Celery/RQ so Django workers never own subprocess lifecycles.
+Daily public/staff access is controlled from `/admin/provider-settings/`, not by flipping `.env` on every rollout. Production Redis is also used for provider single-flight, short failure caching, validated results, and global upstream concurrency counters. Keep `DJANGO_CACHE_SOCKET_CONNECT_TIMEOUT` and `DJANGO_CACHE_SOCKET_TIMEOUT` below the foreground budget so a cache outage cannot pin a request. The current bounded thread pools remain available as an interim deployment model. For sustained heavy provider traffic, move resolution to a long-lived sidecar or Celery/RQ so Django workers never own long subprocess lifecycles.
 
-TikHub and country-aware API routing are retained only as dormant research code. They do not affect the current synchronous ultra-HD path.
+TikHub and country-aware API routing are retained only as dormant research code. They do not affect the active synchronous ultra-HD path.
 
 For local development only, these can be enabled to save files from the Django process to a server-side directory:
 

@@ -1,5 +1,10 @@
 # Ultra-HD Provider Plan
 
+Status: historical/research plan. The current production-oriented Douyin ultra
+path is Provider Strategy v1: TianTianJieXi preferred, KuKuTool fallback/race
+backup, native fallback. Use `docs/codex-handoff.md` and
+`docs/current-version-status.md` as the current source of truth.
+
 ## Goal
 
 Build a stable provider-based path for higher-quality media downloads without weakening the current no-login baseline parser.

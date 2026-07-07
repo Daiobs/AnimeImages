@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Refreshed README and handoff documentation for the current AnimeImages main branch.
+- Added `docs/codex-handoff.md` as the first-read guide for new Codex projects.
+- Updated current-version documentation for Provider Strategy v1, TianTianJieXi ultra race, KuKuTool fallback, batch parsing runtime settings, and admin operations pages.
+- Documented that TikHub and older native-enhanced work are historical/diagnostic rather than the active Douyin ultra path.
+
+## 2026-07-07 Current Main
+
+- Merged Provider Strategy v1 with TianTianJieXi as the preferred Douyin ultra provider and KuKuTool as fallback/race backup.
+- Fixed Douyin ultra race budgeting so TianTianJieXi is not penalized by KuKuTool fallback grace in race mode.
+- Added batch parsing runtime settings with limited parallel workers and a longer total budget.
+- Kept `/batch/` Douyin original/ultra checked by default when runtime allows it.
+- Added/retained admin surfaces for Provider settings, Provider health tests, logs center, policy center, download runtime settings, and batch parse runtime settings.
+- Clarified that provider capability gates live in `.env`, while daily exposure is controlled in admin runtime settings.
+
+## Historical
+
 - Upgraded runtime baseline to Python 3.14.5 and Django 5.2.x.
 - Added production-oriented environment variable settings.
 - Added development, deployment, architecture, and image library documentation.

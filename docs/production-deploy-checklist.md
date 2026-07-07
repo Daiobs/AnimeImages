@@ -111,6 +111,7 @@ THIRD_PARTY_PROVIDER_ENABLED=True
 THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True
 ULTRA_HD_PROVIDER_ENABLED=True
 ULTRA_HD_PUBLIC_ACCESS_ENABLED=False
+TIANTIANJIEXI_PROVIDER_ENABLED=False
 KUKUTOOL_PROVIDER_ENABLED=True
 YTDLP_PROVIDER_ENABLED=True
 YTDLP_MERGE_PROVIDER_ENABLED=True
@@ -120,6 +121,15 @@ YOUTUBE_MERGE_PUBLIC_ACCESS_ENABLED=True
 ```
 
 Provider capability can be configured at deploy time, but `ProviderRuntimeSetting` starts with all Provider modes disabled and `rollout_percent=0`; use the admin Provider console for staff/public-gray/public exposure.
+
+TianTianJieXi is the current preferred Douyin ultra provider when configured. Keep credentials only in `.env.production`; never write the phone, password, or full signed media URLs into docs, issues, logs, or screenshots. KuKuTool remains fallback/race backup and can be enabled independently.
+
+If an env value contains spaces, quote it. Otherwise sourcing `.env.production` can fail with `-m: command not found`:
+
+```text
+YTDLP_BINARY="/srv/animeimages/.venv/bin/python -m yt_dlp"
+GALLERYDL_BINARY="/srv/animeimages/.venv/bin/python -m gallery_dl"
+```
 
 Do not commit `.env.production`. Do not paste real secrets into issue comments, chat logs, or documentation.
 
@@ -153,12 +163,16 @@ cd /srv/animeimages
 - [ ] Optional Provider smoke URLs are configured from `/admin/provider-health-tests/`, not `.env.production`.
 - [ ] `/batch/` remains staff-only unless `BATCH_PARSE_PUBLIC_ENABLED=True` is explicitly configured.
 - [ ] Batch parse limits are configured: `BATCH_PARSE_MAX_LINKS`, `BATCH_PARSE_TOTAL_TIMEOUT_SECONDS`, `BATCH_PARSE_IP_INTERVAL_SECONDS`, `BATCH_PARSE_GLOBAL_MINUTE_LIMIT`, and `BATCH_PARSE_DAILY_IP_LIMIT`.
+- [ ] Batch parse runtime settings can be opened at `/admin/xhs_download/batchparseruntimesetting/`.
+- [ ] Confirm `parallel_workers` is present in the database and defaults to a conservative value such as `4`.
 - [ ] If deploying migration `xhs_download.0020_alter_provider_download_delivery_browser_first`, confirm it only changes choices/default; existing `server_stream` values are not rewritten by data migration.
 - [ ] TianTianJieXi smoke can run without leaking credentials:
 
 ```bash
 /srv/animeimages/.venv/bin/python manage.py smoke_tiantianjiexi_provider --url "<douyin test url>"
 ```
+
+- [ ] If TianTianJieXi is the intended Douyin ultra primary, confirm `/admin/provider-settings/` shows the capability as configured and run at least one `douyin-ultra` smoke.
 
 - [ ] Browser/network response headers include `X-Request-ID`.
 - [ ] `journalctl` can find the same request id:
@@ -412,6 +426,10 @@ Readiness must return HTTP 200 and include both cache and database components as
 - [ ] Save stable smoke URLs in `/admin/provider-health-tests/`; these are database runtime settings, not `.env.production` values.
 - [ ] Run "一键测试" and confirm each item is `success`, `skipped`, or intentionally `unavailable`.
 - [ ] If a Douyin test URL is saved in the panel, confirm `douyin_native_parse` is not `failed`.
+- [ ] If TianTianJieXi credentials are configured, confirm a Douyin ultra smoke selects `tiantianjiexi` or intentionally falls back to KuKuTool/native with a clear reason.
+- [ ] Open `/batch/` as staff and confirm "抖音原画/超清" is checked by default when ultra runtime is available.
+- [ ] Parse two stable Douyin links from `/batch/` and confirm result cards show covers and provider labels.
+- [ ] Open `/batch/` as an anonymous user or no-cookie browser and confirm raw signed direct-link controls are not visible.
 - [ ] Keep `douyin_kukutool_ultra`, `youtube_merge`, `third_party_ytdlp`, and `gallery_dl` staff-only until their test records are `success` or intentionally `skipped/unavailable`.
 - [ ] Use the test run `request_id` to confirm related logs can be found in Django logs or `journalctl`.
 

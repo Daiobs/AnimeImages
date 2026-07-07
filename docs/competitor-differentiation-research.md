@@ -2,6 +2,11 @@
 
 Date: 2026-06-07
 
+Status: historical research note. It is useful background for product and
+competitor thinking, but its TikHub-oriented implementation notes predate
+Provider Strategy v1. Current Douyin ultra work uses TianTianJieXi as preferred
+provider and KuKuTool as fallback/race backup.
+
 Scope:
 
 - Product differentiation for a universal no-watermark media downloader.

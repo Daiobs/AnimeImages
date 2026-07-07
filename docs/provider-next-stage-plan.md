@@ -4,6 +4,12 @@ Date: 2026-06-26
 
 Branch: `codex/provider-next-planning`
 
+Status: historical planning note. For the current handoff and production route,
+use `docs/codex-handoff.md` and `docs/current-version-status.md` first. This
+file still records useful YouTube/yt-dlp/gallery-dl rollout thinking, but it
+predates Provider Strategy v1, TianTianJieXi as the preferred Douyin ultra
+provider, and BatchParseRuntimeSetting.
+
 ## Goal
 
 Move the multi-provider layer from "implemented" to "staff-only usable" without opening risky public third-party traffic. This stage is about repeatable smoke tests, gray-release gates, diagnostics, and queue decisions. It is not a platform-expansion sprint.

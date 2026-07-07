@@ -4,6 +4,12 @@ Date: 2026-06-27
 
 Branch: `codex/provider-next-planning`
 
+Status: historical report. Use `docs/codex-handoff.md` and
+`docs/current-version-status.md` as the current source of truth. This report
+remains useful for YouTube merge and long-tail provider smoke background, but it
+predates Provider Strategy v1, TianTianJieXi as the preferred Douyin ultra
+provider, and BatchParseRuntimeSetting.
+
 ## Scope
 
 This stage stabilizes the multi-provider foundation after the provider hardening work. It does not add new public platforms and does not enable broad third-party access. The target is a staff-only validation loop for:
