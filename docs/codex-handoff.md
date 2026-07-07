@@ -6,7 +6,9 @@ This document is the first stop when a new Codex project or thread takes over An
 
 ## Repository
 
-Use the real AnimeImages repository:
+### Local Codex Working Repo
+
+Use this local repository for Codex development:
 
 ```text
 /Users/xingkong/Documents/Codex/2026-06-03/django-python-pycharm-codex-netlify/djangoProject
@@ -14,7 +16,17 @@ Use the real AnimeImages repository:
 
 Do not continue work in stale Codex worktrees or the old `douyin-source-resolver` experiment unless the user explicitly asks.
 
-Remote:
+### Production Server Repo
+
+The production server uses a separate checkout:
+
+```text
+/srv/animeimages
+```
+
+Do not confuse the local Codex working repo with the server repo. Local changes in `/Users/xingkong/.../djangoProject` do not affect `/srv/animeimages` until they are committed, pushed, and deployed on the server.
+
+### Remote
 
 ```text
 origin ssh://git@ssh.github.com:443/Daiobs/AnimeImages.git
@@ -34,6 +46,13 @@ As of this handoff, `main` is at:
 c732e72 Fix batch parse ultra default and runtime controls (#11)
 ```
 
+This commit only represents the time this document was last updated. Update this section after every `main` merge. If unsure, check the remote baseline:
+
+```bash
+git fetch origin
+git log -1 --oneline origin/main
+```
+
 Recent merged milestones:
 
 - PR #11: Batch parse runtime setting, limited parallel parsing, default Douyin ultra checkbox.
@@ -47,7 +66,9 @@ AnimeImages is no longer just a Xiaohongshu downloader. The current product shap
 
 - Universal parser homepage.
 - Dedicated pages for Xiaohongshu, Douyin, Bilibili.
-- Staff/admin batch parsing page.
+- Runtime-gated batch parsing page.
+  - Staff can see raw/direct controls.
+  - Public users must not see raw signed provider URLs.
 - Provider runtime/admin console.
 - Observability and health-test admin tools.
 - Download strategy experiments to reduce server bandwidth while preserving stable downloads.
@@ -166,7 +187,16 @@ Production should run with:
 - `DJANGO_DEBUG=False`.
 - `.env.production` readable by the process that runs management commands and systemd.
 
-After updating code on the server:
+Preferred deploy path:
+
+```bash
+cd /srv/animeimages
+./scripts/deploy.sh
+```
+
+The deploy script defaults to deploying `origin/main`. Use it for routine production updates after the branch has been merged into `main`.
+
+Manual fallback:
 
 ```bash
 cd /srv/animeimages
@@ -197,15 +227,15 @@ Before starting a new feature:
 cd /Users/xingkong/Documents/Codex/2026-06-03/django-python-pycharm-codex-netlify/djangoProject
 git status --short --branch
 git log --oneline --decorate --max-count=8
-python manage.py check
-python manage.py makemigrations --check --dry-run
+.venv/bin/python manage.py check
+.venv/bin/python manage.py makemigrations --check --dry-run
 ```
 
 If the change touches providers or downloads:
 
 ```bash
-python manage.py inspect_third_party_provider --health --json
-python manage.py smoke_tiantianjiexi_provider --url "<douyin test url>" --mode douyin-ultra
+.venv/bin/python manage.py inspect_third_party_provider --health --json
+.venv/bin/python manage.py smoke_tiantianjiexi_provider --url "<douyin test url>" --mode douyin-ultra
 ```
 
 If the change touches `/batch/`:
@@ -231,8 +261,10 @@ User preference:
 
 - Small updates can be done locally on a branch.
 - Bigger modules should be pushed to GitHub branch for review.
+- Pushing a branch for review is allowed.
 - Do not open a PR until the user confirms the task is ready.
 - Do not merge to `main` unless the user explicitly asks.
+- Merging `main` requires an explicit user request.
 - Use SSH remote already configured for GitHub.
 
 Default branch naming:
@@ -287,12 +319,17 @@ Documentation impact: Historical docs updated
 
 Good next tasks from the current baseline:
 
-1. Continue Provider Strategy v1 polishing:
-   - Stable TianTianJieXi smoke fixtures.
-   - Batch parse public/staff product rules.
-   - Download handoff reliability and bandwidth measurement.
-2. Improve documentation hygiene:
-   - Mark historical policy/autonomous docs as archival.
-   - Keep `docs/current-version-status.md` updated after each major PR.
-3. Add a durable background queue only when downloads/merge jobs need progress that survives worker restarts.
-4. Expand long-tail platforms only after provider health, platform allowlist, and download strategy are proven.
+1. First refactor batch parse services out of `xhs_download/views.py`.
+   - Keep behavior stable.
+   - Move parsing orchestration, runtime-setting lookup, result shaping, and permission helpers into focused service modules.
+   - Add focused tests around the extracted boundaries.
+2. Then split batch page JavaScript if needed.
+   - Keep `/batch/` behavior stable.
+   - Separate settings modal, parse request lifecycle, result rendering, and download handoff logic.
+3. Then continue Batch Parse v2 durable job/queue work only after service boundaries are cleaner.
+   - Durable queue/progress is not the first refactor target.
+   - Do not introduce Celery/RQ before the synchronous batch code is easier to reason about.
+4. Provider Strategy v1 remains stabilization and smoke work.
+   - Keep TianTianJieXi/KuKuTool smoke fixtures healthy.
+   - Continue measuring browser handoff vs server attachment.
+   - Treat provider expansion as secondary to batch parse boundary cleanup.
