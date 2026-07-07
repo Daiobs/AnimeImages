@@ -9,6 +9,12 @@
 - Staging or local smoke path:
 - Rollback switch or command:
 
+## Documentation Impact
+
+- Documentation impact: Not needed
+- Documentation impact: Updated README/current-version/codex-handoff
+- Documentation impact: Historical docs updated
+
 ## Verification
 
 - [ ] `git diff --check`

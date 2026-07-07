@@ -50,24 +50,29 @@ URL 为空时，对应测试会显示“未配置测试 URL”，执行结果为
 
 建议测试 URL 选择：
 
-- 抖音测试 URL：一条稳定的公开视频链接，用于普通 native 和 KuKuTool 超清 smoke。
+- 抖音测试 URL：一条稳定的公开视频链接，用于 `douyin_native_parse`、`douyin_kukutool_ultra`、`douyin_tiantianjiexi_ultra`。
 - YouTube 测试 URL：一条普通 1080p 音画分离视频，用于验证 YouTube merge planning。
 - 第三方 yt-dlp 测试 URL：一条 yt-dlp 支持的轻量公开视频。
 - gallery-dl 测试 URL：一条 Imgur 或 Flickr 图片/图集链接。
 
 不要把私密链接、带 token 的链接或临时 CDN 直链配置为测试 URL。
 
+TianTianJieXi 相关测试分两类：`tiantianjiexi_account_status` 只查账号/配置状态，不消耗真实视频解析；`douyin_tiantianjiexi_ultra` 和 `third_party_tiantianjiexi` 会调用真实解析接口，可能消耗账号额度或触发上游限流。
+
 ## 测试项
 
-当前 MVP 包含 6 个测试项：
+当前面板包含 9 个测试项：
 
 | 测试项 | 目标 | 说明 |
 | --- | --- | --- |
 | `health_ready` | 数据库和缓存 readiness | 复用现有 readiness 逻辑。 |
 | `douyin_native_parse` | 抖音普通解析 | 不强制 KuKuTool，只验证基础链路。 |
 | `douyin_kukutool_ultra` | 抖音 KuKuTool 超清 | capability 未启用时返回 `unavailable`。 |
+| `tiantianjiexi_account_status` | 天天解析账号状态 | 只查账号/配置状态，缓存结果，不消耗真实视频解析。 |
+| `douyin_tiantianjiexi_ultra` | 抖音天天解析超清 | 使用测试抖音 URL 跑 TianTianJieXi ultra path，会消耗真实解析。 |
 | `youtube_merge` | YouTube 合并规划 | 验证 yt-dlp + ffmpeg health 和候选规划，不下载大文件。 |
 | `third_party_ytdlp` | 通用 yt-dlp | 验证 yt-dlp health 和轻量解析。 |
+| `third_party_tiantianjiexi` | 通用天天解析 | 验证 TianTianJieXi generic normalizer 和签名 manifest。 |
 | `gallery_dl` | gallery-dl | 验证 gallery-dl health 和轻量解析。 |
 
 页面也提供“一键测试”，会顺序执行所有测试项。未配置 URL 的项目会写入 `skipped`，不会被当作失败。因为 YouTube、gallery-dl 或 KuKuTool 可能访问外部服务，一键测试适合管理员 smoke，不应放到普通用户路径里。
@@ -117,7 +122,9 @@ URL 为空时，对应测试会显示“未配置测试 URL”，执行结果为
 4. 在页面中保存测试 URL。
 5. 点击“一键测试”，得到完整 smoke 记录。
 6. staff-only 打开对应 provider runtime gate 后，再复测 `youtube_merge`、`third_party_ytdlp`、`gallery_dl`。
-7. KuKuTool 超清只在确认 capability、runtime gate、上游稳定后执行。
-8. 若出现 `failed`，用页面上的 `request_id` 去 `/admin/parse-logs/`、`/admin/download-logs/` 和 `journalctl` 关联排查。
+7. TianTianJieXi account status 可以作为抖音超清上游的低成本预检。
+8. `douyin_tiantianjiexi_ultra` 和 `third_party_tiantianjiexi` 会消耗真实解析额度，只在需要 smoke 时运行。
+9. KuKuTool 超清只在确认 capability、runtime gate、上游稳定后执行，当前定位是抖音超清 fallback/race backup。
+10. 若出现 `failed`，用页面上的 `request_id` 去 `/admin/parse-logs/`、`/admin/download-logs/` 和 `journalctl` 关联排查。
 
 不要因为 health 命令显示 `public_candidate` 就直接全站开放。公网开放仍应通过 Provider 管理后台的 runtime gate 逐步从 `staff` 到 `public_gray` 再到 `public`。
