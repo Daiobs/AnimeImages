@@ -1,6 +1,6 @@
 # Codex Handoff
 
-Last updated: 2026-07-07
+Last updated: 2026-07-08
 
 This document is the first stop when a new Codex project or thread takes over AnimeImages.
 
@@ -277,9 +277,10 @@ User preference:
 - Small updates can be done locally on a branch.
 - Bigger modules should be pushed to GitHub branch for review.
 - Pushing a branch for review is allowed.
-- Opening a PR requires user confirmation.
+- Opening a Pull Request requires user confirmation unless explicitly requested.
 - Do not open a PR until the user confirms the task is ready.
-- Merging to `main` requires an explicit user request.
+- Once a PR is created, the PR body must follow Extended Description Rules.
+- Merging `main` requires an explicit user request.
 - Documentation-only branches should still be reviewed before merge.
 - Use SSH remote already configured for GitHub.
 
@@ -288,6 +289,126 @@ Default branch naming:
 ```text
 codex/<task-name>
 ```
+
+## Pull Request Description Rules
+
+All non-trivial Pull Requests must include an Extended Description. Do not create PRs with only a one-sentence Summary.
+
+The PR body must include these sections:
+
+### Summary
+
+Explain:
+
+- What this PR changes.
+- The main modules, scripts, docs, or runtime surfaces affected.
+
+### Why
+
+Explain:
+
+- Why this change is needed.
+- What problem it fixes.
+- The background or incident that motivated the change.
+
+### Design / Implementation
+
+Explain:
+
+- The core design.
+- The main implementation approach.
+- Important architecture decisions.
+
+### Scope
+
+Explain:
+
+- What this PR includes.
+- What it explicitly does not include.
+- Any boundaries that prevent reviewer confusion.
+
+### Safety
+
+Explain:
+
+- Whether permissions are affected.
+- Whether security posture is affected.
+- Whether migrations are added.
+- Whether Provider, Download, or Runtime behavior changes.
+
+### Verification
+
+List the exact test, check, and manual verification commands that were run.
+
+Common examples:
+
+```bash
+python manage.py check
+python manage.py makemigrations --check --dry-run
+python manage.py test xhs_download --noinput
+git diff --check
+```
+
+### Deployment Notes
+
+If the PR touches any of these areas, call out deployment notes explicitly:
+
+- systemd
+- Nginx
+- environment variables
+- migrations
+- server config
+
+### Rollback
+
+Explain:
+
+- How to roll back.
+- Whether the PR can be reverted directly.
+- Whether database handling is required.
+
+Add PR-type-specific sections when relevant:
+
+### Feature PR
+
+Also include:
+
+- User impact.
+- Provider / API impact.
+- Runtime behavior changes.
+
+### Refactor PR
+
+Also include:
+
+```text
+Before:
+Current structural problem.
+
+After:
+New structure.
+
+Compatibility:
+Why existing behavior is preserved.
+```
+
+### Infrastructure PR
+
+Also include:
+
+- Server impact.
+- Ownership / permission changes.
+- systemd changes.
+- Nginx changes.
+- Deployment risk.
+
+### Documentation PR
+
+Documentation-only PRs may use a shorter body:
+
+- Summary.
+- Files changed.
+- Verification.
 
 ## Documentation Maintenance Rules
 
