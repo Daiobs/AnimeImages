@@ -10,7 +10,12 @@ from django.core.management import call_command
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
-from .models import BatchParseRuntimeSetting, ProviderAccessMode, ProviderHealthTestStatus
+from .models import (
+    BatchParseRuntimeSetting,
+    ProviderAccessMode,
+    ProviderHealthTestStatus,
+    ProviderRuntimeSetting,
+)
 from .services.assets import MediaAsset, ParseResult
 from .services.common import XhsProviderTimeoutError
 from .services.platforms.douyin_providers import (
@@ -224,6 +229,51 @@ class BatchParseViewTests(TestCase):
         self.assertGreater(content.index("高级说明：下载策略矩阵"), content.index("batch-form"))
         self.assertGreater(content.index('name="ultra_hd"'), content.index("batch-settings-panel"))
         self.assertGreater(content.index('name="youtube_merge"'), content.index("batch-settings-panel"))
+
+    @override_settings(ULTRA_HD_PROVIDER_ENABLED=True, KUKUTOOL_PROVIDER_ENABLED=True)
+    @patch("xhs_download.views.get_kukutool_provider_health")
+    def test_batch_parse_defaults_ultra_hd_checked_when_available(self, mock_health):
+        self.client.force_login(self.staff_user)
+        ProviderRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={"douyin_ultra_mode": ProviderAccessMode.STAFF},
+        )
+        mock_health.return_value = {"available": True}
+
+        response = self.client.get(reverse("batch_parse"))
+
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn('type="hidden" name="ultra_hd" value="0"', content)
+        self.assertRegex(content, r'name="ultra_hd"[\s\S]+value="1"[\s\S]+checked')
+
+    @override_settings(ULTRA_HD_PROVIDER_ENABLED=True, KUKUTOOL_PROVIDER_ENABLED=True)
+    @patch("xhs_download.views.get_kukutool_provider_health")
+    @patch("xhs_download.views.parse_media_page")
+    def test_batch_parse_respects_explicit_ultra_hd_off(self, mock_parse, mock_health):
+        self.client.force_login(self.staff_user)
+        ProviderRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={"douyin_ultra_mode": ProviderAccessMode.STAFF},
+        )
+        mock_health.return_value = {"available": True}
+        mock_parse.return_value = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="normal_video",
+            assets=(),
+        )
+
+        response = self.client.post(
+            reverse("batch_parse"),
+            {
+                "links": "https://www.douyin.com/video/7611146072161047526",
+                "ultra_hd": "0",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(mock_parse.call_args.kwargs["prefer_ultra_hd"])
 
     @override_settings(BATCH_PARSE_TOTAL_TIMEOUT_SECONDS="")
     def test_batch_parse_total_timeout_defaults_to_sixty_seconds(self):

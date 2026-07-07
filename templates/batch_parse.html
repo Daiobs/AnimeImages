@@ -62,12 +62,13 @@
                                         <div class="modal-body">
                                             <div class="batch-settings-panel">
                                                 <label class="form-check batch-option">
+                                                    <input type="hidden" name="ultra_hd" value="0">
                                                     <input
                                                             class="form-check-input"
                                                             type="checkbox"
                                                             name="ultra_hd"
                                                             value="1"
-                                                            {% if prefer_ultra_hd %}checked{% endif %}
+                                                            {% if batch_ultra_hd_checked %}checked{% endif %}
                                                             {% if not ultra_hd_available %}disabled{% endif %}
                                                     >
                                                     <span class="form-check-label">
@@ -76,12 +77,13 @@
                                                     </span>
                                                 </label>
                                                 <label class="form-check batch-option">
+                                                    <input type="hidden" name="youtube_merge" value="0">
                                                     <input
                                                             class="form-check-input"
                                                             type="checkbox"
                                                             name="youtube_merge"
                                                             value="1"
-                                                            {% if prefer_youtube_merge %}checked{% endif %}
+                                                            {% if batch_youtube_merge_checked %}checked{% endif %}
                                                             {% if not youtube_merge_mode_available %}disabled{% endif %}
                                                     >
                                                     <span class="form-check-label">

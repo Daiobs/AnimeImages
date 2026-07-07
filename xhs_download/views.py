@@ -4153,17 +4153,33 @@ def batch_parse_view(request):
         raise Http404("Batch parse is not available.")
 
     raw_links = request.POST.get("links", "") if request.method == "POST" else ""
+    ultra_hd_available = (
+        batch_parse_public_ultra_hd_allowed(request)
+        and ultra_hd_is_available(request)
+    )
+    youtube_merge_mode_available = (
+        batch_parse_public_youtube_merge_allowed(request)
+        and youtube_merge_mode_is_available(request)
+    )
+    requested_ultra_hd = (
+        request_flag(request.POST.get("ultra_hd"))
+        if request.method == "POST"
+        else ultra_hd_available
+    )
+    requested_youtube_merge = (
+        request_flag(request.POST.get("youtube_merge"))
+        if request.method == "POST"
+        else False
+    )
     prefer_ultra_hd = (
         request.method == "POST"
-        and request_flag(request.POST.get("ultra_hd"))
-        and batch_parse_public_ultra_hd_allowed(request)
-        and ultra_hd_is_available(request)
+        and requested_ultra_hd
+        and ultra_hd_available
     )
     prefer_youtube_merge = (
         request.method == "POST"
-        and request_flag(request.POST.get("youtube_merge"))
-        and batch_parse_public_youtube_merge_allowed(request)
-        and youtube_merge_mode_is_available(request)
+        and requested_youtube_merge
+        and youtube_merge_mode_available
     )
     max_links = batch_parse_max_links(request)
     links = split_batch_links(raw_links, max_links=max_links)
@@ -4203,15 +4219,11 @@ def batch_parse_view(request):
             "batch_staff_only": not batch_parse_access_allowed(request),
             "batch_direct_links_allowed": batch_parse_user_is_staff(request),
             "prefer_ultra_hd": prefer_ultra_hd,
+            "batch_ultra_hd_checked": requested_ultra_hd and ultra_hd_available,
             "prefer_youtube_merge": prefer_youtube_merge,
-            "ultra_hd_available": (
-                batch_parse_public_ultra_hd_allowed(request)
-                and ultra_hd_is_available(request)
-            ),
-            "youtube_merge_mode_available": (
-                batch_parse_public_youtube_merge_allowed(request)
-                and youtube_merge_mode_is_available(request)
-            ),
+            "batch_youtube_merge_checked": requested_youtube_merge and youtube_merge_mode_available,
+            "ultra_hd_available": ultra_hd_available,
+            "youtube_merge_mode_available": youtube_merge_mode_available,
             "strategy_matrix": build_download_strategy_matrix(),
             "proxy_image_url": reverse("media_proxy_image"),
         },
