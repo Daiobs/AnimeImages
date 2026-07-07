@@ -70,6 +70,18 @@
         window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
+    function handoffBatchDirectUrl(url, filename) {
+        const link = document.createElement("a");
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.download = sanitizeFilename(filename);
+        link.style.display = "none";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+    }
+
     async function readBlobWithProgress(response, onProgress) {
         const contentLength = Number.parseInt(response.headers.get("Content-Length") || "0", 10);
         if (!response.body || !contentLength) {
@@ -382,9 +394,15 @@
                     showBatchDownloadButtonMessage(directDownloadButton, "已交给浏览器");
                 } catch (error) {
                     console.warn("Batch direct browser download failed", error);
-                    resetBatchDownloadProgress(directDownloadButton, "下载失败");
+                    updateBatchDownloadProgress(
+                        directDownloadButton,
+                        null,
+                        "Blob 不可用，正在改用直链..."
+                    );
+                    handoffBatchDirectUrl(url, filename);
+                    resetBatchDownloadProgress(directDownloadButton, "已交给浏览器处理");
                     setBatchDownloadButtonLoading(directDownloadButton, false);
-                    showBatchDownloadButtonMessage(directDownloadButton, "下载失败");
+                    showBatchDownloadButtonMessage(directDownloadButton, "已改用直链");
                 }
                 return;
             }

@@ -1,5 +1,6 @@
 import itertools
 from io import StringIO
+from pathlib import Path
 from time import monotonic, sleep
 from unittest.mock import patch
 
@@ -45,6 +46,8 @@ from .views import (
     split_batch_links,
 )
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 
 class ProviderDownloadStrategyTests(SimpleTestCase):
     def test_tiantianjiexi_video_prefers_browser_blob(self):
@@ -84,6 +87,27 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
         )
 
         self.assertEqual(strategy["download_strategy"], DOWNLOAD_STRATEGY_BROWSER_DIRECT)
+
+    def test_batch_parse_minute_ip_limit_removed_from_examples_and_docs(self):
+        files = (
+            ".env.example.local",
+            ".env.example.production",
+            "docs/production-deploy-checklist.md",
+        )
+
+        for relative_path in files:
+            with self.subTest(path=relative_path):
+                content = (PROJECT_ROOT / relative_path).read_text()
+                self.assertNotIn("BATCH_PARSE_MINUTE_IP_LIMIT", content)
+
+    def test_batch_direct_download_falls_back_to_handoff_when_fetch_fails(self):
+        content = (PROJECT_ROOT / "static/js/app.js").read_text()
+
+        self.assertIn("function handoffBatchDirectUrl", content)
+        self.assertIn("handoffBatchDirectUrl(url, filename)", content)
+        self.assertIn("Blob 不可用", content)
+        self.assertIn("已改用直链", content)
+        self.assertNotIn("server_single", content)
 
     def test_short_video_rule_allows_kukutool_and_tiantianjiexi(self):
         rule = get_third_party_rule("kuaishou")
@@ -170,7 +194,6 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
 
 @override_settings(
     BATCH_PARSE_IP_INTERVAL_SECONDS=0,
-    BATCH_PARSE_MINUTE_IP_LIMIT=0,
     BATCH_PARSE_GLOBAL_MINUTE_LIMIT=0,
     BATCH_PARSE_DAILY_IP_LIMIT=0,
 )
@@ -341,6 +364,7 @@ class BatchParseViewTests(TestCase):
         self.assertContains(response, "复制直链")
         self.assertContains(response, "打开直链")
         self.assertContains(response, "浏览器下载")
+        self.assertContains(response, "data-batch-direct-url")
         self.assertContains(response, "data-batch-direct-download")
         self.assertContains(response, "data-batch-download-progress")
         self.assertNotContains(response, "v5-default.365yg.com</span>")
