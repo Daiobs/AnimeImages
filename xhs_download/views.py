@@ -4011,12 +4011,20 @@ def build_batch_summary(rows):
     return summary
 
 
-def build_batch_result_row(request, source_text, *, prefer_ultra_hd, prefer_youtube_merge, deadline=None):
+def build_batch_result_row(
+    request,
+    source_text,
+    *,
+    prefer_ultra_hd,
+    prefer_youtube_merge,
+    per_link_timeout_seconds,
+    deadline=None,
+):
     started_at = time.monotonic()
     if deadline is not None and time.monotonic() >= deadline:
         return build_batch_skipped_row(source_text, "批量解析总预算已用尽，本条已跳过。", started_at)
     try:
-        remaining_timeout = batch_parse_per_link_timeout_seconds()
+        remaining_timeout = max(0.1, float(per_link_timeout_seconds or 0))
         if deadline is not None:
             remaining_timeout = min(
                 remaining_timeout,
@@ -4085,6 +4093,7 @@ def build_batch_result_rows(request, links, *, prefer_ultra_hd, prefer_youtube_m
         return []
 
     worker_count = min(batch_parse_parallel_workers(), len(links))
+    per_link_timeout = batch_parse_per_link_timeout_seconds()
     if worker_count <= 1:
         rows = []
         for link in links:
@@ -4097,6 +4106,7 @@ def build_batch_result_rows(request, links, *, prefer_ultra_hd, prefer_youtube_m
                     link,
                     prefer_ultra_hd=prefer_ultra_hd,
                     prefer_youtube_merge=prefer_youtube_merge,
+                    per_link_timeout_seconds=per_link_timeout,
                     deadline=deadline,
                 )
             )
@@ -4116,6 +4126,7 @@ def build_batch_result_rows(request, links, *, prefer_ultra_hd, prefer_youtube_m
                 link,
                 prefer_ultra_hd=prefer_ultra_hd,
                 prefer_youtube_merge=prefer_youtube_merge,
+                per_link_timeout_seconds=per_link_timeout,
                 deadline=deadline,
             )
             future_map[future] = (index, link)
