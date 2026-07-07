@@ -4,8 +4,8 @@
 
 ## Production deploy
 
-- `pre_deploy_check.sh`：部署前安全检查，要求当前用户是 `ubuntu`、分支是 `DEPLOY_BRANCH`（默认 `main`）、工作树干净、`djangoProject/settings.py` 没有未提交修改，并且 `.env.production` 存在。
-- `deploy.sh`：标准生产部署脚本。拒绝 root 执行，修正 `/srv/animeimages` 归属为 `ubuntu:ubuntu`，安全清理 stale `.git/index.lock`，执行 `git fetch origin $DEPLOY_BRANCH`、`git reset --hard origin/$DEPLOY_BRANCH`、依赖安装、migration、collectstatic，并调用 `restart.sh` 重启服务和运行 readiness 检查。
+- `pre_deploy_check.sh`：部署前安全检查，要求当前用户是 `ubuntu`、`/srv/animeimages` 目录本身归属为 `ubuntu:ubuntu`、分支是 `DEPLOY_BRANCH`（默认 `main`）、工作树干净、`djangoProject/settings.py` 没有未提交修改，并且 `.env.production` 存在。
+- `deploy.sh`：标准生产部署脚本。拒绝 root 执行，检查 `/srv/animeimages` 目录本身归属为 `ubuntu:ubuntu`，安全清理 stale `.git/index.lock`，执行 `git fetch origin $DEPLOY_BRANCH`、`git reset --hard origin/$DEPLOY_BRANCH`、依赖安装、migration、collectstatic，并调用 `restart.sh` 重启服务和运行 readiness 检查。
 - `restart.sh`：重启 `animeimages` systemd 服务并默认执行 `/health/ready/` 检查。可通过 `RUN_HEALTH_CHECK=0` 暂时跳过健康检查。
 - `health_check.sh`：用 `curl` 检查 readiness endpoint。默认检查 `http://127.0.0.1:8000/health/ready/`，可用 `HEALTH_CHECK_URL` 覆盖。
 
@@ -17,7 +17,13 @@ cd /srv/animeimages
 ./scripts/deploy.sh
 ```
 
-不要在 `/srv/animeimages` 中用 root 执行 Git 命令。
+不要在 `/srv/animeimages` 中用 root 执行 Git 命令。部署脚本不会自动递归修复 ownership；如果 `/srv/animeimages` 目录 owner/group 不正确，先人工修复：
+
+```bash
+sudo chown -R ubuntu:ubuntu /srv/animeimages
+```
+
+`staticfiles/` 是 `collectstatic` 输出，保持可被 Nginx 读取即可；部署 ownership 检查只检查应用目录本身，不会因为 `staticfiles/` 内部归属不同而失败。
 
 临时 staging 分支部署可以显式指定分支，生产默认仍使用 `main`：
 

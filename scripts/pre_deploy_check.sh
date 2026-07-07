@@ -4,6 +4,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="${APP_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 DEPLOY_USER="${DEPLOY_USER:-ubuntu}"
+DEPLOY_GROUP="${DEPLOY_GROUP:-$DEPLOY_USER}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 ENV_FILE="${ENV_FILE:-$APP_DIR/.env.production}"
 SETTINGS_FILE="${SETTINGS_FILE:-djangoProject/settings.py}"
@@ -35,6 +36,33 @@ require_repo() {
     cd "$APP_DIR"
 }
 
+path_owner_group() {
+    local path="$1"
+    if stat -c '%U:%G' "$path" >/dev/null 2>&1; then
+        stat -c '%U:%G' "$path"
+        return 0
+    fi
+    stat -f '%Su:%Sg' "$path"
+}
+
+fail_app_dir_ownership() {
+    local actual_owner_group="${1:-unknown}"
+    printf '[pre-deploy] ERROR:\n' >&2
+    printf 'application directory ownership must be %s:%s\n\n' "$DEPLOY_USER" "$DEPLOY_GROUP" >&2
+    printf 'Current:\n%s: %s\n\n' "$APP_DIR" "$actual_owner_group" >&2
+    printf 'Fix:\nsudo chown -R %s:%s %s\n' "$DEPLOY_USER" "$DEPLOY_GROUP" "$APP_DIR" >&2
+    exit 1
+}
+
+require_app_dir_ownership() {
+    local actual_owner_group=""
+    local expected_owner_group="$DEPLOY_USER:$DEPLOY_GROUP"
+    actual_owner_group="$(path_owner_group "$APP_DIR")" || fail "could not inspect ownership for $APP_DIR"
+    if [[ "$actual_owner_group" != "$expected_owner_group" ]]; then
+        fail_app_dir_ownership "$actual_owner_group"
+    fi
+}
+
 require_deploy_branch() {
     local branch
     branch="$(git rev-parse --abbrev-ref HEAD)"
@@ -61,6 +89,7 @@ require_env_file() {
 main() {
     require_deploy_user
     require_repo
+    require_app_dir_ownership
     require_deploy_branch
     require_clean_status
     require_clean_settings
