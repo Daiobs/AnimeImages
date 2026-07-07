@@ -615,6 +615,7 @@ class DouyinAdapter(BasePlatformAdapter):
     parse_option_names = (
         "prefer_ultra_hd",
         "client_country_code",
+        "douyin_provider_order",
         "timeout_seconds",
         "deadline_monotonic",
     )
@@ -854,10 +855,12 @@ class DouyinAdapter(BasePlatformAdapter):
         fetch_direct_page=True,
         fast_short_link=False,
         request_deadline=0,
+        prefer_ultra_hd=False,
     ):
         context = DouyinParseContext(
             url=url,
             deadline_monotonic=request_deadline,
+            prefer_ultra_hd=prefer_ultra_hd,
         )
         context.aweme_id = extract_aweme_id(context.url)
         short_url = is_douyin_short_url(url)
@@ -872,25 +875,31 @@ class DouyinAdapter(BasePlatformAdapter):
             except Exception as error:
                 context.direct_error = error
 
-        should_fetch_direct_page = (
-            (fetch_direct_page or not context.aweme_id)
-            and not context.aweme_id
-            and not (short_url and fast_short_link)
-        )
+        should_fetch_direct_page = (fetch_direct_page or not context.aweme_id) and not context.aweme_id
         if should_fetch_direct_page:
             try:
+                remaining_timeout = 15
+                if request_deadline:
+                    remaining_timeout = min(
+                        remaining_timeout,
+                        max(0.1, request_deadline - monotonic()),
+                    )
                 response = request_get_with_retry(
                     url,
                     headers=self.headers,
-                    timeout=15,
-                    retries=3,
+                    timeout=remaining_timeout,
+                    retries=1 if fast_short_link else 3,
                     allowed_final_host_suffixes=self.page_host_suffixes,
                     final_url_message="抖音页面跳转到了不允许的域名",
                 )
                 try:
                     context.final_url = response.url
                     context.html = response.text
-                    context.direct_result = self.parse_html(context.html, source_url=context.final_url)
+                    context.direct_result = self.parse_html(
+                        context.html,
+                        source_url=context.final_url,
+                        probe_video_candidates=prefer_ultra_hd,
+                    )
                 finally:
                     response.close()
             except Exception as error:
@@ -903,14 +912,18 @@ class DouyinAdapter(BasePlatformAdapter):
         )
         return context
 
-    def get_result_providers(self, prefer_ultra_hd=False):
-        return build_douyin_result_providers(prefer_ultra_hd=prefer_ultra_hd)
+    def get_result_providers(self, prefer_ultra_hd=False, provider_order=None):
+        return build_douyin_result_providers(
+            prefer_ultra_hd=prefer_ultra_hd,
+            provider_order=provider_order,
+        )
 
     def parse_url(
         self,
         url,
         prefer_ultra_hd=False,
         client_country_code="",
+        douyin_provider_order=None,
         timeout_seconds=None,
         deadline_monotonic=None,
     ):
@@ -929,11 +942,16 @@ class DouyinAdapter(BasePlatformAdapter):
             fetch_direct_page=not bool(extract_aweme_id(url)),
             fast_short_link=prefer_ultra_hd,
             request_deadline=request_deadline,
+            prefer_ultra_hd=prefer_ultra_hd,
         )
         context.client_country_code = client_country_code
+        context.prefer_ultra_hd = prefer_ultra_hd
 
         last_timeout_error = None
-        for provider in self.get_result_providers(prefer_ultra_hd=prefer_ultra_hd):
+        for provider in self.get_result_providers(
+            prefer_ultra_hd=prefer_ultra_hd,
+            provider_order=douyin_provider_order,
+        ):
             provider_started_at = time()
             try:
                 result = provider.parse(self, context)

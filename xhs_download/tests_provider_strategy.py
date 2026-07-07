@@ -279,6 +279,36 @@ class BatchParseViewTests(TestCase):
     def test_batch_parse_total_timeout_defaults_to_sixty_seconds(self):
         self.assertEqual(batch_parse_total_timeout_seconds(), 60.0)
 
+    @override_settings(BATCH_PARSE_PER_LINK_TIMEOUT_SECONDS=8, BATCH_PARSE_ULTRA_PER_LINK_TIMEOUT_SECONDS=12)
+    @patch("xhs_download.views.get_kukutool_provider_health")
+    @patch("xhs_download.views.parse_media_page")
+    def test_batch_parse_ultra_hd_uses_twelve_second_per_link_floor(self, mock_parse, mock_health):
+        self.client.force_login(self.staff_user)
+        ProviderRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={"douyin_ultra_mode": ProviderAccessMode.STAFF},
+        )
+        mock_health.return_value = {"available": True}
+        mock_parse.return_value = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="ultra_video",
+            assets=(),
+        )
+
+        response = self.client.post(
+            reverse("batch_parse"),
+            {
+                "links": "https://www.douyin.com/video/7611146072161047526",
+                "ultra_hd": "1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(mock_parse.call_args.kwargs["prefer_ultra_hd"])
+        self.assertEqual(mock_parse.call_args.kwargs["timeout_seconds"], 12.0)
+        self.assertContains(response, "12.0 秒")
+
     @override_settings(BATCH_PARSE_PUBLIC_ENABLED=True, BATCH_PARSE_IP_INTERVAL_SECONDS=20)
     @patch("xhs_download.views.parse_media_page")
     def test_batch_parse_public_click_interval_uses_twenty_second_message(self, mock_parse):
@@ -418,6 +448,7 @@ class BatchParseViewTests(TestCase):
         self.assertContains(response, "data-batch-direct-url")
         self.assertContains(response, "data-batch-direct-download")
         self.assertContains(response, "data-batch-download-progress")
+        self.assertContains(response, 'onerror="retryImage(this)"')
         self.assertNotContains(response, "v5-default.365yg.com</span>")
         self.assertNotContains(response, "质量未知")
         self.assertNotContains(response, "浏览器 Blob 优先</small>")
@@ -429,6 +460,7 @@ class BatchParseViewTests(TestCase):
         self.assertLessEqual(call_kwargs["timeout_seconds"], 8.0)
         self.assertGreater(call_kwargs["timeout_seconds"], 0)
         self.assertIn("deadline_monotonic", call_kwargs)
+        self.assertEqual(call_kwargs["douyin_provider_order"], ("tiantianjiexi", "native"))
 
     @patch("xhs_download.views.parse_media_page")
     def test_batch_parse_uses_parallel_workers(self, mock_parse):
@@ -892,6 +924,30 @@ class DouyinUltraRaceSettingsTests(SimpleTestCase):
         self.assertTrue(providers[1].reserve_fallback_grace)
         self.assertFalse(providers[1].suppress_selected_log)
         self.assertIsInstance(providers[-1], DouyinNativeProvider)
+
+    @override_settings(
+        DOUYIN_ULTRA_RACE_ENABLED=True,
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="phone",
+        TIANTIANJIEXI_PASSWORD="password",
+        KUKUTOOL_PROVIDER_ENABLED=True,
+    )
+    def test_provider_order_override_can_exclude_kukutool_from_batch_path(self):
+        providers = build_douyin_result_providers(
+            ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tiantianjiexi", "kukutool", "native"),
+                kukutool_enabled=True,
+            ),
+            provider_order=("tiantianjiexi", "native"),
+        )
+
+        self.assertIsInstance(providers[0], DouyinTianTianJieXiProvider)
+        self.assertFalse(providers[0].reserve_fallback_grace)
+        self.assertIsInstance(providers[-1], DouyinNativeProvider)
+        self.assertFalse(any(isinstance(provider, DouyinUltraRaceProvider) for provider in providers))
+        self.assertFalse(any(isinstance(provider, DouyinKukuToolProvider) for provider in providers))
 
     @override_settings(
         DOUYIN_ULTRA_RACE_ENABLED=True,

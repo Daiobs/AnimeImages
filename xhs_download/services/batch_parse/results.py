@@ -12,6 +12,9 @@ from ..registry import get_adapter_for_url, parse_media_page
 from ..region_routing import get_request_country_code
 
 
+BATCH_DOUYIN_PROVIDER_ORDER = ("tiantianjiexi", "native")
+
+
 def split_batch_links(value, max_links=None):
     max_links = max(1, int(max_links or env_runtime_int("BATCH_PARSE_MAX_LINKS", 20) or 20))
     links = []
@@ -146,6 +149,7 @@ def build_batch_result_row(
                 request_country_code_builder(request) if prefer_ultra_hd else ""
             ),
             prefer_youtube_merge=prefer_youtube_merge,
+            douyin_provider_order=BATCH_DOUYIN_PROVIDER_ORDER,
             timeout_seconds=remaining_timeout,
             deadline_monotonic=(
                 time.monotonic() + remaining_timeout

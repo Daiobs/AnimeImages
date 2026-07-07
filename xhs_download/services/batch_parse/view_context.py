@@ -3,10 +3,10 @@ import time
 from .results import build_batch_result_rows, build_batch_summary, split_batch_links
 from .runtime import (
     batch_parse_access_allowed,
+    batch_parse_effective_per_link_timeout_seconds,
     batch_parse_limit_error_message,
     batch_parse_max_links,
     batch_parse_parallel_workers,
-    batch_parse_per_link_timeout_seconds,
     batch_parse_public_ultra_hd_allowed,
     batch_parse_public_youtube_merge_allowed,
     batch_parse_rate_limit_results,
@@ -70,6 +70,9 @@ def build_batch_parse_context(
             batch_error = batch_parse_limit_error_message(blocked_scope, blocked_limit)
         else:
             deadline = time.monotonic() + batch_parse_total_timeout_seconds()
+            per_link_timeout_seconds = batch_parse_effective_per_link_timeout_seconds(
+                prefer_ultra_hd=prefer_ultra_hd,
+            )
             if rows_builder is not None:
                 rows = rows_builder(
                     request,
@@ -86,7 +89,7 @@ def build_batch_parse_context(
                     prefer_youtube_merge=prefer_youtube_merge,
                     deadline=deadline,
                     parallel_workers=batch_parse_parallel_workers(),
-                    per_link_timeout_seconds=batch_parse_per_link_timeout_seconds(),
+                    per_link_timeout_seconds=per_link_timeout_seconds,
                     row_builder=row_builder,
                 )
 
@@ -98,7 +101,9 @@ def build_batch_parse_context(
         "rows": rows,
         "batch_summary": build_batch_summary(rows),
         "max_links": max_links,
-        "batch_per_link_timeout_seconds": batch_parse_per_link_timeout_seconds(),
+        "batch_per_link_timeout_seconds": batch_parse_effective_per_link_timeout_seconds(
+            prefer_ultra_hd=prefer_ultra_hd,
+        ),
         "batch_total_timeout_seconds": batch_parse_total_timeout_seconds(),
         "batch_parallel_workers": batch_parse_parallel_workers(),
         "batch_error": batch_error,
