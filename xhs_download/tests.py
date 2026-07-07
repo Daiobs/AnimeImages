@@ -5788,6 +5788,39 @@ class XhsDownloadViewTests(TestCase):
         self.assertContains(response, 'value="1"')
 
     @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        KUKUTOOL_PROVIDER_ENABLED=True,
+        TIKHUB_API_KEY="secret",
+    )
+    @patch(
+        "xhs_download.views.get_kukutool_provider_health",
+        return_value={"available": True},
+    )
+    @patch("xhs_download.views.parse_media_page")
+    def test_results_explains_ultra_hd_background_refresh(self, mock_parse, _mock_health):
+        setting = ProviderRuntimeSetting.load()
+        setting.douyin_ultra_mode = ProviderAccessMode.PUBLIC
+        setting.save(update_fields=["douyin_ultra_mode", "updated_at"])
+        mock_parse.return_value = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="douyin",
+            assets=(),
+            metadata={
+                "selected_provider": "native",
+                "fallback_reason": "kukutool_deadline",
+                "kukutool_background_refresh": True,
+            },
+        )
+
+        response = Client().get("/results/", {"q": "https://www.douyin.com/video/123", "ultra_hd": "1"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "超高清上游仍在后台解析，本次先回退本地解析")
+        self.assertContains(response, "稍后重新解析此链接可能命中原画 / 超高清资源")
+        self.assertNotContains(response, "本次未命中超高清上游，已自动回退本地解析。")
+
+    @override_settings(
         ULTRA_HD_PROVIDER_ENABLED=False,
         ULTRA_HD_PUBLIC_ACCESS_ENABLED=True,
         KUKUTOOL_PROVIDER_ENABLED=True,
