@@ -50,12 +50,14 @@ URL 为空时，对应测试会显示“未配置测试 URL”，执行结果为
 
 建议测试 URL 选择：
 
-- 抖音测试 URL：一条稳定的公开视频链接，用于普通 native 和 KuKuTool 超清 smoke。
+- 抖音测试 URL：一条稳定的公开视频链接，用于 `douyin_native_parse`、`douyin_kukutool_ultra`、`douyin_tiantianjiexi_ultra`。
 - YouTube 测试 URL：一条普通 1080p 音画分离视频，用于验证 YouTube merge planning。
 - 第三方 yt-dlp 测试 URL：一条 yt-dlp 支持的轻量公开视频。
 - gallery-dl 测试 URL：一条 Imgur 或 Flickr 图片/图集链接。
 
 不要把私密链接、带 token 的链接或临时 CDN 直链配置为测试 URL。
+
+TianTianJieXi 相关测试分两类：`tiantianjiexi_account_status` 只查账号/配置状态，不消耗真实视频解析；`douyin_tiantianjiexi_ultra` 和 `third_party_tiantianjiexi` 会调用真实解析接口，可能消耗账号额度或触发上游限流。
 
 ## 测试项
 

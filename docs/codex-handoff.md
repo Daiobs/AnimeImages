@@ -241,6 +241,38 @@ Default branch naming:
 codex/<task-name>
 ```
 
+## Documentation Maintenance Rules
+
+Every large PR must explicitly consider documentation. This is part of the handoff contract for future Codex projects.
+
+Update `docs/current-version-status.md` when a PR changes any of:
+
+- product capability;
+- parsing or download routing;
+- deployment or smoke flow;
+- Provider strategy;
+- runtime setting behavior;
+- admin entrypoints;
+- public/staff rollout behavior.
+
+Update `docs/codex-handoff.md` when a PR changes:
+
+- the repository/worktree handoff path;
+- development or deployment workflow;
+- Git/PR workflow expectations;
+- the current source-of-truth documents;
+- the next recommended work for a new Codex thread.
+
+Historical plan documents must be marked clearly as `historical`, `archival`, or `research` when they no longer represent the active production route. They can remain useful background, but must not be treated as the current source of truth.
+
+Every PR description should include a `Documentation impact` line with one of:
+
+```text
+Documentation impact: Not needed
+Documentation impact: Updated README/current-version/codex-handoff
+Documentation impact: Historical docs updated
+```
+
 ## Known Pitfalls
 
 - Current Codex desktop worktree can point to a stale repo; always verify the real path.
