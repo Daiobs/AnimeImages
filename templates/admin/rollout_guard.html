@@ -137,11 +137,8 @@
                 <p class="rollout-subtitle">根据最近解析、下载、健康测试和下载流量风险，给出 Provider 放量建议。页面只读，不会自动修改 Provider 设置。当前展示时区：{{ admin_time_zone }}</p>
             </div>
             <div class="rollout-actions">
-                <a class="rollout-link" href="{% url 'control_plane' %}">控制平面</a>
                 <a class="rollout-link" href="{{ links.provider_settings }}">Provider 设置</a>
                 <a class="rollout-link" href="{{ links.provider_health_tests }}">Provider 测试</a>
-                <a class="rollout-link" href="{{ links.admin_console }}">运维首页</a>
-                <a class="rollout-link" href="{{ links.ops_dashboard }}">Ops Dashboard</a>
             </div>
         </section>
 

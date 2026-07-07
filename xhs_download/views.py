@@ -721,6 +721,21 @@ def build_provider_dashboard_rows(runtime_setting, request):
             runtime_setting,
         ),
     }
+    tiantianjiexi_circuit_open = bool((tiantianjiexi_health.get("circuit") or {}).get("open"))
+    tiantianjiexi_ready = bool(
+        tiantianjiexi_health.get("enabled")
+        and tiantianjiexi_health.get("api_configured")
+        and not tiantianjiexi_circuit_open
+    )
+    kukutool_circuit_open = bool((kukutool_health.get("circuit") or {}).get("open"))
+    kukutool_ready = bool(kukutool_health.get("available") and not kukutool_circuit_open)
+    douyin_ultra_issue = ""
+    if not tiantianjiexi_ready and not kukutool_ready:
+        douyin_ultra_issue = "天天解析和 KuKuTool 均不可用"
+    elif tiantianjiexi_circuit_open:
+        douyin_ultra_issue = "天天解析熔断中"
+    elif kukutool_circuit_open and not tiantianjiexi_ready:
+        douyin_ultra_issue = "KuKuTool 熔断中"
     rows = [
         {
             "id": PROVIDER_DOUYIN_ULTRA,
@@ -732,32 +747,13 @@ def build_provider_dashboard_rows(runtime_setting, request):
             "current_mode": runtime_setting.douyin_ultra_mode,
             "current_rollout_percent": runtime_setting.douyin_ultra_rollout_percent,
             "disabled_reason": runtime_setting.douyin_ultra_disabled_reason,
-            "health_ready": bool(
-                kukutool_health.get("available")
-                or tiantianjiexi_health.get("enabled")
-            ),
+            "health_ready": bool(tiantianjiexi_ready or kukutool_ready),
             "health_label": (
                 "可用"
-                if (
-                    kukutool_health.get("available")
-                    or tiantianjiexi_health.get("enabled")
-                )
+                if (tiantianjiexi_ready or kukutool_ready)
                 else "不可用"
             ),
-            "issue": (
-                "天天解析和 KuKuTool 均不可用"
-                if (
-                    not tiantianjiexi_health.get("enabled")
-                    and not kukutool_health.get("available")
-                )
-                else "天天解析熔断中"
-                if (tiantianjiexi_health.get("circuit") or {}).get("open")
-                else "KuKuTool 熔断中"
-                if (kukutool_health.get("circuit") or {}).get("open")
-                else (kukutool_health.get("runtime") or {}).get("error")
-                or (kukutool_health.get("sidecar") or {}).get("error")
-                or ""
-            ),
+            "issue": douyin_ultra_issue,
             "access": access[PROVIDER_DOUYIN_ULTRA],
         },
         {

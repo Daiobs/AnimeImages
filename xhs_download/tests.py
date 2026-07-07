@@ -10324,6 +10324,26 @@ class ProviderSettingsAdminViewTests(TestCase):
         self.assertContains(response, "第三方 allowlist 为空")
         self.assertContains(response, "public_gray")
 
+    @patch(
+        "xhs_download.views.get_kukutool_provider_health",
+        return_value={
+            "enabled": True,
+            "ultra_hd_enabled": True,
+            "public_access_enabled": True,
+            "admin_disabled": False,
+            "runtime": {"available": True, "error": ""},
+            "sidecar": {"configured": False, "available": False, "error": "not configured"},
+            "circuit": {"open": False},
+            "available": True,
+        },
+    )
+    def test_provider_settings_ignores_optional_kukutool_sidecar_not_configured(self, _health):
+        response = self.client.get("/admin/provider-settings/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "抖音超高清")
+        self.assertNotContains(response, "问题：not configured")
+
     def test_staff_can_update_provider_access_modes(self):
         response = self.client.post(
             "/admin/provider-settings/",
@@ -11409,7 +11429,7 @@ class ProductionControlPlaneTests(TestCase):
         self.assertContains(response, 'class="admin-topbar"')
         self.assertContains(response, "css/admin_sidebar.css")
         self.assertContains(response, "js/admin_sidebar.js")
-        self.assertContains(response, "Health")
+        self.assertContains(response, "健康状态")
         self.assertContains(response, "总览")
         self.assertContains(response, "Provider")
         self.assertContains(response, "下载")
