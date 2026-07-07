@@ -150,7 +150,7 @@ cd /srv/animeimages
 ./scripts/health_check.sh
 ```
 
-- [ ] Gunicorn is only bound to localhost, for example `127.0.0.1:8000`.
+- [ ] Gunicorn is exposed to Nginx through `/run/animeimages/gunicorn.sock`.
 - [ ] Nginx forwards `X-Forwarded-Proto $scheme`, `Host $host`, and `X-Request-ID $request_id`.
 - [ ] `/admin/ops-dashboard/` can be opened by a superuser or staff with observability view permissions.
 - [ ] `/admin/control-plane/` can be opened by a superuser or staff with any observability view permission.
@@ -350,6 +350,8 @@ Do not edit `djangoProject/settings.py` on the server. Move production configura
 ```text
 /srv/animeimages
 /srv/animeimages/.venv/bin/gunicorn
+/run/animeimages/gunicorn.sock
+/run/animeimages/gunicorn.ctl
 animeimages.example.com
 ```
 
