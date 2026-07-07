@@ -1,3 +1,6 @@
+import os
+
+from django.conf import settings
 from django.db import models
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.utils import timezone
@@ -27,6 +30,151 @@ class PolicyRuntimeMode(models.TextChoices):
     STAFF = "staff", "仅管理员启用"
     PUBLIC_GRAY = "public_gray", "公开灰度启用"
     PUBLIC = "public", "全站启用"
+
+
+def runtime_default_bool(name, default=False):
+    value = getattr(settings, name, None)
+    if value is None:
+        value = os.environ.get(name)
+    if value is None:
+        return bool(default)
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def runtime_default_int(name, default=0):
+    value = getattr(settings, name, None)
+    if value is None:
+        value = os.environ.get(name)
+    if value is None or value == "":
+        return int(default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def runtime_default_float(name, default=0.0):
+    value = getattr(settings, name, None)
+    if value is None:
+        value = os.environ.get(name)
+    if value is None or value == "":
+        return float(default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+class BatchParseRuntimeSetting(models.Model):
+    singleton_key = models.PositiveSmallIntegerField(
+        default=1,
+        unique=True,
+        editable=False,
+        verbose_name="单例键",
+    )
+    access_mode = models.CharField(
+        max_length=16,
+        choices=ProviderAccessMode.choices,
+        default=ProviderAccessMode.STAFF,
+        verbose_name="开放模式",
+        help_text="disabled 关闭；staff 仅管理员；public_gray 按比例公开；public 全站开放。",
+    )
+    rollout_percent = models.PositiveSmallIntegerField(
+        default=0,
+        validators=(MinValueValidator(0), MaxValueValidator(100)),
+        verbose_name="公开灰度比例",
+    )
+    max_links = models.PositiveIntegerField(
+        default=20,
+        validators=(MinValueValidator(1), MaxValueValidator(200)),
+        verbose_name="单次最大链接数",
+    )
+    staff_max_links = models.PositiveIntegerField(
+        default=20,
+        validators=(MinValueValidator(1), MaxValueValidator(500)),
+        verbose_name="管理员单次最大链接数",
+    )
+    public_max_links = models.PositiveIntegerField(
+        default=3,
+        validators=(MinValueValidator(1), MaxValueValidator(100)),
+        verbose_name="访客单次最大链接数",
+    )
+    per_link_timeout_seconds = models.FloatField(
+        default=8.0,
+        validators=(MinValueValidator(1.0), MaxValueValidator(60.0)),
+        verbose_name="每条链接解析超时（秒）",
+    )
+    total_timeout_seconds = models.FloatField(
+        default=60.0,
+        validators=(MinValueValidator(1.0), MaxValueValidator(300.0)),
+        verbose_name="总解析预算（秒）",
+    )
+    parallel_workers = models.PositiveSmallIntegerField(
+        default=4,
+        validators=(MinValueValidator(1), MaxValueValidator(10)),
+        verbose_name="并发解析数",
+        help_text="同一次批量请求中同时解析的链接数量。建议 3-5，过高可能触发上游限流。",
+    )
+    ip_interval_seconds = models.PositiveIntegerField(
+        default=20,
+        validators=(MinValueValidator(0), MaxValueValidator(3600)),
+        verbose_name="访客点击间隔（秒）",
+        help_text="0 表示不限制。管理员不受此限制。",
+    )
+    global_minute_limit = models.PositiveIntegerField(
+        default=30,
+        validators=(MinValueValidator(0), MaxValueValidator(10000)),
+        verbose_name="全站每分钟链接额度",
+        help_text="按链接数计数，0 表示不限制。管理员不受此限制。",
+    )
+    daily_ip_limit = models.PositiveIntegerField(
+        default=100,
+        validators=(MinValueValidator(0), MaxValueValidator(100000)),
+        verbose_name="访客每日链接额度 / IP",
+        help_text="按链接数计数，0 表示不限制。管理员不受此限制。",
+    )
+    public_ultra_hd_enabled = models.BooleanField(
+        default=False,
+        verbose_name="允许访客使用抖音原画/超清",
+        help_text="管理员仍按 Provider 运行配置判断，不受此项限制。",
+    )
+    public_youtube_merge_enabled = models.BooleanField(
+        default=False,
+        verbose_name="允许访客使用 YouTube 高画质合并",
+        help_text="管理员仍按 Provider 运行配置判断，不受此项限制。",
+    )
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
+
+    class Meta:
+        verbose_name = "批量解析运行配置"
+        verbose_name_plural = "批量解析运行配置"
+
+    def __str__(self):
+        return "批量解析运行配置"
+
+    @classmethod
+    def default_values(cls):
+        public_enabled = runtime_default_bool("BATCH_PARSE_PUBLIC_ENABLED", False)
+        return {
+            "access_mode": ProviderAccessMode.PUBLIC if public_enabled else ProviderAccessMode.STAFF,
+            "max_links": runtime_default_int("BATCH_PARSE_MAX_LINKS", 20),
+            "staff_max_links": runtime_default_int("BATCH_PARSE_STAFF_MAX_LINKS", 20),
+            "public_max_links": runtime_default_int("BATCH_PARSE_PUBLIC_MAX_LINKS", 3),
+            "per_link_timeout_seconds": runtime_default_float("BATCH_PARSE_PER_LINK_TIMEOUT_SECONDS", 8.0),
+            "total_timeout_seconds": runtime_default_float("BATCH_PARSE_TOTAL_TIMEOUT_SECONDS", 60.0),
+            "parallel_workers": runtime_default_int("BATCH_PARSE_PARALLEL_WORKERS", 4),
+            "ip_interval_seconds": runtime_default_int("BATCH_PARSE_IP_INTERVAL_SECONDS", 20),
+            "global_minute_limit": runtime_default_int("BATCH_PARSE_GLOBAL_MINUTE_LIMIT", 30),
+            "daily_ip_limit": runtime_default_int("BATCH_PARSE_DAILY_IP_LIMIT", 100),
+        }
+
+    @classmethod
+    def load(cls):
+        setting, _created = cls.objects.get_or_create(
+            singleton_key=1,
+            defaults=cls.default_values(),
+        )
+        return setting
 
 
 class ProviderRuntimeSetting(models.Model):

@@ -1,5 +1,7 @@
 import itertools
+import threading
 from io import StringIO
+from pathlib import Path
 from time import monotonic, sleep
 from unittest.mock import patch
 
@@ -8,7 +10,12 @@ from django.core.management import call_command
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
-from .models import ProviderHealthTestStatus
+from .models import (
+    BatchParseRuntimeSetting,
+    ProviderAccessMode,
+    ProviderHealthTestStatus,
+    ProviderRuntimeSetting,
+)
 from .services.assets import MediaAsset, ParseResult
 from .services.common import XhsProviderTimeoutError
 from .services.platforms.douyin_providers import (
@@ -33,14 +40,19 @@ from .services.provider_strategy import (
     DOWNLOAD_STRATEGY_SERVER_MERGE,
     build_download_strategy,
 )
+from .services.rate_limits import LimitResult
 from .services.downloads import provider_manifest_allows_public_download
 from .views import (
     PROVIDER_HEALTH_TESTS,
+    batch_parse_limit_error_message,
+    batch_parse_total_timeout_seconds,
     get_video_size_bytes,
     provider_health_test_by_key,
     run_provider_health_test,
     split_batch_links,
 )
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 class ProviderDownloadStrategyTests(SimpleTestCase):
@@ -81,6 +93,27 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
         )
 
         self.assertEqual(strategy["download_strategy"], DOWNLOAD_STRATEGY_BROWSER_DIRECT)
+
+    def test_batch_parse_minute_ip_limit_removed_from_examples_and_docs(self):
+        files = (
+            ".env.example.local",
+            ".env.example.production",
+            "docs/production-deploy-checklist.md",
+        )
+
+        for relative_path in files:
+            with self.subTest(path=relative_path):
+                content = (PROJECT_ROOT / relative_path).read_text()
+                self.assertNotIn("BATCH_PARSE_MINUTE_IP_LIMIT", content)
+
+    def test_batch_direct_download_falls_back_to_handoff_when_fetch_fails(self):
+        content = (PROJECT_ROOT / "static/js/app.js").read_text()
+
+        self.assertIn("function handoffBatchDirectUrl", content)
+        self.assertIn("handoffBatchDirectUrl(url, filename)", content)
+        self.assertIn("Blob 不可用", content)
+        self.assertIn("已改用直链", content)
+        self.assertNotIn("server_single", content)
 
     def test_short_video_rule_allows_kukutool_and_tiantianjiexi(self):
         rule = get_third_party_rule("kuaishou")
@@ -166,7 +199,7 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
 
 
 @override_settings(
-    BATCH_PARSE_MINUTE_IP_LIMIT=0,
+    BATCH_PARSE_IP_INTERVAL_SECONDS=0,
     BATCH_PARSE_GLOBAL_MINUTE_LIMIT=0,
     BATCH_PARSE_DAILY_IP_LIMIT=0,
 )
@@ -183,11 +216,157 @@ class BatchParseViewTests(TestCase):
         response = self.client.get(reverse("batch_parse"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "下载策略矩阵")
+        self.assertContains(response, "解析设置")
+        self.assertContains(response, "batchSettingsModal")
+        self.assertContains(response, "batch-settings-panel")
+        self.assertContains(response, "batch-submit-spinner")
+        self.assertContains(response, "高级说明：下载策略矩阵")
         self.assertContains(response, "批量解析")
-        self.assertContains(response, "仅管理员可用")
+        self.assertNotContains(response, "alert-warning text-start mt-3 mb-0")
+        self.assertNotContains(response, "当前批量解析仅管理员可用")
+        self.assertNotContains(response, "batch-option-row")
+        content = response.content.decode()
+        self.assertGreater(content.index("高级说明：下载策略矩阵"), content.index("batch-form"))
+        self.assertGreater(content.index('name="ultra_hd"'), content.index("batch-settings-panel"))
+        self.assertGreater(content.index('name="youtube_merge"'), content.index("batch-settings-panel"))
+
+    @override_settings(ULTRA_HD_PROVIDER_ENABLED=True, KUKUTOOL_PROVIDER_ENABLED=True)
+    @patch("xhs_download.views.get_kukutool_provider_health")
+    def test_batch_parse_defaults_ultra_hd_checked_when_available(self, mock_health):
+        self.client.force_login(self.staff_user)
+        ProviderRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={"douyin_ultra_mode": ProviderAccessMode.STAFF},
+        )
+        mock_health.return_value = {"available": True}
+
+        response = self.client.get(reverse("batch_parse"))
+
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn('type="hidden" name="ultra_hd" value="0"', content)
+        self.assertRegex(content, r'name="ultra_hd"[\s\S]+value="1"[\s\S]+checked')
+
+    @override_settings(ULTRA_HD_PROVIDER_ENABLED=True, KUKUTOOL_PROVIDER_ENABLED=True)
+    @patch("xhs_download.views.get_kukutool_provider_health")
+    @patch("xhs_download.views.parse_media_page")
+    def test_batch_parse_respects_explicit_ultra_hd_off(self, mock_parse, mock_health):
+        self.client.force_login(self.staff_user)
+        ProviderRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={"douyin_ultra_mode": ProviderAccessMode.STAFF},
+        )
+        mock_health.return_value = {"available": True}
+        mock_parse.return_value = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="normal_video",
+            assets=(),
+        )
+
+        response = self.client.post(
+            reverse("batch_parse"),
+            {
+                "links": "https://www.douyin.com/video/7611146072161047526",
+                "ultra_hd": "0",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(mock_parse.call_args.kwargs["prefer_ultra_hd"])
+
+    @override_settings(BATCH_PARSE_TOTAL_TIMEOUT_SECONDS="")
+    def test_batch_parse_total_timeout_defaults_to_sixty_seconds(self):
+        self.assertEqual(batch_parse_total_timeout_seconds(), 60.0)
+
+    @override_settings(BATCH_PARSE_PUBLIC_ENABLED=True, BATCH_PARSE_IP_INTERVAL_SECONDS=20)
+    @patch("xhs_download.views.parse_media_page")
+    def test_batch_parse_public_click_interval_uses_twenty_second_message(self, mock_parse):
+        mock_parse.return_value = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="first",
+            assets=(),
+        )
+
+        first = self.client.post(reverse("batch_parse"), {"links": "https://example.com/1"})
+        second = self.client.post(reverse("batch_parse"), {"links": "https://example.com/2"})
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertContains(second, "批量解析请求过于频繁，请约")
+        self.assertContains(second, "秒后再试")
+        self.assertNotContains(second, "今日额度已用尽")
+
+    @override_settings(BATCH_PARSE_IP_INTERVAL_SECONDS=20, BATCH_PARSE_DAILY_IP_LIMIT=1)
+    @patch("xhs_download.views.parse_media_page")
+    def test_batch_parse_staff_bypasses_rate_limits(self, mock_parse):
+        self.client.force_login(self.staff_user)
+        mock_parse.return_value = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="staff_video",
+            assets=(),
+        )
+
+        first = self.client.post(reverse("batch_parse"), {"links": "https://example.com/1"})
+        second = self.client.post(reverse("batch_parse"), {"links": "https://example.com/2"})
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertNotContains(second, "批量解析请求过于频繁")
+        self.assertNotContains(second, "今日额度已用尽")
+
+    def test_batch_parse_daily_limit_message_avoids_huge_seconds(self):
+        message = batch_parse_limit_error_message(
+            "daily_ip",
+            LimitResult(allowed=False, current=21, limit=20, retry_after=22163),
+        )
+
+        self.assertIn("今日额度已用尽", message)
+        self.assertIn("21/20", message)
+        self.assertNotIn("22163", message)
 
     def test_batch_parse_non_staff_default_not_accessible(self):
+        response = self.client.get(reverse("batch_parse"))
+
+        self.assertEqual(response.status_code, 404)
+
+    @patch("xhs_download.views.parse_media_page")
+    def test_batch_runtime_setting_public_mode_overrides_env(self, mock_parse):
+        BatchParseRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={
+                "access_mode": ProviderAccessMode.PUBLIC,
+                "public_max_links": 2,
+                "max_links": 20,
+                "ip_interval_seconds": 0,
+                "global_minute_limit": 0,
+                "daily_ip_limit": 0,
+            },
+        )
+        mock_parse.return_value = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="public_video",
+            assets=(),
+        )
+
+        response = self.client.post(
+            reverse("batch_parse"),
+            {"links": "\n".join(f"https://example.com/{index}" for index in range(5))},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "总链接 2")
+
+    def test_batch_runtime_setting_disabled_blocks_staff(self):
+        BatchParseRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={"access_mode": ProviderAccessMode.DISABLED},
+        )
+        self.client.force_login(self.staff_user)
+
         response = self.client.get(reverse("batch_parse"))
 
         self.assertEqual(response.status_code, 404)
@@ -200,7 +379,7 @@ class BatchParseViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "本次提交 3 条链接")
+        self.assertContains(response, "总链接 3")
 
     @patch("xhs_download.views.parse_media_page")
     def test_batch_parse_post_renders_successful_result(self, mock_parse):
@@ -217,6 +396,7 @@ class BatchParseViewTests(TestCase):
                     provider="tiantianjiexi",
                     size_bytes=123456,
                     quality_label="原画",
+                    cover_url="https://p3.douyinpic.com/cover.jpeg",
                 ),
             ),
             metadata={"selected_provider": "tiantianjiexi"},
@@ -229,12 +409,72 @@ class BatchParseViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "demo_video")
-        self.assertContains(response, "浏览器 Blob 优先")
+        self.assertContains(response, "Provider tiantianjiexi")
+        self.assertContains(response, "120.6 KB")
+        self.assertContains(response, "batch-result-cover")
+        self.assertContains(response, "复制直链")
+        self.assertContains(response, "打开直链")
+        self.assertContains(response, "浏览器下载")
+        self.assertContains(response, "data-batch-direct-url")
+        self.assertContains(response, "data-batch-direct-download")
+        self.assertContains(response, "data-batch-download-progress")
+        self.assertNotContains(response, "v5-default.365yg.com</span>")
+        self.assertNotContains(response, "质量未知")
+        self.assertNotContains(response, "浏览器 Blob 优先</small>")
+        self.assertNotContains(response, 'target="_blank" rel="noopener noreferrer">\n                                                                    浏览器下载')
+        content = response.content.decode()
+        self.assertGreater(content.index("高级说明：下载策略矩阵"), content.index("解析结果"))
         mock_parse.assert_called_once()
         call_kwargs = mock_parse.call_args.kwargs
         self.assertLessEqual(call_kwargs["timeout_seconds"], 8.0)
         self.assertGreater(call_kwargs["timeout_seconds"], 0)
         self.assertIn("deadline_monotonic", call_kwargs)
+
+    @patch("xhs_download.views.parse_media_page")
+    def test_batch_parse_uses_parallel_workers(self, mock_parse):
+        self.client.force_login(self.staff_user)
+        BatchParseRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={
+                "parallel_workers": 4,
+                "total_timeout_seconds": 5,
+                "per_link_timeout_seconds": 1,
+                "ip_interval_seconds": 0,
+                "global_minute_limit": 0,
+                "daily_ip_limit": 0,
+            },
+        )
+        lock = threading.Lock()
+        active_count = 0
+        max_active_count = 0
+
+        def parse_side_effect(url, **_kwargs):
+            nonlocal active_count, max_active_count
+            with lock:
+                active_count += 1
+                max_active_count = max(max_active_count, active_count)
+            try:
+                sleep(0.05)
+                return ParseResult(
+                    platform="douyin",
+                    post_type="video",
+                    base_filename=url.rsplit("/", 1)[-1],
+                    assets=(),
+                )
+            finally:
+                with lock:
+                    active_count -= 1
+
+        mock_parse.side_effect = parse_side_effect
+
+        response = self.client.post(
+            reverse("batch_parse"),
+            {"links": "\n".join(f"https://example.com/{index}" for index in range(4))},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "成功 4")
+        self.assertGreater(max_active_count, 1)
 
     @override_settings(BATCH_PARSE_PER_LINK_TIMEOUT_SECONDS=2)
     @patch("xhs_download.views.parse_media_page")
@@ -282,8 +522,13 @@ class BatchParseViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "ok_video")
         self.assertContains(response, "RuntimeError")
+        self.assertContains(response, "复制错误")
+        self.assertContains(response, "复制原链接")
+        self.assertContains(response, "重新解析此链接")
+        self.assertContains(response, "成功 1")
+        self.assertContains(response, "失败 1")
 
-    @override_settings(BATCH_PARSE_TOTAL_TIMEOUT_SECONDS=1)
+    @override_settings(BATCH_PARSE_TOTAL_TIMEOUT_SECONDS=1, BATCH_PARSE_PARALLEL_WORKERS=1)
     @patch("xhs_download.views.time.monotonic")
     @patch("xhs_download.views.build_batch_result_row")
     def test_batch_parse_total_timeout_marks_remaining_skipped(self, mock_row, mock_monotonic):
@@ -335,6 +580,26 @@ class BatchParseViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "public_video")
         self.assertNotContains(response, 'href="https://v5-default.365yg.com/private-demo.mp4"')
+        self.assertNotContains(response, "复制全部成功视频直链")
+        self.assertNotContains(response, "data-batch-direct-url")
+
+    @override_settings(BATCH_PARSE_PUBLIC_ENABLED=True)
+    @patch("xhs_download.views.parse_media_page")
+    def test_batch_public_mode_sanitizes_error_and_hides_strategy_matrix(self, mock_parse):
+        mock_parse.side_effect = RuntimeError(
+            "failed https://v5-default.365yg.com/a.mp4?token=secret&signature=bad"
+        )
+
+        response = self.client.post(
+            reverse("batch_parse"),
+            {"links": "https://www.douyin.com/video/7611146072161047526"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "[url-redacted]")
+        self.assertNotContains(response, "token=secret")
+        self.assertNotContains(response, "signature=bad")
+        self.assertNotContains(response, "高级说明：下载策略矩阵")
 
 
 class TianTianJieXiHealthHardeningTests(TestCase):

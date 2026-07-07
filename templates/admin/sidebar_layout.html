@@ -35,7 +35,7 @@
                     <a href="{{ site_url }}">前台</a>
                 {% endif %}
                 {% if health_ready_url %}
-                    <a class="admin-health-badge" href="{{ health_ready_url }}">Health</a>
+                    <a class="admin-health-badge" href="{{ health_ready_url }}">健康状态</a>
                 {% endif %}
                 <span class="admin-account-user">
                     {% firstof user.get_short_name user.get_username %}

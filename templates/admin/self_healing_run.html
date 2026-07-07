@@ -82,9 +82,8 @@
                 <p class="healing-subtitle">手动触发一次自愈诊断事件，并查看最近的自动修复记录。这里不会修改 Provider 运行配置，也不会自动放量。</p>
             </div>
             <div class="healing-actions">
-                <a class="healing-link" href="{% url 'admin_console' %}">运维首页</a>
-                <a class="healing-link" href="{% url 'provider_settings' %}">Provider 设置</a>
                 <a class="healing-link" href="{% url 'download_logs' %}">下载日志</a>
+                <a class="healing-link" href="{% url 'provider_audit_logs' %}">Provider 审计</a>
             </div>
         </section>
 

@@ -191,7 +191,7 @@
 
     .provider-summary-card,
     .provider-card,
-    .provider-emergency {
+    .provider-settings-panel {
         border: 1px solid var(--provider-line);
         border-radius: 8px;
         background: #fff;
@@ -348,7 +348,7 @@
     }
 
     .provider-mode-options label,
-    .provider-emergency label {
+    .provider-settings-panel label {
         display: grid;
         grid-template-columns: 18px minmax(0, 1fr);
         gap: 8px;
@@ -361,28 +361,29 @@
     }
 
     .provider-mode-options input,
-    .provider-emergency input {
+    .provider-settings-panel input {
         accent-color: var(--provider-brand);
     }
 
-    .provider-emergency {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        padding: 16px 18px;
+    .provider-settings-panel {
+        display: grid;
+        grid-template-columns: minmax(180px, 280px) minmax(0, 1fr);
+        gap: 18px;
+        align-items: start;
+        padding: 18px;
+        box-shadow: none;
     }
 
-    .provider-emergency-title {
+    .provider-settings-title {
         color: var(--provider-text);
         font-weight: 900;
     }
 
-    .provider-emergency-help {
+    .provider-settings-help {
         margin-top: 4px;
         color: var(--provider-muted);
         font-size: 13px;
+        line-height: 1.55;
     }
 
     .provider-rollout-input {
@@ -408,6 +409,11 @@
         margin-top: 12px;
     }
 
+    .provider-field-grid.is-compact {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        margin-top: 0;
+    }
+
     .provider-field {
         display: grid;
         gap: 6px;
@@ -417,6 +423,7 @@
     }
 
     .provider-field input,
+    .provider-field select,
     .provider-field textarea {
         min-height: 38px;
         border: 1px solid var(--provider-line);
@@ -511,6 +518,11 @@
 
         .provider-card {
             min-height: auto;
+        }
+
+        .provider-settings-panel,
+        .provider-field-grid.is-compact {
+            grid-template-columns: 1fr;
         }
 
         .provider-actions {
@@ -695,14 +707,14 @@
                 {% endfor %}
             </div>
 
-            <section class="provider-emergency">
+            <section class="provider-settings-panel">
                 <div>
-                    <div class="provider-emergency-title">Provider 运行预算</div>
-                    <div class="provider-emergency-help">
+                    <div class="provider-settings-title">Provider 运行预算</div>
+                    <div class="provider-settings-help">
                         日常排障和灰度调参使用这里；.env 只保留服务器能力、密钥和兜底默认值。
                     </div>
                 </div>
-                <div class="provider-field-grid" style="flex: 1 1 720px;">
+                <div class="provider-field-grid is-compact">
                     <label class="provider-field">
                         <span>抖音超清前台总预算（秒）</span>
                         <input
@@ -758,12 +770,12 @@
                 </div>
             </section>
 
-            <section class="provider-emergency">
+            <section class="provider-settings-panel">
                 <div>
-                    <div class="provider-emergency-title">第三方公开平台白名单</div>
-                    <div class="provider-emergency-help">allowlist 为空时，通用第三方 Provider 不向访客开放；blocked 优先级高于 allowed。</div>
+                    <div class="provider-settings-title">第三方公开平台白名单</div>
+                    <div class="provider-settings-help">allowlist 为空时，通用第三方 Provider 不向访客开放；blocked 优先级高于 allowed。</div>
                 </div>
-                <div class="provider-field-grid" style="flex: 1 1 520px;">
+                <div class="provider-field-grid is-compact">
                     <label class="provider-field">
                         <span>允许公开平台 platform_id</span>
                         <textarea name="third_party_allowed_public_platforms" placeholder="youtube&#10;flickr">{{ runtime_setting.third_party_allowed_public_platforms }}</textarea>
@@ -816,10 +828,10 @@
                 </table>
             </section>
 
-            <section class="provider-emergency">
+            <section class="provider-settings-panel">
                 <div>
-                    <div class="provider-emergency-title">KuKuTool 兜底紧急开关</div>
-                    <div class="provider-emergency-help">用于 KuKuTool 上游异常、费用风险或线上排障时快速停用该兜底链路；天天解析仍由环境 capability 控制。</div>
+                    <div class="provider-settings-title">KuKuTool 兜底紧急开关</div>
+                    <div class="provider-settings-help">用于 KuKuTool 上游异常、费用风险或线上排障时快速停用该兜底链路；天天解析仍由环境 capability 控制。</div>
                 </div>
                 <label>
                     <input
@@ -833,8 +845,6 @@
             </section>
 
             <div class="provider-actions">
-                <a class="provider-link-btn" href="{% url 'provider_health_tests' %}">Provider 测试</a>
-                <a class="provider-link-btn" href="{% url 'provider_audit_logs' %}">Provider 审计日志</a>
                 <button type="submit" class="provider-btn provider-btn-primary">保存 Provider 设置</button>
             </div>
         </form>

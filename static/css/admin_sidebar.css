@@ -337,9 +337,10 @@ body {
     min-height: 28px;
     align-items: center;
     padding: 0 10px;
-    border-radius: 999px;
-    background: #ecfdf5;
-    color: #047857 !important;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #fff;
+    color: #4b5563 !important;
 }
 
 .admin-account-user {
