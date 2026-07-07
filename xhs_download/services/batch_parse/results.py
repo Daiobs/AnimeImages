@@ -13,6 +13,20 @@ from ..region_routing import get_request_country_code
 
 
 BATCH_DOUYIN_PROVIDER_ORDER = ("tiantianjiexi", "native")
+BATCH_PROVIDER_LABELS = {
+    "tiantianjiexi": "天天解析",
+    "kukutool": "KuKuTool",
+    "native": "本地解析",
+    "mobile_feed": "本地解析",
+    "mobile_share": "本地解析",
+    "native_fast_feed": "本地解析",
+    "native_reference_feed": "本地解析",
+    "yt_dlp_generic": "yt-dlp",
+    "yt_dlp_merge": "yt-dlp 高清合并",
+    "youtube_merge": "YouTube 高清合并",
+    "gallery_dl_generic": "gallery-dl",
+    "kukutool_generic": "KuKuTool",
+}
 
 
 def split_batch_links(value, max_links=None):
@@ -47,6 +61,16 @@ def batch_link_host(url):
         return urlparse(str(url or "")).hostname or ""
     except Exception:
         return ""
+
+
+def batch_provider_display_label(metadata):
+    explicit_label = str(metadata.get("provider_label") or "").strip()
+    if explicit_label:
+        return explicit_label
+    selected_provider = str(
+        metadata.get("selected_provider") or metadata.get("source_provider") or ""
+    ).strip()
+    return BATCH_PROVIDER_LABELS.get(selected_provider, selected_provider)
 
 
 def enrich_batch_media_items(row):
@@ -159,12 +183,13 @@ def build_batch_result_row(
         )
         display_context = display_context_builder(result, platform_key="home")
         metadata = result.metadata or {}
+        selected_provider = metadata.get("selected_provider") or metadata.get("source_provider") or ""
         row = {
             "status": "success",
             "source_text": source_text,
             "duration_ms": int((time.monotonic() - started_at) * 1000),
-            "provider_label": metadata.get("provider_label") or metadata.get("selected_provider") or "",
-            "selected_provider": metadata.get("selected_provider") or metadata.get("source_provider") or "",
+            "provider_label": batch_provider_display_label(metadata),
+            "selected_provider": selected_provider,
             **display_context,
         }
         enrich_batch_media_items(row)
