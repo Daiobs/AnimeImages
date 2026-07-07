@@ -161,7 +161,7 @@ cd /srv/animeimages
 - [ ] Provider setting changes write a new `ProviderAdminAuditLog`.
 - [ ] Running one Provider health test writes a new `ProviderHealthTestRun`.
 - [ ] Optional Provider smoke URLs are configured from `/admin/provider-health-tests/`, not `.env.production`.
-- [ ] `/batch/` remains staff-only unless `BATCH_PARSE_PUBLIC_ENABLED=True` is explicitly configured.
+- [ ] `/batch/` remains staff-only unless `BatchParseRuntimeSetting.access_mode` is set to `public_gray` or `public`. `BATCH_PARSE_PUBLIC_ENABLED` is only an initial/fallback default when the runtime setting row does not exist.
 - [ ] Batch parse limits are configured: `BATCH_PARSE_MAX_LINKS`, `BATCH_PARSE_TOTAL_TIMEOUT_SECONDS`, `BATCH_PARSE_IP_INTERVAL_SECONDS`, `BATCH_PARSE_GLOBAL_MINUTE_LIMIT`, and `BATCH_PARSE_DAILY_IP_LIMIT`.
 - [ ] Batch parse runtime settings can be opened at `/admin/xhs_download/batchparseruntimesetting/`.
 - [ ] Confirm `parallel_workers` is present in the database and defaults to a conservative value such as `4`.
