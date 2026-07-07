@@ -279,7 +279,12 @@ class BatchParseViewTests(TestCase):
     def test_batch_parse_total_timeout_defaults_to_sixty_seconds(self):
         self.assertEqual(batch_parse_total_timeout_seconds(), 60.0)
 
-    @override_settings(BATCH_PARSE_PER_LINK_TIMEOUT_SECONDS=8, BATCH_PARSE_ULTRA_PER_LINK_TIMEOUT_SECONDS=12)
+    @override_settings(
+        BATCH_PARSE_PER_LINK_TIMEOUT_SECONDS=8,
+        BATCH_PARSE_ULTRA_PER_LINK_TIMEOUT_SECONDS=12,
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        KUKUTOOL_PROVIDER_ENABLED=True,
+    )
     @patch("xhs_download.views.get_kukutool_provider_health")
     @patch("xhs_download.views.parse_media_page")
     def test_batch_parse_ultra_hd_uses_twelve_second_per_link_floor(self, mock_parse, mock_health):
