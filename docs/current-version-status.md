@@ -102,7 +102,9 @@ Production observation from PR #15 deployment:
 - `mobile_feed` is a native Douyin fallback path, not a separate external Provider and not KuKuTool.
 - This can happen when TianTianJieXi does not return the selected result for that item within the foreground budget.
 - User-facing batch UI should label this path as `本地解析`; logs should keep the raw `selected_provider=mobile_feed` value for diagnosis.
-- If this becomes frequent, inspect `ParseRequestLog` and TianTianJieXi health/budget before changing provider order.
+- Current decision: record and observe. Do not change batch provider order, retry behavior, or concurrency solely from this single sample.
+- Likely contributing factors include batch concurrency, per-link foreground budget, TianTianJieXi transient latency, and candidate validation differences between attempts.
+- If this becomes frequent after launch feedback or enough `ParseRequestLog` samples, inspect TianTianJieXi timeout/empty-candidate logs first, then consider lower ultra-HD batch concurrency or a targeted TianTianJieXi compensation retry before native fallback.
 
 Runtime page:
 
@@ -196,6 +198,7 @@ curl -i https://download.cosflow.icu/health/ready/
 4. Bilibili high quality remains deferred because it commonly requires Cookie, DASH merge, and entitlements.
 5. Some historical docs describe policy/autonomous/KuKuTool/TikHub plans that are not the active production path. Use `docs/codex-handoff.md` and this file as the source of truth.
 6. Unapplied migrations are the most common cause of admin `OperationalError`.
+7. Batch Douyin ultra may occasionally fall back to `mobile_feed` / 本地解析 even when the same link can return ultra-HD in single-link testing. Treat this as an observation item until production feedback or log volume shows it is frequent enough to justify lowering ultra-HD batch concurrency or adding a targeted retry.
 
 ## Next Priorities
 
