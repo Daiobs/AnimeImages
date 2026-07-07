@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -3806,8 +3807,26 @@ def batch_parse_total_timeout_seconds():
                 setting,
                 "total_timeout_seconds",
                 "BATCH_PARSE_TOTAL_TIMEOUT_SECONDS",
-                30.0,
+                60.0,
             )
+        ),
+    )
+
+
+def batch_parse_parallel_workers():
+    setting = batch_parse_runtime_setting_or_none()
+    return max(
+        1,
+        min(
+            10,
+            int(
+                batch_parse_setting_value(
+                    setting,
+                    "parallel_workers",
+                    "BATCH_PARSE_PARALLEL_WORKERS",
+                    4,
+                )
+            ),
         ),
     )
 
@@ -4061,6 +4080,74 @@ def build_batch_result_row(request, source_text, *, prefer_ultra_hd, prefer_yout
         }
 
 
+def build_batch_result_rows(request, links, *, prefer_ultra_hd, prefer_youtube_merge, deadline):
+    if not links:
+        return []
+
+    worker_count = min(batch_parse_parallel_workers(), len(links))
+    if worker_count <= 1:
+        rows = []
+        for link in links:
+            if time.monotonic() >= deadline:
+                rows.append(build_batch_skipped_row(link, "批量解析总预算已用尽，本条已跳过。"))
+                continue
+            rows.append(
+                build_batch_result_row(
+                    request,
+                    link,
+                    prefer_ultra_hd=prefer_ultra_hd,
+                    prefer_youtube_merge=prefer_youtube_merge,
+                    deadline=deadline,
+                )
+            )
+        return rows
+
+    rows = [None] * len(links)
+    executor = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="batch-parse")
+    future_map = {}
+    try:
+        for index, link in enumerate(links):
+            if time.monotonic() >= deadline:
+                rows[index] = build_batch_skipped_row(link, "批量解析总预算已用尽，本条已跳过。")
+                continue
+            future = executor.submit(
+                build_batch_result_row,
+                request,
+                link,
+                prefer_ultra_hd=prefer_ultra_hd,
+                prefer_youtube_merge=prefer_youtube_merge,
+                deadline=deadline,
+            )
+            future_map[future] = (index, link)
+
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            completed_futures = as_completed(future_map, timeout=remaining)
+            for future in completed_futures:
+                index, link = future_map[future]
+                try:
+                    rows[index] = future.result()
+                except Exception as error:
+                    rows[index] = {
+                        "status": "failed",
+                        "source_text": link,
+                        "duration_ms": 0,
+                        "error_message": sanitize_observability_text(f"{type(error).__name__}: {error}"),
+                    }
+        except FutureTimeoutError:
+            pass
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    for index, row in enumerate(rows):
+        if row is None:
+            rows[index] = build_batch_skipped_row(
+                links[index],
+                "批量解析总预算已用尽，本条已跳过。",
+            )
+    return rows
+
+
 def batch_parse_view(request):
     if not batch_parse_access_allowed(request):
         raise Http404("Batch parse is not available.")
@@ -4090,19 +4177,13 @@ def batch_parse_view(request):
             batch_error = batch_parse_limit_error_message(blocked_scope, blocked_limit)
         else:
             deadline = time.monotonic() + batch_parse_total_timeout_seconds()
-            for link in links:
-                if time.monotonic() >= deadline:
-                    rows.append(build_batch_skipped_row(link, "批量解析总预算已用尽，本条已跳过。"))
-                    continue
-                rows.append(
-                    build_batch_result_row(
-                        request,
-                        link,
-                        prefer_ultra_hd=prefer_ultra_hd,
-                        prefer_youtube_merge=prefer_youtube_merge,
-                        deadline=deadline,
-                    )
-                )
+            rows = build_batch_result_rows(
+                request,
+                links,
+                prefer_ultra_hd=prefer_ultra_hd,
+                prefer_youtube_merge=prefer_youtube_merge,
+                deadline=deadline,
+            )
 
     return render(
         request,
@@ -4117,6 +4198,7 @@ def batch_parse_view(request):
             "max_links": max_links,
             "batch_per_link_timeout_seconds": batch_parse_per_link_timeout_seconds(),
             "batch_total_timeout_seconds": batch_parse_total_timeout_seconds(),
+            "batch_parallel_workers": batch_parse_parallel_workers(),
             "batch_error": batch_error,
             "batch_staff_only": not batch_parse_access_allowed(request),
             "batch_direct_links_allowed": batch_parse_user_is_staff(request),

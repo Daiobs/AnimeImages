@@ -105,9 +105,15 @@ class BatchParseRuntimeSetting(models.Model):
         verbose_name="每条链接解析超时（秒）",
     )
     total_timeout_seconds = models.FloatField(
-        default=30.0,
+        default=60.0,
         validators=(MinValueValidator(1.0), MaxValueValidator(300.0)),
         verbose_name="总解析预算（秒）",
+    )
+    parallel_workers = models.PositiveSmallIntegerField(
+        default=4,
+        validators=(MinValueValidator(1), MaxValueValidator(10)),
+        verbose_name="并发解析数",
+        help_text="同一次批量请求中同时解析的链接数量。建议 3-5，过高可能触发上游限流。",
     )
     ip_interval_seconds = models.PositiveIntegerField(
         default=20,
@@ -155,7 +161,8 @@ class BatchParseRuntimeSetting(models.Model):
             "staff_max_links": runtime_default_int("BATCH_PARSE_STAFF_MAX_LINKS", 20),
             "public_max_links": runtime_default_int("BATCH_PARSE_PUBLIC_MAX_LINKS", 3),
             "per_link_timeout_seconds": runtime_default_float("BATCH_PARSE_PER_LINK_TIMEOUT_SECONDS", 8.0),
-            "total_timeout_seconds": runtime_default_float("BATCH_PARSE_TOTAL_TIMEOUT_SECONDS", 30.0),
+            "total_timeout_seconds": runtime_default_float("BATCH_PARSE_TOTAL_TIMEOUT_SECONDS", 60.0),
+            "parallel_workers": runtime_default_int("BATCH_PARSE_PARALLEL_WORKERS", 4),
             "ip_interval_seconds": runtime_default_int("BATCH_PARSE_IP_INTERVAL_SECONDS", 20),
             "global_minute_limit": runtime_default_int("BATCH_PARSE_GLOBAL_MINUTE_LIMIT", 30),
             "daily_ip_limit": runtime_default_int("BATCH_PARSE_DAILY_IP_LIMIT", 100),

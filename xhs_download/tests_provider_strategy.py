@@ -1,4 +1,5 @@
 import itertools
+import threading
 from io import StringIO
 from pathlib import Path
 from time import monotonic, sleep
@@ -225,8 +226,8 @@ class BatchParseViewTests(TestCase):
         self.assertGreater(content.index('name="youtube_merge"'), content.index("batch-settings-panel"))
 
     @override_settings(BATCH_PARSE_TOTAL_TIMEOUT_SECONDS="")
-    def test_batch_parse_total_timeout_defaults_to_thirty_seconds(self):
-        self.assertEqual(batch_parse_total_timeout_seconds(), 30.0)
+    def test_batch_parse_total_timeout_defaults_to_sixty_seconds(self):
+        self.assertEqual(batch_parse_total_timeout_seconds(), 60.0)
 
     @override_settings(BATCH_PARSE_PUBLIC_ENABLED=True, BATCH_PARSE_IP_INTERVAL_SECONDS=20)
     @patch("xhs_download.views.parse_media_page")
@@ -379,6 +380,52 @@ class BatchParseViewTests(TestCase):
         self.assertGreater(call_kwargs["timeout_seconds"], 0)
         self.assertIn("deadline_monotonic", call_kwargs)
 
+    @patch("xhs_download.views.parse_media_page")
+    def test_batch_parse_uses_parallel_workers(self, mock_parse):
+        self.client.force_login(self.staff_user)
+        BatchParseRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={
+                "parallel_workers": 4,
+                "total_timeout_seconds": 5,
+                "per_link_timeout_seconds": 1,
+                "ip_interval_seconds": 0,
+                "global_minute_limit": 0,
+                "daily_ip_limit": 0,
+            },
+        )
+        lock = threading.Lock()
+        active_count = 0
+        max_active_count = 0
+
+        def parse_side_effect(url, **_kwargs):
+            nonlocal active_count, max_active_count
+            with lock:
+                active_count += 1
+                max_active_count = max(max_active_count, active_count)
+            try:
+                sleep(0.05)
+                return ParseResult(
+                    platform="douyin",
+                    post_type="video",
+                    base_filename=url.rsplit("/", 1)[-1],
+                    assets=(),
+                )
+            finally:
+                with lock:
+                    active_count -= 1
+
+        mock_parse.side_effect = parse_side_effect
+
+        response = self.client.post(
+            reverse("batch_parse"),
+            {"links": "\n".join(f"https://example.com/{index}" for index in range(4))},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "成功 4")
+        self.assertGreater(max_active_count, 1)
+
     @override_settings(BATCH_PARSE_PER_LINK_TIMEOUT_SECONDS=2)
     @patch("xhs_download.views.parse_media_page")
     def test_batch_parse_passes_per_link_timeout(self, mock_parse):
@@ -431,7 +478,7 @@ class BatchParseViewTests(TestCase):
         self.assertContains(response, "成功 1")
         self.assertContains(response, "失败 1")
 
-    @override_settings(BATCH_PARSE_TOTAL_TIMEOUT_SECONDS=1)
+    @override_settings(BATCH_PARSE_TOTAL_TIMEOUT_SECONDS=1, BATCH_PARSE_PARALLEL_WORKERS=1)
     @patch("xhs_download.views.time.monotonic")
     @patch("xhs_download.views.build_batch_result_row")
     def test_batch_parse_total_timeout_marks_remaining_skipped(self, mock_row, mock_monotonic):
