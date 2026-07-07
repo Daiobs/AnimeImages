@@ -6,17 +6,31 @@ This document is the first stop when a new Codex project or thread takes over An
 
 ## Repository
 
-### Local Codex Working Repo
+### Recent Local Codex Worktree
 
-Use this local repository for Codex development:
+Recent local Codex work has used:
 
 ```text
 /Users/xingkong/Documents/Codex/2026-06-03/django-python-pycharm-codex-netlify/djangoProject
 ```
 
+This path is not a permanent fixed path. A new Codex thread must first confirm it is in the correct AnimeImages repository:
+
+```bash
+git remote -v
+git status --short --branch
+git log --oneline --decorate --max-count=5
+```
+
+The remote must point to:
+
+```text
+ssh://git@ssh.github.com:443/Daiobs/AnimeImages.git
+```
+
 Do not continue work in stale Codex worktrees or the old `douyin-source-resolver` experiment unless the user explicitly asks.
 
-### Production Server Repo
+### Production Server Checkout
 
 The production server uses a separate checkout:
 
@@ -24,7 +38,7 @@ The production server uses a separate checkout:
 /srv/animeimages
 ```
 
-Do not confuse the local Codex working repo with the server repo. Local changes in `/Users/xingkong/.../djangoProject` do not affect `/srv/animeimages` until they are committed, pushed, and deployed on the server.
+Do not confuse the local Codex worktree with the production server directory. Local development, code edits, branches, commits, and PR preparation happen in the local worktree. Production deployment happens on the server in `/srv/animeimages`.
 
 ### Remote
 
@@ -191,12 +205,13 @@ Preferred deploy path:
 
 ```bash
 cd /srv/animeimages
+./scripts/pre_deploy_check.sh
 ./scripts/deploy.sh
 ```
 
-The deploy script defaults to deploying `origin/main`. Use it for routine production updates after the branch has been merged into `main`.
+`deploy.sh` deploys `main` by default. Use it for routine production updates after the branch has been merged into `main`. For staging-only branch deploys, set `DEPLOY_BRANCH` explicitly. Do not run `deploy.sh` as root. The production checkout should stay owned by `ubuntu:ubuntu`.
 
-Manual fallback:
+Manual fallback deploy path:
 
 ```bash
 cd /srv/animeimages
@@ -262,9 +277,10 @@ User preference:
 - Small updates can be done locally on a branch.
 - Bigger modules should be pushed to GitHub branch for review.
 - Pushing a branch for review is allowed.
+- Opening a PR requires user confirmation.
 - Do not open a PR until the user confirms the task is ready.
-- Do not merge to `main` unless the user explicitly asks.
-- Merging `main` requires an explicit user request.
+- Merging to `main` requires an explicit user request.
+- Documentation-only branches should still be reviewed before merge.
 - Use SSH remote already configured for GitHub.
 
 Default branch naming:
@@ -320,13 +336,17 @@ Documentation impact: Historical docs updated
 Good next tasks from the current baseline:
 
 1. First refactor batch parse services out of `xhs_download/views.py`.
+   - Suggested target package: `xhs_download/services/batch_parse/`.
    - Keep behavior stable.
    - Move parsing orchestration, runtime-setting lookup, result shaping, and permission helpers into focused service modules.
    - Add focused tests around the extracted boundaries.
 2. Then split batch page JavaScript if needed.
    - Keep `/batch/` behavior stable.
+   - Batch parse page JavaScript can move out of `static/js/app.js` when it grows further.
    - Separate settings modal, parse request lifecycle, result rendering, and download handoff logic.
 3. Then continue Batch Parse v2 durable job/queue work only after service boundaries are cleaner.
+   - Future objects may include durable `BatchParseJob` / `BatchParseItem` records.
+   - Scope can include queue, progress, retry, history, and export.
    - Durable queue/progress is not the first refactor target.
    - Do not introduce Celery/RQ before the synchronous batch code is easier to reason about.
 4. Provider Strategy v1 remains stabilization and smoke work.
