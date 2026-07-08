@@ -265,6 +265,37 @@ XHS_ALLOW_ABSOLUTE_SAVE_PATH=True
 XHS_DEFAULT_SERVER_SAVE_DIR=/Users/your-name/Downloads/xhs
 ```
 
+## Admin Release Management
+
+`/admin/release-management/` shows the current Git branch, commit, matching tag, `origin/main`, latest tags, readiness status, and recent release deployment jobs.
+
+The admin page may run `git fetch --tags origin` when opened. Control this with:
+
+```text
+RELEASE_MANAGEMENT_FETCH_ON_VIEW=True
+RELEASE_MANAGEMENT_GIT_TIMEOUT_SECONDS=6
+```
+
+Creating a deployment from the admin page records a `ReleaseDeployJob`. It must not run long deployment or restart work in the Django request thread. To trigger execution, configure a small external executor command such as a systemd one-shot starter:
+
+```text
+RELEASE_MANAGEMENT_EXECUTOR_COMMAND="/usr/bin/sudo /bin/systemctl start animeimages-deploy@{job_id}.service"
+```
+
+The external service should run:
+
+```bash
+cd /srv/animeimages
+source .venv/bin/activate
+python manage.py run_release_deploy_job --job-id <job_id>
+```
+
+Current execution support is intentionally conservative:
+
+- `main` deployments can run through `scripts/deploy.sh`.
+- tag/commit jobs are recorded for audit and future rollback workflow, but execution must stay disabled until the deploy script supports safe target refs.
+- migration rollback is not automatic. Operators must review migration safety before switching to an older tag or commit.
+
 ## Rollback
 
 Keep each deployed version tied to a Git commit. If deployment fails:

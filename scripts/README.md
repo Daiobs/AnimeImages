@@ -39,6 +39,16 @@ cd /srv/animeimages
 ./scripts/health_check.sh
 ```
 
+## Admin release jobs
+
+`/admin/release-management/` 只创建和展示发布任务。Django 请求线程不直接执行长时间部署或重启。若需要从后台触发部署，使用 systemd one-shot 等外部执行器调用：
+
+```bash
+python manage.py run_release_deploy_job --job-id <job_id>
+```
+
+当前执行器只支持通过 `deploy.sh` 部署 `main`；tag/commit 任务用于审计和后续回滚工作流，必须等部署脚本支持安全目标版本后再启用自动执行。
+
 ## Local experiments
 
 - `xhs_request_probe.py`：小红书页面请求调试。

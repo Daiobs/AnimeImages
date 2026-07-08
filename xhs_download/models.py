@@ -808,3 +808,61 @@ class ProviderHealthTestSetting(models.Model):
 
     def __str__(self):
         return "Provider 健康测试配置"
+
+
+class ReleaseDeployJobStatus(models.TextChoices):
+    PENDING = "pending", "等待执行"
+    RUNNING = "running", "执行中"
+    SUCCEEDED = "succeeded", "成功"
+    FAILED = "failed", "失败"
+    CANCELLED = "cancelled", "已取消"
+
+
+class ReleaseDeployTargetType(models.TextChoices):
+    MAIN = "main", "main"
+    TAG = "tag", "Tag"
+    COMMIT = "commit", "Commit"
+
+
+class ReleaseDeployJob(models.Model):
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(
+        max_length=16,
+        choices=ReleaseDeployJobStatus.choices,
+        default=ReleaseDeployJobStatus.PENDING,
+        db_index=True,
+    )
+    target_type = models.CharField(
+        max_length=16,
+        choices=ReleaseDeployTargetType.choices,
+        default=ReleaseDeployTargetType.MAIN,
+        db_index=True,
+    )
+    target_ref = models.CharField(max_length=160, db_index=True)
+    target_sha = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    request_id = models.CharField(max_length=128, blank=True, default="", db_index=True)
+    actor_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    actor_username = models.CharField(max_length=150, blank=True, default="", db_index=True)
+    actor_is_superuser = models.BooleanField(default=False)
+    command_plan = models.JSONField(default=dict, blank=True)
+    stdout_tail = models.TextField(blank=True, default="")
+    stderr_tail = models.TextField(blank=True, default="")
+    error_message = models.CharField(max_length=300, blank=True, default="")
+    health_check_status = models.CharField(max_length=32, blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = (
+            models.Index(fields=("status", "created_at")),
+            models.Index(fields=("target_type", "target_ref")),
+            models.Index(fields=("actor_username", "created_at")),
+        )
+        verbose_name = "发布部署任务"
+        verbose_name_plural = "发布部署任务"
+
+    def __str__(self):
+        return f"{local_datetime_label(self.created_at)} {self.target_type}:{self.target_ref} {self.status}"

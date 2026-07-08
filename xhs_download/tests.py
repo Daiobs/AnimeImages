@@ -180,6 +180,9 @@ from .models import (
     ProviderHealthTestRun,
     ProviderHealthTestStatus,
     ProviderRuntimeSetting,
+    ReleaseDeployJob,
+    ReleaseDeployJobStatus,
+    ReleaseDeployTargetType,
     RoutingDecisionLog,
     SelfHealingEvent,
 )
@@ -11412,6 +11415,28 @@ class ProductionControlPlaneTests(TestCase):
         active_fragment = sidebar.split("admin-sidebar-link is-active", 1)[1].split("</a>", 1)[0]
         self.assertIn(label, active_fragment)
 
+    def release_state_fixture(self):
+        return {
+            "branch": "main",
+            "commit_sha": "a" * 40,
+            "short_sha": "aaaaaaa",
+            "current_tag": "v1.0.0",
+            "current_tags": ["v1.0.0"],
+            "commit_time": "2026-07-09T10:00:00+08:00",
+            "origin_main_sha": "b" * 40,
+            "origin_main_short_sha": "bbbbbbb",
+            "ahead_count": 0,
+            "behind_count": 1,
+            "has_update": True,
+            "tags": [
+                {"name": "v1.0.0", "sha": "aaaaaaa", "created_at": "2026-07-09T10:00:00+08:00"},
+                {"name": "v0.9.0", "sha": "9999999", "created_at": "2026-07-08T10:00:00+08:00"},
+            ],
+            "latest_tag": {"name": "v1.0.0", "sha": "aaaaaaa"},
+            "latest_successful_job": None,
+            "fetch": {"attempted": False, "ok": None, "error": ""},
+        }
+
     @patch(
         "xhs_download.services.control_plane.get_runtime_readiness",
         return_value={"ready": True, "components": {"database": True, "cache": True}},
@@ -11720,6 +11745,91 @@ class ProductionControlPlaneTests(TestCase):
         self.assertEqual(client.get("/admin/provider-settings/").status_code, 200)
         self.assertEqual(client.get("/admin/logs/").status_code, 200)
         self.assertEqual(client.get("/admin/policy-center/").status_code, 200)
+
+    @override_settings(RELEASE_MANAGEMENT_FETCH_ON_VIEW=False)
+    @patch("xhs_download.views.get_runtime_readiness")
+    @patch("xhs_download.views.build_release_state")
+    def test_release_management_permissions_and_page(self, build_state, readiness):
+        build_state.return_value = self.release_state_fixture()
+        readiness.return_value = {"status": "ready", "ready": True}
+        client = Client()
+        client.force_login(self.staff)
+        super_client = Client()
+        super_client.force_login(self.superuser)
+
+        self.assertEqual(Client().get("/admin/release-management/").status_code, 404)
+        self.assertEqual(client.get("/admin/release-management/").status_code, 404)
+
+        self.grant_xhs_permission(self.staff, "view_releasedeployjob")
+        staff_response = client.get("/admin/release-management/")
+        self.assertContains(staff_response, "版本发布")
+        self.assertContains(staff_response, "有新版本可部署")
+        self.assert_sidebar_active_item(staff_response, "版本发布")
+        self.assertContains(super_client.get("/admin/release-management/"), "创建 main 部署任务")
+
+    @override_settings(RELEASE_MANAGEMENT_FETCH_ON_VIEW=False, RELEASE_MANAGEMENT_EXECUTOR_COMMAND="")
+    @patch("xhs_download.services.release_management.resolve_target_sha")
+    def test_release_management_creates_main_job_without_executor(self, resolve_sha):
+        resolve_sha.return_value = "b" * 40
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.post(
+            "/admin/release-management/",
+            data={"action": "deploy_main", "notes": "deploy newest main"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        job = ReleaseDeployJob.objects.get()
+        self.assertEqual(job.status, ReleaseDeployJobStatus.PENDING)
+        self.assertEqual(job.target_type, ReleaseDeployTargetType.MAIN)
+        self.assertEqual(job.target_ref, "main")
+        self.assertEqual(job.target_sha, "b" * 40)
+        self.assertFalse(job.command_plan["executor_configured"])
+        self.assertEqual(job.actor_username, "control-root")
+
+        cancel = client.post(
+            "/admin/release-management/",
+            data={"action": "cancel_job", "job_id": job.pk},
+        )
+        self.assertEqual(cancel.status_code, 302)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ReleaseDeployJobStatus.CANCELLED)
+
+    @override_settings(RELEASE_MANAGEMENT_FETCH_ON_VIEW=False, RELEASE_MANAGEMENT_EXECUTOR_COMMAND="")
+    @patch("xhs_download.services.release_management.resolve_target_sha")
+    def test_release_management_creates_tag_job_and_rejects_unsafe_tag(self, resolve_sha):
+        resolve_sha.return_value = "c" * 40
+        client = Client()
+        client.force_login(self.superuser)
+
+        ok = client.post(
+            "/admin/release-management/",
+            data={"action": "deploy_tag", "target_ref": "v1.0.0"},
+        )
+        self.assertEqual(ok.status_code, 302)
+        job = ReleaseDeployJob.objects.get()
+        self.assertEqual(job.target_type, ReleaseDeployTargetType.TAG)
+        self.assertEqual(job.target_ref, "v1.0.0")
+
+        ReleaseDeployJob.objects.all().delete()
+        bad = client.post(
+            "/admin/release-management/",
+            data={"action": "deploy_tag", "target_ref": "bad tag;rm -rf /"},
+        )
+        self.assertEqual(bad.status_code, 302)
+        self.assertEqual(ReleaseDeployJob.objects.count(), 0)
+
+    @override_settings(RELEASE_MANAGEMENT_FETCH_ON_VIEW=False)
+    def test_release_management_post_requires_add_permission(self):
+        client = Client()
+        client.force_login(self.staff)
+        self.grant_xhs_permission(self.staff, "view_releasedeployjob")
+
+        response = client.post("/admin/release-management/", data={"action": "deploy_main"})
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(ReleaseDeployJob.objects.count(), 0)
 
     def test_admin_center_pages_render_empty_state(self):
         client = Client()
