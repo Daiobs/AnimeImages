@@ -27,8 +27,36 @@ class GitResult:
     returncode: int = 0
 
 
+def env_bool(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return bool(default)
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_float(name, default=0.0):
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return float(default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def env_str(name, default=""):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip()
+
+
+def release_fetch_on_view():
+    return env_bool("RELEASE_MANAGEMENT_FETCH_ON_VIEW", True)
+
+
 def release_git_timeout_seconds():
-    return float(getattr(settings, "RELEASE_MANAGEMENT_GIT_TIMEOUT_SECONDS", 6.0))
+    return env_float("RELEASE_MANAGEMENT_GIT_TIMEOUT_SECONDS", 6.0)
 
 
 def release_base_dir():
@@ -169,7 +197,7 @@ def build_release_state(*, fetch_remote=False):
 
 
 def release_executor_command():
-    command = str(getattr(settings, "RELEASE_MANAGEMENT_EXECUTOR_COMMAND", "") or "").strip()
+    command = env_str("RELEASE_MANAGEMENT_EXECUTOR_COMMAND", "")
     if not command:
         return []
     return shlex.split(command)
@@ -240,7 +268,7 @@ def trigger_release_executor(job):
             check=False,
             capture_output=True,
             text=True,
-            timeout=float(getattr(settings, "RELEASE_MANAGEMENT_TRIGGER_TIMEOUT_SECONDS", 5.0)),
+            timeout=env_float("RELEASE_MANAGEMENT_TRIGGER_TIMEOUT_SECONDS", 5.0),
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         return GitResult(ok=False, stderr=f"{type(error).__name__}: {error}", returncode=124)
@@ -264,7 +292,7 @@ def execute_release_deploy_job(job):
         job.save(update_fields=("status", "finished_at", "error_message", "updated_at"))
         return job
 
-    script_path = getattr(settings, "RELEASE_MANAGEMENT_DEPLOY_SCRIPT", "")
+    script_path = env_str("RELEASE_MANAGEMENT_DEPLOY_SCRIPT", "")
     if not script_path:
         script_path = f"{release_base_dir()}/scripts/deploy.sh"
     try:
@@ -274,7 +302,7 @@ def execute_release_deploy_job(job):
             check=False,
             capture_output=True,
             text=True,
-            timeout=float(getattr(settings, "RELEASE_MANAGEMENT_DEPLOY_TIMEOUT_SECONDS", 900.0)),
+            timeout=env_float("RELEASE_MANAGEMENT_DEPLOY_TIMEOUT_SECONDS", 900.0),
             env={
                 **os.environ,
                 "APP_DIR": release_base_dir(),

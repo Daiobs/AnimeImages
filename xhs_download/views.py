@@ -177,6 +177,7 @@ from .services.rollout_guard import build_rollout_guard_context
 from .services.release_management import (
     build_release_state,
     create_release_deploy_job,
+    release_fetch_on_view,
     trigger_release_executor,
 )
 from .services.routing_v3 import decide_route_v3
@@ -1294,7 +1295,7 @@ def release_management_view(request):
             messages.warning(request, f"部署任务 #{job.pk} 已记录；当前未配置外部执行器，不会自动重启服务。")
         return redirect("release_management")
 
-    fetch_remote = bool(getattr(settings, "RELEASE_MANAGEMENT_FETCH_ON_VIEW", True))
+    fetch_remote = release_fetch_on_view()
     try:
         release_state = build_release_state(fetch_remote=fetch_remote)
     except Exception as error:
