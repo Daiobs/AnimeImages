@@ -236,13 +236,23 @@ def release_executor_command():
     command = env_str("RELEASE_MANAGEMENT_EXECUTOR_COMMAND", "")
     if not command:
         return []
-    return shlex.split(command)
+    try:
+        return shlex.split(command)
+    except ValueError as error:
+        raise ValueError(
+            "RELEASE_MANAGEMENT_EXECUTOR_COMMAND 配置无效：命令引号未闭合。"
+        ) from error
 
 
 def build_command_plan(job):
     executor = release_executor_command()
     if executor:
-        trigger_command = [part.format(job_id=job.pk) for part in executor]
+        try:
+            trigger_command = [part.format(job_id=job.pk) for part in executor]
+        except (KeyError, IndexError, ValueError) as error:
+            raise ValueError(
+                "RELEASE_MANAGEMENT_EXECUTOR_COMMAND 配置无效：仅支持 {job_id} 占位符。"
+            ) from error
     else:
         trigger_command = []
     deploy_environment = {
@@ -289,13 +299,13 @@ def create_release_deploy_job(*, request, target_type, target_ref, notes=""):
                 actor_is_superuser=bool(getattr(user, "is_superuser", False)),
                 notes=notes,
             )
+            job.command_plan = build_command_plan(job)
+            job.save(update_fields=("command_plan", "updated_at"))
     except IntegrityError as error:
         active_job = ReleaseDeployJob.objects.filter(status__in=ACTIVE_JOB_STATUSES).first()
         if active_job is not None:
             raise ValueError(f"已有未完成部署任务 #{active_job.pk}。") from error
         raise
-    job.command_plan = build_command_plan(job)
-    job.save(update_fields=("command_plan", "updated_at"))
     return job
 
 

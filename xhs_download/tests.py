@@ -11827,6 +11827,128 @@ class ProductionControlPlaneTests(TestCase):
         os.environ,
         {
             "RELEASE_MANAGEMENT_FETCH_ON_VIEW": "False",
+            "RELEASE_MANAGEMENT_EXECUTOR_COMMAND": (
+                '/bin/systemctl start --no-block "animeimages-deploy@{job_id}.service'
+            ),
+        },
+    )
+    @patch("xhs_download.views.get_runtime_readiness", return_value={"status": "ready", "ready": True})
+    @patch("xhs_download.views.build_release_state")
+    @patch("xhs_download.services.release_management.fetch_origin_main_sha", return_value="b" * 40)
+    def test_release_management_rolls_back_job_for_unclosed_executor_quote(
+        self,
+        _fetch_main_sha,
+        build_state,
+        _readiness,
+    ):
+        build_state.return_value = self.release_state_fixture()
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.post(
+            "/admin/release-management/",
+            data={"action": "deploy_main"},
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "配置无效：命令引号未闭合")
+        self.assertNotContains(
+            response,
+            '/bin/systemctl start --no-block "animeimages-deploy@{job_id}.service',
+        )
+        self.assertEqual(ReleaseDeployJob.objects.count(), 0)
+        self.assertFalse(
+            ReleaseDeployJob.objects.filter(
+                status__in=(ReleaseDeployJobStatus.PENDING, ReleaseDeployJobStatus.RUNNING)
+            ).exists()
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "RELEASE_MANAGEMENT_EXECUTOR_COMMAND": (
+                    "/bin/systemctl start --no-block animeimages-deploy@{job_id}.service"
+                ),
+            },
+        ), patch("xhs_download.views.trigger_release_executor") as trigger_executor:
+            trigger_executor.return_value = Mock(ok=True, stderr="")
+            corrected_response = client.post(
+                "/admin/release-management/",
+                data={"action": "deploy_main"},
+            )
+
+        self.assertEqual(corrected_response.status_code, 302)
+        job = ReleaseDeployJob.objects.get()
+        self.assertEqual(job.status, ReleaseDeployJobStatus.PENDING)
+        self.assertTrue(job.command_plan["executor_configured"])
+        trigger_executor.assert_called_once_with(job)
+
+    @patch.dict(
+        os.environ,
+        {
+            "RELEASE_MANAGEMENT_FETCH_ON_VIEW": "False",
+            "RELEASE_MANAGEMENT_EXECUTOR_COMMAND": (
+                "/bin/systemctl start --no-block animeimages-deploy@{unknown}.service"
+            ),
+        },
+    )
+    @patch("xhs_download.views.get_runtime_readiness", return_value={"status": "ready", "ready": True})
+    @patch("xhs_download.views.build_release_state")
+    @patch("xhs_download.services.release_management.fetch_origin_main_sha", return_value="c" * 40)
+    def test_release_management_rolls_back_job_for_unknown_executor_placeholder(
+        self,
+        _fetch_main_sha,
+        build_state,
+        _readiness,
+    ):
+        build_state.return_value = self.release_state_fixture()
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.post(
+            "/admin/release-management/",
+            data={"action": "deploy_main"},
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "配置无效：仅支持 {job_id} 占位符")
+        self.assertNotContains(
+            response,
+            "/bin/systemctl start --no-block animeimages-deploy@{unknown}.service",
+        )
+        self.assertEqual(ReleaseDeployJob.objects.count(), 0)
+        self.assertFalse(
+            ReleaseDeployJob.objects.filter(
+                status__in=(ReleaseDeployJobStatus.PENDING, ReleaseDeployJobStatus.RUNNING)
+            ).exists()
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "RELEASE_MANAGEMENT_EXECUTOR_COMMAND": (
+                    "/bin/systemctl start --no-block animeimages-deploy@{job_id}.service"
+                ),
+            },
+        ), patch("xhs_download.views.trigger_release_executor") as trigger_executor:
+            trigger_executor.return_value = Mock(ok=True, stderr="")
+            corrected_response = client.post(
+                "/admin/release-management/",
+                data={"action": "deploy_main"},
+            )
+
+        self.assertEqual(corrected_response.status_code, 302)
+        job = ReleaseDeployJob.objects.get()
+        self.assertEqual(job.status, ReleaseDeployJobStatus.PENDING)
+        self.assertTrue(job.command_plan["executor_configured"])
+        trigger_executor.assert_called_once_with(job)
+
+    @patch.dict(
+        os.environ,
+        {
+            "RELEASE_MANAGEMENT_FETCH_ON_VIEW": "False",
             "RELEASE_MANAGEMENT_EXECUTOR_COMMAND": "",
         },
     )
