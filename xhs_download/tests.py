@@ -4539,6 +4539,8 @@ class XhsDownloadViewTests(TestCase):
         )
 
     def test_home_route_renders_download_page(self):
+        from django.contrib.staticfiles import finders
+
         response = Client().get("/")
 
         self.assertEqual(response.status_code, 200)
@@ -4546,8 +4548,20 @@ class XhsDownloadViewTests(TestCase):
         self.assertContains(response, "theme-home")
         self.assertContains(response, "nav-settings-btn")
         self.assertContains(response, "css/app.css?v=")
+        self.assertContains(
+            response,
+            "static/vendor/bootstrap-icons/1.11.3/bootstrap-icons.css?v=",
+        )
+        self.assertNotContains(response, "cdn.jsdelivr.net/npm/bootstrap-icons")
         self.assertContains(response, "js/xhs_download.js?v=")
         self.assertContains(response, "data-download-task-url")
+        for asset_path in (
+            "vendor/bootstrap-icons/1.11.3/bootstrap-icons.css",
+            "vendor/bootstrap-icons/1.11.3/fonts/bootstrap-icons.woff2",
+            "vendor/bootstrap-icons/1.11.3/fonts/bootstrap-icons.woff",
+        ):
+            with self.subTest(asset_path=asset_path):
+                self.assertIsNotNone(finders.find(asset_path))
 
     @override_settings(DEBUG=False, XHS_ALLOW_SERVER_SAVE=True, XHS_ENABLE_SERVER_SAVE_MODE=False)
     def test_production_page_hides_server_save_mode(self):
