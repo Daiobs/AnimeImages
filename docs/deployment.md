@@ -276,13 +276,20 @@ RELEASE_MANAGEMENT_FETCH_ON_VIEW=False
 RELEASE_MANAGEMENT_GIT_TIMEOUT_SECONDS=6
 ```
 
-Creating a main deployment first fetches `origin/main`, stores its exact commit in `job.target_sha`, and records a `ReleaseDeployJob`. The database permits at most one pending/running job. Long deployment and restart work must stay outside the Django request thread. Configure a non-blocking systemd one-shot submission command:
+Creating a main deployment first fetches `origin/main`, stores its exact commit in `job.target_sha`, and records a `ReleaseDeployJob`. The database permits at most one pending/running job. Long deployment and restart work must stay outside the Django request thread.
+
+Release Management v1 is record-only by default after merge and the first production deployment. The production environment example leaves the executor empty. Without an executor, a release request is recorded as `pending` and does not deploy or restart anything automatically:
 
 ```text
-RELEASE_MANAGEMENT_EXECUTOR_COMMAND="/usr/bin/sudo /bin/systemctl start --no-block animeimages-deploy@{job_id}.service"
+RELEASE_MANAGEMENT_EXECUTOR_COMMAND=
+# Enable only after the systemd one-shot unit and sudoers rule have been
+# installed and independently tested on the production server.
+# RELEASE_MANAGEMENT_EXECUTOR_COMMAND="/usr/bin/sudo /bin/systemctl start --no-block animeimages-deploy@{job_id}.service"
 ```
 
-`--no-block` is required. Release Management v1 rejects executor commands that are not `systemctl start --no-block` submissions, including direct `deploy.sh` commands. The Django request waits only for systemd to accept the unit job; it never waits for deployment, migration, restart, or health check completion.
+Set `RELEASE_MANAGEMENT_EXECUTOR_COMMAND` in `/srv/animeimages/.env.production` only after the systemd one-shot unit, sudoers rule, service runtime user, application and virtualenv paths, and filesystem permissions have been independently verified on the production server. Example production configuration must not enable the executor by default.
+
+Once explicitly enabled, `--no-block` is required. Release Management v1 rejects executor commands that are not `systemctl start --no-block` submissions, including direct `deploy.sh` commands. The Django request waits only for systemd to accept the unit job; it never waits for deployment, migration, restart, or health check completion.
 
 The external service should run:
 

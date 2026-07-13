@@ -245,8 +245,11 @@ The release-management branch adds `/admin/release-management/`, but v1 is delib
 - GET uses cached Git refs by default; `RELEASE_MANAGEMENT_FETCH_ON_VIEW` defaults to `False`.
 - Creating a job fetches `origin/main` and stores the exact deployment commit in `job.target_sha`.
 - The database allows only one pending/running execution slot.
+- After merge and the first production deployment, v1 is record-only by default. The production environment example must leave `RELEASE_MANAGEMENT_EXECUTOR_COMMAND` empty.
+- Without an executor, a release job remains `pending` as an audit record and does not deploy or restart services automatically.
 - Django may submit a systemd job, but it must not run or wait for `deploy.sh` in the request thread.
 - The v1 executor only accepts `systemctl start --no-block animeimages-deploy@{job_id}.service` submission; direct `deploy.sh` execution is rejected.
+- Set `RELEASE_MANAGEMENT_EXECUTOR_COMMAND` in `/srv/animeimages/.env.production` only after independently verifying the systemd one-shot unit, sudoers rule, runtime user, application and virtualenv paths, and filesystem permissions on production.
 - The external management command passes `DEPLOY_TARGET_SHA=job.target_sha`; deployment fails unless the SHA is reachable from `origin/main` and final `HEAD` equals it.
 - Tags stay visible for reference. Tag/commit deployment and rollback are disabled until migration-aware rollback safeguards exist.
 

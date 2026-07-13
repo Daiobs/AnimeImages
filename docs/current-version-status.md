@@ -27,7 +27,7 @@ https://download.cosflow.icu/
 - `/batch/` supports batch parsing with runtime settings, limited parallelism, and staff-only/raw-link controls.
 - yt-dlp and gallery-dl are optional generic long-tail providers behind capability, runtime, platform and safety gates.
 - Admin UI includes Provider settings, health tests, logs center, policy center, download runtime settings, and batch parse runtime settings.
-- Admin Release Management v1 is being hardened on `codex/admin-release-management-v1`: it is main-only, pins an exact target SHA, and delegates execution to a non-blocking external systemd job.
+- Admin Release Management v1 is being hardened on `codex/admin-release-management-v1`: it is main-only, pins an exact target SHA, and can delegate execution to a non-blocking external systemd job only after explicit production configuration.
 - TikHub and older native-enhanced experiments remain historical/diagnostic only; they are not the active Douyin ultra path.
 
 ## Current Route Map
@@ -173,7 +173,10 @@ The release panel is intentionally narrow:
 - Ordinary GET requests do not fetch GitHub by default (`RELEASE_MANAGEMENT_FETCH_ON_VIEW=False`).
 - Creating a main job fetches `origin/main` and records its exact `job.target_sha`.
 - A database constraint permits only one `pending`/`running` job, while execution and cancellation use atomic status transitions.
+- Merge and the first production deployment leave v1 in record-only mode. `.env.example.production` does not enable the executor.
+- Without `RELEASE_MANAGEMENT_EXECUTOR_COMMAND`, a release request remains `pending` as an audit record and does not deploy automatically.
 - A direct systemd executor must use `systemctl start --no-block ...`; Django only submits the unit job.
+- Configure the executor in `/srv/animeimages/.env.production` only after independently validating the systemd one-shot unit, sudoers rule, runtime user, application and virtualenv paths, and filesystem permissions.
 - `deploy.sh` must deploy `job.target_sha`, verify it is reachable from `origin/main`, and verify final `HEAD == job.target_sha`.
 - Tags remain visible, but v1 does not create or execute Tag/commit switching jobs.
 

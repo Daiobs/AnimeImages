@@ -41,11 +41,16 @@ cd /srv/animeimages
 
 ## Admin release jobs
 
-`/admin/release-management/` 展示版本与 Tag，但 v1 只创建 `main` 发布任务。普通 GET 默认不 fetch GitHub；需要时使用页面刷新操作。Django 请求线程不直接执行 `deploy.sh`、迁移、重启或健康检查。v1 只接受 `systemctl start --no-block` 形式的非阻塞提交，直接配置 `deploy.sh` 会被拒绝。例如：
+`/admin/release-management/` 展示版本与 Tag，但 v1 只创建 `main` 发布任务。普通 GET 默认不 fetch GitHub；需要时使用页面刷新操作。Django 请求线程不直接执行 `deploy.sh`、迁移、重启或健康检查。
+
+Release Management v1 合并和首次部署后默认是 record-only。生产示例不启用执行器；未配置执行器时，发布任务只记录为 `pending`，不会自动部署或重启：
 
 ```text
-RELEASE_MANAGEMENT_EXECUTOR_COMMAND="/usr/bin/sudo /bin/systemctl start --no-block animeimages-deploy@{job_id}.service"
+RELEASE_MANAGEMENT_EXECUTOR_COMMAND=
+# RELEASE_MANAGEMENT_EXECUTOR_COMMAND="/usr/bin/sudo /bin/systemctl start --no-block animeimages-deploy@{job_id}.service"
 ```
+
+只有在生产服务器上独立验证 systemd one-shot、sudoers 规则、服务运行用户、应用与虚拟环境路径及文件权限后，才允许在 `/srv/animeimages/.env.production` 中设置该命令。启用后，v1 只接受 `systemctl start --no-block` 形式的非阻塞提交，直接配置 `deploy.sh` 会被拒绝。
 
 systemd one-shot 服务再调用：
 
