@@ -40,6 +40,9 @@ from .models import (
     ProviderHealthTestRun,
     ProviderHealthTestStatus,
     ProviderRuntimeSetting,
+    ReleaseDeployJob,
+    ReleaseDeployJobStatus,
+    ReleaseDeployTargetType,
     RoutingDecisionLog,
     SelfHealingEvent,
 )
@@ -171,6 +174,13 @@ from .services.autonomous_evolution_engine import build_autonomous_evolution_con
 from .services.governance_engine import build_governance_v8_context
 from .services.control_plane import build_control_plane_context
 from .services.rollout_guard import build_rollout_guard_context
+from .services.release_management import (
+    build_release_state,
+    cancel_pending_release_deploy_job,
+    create_release_deploy_job,
+    release_fetch_on_view,
+    trigger_release_executor,
+)
 from .services.routing_v3 import decide_route_v3
 from .services.rate_limits import (
     acquire_concurrency,
@@ -1157,6 +1167,26 @@ def admin_console_required(request):
     )
 
 
+def release_management_view_allowed(request):
+    return observability_access_allowed(
+        request,
+        "xhs_download.view_releasedeployjob",
+        "xhs_download.add_releasedeployjob",
+    )
+
+
+def release_management_change_allowed(request):
+    user = getattr(request, "user", None)
+    return bool(
+        getattr(user, "is_active", False)
+        and getattr(user, "is_staff", False)
+        and (
+            getattr(user, "is_superuser", False)
+            or user.has_perm("xhs_download.add_releasedeployjob")
+        )
+    )
+
+
 def control_plane_required(request):
     return observability_access_allowed(
         request,
@@ -1208,6 +1238,100 @@ def admin_console_view(request):
     context = build_admin_console_context()
     context["title"] = "运维首页"
     return render(request, "admin/console.html", context)
+
+
+@csrf_protect
+def release_management_view(request):
+    if not release_management_view_allowed(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+
+    if request.method == "POST":
+        if not release_management_change_allowed(request):
+            return JsonResponse({"detail": "Not found."}, status=404)
+        action = request.POST.get("action")
+        if action == "refresh_remote":
+            release_state = build_release_state(fetch_remote=True)
+            fetch_result = release_state.get("fetch") or {}
+            if fetch_result.get("ok"):
+                messages.info(request, "远程版本信息已刷新。")
+            else:
+                messages.error(request, f"远程版本刷新失败：{fetch_result.get('error') or 'git fetch failed'}")
+            return redirect("release_management")
+
+        if action == "cancel_job":
+            job_id = request.POST.get("job_id")
+            if not cancel_pending_release_deploy_job(job_id):
+                messages.error(request, "只能取消等待执行的发布任务。")
+            else:
+                messages.info(request, f"发布任务 #{job_id} 已取消。")
+            return redirect("release_management")
+
+        if action == "deploy_tag":
+            messages.error(request, "Release Management v1 仅支持 main 部署，Tag 版本切换暂未开放。")
+            return redirect("release_management")
+        if action != "deploy_main":
+            return JsonResponse({"detail": "Unknown action."}, status=400)
+
+        try:
+            job = create_release_deploy_job(
+                request=request,
+                target_type=ReleaseDeployTargetType.MAIN,
+                target_ref="main",
+                notes=request.POST.get("notes", ""),
+            )
+        except ValueError as error:
+            messages.error(request, str(error))
+            return redirect("release_management")
+
+        if (job.command_plan or {}).get("executor_configured"):
+            trigger_result = trigger_release_executor(job)
+            if trigger_result.ok:
+                messages.info(request, f"部署任务 #{job.pk} 已提交给外部执行器。")
+            else:
+                error_message = (trigger_result.stderr or "release executor trigger failed")[:300]
+                messages.error(request, f"部署任务 #{job.pk} 执行器触发失败：{error_message}")
+        else:
+            messages.warning(request, f"部署任务 #{job.pk} 已记录；当前未配置外部执行器，不会自动重启服务。")
+        return redirect("release_management")
+
+    fetch_remote = release_fetch_on_view()
+    try:
+        release_state = build_release_state(fetch_remote=fetch_remote)
+    except Exception as error:
+        logger.exception("release_management_state_failed")
+        release_state = {
+            "branch": "",
+            "commit_sha": "",
+            "short_sha": "",
+            "current_tag": "",
+            "current_tags": [],
+            "commit_time": "",
+            "origin_main_sha": "",
+            "origin_main_short_sha": "",
+            "ahead_count": 0,
+            "behind_count": 0,
+            "has_update": False,
+            "tags": [],
+            "latest_tag": {},
+            "latest_successful_job": None,
+            "fetch": {"attempted": fetch_remote, "ok": False, "error": type(error).__name__},
+        }
+    try:
+        readiness = get_runtime_readiness()
+    except Exception as error:
+        logger.exception("release_management_readiness_failed")
+        readiness = {"ready": False, "error": type(error).__name__}
+    context = {
+        "title": "版本发布",
+        "release_state": release_state,
+        "readiness": readiness,
+        "recent_jobs": ReleaseDeployJob.objects.all()[:20],
+        "can_manage_release": release_management_change_allowed(request),
+        "active_job": ReleaseDeployJob.objects.filter(
+            status__in=(ReleaseDeployJobStatus.PENDING, ReleaseDeployJobStatus.RUNNING),
+        ).first(),
+    }
+    return render(request, "admin/release_management.html", context)
 
 
 @require_GET

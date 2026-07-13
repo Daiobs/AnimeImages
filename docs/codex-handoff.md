@@ -1,6 +1,6 @@
 # Codex Handoff
 
-Last updated: 2026-07-08
+Last updated: 2026-07-13
 
 This document is the first stop when a new Codex project or thread takes over AnimeImages.
 
@@ -57,7 +57,7 @@ https://download.cosflow.icu/
 As of this handoff, `main` is at:
 
 ```text
-c732e72 Fix batch parse ultra default and runtime controls (#11)
+494b191 Document production follow-up and batch provider labels (#16)
 ```
 
 This commit only represents the time this document was last updated. Update this section after every `main` merge. If unsure, check the remote baseline:
@@ -69,6 +69,10 @@ git log -1 --oneline origin/main
 
 Recent merged milestones:
 
+- PR #16: Production follow-up documentation and user-facing `mobile_feed` provider labeling.
+- PR #15: Batch parse provider stability fixes and batch-specific TianTianJieXi budgeting.
+- PR #14: Production deploy ownership and Gunicorn runtime hardening.
+- PR #13: Initial extraction of batch parse logic into `xhs_download/services/batch_parse/`.
 - PR #11: Batch parse runtime setting, limited parallel parsing, default Douyin ultra checkbox.
 - PR #10: Provider Strategy v1 with TianTianJieXi official API and Douyin ultra race.
 - PR #8: Collapsible admin sidebar and admin center pages.
@@ -233,6 +237,21 @@ If sourcing `.env.production` prints `-m: command not found`, check quoted comma
 YTDLP_BINARY="/srv/animeimages/.venv/bin/python -m yt_dlp"
 GALLERYDL_BINARY="/srv/animeimages/.venv/bin/python -m gallery_dl"
 ```
+
+## Admin Release Management v1
+
+The release-management branch adds `/admin/release-management/`, but v1 is deliberately main-only:
+
+- GET uses cached Git refs by default; `RELEASE_MANAGEMENT_FETCH_ON_VIEW` defaults to `False`.
+- Creating a job fetches `origin/main` and stores the exact deployment commit in `job.target_sha`.
+- The database allows only one pending/running execution slot.
+- After merge and the first production deployment, v1 is record-only by default. The production environment example must leave `RELEASE_MANAGEMENT_EXECUTOR_COMMAND` empty.
+- Without an executor, a release job remains `pending` as an audit record and does not deploy or restart services automatically.
+- Django may submit a systemd job, but it must not run or wait for `deploy.sh` in the request thread.
+- The v1 executor only accepts `systemctl start --no-block animeimages-deploy@{job_id}.service` submission; direct `deploy.sh` execution is rejected.
+- Set `RELEASE_MANAGEMENT_EXECUTOR_COMMAND` in `/srv/animeimages/.env.production` only after independently verifying the systemd one-shot unit, sudoers rule, runtime user, application and virtualenv paths, and filesystem permissions on production.
+- The external management command passes `DEPLOY_TARGET_SHA=job.target_sha`; deployment fails unless the SHA is reachable from `origin/main` and final `HEAD` equals it.
+- Tags stay visible for reference. Tag/commit deployment and rollback are disabled until migration-aware rollback safeguards exist.
 
 ## Smoke Checklist For A New Codex Thread
 
@@ -456,21 +475,18 @@ Documentation impact: Historical docs updated
 
 Good next tasks from the current baseline:
 
-1. First refactor batch parse services out of `xhs_download/views.py`.
-   - Suggested target package: `xhs_download/services/batch_parse/`.
-   - Keep behavior stable.
-   - Move parsing orchestration, runtime-setting lookup, result shaping, and permission helpers into focused service modules.
-   - Add focused tests around the extracted boundaries.
-2. Then split batch page JavaScript if needed.
+1. Keep `docs/codex-handoff.md` and `docs/current-version-status.md` aligned after each major merge.
+2. Review the batch parse service boundary created by PR #13 and remove residual `views.py` wrappers.
+   - Continue from `xhs_download/services/batch_parse/`; do not restart the extraction.
+   - Keep behavior stable and add focused tests around each moved boundary.
+3. Then split batch page JavaScript.
    - Keep `/batch/` behavior stable.
-   - Batch parse page JavaScript can move out of `static/js/app.js` when it grows further.
+   - Move batch page JavaScript out of `static/js/app.js`.
    - Separate settings modal, parse request lifecycle, result rendering, and download handoff logic.
-3. Then continue Batch Parse v2 durable job/queue work only after service boundaries are cleaner.
-   - Future objects may include durable `BatchParseJob` / `BatchParseItem` records.
-   - Scope can include queue, progress, retry, history, and export.
-   - Durable queue/progress is not the first refactor target.
-   - Do not introduce Celery/RQ before the synchronous batch code is easier to reason about.
-4. Provider Strategy v1 remains stabilization and smoke work.
+4. Finish Release Management v1 production wiring and smoke validation for exact-SHA `main` deploys.
+   - Keep Tag/commit switching disabled.
+   - Do not add automatic migration rollback in v1.
+5. Provider Strategy v1 remains stabilization and smoke work.
    - Keep TianTianJieXi/KuKuTool smoke fixtures healthy.
    - Continue measuring browser handoff vs server attachment.
    - Treat provider expansion as secondary to batch parse boundary cleanup.

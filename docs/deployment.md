@@ -265,6 +265,48 @@ XHS_ALLOW_ABSOLUTE_SAVE_PATH=True
 XHS_DEFAULT_SERVER_SAVE_DIR=/Users/your-name/Downloads/xhs
 ```
 
+## Admin Release Management
+
+`/admin/release-management/` shows the current Git branch, commit, matching tag, the locally cached `origin/main`, latest tags, readiness status, and recent release deployment jobs. Release Management v1 only deploys `main`; tags remain visible for planning and audit, but the UI and POST endpoint do not create tag deployment jobs.
+
+Ordinary GET requests do not access GitHub by default. An authorized operator can use the explicit refresh action, or deliberately opt in to fetch-on-view:
+
+```text
+RELEASE_MANAGEMENT_FETCH_ON_VIEW=False
+RELEASE_MANAGEMENT_GIT_TIMEOUT_SECONDS=6
+```
+
+Creating a main deployment first fetches `origin/main`, stores its exact commit in `job.target_sha`, and records a `ReleaseDeployJob`. The database permits at most one pending/running job. Long deployment and restart work must stay outside the Django request thread.
+
+Release Management v1 is record-only by default after merge and the first production deployment. The production environment example leaves the executor empty. Without an executor, a release request is recorded as `pending` and does not deploy or restart anything automatically:
+
+```text
+RELEASE_MANAGEMENT_EXECUTOR_COMMAND=
+# Enable only after the systemd one-shot unit and sudoers rule have been
+# installed and independently tested on the production server.
+# RELEASE_MANAGEMENT_EXECUTOR_COMMAND="/usr/bin/sudo /bin/systemctl start --no-block animeimages-deploy@{job_id}.service"
+```
+
+Set `RELEASE_MANAGEMENT_EXECUTOR_COMMAND` in `/srv/animeimages/.env.production` only after the systemd one-shot unit, sudoers rule, service runtime user, application and virtualenv paths, and filesystem permissions have been independently verified on the production server. Example production configuration must not enable the executor by default.
+
+Once explicitly enabled, `--no-block` is required. Release Management v1 rejects executor commands that are not `systemctl start --no-block` submissions, including direct `deploy.sh` commands. The Django request waits only for systemd to accept the unit job; it never waits for deployment, migration, restart, or health check completion.
+
+The external service should run:
+
+```bash
+cd /srv/animeimages
+source .venv/bin/activate
+python manage.py run_release_deploy_job --job-id <job_id>
+```
+
+Current execution support is intentionally conservative:
+
+- Only `main` deployment jobs can be created or executed in v1.
+- The executor passes `DEPLOY_TARGET_SHA=job.target_sha` to `scripts/deploy.sh`.
+- After fetch, `deploy.sh` verifies that the SHA is reachable from `origin/main`, resets to that exact SHA, and fails unless the final `HEAD` equals `job.target_sha`.
+- Tag/commit switching remains disabled until migration-aware rollback policy and safe target selection are implemented.
+- migration rollback is not automatic. Operators must review migration safety before switching to an older tag or commit.
+
 ## Rollback
 
 Keep each deployed version tied to a Git commit. If deployment fails:

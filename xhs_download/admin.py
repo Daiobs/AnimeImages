@@ -12,6 +12,7 @@ from .models import (
     ProviderAdminAuditLog,
     ProviderHealthTestRun,
     ProviderRuntimeSetting,
+    ReleaseDeployJob,
     RoutingDecisionLog,
     SelfHealingEvent,
 )
@@ -369,3 +370,18 @@ class SelfHealingEventAdmin(ReadOnlyLogAdmin):
         "switched_to_provider",
         "error_type",
     )
+
+
+@admin.register(ReleaseDeployJob)
+class ReleaseDeployJobAdmin(ReadOnlyLogAdmin):
+    list_display = (
+        "created_at",
+        "status",
+        "target_type",
+        "target_ref",
+        "target_sha",
+        "actor_username",
+        "finished_at",
+    )
+    list_filter = ("status", "target_type", "actor_is_superuser", "created_at")
+    search_fields = ("target_ref", "target_sha", "actor_username", "request_id", "error_message")

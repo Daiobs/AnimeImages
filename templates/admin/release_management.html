@@ -1,0 +1,305 @@
+{% extends "admin/base_site.html" %}
+
+{% block content_title %}{% endblock %}
+{% block nav-breadcrumbs %}{% endblock %}
+
+{% block content %}
+<style>
+    #content { padding: 0; }
+    .release-page {
+        margin: -20px -20px 0;
+        min-height: calc(100vh - 96px);
+        padding: 34px clamp(18px, 4vw, 54px) 56px;
+        background: linear-gradient(180deg, #fff 0%, #f8fbff 58%, #fff 100%);
+        color: #111827;
+    }
+    .release-shell { max-width: 1180px; margin: 0 auto; }
+    .release-hero {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 22px;
+    }
+    .release-eyebrow {
+        display: inline-flex;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: #eef6ff;
+        color: #2563eb;
+        font-size: 12px;
+        font-weight: 900;
+    }
+    .release-title {
+        margin: 12px 0 0;
+        font-size: clamp(30px, 4vw, 46px);
+        font-weight: 900;
+        letter-spacing: 0;
+        color: #111827;
+    }
+    .release-subtitle { margin: 10px 0 0; color: #6b7280; line-height: 1.7; }
+    .release-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 18px;
+    }
+    .release-card,
+    .release-panel {
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: 0 4px 12px rgba(17, 24, 39, .05);
+    }
+    .release-card { padding: 16px; min-height: 108px; }
+    .release-card span { display: block; color: #6b7280; font-size: 13px; font-weight: 800; }
+    .release-card strong {
+        display: block;
+        margin-top: 8px;
+        font-size: 20px;
+        font-weight: 900;
+        overflow-wrap: anywhere;
+    }
+    .release-panel { padding: 18px; margin-bottom: 16px; overflow: hidden; }
+    .release-panel h2 { margin: 0 0 12px; font-size: 18px; font-weight: 900; }
+    .release-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+    }
+    .release-form {
+        border: 1px solid #edf0f3;
+        border-radius: 8px;
+        padding: 14px;
+        background: #fbfdff;
+    }
+    .release-form label { display: block; margin-bottom: 8px; color: #374151; font-weight: 900; }
+    .release-form select,
+    .release-form textarea {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        padding: 9px 10px;
+        background: #fff;
+        color: #111827;
+    }
+    .release-form textarea { min-height: 74px; resize: vertical; margin-top: 10px; }
+    .release-button {
+        display: inline-flex;
+        min-height: 40px;
+        align-items: center;
+        justify-content: center;
+        margin-top: 12px;
+        padding: 0 14px;
+        border: 0;
+        border-radius: 8px;
+        background: #2563eb;
+        color: #fff;
+        font-weight: 900;
+        cursor: pointer;
+    }
+    .release-button-secondary { background: #111827; }
+    .release-button[disabled] { background: #9ca3af; cursor: not-allowed; }
+    .release-banner {
+        border: 1px solid #bfdbfe;
+        border-radius: 8px;
+        padding: 14px 16px;
+        margin-bottom: 18px;
+        background: #eff6ff;
+    }
+    .release-banner-warning { border-color: #fde68a; background: #fffbeb; }
+    .release-banner-danger { border-color: #fecaca; background: #fff1f2; }
+    .release-table-wrap { overflow: auto; }
+    .release-table { width: 100%; border-collapse: collapse; }
+    .release-table th,
+    .release-table td {
+        padding: 9px 8px;
+        border-top: 1px solid #edf0f3;
+        text-align: left;
+        vertical-align: top;
+        font-size: 13px;
+        word-break: break-word;
+    }
+    .release-table th { color: #6b7280; font-weight: 900; }
+    .release-badge {
+        display: inline-flex;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: #f3f4f6;
+        color: #374151;
+        font-size: 12px;
+        font-weight: 900;
+    }
+    .release-badge-succeeded,
+    .release-badge-ready { background: #ecfdf5; color: #047857; }
+    .release-badge-pending,
+    .release-badge-running { background: #eff6ff; color: #1d4ed8; }
+    .release-badge-failed { background: #fff1f2; color: #be123c; }
+    .release-badge-update { background: #fffbeb; color: #92400e; }
+    @media (max-width: 980px) {
+        .release-grid,
+        .release-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 640px) {
+        .release-grid,
+        .release-actions { grid-template-columns: 1fr; }
+    }
+</style>
+
+<div class="release-page">
+    <div class="release-shell">
+        <section class="release-hero">
+            <div>
+                <span class="release-eyebrow">Admin Release</span>
+                <h1 class="release-title">版本发布</h1>
+                <p class="release-subtitle">查看当前 Git 版本、远程更新、健康状态和发布任务。</p>
+            </div>
+            {% if can_manage_release %}
+                <form method="post">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="refresh_remote">
+                    <button class="release-button release-button-secondary" type="submit">刷新远程版本</button>
+                </form>
+            {% endif %}
+        </section>
+
+        {% if release_state.has_update %}
+            <section class="release-banner release-banner-warning">
+                <strong>有新版本可部署：</strong>
+                当前 {{ release_state.short_sha|default:"unknown" }}，origin/main {{ release_state.origin_main_short_sha|default:"unknown" }}。
+            </section>
+        {% elif release_state.fetch.ok == False %}
+            <section class="release-banner release-banner-danger">
+                <strong>远程检查失败：</strong>{{ release_state.fetch.error|default:"git fetch failed" }}
+            </section>
+        {% else %}
+            <section class="release-banner">
+                <strong>当前代码与本地记录的 origin/main 一致。</strong>
+                页面默认不自动访问 GitHub；需要最新状态时请显式刷新。
+            </section>
+        {% endif %}
+
+        <section class="release-grid" aria-label="版本状态">
+            <div class="release-card">
+                <span>当前分支</span>
+                <strong>{{ release_state.branch|default:"unknown" }}</strong>
+            </div>
+            <div class="release-card">
+                <span>当前 Commit</span>
+                <strong>{{ release_state.short_sha|default:"unknown" }}</strong>
+            </div>
+            <div class="release-card">
+                <span>当前版本 Tag</span>
+                <strong>{{ release_state.current_tag|default:"无 tag" }}</strong>
+            </div>
+            <div class="release-card">
+                <span>Health Check</span>
+                <strong>
+                    {% if readiness.ready or readiness.status == "ready" %}
+                        <span class="release-badge release-badge-ready">ready</span>
+                    {% else %}
+                        <span class="release-badge release-badge-failed">not ready</span>
+                    {% endif %}
+                </strong>
+            </div>
+            <div class="release-card">
+                <span>origin/main</span>
+                <strong>{{ release_state.origin_main_short_sha|default:"unknown" }}</strong>
+            </div>
+            <div class="release-card">
+                <span>Ahead / Behind</span>
+                <strong>{{ release_state.ahead_count }} / {{ release_state.behind_count }}</strong>
+            </div>
+            <div class="release-card">
+                <span>最新 Tag</span>
+                <strong>{{ release_state.latest_tag.name|default:"无 tag" }}</strong>
+            </div>
+            <div class="release-card">
+                <span>部署时间</span>
+                <strong>
+                    {% if release_state.latest_successful_job %}
+                        {{ release_state.latest_successful_job.finished_at|date:"Y-m-d H:i:s" }}
+                    {% else %}
+                        未记录
+                    {% endif %}
+                </strong>
+            </div>
+        </section>
+
+        <section class="release-panel">
+            <h2>发布任务</h2>
+            {% if active_job %}
+                <div class="release-banner release-banner-warning">
+                    当前有未完成任务 #{{ active_job.pk }}，新任务已暂时锁定。
+                    {% if can_manage_release and active_job.status == "pending" %}
+                        <form method="post" style="display:inline;">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="cancel_job">
+                            <input type="hidden" name="job_id" value="{{ active_job.pk }}">
+                            <button class="release-button release-button-secondary" type="submit" style="min-height:32px;margin:0 0 0 10px;">取消任务</button>
+                        </form>
+                    {% endif %}
+                </div>
+            {% endif %}
+            <div class="release-actions">
+                <form class="release-form" method="post">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="deploy_main">
+                    <label>部署最新 main</label>
+                    <div>目标：origin/main {{ release_state.origin_main_short_sha|default:"unknown" }}</div>
+                    <textarea name="notes" placeholder="发布备注，可留空"></textarea>
+                    <button class="release-button" type="submit" {% if not can_manage_release or active_job %}disabled{% endif %}>创建 main 部署任务</button>
+                </form>
+                <form class="release-form" method="post">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="deploy_tag">
+                    <label for="target-ref">按 Tag 切换（v1 暂不支持）</label>
+                    <select id="target-ref" name="target_ref" disabled>
+                        {% for tag in release_state.tags %}
+                            <option value="{{ tag.name }}">{{ tag.name }}{% if tag.sha %} · {{ tag.sha }}{% endif %}</option>
+                        {% endfor %}
+                    </select>
+                    <textarea name="notes" placeholder="Tag 仅供查看" disabled></textarea>
+                    <button class="release-button release-button-secondary" type="submit" disabled>版本切换暂未开放</button>
+                </form>
+            </div>
+        </section>
+
+        <section class="release-panel">
+            <h2>最近任务</h2>
+            <div class="release-table-wrap">
+                <table class="release-table">
+                    <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>状态</th>
+                        <th>目标</th>
+                        <th>请求人</th>
+                        <th>创建时间</th>
+                        <th>结束时间</th>
+                        <th>错误</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    {% for job in recent_jobs %}
+                        <tr>
+                            <td>#{{ job.pk }}</td>
+                            <td><span class="release-badge release-badge-{{ job.status }}">{{ job.get_status_display }}</span></td>
+                            <td>{{ job.target_type }}: {{ job.target_ref }}<br>{{ job.target_sha|default:"" }}</td>
+                            <td>{{ job.actor_username|default:"-" }}</td>
+                            <td>{{ job.created_at|date:"Y-m-d H:i:s" }}</td>
+                            <td>{{ job.finished_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
+                            <td>{{ job.error_message|default:"-" }}</td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="7">暂无发布任务。</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+</div>
+{% endblock %}

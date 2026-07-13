@@ -40,6 +40,7 @@ SIDEBAR_GROUPS = (
         "运维",
         (
             ("运营看板", "ops_dashboard", "看"),
+            ("版本发布", "release_management", "版"),
             ("放量守卫", "rollout_guard", "放"),
             ("Self-Healing", "self_healing_run", "愈"),
         ),
