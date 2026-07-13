@@ -178,7 +178,6 @@ from .services.release_management import (
     build_release_state,
     cancel_pending_release_deploy_job,
     create_release_deploy_job,
-    release_fetch_on_view,
     trigger_release_executor,
 )
 from .services.routing_v3 import decide_route_v3
@@ -1250,12 +1249,10 @@ def release_management_view(request):
             return JsonResponse({"detail": "Not found."}, status=404)
         action = request.POST.get("action")
         if action == "refresh_remote":
-            release_state = build_release_state(fetch_remote=True)
-            fetch_result = release_state.get("fetch") or {}
-            if fetch_result.get("ok"):
-                messages.info(request, "远程版本信息已刷新。")
-            else:
-                messages.error(request, f"远程版本刷新失败：{fetch_result.get('error') or 'git fetch failed'}")
+            messages.warning(
+                request,
+                "Web 发布页面禁止执行 git fetch；远程引用由 ubuntu 部署流程或外部运维任务刷新。",
+            )
             return redirect("release_management")
 
         if action == "cancel_job":
@@ -1294,9 +1291,8 @@ def release_management_view(request):
             messages.warning(request, f"部署任务 #{job.pk} 已记录；当前未配置外部执行器，不会自动重启服务。")
         return redirect("release_management")
 
-    fetch_remote = release_fetch_on_view()
     try:
-        release_state = build_release_state(fetch_remote=fetch_remote)
+        release_state = build_release_state()
     except Exception as error:
         logger.exception("release_management_state_failed")
         release_state = {
@@ -1314,7 +1310,10 @@ def release_management_view(request):
             "tags": [],
             "latest_tag": {},
             "latest_successful_job": None,
-            "fetch": {"attempted": fetch_remote, "ok": False, "error": type(error).__name__},
+            "git": {
+                "ok": False,
+                "error": f"本地 Git 状态加载失败：{type(error).__name__}",
+            },
         }
     try:
         readiness = get_runtime_readiness()

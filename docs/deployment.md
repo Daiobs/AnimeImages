@@ -269,14 +269,21 @@ XHS_DEFAULT_SERVER_SAVE_DIR=/Users/your-name/Downloads/xhs
 
 `/admin/release-management/` shows the current Git branch, commit, matching tag, the locally cached `origin/main`, latest tags, readiness status, and recent release deployment jobs. Release Management v1 only deploys `main`; tags remain visible for planning and audit, but the UI and POST endpoint do not create tag deployment jobs.
 
-Ordinary GET requests do not access GitHub by default. An authorized operator can use the explicit refresh action, or deliberately opt in to fetch-on-view:
+Production Web requests only read local Git refs. The release page has no remote-refresh control, and the `www-data` Web process must not run `git fetch`. Local `origin/main` and Tag refs are refreshed by the `ubuntu` deployment workflow or a separately controlled operations task:
 
 ```text
-RELEASE_MANAGEMENT_FETCH_ON_VIEW=False
 RELEASE_MANAGEMENT_GIT_TIMEOUT_SECONDS=6
 ```
 
-Creating a main deployment first fetches `origin/main`, stores its exact commit in `job.target_sha`, and records a `ReleaseDeployJob`. The database permits at most one pending/running job. Long deployment and restart work must stay outside the Django request thread.
+Because `/srv/animeimages` is owned by `ubuntu:ubuntu` while Gunicorn runs as `www-data`, configure the exact production repository as a system-level Git safe directory before enabling the page:
+
+```bash
+sudo git config --system --add safe.directory /srv/animeimages
+```
+
+Do not use a wildcard safe-directory entry and do not change repository ownership for the Web process. If this setting is missing, the release page reports the `dubious ownership` error and remains unable to create a deployment job.
+
+Creating a main deployment reads the locally cached `origin/main`, stores its exact commit in `job.target_sha`, and records a `ReleaseDeployJob`. It does not fetch remote refs in the Web request. The database permits at most one pending/running job. Long deployment and restart work must stay outside the Django request thread.
 
 Release Management v1 is record-only by default after merge and the first production deployment. The production environment example leaves the executor empty. Without an executor, a release request is recorded as `pending` and does not deploy or restart anything automatically:
 
