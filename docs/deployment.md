@@ -267,20 +267,22 @@ XHS_DEFAULT_SERVER_SAVE_DIR=/Users/your-name/Downloads/xhs
 
 ## Admin Release Management
 
-`/admin/release-management/` shows the current Git branch, commit, matching tag, `origin/main`, latest tags, readiness status, and recent release deployment jobs.
+`/admin/release-management/` shows the current Git branch, commit, matching tag, the locally cached `origin/main`, latest tags, readiness status, and recent release deployment jobs. Release Management v1 only deploys `main`; tags remain visible for planning and audit, but the UI and POST endpoint do not create tag deployment jobs.
 
-The admin page may run `git fetch --tags origin` when opened. Control this with:
+Ordinary GET requests do not access GitHub by default. An authorized operator can use the explicit refresh action, or deliberately opt in to fetch-on-view:
 
 ```text
-RELEASE_MANAGEMENT_FETCH_ON_VIEW=True
+RELEASE_MANAGEMENT_FETCH_ON_VIEW=False
 RELEASE_MANAGEMENT_GIT_TIMEOUT_SECONDS=6
 ```
 
-Creating a deployment from the admin page records a `ReleaseDeployJob`. It must not run long deployment or restart work in the Django request thread. To trigger execution, configure a small external executor command such as a systemd one-shot starter:
+Creating a main deployment first fetches `origin/main`, stores its exact commit in `job.target_sha`, and records a `ReleaseDeployJob`. The database permits at most one pending/running job. Long deployment and restart work must stay outside the Django request thread. Configure a non-blocking systemd one-shot submission command:
 
 ```text
-RELEASE_MANAGEMENT_EXECUTOR_COMMAND="/usr/bin/sudo /bin/systemctl start animeimages-deploy@{job_id}.service"
+RELEASE_MANAGEMENT_EXECUTOR_COMMAND="/usr/bin/sudo /bin/systemctl start --no-block animeimages-deploy@{job_id}.service"
 ```
+
+`--no-block` is required. Release Management v1 rejects executor commands that are not `systemctl start --no-block` submissions, including direct `deploy.sh` commands. The Django request waits only for systemd to accept the unit job; it never waits for deployment, migration, restart, or health check completion.
 
 The external service should run:
 
@@ -292,8 +294,10 @@ python manage.py run_release_deploy_job --job-id <job_id>
 
 Current execution support is intentionally conservative:
 
-- `main` deployments can run through `scripts/deploy.sh`.
-- tag/commit jobs are recorded for audit and future rollback workflow, but execution must stay disabled until the deploy script supports safe target refs.
+- Only `main` deployment jobs can be created or executed in v1.
+- The executor passes `DEPLOY_TARGET_SHA=job.target_sha` to `scripts/deploy.sh`.
+- After fetch, `deploy.sh` verifies that the SHA is reachable from `origin/main`, resets to that exact SHA, and fails unless the final `HEAD` equals `job.target_sha`.
+- Tag/commit switching remains disabled until migration-aware rollback policy and safe target selection are implemented.
 - migration rollback is not automatic. Operators must review migration safety before switching to an older tag or commit.
 
 ## Rollback

@@ -5,6 +5,7 @@ import subprocess
 from dataclasses import dataclass
 
 from django.conf import settings
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from ..models import (
@@ -16,7 +17,12 @@ from ..models import (
 
 SAFE_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@+-]{0,159}$")
 SAFE_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
+FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40,64}$")
 OUTPUT_TAIL_CHARS = 12000
+ACTIVE_JOB_STATUSES = (
+    ReleaseDeployJobStatus.PENDING,
+    ReleaseDeployJobStatus.RUNNING,
+)
 
 
 @dataclass(frozen=True)
@@ -52,11 +58,24 @@ def env_str(name, default=""):
 
 
 def release_fetch_on_view():
-    return env_bool("RELEASE_MANAGEMENT_FETCH_ON_VIEW", True)
+    return env_bool("RELEASE_MANAGEMENT_FETCH_ON_VIEW", False)
 
 
 def release_git_timeout_seconds():
     return env_float("RELEASE_MANAGEMENT_GIT_TIMEOUT_SECONDS", 6.0)
+
+
+def release_trigger_timeout_seconds():
+    return env_float("RELEASE_MANAGEMENT_TRIGGER_TIMEOUT_SECONDS", 5.0)
+
+
+def release_deploy_timeout_seconds():
+    return env_float("RELEASE_MANAGEMENT_DEPLOY_TIMEOUT_SECONDS", 900.0)
+
+
+def release_deploy_script():
+    configured = env_str("RELEASE_MANAGEMENT_DEPLOY_SCRIPT", "")
+    return configured or f"{release_base_dir()}/scripts/deploy.sh"
 
 
 def release_base_dir():
@@ -146,6 +165,23 @@ def resolve_target_sha(target_type, target_ref):
     return result.stdout if result.ok else ""
 
 
+def fetch_origin_main_sha():
+    fetch_result = run_git([
+        "fetch",
+        "origin",
+        "+refs/heads/main:refs/remotes/origin/main",
+    ])
+    if not fetch_result.ok:
+        raise ValueError(f"无法刷新 origin/main：{fetch_result.stderr or 'git fetch failed'}")
+    target_sha = resolve_target_sha(ReleaseDeployTargetType.MAIN, "main")
+    if not FULL_SHA_RE.fullmatch(target_sha):
+        raise ValueError("无法解析 origin/main 的精确 commit SHA。")
+    reachable = run_git(["merge-base", "--is-ancestor", target_sha, "origin/main"])
+    if not reachable.ok:
+        raise ValueError("目标 commit 不是 origin/main 的可达提交。")
+    return target_sha.lower()
+
+
 def build_release_state(*, fetch_remote=False):
     fetch_result = None
     if fetch_remote:
@@ -223,44 +259,104 @@ def build_command_plan(job):
         "notes": [
             "Django admin only records and triggers a deployment job.",
             "The actual deploy/restart must run outside the request thread.",
-            "Tag/commit switching requires deploy script support before execution is enabled.",
+            "Release Management v1 only supports a pinned origin/main commit.",
         ],
     }
 
 
 def create_release_deploy_job(*, request, target_type, target_ref, notes=""):
     target_type = str(target_type or "").strip()
+    if target_type != ReleaseDeployTargetType.MAIN:
+        raise ValueError("Release Management v1 仅支持 main 部署，Tag 版本切换暂未开放。")
     target_ref = validate_target_ref(target_type, target_ref)
-    target_sha = resolve_target_sha(target_type, target_ref)
-    if not target_sha:
-        raise ValueError("无法解析目标版本，请先检查远程更新或 tag 是否存在。")
-    active_job = ReleaseDeployJob.objects.filter(
-        status__in=(ReleaseDeployJobStatus.PENDING, ReleaseDeployJobStatus.RUNNING),
-    ).first()
+    active_job = ReleaseDeployJob.objects.filter(status__in=ACTIVE_JOB_STATUSES).first()
     if active_job is not None:
         raise ValueError(f"已有未完成部署任务 #{active_job.pk}。")
+    target_sha = fetch_origin_main_sha()
 
     user = getattr(request, "user", None)
-    job = ReleaseDeployJob.objects.create(
-        status=ReleaseDeployJobStatus.PENDING,
-        target_type=target_type,
-        target_ref=target_ref,
-        target_sha=target_sha,
-        request_id=str(getattr(request, "request_id", "") or ""),
-        actor_id=getattr(user, "pk", None),
-        actor_username=str(getattr(user, "get_username", lambda: "")() or ""),
-        actor_is_superuser=bool(getattr(user, "is_superuser", False)),
-        notes=notes,
-    )
+    try:
+        with transaction.atomic():
+            job = ReleaseDeployJob.objects.create(
+                execution_slot=1,
+                status=ReleaseDeployJobStatus.PENDING,
+                target_type=target_type,
+                target_ref=target_ref,
+                target_sha=target_sha,
+                request_id=str(getattr(request, "request_id", "") or ""),
+                actor_id=getattr(user, "pk", None),
+                actor_username=str(getattr(user, "get_username", lambda: "")() or ""),
+                actor_is_superuser=bool(getattr(user, "is_superuser", False)),
+                notes=notes,
+            )
+    except IntegrityError as error:
+        active_job = ReleaseDeployJob.objects.filter(status__in=ACTIVE_JOB_STATUSES).first()
+        if active_job is not None:
+            raise ValueError(f"已有未完成部署任务 #{active_job.pk}。") from error
+        raise
     job.command_plan = build_command_plan(job)
     job.save(update_fields=("command_plan", "updated_at"))
     return job
 
 
+def cancel_pending_release_deploy_job(job_id):
+    now = timezone.now()
+    return ReleaseDeployJob.objects.filter(
+        pk=job_id,
+        status=ReleaseDeployJobStatus.PENDING,
+    ).update(
+        status=ReleaseDeployJobStatus.CANCELLED,
+        finished_at=now,
+        error_message="cancelled by admin",
+        updated_at=now,
+    )
+
+
+def claim_pending_release_deploy_job(job_id):
+    now = timezone.now()
+    claimed = ReleaseDeployJob.objects.filter(
+        pk=job_id,
+        status=ReleaseDeployJobStatus.PENDING,
+    ).update(
+        status=ReleaseDeployJobStatus.RUNNING,
+        started_at=now,
+        updated_at=now,
+    )
+    if not claimed:
+        return None
+    return ReleaseDeployJob.objects.get(pk=job_id)
+
+
+def mark_executor_trigger_failed(job, error_message):
+    now = timezone.now()
+    message = (error_message or "release executor trigger failed")[:300]
+    ReleaseDeployJob.objects.filter(
+        pk=job.pk,
+        status=ReleaseDeployJobStatus.PENDING,
+    ).update(
+        status=ReleaseDeployJobStatus.FAILED,
+        finished_at=now,
+        error_message=message,
+        updated_at=now,
+    )
+    job.refresh_from_db()
+
+
 def trigger_release_executor(job):
     command = (job.command_plan or {}).get("trigger_command") or []
     if not command:
-        return GitResult(ok=False, stderr="release executor is not configured", returncode=127)
+        result = GitResult(ok=False, stderr="release executor is not configured", returncode=127)
+        mark_executor_trigger_failed(job, result.stderr)
+        return result
+    uses_systemctl_start = any(os.path.basename(part) == "systemctl" for part in command) and "start" in command
+    if not uses_systemctl_start or "--no-block" not in command:
+        result = GitResult(
+            ok=False,
+            stderr="release executor must use systemctl start --no-block",
+            returncode=2,
+        )
+        mark_executor_trigger_failed(job, result.stderr)
+        return result
     try:
         completed = subprocess.run(
             command,
@@ -268,33 +364,34 @@ def trigger_release_executor(job):
             check=False,
             capture_output=True,
             text=True,
-            timeout=env_float("RELEASE_MANAGEMENT_TRIGGER_TIMEOUT_SECONDS", 5.0),
+            timeout=release_trigger_timeout_seconds(),
         )
     except (OSError, subprocess.TimeoutExpired) as error:
-        return GitResult(ok=False, stderr=f"{type(error).__name__}: {error}", returncode=124)
-    return GitResult(
+        result = GitResult(ok=False, stderr=f"{type(error).__name__}: {error}", returncode=124)
+        mark_executor_trigger_failed(job, result.stderr)
+        return result
+    result = GitResult(
         ok=completed.returncode == 0,
         stdout=(completed.stdout or "").strip(),
         stderr=(completed.stderr or "").strip(),
         returncode=completed.returncode,
     )
+    if not result.ok:
+        mark_executor_trigger_failed(job, result.stderr or f"release executor exited with {result.returncode}")
+    return result
 
 
 def execute_release_deploy_job(job):
-    job.status = ReleaseDeployJobStatus.RUNNING
-    job.started_at = timezone.now()
-    job.save(update_fields=("status", "started_at", "updated_at"))
-
-    if job.target_type != ReleaseDeployTargetType.MAIN:
+    if job.status != ReleaseDeployJobStatus.RUNNING:
+        raise ValueError("release deploy job must be claimed before execution")
+    if job.target_type != ReleaseDeployTargetType.MAIN or not FULL_SHA_RE.fullmatch(job.target_sha):
         job.status = ReleaseDeployJobStatus.FAILED
         job.finished_at = timezone.now()
-        job.error_message = "tag/commit deploy execution is not enabled until deploy.sh supports target refs"
+        job.error_message = "v1 requires a main job with an exact target SHA"
         job.save(update_fields=("status", "finished_at", "error_message", "updated_at"))
         return job
 
-    script_path = env_str("RELEASE_MANAGEMENT_DEPLOY_SCRIPT", "")
-    if not script_path:
-        script_path = f"{release_base_dir()}/scripts/deploy.sh"
+    script_path = release_deploy_script()
     try:
         completed = subprocess.run(
             [script_path],
@@ -302,21 +399,26 @@ def execute_release_deploy_job(job):
             check=False,
             capture_output=True,
             text=True,
-            timeout=env_float("RELEASE_MANAGEMENT_DEPLOY_TIMEOUT_SECONDS", 900.0),
+            timeout=release_deploy_timeout_seconds(),
             env={
                 **os.environ,
                 "APP_DIR": release_base_dir(),
                 "DEPLOY_BRANCH": "main",
+                "DEPLOY_TARGET_SHA": job.target_sha,
             },
         )
         job.stdout_tail = (completed.stdout or "")[-OUTPUT_TAIL_CHARS:]
         job.stderr_tail = (completed.stderr or "")[-OUTPUT_TAIL_CHARS:]
-        job.status = (
-            ReleaseDeployJobStatus.SUCCEEDED
-            if completed.returncode == 0
-            else ReleaseDeployJobStatus.FAILED
-        )
-        if completed.returncode != 0:
+        if completed.returncode == 0:
+            deployed_head = run_git(["rev-parse", "HEAD"])
+            if not deployed_head.ok or deployed_head.stdout.lower() != job.target_sha.lower():
+                job.status = ReleaseDeployJobStatus.FAILED
+                job.error_message = "deployed HEAD does not match job.target_sha"
+            else:
+                job.status = ReleaseDeployJobStatus.SUCCEEDED
+                job.health_check_status = "ready"
+        else:
+            job.status = ReleaseDeployJobStatus.FAILED
             job.error_message = f"deploy script exited with {completed.returncode}"
     except (OSError, subprocess.TimeoutExpired) as error:
         job.status = ReleaseDeployJobStatus.FAILED
@@ -329,6 +431,7 @@ def execute_release_deploy_job(job):
             "stdout_tail",
             "stderr_tail",
             "error_message",
+            "health_check_status",
             "updated_at",
         )
     )

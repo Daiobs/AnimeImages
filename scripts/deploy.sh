@@ -6,6 +6,7 @@ APP_DIR="${APP_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 DEPLOY_USER="${DEPLOY_USER:-ubuntu}"
 DEPLOY_GROUP="${DEPLOY_GROUP:-$DEPLOY_USER}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
+DEPLOY_TARGET_SHA="${DEPLOY_TARGET_SHA:-}"
 SERVICE_NAME="${SERVICE_NAME:-animeimages}"
 ENV_FILE="${ENV_FILE:-$APP_DIR/.env.production}"
 PYTHON_BIN="${PYTHON_BIN:-$APP_DIR/.venv/bin/python}"
@@ -114,6 +115,40 @@ load_environment() {
     set +a
 }
 
+resolve_deploy_target_sha() {
+    local target_sha="$DEPLOY_TARGET_SHA"
+
+    run git fetch origin "+refs/heads/$DEPLOY_BRANCH:refs/remotes/origin/$DEPLOY_BRANCH"
+    cleanup_stale_git_lock
+    if [[ -z "$target_sha" ]]; then
+        target_sha="$(git rev-parse "origin/$DEPLOY_BRANCH")" || fail "could not resolve origin/$DEPLOY_BRANCH"
+    fi
+    if [[ ! "$target_sha" =~ ^[0-9a-fA-F]{40,64}$ ]]; then
+        fail "DEPLOY_TARGET_SHA must be a full commit SHA"
+    fi
+    if ! git cat-file -e "${target_sha}^{commit}" >/dev/null 2>&1; then
+        fail "DEPLOY_TARGET_SHA does not resolve to a commit: $target_sha"
+    fi
+    if ! git merge-base --is-ancestor "$target_sha" "origin/$DEPLOY_BRANCH"; then
+        fail "DEPLOY_TARGET_SHA is not reachable from origin/$DEPLOY_BRANCH: $target_sha"
+    fi
+    DEPLOY_TARGET_SHA="$(git rev-parse "${target_sha}^{commit}")"
+    log "pinned deployment target: $DEPLOY_TARGET_SHA"
+}
+
+checkout_deploy_target() {
+    local deployed_head=""
+
+    run git reset --hard "$DEPLOY_TARGET_SHA"
+    if [[ "$DRY_RUN" == "1" ]]; then
+        return 0
+    fi
+    deployed_head="$(git rev-parse HEAD)" || fail "could not verify deployed HEAD"
+    if [[ "$deployed_head" != "$DEPLOY_TARGET_SHA" ]]; then
+        fail "deployed HEAD $deployed_head does not match target $DEPLOY_TARGET_SHA"
+    fi
+}
+
 main() {
     require_deploy_user
     require_repo
@@ -121,16 +156,15 @@ main() {
     cleanup_stale_git_lock
     run_pre_deploy_check
 
-    run git fetch origin "$DEPLOY_BRANCH"
-    cleanup_stale_git_lock
-    run git reset --hard "origin/$DEPLOY_BRANCH"
+    resolve_deploy_target_sha
+    checkout_deploy_target
 
     load_environment
     run "$PIP_BIN" install -r requirements.txt
     run "$PYTHON_BIN" manage.py migrate
     run "$PYTHON_BIN" manage.py collectstatic --noinput
     run env APP_DIR="$APP_DIR" SERVICE_NAME="$SERVICE_NAME" "$APP_DIR/scripts/restart.sh"
-    log "deployment finished"
+    log "deployment finished at $DEPLOY_TARGET_SHA"
 }
 
 main "$@"

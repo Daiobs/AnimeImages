@@ -825,6 +825,7 @@ class ReleaseDeployTargetType(models.TextChoices):
 
 
 class ReleaseDeployJob(models.Model):
+    execution_slot = models.PositiveSmallIntegerField(default=1, editable=False)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
     started_at = models.DateTimeField(null=True, blank=True)
@@ -860,6 +861,17 @@ class ReleaseDeployJob(models.Model):
             models.Index(fields=("status", "created_at")),
             models.Index(fields=("target_type", "target_ref")),
             models.Index(fields=("actor_username", "created_at")),
+        )
+        constraints = (
+            models.CheckConstraint(
+                condition=models.Q(execution_slot=1),
+                name="release_deploy_slot_is_one",
+            ),
+            models.UniqueConstraint(
+                fields=("execution_slot",),
+                condition=models.Q(status__in=("pending", "running")),
+                name="uniq_active_release_deploy_slot",
+            ),
         )
         verbose_name = "发布部署任务"
         verbose_name_plural = "发布部署任务"

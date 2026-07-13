@@ -14,6 +14,7 @@ class Migration(migrations.Migration):
             name='ReleaseDeployJob',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
+                ('execution_slot', models.PositiveSmallIntegerField(default=1, editable=False)),
                 ('created_at', models.DateTimeField(auto_now_add=True, db_index=True)),
                 ('updated_at', models.DateTimeField(auto_now=True)),
                 ('started_at', models.DateTimeField(blank=True, null=True)),
@@ -38,6 +39,7 @@ class Migration(migrations.Migration):
                 'verbose_name_plural': '发布部署任务',
                 'ordering': ('-created_at',),
                 'indexes': [models.Index(fields=['status', 'created_at'], name='xhs_downloa_status_4e261a_idx'), models.Index(fields=['target_type', 'target_ref'], name='xhs_downloa_target__c7b18a_idx'), models.Index(fields=['actor_username', 'created_at'], name='xhs_downloa_actor_u_170eaf_idx')],
+                'constraints': [models.CheckConstraint(condition=models.Q(('execution_slot', 1)), name='release_deploy_slot_is_one'), models.UniqueConstraint(condition=models.Q(('status__in', ('pending', 'running'))), fields=('execution_slot',), name='uniq_active_release_deploy_slot')],
             },
         ),
     ]

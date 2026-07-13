@@ -1,11 +1,11 @@
 # Current Version Status
 
-Date: 2026-07-08
+Date: 2026-07-13
 
 Main baseline:
 
 ```text
-c732e72 Fix batch parse ultra default and runtime controls (#11)
+494b191 Document production follow-up and batch provider labels (#16)
 ```
 
 Production site:
@@ -27,6 +27,7 @@ https://download.cosflow.icu/
 - `/batch/` supports batch parsing with runtime settings, limited parallelism, and staff-only/raw-link controls.
 - yt-dlp and gallery-dl are optional generic long-tail providers behind capability, runtime, platform and safety gates.
 - Admin UI includes Provider settings, health tests, logs center, policy center, download runtime settings, and batch parse runtime settings.
+- Admin Release Management v1 is being hardened on `codex/admin-release-management-v1`: it is main-only, pins an exact target SHA, and delegates execution to a non-blocking external systemd job.
 - TikHub and older native-enhanced experiments remain historical/diagnostic only; they are not the active Douyin ultra path.
 
 ## Current Route Map
@@ -164,6 +165,18 @@ Examples:
 - Batch parse runtime: `/admin/xhs_download/batchparseruntimesetting/`
 - Download limits/runtime: `/admin/console/`
 
+## Admin Release Management v1
+
+The release panel is intentionally narrow:
+
+- It displays current Git state, the locally cached `origin/main`, tags, readiness, and deployment history.
+- Ordinary GET requests do not fetch GitHub by default (`RELEASE_MANAGEMENT_FETCH_ON_VIEW=False`).
+- Creating a main job fetches `origin/main` and records its exact `job.target_sha`.
+- A database constraint permits only one `pending`/`running` job, while execution and cancellation use atomic status transitions.
+- A direct systemd executor must use `systemctl start --no-block ...`; Django only submits the unit job.
+- `deploy.sh` must deploy `job.target_sha`, verify it is reachable from `origin/main`, and verify final `HEAD == job.target_sha`.
+- Tags remain visible, but v1 does not create or execute Tag/commit switching jobs.
+
 ## Health And Smoke Commands
 
 Core checks:
@@ -199,14 +212,12 @@ curl -i https://download.cosflow.icu/health/ready/
 5. Some historical docs describe policy/autonomous/KuKuTool/TikHub plans that are not the active production path. Use `docs/codex-handoff.md` and this file as the source of truth.
 6. Unapplied migrations are the most common cause of admin `OperationalError`.
 7. Batch Douyin ultra may occasionally fall back to `mobile_feed` / 本地解析 even when the same link can return ultra-HD in single-link testing. Treat this as an observation item until production feedback or log volume shows it is frequent enough to justify lowering ultra-HD batch concurrency or adding a targeted retry.
+8. Release Management v1 does not provide migration-aware Tag rollback. Do not treat the visible Tag list as an enabled version-switch workflow.
 
 ## Next Priorities
 
 1. Keep documentation current after major PRs; update this file and `docs/codex-handoff.md`.
-2. Continue Provider Strategy v1 stabilization:
-   - TianTianJieXi smoke fixtures.
-   - KuKuTool fallback verification.
-   - Batch parse public/staff product rules.
-3. Measure browser blob / browser-first / server attachment speed on production and decide the default per platform.
-4. Decide when a durable queue is required for YouTube merge or large provider downloads.
-5. Expand long-tail platforms only after Provider Health Tests and download strategy are reliable.
+2. Review the existing `xhs_download/services/batch_parse/` boundary from PR #13 and remove residual wrappers from `views.py`; do not restart the extraction from zero.
+3. Move batch-page logic out of `static/js/app.js` into a focused module while preserving `/batch/` behavior.
+4. Finish Release Management v1 production wiring and smoke validation for pinned `main` deployment. Keep Tag/commit switching disabled.
+5. Keep Provider Strategy v1 in smoke/stabilization mode; defer new provider/platform expansion until the structural work is settled.

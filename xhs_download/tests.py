@@ -2,6 +2,7 @@ from io import BytesIO, StringIO
 from datetime import datetime, timezone as datetime_timezone
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
@@ -14,6 +15,8 @@ from django.contrib.auth.models import Permission, User
 from django.core.cache import cache
 from django.core.checks import Error as CheckError, Warning as CheckWarning, run_checks
 from django.core.management import call_command
+from django.core.management.base import CommandError
+from django.db import IntegrityError, transaction
 from django.template.loader import render_to_string
 from django.test import Client, RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
@@ -11746,7 +11749,7 @@ class ProductionControlPlaneTests(TestCase):
         self.assertEqual(client.get("/admin/logs/").status_code, 200)
         self.assertEqual(client.get("/admin/policy-center/").status_code, 200)
 
-    @override_settings(RELEASE_MANAGEMENT_FETCH_ON_VIEW=False)
+    @patch.dict(os.environ, {"RELEASE_MANAGEMENT_FETCH_ON_VIEW": "False"})
     @patch("xhs_download.views.get_runtime_readiness")
     @patch("xhs_download.views.build_release_state")
     def test_release_management_permissions_and_page(self, build_state, readiness):
@@ -11766,11 +11769,19 @@ class ProductionControlPlaneTests(TestCase):
         self.assertContains(staff_response, "有新版本可部署")
         self.assert_sidebar_active_item(staff_response, "版本发布")
         self.assertContains(super_client.get("/admin/release-management/"), "创建 main 部署任务")
+        self.assertContains(super_client.get("/admin/release-management/"), "版本切换暂未开放")
+        build_state.assert_called_with(fetch_remote=False)
 
-    @override_settings(RELEASE_MANAGEMENT_FETCH_ON_VIEW=False, RELEASE_MANAGEMENT_EXECUTOR_COMMAND="")
-    @patch("xhs_download.services.release_management.resolve_target_sha")
-    def test_release_management_creates_main_job_without_executor(self, resolve_sha):
-        resolve_sha.return_value = "b" * 40
+    @patch.dict(
+        os.environ,
+        {
+            "RELEASE_MANAGEMENT_FETCH_ON_VIEW": "False",
+            "RELEASE_MANAGEMENT_EXECUTOR_COMMAND": "",
+        },
+    )
+    @patch("xhs_download.services.release_management.fetch_origin_main_sha")
+    def test_release_management_creates_main_job_without_executor(self, fetch_main_sha):
+        fetch_main_sha.return_value = "b" * 40
         client = Client()
         client.force_login(self.superuser)
 
@@ -11787,6 +11798,7 @@ class ProductionControlPlaneTests(TestCase):
         self.assertEqual(job.target_sha, "b" * 40)
         self.assertFalse(job.command_plan["executor_configured"])
         self.assertEqual(job.actor_username, "control-root")
+        fetch_main_sha.assert_called_once_with()
 
         cancel = client.post(
             "/admin/release-management/",
@@ -11795,32 +11807,29 @@ class ProductionControlPlaneTests(TestCase):
         self.assertEqual(cancel.status_code, 302)
         job.refresh_from_db()
         self.assertEqual(job.status, ReleaseDeployJobStatus.CANCELLED)
+        self.assertIsNotNone(job.finished_at)
 
-    @override_settings(RELEASE_MANAGEMENT_FETCH_ON_VIEW=False, RELEASE_MANAGEMENT_EXECUTOR_COMMAND="")
-    @patch("xhs_download.services.release_management.resolve_target_sha")
-    def test_release_management_creates_tag_job_and_rejects_unsafe_tag(self, resolve_sha):
-        resolve_sha.return_value = "c" * 40
+    @patch.dict(
+        os.environ,
+        {
+            "RELEASE_MANAGEMENT_FETCH_ON_VIEW": "False",
+            "RELEASE_MANAGEMENT_EXECUTOR_COMMAND": "",
+        },
+    )
+    def test_release_management_rejects_tag_job(self):
         client = Client()
         client.force_login(self.superuser)
 
-        ok = client.post(
+        response = client.post(
             "/admin/release-management/",
             data={"action": "deploy_tag", "target_ref": "v1.0.0"},
+            follow=True,
         )
-        self.assertEqual(ok.status_code, 302)
-        job = ReleaseDeployJob.objects.get()
-        self.assertEqual(job.target_type, ReleaseDeployTargetType.TAG)
-        self.assertEqual(job.target_ref, "v1.0.0")
-
-        ReleaseDeployJob.objects.all().delete()
-        bad = client.post(
-            "/admin/release-management/",
-            data={"action": "deploy_tag", "target_ref": "bad tag;rm -rf /"},
-        )
-        self.assertEqual(bad.status_code, 302)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Tag 版本切换暂未开放")
         self.assertEqual(ReleaseDeployJob.objects.count(), 0)
 
-    @override_settings(RELEASE_MANAGEMENT_FETCH_ON_VIEW=False)
+    @patch.dict(os.environ, {"RELEASE_MANAGEMENT_FETCH_ON_VIEW": "False"})
     def test_release_management_post_requires_add_permission(self):
         client = Client()
         client.force_login(self.staff)
@@ -11830,6 +11839,317 @@ class ProductionControlPlaneTests(TestCase):
 
         self.assertEqual(response.status_code, 404)
         self.assertEqual(ReleaseDeployJob.objects.count(), 0)
+
+    @patch.dict(os.environ, {"RELEASE_MANAGEMENT_FETCH_ON_VIEW": "False"})
+    @patch("xhs_download.views.get_runtime_readiness", return_value={"status": "ready", "ready": True})
+    @patch("xhs_download.views.build_release_state")
+    def test_release_management_refresh_is_explicit(self, build_state, _readiness):
+        build_state.return_value = self.release_state_fixture()
+        client = Client()
+        client.force_login(self.superuser)
+
+        client.get("/admin/release-management/")
+        build_state.assert_called_with(fetch_remote=False)
+
+        client.post("/admin/release-management/", data={"action": "refresh_remote"})
+        build_state.assert_called_with(fetch_remote=True)
+
+    @patch.dict(
+        os.environ,
+        {
+            "RELEASE_MANAGEMENT_FETCH_ON_VIEW": "True",
+            "RELEASE_MANAGEMENT_GIT_TIMEOUT_SECONDS": "1.25",
+            "RELEASE_MANAGEMENT_TRIGGER_TIMEOUT_SECONDS": "0.75",
+            "RELEASE_MANAGEMENT_DEPLOY_TIMEOUT_SECONDS": "42",
+            "RELEASE_MANAGEMENT_EXECUTOR_COMMAND": "/bin/systemctl start --no-block animeimages-deploy@{job_id}.service",
+            "RELEASE_MANAGEMENT_DEPLOY_SCRIPT": "/opt/animeimages/deploy.sh",
+        },
+    )
+    def test_release_management_config_reads_environment(self):
+        from xhs_download.services import release_management
+
+        self.assertTrue(release_management.release_fetch_on_view())
+        self.assertEqual(release_management.release_git_timeout_seconds(), 1.25)
+        self.assertEqual(release_management.release_trigger_timeout_seconds(), 0.75)
+        self.assertEqual(release_management.release_deploy_timeout_seconds(), 42.0)
+        self.assertEqual(release_management.release_deploy_script(), "/opt/animeimages/deploy.sh")
+        self.assertEqual(
+            release_management.release_executor_command(),
+            [
+                "/bin/systemctl",
+                "start",
+                "--no-block",
+                "animeimages-deploy@{job_id}.service",
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_release_management_fetch_on_view_defaults_false(self):
+        from xhs_download.services.release_management import release_fetch_on_view
+
+        self.assertFalse(release_fetch_on_view())
+
+    @patch("xhs_download.services.release_management.run_git")
+    def test_fetch_origin_main_returns_reachable_exact_sha(self, run_git):
+        from xhs_download.services.release_management import GitResult, fetch_origin_main_sha
+
+        target_sha = "A" * 40
+        run_git.side_effect = (
+            GitResult(ok=True),
+            GitResult(ok=True, stdout=target_sha),
+            GitResult(ok=True),
+        )
+
+        self.assertEqual(fetch_origin_main_sha(), target_sha.lower())
+        self.assertEqual(
+            run_git.call_args_list[0].args[0],
+            ["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
+        )
+        self.assertEqual(run_git.call_args_list[1].args[0], ["rev-parse", "origin/main"])
+        self.assertEqual(
+            run_git.call_args_list[2].args[0],
+            ["merge-base", "--is-ancestor", target_sha, "origin/main"],
+        )
+
+    @patch.dict(os.environ, {"RELEASE_MANAGEMENT_TRIGGER_TIMEOUT_SECONDS": "0.25"})
+    @patch("xhs_download.services.release_management.subprocess.run")
+    def test_trigger_release_executor_submits_non_blocking_job_only(self, run_process):
+        from xhs_download.services import release_management
+
+        job = ReleaseDeployJob.objects.create(
+            target_type=ReleaseDeployTargetType.MAIN,
+            target_ref="main",
+            target_sha="a" * 40,
+            command_plan={
+                "trigger_command": [
+                    "/bin/systemctl",
+                    "start",
+                    "--no-block",
+                    "animeimages-deploy@1.service",
+                ],
+            },
+        )
+        run_process.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        with patch.object(release_management, "execute_release_deploy_job") as execute_job:
+            result = release_management.trigger_release_executor(job)
+
+        self.assertTrue(result.ok)
+        execute_job.assert_not_called()
+        command = run_process.call_args.args[0]
+        self.assertEqual(command[1:3], ["start", "--no-block"])
+        self.assertNotIn("deploy.sh", " ".join(command))
+        self.assertEqual(run_process.call_args.kwargs["timeout"], 0.25)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ReleaseDeployJobStatus.PENDING)
+
+    @patch.dict(os.environ, {"RELEASE_MANAGEMENT_TRIGGER_TIMEOUT_SECONDS": "0.01"})
+    @patch("xhs_download.services.release_management.subprocess.run")
+    def test_trigger_release_executor_timeout_finishes_trigger_job(self, run_process):
+        from xhs_download.services import release_management
+
+        job = ReleaseDeployJob.objects.create(
+            target_type=ReleaseDeployTargetType.MAIN,
+            target_ref="main",
+            target_sha="a" * 40,
+            command_plan={
+                "trigger_command": [
+                    "/bin/systemctl",
+                    "start",
+                    "--no-block",
+                    "animeimages-deploy@1.service",
+                ],
+            },
+        )
+        run_process.side_effect = subprocess.TimeoutExpired(cmd="systemctl", timeout=0.01)
+
+        result = release_management.trigger_release_executor(job)
+
+        self.assertFalse(result.ok)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ReleaseDeployJobStatus.FAILED)
+        self.assertIsNotNone(job.finished_at)
+        self.assertIn("TimeoutExpired", job.error_message)
+        self.assertIsNone(job.started_at)
+        self.assertEqual(job.stdout_tail, "")
+
+    def test_trigger_release_executor_rejects_blocking_systemctl_config(self):
+        from xhs_download.services.release_management import trigger_release_executor
+
+        job = ReleaseDeployJob.objects.create(
+            target_type=ReleaseDeployTargetType.MAIN,
+            target_ref="main",
+            target_sha="a" * 40,
+            command_plan={
+                "trigger_command": [
+                    "/usr/bin/sudo",
+                    "/bin/systemctl",
+                    "start",
+                    "animeimages-deploy@1.service",
+                ],
+            },
+        )
+
+        with patch("xhs_download.services.release_management.subprocess.run") as run_process:
+            result = trigger_release_executor(job)
+
+        self.assertFalse(result.ok)
+        self.assertIn("--no-block", result.stderr)
+        run_process.assert_not_called()
+        job.refresh_from_db()
+        self.assertEqual(job.status, ReleaseDeployJobStatus.FAILED)
+        self.assertIsNotNone(job.finished_at)
+
+    def test_trigger_release_executor_rejects_direct_deploy_script(self):
+        from xhs_download.services.release_management import trigger_release_executor
+
+        job = ReleaseDeployJob.objects.create(
+            target_type=ReleaseDeployTargetType.MAIN,
+            target_ref="main",
+            target_sha="a" * 40,
+            command_plan={"trigger_command": ["/srv/animeimages/scripts/deploy.sh"]},
+        )
+
+        with patch("xhs_download.services.release_management.subprocess.run") as run_process:
+            result = trigger_release_executor(job)
+
+        self.assertFalse(result.ok)
+        self.assertIn("systemctl start --no-block", result.stderr)
+        run_process.assert_not_called()
+        job.refresh_from_db()
+        self.assertEqual(job.status, ReleaseDeployJobStatus.FAILED)
+        self.assertIsNotNone(job.finished_at)
+
+    @patch.dict(os.environ, {"RELEASE_MANAGEMENT_EXECUTOR_COMMAND": ""})
+    @patch("xhs_download.services.release_management.fetch_origin_main_sha", return_value="b" * 40)
+    def test_release_job_double_request_keeps_one_active_job(self, fetch_main_sha):
+        client = Client()
+        client.force_login(self.superuser)
+
+        first = client.post("/admin/release-management/", data={"action": "deploy_main"})
+        second = client.post("/admin/release-management/", data={"action": "deploy_main"}, follow=True)
+
+        self.assertEqual(first.status_code, 302)
+        self.assertEqual(second.status_code, 200)
+        self.assertContains(second, "已有未完成部署任务")
+        self.assertEqual(
+            ReleaseDeployJob.objects.filter(
+                status__in=(ReleaseDeployJobStatus.PENDING, ReleaseDeployJobStatus.RUNNING),
+            ).count(),
+            1,
+        )
+        fetch_main_sha.assert_called_once_with()
+
+    def test_release_job_database_constraint_allows_one_active_slot(self):
+        ReleaseDeployJob.objects.create(
+            target_type=ReleaseDeployTargetType.MAIN,
+            target_ref="main",
+            target_sha="a" * 40,
+        )
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            ReleaseDeployJob.objects.create(
+                target_type=ReleaseDeployTargetType.MAIN,
+                target_ref="main",
+                target_sha="b" * 40,
+            )
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            ReleaseDeployJob.objects.create(
+                execution_slot=2,
+                status=ReleaseDeployJobStatus.FAILED,
+                target_type=ReleaseDeployTargetType.MAIN,
+                target_ref="main",
+                target_sha="c" * 40,
+            )
+
+    def test_release_job_claim_and_cancel_are_atomic(self):
+        from xhs_download.services.release_management import (
+            cancel_pending_release_deploy_job,
+            claim_pending_release_deploy_job,
+        )
+
+        job = ReleaseDeployJob.objects.create(
+            target_type=ReleaseDeployTargetType.MAIN,
+            target_ref="main",
+            target_sha="a" * 40,
+        )
+
+        claimed = claim_pending_release_deploy_job(job.pk)
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed.status, ReleaseDeployJobStatus.RUNNING)
+        self.assertIsNone(claim_pending_release_deploy_job(job.pk))
+        self.assertEqual(cancel_pending_release_deploy_job(job.pk), 0)
+
+    @patch("xhs_download.management.commands.run_release_deploy_job.execute_release_deploy_job")
+    def test_release_management_command_cannot_execute_job_twice(self, execute_job):
+        job = ReleaseDeployJob.objects.create(
+            target_type=ReleaseDeployTargetType.MAIN,
+            target_ref="main",
+            target_sha="a" * 40,
+        )
+
+        def succeed(claimed_job):
+            claimed_job.status = ReleaseDeployJobStatus.SUCCEEDED
+            claimed_job.finished_at = timezone.now()
+            claimed_job.save(update_fields=("status", "finished_at", "updated_at"))
+            return claimed_job
+
+        execute_job.side_effect = succeed
+        call_command("run_release_deploy_job", job_id=job.pk, stdout=StringIO())
+        with self.assertRaises(CommandError):
+            call_command("run_release_deploy_job", job_id=job.pk, stdout=StringIO())
+        self.assertEqual(execute_job.call_count, 1)
+
+    @patch.dict(
+        os.environ,
+        {
+            "RELEASE_MANAGEMENT_DEPLOY_SCRIPT": "/opt/animeimages/deploy.sh",
+            "RELEASE_MANAGEMENT_DEPLOY_TIMEOUT_SECONDS": "12.5",
+        },
+    )
+    @patch("xhs_download.services.release_management.run_git")
+    @patch("xhs_download.services.release_management.subprocess.run")
+    def test_execute_release_job_pins_and_verifies_target_sha(self, run_process, run_git):
+        from xhs_download.services.release_management import GitResult, execute_release_deploy_job
+
+        target_sha = "a" * 40
+        job = ReleaseDeployJob.objects.create(
+            status=ReleaseDeployJobStatus.RUNNING,
+            target_type=ReleaseDeployTargetType.MAIN,
+            target_ref="main",
+            target_sha=target_sha,
+        )
+        run_process.return_value = subprocess.CompletedProcess([], 0, stdout="deployed", stderr="")
+        run_git.return_value = GitResult(ok=True, stdout=target_sha)
+
+        result = execute_release_deploy_job(job)
+
+        self.assertEqual(result.status, ReleaseDeployJobStatus.SUCCEEDED)
+        self.assertEqual(result.health_check_status, "ready")
+        self.assertEqual(run_process.call_args.args[0], ["/opt/animeimages/deploy.sh"])
+        self.assertEqual(run_process.call_args.kwargs["timeout"], 12.5)
+        self.assertEqual(run_process.call_args.kwargs["env"]["DEPLOY_TARGET_SHA"], target_sha)
+        run_git.assert_called_once_with(["rev-parse", "HEAD"])
+
+    @patch("xhs_download.services.release_management.run_git")
+    @patch("xhs_download.services.release_management.subprocess.run")
+    def test_execute_release_job_fails_when_head_differs(self, run_process, run_git):
+        from xhs_download.services.release_management import GitResult, execute_release_deploy_job
+
+        job = ReleaseDeployJob.objects.create(
+            status=ReleaseDeployJobStatus.RUNNING,
+            target_type=ReleaseDeployTargetType.MAIN,
+            target_ref="main",
+            target_sha="a" * 40,
+        )
+        run_process.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        run_git.return_value = GitResult(ok=True, stdout="b" * 40)
+
+        result = execute_release_deploy_job(job)
+
+        self.assertEqual(result.status, ReleaseDeployJobStatus.FAILED)
+        self.assertIn("does not match", result.error_message)
 
     def test_admin_center_pages_render_empty_state(self):
         client = Client()

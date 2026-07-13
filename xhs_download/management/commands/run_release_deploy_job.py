@@ -1,7 +1,10 @@
 from django.core.management.base import BaseCommand, CommandError
 
 from xhs_download.models import ReleaseDeployJob, ReleaseDeployJobStatus
-from xhs_download.services.release_management import execute_release_deploy_job
+from xhs_download.services.release_management import (
+    claim_pending_release_deploy_job,
+    execute_release_deploy_job,
+)
 
 
 class Command(BaseCommand):
@@ -12,13 +15,13 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         job_id = options["job_id"]
-        try:
-            job = ReleaseDeployJob.objects.get(pk=job_id)
-        except ReleaseDeployJob.DoesNotExist as error:
-            raise CommandError(f"ReleaseDeployJob #{job_id} does not exist") from error
-
-        if job.status != ReleaseDeployJobStatus.PENDING:
-            raise CommandError(f"ReleaseDeployJob #{job_id} is {job.status}, not pending")
+        job = claim_pending_release_deploy_job(job_id)
+        if job is None:
+            try:
+                current_status = ReleaseDeployJob.objects.values_list("status", flat=True).get(pk=job_id)
+            except ReleaseDeployJob.DoesNotExist as error:
+                raise CommandError(f"ReleaseDeployJob #{job_id} does not exist") from error
+            raise CommandError(f"ReleaseDeployJob #{job_id} is {current_status}, not pending")
 
         job = execute_release_deploy_job(job)
         self.stdout.write(f"ReleaseDeployJob #{job.pk}: {job.status}")

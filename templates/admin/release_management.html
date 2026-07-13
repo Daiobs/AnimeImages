@@ -156,6 +156,13 @@
                 <h1 class="release-title">版本发布</h1>
                 <p class="release-subtitle">查看当前 Git 版本、远程更新、健康状态和发布任务。</p>
             </div>
+            {% if can_manage_release %}
+                <form method="post">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="refresh_remote">
+                    <button class="release-button release-button-secondary" type="submit">刷新远程版本</button>
+                </form>
+            {% endif %}
         </section>
 
         {% if release_state.has_update %}
@@ -169,7 +176,8 @@
             </section>
         {% else %}
             <section class="release-banner">
-                <strong>当前代码与 origin/main 一致。</strong>
+                <strong>当前代码与本地记录的 origin/main 一致。</strong>
+                页面默认不自动访问 GitHub；需要最新状态时请显式刷新。
             </section>
         {% endif %}
 
@@ -247,14 +255,14 @@
                 <form class="release-form" method="post">
                     {% csrf_token %}
                     <input type="hidden" name="action" value="deploy_tag">
-                    <label for="target-ref">按 Tag 切换</label>
-                    <select id="target-ref" name="target_ref" {% if not release_state.tags %}disabled{% endif %}>
+                    <label for="target-ref">按 Tag 切换（v1 暂不支持）</label>
+                    <select id="target-ref" name="target_ref" disabled>
                         {% for tag in release_state.tags %}
                             <option value="{{ tag.name }}">{{ tag.name }}{% if tag.sha %} · {{ tag.sha }}{% endif %}</option>
                         {% endfor %}
                     </select>
-                    <textarea name="notes" placeholder="回滚/切换原因，可留空"></textarea>
-                    <button class="release-button release-button-secondary" type="submit" {% if not can_manage_release or active_job or not release_state.tags %}disabled{% endif %}>创建版本切换任务</button>
+                    <textarea name="notes" placeholder="Tag 仅供查看" disabled></textarea>
+                    <button class="release-button release-button-secondary" type="submit" disabled>版本切换暂未开放</button>
                 </form>
             </div>
         </section>

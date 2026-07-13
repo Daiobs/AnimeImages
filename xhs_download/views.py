@@ -176,6 +176,7 @@ from .services.control_plane import build_control_plane_context
 from .services.rollout_guard import build_rollout_guard_context
 from .services.release_management import (
     build_release_state,
+    cancel_pending_release_deploy_job,
     create_release_deploy_job,
     release_fetch_on_view,
     trigger_release_executor,
@@ -1248,34 +1249,34 @@ def release_management_view(request):
         if not release_management_change_allowed(request):
             return JsonResponse({"detail": "Not found."}, status=404)
         action = request.POST.get("action")
-        if action == "cancel_job":
-            job = ReleaseDeployJob.objects.filter(
-                pk=request.POST.get("job_id"),
-                status=ReleaseDeployJobStatus.PENDING,
-            ).first()
-            if job is None:
-                messages.error(request, "只能取消等待执行的发布任务。")
+        if action == "refresh_remote":
+            release_state = build_release_state(fetch_remote=True)
+            fetch_result = release_state.get("fetch") or {}
+            if fetch_result.get("ok"):
+                messages.info(request, "远程版本信息已刷新。")
             else:
-                job.status = ReleaseDeployJobStatus.CANCELLED
-                job.finished_at = timezone.now()
-                job.error_message = "cancelled by admin"
-                job.save(update_fields=("status", "finished_at", "error_message", "updated_at"))
-                messages.info(request, f"发布任务 #{job.pk} 已取消。")
+                messages.error(request, f"远程版本刷新失败：{fetch_result.get('error') or 'git fetch failed'}")
             return redirect("release_management")
 
-        target_type = ReleaseDeployTargetType.MAIN
-        target_ref = "main"
+        if action == "cancel_job":
+            job_id = request.POST.get("job_id")
+            if not cancel_pending_release_deploy_job(job_id):
+                messages.error(request, "只能取消等待执行的发布任务。")
+            else:
+                messages.info(request, f"发布任务 #{job_id} 已取消。")
+            return redirect("release_management")
+
         if action == "deploy_tag":
-            target_type = ReleaseDeployTargetType.TAG
-            target_ref = request.POST.get("target_ref")
-        elif action != "deploy_main":
+            messages.error(request, "Release Management v1 仅支持 main 部署，Tag 版本切换暂未开放。")
+            return redirect("release_management")
+        if action != "deploy_main":
             return JsonResponse({"detail": "Unknown action."}, status=400)
 
         try:
             job = create_release_deploy_job(
                 request=request,
-                target_type=target_type,
-                target_ref=target_ref,
+                target_type=ReleaseDeployTargetType.MAIN,
+                target_ref="main",
                 notes=request.POST.get("notes", ""),
             )
         except ValueError as error:
@@ -1287,10 +1288,8 @@ def release_management_view(request):
             if trigger_result.ok:
                 messages.info(request, f"部署任务 #{job.pk} 已提交给外部执行器。")
             else:
-                job.status = ReleaseDeployJobStatus.FAILED
-                job.error_message = (trigger_result.stderr or "release executor failed")[:300]
-                job.save(update_fields=("status", "error_message", "updated_at"))
-                messages.error(request, f"部署任务 #{job.pk} 执行器触发失败：{job.error_message}")
+                error_message = (trigger_result.stderr or "release executor trigger failed")[:300]
+                messages.error(request, f"部署任务 #{job.pk} 执行器触发失败：{error_message}")
         else:
             messages.warning(request, f"部署任务 #{job.pk} 已记录；当前未配置外部执行器，不会自动重启服务。")
         return redirect("release_management")
