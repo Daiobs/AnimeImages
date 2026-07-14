@@ -41,7 +41,13 @@ cd /srv/animeimages
 
 ## Admin release jobs
 
-`/admin/release-management/` 展示版本与 Tag，但 v1 只创建 `main` 发布任务。普通 GET 默认不 fetch GitHub；需要时使用页面刷新操作。Django 请求线程不直接执行 `deploy.sh`、迁移、重启或健康检查。
+`/admin/release-management/` 展示本地 Git 版本与 Tag，但 v1 只创建 `main` 发布任务。所有 Web 请求都只读取本地 refs，页面不提供远程刷新操作，`www-data` 不允许执行 `git fetch`。远程引用由 `ubuntu` 部署流程或独立的外部运维任务刷新。Django 请求线程不直接执行 `deploy.sh`、迁移、重启或健康检查。
+
+生产仓库由 `ubuntu:ubuntu` 持有，而 Web 进程以 `www-data` 读取 Git 状态。请为精确目录配置 system-level safe directory，不要修改仓库 ownership，也不要使用通配符：
+
+```bash
+sudo git config --system --add safe.directory /srv/animeimages
+```
 
 Release Management v1 合并和首次部署后默认是 record-only。生产示例不启用执行器；未配置执行器时，发布任务只记录为 `pending`，不会自动部署或重启：
 
@@ -58,7 +64,7 @@ systemd one-shot 服务再调用：
 python manage.py run_release_deploy_job --job-id <job_id>
 ```
 
-任务创建时会 fetch `origin/main` 并保存精确 `job.target_sha`。执行器把该值作为 `DEPLOY_TARGET_SHA` 传给 `deploy.sh`；脚本结束时 `HEAD` 必须与它一致。数据库最多允许一个 `pending`/`running` 任务。Tag/commit 在 v1 中只展示、不创建任务，需等迁移回滚策略完善后再开放。
+任务创建时只读取本地 `origin/main` 并保存精确 `job.target_sha`，不会在 Web 请求中 fetch。执行器把该值作为 `DEPLOY_TARGET_SHA` 传给 `deploy.sh`；脚本结束时 `HEAD` 必须与它一致。数据库最多允许一个 `pending`/`running` 任务。Tag/commit 在 v1 中只展示、不创建任务，需等迁移回滚策略完善后再开放。
 
 ## Local experiments
 

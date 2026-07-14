@@ -23,6 +23,11 @@ ACTIVE_JOB_STATUSES = (
     ReleaseDeployJobStatus.PENDING,
     ReleaseDeployJobStatus.RUNNING,
 )
+DUBIOUS_OWNERSHIP_MARKER = "detected dubious ownership"
+PRODUCTION_SAFE_DIRECTORY_COMMAND = (
+    "sudo git config --system --add safe.directory /srv/animeimages"
+)
+READ_ONLY_GIT_COMMANDS = frozenset({"merge-base", "rev-list", "rev-parse", "show", "tag"})
 
 
 @dataclass(frozen=True)
@@ -31,13 +36,6 @@ class GitResult:
     stdout: str = ""
     stderr: str = ""
     returncode: int = 0
-
-
-def env_bool(name, default=False):
-    value = os.environ.get(name)
-    if value is None:
-        return bool(default)
-    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def env_float(name, default=0.0):
@@ -55,10 +53,6 @@ def env_str(name, default=""):
     if value is None:
         return default
     return value.strip()
-
-
-def release_fetch_on_view():
-    return env_bool("RELEASE_MANAGEMENT_FETCH_ON_VIEW", False)
 
 
 def release_git_timeout_seconds():
@@ -83,6 +77,12 @@ def release_base_dir():
 
 
 def run_git(args, *, timeout=None):
+    if not args or args[0] not in READ_ONLY_GIT_COMMANDS:
+        return GitResult(
+            ok=False,
+            stderr="Release Management Git access is read-only; command is not allowed.",
+            returncode=2,
+        )
     timeout = release_git_timeout_seconds() if timeout is None else timeout
     try:
         completed = subprocess.run(
@@ -107,11 +107,16 @@ def run_git(args, *, timeout=None):
     )
 
 
-def git_stdout(args, default=""):
-    result = run_git(args)
-    if not result.ok:
-        return default
-    return result.stdout
+def git_read_error_message(result):
+    stderr = str(getattr(result, "stderr", "") or "").strip()
+    if DUBIOUS_OWNERSHIP_MARKER in stderr.lower():
+        return (
+            "Git 无法读取本地仓库：检测到 dubious ownership。"
+            f"请由服务器管理员执行 `{PRODUCTION_SAFE_DIRECTORY_COMMAND}` 后重试。"
+        )
+    if stderr:
+        return f"Git 无法读取本地仓库：{stderr[:500]}"
+    return f"Git 无法读取本地仓库：命令退出码 {getattr(result, 'returncode', '不可用')}。"
 
 
 def split_count_pair(value):
@@ -153,51 +158,45 @@ def validate_target_ref(target_type, target_ref):
     raise ValueError("未知部署目标类型。")
 
 
-def resolve_target_sha(target_type, target_ref):
-    if target_type == ReleaseDeployTargetType.MAIN:
-        result = run_git(["rev-parse", "origin/main"])
-    elif target_type == ReleaseDeployTargetType.TAG:
-        result = run_git(["rev-parse", f"refs/tags/{target_ref}^{{commit}}"])
-    elif target_type == ReleaseDeployTargetType.COMMIT:
-        result = run_git(["rev-parse", f"{target_ref}^{{commit}}"])
-    else:
-        return ""
-    return result.stdout if result.ok else ""
-
-
-def fetch_origin_main_sha():
-    fetch_result = run_git([
-        "fetch",
-        "origin",
-        "+refs/heads/main:refs/remotes/origin/main",
-    ])
-    if not fetch_result.ok:
-        raise ValueError(f"无法刷新 origin/main：{fetch_result.stderr or 'git fetch failed'}")
-    target_sha = resolve_target_sha(ReleaseDeployTargetType.MAIN, "main")
+def resolve_local_origin_main_sha():
+    result = run_git(["rev-parse", "origin/main"])
+    if not result.ok:
+        raise ValueError(git_read_error_message(result))
+    target_sha = result.stdout
     if not FULL_SHA_RE.fullmatch(target_sha):
-        raise ValueError("无法解析 origin/main 的精确 commit SHA。")
+        raise ValueError("无法从本地 origin/main 解析精确 commit SHA。")
     reachable = run_git(["merge-base", "--is-ancestor", target_sha, "origin/main"])
     if not reachable.ok:
-        raise ValueError("目标 commit 不是 origin/main 的可达提交。")
+        if DUBIOUS_OWNERSHIP_MARKER in (reachable.stderr or "").lower():
+            raise ValueError(git_read_error_message(reachable))
+        raise ValueError("本地目标 commit 不是 origin/main 的可达提交。")
     return target_sha.lower()
 
 
-def build_release_state(*, fetch_remote=False):
-    fetch_result = None
-    if fetch_remote:
-        fetch_result = run_git(["fetch", "--tags", "origin"])
+def build_release_state():
+    git_errors = []
 
-    commit_sha = git_stdout(["rev-parse", "HEAD"])
-    short_sha = git_stdout(["rev-parse", "--short", "HEAD"])
-    branch = git_stdout(["rev-parse", "--abbrev-ref", "HEAD"], default="HEAD")
-    current_tags = git_stdout(["tag", "--points-at", "HEAD"]).splitlines()
+    def read_local_git(args, default=""):
+        result = run_git(args)
+        if not result.ok:
+            if not git_errors:
+                git_errors.append(git_read_error_message(result))
+            return default
+        return result.stdout
+
+    commit_sha = read_local_git(["rev-parse", "HEAD"])
+    short_sha = read_local_git(["rev-parse", "--short", "HEAD"])
+    branch = read_local_git(["rev-parse", "--abbrev-ref", "HEAD"])
+    current_tags = read_local_git(["tag", "--points-at", "HEAD"]).splitlines()
     current_tag = current_tags[0] if current_tags else ""
-    commit_time = git_stdout(["show", "-s", "--format=%cI", "HEAD"])
-    origin_main_sha = git_stdout(["rev-parse", "origin/main"])
-    origin_main_short_sha = git_stdout(["rev-parse", "--short", "origin/main"])
-    ahead, behind = split_count_pair(git_stdout(["rev-list", "--left-right", "--count", "HEAD...origin/main"]))
+    commit_time = read_local_git(["show", "-s", "--format=%cI", "HEAD"])
+    origin_main_sha = read_local_git(["rev-parse", "origin/main"])
+    origin_main_short_sha = read_local_git(["rev-parse", "--short", "origin/main"])
+    ahead, behind = split_count_pair(
+        read_local_git(["rev-list", "--left-right", "--count", "HEAD...origin/main"])
+    )
     tag_rows = parse_tag_rows(
-        git_stdout([
+        read_local_git([
             "tag",
             "--sort=-creatordate",
             "--format=%(refname:short)|%(objectname:short)|%(creatordate:iso8601-strict)",
@@ -224,10 +223,9 @@ def build_release_state(*, fetch_remote=False):
         "tags": tag_rows[:30],
         "latest_tag": tag_rows[0] if tag_rows else {},
         "latest_successful_job": latest_success,
-        "fetch": {
-            "attempted": bool(fetch_remote),
-            "ok": None if fetch_result is None else fetch_result.ok,
-            "error": "" if fetch_result is None or fetch_result.ok else fetch_result.stderr,
+        "git": {
+            "ok": not git_errors,
+            "error": git_errors[0] if git_errors else "",
         },
     }
 
@@ -282,7 +280,7 @@ def create_release_deploy_job(*, request, target_type, target_ref, notes=""):
     active_job = ReleaseDeployJob.objects.filter(status__in=ACTIVE_JOB_STATUSES).first()
     if active_job is not None:
         raise ValueError(f"已有未完成部署任务 #{active_job.pk}。")
-    target_sha = fetch_origin_main_sha()
+    target_sha = resolve_local_origin_main_sha()
 
     user = getattr(request, "user", None)
     try:

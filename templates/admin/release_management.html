@@ -154,41 +154,39 @@
             <div>
                 <span class="release-eyebrow">Admin Release</span>
                 <h1 class="release-title">版本发布</h1>
-                <p class="release-subtitle">查看当前 Git 版本、远程更新、健康状态和发布任务。</p>
+                <p class="release-subtitle">查看本地 Git 引用、健康状态和发布任务。</p>
             </div>
-            {% if can_manage_release %}
-                <form method="post">
-                    {% csrf_token %}
-                    <input type="hidden" name="action" value="refresh_remote">
-                    <button class="release-button release-button-secondary" type="submit">刷新远程版本</button>
-                </form>
-            {% endif %}
         </section>
 
-        {% if release_state.has_update %}
-            <section class="release-banner release-banner-warning">
-                <strong>有新版本可部署：</strong>
-                当前 {{ release_state.short_sha|default:"unknown" }}，origin/main {{ release_state.origin_main_short_sha|default:"unknown" }}。
-            </section>
-        {% elif release_state.fetch.ok == False %}
+        <section class="release-banner">
+            <strong>只读 Git 状态：</strong>
+            Web 请求不会执行 git fetch；远程引用由 ubuntu 部署流程或外部运维任务刷新。
+        </section>
+
+        {% if release_state.git.ok == False %}
             <section class="release-banner release-banner-danger">
-                <strong>远程检查失败：</strong>{{ release_state.fetch.error|default:"git fetch failed" }}
+                <strong>本地 Git 状态读取失败：</strong>{{ release_state.git.error }}
+            </section>
+        {% elif release_state.has_update %}
+            <section class="release-banner release-banner-warning">
+                <strong>本地 origin/main 显示有可部署版本：</strong>
+                当前 {{ release_state.short_sha|default:"不可读取" }}，origin/main {{ release_state.origin_main_short_sha|default:"不可读取" }}。
             </section>
         {% else %}
             <section class="release-banner">
                 <strong>当前代码与本地记录的 origin/main 一致。</strong>
-                页面默认不自动访问 GitHub；需要最新状态时请显式刷新。
+                如需最新状态，请先由部署流程或外部运维任务刷新本地引用。
             </section>
         {% endif %}
 
         <section class="release-grid" aria-label="版本状态">
             <div class="release-card">
                 <span>当前分支</span>
-                <strong>{{ release_state.branch|default:"unknown" }}</strong>
+                <strong>{{ release_state.branch|default:"不可读取" }}</strong>
             </div>
             <div class="release-card">
                 <span>当前 Commit</span>
-                <strong>{{ release_state.short_sha|default:"unknown" }}</strong>
+                <strong>{{ release_state.short_sha|default:"不可读取" }}</strong>
             </div>
             <div class="release-card">
                 <span>当前版本 Tag</span>
@@ -206,7 +204,7 @@
             </div>
             <div class="release-card">
                 <span>origin/main</span>
-                <strong>{{ release_state.origin_main_short_sha|default:"unknown" }}</strong>
+                <strong>{{ release_state.origin_main_short_sha|default:"不可读取" }}</strong>
             </div>
             <div class="release-card">
                 <span>Ahead / Behind</span>
@@ -247,10 +245,10 @@
                 <form class="release-form" method="post">
                     {% csrf_token %}
                     <input type="hidden" name="action" value="deploy_main">
-                    <label>部署最新 main</label>
-                    <div>目标：origin/main {{ release_state.origin_main_short_sha|default:"unknown" }}</div>
+                    <label>部署本地记录的 main</label>
+                    <div>目标：origin/main {{ release_state.origin_main_short_sha|default:"不可读取" }}</div>
                     <textarea name="notes" placeholder="发布备注，可留空"></textarea>
-                    <button class="release-button" type="submit" {% if not can_manage_release or active_job %}disabled{% endif %}>创建 main 部署任务</button>
+                    <button class="release-button" type="submit" {% if not can_manage_release or active_job or release_state.git.ok == False or not release_state.origin_main_sha %}disabled{% endif %}>创建 main 部署任务</button>
                 </form>
                 <form class="release-form" method="post">
                     {% csrf_token %}

@@ -11451,7 +11451,7 @@ class ProductionControlPlaneTests(TestCase):
             ],
             "latest_tag": {"name": "v1.0.0", "sha": "aaaaaaa"},
             "latest_successful_job": None,
-            "fetch": {"attempted": False, "ok": None, "error": ""},
+            "git": {"ok": True, "error": ""},
         }
 
     @patch(
@@ -11763,7 +11763,6 @@ class ProductionControlPlaneTests(TestCase):
         self.assertEqual(client.get("/admin/logs/").status_code, 200)
         self.assertEqual(client.get("/admin/policy-center/").status_code, 200)
 
-    @patch.dict(os.environ, {"RELEASE_MANAGEMENT_FETCH_ON_VIEW": "False"})
     @patch("xhs_download.views.get_runtime_readiness")
     @patch("xhs_download.views.build_release_state")
     def test_release_management_permissions_and_page(self, build_state, readiness):
@@ -11780,22 +11779,23 @@ class ProductionControlPlaneTests(TestCase):
         self.grant_xhs_permission(self.staff, "view_releasedeployjob")
         staff_response = client.get("/admin/release-management/")
         self.assertContains(staff_response, "版本发布")
-        self.assertContains(staff_response, "有新版本可部署")
+        self.assertContains(staff_response, "本地 origin/main 显示有可部署版本")
+        self.assertContains(staff_response, "Web 请求不会执行 git fetch")
+        self.assertNotContains(staff_response, "刷新远程版本")
         self.assert_sidebar_active_item(staff_response, "版本发布")
         self.assertContains(super_client.get("/admin/release-management/"), "创建 main 部署任务")
         self.assertContains(super_client.get("/admin/release-management/"), "版本切换暂未开放")
-        build_state.assert_called_with(fetch_remote=False)
+        build_state.assert_called_with()
 
     @patch.dict(
         os.environ,
         {
-            "RELEASE_MANAGEMENT_FETCH_ON_VIEW": "False",
             "RELEASE_MANAGEMENT_EXECUTOR_COMMAND": "",
         },
     )
-    @patch("xhs_download.services.release_management.fetch_origin_main_sha")
-    def test_release_management_creates_main_job_without_executor(self, fetch_main_sha):
-        fetch_main_sha.return_value = "b" * 40
+    @patch("xhs_download.services.release_management.resolve_local_origin_main_sha")
+    def test_release_management_creates_main_job_without_executor(self, local_main_sha):
+        local_main_sha.return_value = "b" * 40
         client = Client()
         client.force_login(self.superuser)
 
@@ -11812,7 +11812,7 @@ class ProductionControlPlaneTests(TestCase):
         self.assertEqual(job.target_sha, "b" * 40)
         self.assertFalse(job.command_plan["executor_configured"])
         self.assertEqual(job.actor_username, "control-root")
-        fetch_main_sha.assert_called_once_with()
+        local_main_sha.assert_called_once_with()
 
         cancel = client.post(
             "/admin/release-management/",
@@ -11826,7 +11826,6 @@ class ProductionControlPlaneTests(TestCase):
     @patch.dict(
         os.environ,
         {
-            "RELEASE_MANAGEMENT_FETCH_ON_VIEW": "False",
             "RELEASE_MANAGEMENT_EXECUTOR_COMMAND": (
                 '/bin/systemctl start --no-block "animeimages-deploy@{job_id}.service'
             ),
@@ -11834,10 +11833,10 @@ class ProductionControlPlaneTests(TestCase):
     )
     @patch("xhs_download.views.get_runtime_readiness", return_value={"status": "ready", "ready": True})
     @patch("xhs_download.views.build_release_state")
-    @patch("xhs_download.services.release_management.fetch_origin_main_sha", return_value="b" * 40)
+    @patch("xhs_download.services.release_management.resolve_local_origin_main_sha", return_value="b" * 40)
     def test_release_management_rolls_back_job_for_unclosed_executor_quote(
         self,
-        _fetch_main_sha,
+        _local_main_sha,
         build_state,
         _readiness,
     ):
@@ -11887,7 +11886,6 @@ class ProductionControlPlaneTests(TestCase):
     @patch.dict(
         os.environ,
         {
-            "RELEASE_MANAGEMENT_FETCH_ON_VIEW": "False",
             "RELEASE_MANAGEMENT_EXECUTOR_COMMAND": (
                 "/bin/systemctl start --no-block animeimages-deploy@{unknown}.service"
             ),
@@ -11895,10 +11893,10 @@ class ProductionControlPlaneTests(TestCase):
     )
     @patch("xhs_download.views.get_runtime_readiness", return_value={"status": "ready", "ready": True})
     @patch("xhs_download.views.build_release_state")
-    @patch("xhs_download.services.release_management.fetch_origin_main_sha", return_value="c" * 40)
+    @patch("xhs_download.services.release_management.resolve_local_origin_main_sha", return_value="c" * 40)
     def test_release_management_rolls_back_job_for_unknown_executor_placeholder(
         self,
-        _fetch_main_sha,
+        _local_main_sha,
         build_state,
         _readiness,
     ):
@@ -11948,7 +11946,6 @@ class ProductionControlPlaneTests(TestCase):
     @patch.dict(
         os.environ,
         {
-            "RELEASE_MANAGEMENT_FETCH_ON_VIEW": "False",
             "RELEASE_MANAGEMENT_EXECUTOR_COMMAND": "",
         },
     )
@@ -11965,7 +11962,6 @@ class ProductionControlPlaneTests(TestCase):
         self.assertContains(response, "Tag 版本切换暂未开放")
         self.assertEqual(ReleaseDeployJob.objects.count(), 0)
 
-    @patch.dict(os.environ, {"RELEASE_MANAGEMENT_FETCH_ON_VIEW": "False"})
     def test_release_management_post_requires_add_permission(self):
         client = Client()
         client.force_login(self.staff)
@@ -11976,24 +11972,32 @@ class ProductionControlPlaneTests(TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(ReleaseDeployJob.objects.count(), 0)
 
-    @patch.dict(os.environ, {"RELEASE_MANAGEMENT_FETCH_ON_VIEW": "False"})
+    @patch.dict(os.environ, {"RELEASE_MANAGEMENT_FETCH_ON_VIEW": "True"})
     @patch("xhs_download.views.get_runtime_readiness", return_value={"status": "ready", "ready": True})
     @patch("xhs_download.views.build_release_state")
-    def test_release_management_refresh_is_explicit(self, build_state, _readiness):
+    def test_release_management_web_requests_cannot_refresh_remote(self, build_state, _readiness):
         build_state.return_value = self.release_state_fixture()
         client = Client()
         client.force_login(self.superuser)
 
-        client.get("/admin/release-management/")
-        build_state.assert_called_with(fetch_remote=False)
+        page = client.get("/admin/release-management/")
+        self.assertContains(page, "Web 请求不会执行 git fetch")
+        self.assertNotContains(page, "刷新远程版本")
+        build_state.assert_called_once_with()
 
-        client.post("/admin/release-management/", data={"action": "refresh_remote"})
-        build_state.assert_called_with(fetch_remote=True)
+        build_state.reset_mock()
+        response = client.post(
+            "/admin/release-management/",
+            data={"action": "refresh_remote"},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Web 发布页面禁止执行 git fetch")
+        build_state.assert_called_once_with()
 
     @patch.dict(
         os.environ,
         {
-            "RELEASE_MANAGEMENT_FETCH_ON_VIEW": "True",
             "RELEASE_MANAGEMENT_GIT_TIMEOUT_SECONDS": "1.25",
             "RELEASE_MANAGEMENT_TRIGGER_TIMEOUT_SECONDS": "0.75",
             "RELEASE_MANAGEMENT_DEPLOY_TIMEOUT_SECONDS": "42",
@@ -12004,7 +12008,6 @@ class ProductionControlPlaneTests(TestCase):
     def test_release_management_config_reads_environment(self):
         from xhs_download.services import release_management
 
-        self.assertTrue(release_management.release_fetch_on_view())
         self.assertEqual(release_management.release_git_timeout_seconds(), 1.25)
         self.assertEqual(release_management.release_trigger_timeout_seconds(), 0.75)
         self.assertEqual(release_management.release_deploy_timeout_seconds(), 42.0)
@@ -12019,33 +12022,88 @@ class ProductionControlPlaneTests(TestCase):
             ],
         )
 
-    @patch.dict(os.environ, {}, clear=True)
-    def test_release_management_fetch_on_view_defaults_false(self):
-        from xhs_download.services.release_management import release_fetch_on_view
-
-        self.assertFalse(release_fetch_on_view())
-
     @patch("xhs_download.services.release_management.run_git")
-    def test_fetch_origin_main_returns_reachable_exact_sha(self, run_git):
-        from xhs_download.services.release_management import GitResult, fetch_origin_main_sha
+    def test_local_origin_main_returns_reachable_exact_sha_without_fetch(self, run_git):
+        from xhs_download.services.release_management import GitResult, resolve_local_origin_main_sha
 
         target_sha = "A" * 40
         run_git.side_effect = (
-            GitResult(ok=True),
             GitResult(ok=True, stdout=target_sha),
             GitResult(ok=True),
         )
 
-        self.assertEqual(fetch_origin_main_sha(), target_sha.lower())
+        self.assertEqual(resolve_local_origin_main_sha(), target_sha.lower())
+        self.assertEqual(run_git.call_args_list[0].args[0], ["rev-parse", "origin/main"])
         self.assertEqual(
-            run_git.call_args_list[0].args[0],
-            ["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
-        )
-        self.assertEqual(run_git.call_args_list[1].args[0], ["rev-parse", "origin/main"])
-        self.assertEqual(
-            run_git.call_args_list[2].args[0],
+            run_git.call_args_list[1].args[0],
             ["merge-base", "--is-ancestor", target_sha, "origin/main"],
         )
+        self.assertNotIn("fetch", [call.args[0][0] for call in run_git.call_args_list])
+
+    @patch("xhs_download.services.release_management.subprocess.run")
+    def test_release_git_runner_rejects_fetch_before_subprocess(self, run_process):
+        from xhs_download.services.release_management import run_git
+
+        result = run_git(["fetch", "origin"])
+
+        self.assertFalse(result.ok)
+        self.assertIn("read-only", result.stderr)
+        run_process.assert_not_called()
+
+    @patch("xhs_download.services.release_management.run_git")
+    def test_release_state_reports_dubious_ownership_with_safe_directory_fix(self, run_git):
+        from xhs_download.services.release_management import GitResult, build_release_state
+
+        run_git.return_value = GitResult(
+            ok=False,
+            stderr="fatal: detected dubious ownership in repository at '/srv/animeimages'",
+            returncode=128,
+        )
+
+        state = build_release_state()
+
+        self.assertFalse(state["git"]["ok"])
+        self.assertIn("dubious ownership", state["git"]["error"])
+        self.assertIn(
+            "sudo git config --system --add safe.directory /srv/animeimages",
+            state["git"]["error"],
+        )
+        self.assertNotIn("unknown", state["git"]["error"])
+        self.assertNotIn("fetch", [call.args[0][0] for call in run_git.call_args_list])
+
+    @patch("xhs_download.views.get_runtime_readiness", return_value={"status": "ready", "ready": True})
+    @patch("xhs_download.views.build_release_state")
+    def test_release_management_page_displays_dubious_ownership_error(
+        self,
+        build_state,
+        _readiness,
+    ):
+        state = self.release_state_fixture()
+        state.update({"branch": "", "commit_sha": "", "short_sha": "", "origin_main_sha": ""})
+        state["origin_main_short_sha"] = ""
+        state["has_update"] = False
+        state["git"] = {
+            "ok": False,
+            "error": (
+                "Git 无法读取本地仓库：检测到 dubious ownership。"
+                "请由服务器管理员执行 `sudo git config --system --add safe.directory "
+                "/srv/animeimages` 后重试。"
+            ),
+        }
+        build_state.return_value = state
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/release-management/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "dubious ownership")
+        self.assertContains(
+            response,
+            "sudo git config --system --add safe.directory /srv/animeimages",
+        )
+        self.assertContains(response, "不可读取")
+        self.assertNotContains(response, "unknown")
 
     @patch.dict(os.environ, {"RELEASE_MANAGEMENT_TRIGGER_TIMEOUT_SECONDS": "0.25"})
     @patch("xhs_download.services.release_management.subprocess.run")
@@ -12157,8 +12215,8 @@ class ProductionControlPlaneTests(TestCase):
         self.assertIsNotNone(job.finished_at)
 
     @patch.dict(os.environ, {"RELEASE_MANAGEMENT_EXECUTOR_COMMAND": ""})
-    @patch("xhs_download.services.release_management.fetch_origin_main_sha", return_value="b" * 40)
-    def test_release_job_double_request_keeps_one_active_job(self, fetch_main_sha):
+    @patch("xhs_download.services.release_management.resolve_local_origin_main_sha", return_value="b" * 40)
+    def test_release_job_double_request_keeps_one_active_job(self, local_main_sha):
         client = Client()
         client.force_login(self.superuser)
 
@@ -12174,7 +12232,7 @@ class ProductionControlPlaneTests(TestCase):
             ).count(),
             1,
         )
-        fetch_main_sha.assert_called_once_with()
+        local_main_sha.assert_called_once_with()
 
     def test_release_job_database_constraint_allows_one_active_slot(self):
         ReleaseDeployJob.objects.create(

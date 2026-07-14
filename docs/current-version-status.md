@@ -170,13 +170,15 @@ Examples:
 The release panel is intentionally narrow:
 
 - It displays current Git state, the locally cached `origin/main`, tags, readiness, and deployment history.
-- Ordinary GET requests do not fetch GitHub by default (`RELEASE_MANAGEMENT_FETCH_ON_VIEW=False`).
-- Creating a main job fetches `origin/main` and records its exact `job.target_sha`.
+- All Web requests read local Git refs only. The page cannot refresh remotes, and `www-data` must not run `git fetch`.
+- The `ubuntu` deployment workflow or an external operations task refreshes local remote refs.
+- Creating a main job reads local `origin/main` and records its exact `job.target_sha`.
 - A database constraint permits only one `pending`/`running` job, while execution and cancellation use atomic status transitions.
 - Merge and the first production deployment leave v1 in record-only mode. `.env.example.production` does not enable the executor.
 - Without `RELEASE_MANAGEMENT_EXECUTOR_COMMAND`, a release request remains `pending` as an audit record and does not deploy automatically.
 - A direct systemd executor must use `systemctl start --no-block ...`; Django only submits the unit job.
 - Configure the executor in `/srv/animeimages/.env.production` only after independently validating the systemd one-shot unit, sudoers rule, runtime user, application and virtualenv paths, and filesystem permissions.
+- Configure `sudo git config --system --add safe.directory /srv/animeimages` so `www-data` can read the `ubuntu:ubuntu` repository without changing ownership. Do not use a wildcard safe directory.
 - `deploy.sh` must deploy `job.target_sha`, verify it is reachable from `origin/main`, and verify final `HEAD == job.target_sha`.
 - Tags remain visible, but v1 does not create or execute Tag/commit switching jobs.
 
