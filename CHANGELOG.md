@@ -8,7 +8,7 @@
 ## 2026-07-14 Production Releases
 
 - **PR #13 - Batch Parse service refactor:** extracted runtime, result normalization, and view-context logic from `views.py` into `xhs_download/services/batch_parse/` while preserving existing behavior.
-- **PR #14 - Production deploy hardening:** replaced automatic recursive ownership repair with explicit validation, hardened readiness checks, and moved Gunicorn runtime files to the systemd-managed `/run/animeimages/` directory.
+- **PR #14 - Production deploy hardening:** replaced automatic recursive ownership repair with explicit validation, hardened readiness checks, and prepared documentation for a future systemd-managed Unix-socket topology; production currently remains on local TCP.
 - **PR #15 - Provider stability fixes:** improved batch Douyin provider budgeting and fallback behavior, strengthened Douyin metadata handling, and improved Bilibili parsing reliability.
 - **PR #16 - Production follow-up labels:** documented the observed `mobile_feed` fallback and mapped that internal provider value to the user-facing `本地解析` label without changing provider order.
 - **PR #17 - Admin Release Management v1:** added audited, exact-SHA `main` release jobs, a non-blocking external executor boundary, single-active-job protection, deployment verification, and locally vendored Bootstrap Icons.
