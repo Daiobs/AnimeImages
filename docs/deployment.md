@@ -154,7 +154,7 @@ For the VPS baseline, keep Gunicorn behind Nginx on a systemd-managed Unix socke
 
 ```ini
 [Service]
-User=ubuntu
+User=www-data
 Group=www-data
 WorkingDirectory=/srv/animeimages
 EnvironmentFile=/srv/animeimages/.env.production
@@ -172,6 +172,8 @@ RestartSec=5
 /run/animeimages/gunicorn.sock
 /run/animeimages/gunicorn.ctl
 ```
+
+Gunicorn runs as `www-data`, while the application checkout remains owned by `ubuntu:ubuntu`. The Web process needs read access to application files and approved local Git refs, but it must not own the checkout, run `git fetch`, or receive the production deploy key.
 
 Configure the deployment platform or load balancer with:
 

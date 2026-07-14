@@ -1,11 +1,11 @@
 # Current Version Status
 
-Date: 2026-07-13
+Date: 2026-07-14
 
 Main baseline:
 
 ```text
-494b191 Document production follow-up and batch provider labels (#16)
+6b1787f Make release Git state read-only (#18)
 ```
 
 Production site:
@@ -26,8 +26,8 @@ https://download.cosflow.icu/
 - Bilibili remains baseline-only. Do not pursue cookie/member/DASH work unless explicitly requested.
 - `/batch/` supports batch parsing with runtime settings, limited parallelism, and staff-only/raw-link controls.
 - yt-dlp and gallery-dl are optional generic long-tail providers behind capability, runtime, platform and safety gates.
-- Admin UI includes Provider settings, health tests, logs center, policy center, download runtime settings, and batch parse runtime settings.
-- Admin Release Management v1 is being hardened on `codex/admin-release-management-v1`: it is main-only, pins an exact target SHA, and can delegate execution to a non-blocking external systemd job only after explicit production configuration.
+- Admin UI includes Provider settings, health tests, logs center, policy center, download runtime settings, batch parse runtime settings, and Release Management.
+- PR #17 and PR #18 are merged into `main` and deployed. Release Management v1 is main-only, record-only by default, and restricted to read-only local Git refs in Web requests.
 - TikHub and older native-enhanced experiments remain historical/diagnostic only; they are not the active Douyin ultra path.
 
 ## Current Route Map
@@ -126,6 +126,7 @@ Important pages:
 /admin/policy-center/
 /admin/ops-dashboard/
 /admin/xhs_download/batchparseruntimesetting/
+/admin/release-management/
 ```
 
 Important log/diagnostic models:
@@ -167,20 +168,21 @@ Examples:
 
 ## Admin Release Management v1
 
-The release panel is intentionally narrow:
+PR #17 added Admin Release Management v1 and PR #18 applied the read-only Git production fix. Both PRs are merged and deployed. The production release panel is intentionally narrow:
 
 - It displays current Git state, the locally cached `origin/main`, tags, readiness, and deployment history.
 - All Web requests read local Git refs only. The page cannot refresh remotes, and `www-data` must not run `git fetch`.
 - The `ubuntu` deployment workflow or an external operations task refreshes local remote refs.
 - Creating a main job reads local `origin/main` and records its exact `job.target_sha`.
 - A database constraint permits only one `pending`/`running` job, while execution and cancellation use atomic status transitions.
-- Merge and the first production deployment leave v1 in record-only mode. `.env.example.production` does not enable the executor.
+- Production remains in record-only mode after the PR #17 and PR #18 rollout. `.env.example.production` does not enable the executor.
 - Without `RELEASE_MANAGEMENT_EXECUTOR_COMMAND`, a release request remains `pending` as an audit record and does not deploy automatically.
 - A direct systemd executor must use `systemctl start --no-block ...`; Django only submits the unit job.
 - Configure the executor in `/srv/animeimages/.env.production` only after independently validating the systemd one-shot unit, sudoers rule, runtime user, application and virtualenv paths, and filesystem permissions.
 - Configure `sudo git config --system --add safe.directory /srv/animeimages` so `www-data` can read the `ubuntu:ubuntu` repository without changing ownership. Do not use a wildcard safe directory.
 - `deploy.sh` must deploy `job.target_sha`, verify it is reachable from `origin/main`, and verify final `HEAD == job.target_sha`.
 - Tags remain visible, but v1 does not create or execute Tag/commit switching jobs.
+- The full operating model and troubleshooting runbook live in `docs/release-management.md`.
 
 ## Health And Smoke Commands
 
@@ -224,5 +226,5 @@ curl -i https://download.cosflow.icu/health/ready/
 1. Keep documentation current after major PRs; update this file and `docs/codex-handoff.md`.
 2. Review the existing `xhs_download/services/batch_parse/` boundary from PR #13 and remove residual wrappers from `views.py`; do not restart the extraction from zero.
 3. Move batch-page logic out of `static/js/app.js` into a focused module while preserving `/batch/` behavior.
-4. Finish Release Management v1 production wiring and smoke validation for pinned `main` deployment. Keep Tag/commit switching disabled.
+4. Keep Release Management v1 record-only unless the systemd one-shot unit, narrow sudoers rule, runtime user, paths, and permissions are independently validated. Keep Tag/commit switching disabled.
 5. Keep Provider Strategy v1 in smoke/stabilization mode; defer new provider/platform expansion until the structural work is settled.

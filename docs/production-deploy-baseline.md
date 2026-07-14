@@ -167,7 +167,7 @@ After=network.target postgresql.service redis-server.service
 
 [Service]
 Type=simple
-User=ubuntu
+User=www-data
 Group=www-data
 WorkingDirectory=/srv/animeimages
 EnvironmentFile=/srv/animeimages/.env.production
@@ -183,6 +183,8 @@ NoNewPrivileges=true
 [Install]
 WantedBy=multi-user.target
 ```
+
+Gunicorn runs as `www-data`. Keep the application checkout owned by `ubuntu:ubuntu`; the `ubuntu` account remains responsible for Git fetch/reset and deployment operations. The Web service only needs read access to application files and approved local Git refs.
 
 Operational commands:
 

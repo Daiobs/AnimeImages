@@ -345,6 +345,7 @@ Do not edit `djangoProject/settings.py` on the server. Move production configura
 ## 8. Configure Gunicorn and systemd
 
 - [ ] Create `/etc/systemd/system/animeimages.service` using the sample from `docs/production-deploy-baseline.md`.
+- [ ] Confirm Gunicorn runs as `www-data` while `/srv/animeimages` remains owned by `ubuntu:ubuntu`.
 - [ ] Verify placeholders are replaced:
 
 ```text

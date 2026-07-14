@@ -2,10 +2,17 @@
 
 ## Unreleased
 
-- Refreshed README and handoff documentation for the current AnimeImages main branch.
-- Added `docs/codex-handoff.md` as the first-read guide for new Codex projects.
-- Updated current-version documentation for Provider Strategy v1, TianTianJieXi ultra race, KuKuTool fallback, batch parsing runtime settings, and admin operations pages.
-- Documented that TikHub and older native-enhanced work are historical/diagnostic rather than the active Douyin ultra path.
+- Synchronized README, handoff, current-version, changelog, deployment, and PR-template guidance after the Release Management rollout.
+- Added a dedicated Release Management architecture and operations runbook.
+
+## 2026-07-14 Production Releases
+
+- **PR #13 - Batch Parse service refactor:** extracted runtime, result normalization, and view-context logic from `views.py` into `xhs_download/services/batch_parse/` while preserving existing behavior.
+- **PR #14 - Production deploy hardening:** replaced automatic recursive ownership repair with explicit validation, hardened readiness checks, and moved Gunicorn runtime files to the systemd-managed `/run/animeimages/` directory.
+- **PR #15 - Provider stability fixes:** improved batch Douyin provider budgeting and fallback behavior, strengthened Douyin metadata handling, and improved Bilibili parsing reliability.
+- **PR #16 - Production follow-up labels:** documented the observed `mobile_feed` fallback and mapped that internal provider value to the user-facing `本地解析` label without changing provider order.
+- **PR #17 - Admin Release Management v1:** added audited, exact-SHA `main` release jobs, a non-blocking external executor boundary, single-active-job protection, deployment verification, and locally vendored Bootstrap Icons.
+- **PR #18 - Read-only Git state production fix:** removed Web-triggered remote refresh, restricted Web Git access to local read-only refs, added actionable dubious-ownership handling, and documented the exact-path `safe.directory` boundary.
 
 ## 2026-07-07 Current Main
 
