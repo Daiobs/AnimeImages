@@ -52,10 +52,9 @@ Production deploys use a fixed application ownership model:
 /srv/animeimages:
   owner: ubuntu
   group: ubuntu
-
-/run/animeimages:
-  managed by systemd RuntimeDirectory
 ```
+
+Current production Gunicorn listens on TCP `127.0.0.1:8000` and does not use `/run/animeimages`. A future Unix-socket hardening target may use `/run/animeimages` managed by systemd `RuntimeDirectory`, but that topology is not currently deployed.
 
 `deploy.sh` and `pre_deploy_check.sh` check the ownership of `/srv/animeimages` before Git operations. They do not recursively repair ownership. If the application directory owner or group is wrong, the deploy must fail and the operator must repair it explicitly:
 
@@ -150,28 +149,25 @@ gunicorn djangoProject.wsgi:application
 
 Add `gunicorn` to dependencies when a deployment target is chosen.
 
-For the VPS baseline, keep Gunicorn behind Nginx on a systemd-managed Unix socket:
+### Current Production Topology
+
+The current production service runs Gunicorn as `www-data`, binds TCP `127.0.0.1:8000`, and receives traffic from Nginx on that local address. The application checkout remains owned by `ubuntu:ubuntu`.
+
+Current systemd shape:
 
 ```ini
 [Service]
-User=ubuntu
+User=www-data
 Group=www-data
 WorkingDirectory=/srv/animeimages
 EnvironmentFile=/srv/animeimages/.env.production
-RuntimeDirectory=animeimages
-RuntimeDirectoryMode=0750
 UMask=0007
-ExecStart=/srv/animeimages/.venv/bin/gunicorn djangoProject.wsgi:application --bind unix:/run/animeimages/gunicorn.sock --pid /run/animeimages/gunicorn.ctl --workers 2 --timeout 120
+ExecStart=/srv/animeimages/.venv/bin/gunicorn djangoProject.wsgi:application --bind 127.0.0.1:8000 --workers 2 --timeout 120
 Restart=on-failure
 RestartSec=5
 ```
 
-`RuntimeDirectory=animeimages` makes systemd create `/run/animeimages` for the service on every start, so Gunicorn does not depend on a manually created `/var/www/.gunicorn` or `/run/animeimages` directory. The socket and pid/control file live under:
-
-```text
-/run/animeimages/gunicorn.sock
-/run/animeimages/gunicorn.ctl
-```
+Gunicorn runs as `www-data`, while the application checkout remains owned by `ubuntu:ubuntu`. The Web process needs read access to application files and approved local Git refs, but it must not own the checkout, run `git fetch`, or receive the production deploy key.
 
 Configure the deployment platform or load balancer with:
 
@@ -184,7 +180,7 @@ When Nginx terminates HTTPS, forward the original scheme and request id:
 
 ```nginx
 upstream animeimages_app {
-    server unix:/run/animeimages/gunicorn.sock;
+    server 127.0.0.1:8000;
 }
 
 location / {
@@ -198,7 +194,41 @@ location / {
 
 With `DJANGO_TRUST_X_FORWARDED_PROTO=True`, Django uses `X-Forwarded-Proto: https` to build secure URLs and apply HTTPS-aware CSRF/session behavior while Gunicorn stays behind local Nginx.
 
-When Gunicorn listens only on the Unix socket, run readiness checks through Nginx, for example `HEALTH_CHECK_URL=http://127.0.0.1/health/ready/ ./scripts/health_check.sh`.
+The current direct readiness target is:
+
+```bash
+HEALTH_CHECK_URL=http://127.0.0.1:8000/health/ready/ ./scripts/health_check.sh
+```
+
+### Future Recommended Hardening Target (Not Currently Deployed)
+
+A future reviewed infrastructure change may replace the local TCP listener with a systemd-managed Unix socket. This is not the current production topology and must not be treated as already deployed.
+
+Future systemd shape:
+
+```ini
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/srv/animeimages
+EnvironmentFile=/srv/animeimages/.env.production
+RuntimeDirectory=animeimages
+RuntimeDirectoryMode=0750
+UMask=0007
+ExecStart=/srv/animeimages/.venv/bin/gunicorn djangoProject.wsgi:application --bind unix:/run/animeimages/gunicorn.sock --pid /run/animeimages/gunicorn.ctl --workers 2 --timeout 120
+Restart=on-failure
+RestartSec=5
+```
+
+In that future topology, systemd creates `/run/animeimages` on service start and Nginx uses:
+
+```nginx
+upstream animeimages_app {
+    server unix:/run/animeimages/gunicorn.sock;
+}
+```
+
+The change requires coordinated systemd and Nginx updates, service restart, socket permission validation, and readiness smoke tests. This documentation PR does not apply any of those server changes.
 
 ## Database
 

@@ -1,6 +1,6 @@
 # Codex Handoff
 
-Last updated: 2026-07-13
+Last updated: 2026-07-14
 
 This document is the first stop when a new Codex project or thread takes over AnimeImages.
 
@@ -52,15 +52,15 @@ Current production site:
 https://download.cosflow.icu/
 ```
 
-## Current Main Baseline
+## Last Audited Runtime Baseline
 
-As of this handoff, `main` is at:
+This handoff was audited against the following application runtime baseline:
 
 ```text
-494b191 Document production follow-up and batch provider labels (#16)
+6b1787f Make release Git state read-only (#18)
 ```
 
-This commit only represents the time this document was last updated. Update this section after every `main` merge. If unsure, check the remote baseline:
+This SHA is not a real-time pointer to `main`. Fetch and read the current remote baseline before starting work:
 
 ```bash
 git fetch origin
@@ -69,6 +69,8 @@ git log -1 --oneline origin/main
 
 Recent merged milestones:
 
+- PR #18: Read-only local Git state for Release Management Web requests and an exact-path `safe.directory` production fix.
+- PR #17: Admin Release Management v1 with audited main jobs, pinned target SHA, external non-blocking execution, and local Bootstrap Icons.
 - PR #16: Production follow-up documentation and user-facing `mobile_feed` provider labeling.
 - PR #15: Batch parse provider stability fixes and batch-specific TianTianJieXi budgeting.
 - PR #14: Production deploy ownership and Gunicorn runtime hardening.
@@ -148,6 +150,7 @@ Do not treat `.env *_ENABLED=True` as public launch approval. Routine rollout is
 /admin/policy-center/
 /admin/ops-dashboard/
 /admin/xhs_download/batchparseruntimesetting/
+/admin/release-management/
 ```
 
 ## Batch Parse State
@@ -201,9 +204,21 @@ Production should run with:
 - PostgreSQL.
 - Redis/Django cache.
 - Gunicorn behind Nginx.
+- Gunicorn running as `www-data`; the Web process reads application code and local Git refs but does not own the checkout.
 - `DJANGO_ENV=production`.
 - `DJANGO_DEBUG=False`.
 - `.env.production` readable by the process that runs management commands and systemd.
+
+Current production topology:
+
+```text
+Gunicorn user:  www-data
+Gunicorn bind:  127.0.0.1:8000
+Nginx upstream: http://127.0.0.1:8000
+Checkout owner: ubuntu:ubuntu
+```
+
+The current server does not use `/run/animeimages/gunicorn.sock`. The systemd-managed Unix socket documented elsewhere is a future recommended hardening target, not a deployed production fact. Moving to it requires a separate systemd/Nginx change and smoke validation.
 
 Preferred deploy path:
 
@@ -213,7 +228,7 @@ cd /srv/animeimages
 ./scripts/deploy.sh
 ```
 
-`deploy.sh` deploys `main` by default. Use it for routine production updates after the branch has been merged into `main`. For staging-only branch deploys, set `DEPLOY_BRANCH` explicitly. Do not run `deploy.sh` as root. The production checkout should stay owned by `ubuntu:ubuntu`.
+`deploy.sh` deploys `main` by default. Use it for routine production updates after the branch has been merged into `main`. For staging-only branch deploys, set `DEPLOY_BRANCH` explicitly. Do not run `deploy.sh` as root. The production checkout must stay owned by `ubuntu:ubuntu`; Gunicorn runs separately as `www-data`.
 
 Manual fallback deploy path:
 
@@ -240,18 +255,19 @@ GALLERYDL_BINARY="/srv/animeimages/.venv/bin/python -m gallery_dl"
 
 ## Admin Release Management v1
 
-The release-management branch adds `/admin/release-management/`, but v1 is deliberately main-only:
+PR #17 and PR #18 are merged and deployed. `/admin/release-management/` is available in production, but v1 is deliberately main-only and record-only by default. See `docs/release-management.md` for the complete operating model.
 
 - Every production Web request reads local Git refs only. The page has no remote-refresh action, and `www-data` must not run `git fetch`.
 - Local `origin/main` and Tag refs are refreshed by the `ubuntu` deployment workflow or a separately controlled operations task.
 - Creating a job reads the local `origin/main` and stores the exact deployment commit in `job.target_sha`.
 - The database allows only one pending/running execution slot.
-- After merge and the first production deployment, v1 is record-only by default. The production environment example must leave `RELEASE_MANAGEMENT_EXECUTOR_COMMAND` empty.
+- Production remains record-only after the PR #17 and PR #18 rollout. The production environment example must leave `RELEASE_MANAGEMENT_EXECUTOR_COMMAND` empty.
 - Without an executor, a release job remains `pending` as an audit record and does not deploy or restart services automatically.
 - Django may submit a systemd job, but it must not run or wait for `deploy.sh` in the request thread.
 - The v1 executor only accepts `systemctl start --no-block animeimages-deploy@{job_id}.service` submission; direct `deploy.sh` execution is rejected.
 - Set `RELEASE_MANAGEMENT_EXECUTOR_COMMAND` in `/srv/animeimages/.env.production` only after independently verifying the systemd one-shot unit, sudoers rule, runtime user, application and virtualenv paths, and filesystem permissions on production.
-- Because the repository is owned by `ubuntu:ubuntu` and read by the Web process, configure `sudo git config --system --add safe.directory /srv/animeimages`. Do not change repository ownership or use a wildcard safe-directory entry.
+- Gunicorn runs as `www-data`, while `/srv/animeimages` remains owned by `ubuntu:ubuntu`. The Web path may read local refs but must never execute `git fetch` or receive the production deploy key.
+- Configure exactly `sudo git config --system --add safe.directory /srv/animeimages`. Do not change repository ownership, do not use `safe.directory=*`, and do not add a broader parent path.
 - The external management command passes `DEPLOY_TARGET_SHA=job.target_sha`; deployment fails unless the SHA is reachable from `origin/main` and final `HEAD` equals it.
 - Tags stay visible for reference. Tag/commit deployment and rollback are disabled until migration-aware rollback safeguards exist.
 
@@ -304,6 +320,7 @@ User preference:
 - Merging `main` requires an explicit user request.
 - Documentation-only branches should still be reviewed before merge.
 - Use SSH remote already configured for GitHub.
+- For a squash merge, keep the complete design record in the PR body. The squash commit body must retain concise `Summary`, `Validation`, `Deployment`, and `Rollback` information at minimum.
 
 Default branch naming:
 
@@ -357,6 +374,15 @@ Explain:
 - Whether migrations are added.
 - Whether Provider, Download, or Runtime behavior changes.
 
+### Documentation Impact
+
+Choose exactly one:
+
+```text
+Updated: <files>
+Not needed: <reason>
+```
+
 ### Verification
 
 List the exact test, check, and manual verification commands that were run.
@@ -387,6 +413,10 @@ Explain:
 - How to roll back.
 - Whether the PR can be reverted directly.
 - Whether database handling is required.
+
+### Non-goals
+
+List work that is intentionally excluded from the PR so reviewers do not infer a broader rollout or architecture change.
 
 Add PR-type-specific sections when relevant:
 
@@ -425,11 +455,7 @@ Also include:
 
 ### Documentation PR
 
-Documentation-only PRs may use a shorter body:
-
-- Summary.
-- Files changed.
-- Verification.
+Documentation-only PRs still use the Extended Description headings. Keep Design / Implementation, Scope, Safety, Deployment Notes, Rollback, and Non-goals concise when they are not complex, and list all changed documentation under Documentation Impact.
 
 ## Documentation Maintenance Rules
 
@@ -455,12 +481,11 @@ Update `docs/codex-handoff.md` when a PR changes:
 
 Historical plan documents must be marked clearly as `historical`, `archival`, or `research` when they no longer represent the active production route. They can remain useful background, but must not be treated as the current source of truth.
 
-Every PR description should include a `Documentation impact` line with one of:
+Every PR description must include a `Documentation Impact` section with exactly one of:
 
 ```text
-Documentation impact: Not needed
-Documentation impact: Updated README/current-version/codex-handoff
-Documentation impact: Historical docs updated
+Updated: <files>
+Not needed: <reason>
 ```
 
 ## Known Pitfalls
@@ -485,9 +510,10 @@ Good next tasks from the current baseline:
    - Keep `/batch/` behavior stable.
    - Move batch page JavaScript out of `static/js/app.js`.
    - Separate settings modal, parse request lifecycle, result rendering, and download handoff logic.
-4. Finish Release Management v1 production wiring and smoke validation for exact-SHA `main` deploys.
+4. Keep Release Management v1 record-only until its external execution boundary is independently approved and tested.
    - Keep Tag/commit switching disabled.
    - Do not add automatic migration rollback in v1.
+   - Do not give `www-data` GitHub credentials or Git write access.
 5. Provider Strategy v1 remains stabilization and smoke work.
    - Keep TianTianJieXi/KuKuTool smoke fixtures healthy.
    - Continue measuring browser handoff vs server attachment.

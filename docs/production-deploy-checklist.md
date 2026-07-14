@@ -24,16 +24,40 @@ sudo apt install -y python3 python3-venv python3-pip git nginx postgresql redis-
 
 ## 2. Fetch Code
 
-- [ ] Clone or update repository:
+- [ ] As `ubuntu`, install the dedicated deploy key at `~/.ssh/animeimages_deploy`. Do not copy this key to `www-data`.
+- [ ] Configure the production SSH host alias in `~/.ssh/config`:
+
+```sshconfig
+Host github-animeimages
+  HostName github.com
+  User git
+  IdentityFile ~/.ssh/animeimages_deploy
+  IdentitiesOnly yes
+```
+
+- [ ] Restrict the SSH files and verify the alias:
+
+```bash
+chmod 700 ~/.ssh
+chmod 600 ~/.ssh/config ~/.ssh/animeimages_deploy
+ssh -T git@github-animeimages
+```
+
+GitHub should confirm authentication and may also state that shell access is not provided.
+
+- [ ] Clone or update the repository through the dedicated alias:
 
 ```bash
 cd /srv
-git clone git@github.com:Daiobs/AnimeImages.git animeimages
+git clone git@github-animeimages:Daiobs/AnimeImages.git animeimages
 cd /srv/animeimages
+git remote -v
 git fetch origin
 git checkout main
 git pull --ff-only origin main
 ```
+
+Do not unintentionally replace this remote with the default `git@github.com:Daiobs/AnimeImages.git` form. Git fetch remains an `ubuntu` deployment responsibility; `www-data` must not receive the deploy key or run `git fetch`.
 
 - [ ] Ensure the repository is owned by the deploy user and never by root:
 
@@ -150,7 +174,9 @@ cd /srv/animeimages
 ./scripts/health_check.sh
 ```
 
-- [ ] Gunicorn is exposed to Nginx through `/run/animeimages/gunicorn.sock`.
+- [ ] Gunicorn runs as `www-data` and listens on TCP `127.0.0.1:8000`.
+- [ ] Nginx proxies application requests to `http://127.0.0.1:8000`.
+- [ ] Do not require `/run/animeimages/gunicorn.sock`; it is a future recommended hardening target and is not currently deployed.
 - [ ] Nginx forwards `X-Forwarded-Proto $scheme`, `Host $host`, and `X-Request-ID $request_id`.
 - [ ] `/admin/ops-dashboard/` can be opened by a superuser or staff with observability view permissions.
 - [ ] `/admin/control-plane/` can be opened by a superuser or staff with any observability view permission.
@@ -345,15 +371,18 @@ Do not edit `djangoProject/settings.py` on the server. Move production configura
 ## 8. Configure Gunicorn and systemd
 
 - [ ] Create `/etc/systemd/system/animeimages.service` using the sample from `docs/production-deploy-baseline.md`.
+- [ ] Confirm Gunicorn runs as `www-data` while `/srv/animeimages` remains owned by `ubuntu:ubuntu`.
+- [ ] Confirm Gunicorn binds `127.0.0.1:8000`; the current production service does not use a Unix socket.
 - [ ] Verify placeholders are replaced:
 
 ```text
 /srv/animeimages
 /srv/animeimages/.venv/bin/gunicorn
-/run/animeimages/gunicorn.sock
-/run/animeimages/gunicorn.ctl
+127.0.0.1:8000
 animeimages.example.com
 ```
+
+`/run/animeimages/gunicorn.sock` and `/run/animeimages/gunicorn.ctl` belong to a future recommended hardening target. Do not add them to the current service without a separate reviewed systemd and Nginx rollout.
 
 - [ ] Start service:
 
@@ -373,6 +402,7 @@ journalctl -u animeimages -n 100 --no-pager
 ## 9. Configure Nginx and HTTPS
 
 - [ ] Create `/etc/nginx/sites-available/animeimages`.
+- [ ] Confirm the Nginx upstream points to `127.0.0.1:8000`, not the future Unix socket path.
 - [ ] Link it:
 
 ```bash

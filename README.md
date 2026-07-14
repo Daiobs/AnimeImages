@@ -6,6 +6,7 @@ AnimeImages 是一个 Django 素材解析下载项目，当前主线目标是把
 
 - [Codex 接手指南](docs/codex-handoff.md)
 - [当前版本状态](docs/current-version-status.md)
+- [Release Management 运维指南](docs/release-management.md)
 - [生产部署检查清单](docs/production-deploy-checklist.md)
 - [Provider Runtime Gates](docs/provider-runtime-gates.md)
 - [天天解析 API 说明](docs/tiantianjiexi-api.md)
@@ -29,7 +30,7 @@ AnimeImages 是一个 Django 素材解析下载项目，当前主线目标是把
 - 批量解析：`/batch/` 支持多链接解析，运行参数由 `BatchParseRuntimeSetting` 和 `.env` fallback 控制。
 - 通用 Provider：yt-dlp、gallery-dl 作为长尾平台能力，必须经过 capability gate、runtime gate、platform gate。
 - 下载策略：优先减少服务器中转流量；Provider 视频可走 browser-first / browser blob / server attachment fallback 等策略。
-- 后台运维：Provider 设置、Provider Health Tests、下载运行配置、批量解析运行配置、日志中心、策略中心均已接入后台。
+- 后台运维：Provider 设置、Provider Health Tests、下载运行配置、批量解析运行配置、日志中心、策略中心和 Release Management 均已接入后台。
 
 ## 本地运行
 
@@ -88,6 +89,9 @@ python -m pip install -r requirements.txt
 - 日志中心：`/admin/logs/`
 - Policy Center：`/admin/policy-center/`
 - 运维首页：`/admin/ops-dashboard/`
+- Release Management：`/admin/release-management/`
+
+Release Management v1 只读取本地 Git refs，默认处于 record-only 状态；未配置外部执行器时只记录 `pending` 发布任务，不会自动部署。权限边界、systemd 接线和故障排查见 [Release Management 运维指南](docs/release-management.md)。
 
 ## 常用检查命令
 
@@ -166,6 +170,7 @@ GALLERYDL_BINARY="/srv/animeimages/.venv/bin/python -m gallery_dl"
 - [下载成本守卫](docs/download-cost-guard.md)
 - [Admin Observability](docs/admin-observability.md)
 - [生产部署检查清单](docs/production-deploy-checklist.md)
+- [Release Management 运维指南](docs/release-management.md)
 - [开发流程](docs/development.md)
 - [架构说明](docs/architecture.md)
 - [图库素材](docs/image-library.md)
