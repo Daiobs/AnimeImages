@@ -48,6 +48,7 @@ Production does not currently use `/run/animeimages/gunicorn.sock`. A systemd-ma
 - yt-dlp and gallery-dl are optional generic long-tail providers behind capability, runtime, platform and safety gates.
 - Admin UI includes Provider settings, health tests, logs center, policy center, download runtime settings, batch parse runtime settings, and Release Management.
 - PR #17 and PR #18 are merged into `main` and deployed. Release Management v1 is main-only, record-only by default, and restricted to read-only local Git refs in Web requests.
+- The repository includes root-owned helper, systemd, and sudoers templates for a future Release Executor Wiring v1 rollout. They are not installed or enabled in production.
 - TikHub and older native-enhanced experiments remain historical/diagnostic only; they are not the active Douyin ultra path.
 
 ## Current Route Map
@@ -197,8 +198,9 @@ PR #17 added Admin Release Management v1 and PR #18 applied the read-only Git pr
 - A database constraint permits only one `pending`/`running` job, while execution and cancellation use atomic status transitions.
 - Production remains in record-only mode after the PR #17 and PR #18 rollout. `.env.example.production` does not enable the executor.
 - Without `RELEASE_MANAGEMENT_EXECUTOR_COMMAND`, a release request remains `pending` as an audit record and does not deploy automatically.
-- A direct systemd executor must use `systemctl start --no-block ...`; Django only submits the unit job.
-- Configure the executor in `/srv/animeimages/.env.production` only after independently validating the systemd one-shot unit, sudoers rule, runtime user, application and virtualenv paths, and filesystem permissions.
+- The only accepted executor command is `/usr/bin/sudo -n /usr/local/sbin/animeimages-release-submit {job_id}`. Django binds the current job ID and rejects direct systemd, shell, `deploy.sh`, alternate paths, wrong IDs, and extra arguments.
+- `ops/release-executor/` contains versioned helper, systemd, sudoers, and installation documentation. The installed files must be root-owned and immutable by `ubuntu` and `www-data`.
+- Configure the executor in `/srv/animeimages/.env.production` only after separately installing and validating the helper, systemd unit, sudoers rule, runtime user, application and virtualenv paths, filesystem permissions, and one controlled pending job.
 - Configure `sudo git config --system --add safe.directory /srv/animeimages` so `www-data` can read the `ubuntu:ubuntu` repository without changing ownership. Do not use a wildcard safe directory.
 - `deploy.sh` must deploy `job.target_sha`, verify it is reachable from `origin/main`, and verify final `HEAD == job.target_sha`.
 - Tags remain visible, but v1 does not create or execute Tag/commit switching jobs.
@@ -212,6 +214,9 @@ Core checks:
 python manage.py check
 python manage.py makemigrations --check --dry-run
 python manage.py test xhs_download --noinput
+bash -n ops/release-executor/animeimages-release-submit
+bash -n scripts/validate_release_executor.sh
+./scripts/validate_release_executor.sh
 ```
 
 Provider checks:
@@ -240,11 +245,12 @@ curl -i https://download.cosflow.icu/health/ready/
 6. Unapplied migrations are the most common cause of admin `OperationalError`.
 7. Batch Douyin ultra may occasionally fall back to `mobile_feed` / 本地解析 even when the same link can return ultra-HD in single-link testing. Treat this as an observation item until production feedback or log volume shows it is frequent enough to justify lowering ultra-HD batch concurrency or adding a targeted retry.
 8. Release Management v1 does not provide migration-aware Tag rollback. Do not treat the visible Tag list as an enabled version-switch workflow.
+9. The release executor templates are repository artifacts only. Production remains record-only until a separate server installation and controlled-job validation are explicitly approved and completed.
 
 ## Next Priorities
 
 1. Keep documentation current after major PRs; update this file and `docs/codex-handoff.md`.
 2. Review the existing `xhs_download/services/batch_parse/` boundary from PR #13 and remove residual wrappers from `views.py`; do not restart the extraction from zero.
 3. Move batch-page logic out of `static/js/app.js` into a focused module while preserving `/batch/` behavior.
-4. Keep Release Management v1 record-only unless the systemd one-shot unit, narrow sudoers rule, runtime user, paths, and permissions are independently validated. Keep Tag/commit switching disabled.
+4. Keep Release Management v1 record-only unless the root-owned helper, systemd one-shot unit, narrow sudoers rule, runtime user, paths, permissions, and a controlled pending job are independently validated on production. Keep Tag/commit switching disabled.
 5. Keep Provider Strategy v1 in smoke/stabilization mode; defer new provider/platform expansion until the structural work is settled.

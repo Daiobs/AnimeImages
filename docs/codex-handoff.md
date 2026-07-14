@@ -69,6 +69,7 @@ git log -1 --oneline origin/main
 
 Recent merged milestones:
 
+- PR #19: Synchronized Release Management, deployment, handoff, changelog, README, and PR template documentation with the last audited production state.
 - PR #18: Read-only local Git state for Release Management Web requests and an exact-path `safe.directory` production fix.
 - PR #17: Admin Release Management v1 with audited main jobs, pinned target SHA, external non-blocking execution, and local Bootstrap Icons.
 - PR #16: Production follow-up documentation and user-facing `mobile_feed` provider labeling.
@@ -208,6 +209,7 @@ Production should run with:
 - `DJANGO_ENV=production`.
 - `DJANGO_DEBUG=False`.
 - `.env.production` readable by the process that runs management commands and systemd.
+- `RELEASE_MANAGEMENT_EXECUTOR_COMMAND` empty until the separately reviewed root-owned helper, systemd unit, and sudoers boundary are installed and validated.
 
 Current production topology:
 
@@ -264,8 +266,9 @@ PR #17 and PR #18 are merged and deployed. `/admin/release-management/` is avail
 - Production remains record-only after the PR #17 and PR #18 rollout. The production environment example must leave `RELEASE_MANAGEMENT_EXECUTOR_COMMAND` empty.
 - Without an executor, a release job remains `pending` as an audit record and does not deploy or restart services automatically.
 - Django may submit a systemd job, but it must not run or wait for `deploy.sh` in the request thread.
-- The v1 executor only accepts `systemctl start --no-block animeimages-deploy@{job_id}.service` submission; direct `deploy.sh` execution is rejected.
-- Set `RELEASE_MANAGEMENT_EXECUTOR_COMMAND` in `/srv/animeimages/.env.production` only after independently verifying the systemd one-shot unit, sudoers rule, runtime user, application and virtualenv paths, and filesystem permissions on production.
+- The v1 executor only accepts `/usr/bin/sudo -n /usr/local/sbin/animeimages-release-submit {job_id}`. Django binds the current numeric job ID and rejects direct systemd, shell, `deploy.sh`, alternate helper paths, wrong IDs, and extra arguments.
+- Versioned templates live in `ops/release-executor/`; `scripts/validate_release_executor.sh` performs repository-only checks without sudo, installation, systemd startup, or database writes.
+- Production has not installed or enabled this executor boundary. Set `RELEASE_MANAGEMENT_EXECUTOR_COMMAND` in `/srv/animeimages/.env.production` only after separately installing the root-owned helper, systemd unit, and sudoers rule, then validating runtime user, paths, permissions, a controlled pending job, logs, final SHA, and readiness.
 - Gunicorn runs as `www-data`, while `/srv/animeimages` remains owned by `ubuntu:ubuntu`. The Web path may read local refs but must never execute `git fetch` or receive the production deploy key.
 - Configure exactly `sudo git config --system --add safe.directory /srv/animeimages`. Do not change repository ownership, do not use `safe.directory=*`, and do not add a broader parent path.
 - The external management command passes `DEPLOY_TARGET_SHA=job.target_sha`; deployment fails unless the SHA is reachable from `origin/main` and final `HEAD` equals it.
@@ -281,6 +284,8 @@ git status --short --branch
 git log --oneline --decorate --max-count=8
 .venv/bin/python manage.py check
 .venv/bin/python manage.py makemigrations --check --dry-run
+bash -n ops/release-executor/animeimages-release-submit
+./scripts/validate_release_executor.sh
 ```
 
 If the change touches providers or downloads:
@@ -510,7 +515,7 @@ Good next tasks from the current baseline:
    - Keep `/batch/` behavior stable.
    - Move batch page JavaScript out of `static/js/app.js`.
    - Separate settings modal, parse request lifecycle, result rendering, and download handoff logic.
-4. Keep Release Management v1 record-only until its external execution boundary is independently approved and tested.
+4. Keep Release Management v1 record-only until the versioned root-owned helper, systemd unit, and sudoers boundary are separately installed and a controlled pending job is independently approved and tested on production.
    - Keep Tag/commit switching disabled.
    - Do not add automatic migration rollback in v1.
    - Do not give `www-data` GitHub credentials or Git write access.

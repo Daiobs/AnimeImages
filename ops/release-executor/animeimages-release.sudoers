@@ -1,0 +1,4 @@
+# Install as /etc/sudoers.d/animeimages-release with root:root ownership and mode 0440.
+# The helper is the only privileged entry point; it validates exactly one numeric job ID.
+Cmnd_Alias ANIMEIMAGES_RELEASE_SUBMIT = /usr/local/sbin/animeimages-release-submit *
+www-data ALL=(root) NOPASSWD: NOSETENV: ANIMEIMAGES_RELEASE_SUBMIT

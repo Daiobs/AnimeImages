@@ -1,0 +1,17 @@
+[Unit]
+Description=AnimeImages release deployment job %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/srv/animeimages
+EnvironmentFile=/srv/animeimages/.env.production
+ExecStart=/srv/animeimages/.venv/bin/python /srv/animeimages/manage.py run_release_deploy_job --job-id %i
+TimeoutStartSec=20min
+UMask=0022
+KillMode=control-group
+Restart=no
+PrivateTmp=true

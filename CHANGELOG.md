@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added Release Management Executor Wiring v1 with an exact `sudo -n` submit-helper allowlist, root-owned helper/systemd/sudoers templates, static validation, failure sanitization, and production runbooks; production remains record-only until a separate approved installation.
 - Synchronized README, handoff, current-version, changelog, deployment, and PR-template guidance after the Release Management rollout.
 - Added a dedicated Release Management architecture and operations runbook.
 

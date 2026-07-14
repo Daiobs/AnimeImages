@@ -28,6 +28,16 @@ PRODUCTION_SAFE_DIRECTORY_COMMAND = (
     "sudo git config --system --add safe.directory /srv/animeimages"
 )
 READ_ONLY_GIT_COMMANDS = frozenset({"merge-base", "rev-list", "rev-parse", "show", "tag"})
+RELEASE_EXECUTOR_COMMAND_TEMPLATE = (
+    "/usr/bin/sudo",
+    "-n",
+    "/usr/local/sbin/animeimages-release-submit",
+    "{job_id}",
+)
+EXECUTOR_ERROR_MAX_CHARS = 300
+EXECUTOR_ERROR_INPUT_MAX_CHARS = 4000
+ENV_ASSIGNMENT_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*=[^\s]+")
+CONTROL_CHARACTER_RE = re.compile(r"[\x00-\x1f\x7f]+")
 
 
 @dataclass(frozen=True)
@@ -235,24 +245,48 @@ def release_executor_command():
     if not command:
         return []
     try:
-        return shlex.split(command)
+        parsed = shlex.split(command)
     except ValueError as error:
         raise ValueError(
             "RELEASE_MANAGEMENT_EXECUTOR_COMMAND 配置无效：命令引号未闭合。"
         ) from error
+    if tuple(parsed) != RELEASE_EXECUTOR_COMMAND_TEMPLATE:
+        raise ValueError(
+            "RELEASE_MANAGEMENT_EXECUTOR_COMMAND 配置无效：只允许固定的 "
+            "sudo -n release submit helper 与 {job_id} 占位符。"
+        )
+    return parsed
+
+
+def approved_release_executor_command(job_id):
+    try:
+        normalized_job_id = int(job_id)
+    except (TypeError, ValueError) as error:
+        raise ValueError("release executor job ID must be a positive integer") from error
+    if normalized_job_id <= 0 or str(normalized_job_id) != str(job_id):
+        raise ValueError("release executor job ID must be a positive integer")
+    return [*RELEASE_EXECUTOR_COMMAND_TEMPLATE[:3], str(normalized_job_id)]
+
+
+def release_executor_trigger_command_is_approved(command, job_id):
+    try:
+        expected = approved_release_executor_command(job_id)
+    except ValueError:
+        return False
+    return isinstance(command, list) and command == expected
+
+
+def sanitize_executor_error(error_message, fallback="release executor submission failed"):
+    message = str(error_message or "")[:EXECUTOR_ERROR_INPUT_MAX_CHARS]
+    message = CONTROL_CHARACTER_RE.sub(" ", message)
+    message = ENV_ASSIGNMENT_RE.sub("[redacted]", message)
+    message = " ".join(message.split())
+    return (message or fallback)[:EXECUTOR_ERROR_MAX_CHARS]
 
 
 def build_command_plan(job):
     executor = release_executor_command()
-    if executor:
-        try:
-            trigger_command = [part.format(job_id=job.pk) for part in executor]
-        except (KeyError, IndexError, ValueError) as error:
-            raise ValueError(
-                "RELEASE_MANAGEMENT_EXECUTOR_COMMAND 配置无效：仅支持 {job_id} 占位符。"
-            ) from error
-    else:
-        trigger_command = []
+    trigger_command = approved_release_executor_command(job.pk) if executor else []
     deploy_environment = {
         "DEPLOY_BRANCH": "main" if job.target_type == ReleaseDeployTargetType.MAIN else "",
         "DEPLOY_TARGET_TYPE": job.target_type,
@@ -337,7 +371,7 @@ def claim_pending_release_deploy_job(job_id):
 
 def mark_executor_trigger_failed(job, error_message):
     now = timezone.now()
-    message = (error_message or "release executor trigger failed")[:300]
+    message = sanitize_executor_error(error_message)
     ReleaseDeployJob.objects.filter(
         pk=job.pk,
         status=ReleaseDeployJobStatus.PENDING,
@@ -356,11 +390,10 @@ def trigger_release_executor(job):
         result = GitResult(ok=False, stderr="release executor is not configured", returncode=127)
         mark_executor_trigger_failed(job, result.stderr)
         return result
-    uses_systemctl_start = any(os.path.basename(part) == "systemctl" for part in command) and "start" in command
-    if not uses_systemctl_start or "--no-block" not in command:
+    if not release_executor_trigger_command_is_approved(command, job.pk):
         result = GitResult(
             ok=False,
-            stderr="release executor must use systemctl start --no-block",
+            stderr="release executor command does not match the approved sudo helper",
             returncode=2,
         )
         mark_executor_trigger_failed(job, result.stderr)
@@ -374,14 +407,33 @@ def trigger_release_executor(job):
             text=True,
             timeout=release_trigger_timeout_seconds(),
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        result = GitResult(ok=False, stderr=f"{type(error).__name__}: {error}", returncode=124)
+    except subprocess.TimeoutExpired:
+        result = GitResult(
+            ok=False,
+            stderr="release executor submission timed out",
+            returncode=124,
+        )
+        mark_executor_trigger_failed(job, result.stderr)
+        return result
+    except OSError as error:
+        result = GitResult(
+            ok=False,
+            stderr=f"release executor could not be started ({type(error).__name__})",
+            returncode=127,
+        )
         mark_executor_trigger_failed(job, result.stderr)
         return result
     result = GitResult(
         ok=completed.returncode == 0,
         stdout=(completed.stdout or "").strip(),
-        stderr=(completed.stderr or "").strip(),
+        stderr=(
+            ""
+            if completed.returncode == 0
+            else sanitize_executor_error(
+                completed.stderr,
+                fallback=f"release executor exited with status {completed.returncode}",
+            )
+        ),
         returncode=completed.returncode,
     )
     if not result.ok:

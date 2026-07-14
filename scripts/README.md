@@ -53,10 +53,10 @@ Release Management v1 合并和首次部署后默认是 record-only。生产示�
 
 ```text
 RELEASE_MANAGEMENT_EXECUTOR_COMMAND=
-# RELEASE_MANAGEMENT_EXECUTOR_COMMAND="/usr/bin/sudo /bin/systemctl start --no-block animeimages-deploy@{job_id}.service"
+# RELEASE_MANAGEMENT_EXECUTOR_COMMAND="/usr/bin/sudo -n /usr/local/sbin/animeimages-release-submit {job_id}"
 ```
 
-只有在生产服务器上独立验证 systemd one-shot、sudoers 规则、服务运行用户、应用与虚拟环境路径及文件权限后，才允许在 `/srv/animeimages/.env.production` 中设置该命令。启用后，v1 只接受 `systemctl start --no-block` 形式的非阻塞提交，直接配置 `deploy.sh` 会被拒绝。
+只有在生产服务器上独立安装并验证 root-owned helper、systemd one-shot、sudoers 规则、服务运行用户、应用与虚拟环境路径、`ubuntu` 现有部署 sudo 边界及文件权限后，才允许在 `/srv/animeimages/.env.production` 中设置该命令。启用后，v1 只接受固定的 `sudo -n` helper 形态；直接配置 systemd、shell 或 `deploy.sh` 都会被拒绝。模板和无副作用验证入口见 `ops/release-executor/README.md` 与 `scripts/validate_release_executor.sh`。
 
 systemd one-shot 服务再调用：
 

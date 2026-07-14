@@ -71,14 +71,14 @@ sudo chown -R ubuntu:ubuntu /srv/animeimages
 whoami
 ```
 
-- [ ] Pin the deployed version:
+- [ ] Record the intended deployed version while remaining on `main`:
 
 ```bash
-git checkout <deploy-commit>
+git switch main
 git rev-parse HEAD
 ```
 
-Record the commit in the deploy log.
+Record the commit in the deploy log. Do not leave the production checkout on a detached HEAD; `pre_deploy_check.sh` and Release Management require `main`.
 
 ## 3. Create Python Environment
 
@@ -131,6 +131,7 @@ DJANGO_CSRF_TRUSTED_ORIGINS=https://animeimages.example.com
 XHS_ALLOW_SERVER_SAVE=False
 XHS_ALLOW_ABSOLUTE_SAVE_PATH=False
 DOWNLOAD_ASYNC_TASKS_ENABLED=False
+RELEASE_MANAGEMENT_EXECUTOR_COMMAND=
 THIRD_PARTY_PROVIDER_ENABLED=True
 THIRD_PARTY_PUBLIC_ACCESS_ENABLED=True
 ULTRA_HD_PROVIDER_ENABLED=True
@@ -355,16 +356,7 @@ cd /srv/animeimages
 ./scripts/deploy.sh
 ```
 
-If deployment fails after a bad code change, rollback to the previous known-good commit:
-
-```bash
-cd /srv/animeimages
-git fetch origin
-git reset --hard <previous-good-commit>
-/srv/animeimages/.venv/bin/python manage.py migrate
-/srv/animeimages/.venv/bin/python manage.py collectstatic --noinput
-sudo systemctl restart animeimages
-```
+If deployment fails after a bad code change, follow the reviewed `main` revert and explicitly controlled emergency procedure in section 12. Do not leave the production checkout on a detached or non-`main` state before the next pre-deploy or Release Management operation.
 
 Do not edit `djangoProject/settings.py` on the server. Move production configuration into `/srv/animeimages/.env.production`.
 
@@ -398,6 +390,50 @@ sudo systemctl status animeimages --no-pager
 ```bash
 journalctl -u animeimages -n 100 --no-pager
 ```
+
+## 8.1 Optional Release Executor Wiring
+
+Release executor installation is a separate production change. A normal application deployment must leave `RELEASE_MANAGEMENT_EXECUTOR_COMMAND=` and must not install or enable these templates automatically.
+
+- [ ] Run repository-only checks before any installation:
+
+```bash
+cd /srv/animeimages
+bash -n ops/release-executor/animeimages-release-submit
+bash -n scripts/validate_release_executor.sh
+./scripts/validate_release_executor.sh
+```
+
+- [ ] Review `ops/release-executor/README.md` and install only during an explicitly approved maintenance window.
+- [ ] Install `/usr/local/sbin/animeimages-release-submit` as `root:root` mode `0755`; confirm neither `ubuntu` nor `www-data` can modify it.
+- [ ] Install `/etc/systemd/system/animeimages-deploy@.service` as `root:root` mode `0644`.
+- [ ] Confirm the unit is `Type=oneshot`, runs as `ubuntu:ubuntu`, uses `/srv/animeimages/.env.production`, and executes `/srv/animeimages/.venv/bin/python /srv/animeimages/manage.py run_release_deploy_job --job-id %i`.
+- [ ] Install `/etc/sudoers.d/animeimages-release` as `root:root` mode `0440`.
+- [ ] Confirm sudoers grants `www-data` only `/usr/local/sbin/animeimages-release-submit *`; it must not grant direct `systemctl`, shell, Git, `deploy.sh`, or any executable below `/srv/animeimages`.
+- [ ] Validate and reload systemd:
+
+```bash
+sudo visudo -cf /etc/sudoers.d/animeimages-release
+sudo systemd-analyze verify /etc/systemd/system/animeimages-deploy@.service
+sudo systemctl daemon-reload
+```
+
+- [ ] Keep the executor empty and create one controlled main-only pending job through the admin page.
+- [ ] Submit that real numeric job ID through the fixed helper:
+
+```bash
+sudo -u www-data /usr/bin/sudo -n /usr/local/sbin/animeimages-release-submit <job-id>
+sudo journalctl -u animeimages-deploy@<job-id>.service --no-pager
+```
+
+- [ ] Confirm the job moves `pending -> running -> succeeded`, is claimed only once, final `HEAD` equals `job.target_sha`, and `/health/ready/` returns HTTP 200.
+- [ ] Only after all checks pass, set the exact value below in `/srv/animeimages/.env.production` and restart Gunicorn:
+
+```text
+RELEASE_MANAGEMENT_EXECUTOR_COMMAND="/usr/bin/sudo -n /usr/local/sbin/animeimages-release-submit {job_id}"
+```
+
+This wiring does not modify `animeimages.service`, Nginx, or the current `www-data` plus `127.0.0.1:8000` Gunicorn topology. It does not enable Tag/commit deployment.
 
 ## 9. Configure Nginx and HTTPS
 
@@ -470,11 +506,14 @@ Readiness must return HTTP 200 and include both cache and database components as
 If deployment fails:
 
 - [ ] Record failing commit and error.
-- [ ] Switch to previous known-good commit:
+- [ ] Immediately disable new Release Management submissions by clearing `RELEASE_MANAGEMENT_EXECUTOR_COMMAND` and restarting Gunicorn. Inspect any already-submitted one-shot separately; clearing the variable does not cancel it.
+- [ ] Create and merge a reviewed revert on `main`. Release Management v1 cannot deploy an older Tag or arbitrary commit.
+- [ ] For an explicitly approved emergency manual rollback only, record the temporary checkout state and restore `main` before returning to routine deployment:
 
 ```bash
 cd /srv/animeimages
-git checkout <previous-good-commit>
+git fetch origin
+git reset --hard <previous-good-commit>
 ```
 
 - [ ] Reinstall requirements if they changed:
@@ -493,3 +532,4 @@ sudo systemctl reload nginx
 ```
 
 - [ ] Re-check `/health/live/`, `/health/ready/`, home page, and one stable adapter smoke.
+- [ ] Restore the production checkout to reviewed `main` before the next `pre_deploy_check.sh` or Release Management operation.
