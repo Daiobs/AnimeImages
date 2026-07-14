@@ -1,0 +1,15 @@
+#!/bin/bash
+set -euo pipefail
+
+if [[ "$#" -ne 1 ]]; then
+  echo "usage: animeimages-release-submit <numeric-job-id>" >&2
+  exit 64
+fi
+
+job_id="$1"
+if [[ ! "$job_id" =~ ^[1-9][0-9]{0,18}$ ]]; then
+  echo "job ID must be a positive integer" >&2
+  exit 64
+fi
+
+exec /bin/systemctl start --no-block "animeimages-deploy@${job_id}.service"

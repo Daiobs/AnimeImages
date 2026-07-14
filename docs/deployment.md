@@ -319,22 +319,26 @@ Release Management v1 is record-only by default after merge and the first produc
 
 ```text
 RELEASE_MANAGEMENT_EXECUTOR_COMMAND=
-# Enable only after the systemd one-shot unit and sudoers rule have been
-# installed and independently tested on the production server.
-# RELEASE_MANAGEMENT_EXECUTOR_COMMAND="/usr/bin/sudo /bin/systemctl start --no-block animeimages-deploy@{job_id}.service"
+# Enable only after the root-owned helper, systemd unit, and sudoers rule have
+# been installed and independently tested on the production server.
+# RELEASE_MANAGEMENT_EXECUTOR_COMMAND="/usr/bin/sudo -n /usr/local/sbin/animeimages-release-submit {job_id}"
 ```
 
-Set `RELEASE_MANAGEMENT_EXECUTOR_COMMAND` in `/srv/animeimages/.env.production` only after the systemd one-shot unit, sudoers rule, service runtime user, application and virtualenv paths, and filesystem permissions have been independently verified on the production server. Example production configuration must not enable the executor by default.
+Set `RELEASE_MANAGEMENT_EXECUTOR_COMMAND` in `/srv/animeimages/.env.production` only after the root-owned helper, systemd one-shot unit, sudoers rule, service runtime user, application and virtualenv paths, and filesystem permissions have been independently verified on the production server. Example production configuration must not enable the executor by default.
 
-Once explicitly enabled, `--no-block` is required. Release Management v1 rejects executor commands that are not `systemctl start --no-block` submissions, including direct `deploy.sh` commands. The Django request waits only for systemd to accept the unit job; it never waits for deployment, migration, restart, or health check completion.
+The only accepted executor argv is `/usr/bin/sudo -n /usr/local/sbin/animeimages-release-submit <current-job-id>`. Release Management rejects direct `systemctl`, direct `deploy.sh`, shell wrappers, alternate paths, missing `-n`, wrong IDs, and extra arguments. The request waits only for the root-owned helper to submit systemd work; it never waits for deployment, migration, restart, or health check completion.
 
-The external service should run:
+Repository templates and the non-installing validator live in `ops/release-executor/` and `scripts/validate_release_executor.sh`. The production installation must use these fixed paths and permissions:
 
-```bash
-cd /srv/animeimages
-source .venv/bin/activate
-python manage.py run_release_deploy_job --job-id <job_id>
+```text
+/usr/local/sbin/animeimages-release-submit         root:root 0755
+/etc/systemd/system/animeimages-deploy@.service   root:root 0644
+/etc/sudoers.d/animeimages-release                root:root 0440
 ```
+
+Neither `ubuntu` nor `www-data` may modify those installed files. The sudoers rule grants `www-data` only the fixed helper, never direct or wildcard `systemctl`, shell, Git, or `deploy.sh` access. Do not authorize a script under `/srv/animeimages` through sudo. Follow `ops/release-executor/README.md` for static validation, installation, `visudo -cf`, `systemd-analyze verify`, `daemon-reload`, a controlled pending-job test, `journalctl`, final enablement, and immediate disablement.
+
+The one-shot reuses the existing `ubuntu` deployment workflow. Because `scripts/restart.sh` performs the current exact service restart/status operations through sudo, verify that production's existing deployment-user sudo boundary works non-interactively before enabling the executor. This template does not grant `ubuntu` broader privileges; stop for a separate least-privilege review if the existing boundary is insufficient.
 
 Current execution support is intentionally conservative:
 
@@ -342,13 +346,17 @@ Current execution support is intentionally conservative:
 - The executor passes `DEPLOY_TARGET_SHA=job.target_sha` to `scripts/deploy.sh`.
 - After fetch, `deploy.sh` verifies that the SHA is reachable from `origin/main`, resets to that exact SHA, and fails unless the final `HEAD` equals `job.target_sha`.
 - Tag/commit switching remains disabled until migration-aware rollback policy and safe target selection are implemented.
-- migration rollback is not automatic. Operators must review migration safety before switching to an older tag or commit.
+- Migration rollback is not automatic. Operators must review migration safety before reverting application code.
 
 ## Rollback
 
+To disable Release Management execution immediately, clear `RELEASE_MANAGEMENT_EXECUTOR_COMMAND` in `.env.production` and restart Gunicorn so the Web process reloads the empty value. This stops new submissions but does not cancel a one-shot that systemd already accepted; inspect its unit and journal before taking further action.
+
+Release Management v1 cannot deploy an older Tag or arbitrary commit. The durable rollback path is a reviewed revert merged into `main`, followed by the normal deployment workflow.
+
 Keep each deployed version tied to a Git commit. If deployment fails:
 
-1. Revert to the previous known-good commit.
+1. Revert the faulty change through the reviewed `main` workflow.
 2. Re-run migrations only if rollback migrations are safe.
 3. Confirm `check`, smoke URLs, and logs.
 
@@ -359,7 +367,7 @@ git tag -a v0.1-production-baseline -m "Production baseline v0.1"
 git push origin v0.1-production-baseline
 ```
 
-Rollback to a known-good tag or commit:
+For an explicitly approved emergency manual rollback outside Release Management only, record the temporary state before resetting to a known-good commit. Review migration safety first, and restore the checkout to reviewed `main` before the next routine deploy or Release Management operation:
 
 ```bash
 cd /srv/animeimages
@@ -373,3 +381,5 @@ python manage.py migrate
 python manage.py collectstatic --noinput
 ./scripts/restart.sh
 ```
+
+Do not switch the filesystem back to `main` without completing a normal deployment. Once the reviewed revert is merged, run the standard `main` deployment so code, dependencies, migrations, static assets, service state, and health checks move together.

@@ -11867,7 +11867,7 @@ class ProductionControlPlaneTests(TestCase):
             os.environ,
             {
                 "RELEASE_MANAGEMENT_EXECUTOR_COMMAND": (
-                    "/bin/systemctl start --no-block animeimages-deploy@{job_id}.service"
+                    "/usr/bin/sudo -n /usr/local/sbin/animeimages-release-submit {job_id}"
                 ),
             },
         ), patch("xhs_download.views.trigger_release_executor") as trigger_executor:
@@ -11911,7 +11911,7 @@ class ProductionControlPlaneTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "配置无效：仅支持 {job_id} 占位符")
+        self.assertContains(response, "只允许固定的 sudo -n release submit helper")
         self.assertNotContains(
             response,
             "/bin/systemctl start --no-block animeimages-deploy@{unknown}.service",
@@ -11927,7 +11927,7 @@ class ProductionControlPlaneTests(TestCase):
             os.environ,
             {
                 "RELEASE_MANAGEMENT_EXECUTOR_COMMAND": (
-                    "/bin/systemctl start --no-block animeimages-deploy@{job_id}.service"
+                    "/usr/bin/sudo -n /usr/local/sbin/animeimages-release-submit {job_id}"
                 ),
             },
         ), patch("xhs_download.views.trigger_release_executor") as trigger_executor:
@@ -11960,6 +11960,26 @@ class ProductionControlPlaneTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Tag 版本切换暂未开放")
+        self.assertEqual(ReleaseDeployJob.objects.count(), 0)
+
+    def test_release_service_rejects_tag_and_commit_targets(self):
+        from xhs_download.services.release_management import create_release_deploy_job
+
+        request = Mock(user=self.superuser, request_id="release-target-rejection")
+        targets = (
+            (ReleaseDeployTargetType.TAG, "v1.0.0"),
+            (ReleaseDeployTargetType.COMMIT, "a" * 40),
+        )
+
+        for target_type, target_ref in targets:
+            with self.subTest(target_type=target_type):
+                with self.assertRaisesMessage(ValueError, "仅支持 main 部署"):
+                    create_release_deploy_job(
+                        request=request,
+                        target_type=target_type,
+                        target_ref=target_ref,
+                    )
+
         self.assertEqual(ReleaseDeployJob.objects.count(), 0)
 
     def test_release_management_post_requires_add_permission(self):
@@ -12001,7 +12021,9 @@ class ProductionControlPlaneTests(TestCase):
             "RELEASE_MANAGEMENT_GIT_TIMEOUT_SECONDS": "1.25",
             "RELEASE_MANAGEMENT_TRIGGER_TIMEOUT_SECONDS": "0.75",
             "RELEASE_MANAGEMENT_DEPLOY_TIMEOUT_SECONDS": "42",
-            "RELEASE_MANAGEMENT_EXECUTOR_COMMAND": "/bin/systemctl start --no-block animeimages-deploy@{job_id}.service",
+            "RELEASE_MANAGEMENT_EXECUTOR_COMMAND": (
+                "/usr/bin/sudo -n /usr/local/sbin/animeimages-release-submit {job_id}"
+            ),
             "RELEASE_MANAGEMENT_DEPLOY_SCRIPT": "/opt/animeimages/deploy.sh",
         },
     )
@@ -12015,11 +12037,88 @@ class ProductionControlPlaneTests(TestCase):
         self.assertEqual(
             release_management.release_executor_command(),
             [
-                "/bin/systemctl",
-                "start",
-                "--no-block",
-                "animeimages-deploy@{job_id}.service",
+                "/usr/bin/sudo",
+                "-n",
+                "/usr/local/sbin/animeimages-release-submit",
+                "{job_id}",
             ],
+        )
+
+    @patch.dict(
+        os.environ,
+        {
+            "RELEASE_MANAGEMENT_EXECUTOR_COMMAND": (
+                "/usr/bin/sudo -n /usr/local/sbin/animeimages-release-submit {job_id}"
+            ),
+        },
+    )
+    def test_release_executor_builds_exact_submit_helper_command(self):
+        from xhs_download.services.release_management import build_command_plan
+
+        job = ReleaseDeployJob.objects.create(
+            target_type=ReleaseDeployTargetType.MAIN,
+            target_ref="main",
+            target_sha="a" * 40,
+        )
+
+        plan = build_command_plan(job)
+
+        self.assertTrue(plan["executor_configured"])
+        self.assertEqual(
+            plan["trigger_command"],
+            [
+                "/usr/bin/sudo",
+                "-n",
+                "/usr/local/sbin/animeimages-release-submit",
+                str(job.pk),
+            ],
+        )
+
+    def assert_release_executor_config_rejected(self, command):
+        from xhs_download.services.release_management import release_executor_command
+
+        with patch.dict(os.environ, {"RELEASE_MANAGEMENT_EXECUTOR_COMMAND": command}):
+            with self.assertRaisesMessage(ValueError, "只允许固定的 sudo -n release submit helper"):
+                release_executor_command()
+
+    def test_release_executor_config_rejects_legacy_direct_systemctl(self):
+        self.assert_release_executor_config_rejected(
+            "/bin/systemctl start --no-block animeimages-deploy@{job_id}.service"
+        )
+
+    def test_release_executor_config_rejects_direct_deploy_script(self):
+        self.assert_release_executor_config_rejected("/srv/animeimages/scripts/deploy.sh {job_id}")
+
+    def test_release_executor_config_rejects_shell_wrappers(self):
+        for shell in ("/bin/bash", "/bin/sh"):
+            with self.subTest(shell=shell):
+                self.assert_release_executor_config_rejected(
+                    f"{shell} -c '/usr/local/sbin/animeimages-release-submit {{job_id}}'"
+                )
+
+    def test_release_executor_config_rejects_wrong_helper_path(self):
+        self.assert_release_executor_config_rejected(
+            "/usr/bin/sudo -n /srv/animeimages/animeimages-release-submit {job_id}"
+        )
+
+    def test_release_executor_config_rejects_missing_noninteractive_sudo(self):
+        self.assert_release_executor_config_rejected(
+            "/usr/bin/sudo /usr/local/sbin/animeimages-release-submit {job_id}"
+        )
+
+    def test_release_executor_config_rejects_fixed_or_wrong_job_id(self):
+        self.assert_release_executor_config_rejected(
+            "/usr/bin/sudo -n /usr/local/sbin/animeimages-release-submit 999"
+        )
+
+    def test_release_executor_config_rejects_extra_arguments(self):
+        self.assert_release_executor_config_rejected(
+            "/usr/bin/sudo -n /usr/local/sbin/animeimages-release-submit {job_id} extra"
+        )
+
+    def test_release_executor_config_rejects_other_placeholders(self):
+        self.assert_release_executor_config_rejected(
+            "/usr/bin/sudo -n /usr/local/sbin/animeimages-release-submit {unknown}"
         )
 
     @patch("xhs_download.services.release_management.run_git")
@@ -12114,15 +12213,16 @@ class ProductionControlPlaneTests(TestCase):
             target_type=ReleaseDeployTargetType.MAIN,
             target_ref="main",
             target_sha="a" * 40,
-            command_plan={
-                "trigger_command": [
-                    "/bin/systemctl",
-                    "start",
-                    "--no-block",
-                    "animeimages-deploy@1.service",
-                ],
-            },
         )
+        job.command_plan = {
+            "trigger_command": [
+                "/usr/bin/sudo",
+                "-n",
+                "/usr/local/sbin/animeimages-release-submit",
+                str(job.pk),
+            ],
+        }
+        job.save(update_fields=("command_plan", "updated_at"))
         run_process.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
 
         with patch.object(release_management, "execute_release_deploy_job") as execute_job:
@@ -12131,8 +12231,16 @@ class ProductionControlPlaneTests(TestCase):
         self.assertTrue(result.ok)
         execute_job.assert_not_called()
         command = run_process.call_args.args[0]
-        self.assertEqual(command[1:3], ["start", "--no-block"])
-        self.assertNotIn("deploy.sh", " ".join(command))
+        self.assertEqual(
+            command,
+            [
+                "/usr/bin/sudo",
+                "-n",
+                "/usr/local/sbin/animeimages-release-submit",
+                str(job.pk),
+            ],
+        )
+        self.assertNotEqual(run_process.call_args.kwargs.get("shell"), True)
         self.assertEqual(run_process.call_args.kwargs["timeout"], 0.25)
         job.refresh_from_db()
         self.assertEqual(job.status, ReleaseDeployJobStatus.PENDING)
@@ -12146,15 +12254,16 @@ class ProductionControlPlaneTests(TestCase):
             target_type=ReleaseDeployTargetType.MAIN,
             target_ref="main",
             target_sha="a" * 40,
-            command_plan={
-                "trigger_command": [
-                    "/bin/systemctl",
-                    "start",
-                    "--no-block",
-                    "animeimages-deploy@1.service",
-                ],
-            },
         )
+        job.command_plan = {
+            "trigger_command": [
+                "/usr/bin/sudo",
+                "-n",
+                "/usr/local/sbin/animeimages-release-submit",
+                str(job.pk),
+            ],
+        }
+        job.save(update_fields=("command_plan", "updated_at"))
         run_process.side_effect = subprocess.TimeoutExpired(cmd="systemctl", timeout=0.01)
 
         result = release_management.trigger_release_executor(job)
@@ -12163,9 +12272,134 @@ class ProductionControlPlaneTests(TestCase):
         job.refresh_from_db()
         self.assertEqual(job.status, ReleaseDeployJobStatus.FAILED)
         self.assertIsNotNone(job.finished_at)
-        self.assertIn("TimeoutExpired", job.error_message)
+        self.assertEqual(job.error_message, "release executor submission timed out")
+        self.assertNotIn("systemctl", job.error_message)
         self.assertIsNone(job.started_at)
         self.assertEqual(job.stdout_tail, "")
+
+    @patch("xhs_download.services.release_management.subprocess.run")
+    def test_trigger_release_executor_nonzero_exit_finishes_and_sanitizes_job(self, run_process):
+        from xhs_download.services import release_management
+
+        job = ReleaseDeployJob.objects.create(
+            target_type=ReleaseDeployTargetType.MAIN,
+            target_ref="main",
+            target_sha="a" * 40,
+        )
+        job.command_plan = {
+            "trigger_command": [
+                "/usr/bin/sudo",
+                "-n",
+                "/usr/local/sbin/animeimages-release-submit",
+                str(job.pk),
+            ],
+        }
+        job.save(update_fields=("command_plan", "updated_at"))
+        run_process.return_value = subprocess.CompletedProcess(
+            [],
+            1,
+            stdout="",
+            stderr="sudo failed\nDATABASE_URL=postgresql://secret@example.invalid/db",
+        )
+
+        result = release_management.trigger_release_executor(job)
+
+        self.assertFalse(result.ok)
+        self.assertIn("sudo failed", result.stderr)
+        self.assertIn("[redacted]", result.stderr)
+        self.assertNotIn("secret@example.invalid", result.stderr)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ReleaseDeployJobStatus.FAILED)
+        self.assertIsNotNone(job.finished_at)
+        self.assertEqual(job.error_message, result.stderr)
+        self.assertLessEqual(len(job.error_message), 300)
+
+    @patch("xhs_download.services.release_management.subprocess.run")
+    def test_trigger_release_executor_launch_failure_finishes_job(self, run_process):
+        from xhs_download.services import release_management
+
+        job = ReleaseDeployJob.objects.create(
+            target_type=ReleaseDeployTargetType.MAIN,
+            target_ref="main",
+            target_sha="a" * 40,
+        )
+        job.command_plan = {
+            "trigger_command": [
+                "/usr/bin/sudo",
+                "-n",
+                "/usr/local/sbin/animeimages-release-submit",
+                str(job.pk),
+            ],
+        }
+        job.save(update_fields=("command_plan", "updated_at"))
+        run_process.side_effect = FileNotFoundError("sensitive command details")
+
+        result = release_management.trigger_release_executor(job)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(
+            result.stderr,
+            "release executor could not be started (FileNotFoundError)",
+        )
+        job.refresh_from_db()
+        self.assertEqual(job.status, ReleaseDeployJobStatus.FAILED)
+        self.assertIsNotNone(job.finished_at)
+        self.assertNotIn("sensitive command details", job.error_message)
+
+    def test_trigger_release_executor_rejects_wrong_job_id(self):
+        from xhs_download.services.release_management import trigger_release_executor
+
+        job = ReleaseDeployJob.objects.create(
+            target_type=ReleaseDeployTargetType.MAIN,
+            target_ref="main",
+            target_sha="a" * 40,
+        )
+        job.command_plan = {
+            "trigger_command": [
+                "/usr/bin/sudo",
+                "-n",
+                "/usr/local/sbin/animeimages-release-submit",
+                str(job.pk + 1),
+            ],
+        }
+        job.save(update_fields=("command_plan", "updated_at"))
+
+        with patch("xhs_download.services.release_management.subprocess.run") as run_process:
+            result = trigger_release_executor(job)
+
+        self.assertFalse(result.ok)
+        run_process.assert_not_called()
+        job.refresh_from_db()
+        self.assertEqual(job.status, ReleaseDeployJobStatus.FAILED)
+        self.assertIsNotNone(job.finished_at)
+
+    def test_trigger_release_executor_rejects_extra_arguments(self):
+        from xhs_download.services.release_management import trigger_release_executor
+
+        job = ReleaseDeployJob.objects.create(
+            target_type=ReleaseDeployTargetType.MAIN,
+            target_ref="main",
+            target_sha="a" * 40,
+        )
+        job.command_plan = {
+            "trigger_command": [
+                "/usr/bin/sudo",
+                "-n",
+                "/usr/local/sbin/animeimages-release-submit",
+                str(job.pk),
+                "extra",
+            ],
+        }
+        job.save(update_fields=("command_plan", "updated_at"))
+
+        with patch("xhs_download.services.release_management.subprocess.run") as run_process:
+            result = trigger_release_executor(job)
+
+        self.assertFalse(result.ok)
+        run_process.assert_not_called()
+        job.refresh_from_db()
+        self.assertEqual(job.status, ReleaseDeployJobStatus.FAILED)
+        self.assertIsNotNone(job.finished_at)
 
     def test_trigger_release_executor_rejects_blocking_systemctl_config(self):
         from xhs_download.services.release_management import trigger_release_executor
@@ -12188,7 +12422,7 @@ class ProductionControlPlaneTests(TestCase):
             result = trigger_release_executor(job)
 
         self.assertFalse(result.ok)
-        self.assertIn("--no-block", result.stderr)
+        self.assertIn("approved sudo helper", result.stderr)
         run_process.assert_not_called()
         job.refresh_from_db()
         self.assertEqual(job.status, ReleaseDeployJobStatus.FAILED)
@@ -12208,7 +12442,7 @@ class ProductionControlPlaneTests(TestCase):
             result = trigger_release_executor(job)
 
         self.assertFalse(result.ok)
-        self.assertIn("systemctl start --no-block", result.stderr)
+        self.assertIn("approved sudo helper", result.stderr)
         run_process.assert_not_called()
         job.refresh_from_db()
         self.assertEqual(job.status, ReleaseDeployJobStatus.FAILED)
