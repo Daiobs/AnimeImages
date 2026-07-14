@@ -14,6 +14,17 @@ Recommended first production shape:
 - Redis as Django cache, rate-limit state, provider cache state, and readiness dependency.
 - HTTPS through Certbot, a managed certificate, or the VPS provider's certificate workflow.
 
+Current production topology audited for this runbook:
+
+```text
+Gunicorn user:  www-data
+Gunicorn bind:  127.0.0.1:8000
+Nginx upstream: http://127.0.0.1:8000
+Checkout owner: ubuntu:ubuntu
+```
+
+Production does not currently use `/run/animeimages/gunicorn.sock`. The Unix-socket model remains a future recommended hardening target, not the deployed topology.
+
 Netlify is not a good target for the current full Django backend. Netlify can host a future static frontend, but this project currently needs a long-running Python process, Django views, database connections, Redis-backed limits, file downloads, and server-side ZIP responses.
 
 ## First Launch Scope
@@ -171,10 +182,8 @@ User=www-data
 Group=www-data
 WorkingDirectory=/srv/animeimages
 EnvironmentFile=/srv/animeimages/.env.production
-RuntimeDirectory=animeimages
-RuntimeDirectoryMode=0750
 UMask=0007
-ExecStart=/srv/animeimages/.venv/bin/gunicorn djangoProject.wsgi:application --bind unix:/run/animeimages/gunicorn.sock --pid /run/animeimages/gunicorn.ctl --workers 2 --timeout 60
+ExecStart=/srv/animeimages/.venv/bin/gunicorn djangoProject.wsgi:application --bind 127.0.0.1:8000 --workers 2 --timeout 60
 Restart=on-failure
 RestartSec=5
 PrivateTmp=true
@@ -204,7 +213,7 @@ Example site path:
 
 ```nginx
 upstream animeimages_app {
-    server unix:/run/animeimages/gunicorn.sock;
+    server 127.0.0.1:8000;
 }
 
 server {
@@ -238,6 +247,27 @@ server {
 ```
 
 After HTTPS is configured, redirect HTTP to HTTPS and keep Django secure cookie settings enabled. Do not expose the whole `media/` directory as a public static folder. ZIP downloads should be returned through controlled Django responses, not long-lived public media URLs.
+
+## Future Recommended Hardening Target (Not Currently Deployed)
+
+A future infrastructure PR may move Gunicorn from local TCP to a systemd-managed Unix socket. The following settings are reference material only and are not active on the current production server:
+
+```ini
+[Service]
+RuntimeDirectory=animeimages
+RuntimeDirectoryMode=0750
+ExecStart=/srv/animeimages/.venv/bin/gunicorn djangoProject.wsgi:application --bind unix:/run/animeimages/gunicorn.sock --pid /run/animeimages/gunicorn.ctl --workers 2 --timeout 60
+```
+
+The matching future Nginx upstream would be:
+
+```nginx
+upstream animeimages_app {
+    server unix:/run/animeimages/gunicorn.sock;
+}
+```
+
+Adopting this target requires a separate systemd/Nginx rollout, socket permission checks, restart validation, and readiness smoke tests. This runbook does not imply that those changes have already been deployed.
 
 ## Static, Media, and Downloads
 

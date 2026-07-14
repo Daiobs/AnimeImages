@@ -29,11 +29,14 @@ Production separates the Web identity from the deployment identity:
 
 ```text
 Gunicorn / Django Web process: www-data
+Gunicorn bind:                 127.0.0.1:8000
+Nginx upstream:                http://127.0.0.1:8000
 Application checkout owner:   ubuntu:ubuntu
 Application checkout:         /srv/animeimages
 Deployment user:              ubuntu
-Runtime directory:            /run/animeimages (managed by systemd)
 ```
+
+Production does not currently use `/run/animeimages/gunicorn.sock`. A systemd-managed Unix socket is a future recommended hardening target only; adopting it requires a separate reviewed systemd and Nginx rollout.
 
 `www-data` may:
 

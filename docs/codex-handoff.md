@@ -52,15 +52,15 @@ Current production site:
 https://download.cosflow.icu/
 ```
 
-## Current Main Baseline
+## Last Audited Runtime Baseline
 
-As of this handoff, `main` is at:
+This handoff was audited against the following application runtime baseline:
 
 ```text
 6b1787f Make release Git state read-only (#18)
 ```
 
-This commit only represents the time this document was last updated. Update this section after every `main` merge. If unsure, check the remote baseline:
+This SHA is not a real-time pointer to `main`. Fetch and read the current remote baseline before starting work:
 
 ```bash
 git fetch origin
@@ -208,6 +208,17 @@ Production should run with:
 - `DJANGO_ENV=production`.
 - `DJANGO_DEBUG=False`.
 - `.env.production` readable by the process that runs management commands and systemd.
+
+Current production topology:
+
+```text
+Gunicorn user:  www-data
+Gunicorn bind:  127.0.0.1:8000
+Nginx upstream: http://127.0.0.1:8000
+Checkout owner: ubuntu:ubuntu
+```
+
+The current server does not use `/run/animeimages/gunicorn.sock`. The systemd-managed Unix socket documented elsewhere is a future recommended hardening target, not a deployed production fact. Moving to it requires a separate systemd/Nginx change and smoke validation.
 
 Preferred deploy path:
 

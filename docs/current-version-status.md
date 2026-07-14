@@ -2,10 +2,17 @@
 
 Date: 2026-07-14
 
-Main baseline:
+Last Audited Runtime Baseline:
 
 ```text
 6b1787f Make release Git state read-only (#18)
+```
+
+This is the application runtime baseline used for this documentation audit. It is not a real-time pointer to `main`. Read the current remote baseline with:
+
+```bash
+git fetch origin
+git log -1 --oneline origin/main
 ```
 
 Production site:
@@ -13,6 +20,19 @@ Production site:
 ```text
 https://download.cosflow.icu/
 ```
+
+## Production Runtime Topology
+
+Current deployed topology:
+
+```text
+Gunicorn user:  www-data
+Gunicorn bind:  127.0.0.1:8000
+Nginx upstream: http://127.0.0.1:8000
+Checkout owner: ubuntu:ubuntu
+```
+
+Production does not currently use `/run/animeimages/gunicorn.sock`. A systemd-managed Unix socket remains a future recommended hardening target and requires a separate reviewed server configuration change.
 
 ## Summary
 
