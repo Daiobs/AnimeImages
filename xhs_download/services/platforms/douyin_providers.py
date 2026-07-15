@@ -525,7 +525,19 @@ def get_reference_result(adapter, context):
     if context.aweme_id:
         started_at = time()
         try:
-            result = adapter.fetch_mobile_feed_result(context.aweme_id)
+            request_options = {}
+            if context.deadline_monotonic:
+                remaining = context.deadline_monotonic - monotonic()
+                if remaining <= 0:
+                    raise XhsProviderTimeoutError("抖音参考解析超过时间限制")
+                request_options = {
+                    "request_timeout": max(0.001, min(15.0, remaining)),
+                    "request_deadline": context.deadline_monotonic,
+                }
+            result = adapter.fetch_mobile_feed_result(
+                context.aweme_id,
+                **request_options,
+            )
             if result and result.assets:
                 return result
         except Exception as error:
@@ -534,13 +546,15 @@ def get_reference_result(adapter, context):
     return None
 
 
-def call_native_fetcher(fetcher, aweme_id, timeout_seconds):
+def call_native_fetcher(fetcher, aweme_id, timeout_seconds, deadline_monotonic=0):
     parameters = inspect.signature(fetcher).parameters
     request_options = {}
     if "request_timeout" in parameters:
         request_options["request_timeout"] = max(0.1, timeout_seconds)
     if "request_retries" in parameters:
         request_options["request_retries"] = 1
+    if "request_deadline" in parameters:
+        request_options["request_deadline"] = deadline_monotonic
     return fetcher(aweme_id, **request_options)
 
 
@@ -551,6 +565,8 @@ def get_fast_native_result(adapter, context, timeout_seconds=5.0):
             result = context.direct_result
         elif context.aweme_id:
             native_deadline = monotonic() + max(0.1, timeout_seconds)
+            if context.deadline_monotonic:
+                native_deadline = min(native_deadline, context.deadline_monotonic)
             result = None
             for provider_name, fetcher_name, budget_ratio in (
                 ("native_fast_feed", "fetch_mobile_feed_result", 0.6),
@@ -572,6 +588,7 @@ def get_fast_native_result(adapter, context, timeout_seconds=5.0):
                         fetcher,
                         context.aweme_id,
                         request_budget,
+                        native_deadline,
                     )
                 except Exception as error:
                     log_provider_failure(
@@ -1406,6 +1423,7 @@ class DouyinTikHubProvider(DouyinResultProvider):
             expected_type="video",
             probe_strategy="range_first",
             probe_fallback=False,
+            deadline_monotonic=context.deadline_monotonic or None,
         )
         probe_duration_ms = duration_ms(probe_started_at)
         selected_diagnostic = selection.selected_diagnostic
@@ -1597,9 +1615,20 @@ class DouyinMobileFeedProvider(DouyinResultProvider):
     def parse(self, adapter, context):
         if not context.aweme_id:
             return None
+        request_options = {
+            "probe_video_candidates": bool(context.prefer_ultra_hd),
+        }
+        if context.deadline_monotonic:
+            remaining = context.deadline_monotonic - monotonic()
+            if remaining <= 0:
+                raise XhsProviderTimeoutError("抖音本地解析超过时间限制")
+            request_options.update(
+                request_timeout=max(0.001, min(15.0, remaining)),
+                request_deadline=context.deadline_monotonic,
+            )
         return adapter.fetch_mobile_feed_result(
             context.aweme_id,
-            probe_video_candidates=bool(context.prefer_ultra_hd),
+            **request_options,
         )
 
 
@@ -1609,9 +1638,20 @@ class DouyinMobileShareProvider(DouyinResultProvider):
     def parse(self, adapter, context):
         if not context.aweme_id:
             return None
+        request_options = {
+            "probe_video_candidates": bool(context.prefer_ultra_hd),
+        }
+        if context.deadline_monotonic:
+            remaining = context.deadline_monotonic - monotonic()
+            if remaining <= 0:
+                raise XhsProviderTimeoutError("抖音本地解析超过时间限制")
+            request_options.update(
+                request_timeout=max(0.001, min(15.0, remaining)),
+                request_deadline=context.deadline_monotonic,
+            )
         return adapter.fetch_mobile_share_result(
             context.aweme_id,
-            probe_video_candidates=bool(context.prefer_ultra_hd),
+            **request_options,
         )
 
 
@@ -1662,7 +1702,21 @@ class DouyinNativeEnhancedProvider(DouyinResultProvider):
             ):
                 started_at = time()
                 try:
-                    result = fetcher(context.aweme_id, probe_video_candidates=True)
+                    request_options = {"probe_video_candidates": True}
+                    if context.deadline_monotonic:
+                        remaining = context.deadline_monotonic - monotonic()
+                        if remaining <= 0:
+                            raise XhsProviderTimeoutError(
+                                "抖音本地解析超过时间限制"
+                            )
+                        request_options.update(
+                            request_timeout=max(0.001, min(15.0, remaining)),
+                            request_deadline=context.deadline_monotonic,
+                        )
+                    result = fetcher(
+                        context.aweme_id,
+                        **request_options,
+                    )
                     if result and result.assets:
                         results.append(result)
                 except Exception as error:

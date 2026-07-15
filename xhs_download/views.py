@@ -204,6 +204,7 @@ from .services.batch_parse import (
     batch_parse_setting_value,
     batch_parse_total_timeout_seconds,
     batch_parse_user_is_staff,
+    build_batch_parse_budget,
     build_batch_parse_context,
     build_batch_result_row as service_build_batch_result_row,
     build_batch_result_rows as service_build_batch_result_rows,
@@ -279,10 +280,10 @@ def elapsed_ms(started_at):
         return 0
 
 
-def get_video_size_bytes(asset):
+def get_video_size_bytes(asset, *, probe_missing=True):
     if asset.size_bytes:
         return asset.size_bytes
-    if asset.provider in SIGNED_THIRD_PARTY_VIDEO_PROVIDERS:
+    if not probe_missing or asset.provider in SIGNED_THIRD_PARTY_VIDEO_PROVIDERS:
         return 0
     return probe_media_size(asset.url)
 
@@ -3248,8 +3249,8 @@ def build_image_item(asset, result):
     }
 
 
-def build_video_item(asset, result):
-    size_bytes = get_video_size_bytes(asset)
+def build_video_item(asset, result, *, probe_missing_size=True):
+    size_bytes = get_video_size_bytes(asset, probe_missing=probe_missing_size)
     return {
         **asset.to_download_item(),
         **build_asset_strategy_fields(asset, result),
@@ -3272,7 +3273,12 @@ def build_video_item(asset, result):
     }
 
 
-def build_result_display_context(result, *, platform_key="home"):
+def build_result_display_context(
+    result,
+    *,
+    platform_key="home",
+    probe_missing_video_sizes=True,
+):
     result_metadata = result.metadata or {}
     return {
         "platform": result.platform,
@@ -3288,7 +3294,14 @@ def build_result_display_context(result, *, platform_key="home"):
         "post_type": result.post_type,
         "base_filename": result.base_filename,
         "image_items": [build_image_item(asset, result) for asset in result.image_assets],
-        "video_items": [build_video_item(asset, result) for asset in result.video_assets],
+        "video_items": [
+            build_video_item(
+                asset,
+                result,
+                probe_missing_size=probe_missing_video_sizes,
+            )
+            for asset in result.video_assets
+        ],
         "metadata": result_metadata,
     }
 
@@ -3867,6 +3880,13 @@ def build_batch_result_row(
     per_link_timeout_seconds,
     deadline=None,
 ):
+    def build_batch_display_context(result, *, platform_key="home"):
+        return build_result_display_context(
+            result,
+            platform_key=platform_key,
+            probe_missing_video_sizes=False,
+        )
+
     return service_build_batch_result_row(
         request,
         source_text,
@@ -3875,24 +3895,35 @@ def build_batch_result_row(
         per_link_timeout_seconds=per_link_timeout_seconds,
         deadline=deadline,
         parser=parse_media_page,
-        display_context_builder=build_result_display_context,
+        display_context_builder=build_batch_display_context,
         request_country_code_builder=get_request_country_code,
         query_uses_third_party_provider_func=query_uses_third_party_provider,
         third_party_provider_is_available_func=third_party_provider_is_available,
     )
 
 
-def build_batch_result_rows(request, links, *, prefer_ultra_hd, prefer_youtube_merge, deadline):
+def build_batch_result_rows(
+    request,
+    links,
+    *,
+    prefer_ultra_hd,
+    prefer_youtube_merge,
+    deadline,
+    budget=None,
+):
+    budget = budget or build_batch_parse_budget(
+        len(links),
+        prefer_ultra_hd=prefer_ultra_hd,
+    )
     return service_build_batch_result_rows(
         request,
         links,
         prefer_ultra_hd=prefer_ultra_hd,
         prefer_youtube_merge=prefer_youtube_merge,
         deadline=deadline,
-        parallel_workers=batch_parse_parallel_workers(),
-        per_link_timeout_seconds=batch_parse_effective_per_link_timeout_seconds(
-            prefer_ultra_hd=prefer_ultra_hd,
-        ),
+        parallel_workers=budget.worker_count,
+        per_link_timeout_seconds=budget.per_link_timeout_seconds,
+        completion_grace_seconds=budget.completion_grace_seconds,
         row_builder=build_batch_result_row,
     )
 
@@ -3914,6 +3945,107 @@ def batch_parse_view(request):
             proxy_image_url=reverse("media_proxy_image"),
         ),
     )
+
+
+@require_POST
+@csrf_protect
+def batch_parse_retry_view(request):
+    if not batch_parse_access_allowed(request):
+        raise Http404("Batch parse is not available.")
+
+    raw_source = str(request.POST.get("link") or "")
+    source_lines = [line.strip() for line in raw_source.splitlines() if line.strip()]
+    if len(source_lines) != 1:
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error_code": "INVALID_BATCH_RETRY_LINK",
+                "message": "每次只能重新解析一条链接。",
+            },
+            status=400,
+        )
+        response["Cache-Control"] = "no-store"
+        return response
+
+    limits = batch_parse_rate_limit_results(request, 1)
+    blocked = next(((scope, limit) for scope, limit in limits if not limit.allowed), None)
+    if blocked:
+        blocked_scope, blocked_limit = blocked
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error_code": "BATCH_RETRY_RATE_LIMITED",
+                "message": batch_parse_limit_error_message(
+                    blocked_scope,
+                    blocked_limit,
+                ),
+            },
+            status=429,
+        )
+        if blocked_limit.retry_after:
+            response["Retry-After"] = str(max(1, int(blocked_limit.retry_after)))
+        response["Cache-Control"] = "no-store"
+        return response
+
+    ultra_hd_available = (
+        batch_parse_public_ultra_hd_allowed(request)
+        and ultra_hd_is_available(request)
+    )
+    youtube_merge_available = (
+        batch_parse_public_youtube_merge_allowed(request)
+        and youtube_merge_mode_is_available(request)
+    )
+    prefer_ultra_hd = request_flag(request.POST.get("ultra_hd")) and ultra_hd_available
+    prefer_youtube_merge = (
+        request_flag(request.POST.get("youtube_merge"))
+        and youtube_merge_available
+    )
+    budget = build_batch_parse_budget(
+        1,
+        prefer_ultra_hd=prefer_ultra_hd,
+    )
+    started_at = time.monotonic()
+    row = build_batch_result_row(
+        request,
+        source_lines[0],
+        prefer_ultra_hd=prefer_ultra_hd,
+        prefer_youtube_merge=prefer_youtube_merge,
+        per_link_timeout_seconds=budget.per_link_timeout_seconds,
+        deadline=started_at + budget.per_link_timeout_seconds,
+    )
+    retry_wall_duration_ms = int((time.monotonic() - started_at) * 1000)
+    summary = build_batch_summary(
+        [row],
+        batch_wall_duration_ms=retry_wall_duration_ms,
+    )
+    card_html = render_to_string(
+        "partials/batch_result_card.html",
+        {
+            "row": row,
+            "batch_direct_links_allowed": batch_parse_user_is_staff(request),
+            "proxy_image_url": reverse("media_proxy_image"),
+        },
+        request=request,
+    )
+    response = JsonResponse(
+        {
+            "ok": True,
+            "status": row.get("status") or "failed",
+            "card_html": card_html,
+            "retry_wall_duration_ms": retry_wall_duration_ms,
+            "summary": {
+                "success_count": summary["success_count"],
+                "failed_count": summary["failed_count"],
+                "timeout_count": summary["timeout_count"],
+                "skipped_count": summary["skipped_count"],
+                "video_count": summary["video_count"],
+                "image_count": summary["image_count"],
+                "total_duration_ms": summary["total_duration_ms"],
+            },
+        }
+    )
+    response["Cache-Control"] = "no-store"
+    return response
 
 
 def placeholder_image_response(status=200, retry_after=0):

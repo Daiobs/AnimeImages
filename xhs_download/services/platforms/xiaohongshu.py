@@ -1,4 +1,5 @@
 import re
+import time
 
 from bs4 import BeautifulSoup
 
@@ -127,6 +128,7 @@ class XiaohongshuAdapter(BasePlatformAdapter):
         cover=True,
     )
     provider_policy = ProviderPolicy(primary_provider="native")
+    parse_option_names = ("timeout_seconds", "deadline_monotonic")
 
     def parse_html(self, html, source_url=None):
         soup = BeautifulSoup(html, "html.parser")
@@ -200,15 +202,25 @@ class XiaohongshuAdapter(BasePlatformAdapter):
 
         return fallback_image_urls
 
-    def parse_url(self, url):
+    def parse_url(self, url, timeout_seconds=None, deadline_monotonic=None):
         self.require_supported_url(url)
+        deadline = float(deadline_monotonic or 0)
+        if not deadline and timeout_seconds is not None:
+            deadline = time.monotonic() + max(0.001, float(timeout_seconds or 0))
+        request_timeout = 15.0
+        if deadline:
+            request_timeout = min(
+                request_timeout,
+                max(0.001, deadline - time.monotonic()),
+            )
         response = request_get_with_retry(
             url,
             headers=self.headers,
-            timeout=15,
+            timeout=request_timeout,
             retries=3,
             allowed_final_host_suffixes=self.page_host_suffixes,
             final_url_message="小红书页面跳转到了不允许的域名",
+            deadline_monotonic=deadline or None,
         )
         try:
             return self.parse_html(response.text, source_url=response.url)

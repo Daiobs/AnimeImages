@@ -209,15 +209,32 @@ def request_get_with_retry(
     stream=False,
     allowed_final_host_suffixes=None,
     final_url_message="请求跳转到了不允许的 URL",
+    deadline_monotonic=None,
 ):
     last_error = None
 
     for attempt in range(retries):
+        request_timeout = timeout
+        if deadline_monotonic is not None:
+            remaining = float(deadline_monotonic) - time.monotonic()
+            if remaining <= 0:
+                raise requests.Timeout("请求超过时间限制") from last_error
+            if isinstance(timeout, (tuple, list)):
+                phase_budget = remaining / max(1, len(timeout))
+                request_timeout = tuple(
+                    min(max(0.001, float(value)), phase_budget)
+                    for value in timeout
+                )
+            else:
+                request_timeout = min(
+                    max(0.001, float(timeout)),
+                    remaining,
+                )
         try:
             response = requests.get(
                 url,
                 headers=headers or HEADERS,
-                timeout=timeout,
+                timeout=request_timeout,
                 allow_redirects=True,
                 stream=stream,
             )
@@ -242,6 +259,12 @@ def request_get_with_retry(
             last_error = error
 
         if attempt < retries - 1:
-            time.sleep(sleep_seconds * (attempt + 1))
+            retry_delay = sleep_seconds * (attempt + 1)
+            if deadline_monotonic is not None:
+                remaining = float(deadline_monotonic) - time.monotonic()
+                if remaining <= 0 or retry_delay >= remaining:
+                    raise requests.Timeout("请求超过时间限制") from last_error
+                retry_delay = min(retry_delay, remaining)
+            time.sleep(retry_delay)
 
     raise last_error

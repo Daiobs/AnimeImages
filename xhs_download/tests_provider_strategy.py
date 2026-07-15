@@ -1,13 +1,17 @@
 import itertools
 import threading
+from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
 from io import StringIO
 from pathlib import Path
 from time import monotonic, sleep
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+import requests
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
-from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
+from django.db import connection
+from django.test import Client, RequestFactory, SimpleTestCase, TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
 from .models import (
@@ -17,15 +21,18 @@ from .models import (
     ProviderRuntimeSetting,
 )
 from .services.assets import MediaAsset, ParseResult
-from .services.common import XhsProviderTimeoutError
+from .services.common import XhsProviderTimeoutError, request_get_with_retry
+from .services.platforms.bilibili import api_get_json
 from .services.platforms.douyin_providers import (
     DouyinKukuToolProvider,
+    DouyinMobileFeedProvider,
     DouyinNativeProvider,
     DouyinParseContext,
     DouyinTianTianJieXiProvider,
     DouyinUltraRaceProvider,
     build_douyin_result_providers,
 )
+from .services.platforms.xiaohongshu import XiaohongshuAdapter
 from .services.platforms.third_party import (
     GenericThirdPartyAdapter,
     configured_third_party_provider_order,
@@ -33,6 +40,12 @@ from .services.platforms.third_party import (
 )
 from .services.platforms.tiantianjiexi_generic import TianTianJieXiGenericProvider
 from .services.provider_settings import ProviderSettings
+from .services.batch_parse.results import (
+    build_batch_result_row as service_build_batch_result_row,
+    build_batch_result_rows,
+    build_batch_summary,
+)
+from .services.batch_parse.runtime import calculate_batch_parse_budget
 from .services.provider_manifest import build_provider_manifest_token
 from .services.provider_strategy import (
     DOWNLOAD_STRATEGY_BROWSER_BLOB,
@@ -53,6 +66,36 @@ from .views import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+class TrackingThreadPoolExecutor:
+    instances = []
+
+    def __init__(self, *args, **kwargs):
+        self._executor = RealThreadPoolExecutor(*args, **kwargs)
+        self._lock = threading.Lock()
+        self.outstanding_count = 0
+        self.max_outstanding_count = 0
+        type(self).instances.append(self)
+
+    def submit(self, *args, **kwargs):
+        with self._lock:
+            self.outstanding_count += 1
+            self.max_outstanding_count = max(
+                self.max_outstanding_count,
+                self.outstanding_count,
+            )
+        future = self._executor.submit(*args, **kwargs)
+
+        def mark_finished(_future):
+            with self._lock:
+                self.outstanding_count -= 1
+
+        future.add_done_callback(mark_finished)
+        return future
+
+    def shutdown(self, *args, **kwargs):
+        return self._executor.shutdown(*args, **kwargs)
 
 
 class ProviderDownloadStrategyTests(SimpleTestCase):
@@ -107,13 +150,40 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
                 self.assertNotIn("BATCH_PARSE_MINUTE_IP_LIMIT", content)
 
     def test_batch_direct_download_falls_back_to_handoff_when_fetch_fails(self):
-        content = (PROJECT_ROOT / "static/js/app.js").read_text()
+        content = (PROJECT_ROOT / "static/js/batch_parse.js").read_text()
 
         self.assertIn("function handoffBatchDirectUrl", content)
         self.assertIn("handoffBatchDirectUrl(url, filename)", content)
         self.assertIn("Blob 不可用", content)
         self.assertIn("已改用直链", content)
         self.assertNotIn("server_single", content)
+
+    def test_batch_javascript_is_page_scoped_and_retry_preserves_form(self):
+        global_content = (PROJECT_ROOT / "static/js/app.js").read_text()
+        batch_content = (PROJECT_ROOT / "static/js/batch_parse.js").read_text()
+
+        self.assertNotIn("data-retry-link", global_content)
+        self.assertNotIn("batch-parse-page", global_content)
+        self.assertIn("retryBatchResultCard", batch_content)
+        self.assertIn("replaceBatchResultCard", batch_content)
+        self.assertIn("recomputeBatchSummary", batch_content)
+        self.assertIn('method: "POST"', batch_content)
+        self.assertIn("card.replaceWith(replacement)", batch_content)
+        self.assertNotIn("batchTextarea.value = retryButton", batch_content)
+        self.assertNotIn("card_html:", batch_content)
+        self.assertNotIn("signed_url", batch_content)
+
+    def test_batch_local_storage_only_contains_input_preferences(self):
+        content = (PROJECT_ROOT / "static/js/batch_parse.js").read_text()
+        draft_block = content[content.index("window.localStorage.setItem"):]
+        draft_block = draft_block[:draft_block.index("}));")]
+
+        self.assertIn("links:", draft_block)
+        self.assertIn("ultra_hd:", draft_block)
+        self.assertIn("youtube_merge:", draft_block)
+        self.assertNotIn("card_html", draft_block)
+        self.assertNotIn("video_items", draft_block)
+        self.assertNotIn("direct_url", draft_block)
 
     def test_short_video_rule_allows_kukutool_and_tiantianjiexi(self):
         rule = get_third_party_rule("kuaishou")
@@ -196,6 +266,380 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
 
         self.assertEqual(len(links), 20)
         self.assertEqual(links[0], "https://example.com/a")
+
+
+class BatchParseSchedulerRegressionTests(SimpleTestCase):
+    @staticmethod
+    def success_row(source_text, duration_ms=0):
+        return {
+            "status": "success",
+            "source_text": source_text,
+            "base_filename": source_text.rsplit("/", 1)[-1],
+            "duration_ms": duration_ms,
+            "video_items": (),
+            "image_items": (),
+        }
+
+    @patch(
+        "xhs_download.services.batch_parse.results.ThreadPoolExecutor",
+        new=TrackingThreadPoolExecutor,
+    )
+    def test_scheduler_never_submits_more_than_worker_count(self):
+        TrackingThreadPoolExecutor.instances.clear()
+
+        def slow_row_builder(_request, source_text, **_kwargs):
+            sleep(0.06)
+            return self.success_row(source_text, duration_ms=60)
+
+        build_batch_result_rows(
+            object(),
+            [f"https://example.com/{index}" for index in range(5)],
+            prefer_ultra_hd=False,
+            prefer_youtube_merge=False,
+            deadline=monotonic() + 0.02,
+            parallel_workers=2,
+            per_link_timeout_seconds=0.02,
+            row_builder=slow_row_builder,
+        )
+        sleep(0.08)
+
+        self.assertEqual(len(TrackingThreadPoolExecutor.instances), 1)
+        self.assertLessEqual(
+            TrackingThreadPoolExecutor.instances[0].max_outstanding_count,
+            2,
+        )
+
+    def test_scheduler_waits_for_started_work_before_returning(self):
+        state_lock = threading.Lock()
+        active_count = 0
+
+        def slow_row_builder(_request, source_text, **_kwargs):
+            nonlocal active_count
+            with state_lock:
+                active_count += 1
+            try:
+                sleep(0.06)
+                return self.success_row(source_text, duration_ms=60)
+            finally:
+                with state_lock:
+                    active_count -= 1
+
+        build_batch_result_rows(
+            object(),
+            ["https://example.com/1", "https://example.com/2"],
+            prefer_ultra_hd=False,
+            prefer_youtube_merge=False,
+            deadline=monotonic() + 0.02,
+            parallel_workers=2,
+            per_link_timeout_seconds=0.02,
+            row_builder=slow_row_builder,
+        )
+        with state_lock:
+            active_at_return = active_count
+        sleep(0.08)
+
+        self.assertEqual(active_at_return, 0)
+
+    def test_started_items_timeout_and_unscheduled_items_skip(self):
+        def slow_row_builder(_request, source_text, **_kwargs):
+            sleep(0.06)
+            return self.success_row(source_text, duration_ms=60)
+
+        rows = build_batch_result_rows(
+            object(),
+            [f"https://example.com/{index}" for index in range(4)],
+            prefer_ultra_hd=False,
+            prefer_youtube_merge=False,
+            deadline=monotonic() + 0.02,
+            parallel_workers=2,
+            per_link_timeout_seconds=0.02,
+            row_builder=slow_row_builder,
+        )
+        sleep(0.08)
+
+        self.assertEqual(
+            [row["status"] for row in rows],
+            ["timeout", "timeout", "skipped", "skipped"],
+        )
+
+    def test_parallel_results_preserve_input_order(self):
+        def out_of_order_row_builder(_request, source_text, **_kwargs):
+            if source_text.endswith("/0"):
+                sleep(0.03)
+            return self.success_row(source_text)
+
+        links = [f"https://example.com/{index}" for index in range(4)]
+        rows = build_batch_result_rows(
+            object(),
+            links,
+            prefer_ultra_hd=False,
+            prefer_youtube_merge=False,
+            deadline=monotonic() + 1,
+            parallel_workers=2,
+            per_link_timeout_seconds=0.5,
+            row_builder=out_of_order_row_builder,
+        )
+
+        self.assertEqual([row["source_text"] for row in rows], links)
+
+    def test_each_item_receives_fresh_execution_deadline_when_it_starts(self):
+        observed_budgets = []
+
+        def capture_deadline(_request, source_text, **kwargs):
+            observed_budgets.append(kwargs["deadline"] - monotonic())
+            if source_text.endswith("/0"):
+                sleep(0.04)
+            return self.success_row(source_text)
+
+        build_batch_result_rows(
+            object(),
+            ["https://example.com/0", "https://example.com/1"],
+            prefer_ultra_hd=False,
+            prefer_youtube_merge=False,
+            deadline=monotonic() + 1,
+            parallel_workers=1,
+            per_link_timeout_seconds=0.1,
+            row_builder=capture_deadline,
+        )
+
+        self.assertEqual(len(observed_budgets), 2)
+        for budget in observed_budgets:
+            self.assertGreater(budget, 0.08)
+            self.assertLessEqual(budget, 0.1)
+
+    def test_next_item_starts_only_after_worker_slot_is_released(self):
+        first_finished = False
+        second_observed_first_finished = []
+
+        def ordered_row_builder(_request, source_text, **_kwargs):
+            nonlocal first_finished
+            if source_text.endswith("/0"):
+                sleep(0.03)
+                first_finished = True
+            else:
+                second_observed_first_finished.append(first_finished)
+            return self.success_row(source_text)
+
+        build_batch_result_rows(
+            object(),
+            ["https://example.com/0", "https://example.com/1"],
+            prefer_ultra_hd=False,
+            prefer_youtube_merge=False,
+            deadline=monotonic() + 1,
+            parallel_workers=1,
+            per_link_timeout_seconds=0.2,
+            row_builder=ordered_row_builder,
+        )
+
+        self.assertEqual(second_observed_first_finished, [True])
+
+    def test_one_item_timeout_does_not_change_other_success(self):
+        def mixed_row_builder(_request, source_text, **_kwargs):
+            if source_text.endswith("/slow"):
+                sleep(0.04)
+            return self.success_row(source_text)
+
+        rows = build_batch_result_rows(
+            object(),
+            ["https://example.com/slow", "https://example.com/fast"],
+            prefer_ultra_hd=False,
+            prefer_youtube_merge=False,
+            deadline=monotonic() + 1,
+            parallel_workers=2,
+            per_link_timeout_seconds=0.02,
+            row_builder=mixed_row_builder,
+        )
+
+        self.assertEqual([row["status"] for row in rows], ["timeout", "success"])
+
+    def test_summary_counts_timeout_separately(self):
+        rows = [
+            self.success_row("https://example.com/ok", duration_ms=10),
+            {"status": "failed", "duration_ms": 20},
+            {"status": "timeout", "duration_ms": 30},
+            {"status": "skipped", "duration_ms": 0},
+        ]
+
+        summary = build_batch_summary(rows, batch_wall_duration_ms=40)
+
+        self.assertEqual(summary["success_count"], 1)
+        self.assertEqual(summary["failed_count"], 1)
+        self.assertEqual(summary["timeout_count"], 1)
+        self.assertEqual(summary["skipped_count"], 1)
+        self.assertEqual(summary["total_duration_ms"], 60)
+        self.assertEqual(summary["batch_wall_duration_ms"], 40)
+
+    def test_summary_prefers_public_provider_label(self):
+        row = self.success_row("https://example.com/ok")
+        row.update(
+            provider_label="本地解析",
+            selected_provider="mobile_feed",
+            platform="douyin",
+        )
+
+        summary = build_batch_summary([row])
+
+        self.assertEqual(summary["provider_counts"], {"本地解析": 1})
+
+    def test_result_row_maps_provider_timeout_to_timeout(self):
+        def timeout_parser(_source_text, **_kwargs):
+            raise XhsProviderTimeoutError("provider token=secret timed out")
+
+        row = service_build_batch_result_row(
+            object(),
+            "https://example.com/timeout",
+            prefer_ultra_hd=False,
+            prefer_youtube_merge=False,
+            per_link_timeout_seconds=1,
+            parser=timeout_parser,
+            display_context_builder=Mock(),
+            request_country_code_builder=Mock(return_value=""),
+            query_uses_third_party_provider_func=Mock(return_value=False),
+            third_party_provider_is_available_func=Mock(return_value=True),
+        )
+
+        self.assertEqual(row["status"], "timeout")
+        self.assertEqual(row["error_message"], "上游解析服务响应超时，请稍后重试。")
+        self.assertNotIn("secret", row["error_message"])
+
+    def test_result_row_maps_non_timeout_error_to_failed(self):
+        def failed_parser(_source_text, **_kwargs):
+            raise RuntimeError("broken parser")
+
+        row = service_build_batch_result_row(
+            object(),
+            "https://example.com/failed",
+            prefer_ultra_hd=False,
+            prefer_youtube_merge=False,
+            per_link_timeout_seconds=1,
+            parser=failed_parser,
+            display_context_builder=Mock(),
+            request_country_code_builder=Mock(return_value=""),
+            query_uses_third_party_provider_func=Mock(return_value=False),
+            third_party_provider_is_available_func=Mock(return_value=True),
+        )
+
+        self.assertEqual(row["status"], "failed")
+        self.assertIn("解析执行失败", row["error_message"])
+
+    def test_started_row_with_expired_item_deadline_is_timeout(self):
+        parser = Mock()
+
+        row = service_build_batch_result_row(
+            object(),
+            "https://example.com/expired",
+            prefer_ultra_hd=False,
+            prefer_youtube_merge=False,
+            per_link_timeout_seconds=1,
+            deadline=monotonic() - 1,
+            parser=parser,
+        )
+
+        self.assertEqual(row["status"], "timeout")
+        parser.assert_not_called()
+
+    def test_budget_calculates_waves_and_capacity(self):
+        budget = calculate_batch_parse_budget(
+            link_count=10,
+            worker_count=3,
+            per_link_timeout_seconds=8,
+            configured_total_timeout_seconds=20,
+        )
+
+        self.assertEqual(budget.wave_count, 4)
+        self.assertEqual(budget.theoretical_full_duration_seconds, 32)
+        self.assertEqual(budget.fully_schedulable_capacity, 9)
+        self.assertEqual(budget.fully_completable_capacity, 6)
+        self.assertEqual(budget.max_response_timeout_seconds, 29)
+
+    def test_budget_caps_effective_response_time(self):
+        budget = calculate_batch_parse_budget(
+            link_count=20,
+            worker_count=4,
+            per_link_timeout_seconds=999,
+            configured_total_timeout_seconds=999,
+            max_scheduling_timeout_seconds=120,
+            max_per_link_timeout_seconds=30,
+            completion_grace_seconds=99,
+        )
+
+        self.assertEqual(budget.scheduling_timeout_seconds, 120)
+        self.assertEqual(budget.per_link_timeout_seconds, 30)
+        self.assertEqual(budget.completion_grace_seconds, 2)
+        self.assertEqual(budget.max_response_timeout_seconds, 152)
+
+        single_link_budget = calculate_batch_parse_budget(
+            link_count=1,
+            worker_count=4,
+            per_link_timeout_seconds=8,
+            configured_total_timeout_seconds=60,
+        )
+        self.assertEqual(single_link_budget.max_response_timeout_seconds, 9)
+
+
+class BatchParseAdapterDeadlineTests(SimpleTestCase):
+    @patch("xhs_download.services.common.requests.get")
+    def test_retry_helper_does_not_start_request_after_deadline(self, mock_get):
+        with self.assertRaises(requests.Timeout):
+            request_get_with_retry(
+                "https://example.com/resource",
+                retries=2,
+                deadline_monotonic=monotonic() - 1,
+            )
+
+        mock_get.assert_not_called()
+
+    @patch("xhs_download.services.platforms.xiaohongshu.request_get_with_retry")
+    def test_xiaohongshu_adapter_caps_request_to_item_deadline(self, mock_get):
+        response = Mock(
+            text="<html><body></body></html>",
+            url="https://www.xiaohongshu.com/explore/example",
+        )
+        response.close = Mock()
+        mock_get.return_value = response
+        deadline = monotonic() + 0.5
+
+        XiaohongshuAdapter().parse(
+            "https://www.xiaohongshu.com/explore/example",
+            timeout_seconds=5,
+            deadline_monotonic=deadline,
+        )
+
+        self.assertLessEqual(mock_get.call_args.kwargs["timeout"], 0.5)
+        self.assertEqual(mock_get.call_args.kwargs["deadline_monotonic"], deadline)
+
+    @patch("xhs_download.services.platforms.bilibili.request_get_with_retry")
+    def test_bilibili_api_caps_request_to_item_deadline(self, mock_get):
+        response = Mock()
+        response.json.return_value = {"code": 0, "data": {"title": "demo"}}
+        response.close = Mock()
+        mock_get.return_value = response
+        deadline = monotonic() + 0.5
+
+        data = api_get_json(
+            "https://api.bilibili.com/x/web-interface/view",
+            {"bvid": "BV1234567890"},
+            deadline_monotonic=deadline,
+        )
+
+        self.assertEqual(data["title"], "demo")
+        self.assertLessEqual(mock_get.call_args.kwargs["timeout"], 0.5)
+        self.assertEqual(mock_get.call_args.kwargs["deadline_monotonic"], deadline)
+
+    def test_douyin_mobile_feed_receives_item_deadline(self):
+        adapter = Mock()
+        adapter.fetch_mobile_feed_result.return_value = None
+        context = DouyinParseContext(
+            url="https://www.douyin.com/video/7611146072161047526",
+            aweme_id="7611146072161047526",
+            deadline_monotonic=monotonic() + 0.5,
+        )
+
+        DouyinMobileFeedProvider().parse(adapter, context)
+
+        kwargs = adapter.fetch_mobile_feed_result.call_args.kwargs
+        self.assertLessEqual(kwargs["request_timeout"], 0.5)
+        self.assertEqual(kwargs["request_deadline"], context.deadline_monotonic)
 
 
 @override_settings(
@@ -311,7 +755,8 @@ class BatchParseViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(mock_parse.call_args.kwargs["prefer_ultra_hd"])
-        self.assertEqual(mock_parse.call_args.kwargs["timeout_seconds"], 12.0)
+        self.assertGreater(mock_parse.call_args.kwargs["timeout_seconds"], 11.9)
+        self.assertLessEqual(mock_parse.call_args.kwargs["timeout_seconds"], 12.0)
         self.assertContains(response, "12.0 秒")
 
     @override_settings(BATCH_PARSE_PUBLIC_ENABLED=True, BATCH_PARSE_IP_INTERVAL_SECONDS=20)
@@ -467,8 +912,13 @@ class BatchParseViewTests(TestCase):
         self.assertIn("deadline_monotonic", call_kwargs)
         self.assertEqual(call_kwargs["douyin_provider_order"], ("tiantianjiexi", "native"))
 
+    @patch("xhs_download.views.probe_media_size")
     @patch("xhs_download.views.parse_media_page")
-    def test_batch_parse_labels_native_mobile_feed_provider_for_users(self, mock_parse):
+    def test_batch_parse_labels_native_mobile_feed_provider_for_users(
+        self,
+        mock_parse,
+        mock_probe_media_size,
+    ):
         self.client.force_login(self.staff_user)
         mock_parse.return_value = ParseResult(
             platform="douyin",
@@ -494,6 +944,7 @@ class BatchParseViewTests(TestCase):
         self.assertContains(response, "Provider 本地解析")
         self.assertNotContains(response, "Provider mobile_feed")
         mock_parse.assert_called_once()
+        mock_probe_media_size.assert_not_called()
 
     @patch("xhs_download.views.parse_media_page")
     def test_batch_parse_uses_parallel_workers(self, mock_parse):
@@ -618,7 +1069,7 @@ class BatchParseViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "first_video")
-        self.assertContains(response, "批量解析总预算已用尽")
+        self.assertContains(response, "等待执行时批次处理窗口已结束")
 
     @override_settings(BATCH_PARSE_PUBLIC_ENABLED=True)
     @patch("xhs_download.views.parse_media_page")
@@ -665,6 +1116,204 @@ class BatchParseViewTests(TestCase):
         self.assertNotContains(response, "token=secret")
         self.assertNotContains(response, "signature=bad")
         self.assertNotContains(response, "高级说明：下载策略矩阵")
+
+
+    def test_batch_retry_is_post_only_and_uses_batch_access_gate(self):
+        self.client.force_login(self.staff_user)
+
+        get_response = self.client.get(reverse("batch_parse_retry"))
+        self.client.logout()
+        anonymous_response = self.client.post(
+            reverse("batch_parse_retry"),
+            {"link": "https://example.com/1"},
+        )
+
+        self.assertEqual(get_response.status_code, 405)
+        self.assertEqual(anonymous_response.status_code, 404)
+
+    @patch("xhs_download.views.build_batch_result_row")
+    def test_batch_retry_enforces_csrf(self, mock_row):
+        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client.force_login(self.staff_user)
+        csrf_client.get(reverse("batch_parse"))
+        mock_row.return_value = {
+            "status": "failed",
+            "source_text": "https://example.com/1",
+            "duration_ms": 1,
+            "error_message": "解析执行失败",
+        }
+
+        response = csrf_client.post(
+            reverse("batch_parse_retry"),
+            {"link": "https://example.com/1"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        mock_row.assert_not_called()
+
+    @patch("xhs_download.views.build_batch_result_row")
+    def test_batch_retry_accepts_exactly_one_link(self, mock_row):
+        self.client.force_login(self.staff_user)
+
+        response = self.client.post(
+            reverse("batch_parse_retry"),
+            {"link": "https://example.com/1\nhttps://example.com/2"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error_code"], "INVALID_BATCH_RETRY_LINK")
+        mock_row.assert_not_called()
+
+    @patch("xhs_download.views.build_batch_result_row")
+    def test_batch_retry_only_parses_target_and_returns_shared_card(self, mock_row):
+        self.client.force_login(self.staff_user)
+        mock_row.return_value = {
+            "status": "success",
+            "source_text": "https://example.com/target",
+            "base_filename": "retried_video",
+            "duration_ms": 5,
+            "platform": "douyin",
+            "platform_name": "抖音",
+            "post_type": "video",
+            "provider_label": "天天解析",
+            "video_items": (),
+            "image_items": (),
+        }
+
+        response = self.client.post(
+            reverse("batch_parse_retry"),
+            {
+                "link": "https://example.com/target",
+                "ultra_hd": "0",
+                "youtube_merge": "0",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["status"], "success")
+        self.assertIn("partials/batch_result_card.html", [template.name for template in response.templates])
+        self.assertIn("retried_video", payload["card_html"])
+        self.assertIn("data-retry-link", payload["card_html"])
+        mock_row.assert_called_once()
+        self.assertEqual(mock_row.call_args.args[1], "https://example.com/target")
+
+    @patch("xhs_download.views.build_batch_result_row")
+    def test_batch_retry_does_not_write_result_records(self, mock_row):
+        self.client.force_login(self.staff_user)
+        BatchParseRuntimeSetting.objects.get_or_create(singleton_key=1)
+        ProviderRuntimeSetting.objects.get_or_create(singleton_key=1)
+        mock_row.return_value = {
+            "status": "failed",
+            "source_text": "https://example.com/target",
+            "duration_ms": 1,
+            "error_message": "解析执行失败",
+        }
+
+        with CaptureQueriesContext(connection) as queries:
+            response = self.client.post(
+                reverse("batch_parse_retry"),
+                {"link": "https://example.com/target"},
+            )
+
+        write_prefixes = ("INSERT ", "UPDATE ", "DELETE ", "REPLACE ")
+        write_queries = [
+            query["sql"]
+            for query in queries.captured_queries
+            if query["sql"].lstrip().upper().startswith(write_prefixes)
+        ]
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(write_queries, [])
+
+    @patch("xhs_download.views.youtube_merge_mode_is_available", return_value=True)
+    @patch("xhs_download.views.ultra_hd_is_available", return_value=True)
+    @patch("xhs_download.views.build_batch_result_row")
+    def test_batch_retry_reuses_server_controlled_options(
+        self,
+        mock_row,
+        _mock_ultra_available,
+        _mock_youtube_available,
+    ):
+        self.client.force_login(self.staff_user)
+        mock_row.return_value = {
+            "status": "failed",
+            "source_text": "https://example.com/target",
+            "duration_ms": 1,
+            "error_message": "解析执行失败",
+        }
+
+        response = self.client.post(
+            reverse("batch_parse_retry"),
+            {
+                "link": "https://example.com/target",
+                "ultra_hd": "1",
+                "youtube_merge": "1",
+                "provider_order": "kukutool,native",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        kwargs = mock_row.call_args.kwargs
+        self.assertTrue(kwargs["prefer_ultra_hd"])
+        self.assertTrue(kwargs["prefer_youtube_merge"])
+        self.assertNotIn("provider_order", kwargs)
+
+    @patch("xhs_download.views.build_batch_result_row")
+    def test_batch_retry_safely_renders_non_success_states(self, mock_row):
+        self.client.force_login(self.staff_user)
+
+        for status in ("failed", "timeout", "skipped"):
+            with self.subTest(status=status):
+                mock_row.reset_mock()
+                mock_row.return_value = {
+                    "status": status,
+                    "source_text": "https://example.com/target",
+                    "duration_ms": 5,
+                    "error_message": "安全错误信息",
+                }
+                response = self.client.post(
+                    reverse("batch_parse_retry"),
+                    {"link": "https://example.com/target"},
+                )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["status"], status)
+                self.assertIn("安全错误信息", response.json()["card_html"])
+                mock_row.assert_called_once()
+
+    @patch("xhs_download.views.build_batch_result_row")
+    def test_batch_retry_public_response_hides_raw_direct_links(self, mock_row):
+        BatchParseRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={
+                "access_mode": ProviderAccessMode.PUBLIC,
+                "ip_interval_seconds": 0,
+                "global_minute_limit": 0,
+                "daily_ip_limit": 0,
+            },
+        )
+        signed_url = "https://v5-default.365yg.com/private.mp4?token=secret"
+        mock_row.return_value = {
+            "status": "success",
+            "source_text": "https://example.com/target",
+            "base_filename": "public_retry",
+            "duration_ms": 5,
+            "platform": "douyin",
+            "platform_name": "抖音",
+            "post_type": "video",
+            "video_items": ({"direct_url": signed_url, "size_label": "1 MB"},),
+            "image_items": (),
+        }
+
+        response = self.client.post(
+            reverse("batch_parse_retry"),
+            {"link": "https://example.com/target"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn(signed_url, response.json()["card_html"])
+        self.assertNotIn("token=secret", response.content.decode())
 
 
 class TianTianJieXiHealthHardeningTests(TestCase):

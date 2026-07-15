@@ -1,9 +1,11 @@
 {% extends "base.html" %}
+{% load static %}
 
 {% block title %}批量解析 - 星空的高清下载小站{% endblock %}
 
 {% block content %}
-<section class="xhs-download-page theme-home batch-parse-page">
+<section class="xhs-download-page theme-home batch-parse-page"
+         data-batch-retry-url="{% url 'batch_parse_retry' %}">
     <div class="container-fluid px-4 px-md-5">
         <div class="batch-hero">
             <div class="row justify-content-center">
@@ -11,7 +13,7 @@
                     <div class="text-center">
                         <h1 class="hero-title">批量解析</h1>
                         <p class="hero-subtitle">
-                            一行一个链接，适合批量测试天天解析、KuKuTool、yt-dlp 与 gallery-dl 支持的平台。
+                            一行一个链接，逐条解析并保留每条素材的独立状态。
                         </p>
                     </div>
 
@@ -73,7 +75,7 @@
                                                     >
                                                     <span class="form-check-label">
                                                         <strong>抖音原画/超清</strong>
-                                                        <small>开启后会让天天解析与 KuKuTool 竞速获取原画/超清资源，失败时自动回退普通解析。</small>
+                                                        <small>批量模式优先使用天天解析，未命中时回退本地解析。</small>
                                                     </span>
                                                 </label>
                                                 <label class="form-check batch-option">
@@ -93,9 +95,15 @@
                                                 </label>
                                                 <div class="batch-limit-row">
                                                     <span>本次最多链接数：{{ max_links }}</span>
-                                                    <span>每条链接超时：{{ batch_per_link_timeout_seconds }} 秒</span>
-                                                    <span>总解析预算：{{ batch_total_timeout_seconds }} 秒</span>
+                                                    <span>每条执行预算：{{ batch_per_link_timeout_seconds }} 秒</span>
+                                                    <span>配置调度窗口：{{ batch_total_timeout_seconds }} 秒</span>
+                                                    <span>实际调度窗口：{{ batch_effective_total_timeout_seconds }} 秒</span>
                                                     <span>并发解析数：{{ batch_parallel_workers }}</span>
+                                                    <span>预计波次：{{ batch_budget.wave_count }}</span>
+                                                    <span>理论完整耗时：{{ batch_budget.theoretical_full_duration_seconds }} 秒</span>
+                                                    <span>按上限可启动：{{ batch_budget.fully_schedulable_capacity }} 条</span>
+                                                    <span>调度窗内可完成：{{ batch_budget.fully_completable_capacity }} 条</span>
+                                                    <span>响应上限：{{ batch_budget.max_response_timeout_seconds }} 秒</span>
                                                 </div>
                                             </div>
                                         </div>
@@ -116,32 +124,35 @@
                 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
                     <div>
                         <h2 class="batch-section-title mb-1">解析结果</h2>
-                        <div class="batch-summary">
-                            <span class="batch-summary-chip">总链接 {{ batch_summary.total_count }}</span>
-                            <span class="batch-summary-chip text-success">成功 {{ batch_summary.success_count }}</span>
-                            <span class="batch-summary-chip text-danger">失败 {{ batch_summary.failed_count }}</span>
-                            <span class="batch-summary-chip">跳过 {{ batch_summary.skipped_count }}</span>
-                            <span class="batch-summary-chip">视频 {{ batch_summary.video_count }}</span>
-                            <span class="batch-summary-chip">图片 {{ batch_summary.image_count }}</span>
-                            <span class="batch-summary-chip">总耗时 {{ batch_summary.total_duration_ms }}ms</span>
-                            {% for provider, count in batch_summary.provider_counts.items %}
-                                <span class="batch-summary-chip">{{ provider }} {{ count }}</span>
-                            {% endfor %}
+                        <div class="batch-summary"
+                             data-batch-summary
+                             data-batch-wall-duration-ms="{{ batch_summary.batch_wall_duration_ms }}">
+                            <span class="batch-summary-chip" data-batch-summary-key="total_count">总链接 {{ batch_summary.total_count }}</span>
+                            <span class="batch-summary-chip text-success" data-batch-summary-key="success_count">成功 {{ batch_summary.success_count }}</span>
+                            <span class="batch-summary-chip text-danger" data-batch-summary-key="failed_count">失败 {{ batch_summary.failed_count }}</span>
+                            <span class="batch-summary-chip batch-summary-timeout" data-batch-summary-key="timeout_count">超时 {{ batch_summary.timeout_count }}</span>
+                            <span class="batch-summary-chip" data-batch-summary-key="skipped_count">跳过 {{ batch_summary.skipped_count }}</span>
+                            <span class="batch-summary-chip" data-batch-summary-key="video_count">视频 {{ batch_summary.video_count }}</span>
+                            <span class="batch-summary-chip" data-batch-summary-key="image_count">图片 {{ batch_summary.image_count }}</span>
+                            <span class="batch-summary-chip" data-batch-summary-key="total_duration_ms">行耗时合计 {{ batch_summary.total_duration_ms }}ms</span>
+                            <span class="batch-summary-chip" data-batch-summary-key="batch_wall_duration_ms">批次墙钟耗时 {{ batch_summary.batch_wall_duration_ms }}ms</span>
+                            <span data-batch-provider-summary>
+                                {% for provider, count in batch_summary.provider_counts.items %}
+                                    <span class="batch-summary-chip">{{ provider }} {{ count }}</span>
+                                {% endfor %}
+                            </span>
                         </div>
                     </div>
                     {% if batch_direct_links_allowed %}
                         <div class="batch-bulk-actions">
                             <button type="button" class="btn btn-outline-secondary btn-sm batch-export-btn" data-batch-export="copy-links">
-                                <i class="bi bi-clipboard me-1"></i>
-                                复制全部成功视频直链
+                                <i class="bi bi-clipboard me-1"></i>复制全部成功视频直链
                             </button>
                             <button type="button" class="btn btn-outline-secondary btn-sm batch-export-btn" data-batch-export="links">
-                                <i class="bi bi-file-earmark-arrow-down me-1"></i>
-                                导出 links.txt
+                                <i class="bi bi-file-earmark-arrow-down me-1"></i>导出 links.txt
                             </button>
                             <button type="button" class="btn btn-outline-secondary btn-sm batch-export-btn" data-batch-export="aria2">
-                                <i class="bi bi-file-earmark-code me-1"></i>
-                                导出 aria2.txt
+                                <i class="bi bi-file-earmark-code me-1"></i>导出 aria2.txt
                             </button>
                         </div>
                     {% endif %}
@@ -151,6 +162,8 @@
                     <button type="button" class="batch-filter-btn is-active" data-batch-filter="all">全部</button>
                     <button type="button" class="batch-filter-btn" data-batch-filter="success">成功</button>
                     <button type="button" class="batch-filter-btn" data-batch-filter="failed">失败</button>
+                    <button type="button" class="batch-filter-btn" data-batch-filter="timeout">超时</button>
+                    <button type="button" class="batch-filter-btn" data-batch-filter="skipped">跳过</button>
                     <button type="button" class="batch-filter-btn" data-batch-filter="video">视频</button>
                     <button type="button" class="batch-filter-btn" data-batch-filter="image">图片</button>
                     <button type="button" class="batch-filter-btn" data-batch-filter="douyin">抖音</button>
@@ -160,171 +173,7 @@
 
                 <div class="batch-result-list">
                     {% for row in rows %}
-                        <article class="batch-result-card batch-status-card-{{ row.status }}"
-                                 data-status="{{ row.status }}"
-                                 data-platform="{{ row.platform|default:'' }}"
-                                 data-platform-name="{{ row.platform_name|default:'' }}"
-                                 data-post-type="{{ row.post_type|default:'' }}">
-                            {% if row.status == "failed" or row.status == "skipped" %}
-                                <div class="batch-result-main">
-                                    <div class="batch-result-info">
-                                        <div class="batch-result-header">
-                                            <div>
-                                                <div class="batch-result-title">
-                                                    {% if row.status == "skipped" %}已跳过{% else %}解析失败{% endif %}
-                                                </div>
-                                                <div class="batch-result-source">{{ row.source_text }}</div>
-                                            </div>
-                                            <div class="batch-status-pill batch-status-{{ row.status }}">
-                                                {{ row.status }}
-                                                {% if row.duration_ms %}· {{ row.duration_ms }}ms{% endif %}
-                                            </div>
-                                        </div>
-                                        <div class="alert alert-warning mb-3">
-                                            <i class="bi bi-exclamation-triangle me-1"></i>
-                                            {{ row.error_message|default:"解析失败" }}
-                                        </div>
-                                        <div class="batch-result-actions">
-                                            <button type="button" class="btn btn-outline-secondary btn-sm batch-copy-btn" data-copy-text="{{ row.error_message|default:'解析失败' }}">
-                                                复制错误
-                                            </button>
-                                            <button type="button" class="btn btn-outline-secondary btn-sm batch-copy-btn" data-copy-text="{{ row.source_text }}">
-                                                复制原链接
-                                            </button>
-                                            <button type="button" class="btn btn-brand btn-sm batch-retry-btn" data-retry-link="{{ row.source_text }}">
-                                                重新解析此链接
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-                            {% else %}
-                                <div class="batch-result-main">
-                                    <div class="batch-result-info">
-                                        <div class="batch-result-header">
-                                            <div>
-                                                <div class="batch-result-title">{{ row.base_filename|default:"已解析素材" }}</div>
-                                                <div class="batch-result-source">{{ row.source_text }}</div>
-                                            </div>
-                                            <div class="batch-status-pill batch-status-{{ row.status }}">
-                                                {{ row.status }}
-                                                {% if row.duration_ms %}· {{ row.duration_ms }}ms{% endif %}
-                                            </div>
-                                        </div>
-
-                                        <div class="batch-meta-row">
-                                            <span>{{ row.platform_name }}</span>
-                                            {% if row.provider_label %}
-                                                <span>Provider {{ row.provider_label }}</span>
-                                            {% elif row.selected_provider %}
-                                                <span>Provider {{ row.selected_provider }}</span>
-                                            {% endif %}
-                                            <span>{{ row.post_type }}</span>
-                                            {% if row.video_items %}<span>视频 {{ row.video_items|length }}</span>{% endif %}
-                                            {% if row.image_items %}<span>图片 {{ row.image_items|length }}</span>{% endif %}
-                                        </div>
-
-                                        {% if row.video_items %}
-                                            <div class="batch-direct-tools">
-                                                {% for item in row.video_items %}
-                                                    <div class="batch-direct-item">
-                                                        <div class="batch-direct-summary">
-                                                            <span class="batch-direct-icon">
-                                                                <i class="bi bi-file-earmark-play"></i>
-                                                            </span>
-                                                            <span class="batch-direct-text">
-                                                                <strong>视频文件</strong>
-                                                                <small>{{ item.size_label|default:"大小未知" }}</small>
-                                                            </span>
-                                                        </div>
-                                                        {% if batch_direct_links_allowed %}
-                                                            <div class="batch-result-actions">
-                                                                <button type="button" class="btn btn-outline-secondary btn-sm batch-copy-btn" data-copy-text="{{ item.direct_url }}">
-                                                                    复制直链
-                                                                </button>
-                                                                <a class="btn btn-outline-secondary btn-sm" href="{{ item.direct_url }}" target="_blank" rel="noopener noreferrer">
-                                                                    打开直链
-                                                                </a>
-                                                                <button type="button"
-                                                                        class="btn btn-brand btn-sm batch-browser-download-btn"
-                                                                        data-batch-direct-download
-                                                                        data-batch-direct-url="{{ item.direct_url }}"
-                                                                        data-batch-direct-filename="{{ row.base_filename|default:'video' }}_{{ forloop.counter }}.mp4">
-                                                                    <span class="spinner-border spinner-border-sm me-1 batch-download-spinner" aria-hidden="true"></span>
-                                                                    <i class="bi bi-download me-1 batch-download-icon"></i>
-                                                                    <span class="batch-download-label">浏览器下载</span>
-                                                                </button>
-                                                            </div>
-                                                            <div class="batch-download-progress"
-                                                                 data-batch-download-progress
-                                                                 hidden>
-                                                                <div class="batch-download-progress-track">
-                                                                    <div class="batch-download-progress-bar"
-                                                                         data-batch-download-progress-bar></div>
-                                                                </div>
-                                                                <div class="batch-download-progress-label"
-                                                                     data-batch-download-progress-label>准备下载...</div>
-                                                            </div>
-                                                            <details class="batch-direct-url">
-                                                                <summary>展开链接</summary>
-                                                                <code>{{ item.direct_url }}</code>
-                                                            </details>
-                                                        {% endif %}
-                                                    </div>
-                                                {% endfor %}
-                                            </div>
-                                        {% endif %}
-
-                                        {% if row.image_items %}
-                                            <div class="batch-assets">
-                                                {% for item in row.image_items %}
-                                                    {% if batch_direct_links_allowed %}
-                                                        <a class="batch-asset-link" href="{{ item.url }}" target="_blank" rel="noopener noreferrer">
-                                                            <i class="bi bi-image"></i>
-                                                            <span>图片 {{ forloop.counter }}</span>
-                                                            <small>{{ item.strategy_label|default:item.download_strategy }}</small>
-                                                        </a>
-                                                    {% else %}
-                                                        <div class="batch-asset-link">
-                                                            <i class="bi bi-image"></i>
-                                                            <span>图片 {{ forloop.counter }}</span>
-                                                            <small>{{ item.strategy_label|default:item.download_strategy }}</small>
-                                                        </div>
-                                                    {% endif %}
-                                                {% endfor %}
-                                            </div>
-                                        {% endif %}
-                                    </div>
-
-                                    <div class="batch-result-cover">
-                                        {% if row.video_items and row.video_items.0.cover_url %}
-                                            <img
-                                                    src="{{ proxy_image_url }}?u={{ row.video_items.0.encoded_preview_cover_url|default:row.video_items.0.encoded_cover_url }}{% if row.video_items.0.cover_preview_provider_query %}&{{ row.video_items.0.cover_preview_provider_query }}{% endif %}"
-                                                    alt="视频封面"
-                                                    loading="lazy"
-                                                    decoding="async"
-                                                    onerror="retryImage(this)"
-                                            >
-                                        {% elif row.image_items %}
-                                            <div class="batch-image-grid">
-                                                {% for item in row.image_items|slice:":4" %}
-                                                    <img
-                                                            src="{{ proxy_image_url }}?u={{ item.encoded_preview_url|default:item.encoded_url }}{% if item.preview_provider_query %}&{{ item.preview_provider_query }}{% endif %}"
-                                                            alt="图片预览"
-                                                            loading="lazy"
-                                                            decoding="async"
-                                                            onerror="retryImage(this)"
-                                                    >
-                                                {% endfor %}
-                                            </div>
-                                        {% else %}
-                                            <div class="batch-cover-placeholder">
-                                                <i class="bi bi-card-image"></i>
-                                            </div>
-                                        {% endif %}
-                                    </div>
-                                </div>
-                            {% endif %}
-                        </article>
+                        {% include "partials/batch_result_card.html" with row=row %}
                     {% endfor %}
                 </div>
             </section>
@@ -333,10 +182,7 @@
         {% if batch_direct_links_allowed %}
             <section class="batch-strategy-section">
                 <details class="batch-strategy-details">
-                    <summary>
-                        <i class="bi bi-info-circle me-1"></i>
-                        高级说明：下载策略矩阵
-                    </summary>
+                    <summary><i class="bi bi-info-circle me-1"></i>高级说明：下载策略矩阵</summary>
                     <p class="text-muted mb-3">后端为每个资源声明推荐策略，前端按策略选择 Blob、直链、服务端单文件、ZIP 或合并。</p>
                     <div class="row g-3">
                         {% for item in strategy_matrix %}
@@ -346,8 +192,7 @@
                                     <div class="strategy-route">
                                         <span>{{ item.strategy }}</span>
                                         {% if item.fallback != "none" %}
-                                            <i class="bi bi-arrow-right"></i>
-                                            <span>{{ item.fallback }}</span>
+                                            <i class="bi bi-arrow-right"></i><span>{{ item.fallback }}</span>
                                         {% endif %}
                                     </div>
                                     <p>{{ item.note }}</p>
@@ -360,4 +205,8 @@
         {% endif %}
     </div>
 </section>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/batch_parse.js' %}?v={{ static_asset_version }}"></script>
 {% endblock %}

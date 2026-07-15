@@ -21,6 +21,20 @@ Production site:
 https://download.cosflow.icu/
 ```
 
+## Unreleased Batch Parse Candidate
+
+The `codex/batch-parse-stability-v1` development branch is not deployed. Its candidate behavior includes:
+
+- Bounded Batch scheduling with no executor backlog beyond the configured worker count.
+- A scheduling deadline for starting new rows and a fresh per-item deadline created only when a row actually starts.
+- Separate `success`, `failed`, `timeout`, and `skipped` states.
+- Separate row-duration totals and real Batch wall-clock duration.
+- A POST/CSRF-protected single-card retry that preserves the textarea and all other cards.
+- Batch-only JavaScript in `static/js/batch_parse.js` and a shared result-card template.
+- No optional missing-size CDN probe in the Batch display path; single-link parsing remains unchanged.
+
+Do not treat these items as production behavior until the corresponding PR is reviewed, merged, and deployed.
+
 ## Production Runtime Topology
 
 Current deployed topology:

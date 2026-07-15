@@ -785,6 +785,14 @@ body {
     display: none;
 }
 
+.batch-retry-spinner {
+    display: none;
+}
+
+.batch-retry-btn.is-loading .batch-retry-spinner {
+    display: inline-block;
+}
+
 .batch-browser-download-btn.is-loading .batch-download-spinner {
     display: inline-block;
 }
@@ -1027,6 +1035,12 @@ body {
 .batch-status-failed {
     background: #fff2f2;
     color: #dc2626;
+}
+
+.batch-status-timeout,
+.batch-summary-timeout {
+    background: #fff1e8;
+    color: #c2410c;
 }
 
 .batch-status-skipped {

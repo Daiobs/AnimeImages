@@ -1,4 +1,5 @@
 from dataclasses import dataclass, replace
+from time import monotonic
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from .candidates import MediaCandidate, rank_media_candidates
@@ -144,6 +145,7 @@ def diagnose_media_candidates(
     expected_type="",
     probe_strategy="head_first",
     probe_fallback=True,
+    deadline_monotonic=None,
 ):
     ranked_candidates = rank_media_candidates(tuple(candidates or ()))[:max_candidates]
     if not should_probe:
@@ -155,10 +157,23 @@ def diagnose_media_candidates(
     probe = quality_probe or QualityProbe(allowed_final_host_suffixes=allowed_final_host_suffixes)
     diagnostics = []
     for index, candidate in enumerate(ranked_candidates, start=1):
+        probe_timeout = timeout
+        if deadline_monotonic is not None:
+            remaining = float(deadline_monotonic) - monotonic()
+            if remaining <= 0:
+                diagnostics.extend(
+                    CandidateDiagnostic(index=rest_index, candidate=rest_candidate)
+                    for rest_index, rest_candidate in enumerate(
+                        ranked_candidates[index - 1 :],
+                        start=index,
+                    )
+                )
+                break
+            probe_timeout = min(float(timeout), max(0.001, remaining))
         try:
             probe_kwargs = {
                 "headers": headers,
-                "timeout": timeout,
+                "timeout": probe_timeout,
                 "expected_type": expected_type,
             }
             if probe_strategy != "head_first":
@@ -203,6 +218,7 @@ def select_best_media_candidate(
     expected_type="",
     probe_strategy="head_first",
     probe_fallback=True,
+    deadline_monotonic=None,
 ):
     diagnostics = diagnose_media_candidates(
         candidates,
@@ -215,6 +231,7 @@ def select_best_media_candidate(
         expected_type=expected_type,
         probe_strategy=probe_strategy,
         probe_fallback=probe_fallback,
+        deadline_monotonic=deadline_monotonic,
     )
 
     reachable_candidates = [

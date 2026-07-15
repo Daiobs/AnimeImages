@@ -1,5 +1,5 @@
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from urllib.parse import urlparse
 
 import requests
@@ -13,6 +13,9 @@ from ..region_routing import get_request_country_code
 
 
 BATCH_DOUYIN_PROVIDER_ORDER = ("tiantianjiexi", "native")
+BATCH_SKIPPED_MESSAGE = "等待执行时批次处理窗口已结束，本条未启动。"
+BATCH_ITEM_TIMEOUT_MESSAGE = "本条解析超过单条时间限制。"
+BATCH_PROVIDER_TIMEOUT_MESSAGE = "上游解析服务响应超时，请稍后重试。"
 BATCH_PROVIDER_LABELS = {
     "tiantianjiexi": "天天解析",
     "kukutool": "KuKuTool",
@@ -56,6 +59,30 @@ def build_batch_skipped_row(source_text, reason, started_at=None):
     }
 
 
+def build_batch_timeout_row(source_text, reason, started_at=None, duration_ms=None):
+    started_at = started_at or time.monotonic()
+    if duration_ms is None:
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+    return {
+        "status": "timeout",
+        "source_text": source_text,
+        "duration_ms": max(0, int(duration_ms or 0)),
+        "error_message": sanitize_observability_text(reason),
+    }
+
+
+def build_batch_failed_row(source_text, reason, started_at=None, duration_ms=None):
+    started_at = started_at or time.monotonic()
+    if duration_ms is None:
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+    return {
+        "status": "failed",
+        "source_text": source_text,
+        "duration_ms": max(0, int(duration_ms or 0)),
+        "error_message": sanitize_observability_text(reason),
+    }
+
+
 def batch_link_host(url):
     try:
         return urlparse(str(url or "")).hostname or ""
@@ -82,15 +109,17 @@ def enrich_batch_media_items(row):
         item["direct_url"] = item.get("url") or ""
 
 
-def build_batch_summary(rows):
+def build_batch_summary(rows, *, batch_wall_duration_ms=0):
     summary = {
         "total_count": len(rows),
         "success_count": 0,
         "failed_count": 0,
+        "timeout_count": 0,
         "skipped_count": 0,
         "video_count": 0,
         "image_count": 0,
         "total_duration_ms": 0,
+        "batch_wall_duration_ms": max(0, int(batch_wall_duration_ms or 0)),
         "provider_counts": {},
         "platform_counts": {},
     }
@@ -102,10 +131,12 @@ def build_batch_summary(rows):
             images = row.get("image_items") or ()
             summary["video_count"] += len(videos)
             summary["image_count"] += len(images)
-            provider = row.get("selected_provider") or row.get("provider_label") or "native"
+            provider = row.get("provider_label") or row.get("selected_provider") or "native"
             platform = row.get("platform_name") or row.get("platform") or "未知平台"
             summary["provider_counts"][provider] = summary["provider_counts"].get(provider, 0) + 1
             summary["platform_counts"][platform] = summary["platform_counts"].get(platform, 0) + 1
+        elif status == "timeout":
+            summary["timeout_count"] += 1
         elif status == "skipped":
             summary["skipped_count"] += 1
         else:
@@ -140,8 +171,17 @@ def build_batch_result_row(
     third_party_provider_is_available_func=None,
 ):
     started_at = time.monotonic()
-    if deadline is not None and time.monotonic() >= deadline:
-        return build_batch_skipped_row(source_text, "批量解析总预算已用尽，本条已跳过。", started_at)
+    execution_deadline = (
+        float(deadline)
+        if deadline is not None
+        else started_at + max(0.1, float(per_link_timeout_seconds or 0))
+    )
+    if started_at >= execution_deadline:
+        return build_batch_timeout_row(
+            source_text,
+            BATCH_ITEM_TIMEOUT_MESSAGE,
+            started_at,
+        )
     try:
         parser = parser or parse_media_page
         display_context_builder = display_context_builder or _missing_display_context_builder
@@ -153,14 +193,16 @@ def build_batch_result_row(
             third_party_provider_is_available_func or third_party_provider_is_available
         )
 
-        remaining_timeout = max(0.1, float(per_link_timeout_seconds or 0))
-        if deadline is not None:
-            remaining_timeout = min(
-                remaining_timeout,
-                max(0.0, deadline - time.monotonic()),
-            )
+        remaining_timeout = min(
+            max(0.1, float(per_link_timeout_seconds or 0)),
+            max(0.0, execution_deadline - time.monotonic()),
+        )
         if remaining_timeout <= 0:
-            return build_batch_skipped_row(source_text, "批量解析总预算已用尽，本条已跳过。", started_at)
+            return build_batch_timeout_row(
+                source_text,
+                BATCH_ITEM_TIMEOUT_MESSAGE,
+                started_at,
+            )
         if (
             query_uses_third_party_provider_func(source_text)
             and not third_party_provider_is_available_func(request)
@@ -175,11 +217,7 @@ def build_batch_result_row(
             prefer_youtube_merge=prefer_youtube_merge,
             douyin_provider_order=BATCH_DOUYIN_PROVIDER_ORDER,
             timeout_seconds=remaining_timeout,
-            deadline_monotonic=(
-                time.monotonic() + remaining_timeout
-                if deadline is None
-                else min(deadline, time.monotonic() + remaining_timeout)
-            ),
+            deadline_monotonic=execution_deadline,
         )
         display_context = display_context_builder(result, platform_key="home")
         metadata = result.metadata or {}
@@ -194,34 +232,94 @@ def build_batch_result_row(
         }
         enrich_batch_media_items(row)
         return row
-    except XhsProviderTimeoutError as error:
-        return {
-            "status": "failed",
-            "source_text": source_text,
-            "duration_ms": int((time.monotonic() - started_at) * 1000),
-            "error_message": sanitize_observability_text(str(error)),
-        }
+    except XhsProviderTimeoutError:
+        return build_batch_timeout_row(
+            source_text,
+            BATCH_PROVIDER_TIMEOUT_MESSAGE,
+            started_at,
+        )
+    except requests.Timeout:
+        return build_batch_timeout_row(
+            source_text,
+            BATCH_PROVIDER_TIMEOUT_MESSAGE,
+            started_at,
+        )
     except XhsError as error:
-        return {
-            "status": "failed",
-            "source_text": source_text,
-            "duration_ms": int((time.monotonic() - started_at) * 1000),
-            "error_message": sanitize_observability_text(f"解析失败：{error}"),
-        }
+        return build_batch_failed_row(
+            source_text,
+            f"解析执行失败：{error}",
+            started_at,
+        )
     except requests.RequestException as error:
-        return {
-            "status": "failed",
-            "source_text": source_text,
-            "duration_ms": int((time.monotonic() - started_at) * 1000),
-            "error_message": sanitize_observability_text(f"请求失败：{error}"),
-        }
+        return build_batch_failed_row(
+            source_text,
+            f"解析执行失败：{error}",
+            started_at,
+        )
     except Exception as error:
-        return {
-            "status": "failed",
-            "source_text": source_text,
-            "duration_ms": int((time.monotonic() - started_at) * 1000),
-            "error_message": sanitize_observability_text(f"{type(error).__name__}: {error}"),
-        }
+        return build_batch_failed_row(
+            source_text,
+            f"解析执行失败：{type(error).__name__}: {error}",
+            started_at,
+        )
+
+
+def _execute_batch_result_row(
+    row_builder,
+    request,
+    source_text,
+    *,
+    prefer_ultra_hd,
+    prefer_youtube_merge,
+    per_link_timeout_seconds,
+    row_builder_kwargs,
+):
+    started_at = time.monotonic()
+    execution_deadline = started_at + max(
+        0.001,
+        float(per_link_timeout_seconds or 0),
+    )
+    try:
+        row = row_builder(
+            request,
+            source_text,
+            prefer_ultra_hd=prefer_ultra_hd,
+            prefer_youtube_merge=prefer_youtube_merge,
+            per_link_timeout_seconds=per_link_timeout_seconds,
+            deadline=execution_deadline,
+            **row_builder_kwargs,
+        )
+    except Exception as error:
+        return build_batch_failed_row(
+            source_text,
+            f"解析执行失败：{type(error).__name__}: {error}",
+            started_at,
+        )
+
+    finished_at = time.monotonic()
+    if not isinstance(row, dict):
+        return build_batch_failed_row(
+            source_text,
+            "解析执行失败：返回结果格式无效。",
+            started_at,
+        )
+    if finished_at >= execution_deadline and row.get("status") != "timeout":
+        return build_batch_timeout_row(
+            source_text,
+            BATCH_ITEM_TIMEOUT_MESSAGE,
+            started_at,
+            duration_ms=int((finished_at - started_at) * 1000),
+        )
+    if row.get("status") == "skipped":
+        return build_batch_timeout_row(
+            source_text,
+            BATCH_ITEM_TIMEOUT_MESSAGE,
+            started_at,
+            duration_ms=int((finished_at - started_at) * 1000),
+        )
+    row.setdefault("source_text", source_text)
+    row.setdefault("duration_ms", int((finished_at - started_at) * 1000))
+    return row
 
 
 def build_batch_result_rows(
@@ -233,6 +331,7 @@ def build_batch_result_rows(
     deadline,
     parallel_workers,
     per_link_timeout_seconds,
+    completion_grace_seconds=1.0,
     row_builder=None,
     row_builder_kwargs=None,
 ):
@@ -242,70 +341,93 @@ def build_batch_result_rows(
     row_builder = row_builder or build_batch_result_row
     row_builder_kwargs = row_builder_kwargs or {}
     worker_count = min(max(1, int(parallel_workers or 1)), len(links))
-    per_link_timeout = per_link_timeout_seconds
-    if worker_count <= 1:
-        rows = []
-        for link in links:
-            if time.monotonic() >= deadline:
-                rows.append(build_batch_skipped_row(link, "批量解析总预算已用尽，本条已跳过。"))
-                continue
-            rows.append(
-                row_builder(
-                    request,
-                    link,
-                    prefer_ultra_hd=prefer_ultra_hd,
-                    prefer_youtube_merge=prefer_youtube_merge,
-                    per_link_timeout_seconds=per_link_timeout,
-                    deadline=deadline,
-                    **row_builder_kwargs,
-                )
-            )
-        return rows
-
+    per_link_timeout = max(0.001, float(per_link_timeout_seconds or 0))
+    completion_grace = min(max(0.0, float(completion_grace_seconds or 0)), 2.0)
+    response_deadline = float(deadline) + per_link_timeout + completion_grace
     rows = [None] * len(links)
     executor = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="batch-parse")
-    future_map = {}
-    try:
-        for index, link in enumerate(links):
+    active_futures = {}
+    next_index = 0
+
+    def mark_remaining_skipped():
+        nonlocal next_index
+        while next_index < len(links):
+            rows[next_index] = build_batch_skipped_row(
+                links[next_index],
+                BATCH_SKIPPED_MESSAGE,
+            )
+            next_index += 1
+
+    def submit_available():
+        nonlocal next_index
+        while len(active_futures) < worker_count and next_index < len(links):
             if time.monotonic() >= deadline:
-                rows[index] = build_batch_skipped_row(link, "批量解析总预算已用尽，本条已跳过。")
-                continue
+                mark_remaining_skipped()
+                return
+            index = next_index
+            link = links[index]
+            next_index += 1
             future = executor.submit(
+                _execute_batch_result_row,
                 row_builder,
                 request,
                 link,
                 prefer_ultra_hd=prefer_ultra_hd,
                 prefer_youtube_merge=prefer_youtube_merge,
                 per_link_timeout_seconds=per_link_timeout,
-                deadline=deadline,
-                **row_builder_kwargs,
+                row_builder_kwargs=row_builder_kwargs,
             )
-            future_map[future] = (index, link)
+            active_futures[future] = (index, link)
 
-        remaining = max(0.0, deadline - time.monotonic())
-        try:
-            completed_futures = as_completed(future_map, timeout=remaining)
-            for future in completed_futures:
-                index, link = future_map[future]
+    try:
+        submit_available()
+        while active_futures:
+            now = time.monotonic()
+            if next_index < len(links) and now >= deadline:
+                mark_remaining_skipped()
+
+            remaining_response_time = max(0.0, response_deadline - now)
+            if remaining_response_time <= 0:
+                completed, _pending = wait(
+                    tuple(active_futures),
+                    return_when=FIRST_COMPLETED,
+                )
+            else:
+                wait_timeout = remaining_response_time
+                if next_index < len(links):
+                    wait_timeout = min(
+                        wait_timeout,
+                        max(0.0, float(deadline) - now),
+                    )
+                if wait_timeout <= 0:
+                    continue
+                completed, _pending = wait(
+                    tuple(active_futures),
+                    timeout=wait_timeout,
+                    return_when=FIRST_COMPLETED,
+                )
+                if not completed:
+                    continue
+
+            for future in completed:
+                index, link = active_futures.pop(future)
                 try:
                     rows[index] = future.result()
                 except Exception as error:
-                    rows[index] = {
-                        "status": "failed",
-                        "source_text": link,
-                        "duration_ms": 0,
-                        "error_message": sanitize_observability_text(f"{type(error).__name__}: {error}"),
-                    }
-        except FutureTimeoutError:
-            pass
+                    rows[index] = build_batch_failed_row(
+                        link,
+                        f"解析执行失败：{type(error).__name__}: {error}",
+                    )
+            if next_index < len(links):
+                submit_available()
     finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+        executor.shutdown(wait=True, cancel_futures=True)
 
     for index, row in enumerate(rows):
         if row is None:
             rows[index] = build_batch_skipped_row(
                 links[index],
-                "批量解析总预算已用尽，本条已跳过。",
+                BATCH_SKIPPED_MESSAGE,
             )
     return rows
 

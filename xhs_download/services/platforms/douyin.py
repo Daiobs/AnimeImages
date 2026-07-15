@@ -620,10 +620,20 @@ class DouyinAdapter(BasePlatformAdapter):
         "deadline_monotonic",
     )
 
-    def parse_html(self, html, source_url=None, probe_video_candidates=False):
+    def parse_html(
+        self,
+        html,
+        source_url=None,
+        probe_video_candidates=False,
+        deadline_monotonic=None,
+    ):
         aweme = find_aweme_in_html(html)
         if aweme:
-            return self.parse_aweme(aweme, probe_video_candidates=probe_video_candidates)
+            return self.parse_aweme(
+                aweme,
+                probe_video_candidates=probe_video_candidates,
+                deadline_monotonic=deadline_monotonic,
+            )
 
         return ParseResult(
             platform=self.platform_id,
@@ -632,7 +642,12 @@ class DouyinAdapter(BasePlatformAdapter):
             assets=(),
         )
 
-    def parse_aweme(self, aweme, probe_video_candidates=False):
+    def parse_aweme(
+        self,
+        aweme,
+        probe_video_candidates=False,
+        deadline_monotonic=None,
+    ):
         base_filename = get_base_filename(aweme)
         metadata = get_aweme_metadata(aweme)
         image_assets = self.build_image_assets(aweme)
@@ -655,6 +670,7 @@ class DouyinAdapter(BasePlatformAdapter):
                     headers=self.headers,
                     allowed_final_host_suffixes=self.media_host_suffixes,
                     expected_type="video",
+                    deadline_monotonic=deadline_monotonic,
                 )
                 video_candidate = selection.candidate or video_candidate
 
@@ -709,7 +725,13 @@ class DouyinAdapter(BasePlatformAdapter):
 
         return assets
 
-    def fetch_mobile_feed_aweme(self, aweme_id, request_timeout=15, request_retries=2):
+    def fetch_mobile_feed_aweme(
+        self,
+        aweme_id,
+        request_timeout=15,
+        request_retries=2,
+        request_deadline=0,
+    ):
         feed_url = build_mobile_feed_url(aweme_id)
         if not feed_url:
             return {}
@@ -721,6 +743,7 @@ class DouyinAdapter(BasePlatformAdapter):
             retries=request_retries,
             allowed_final_host_suffixes=("snssdk.com",),
             final_url_message="抖音移动接口跳转到了不允许的域名",
+            deadline_monotonic=request_deadline or None,
         )
         try:
             data = response.json()
@@ -735,15 +758,21 @@ class DouyinAdapter(BasePlatformAdapter):
         probe_video_candidates=False,
         request_timeout=15,
         request_retries=2,
+        request_deadline=0,
     ):
         aweme = self.fetch_mobile_feed_aweme(
             aweme_id,
             request_timeout=request_timeout,
             request_retries=request_retries,
+            request_deadline=request_deadline,
         )
         if not aweme:
             return None
-        result = self.parse_aweme(aweme, probe_video_candidates=probe_video_candidates)
+        result = self.parse_aweme(
+            aweme,
+            probe_video_candidates=probe_video_candidates,
+            deadline_monotonic=request_deadline or None,
+        )
         return result if result.assets else None
 
     def fetch_mobile_share_aweme(
@@ -751,6 +780,7 @@ class DouyinAdapter(BasePlatformAdapter):
         aweme_id,
         request_timeout=15,
         request_retries=2,
+        request_deadline=0,
     ):
         for share_url in build_mobile_share_urls(aweme_id):
             try:
@@ -761,6 +791,7 @@ class DouyinAdapter(BasePlatformAdapter):
                     retries=request_retries,
                     allowed_final_host_suffixes=self.page_host_suffixes,
                     final_url_message="抖音移动分享页跳转到了不允许的域名",
+                    deadline_monotonic=request_deadline or None,
                 )
                 try:
                     aweme = find_aweme_in_html(response.text)
@@ -778,14 +809,20 @@ class DouyinAdapter(BasePlatformAdapter):
         probe_video_candidates=False,
         request_timeout=15,
         request_retries=2,
+        request_deadline=0,
     ):
         aweme = self.fetch_mobile_share_aweme(
             aweme_id,
             request_timeout=request_timeout,
             request_retries=request_retries,
+            request_deadline=request_deadline,
         )
         if aweme:
-            result = self.parse_aweme(aweme, probe_video_candidates=probe_video_candidates)
+            result = self.parse_aweme(
+                aweme,
+                probe_video_candidates=probe_video_candidates,
+                deadline_monotonic=request_deadline or None,
+            )
             if result.assets:
                 return result
         return None
@@ -891,6 +928,7 @@ class DouyinAdapter(BasePlatformAdapter):
                     retries=1 if fast_short_link else 3,
                     allowed_final_host_suffixes=self.page_host_suffixes,
                     final_url_message="抖音页面跳转到了不允许的域名",
+                    deadline_monotonic=request_deadline or None,
                 )
                 try:
                     context.final_url = response.url
@@ -899,6 +937,7 @@ class DouyinAdapter(BasePlatformAdapter):
                         context.html,
                         source_url=context.final_url,
                         probe_video_candidates=prefer_ultra_hd,
+                        deadline_monotonic=request_deadline or None,
                     )
                 finally:
                     response.close()

@@ -1,4 +1,6 @@
 import logging
+import math
+from dataclasses import dataclass
 
 from ...models import BatchParseRuntimeSetting, ProviderAccessMode
 from ..env_config import (
@@ -11,6 +13,82 @@ from ..rate_limits import consume_daily, consume_fixed_window, get_client_identi
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class BatchParseBudget:
+    link_count: int
+    worker_count: int
+    wave_count: int
+    configured_total_timeout_seconds: float
+    scheduling_timeout_seconds: float
+    per_link_timeout_seconds: float
+    theoretical_full_duration_seconds: float
+    fully_schedulable_capacity: int
+    fully_completable_capacity: int
+    completion_grace_seconds: float
+    max_response_timeout_seconds: float
+
+
+def calculate_batch_parse_budget(
+    *,
+    link_count,
+    worker_count,
+    per_link_timeout_seconds,
+    configured_total_timeout_seconds,
+    max_scheduling_timeout_seconds=120.0,
+    max_per_link_timeout_seconds=30.0,
+    completion_grace_seconds=1.0,
+):
+    """Return deterministic scheduling capacity without reading runtime state."""
+    link_count = max(0, int(link_count or 0))
+    requested_workers = max(1, int(worker_count or 1))
+    worker_count = min(requested_workers, link_count) if link_count else requested_workers
+    configured_total_timeout = max(1.0, float(configured_total_timeout_seconds or 0))
+    scheduling_timeout = min(
+        configured_total_timeout,
+        max(1.0, float(max_scheduling_timeout_seconds or 0)),
+    )
+    per_link_timeout = min(
+        max(0.5, float(per_link_timeout_seconds or 0)),
+        max(0.5, float(max_per_link_timeout_seconds or 0)),
+    )
+    completion_grace = min(
+        max(0.0, float(completion_grace_seconds or 0)),
+        2.0,
+    )
+    wave_count = math.ceil(link_count / worker_count) if link_count else 0
+    theoretical_full_duration = wave_count * per_link_timeout
+    response_work_duration = min(
+        theoretical_full_duration,
+        scheduling_timeout + per_link_timeout,
+    )
+    schedulable_waves = (
+        min(wave_count, max(1, math.ceil(scheduling_timeout / per_link_timeout)))
+        if wave_count
+        else 0
+    )
+    completable_waves = (
+        min(wave_count, math.floor(scheduling_timeout / per_link_timeout))
+        if wave_count
+        else 0
+    )
+
+    return BatchParseBudget(
+        link_count=link_count,
+        worker_count=worker_count,
+        wave_count=wave_count,
+        configured_total_timeout_seconds=configured_total_timeout,
+        scheduling_timeout_seconds=scheduling_timeout,
+        per_link_timeout_seconds=per_link_timeout,
+        theoretical_full_duration_seconds=theoretical_full_duration,
+        fully_schedulable_capacity=min(link_count, schedulable_waves * worker_count),
+        fully_completable_capacity=min(link_count, completable_waves * worker_count),
+        completion_grace_seconds=completion_grace,
+        max_response_timeout_seconds=(
+            response_work_duration + completion_grace if link_count else 0.0
+        ),
+    )
 
 
 def batch_parse_user_is_staff(request):
@@ -158,6 +236,29 @@ def batch_parse_effective_per_link_timeout_seconds(prefer_ultra_hd=False):
     return max(
         per_link_timeout,
         env_runtime_float("BATCH_PARSE_ULTRA_PER_LINK_TIMEOUT_SECONDS", 12.0),
+    )
+
+
+def build_batch_parse_budget(link_count, *, prefer_ultra_hd=False):
+    return calculate_batch_parse_budget(
+        link_count=link_count,
+        worker_count=batch_parse_parallel_workers(),
+        per_link_timeout_seconds=batch_parse_effective_per_link_timeout_seconds(
+            prefer_ultra_hd=prefer_ultra_hd,
+        ),
+        configured_total_timeout_seconds=batch_parse_total_timeout_seconds(),
+        max_scheduling_timeout_seconds=env_runtime_float(
+            "BATCH_PARSE_MAX_TOTAL_TIMEOUT_SECONDS",
+            120.0,
+        ),
+        max_per_link_timeout_seconds=env_runtime_float(
+            "BATCH_PARSE_MAX_PER_LINK_TIMEOUT_SECONDS",
+            30.0,
+        ),
+        completion_grace_seconds=env_runtime_float(
+            "BATCH_PARSE_COMPLETION_GRACE_SECONDS",
+            1.0,
+        ),
     )
 
 

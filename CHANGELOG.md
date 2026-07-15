@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Reworked Batch Parse into a bounded scheduler that separates the batch scheduling window from per-item execution deadlines, distinguishes timeout from skipped work, and reports wall-clock duration separately from row-duration totals.
+- Added CSRF-protected, single-card Batch retry that preserves the original input and all other results, plus moved Batch-only browser behavior from `static/js/app.js` to `static/js/batch_parse.js`.
+- Removed optional missing-size media probes from the Batch display path so completed parses are not delayed by extra CDN requests; single-link display behavior is unchanged.
 - Added Release Management Executor Wiring v1 with an exact `sudo -n` submit-helper allowlist, root-owned helper/systemd/sudoers templates, static validation, failure sanitization, and production runbooks; production remains record-only until a separate approved installation.
 - Synchronized README, handoff, current-version, changelog, deployment, and PR-template guidance after the Release Management rollout.
 - Added a dedicated Release Management architecture and operations runbook.
