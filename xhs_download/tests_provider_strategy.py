@@ -46,6 +46,7 @@ from .services.batch_parse.results import (
     build_batch_summary,
 )
 from .services.batch_parse.runtime import calculate_batch_parse_budget
+from .services.batch_parse.view_context import build_batch_parse_context
 from .services.provider_manifest import build_provider_manifest_token
 from .services.provider_strategy import (
     DOWNLOAD_STRATEGY_BROWSER_BLOB,
@@ -291,14 +292,18 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
             sleep(0.06)
             return self.success_row(source_text, duration_ms=60)
 
+        started_at = monotonic()
         build_batch_result_rows(
             object(),
             [f"https://example.com/{index}" for index in range(5)],
             prefer_ultra_hd=False,
             prefer_youtube_merge=False,
-            deadline=monotonic() + 0.02,
+            deadline=started_at + 0.02,
+            response_deadline=started_at + 0.2,
             parallel_workers=2,
             per_link_timeout_seconds=0.02,
+            scheduling_timeout_seconds=0.02,
+            max_response_timeout_seconds=0.2,
             row_builder=slow_row_builder,
         )
         sleep(0.08)
@@ -324,14 +329,18 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
                 with state_lock:
                     active_count -= 1
 
+        started_at = monotonic()
         build_batch_result_rows(
             object(),
             ["https://example.com/1", "https://example.com/2"],
             prefer_ultra_hd=False,
             prefer_youtube_merge=False,
-            deadline=monotonic() + 0.02,
+            deadline=started_at + 0.02,
+            response_deadline=started_at + 0.2,
             parallel_workers=2,
             per_link_timeout_seconds=0.02,
+            scheduling_timeout_seconds=0.02,
+            max_response_timeout_seconds=0.2,
             row_builder=slow_row_builder,
         )
         with state_lock:
@@ -340,19 +349,167 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
 
         self.assertEqual(active_at_return, 0)
 
+    def test_cooperative_workers_finish_before_response_boundary(self):
+        TrackingThreadPoolExecutor.instances.clear()
+        state_lock = threading.Lock()
+        active_count = 0
+
+        def cooperative_row_builder(_request, source_text, **kwargs):
+            nonlocal active_count
+            with state_lock:
+                active_count += 1
+            try:
+                if source_text.endswith("/success"):
+                    sleep(0.06)
+                    return self.success_row(source_text, duration_ms=60)
+                sleep(max(0.0, kwargs["deadline"] - monotonic()))
+                return {
+                    "status": "timeout",
+                    "source_text": source_text,
+                    "duration_ms": 100,
+                    "error_message": "本条解析超过单条时间限制。",
+                }
+            finally:
+                with state_lock:
+                    active_count -= 1
+
+        started_at = monotonic()
+        with patch(
+            "xhs_download.services.batch_parse.results.ThreadPoolExecutor",
+            new=TrackingThreadPoolExecutor,
+        ), patch(
+            "xhs_download.services.batch_parse.results.logger.warning"
+        ) as mock_warning:
+            rows = build_batch_result_rows(
+                object(),
+                [
+                    "https://example.com/success",
+                    "https://example.com/timeout",
+                    "https://example.com/skipped",
+                ],
+                prefer_ultra_hd=False,
+                prefer_youtube_merge=False,
+                deadline=started_at + 0.04,
+                response_deadline=started_at + 0.25,
+                parallel_workers=2,
+                per_link_timeout_seconds=0.1,
+                scheduling_timeout_seconds=0.04,
+                max_response_timeout_seconds=0.25,
+                completion_grace_seconds=0.01,
+                row_builder=cooperative_row_builder,
+            )
+
+        with state_lock:
+            active_at_return = active_count
+        self.assertEqual(
+            [row["status"] for row in rows],
+            ["success", "timeout", "skipped"],
+        )
+        self.assertEqual(active_at_return, 0)
+        self.assertEqual(
+            TrackingThreadPoolExecutor.instances[0].outstanding_count,
+            0,
+        )
+        mock_warning.assert_not_called()
+
+    def test_uncooperative_worker_cannot_hold_response_open(self):
+        TrackingThreadPoolExecutor.instances.clear()
+        release_worker = threading.Event()
+        worker_finished = threading.Event()
+        release_timer = threading.Timer(0.8, release_worker.set)
+
+        def uncooperative_row_builder(_request, source_text, **_kwargs):
+            try:
+                release_worker.wait(timeout=2)
+                return self.success_row(source_text)
+            finally:
+                worker_finished.set()
+
+        started_at = monotonic()
+        release_timer.start()
+        try:
+            with patch(
+                "xhs_download.services.batch_parse.results.ThreadPoolExecutor",
+                new=TrackingThreadPoolExecutor,
+            ), patch(
+                "xhs_download.services.batch_parse.results.logger.warning"
+            ) as mock_warning:
+                rows = build_batch_result_rows(
+                    object(),
+                    [
+                        "https://example.com/uncooperative",
+                        "https://example.com/skipped-1",
+                        "https://example.com/skipped-2",
+                    ],
+                    prefer_ultra_hd=False,
+                    prefer_youtube_merge=False,
+                    deadline=started_at + 0.1,
+                    response_deadline=started_at + 0.2,
+                    parallel_workers=1,
+                    per_link_timeout_seconds=1,
+                    scheduling_timeout_seconds=0.1,
+                    max_response_timeout_seconds=0.2,
+                    completion_grace_seconds=0.01,
+                    row_builder=uncooperative_row_builder,
+                )
+                elapsed = monotonic() - started_at
+
+                self.assertLess(elapsed, 0.5)
+                self.assertEqual(
+                    [row["status"] for row in rows],
+                    ["timeout", "skipped", "skipped"],
+                )
+                self.assertEqual(
+                    rows[0]["error_message"],
+                    "本条解析超过批次最大响应时间。",
+                )
+                mock_warning.assert_called_once_with(
+                    "batch_parse_worker_deadline_overrun",
+                    extra={
+                        "unresolved_count": 1,
+                        "worker_count": 1,
+                        "link_count": 3,
+                        "configured_scheduling_timeout_seconds": 0.1,
+                        "configured_per_link_timeout_seconds": 1.0,
+                        "configured_completion_grace_seconds": 0.01,
+                        "configured_response_timeout_seconds": 0.2,
+                    },
+                )
+                self.assertNotIn("example.com", repr(mock_warning.call_args))
+        finally:
+            release_worker.set()
+            release_timer.cancel()
+            release_timer.join(timeout=1)
+
+        self.assertTrue(worker_finished.wait(timeout=1))
+        worker_cleanup_deadline = monotonic() + 1
+        while (
+            TrackingThreadPoolExecutor.instances[0].outstanding_count
+            and monotonic() < worker_cleanup_deadline
+        ):
+            sleep(0.01)
+        self.assertEqual(
+            TrackingThreadPoolExecutor.instances[0].outstanding_count,
+            0,
+        )
+
     def test_started_items_timeout_and_unscheduled_items_skip(self):
         def slow_row_builder(_request, source_text, **_kwargs):
             sleep(0.06)
             return self.success_row(source_text, duration_ms=60)
 
+        started_at = monotonic()
         rows = build_batch_result_rows(
             object(),
             [f"https://example.com/{index}" for index in range(4)],
             prefer_ultra_hd=False,
             prefer_youtube_merge=False,
-            deadline=monotonic() + 0.02,
+            deadline=started_at + 0.02,
+            response_deadline=started_at + 0.2,
             parallel_workers=2,
             per_link_timeout_seconds=0.02,
+            scheduling_timeout_seconds=0.02,
+            max_response_timeout_seconds=0.2,
             row_builder=slow_row_builder,
         )
         sleep(0.08)
@@ -369,14 +526,18 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
             return self.success_row(source_text)
 
         links = [f"https://example.com/{index}" for index in range(4)]
+        started_at = monotonic()
         rows = build_batch_result_rows(
             object(),
             links,
             prefer_ultra_hd=False,
             prefer_youtube_merge=False,
-            deadline=monotonic() + 1,
+            deadline=started_at + 1,
+            response_deadline=started_at + 2,
             parallel_workers=2,
             per_link_timeout_seconds=0.5,
+            scheduling_timeout_seconds=1,
+            max_response_timeout_seconds=2,
             row_builder=out_of_order_row_builder,
         )
 
@@ -391,14 +552,18 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
                 sleep(0.04)
             return self.success_row(source_text)
 
+        started_at = monotonic()
         build_batch_result_rows(
             object(),
             ["https://example.com/0", "https://example.com/1"],
             prefer_ultra_hd=False,
             prefer_youtube_merge=False,
-            deadline=monotonic() + 1,
+            deadline=started_at + 1,
+            response_deadline=started_at + 2,
             parallel_workers=1,
             per_link_timeout_seconds=0.1,
+            scheduling_timeout_seconds=1,
+            max_response_timeout_seconds=2,
             row_builder=capture_deadline,
         )
 
@@ -420,14 +585,18 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
                 second_observed_first_finished.append(first_finished)
             return self.success_row(source_text)
 
+        started_at = monotonic()
         build_batch_result_rows(
             object(),
             ["https://example.com/0", "https://example.com/1"],
             prefer_ultra_hd=False,
             prefer_youtube_merge=False,
-            deadline=monotonic() + 1,
+            deadline=started_at + 1,
+            response_deadline=started_at + 2,
             parallel_workers=1,
             per_link_timeout_seconds=0.2,
+            scheduling_timeout_seconds=1,
+            max_response_timeout_seconds=2,
             row_builder=ordered_row_builder,
         )
 
@@ -439,14 +608,18 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
                 sleep(0.04)
             return self.success_row(source_text)
 
+        started_at = monotonic()
         rows = build_batch_result_rows(
             object(),
             ["https://example.com/slow", "https://example.com/fast"],
             prefer_ultra_hd=False,
             prefer_youtube_merge=False,
-            deadline=monotonic() + 1,
+            deadline=started_at + 1,
+            response_deadline=started_at + 2,
             parallel_workers=2,
             per_link_timeout_seconds=0.02,
+            scheduling_timeout_seconds=1,
+            max_response_timeout_seconds=2,
             row_builder=mixed_row_builder,
         )
 
@@ -552,6 +725,43 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
         self.assertEqual(budget.fully_completable_capacity, 6)
         self.assertEqual(budget.max_response_timeout_seconds, 29)
 
+    def test_budget_uses_one_wave_when_links_fit_available_workers(self):
+        single_link_budget = calculate_batch_parse_budget(
+            link_count=1,
+            worker_count=4,
+            per_link_timeout_seconds=8,
+            configured_total_timeout_seconds=60,
+        )
+        full_worker_wave_budget = calculate_batch_parse_budget(
+            link_count=4,
+            worker_count=4,
+            per_link_timeout_seconds=8,
+            configured_total_timeout_seconds=60,
+        )
+
+        self.assertEqual(single_link_budget.worker_count, 1)
+        self.assertEqual(single_link_budget.wave_count, 1)
+        self.assertEqual(single_link_budget.theoretical_full_duration_seconds, 8)
+        self.assertEqual(single_link_budget.max_response_timeout_seconds, 9)
+        self.assertEqual(full_worker_wave_budget.worker_count, 4)
+        self.assertEqual(full_worker_wave_budget.wave_count, 1)
+        self.assertEqual(full_worker_wave_budget.fully_schedulable_capacity, 4)
+        self.assertEqual(full_worker_wave_budget.fully_completable_capacity, 4)
+        self.assertEqual(full_worker_wave_budget.max_response_timeout_seconds, 9)
+
+    def test_budget_long_scheduling_window_still_uses_theoretical_bound(self):
+        budget = calculate_batch_parse_budget(
+            link_count=6,
+            worker_count=2,
+            per_link_timeout_seconds=8,
+            configured_total_timeout_seconds=60,
+        )
+
+        self.assertEqual(budget.wave_count, 3)
+        self.assertEqual(budget.theoretical_full_duration_seconds, 24)
+        self.assertEqual(budget.scheduling_timeout_seconds, 60)
+        self.assertEqual(budget.max_response_timeout_seconds, 25)
+
     def test_budget_caps_effective_response_time(self):
         budget = calculate_batch_parse_budget(
             link_count=20,
@@ -568,13 +778,72 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
         self.assertEqual(budget.completion_grace_seconds, 2)
         self.assertEqual(budget.max_response_timeout_seconds, 152)
 
-        single_link_budget = calculate_batch_parse_budget(
-            link_count=1,
+    def test_view_context_passes_displayed_response_budget_to_scheduler(self):
+        budget = calculate_batch_parse_budget(
+            link_count=4,
             worker_count=4,
             per_link_timeout_seconds=8,
             configured_total_timeout_seconds=60,
         )
-        self.assertEqual(single_link_budget.max_response_timeout_seconds, 9)
+        request = RequestFactory().post(
+            "/batch/",
+            {
+                "links": "\n".join(
+                    f"https://example.com/{index}" for index in range(4)
+                )
+            },
+        )
+        request.user = Mock(is_active=True, is_staff=True)
+        rows_builder = Mock(return_value=[])
+
+        with patch(
+            "xhs_download.services.batch_parse.view_context.build_batch_parse_budget",
+            return_value=budget,
+        ), patch(
+            "xhs_download.services.batch_parse.view_context.batch_parse_max_links",
+            return_value=4,
+        ), patch(
+            "xhs_download.services.batch_parse.view_context.batch_parse_rate_limit_results",
+            return_value=(),
+        ), patch(
+            "xhs_download.services.batch_parse.view_context.batch_parse_total_timeout_seconds",
+            return_value=60,
+        ), patch(
+            "xhs_download.services.batch_parse.view_context.batch_parse_access_allowed",
+            return_value=True,
+        ), patch(
+            "xhs_download.services.batch_parse.view_context.batch_parse_public_ultra_hd_allowed",
+            return_value=False,
+        ), patch(
+            "xhs_download.services.batch_parse.view_context.batch_parse_public_youtube_merge_allowed",
+            return_value=False,
+        ), patch(
+            "xhs_download.services.batch_parse.view_context.time.monotonic",
+            side_effect=[100.0, 100.25],
+        ):
+            context = build_batch_parse_context(
+                request,
+                ultra_hd_available_func=Mock(return_value=False),
+                youtube_merge_mode_available_func=Mock(return_value=False),
+                row_builder=Mock(),
+                rows_builder=rows_builder,
+                strategy_matrix={},
+                proxy_image_url="/proxy/image/",
+            )
+
+        scheduler_kwargs = rows_builder.call_args.kwargs
+        self.assertEqual(
+            scheduler_kwargs["deadline"],
+            100.0 + budget.scheduling_timeout_seconds,
+        )
+        self.assertEqual(
+            scheduler_kwargs["response_deadline"],
+            100.0 + budget.max_response_timeout_seconds,
+        )
+        self.assertEqual(
+            context["batch_budget"].max_response_timeout_seconds,
+            scheduler_kwargs["response_deadline"] - 100.0,
+        )
 
 
 class BatchParseAdapterDeadlineTests(SimpleTestCase):
@@ -674,7 +943,12 @@ class BatchParseViewTests(TestCase):
         self.assertGreater(content.index('name="ultra_hd"'), content.index("batch-settings-panel"))
         self.assertGreater(content.index('name="youtube_merge"'), content.index("batch-settings-panel"))
 
-    @override_settings(ULTRA_HD_PROVIDER_ENABLED=True, KUKUTOOL_PROVIDER_ENABLED=True)
+    @override_settings(
+        BATCH_PARSE_PER_LINK_TIMEOUT_SECONDS=8,
+        BATCH_PARSE_ULTRA_PER_LINK_TIMEOUT_SECONDS=12,
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        KUKUTOOL_PROVIDER_ENABLED=True,
+    )
     @patch("xhs_download.views.get_kukutool_provider_health")
     def test_batch_parse_defaults_ultra_hd_checked_when_available(self, mock_health):
         self.client.force_login(self.staff_user)
@@ -718,6 +992,7 @@ class BatchParseViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertFalse(mock_parse.call_args.kwargs["prefer_ultra_hd"])
+        self.assertContains(response, "响应上限：9.0 秒")
 
     @override_settings(BATCH_PARSE_TOTAL_TIMEOUT_SECONDS="")
     def test_batch_parse_total_timeout_defaults_to_sixty_seconds(self):
@@ -758,6 +1033,7 @@ class BatchParseViewTests(TestCase):
         self.assertGreater(mock_parse.call_args.kwargs["timeout_seconds"], 11.9)
         self.assertLessEqual(mock_parse.call_args.kwargs["timeout_seconds"], 12.0)
         self.assertContains(response, "12.0 秒")
+        self.assertContains(response, "响应上限：13.0 秒")
 
     @override_settings(BATCH_PARSE_PUBLIC_ENABLED=True, BATCH_PARSE_IP_INTERVAL_SECONDS=20)
     @patch("xhs_download.views.parse_media_page")

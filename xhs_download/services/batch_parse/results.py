@@ -1,3 +1,4 @@
+import logging
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from urllib.parse import urlparse
@@ -16,6 +17,7 @@ BATCH_DOUYIN_PROVIDER_ORDER = ("tiantianjiexi", "native")
 BATCH_SKIPPED_MESSAGE = "等待执行时批次处理窗口已结束，本条未启动。"
 BATCH_ITEM_TIMEOUT_MESSAGE = "本条解析超过单条时间限制。"
 BATCH_PROVIDER_TIMEOUT_MESSAGE = "上游解析服务响应超时，请稍后重试。"
+BATCH_RESPONSE_TIMEOUT_MESSAGE = "本条解析超过批次最大响应时间。"
 BATCH_PROVIDER_LABELS = {
     "tiantianjiexi": "天天解析",
     "kukutool": "KuKuTool",
@@ -30,6 +32,9 @@ BATCH_PROVIDER_LABELS = {
     "gallery_dl_generic": "gallery-dl",
     "kukutool_generic": "KuKuTool",
 }
+
+
+logger = logging.getLogger(__name__)
 
 
 def split_batch_links(value, max_links=None):
@@ -272,12 +277,20 @@ def _execute_batch_result_row(
     prefer_ultra_hd,
     prefer_youtube_merge,
     per_link_timeout_seconds,
+    response_deadline,
     row_builder_kwargs,
 ):
     started_at = time.monotonic()
-    execution_deadline = started_at + max(
-        0.001,
-        float(per_link_timeout_seconds or 0),
+    response_deadline = float(response_deadline)
+    if started_at >= response_deadline:
+        return build_batch_timeout_row(
+            source_text,
+            BATCH_RESPONSE_TIMEOUT_MESSAGE,
+            started_at,
+        )
+    execution_deadline = min(
+        started_at + max(0.001, float(per_link_timeout_seconds or 0)),
+        response_deadline,
     )
     try:
         row = row_builder(
@@ -329,12 +342,21 @@ def build_batch_result_rows(
     prefer_ultra_hd,
     prefer_youtube_merge,
     deadline,
+    response_deadline,
     parallel_workers,
     per_link_timeout_seconds,
+    scheduling_timeout_seconds,
+    max_response_timeout_seconds,
     completion_grace_seconds=1.0,
     row_builder=None,
     row_builder_kwargs=None,
 ):
+    """Schedule rows within explicit scheduling and HTTP response deadlines.
+
+    Batch-reachable providers should finish cooperatively by their item deadline.
+    Python cannot safely kill a running thread, so a worker that overruns the final
+    response boundary is logged and detached from the request's blocking path.
+    """
     if not links:
         return []
 
@@ -343,11 +365,15 @@ def build_batch_result_rows(
     worker_count = min(max(1, int(parallel_workers or 1)), len(links))
     per_link_timeout = max(0.001, float(per_link_timeout_seconds or 0))
     completion_grace = min(max(0.0, float(completion_grace_seconds or 0)), 2.0)
-    response_deadline = float(deadline) + per_link_timeout + completion_grace
+    scheduling_deadline = float(deadline)
+    response_deadline = float(response_deadline)
+    scheduling_timeout = max(0.0, float(scheduling_timeout_seconds or 0))
+    max_response_timeout = max(0.0, float(max_response_timeout_seconds or 0))
     rows = [None] * len(links)
     executor = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="batch-parse")
     active_futures = {}
     next_index = 0
+    shutdown_wait = False
 
     def mark_remaining_skipped():
         nonlocal next_index
@@ -361,7 +387,8 @@ def build_batch_result_rows(
     def submit_available():
         nonlocal next_index
         while len(active_futures) < worker_count and next_index < len(links):
-            if time.monotonic() >= deadline:
+            now = time.monotonic()
+            if now >= scheduling_deadline or now >= response_deadline:
                 mark_remaining_skipped()
                 return
             index = next_index
@@ -375,53 +402,99 @@ def build_batch_result_rows(
                 prefer_ultra_hd=prefer_ultra_hd,
                 prefer_youtube_merge=prefer_youtube_merge,
                 per_link_timeout_seconds=per_link_timeout,
+                response_deadline=response_deadline,
                 row_builder_kwargs=row_builder_kwargs,
             )
             active_futures[future] = (index, link)
+
+    def collect_future(future):
+        index, link = active_futures.pop(future)
+        try:
+            rows[index] = future.result()
+        except Exception as error:
+            rows[index] = build_batch_failed_row(
+                link,
+                f"解析执行失败：{type(error).__name__}: {error}",
+            )
+
+    def stop_at_response_deadline():
+        mark_remaining_skipped()
+        unresolved_count = 0
+        for future in tuple(active_futures):
+            index, link = active_futures[future]
+            if future.done():
+                collect_future(future)
+                continue
+            if future.cancel():
+                active_futures.pop(future)
+                rows[index] = build_batch_skipped_row(
+                    link,
+                    BATCH_SKIPPED_MESSAGE,
+                )
+                continue
+            if future.done():
+                collect_future(future)
+                continue
+            active_futures.pop(future)
+            rows[index] = build_batch_timeout_row(
+                link,
+                BATCH_RESPONSE_TIMEOUT_MESSAGE,
+                duration_ms=int(max_response_timeout * 1000),
+            )
+            unresolved_count += 1
+
+        if unresolved_count:
+            logger.warning(
+                "batch_parse_worker_deadline_overrun",
+                extra={
+                    "unresolved_count": unresolved_count,
+                    "worker_count": worker_count,
+                    "link_count": len(links),
+                    "configured_scheduling_timeout_seconds": scheduling_timeout,
+                    "configured_per_link_timeout_seconds": per_link_timeout,
+                    "configured_completion_grace_seconds": completion_grace,
+                    "configured_response_timeout_seconds": max_response_timeout,
+                },
+            )
+        return unresolved_count
 
     try:
         submit_available()
         while active_futures:
             now = time.monotonic()
-            if next_index < len(links) and now >= deadline:
+            if now >= response_deadline:
+                unresolved_count = stop_at_response_deadline()
+                shutdown_wait = unresolved_count == 0
+                break
+            if next_index < len(links) and now >= scheduling_deadline:
                 mark_remaining_skipped()
 
             remaining_response_time = max(0.0, response_deadline - now)
-            if remaining_response_time <= 0:
-                completed, _pending = wait(
-                    tuple(active_futures),
-                    return_when=FIRST_COMPLETED,
+            wait_timeout = remaining_response_time
+            if next_index < len(links):
+                wait_timeout = min(
+                    wait_timeout,
+                    max(0.0, scheduling_deadline - now),
                 )
-            else:
-                wait_timeout = remaining_response_time
-                if next_index < len(links):
-                    wait_timeout = min(
-                        wait_timeout,
-                        max(0.0, float(deadline) - now),
-                    )
-                if wait_timeout <= 0:
-                    continue
-                completed, _pending = wait(
-                    tuple(active_futures),
-                    timeout=wait_timeout,
-                    return_when=FIRST_COMPLETED,
-                )
-                if not completed:
-                    continue
+            if wait_timeout <= 0:
+                continue
+            completed, _pending = wait(
+                tuple(active_futures),
+                timeout=wait_timeout,
+                return_when=FIRST_COMPLETED,
+            )
+            if not completed:
+                continue
 
             for future in completed:
-                index, link = active_futures.pop(future)
-                try:
-                    rows[index] = future.result()
-                except Exception as error:
-                    rows[index] = build_batch_failed_row(
-                        link,
-                        f"解析执行失败：{type(error).__name__}: {error}",
-                    )
+                collect_future(future)
             if next_index < len(links):
                 submit_available()
+        else:
+            shutdown_wait = True
     finally:
-        executor.shutdown(wait=True, cancel_futures=True)
+        # Only a deadline overrun or scheduler exception takes the non-blocking path.
+        executor.shutdown(wait=shutdown_wait, cancel_futures=True)
 
     for index, row in enumerate(rows):
         if row is None:

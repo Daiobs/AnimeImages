@@ -27,6 +27,8 @@ The `codex/batch-parse-stability-v1` development branch is not deployed. Its can
 
 - Bounded Batch scheduling with no executor backlog beyond the configured worker count.
 - A scheduling deadline for starting new rows and a fresh per-item deadline created only when a row actually starts.
+- One response deadline calculated from the same `BatchParseBudget` value displayed as the response upper bound; the scheduler never performs an unbounded wait after it expires.
+- Cooperative Provider deadlines remain the normal path. Because Python threads cannot be safely force-killed, an extreme non-cooperative worker may continue briefly after the request returns; the row is marked `timeout` and a non-sensitive `batch_parse_worker_deadline_overrun` warning identifies the missing deadline path.
 - Separate `success`, `failed`, `timeout`, and `skipped` states.
 - Separate row-duration totals and real Batch wall-clock duration.
 - A POST/CSRF-protected single-card retry that preserves the textarea and all other cards.

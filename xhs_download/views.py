@@ -3909,6 +3909,7 @@ def build_batch_result_rows(
     prefer_ultra_hd,
     prefer_youtube_merge,
     deadline,
+    response_deadline,
     budget=None,
 ):
     budget = budget or build_batch_parse_budget(
@@ -3921,8 +3922,11 @@ def build_batch_result_rows(
         prefer_ultra_hd=prefer_ultra_hd,
         prefer_youtube_merge=prefer_youtube_merge,
         deadline=deadline,
+        response_deadline=response_deadline,
         parallel_workers=budget.worker_count,
         per_link_timeout_seconds=budget.per_link_timeout_seconds,
+        scheduling_timeout_seconds=budget.scheduling_timeout_seconds,
+        max_response_timeout_seconds=budget.max_response_timeout_seconds,
         completion_grace_seconds=budget.completion_grace_seconds,
         row_builder=build_batch_result_row,
     )

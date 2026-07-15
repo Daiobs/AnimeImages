@@ -75,6 +75,9 @@ def build_batch_parse_context(
         else:
             batch_started_at = time.monotonic()
             deadline = batch_started_at + budget.scheduling_timeout_seconds
+            response_deadline = (
+                batch_started_at + budget.max_response_timeout_seconds
+            )
             if rows_builder is not None:
                 rows = rows_builder(
                     request,
@@ -82,6 +85,7 @@ def build_batch_parse_context(
                     prefer_ultra_hd=prefer_ultra_hd,
                     prefer_youtube_merge=prefer_youtube_merge,
                     deadline=deadline,
+                    response_deadline=response_deadline,
                     budget=budget,
                 )
             else:
@@ -91,8 +95,11 @@ def build_batch_parse_context(
                     prefer_ultra_hd=prefer_ultra_hd,
                     prefer_youtube_merge=prefer_youtube_merge,
                     deadline=deadline,
+                    response_deadline=response_deadline,
                     parallel_workers=budget.worker_count,
                     per_link_timeout_seconds=budget.per_link_timeout_seconds,
+                    scheduling_timeout_seconds=budget.scheduling_timeout_seconds,
+                    max_response_timeout_seconds=budget.max_response_timeout_seconds,
                     completion_grace_seconds=budget.completion_grace_seconds,
                     row_builder=row_builder,
                 )
