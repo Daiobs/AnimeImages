@@ -118,6 +118,12 @@ def ytdlp_format_score(item):
     )
 
 
+def ytdlp_size_is_estimate(item):
+    if integer_value(item.get("filesize")) > 0:
+        return False
+    return integer_value(item.get("filesize_approx")) > 0
+
+
 def ytdlp_format_has_audio(item):
     acodec = str(item.get("acodec") or "").strip().lower()
     if acodec:
@@ -360,6 +366,7 @@ class YtDlpResultNormalizer:
                     "size_bytes": integer_value(
                         item.get("filesize") or item.get("filesize_approx")
                     ),
+                    "size_is_estimate": ytdlp_size_is_estimate(item),
                     "score": ytdlp_format_score(item),
                 })
 
@@ -380,6 +387,7 @@ class YtDlpResultNormalizer:
                 "size_bytes": integer_value(
                     payload.get("filesize") or payload.get("filesize_approx")
                 ),
+                "size_is_estimate": ytdlp_size_is_estimate(payload),
                 "score": (
                     integer_value(payload.get("height")),
                     integer_value(payload.get("width")),
@@ -425,6 +433,7 @@ class YtDlpResultNormalizer:
             cover_preview_url=cover_url,
             quality_label=selected["quality_label"],
             size_bytes=selected["size_bytes"],
+            size_is_estimate=selected["size_is_estimate"],
             **self.build_provider_asset_fields(
                 rule,
                 source_url,

@@ -64,6 +64,7 @@ from .views import (
     PROVIDER_HEALTH_TESTS,
     batch_parse_limit_error_message,
     batch_parse_total_timeout_seconds,
+    build_result_display_context,
     get_video_size_bytes,
     provider_health_test_by_key,
     run_provider_health_test,
@@ -189,6 +190,24 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
         self.assertIn("resultList.appendChild", content)
         self.assertNotIn("batchRunToken", content[content.index("window.localStorage.setItem"):])
 
+    def test_batch_first_preview_priority_is_limited_to_one_image_per_new_card(self):
+        content = (PROJECT_ROOT / "static/js/batch_parse.js").read_text()
+        template = (PROJECT_ROOT / "templates/partials/batch_result_card.html").read_text()
+
+        self.assertIn("function prioritizeFirstBatchPreview(card)", content)
+        self.assertIn('card.querySelector(".batch-result-cover img")', content)
+        self.assertIn('setAttribute("loading", "eager")', content)
+        self.assertIn('setAttribute("fetchpriority", "high")', content)
+        self.assertIn("prioritizeFirstBatchPreview(replacement)", content)
+        self.assertIn(
+            'batchPage.querySelector(".batch-result-card:not(.is-hidden)")',
+            content,
+        )
+        self.assertNotIn('querySelectorAll(".batch-result-cover img")', content)
+        self.assertIn('loading="lazy"', template)
+        self.assertIn('decoding="async"', template)
+        self.assertNotIn('loading="eager"', template)
+
     def test_batch_local_storage_only_contains_input_preferences(self):
         content = (PROJECT_ROOT / "static/js/batch_parse.js").read_text()
         draft_block = content[content.index("window.localStorage.setItem"):]
@@ -200,6 +219,111 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
         self.assertNotIn("card_html", draft_block)
         self.assertNotIn("video_items", draft_block)
         self.assertNotIn("direct_url", draft_block)
+
+    @patch("xhs_download.views.probe_media_size", return_value=2_800_000)
+    def test_content_length_size_is_displayed_as_exact(self, _mock_probe):
+        result = ParseResult(
+            platform="xiaohongshu",
+            post_type="video",
+            base_filename="exact-size",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url="https://sns-video-bd.xhscdn.com/exact.mp4",
+                    platform="xiaohongshu",
+                ),
+            ),
+        )
+
+        item = build_result_display_context(result)["video_items"][0]
+
+        self.assertFalse(item["size_is_estimate"])
+        self.assertEqual(item["size_label"], "2.7 MB")
+        self.assertEqual(item["size_display_label"], "2.7 MB")
+
+    def test_estimated_and_unknown_sizes_have_explicit_display_semantics(self):
+        estimated_result = ParseResult(
+            platform="third_party",
+            post_type="video",
+            base_filename="estimated-size",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url="https://www.youtube.com/watch?v=demo",
+                    platform="third_party",
+                    provider="youtube_merge",
+                    size_bytes=2_977_148,
+                    size_is_estimate=True,
+                ),
+            ),
+        )
+        unknown_result = ParseResult(
+            platform="third_party",
+            post_type="video",
+            base_filename="unknown-size",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url="https://example.com/unknown.mp4",
+                    platform="third_party",
+                    provider="youtube_merge",
+                ),
+            ),
+        )
+
+        estimated_item = build_result_display_context(estimated_result)["video_items"][0]
+        unknown_item = build_result_display_context(unknown_result)["video_items"][0]
+
+        self.assertTrue(estimated_item["size_is_estimate"])
+        self.assertEqual(estimated_item["size_display_label"], "预计 2.8 MB")
+        self.assertFalse(unknown_item["size_is_estimate"])
+        self.assertEqual(unknown_item["size_display_label"], "大小未知")
+
+    def test_batch_and_single_result_templates_share_size_display_semantics(self):
+        batch_template = (
+            PROJECT_ROOT / "templates/partials/batch_result_card.html"
+        ).read_text()
+        single_template = (
+            PROJECT_ROOT / "templates/partials/xhs_results_region.html"
+        ).read_text()
+
+        self.assertIn("item.size_display_label", batch_template)
+        self.assertIn("item.size_display_label", single_template)
+        self.assertIn(
+            'item.size_display_label|default:item.size_label|default:"大小未知"',
+            batch_template,
+        )
+        self.assertIn(
+            'item.size_display_label|default:item.size_label|default:"大小未知"',
+            single_template,
+        )
+
+    def test_size_provenance_does_not_change_download_strategy_fields(self):
+        fields = {
+            "media_type": "video",
+            "url": "https://www.youtube.com/watch?v=demo",
+            "platform": "third_party",
+            "provider": "youtube_merge",
+            "size_bytes": 2_977_148,
+        }
+
+        exact_strategy = build_download_strategy(MediaAsset(**fields))
+        estimated_strategy = build_download_strategy(
+            MediaAsset(**fields, size_is_estimate=True)
+        )
+        exact_merge_result = ParseResult(
+            platform="third_party",
+            post_type="video",
+            base_filename="exact-merge-size",
+            assets=(MediaAsset(**fields),),
+        )
+        exact_merge_item = build_result_display_context(exact_merge_result)[
+            "video_items"
+        ][0]
+
+        self.assertEqual(estimated_strategy, exact_strategy)
+        self.assertTrue(estimated_strategy["requires_merge"])
+        self.assertEqual(exact_merge_item["size_display_label"], "2.8 MB")
 
     def test_short_video_rule_allows_kukutool_and_tiantianjiexi(self):
         rule = get_third_party_rule("kuaishou")

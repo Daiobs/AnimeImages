@@ -86,7 +86,7 @@
                                     </span>
                                     <span class="batch-direct-text">
                                         <strong>视频文件</strong>
-                                        <small>{{ item.size_label|default:"大小未知" }}</small>
+                                        <small>{{ item.size_display_label|default:item.size_label|default:"大小未知" }}</small>
                                     </span>
                                 </div>
                                 {% if batch_direct_links_allowed %}

@@ -251,6 +251,7 @@ class YouTubeMergePlannerTests(SimpleTestCase):
             result.video_assets[0].cover_url,
             "https://i.ytimg.com/vi/demo/maxresdefault.jpg",
         )
+        self.assertTrue(result.video_assets[0].size_is_estimate)
 
     def test_youtube_merge_manifest_rejects_tampered_source_url(self):
         asset = build_youtube_merge_parse_result(
@@ -1090,6 +1091,7 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         self.assertEqual(result.metadata["selected_provider"], "yt_dlp_merge")
         self.assertEqual(result.video_assets[0].provider, "yt_dlp_merge")
         self.assertEqual(result.video_assets[0].quality_label, "1080p60 高清合并")
+        self.assertTrue(result.video_assets[0].size_is_estimate)
         self.assertIn(":h1080", result.video_assets[0].asset_id)
 
     @override_settings(
@@ -1888,6 +1890,34 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
 
         self.assertEqual(result.video_assets[0].url, "https://rr1---sn.googlevideo.com/videoplayback?itag=18")
         self.assertEqual(result.video_assets[0].quality_label, "360p mp4")
+        self.assertFalse(result.video_assets[0].size_is_estimate)
+
+    def test_ytdlp_normalizer_marks_filesize_approx_as_estimated(self):
+        rule = GenericThirdPartyAdapter().get_rule_for_url(
+            "https://www.youtube.com/watch?v=demo"
+        )
+
+        result = YtDlpResultNormalizer().normalize(
+            rule=rule,
+            platform_name="YouTube",
+            source_url="https://www.youtube.com/watch?v=demo",
+            payload={
+                "title": "approximate complete video",
+                "url": "https://rr1---sn.googlevideo.com/videoplayback?itag=18",
+                "protocol": "https",
+                "ext": "mp4",
+                "height": 360,
+                "width": 640,
+                "tbr": 500,
+                "vcodec": "avc1.42001E",
+                "acodec": "mp4a.40.2",
+                "filesize_approx": 2_800_000,
+                "format": "360p mp4",
+            },
+        )
+
+        self.assertEqual(result.video_assets[0].size_bytes, 2_800_000)
+        self.assertTrue(result.video_assets[0].size_is_estimate)
 
     @patch("xhs_download.services.platforms.external_tools.subprocess.run")
     def test_run_ytdlp_json_ignores_user_config(self, mock_run):

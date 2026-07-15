@@ -8,6 +8,8 @@
 - Serialized interactive Batch parsing and Batch-only TianTianJieXi fallback scheduling so multi-link ultra-HD parsing follows the upstream one-at-a-time behavior instead of tripping its concurrency limiter; the single-link Provider Strategy remains unchanged.
 - Added CSRF-protected, single-card Batch retry that preserves the original input and all other results, plus moved Batch-only browser behavior from `static/js/app.js` to `static/js/batch_parse.js`.
 - Removed optional missing-size media probes from the Batch display path so completed parses are not delayed by extra CDN requests; single-link display behavior is unchanged.
+- Distinguished exact, estimated, and unknown resource sizes across Batch and single-result cards; yt-dlp approximate and audio/video merge totals are now labeled as estimates without changing download selection.
+- Prioritized only the first preview image in each newly displayed Batch card while keeping the remaining previews lazy-loaded.
 - Added Release Management Executor Wiring v1 with an exact `sudo -n` submit-helper allowlist, root-owned helper/systemd/sudoers templates, static validation, failure sanitization, and production runbooks; production remains record-only until a separate approved installation.
 - Synchronized README, handoff, current-version, changelog, deployment, and PR-template guidance after the Release Management rollout.
 - Added a dedicated Release Management architecture and operations runbook.

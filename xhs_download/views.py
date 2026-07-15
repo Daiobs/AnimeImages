@@ -274,6 +274,15 @@ def format_file_size(size_bytes):
     return f"{value:.1f} {units[unit_index]}"
 
 
+def format_size_display_label(size_bytes, *, is_estimate=False):
+    size_label = format_file_size(size_bytes)
+    if size_label == "大小未知":
+        return size_label
+    if is_estimate:
+        return f"预计 {size_label}"
+    return size_label
+
+
 def elapsed_ms(started_at):
     try:
         return int((time.monotonic() - float(started_at or 0)) * 1000)
@@ -282,11 +291,15 @@ def elapsed_ms(started_at):
 
 
 def get_video_size_bytes(asset, *, probe_missing=True):
+    return get_video_size_details(asset, probe_missing=probe_missing)[0]
+
+
+def get_video_size_details(asset, *, probe_missing=True):
     if asset.size_bytes:
-        return asset.size_bytes
+        return asset.size_bytes, bool(getattr(asset, "size_is_estimate", False))
     if not probe_missing or asset.provider in SIGNED_THIRD_PARTY_VIDEO_PROVIDERS:
-        return 0
-    return probe_media_size(asset.url)
+        return 0, False
+    return probe_media_size(asset.url), False
 
 
 def build_provider_preview_query(asset, preview_url, asset_id_suffix=""):
@@ -3251,7 +3264,10 @@ def build_image_item(asset, result):
 
 
 def build_video_item(asset, result, *, probe_missing_size=True):
-    size_bytes = get_video_size_bytes(asset, probe_missing=probe_missing_size)
+    size_bytes, size_is_estimate = get_video_size_details(
+        asset,
+        probe_missing=probe_missing_size,
+    )
     return {
         **asset.to_download_item(),
         **build_asset_strategy_fields(asset, result),
@@ -3260,6 +3276,11 @@ def build_video_item(asset, result, *, probe_missing_size=True):
         "cover_url": asset.cover_url,
         "size_bytes": size_bytes,
         "size_label": format_file_size(size_bytes),
+        "size_is_estimate": size_is_estimate,
+        "size_display_label": format_size_display_label(
+            size_bytes,
+            is_estimate=size_is_estimate,
+        ),
         "encoded_cover_url": encode_url(asset.cover_url) if asset.cover_url else "",
         "encoded_preview_cover_url": (
             encode_url(asset.cover_preview_url or asset.cover_url)

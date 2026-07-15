@@ -132,7 +132,7 @@
                             </div>
 
                             <div class="position-absolute bottom-0 start-0 end-0 p-2 bg-dark bg-opacity-50 text-white small">
-                                视频资源 · {{ item.size_label|default:"大小未知" }}
+                                视频资源 · {{ item.size_display_label|default:item.size_label|default:"大小未知" }}
                                 {% if item.strategy_label %}
                                     · {{ item.strategy_label }}
                                 {% endif %}

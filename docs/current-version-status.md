@@ -37,6 +37,8 @@ The `codex/batch-parse-stability-v1` development branch is not deployed. Its can
 - A POST/CSRF-protected single-card retry that preserves the textarea and all other cards.
 - Batch-only JavaScript in `static/js/batch_parse.js` and a shared result-card template.
 - No optional missing-size CDN probe in the Batch display path; single-link parsing remains unchanged.
+- Shared Batch and single-result size semantics: exact byte sources render normally, yt-dlp approximate or audio/video merge totals render with `预计`, and missing sizes render as `大小未知`.
+- Progressive cards prioritize only their first preview image; other Batch previews remain lazy-loaded, including after single-card retry.
 
 Do not treat these items as production behavior until the corresponding PR is reviewed, merged, and deployed.
 

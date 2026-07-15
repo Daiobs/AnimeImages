@@ -335,6 +335,18 @@
         return replacement;
     }
 
+    function prioritizeFirstBatchPreview(card) {
+        if (!card) {
+            return;
+        }
+        const image = card.querySelector(".batch-result-cover img");
+        if (!image) {
+            return;
+        }
+        image.setAttribute("loading", "eager");
+        image.setAttribute("fetchpriority", "high");
+    }
+
     function parseBatchResultCard(cardHtml) {
         const template = document.createElement("template");
         template.innerHTML = String(cardHtml || "").trim();
@@ -342,6 +354,7 @@
         if (!replacement || !replacement.classList.contains("batch-result-card")) {
             throw new Error("重试结果格式无效");
         }
+        prioritizeFirstBatchPreview(replacement);
         return replacement;
     }
 
@@ -523,6 +536,10 @@
         const ultraInput = batchPage.querySelector('input[name="ultra_hd"][type="checkbox"]');
         const youtubeInput = batchPage.querySelector('input[name="youtube_merge"][type="checkbox"]');
         const draftKey = "animeimages.batchParseDraft.v1";
+
+        prioritizeFirstBatchPreview(
+            batchPage.querySelector(".batch-result-card:not(.is-hidden)")
+        );
 
         function readDraft() {
             try {
