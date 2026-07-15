@@ -4,6 +4,8 @@
 
 - Reworked Batch Parse into a bounded scheduler that separates the batch scheduling window from per-item execution deadlines, distinguishes timeout from skipped work, and reports wall-clock duration separately from row-duration totals.
 - Enforced the displayed Batch response boundary in the scheduler: cooperative workers still finish before return, while an uncooperative worker is reported as timed out, logged without source URLs, and cannot hold the HTTP request in an unbounded wait.
+- Added progressive Batch execution: one CSRF-protected start request reserves the existing whole-batch rate limit, then short-lived client-bound item tokens drive server-ordered, bounded requests and one visible result card at a time without persisting parse results.
+- Serialized interactive Batch parsing and Batch-only TianTianJieXi fallback scheduling so multi-link ultra-HD parsing follows the upstream one-at-a-time behavior instead of tripping its concurrency limiter; the single-link Provider Strategy remains unchanged.
 - Added CSRF-protected, single-card Batch retry that preserves the original input and all other results, plus moved Batch-only browser behavior from `static/js/app.js` to `static/js/batch_parse.js`.
 - Removed optional missing-size media probes from the Batch display path so completed parses are not delayed by extra CDN requests; single-link display behavior is unchanged.
 - Added Release Management Executor Wiring v1 with an exact `sudo -n` submit-helper allowlist, root-owned helper/systemd/sudoers templates, static validation, failure sanitization, and production runbooks; production remains record-only until a separate approved installation.

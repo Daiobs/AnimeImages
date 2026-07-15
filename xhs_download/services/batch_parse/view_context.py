@@ -7,6 +7,7 @@ from .runtime import (
     batch_parse_max_links,
     batch_parse_public_ultra_hd_allowed,
     batch_parse_public_youtube_merge_allowed,
+    batch_parse_progressive_scheduling_timeout_seconds,
     batch_parse_rate_limit_results,
     batch_parse_total_timeout_seconds,
     batch_parse_user_is_staff,
@@ -59,9 +60,13 @@ def build_batch_parse_context(
     )
     max_links = batch_parse_max_links(request)
     links = split_batch_links(raw_links, max_links=max_links)
+    budget_prefer_ultra_hd = requested_ultra_hd and ultra_hd_available
     budget = build_batch_parse_budget(
         len(links) or max_links,
-        prefer_ultra_hd=prefer_ultra_hd,
+        prefer_ultra_hd=budget_prefer_ultra_hd,
+    )
+    progressive_scheduling_timeout_seconds = (
+        batch_parse_progressive_scheduling_timeout_seconds()
     )
     rows = []
     batch_error = ""
@@ -121,6 +126,12 @@ def build_batch_parse_context(
         "batch_per_link_timeout_seconds": budget.per_link_timeout_seconds,
         "batch_total_timeout_seconds": batch_parse_total_timeout_seconds(),
         "batch_effective_total_timeout_seconds": budget.scheduling_timeout_seconds,
+        "batch_progressive_scheduling_timeout_seconds": progressive_scheduling_timeout_seconds,
+        "batch_progressive_max_duration_seconds": (
+            progressive_scheduling_timeout_seconds
+            + budget.per_link_timeout_seconds
+            + budget.completion_grace_seconds
+        ),
         "batch_parallel_workers": budget.worker_count,
         "batch_budget": budget,
         "batch_error": batch_error,

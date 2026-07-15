@@ -5,6 +5,8 @@
 
 {% block content %}
 <section class="xhs-download-page theme-home batch-parse-page"
+         data-batch-start-url="{% url 'batch_parse_start' %}"
+         data-batch-item-url="{% url 'batch_parse_item' %}"
          data-batch-retry-url="{% url 'batch_parse_retry' %}">
     <div class="container-fluid px-4 px-md-5">
         <div class="batch-hero">
@@ -97,13 +99,14 @@
                                                     <span>本次最多链接数：{{ max_links }}</span>
                                                     <span>每条执行预算：{{ batch_per_link_timeout_seconds }} 秒</span>
                                                     <span>配置调度窗口：{{ batch_total_timeout_seconds }} 秒</span>
-                                                    <span>实际调度窗口：{{ batch_effective_total_timeout_seconds }} 秒</span>
+                                                    <span>逐条启动窗口：{{ batch_progressive_scheduling_timeout_seconds }} 秒</span>
                                                     <span>并发解析数：{{ batch_parallel_workers }}</span>
                                                     <span>预计波次：{{ batch_budget.wave_count }}</span>
                                                     <span>理论完整耗时：{{ batch_budget.theoretical_full_duration_seconds }} 秒</span>
                                                     <span>按上限可启动：{{ batch_budget.fully_schedulable_capacity }} 条</span>
                                                     <span>调度窗内可完成：{{ batch_budget.fully_completable_capacity }} 条</span>
-                                                    <span>响应上限：{{ batch_budget.max_response_timeout_seconds }} 秒</span>
+                                                    <span>逐条模式最长：{{ batch_progressive_max_duration_seconds }} 秒</span>
+                                                    <span>同步回退响应上限：{{ batch_budget.max_response_timeout_seconds }} 秒</span>
                                                 </div>
                                             </div>
                                         </div>
@@ -119,8 +122,9 @@
             </div>
         </div>
 
-        {% if rows %}
-            <section class="batch-results-section">
+            <section class="batch-results-section"
+                     data-batch-results
+                     {% if not rows %}hidden{% endif %}>
                 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
                     <div>
                         <h2 class="batch-section-title mb-1">解析结果</h2>
@@ -158,6 +162,12 @@
                     {% endif %}
                 </div>
 
+                <div class="batch-progress-status"
+                     data-batch-progress-status
+                     role="status"
+                     aria-live="polite"
+                     hidden></div>
+
                 <div class="batch-filter-row" aria-label="结果筛选">
                     <button type="button" class="batch-filter-btn is-active" data-batch-filter="all">全部</button>
                     <button type="button" class="batch-filter-btn" data-batch-filter="success">成功</button>
@@ -171,13 +181,12 @@
                     <button type="button" class="batch-filter-btn" data-batch-filter="youtube">YouTube</button>
                 </div>
 
-                <div class="batch-result-list">
+                <div class="batch-result-list" data-batch-result-list>
                     {% for row in rows %}
                         {% include "partials/batch_result_card.html" with row=row %}
                     {% endfor %}
                 </div>
             </section>
-        {% endif %}
 
         {% if batch_direct_links_allowed %}
             <section class="batch-strategy-section">

@@ -923,6 +923,29 @@ body {
     gap: 14px;
 }
 
+.batch-progress-status {
+    min-height: 42px;
+    margin-bottom: 14px;
+    padding: 10px 12px;
+    border-left: 3px solid var(--brand);
+    background: var(--brand-light);
+    color: var(--text-main);
+    font-size: .9rem;
+    font-weight: 800;
+}
+
+.batch-progress-status.is-complete {
+    border-left-color: #16803c;
+    background: #edf9f0;
+    color: #166534;
+}
+
+.batch-progress-status.is-error {
+    border-left-color: #dc2626;
+    background: #fff2f2;
+    color: #b91c1c;
+}
+
 .batch-result-item {
     padding: 18px;
 }

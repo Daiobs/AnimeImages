@@ -335,7 +335,7 @@ def _execute_batch_result_row(
     return row
 
 
-def build_batch_result_rows(
+def iter_batch_result_rows(
     request,
     links,
     *,
@@ -358,7 +358,7 @@ def build_batch_result_rows(
     response boundary is logged and detached from the request's blocking path.
     """
     if not links:
-        return []
+        return
 
     row_builder = row_builder or build_batch_result_row
     row_builder_kwargs = row_builder_kwargs or {}
@@ -373,6 +373,7 @@ def build_batch_result_rows(
     executor = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="batch-parse")
     active_futures = {}
     next_index = 0
+    next_emit_index = 0
     shutdown_wait = False
 
     def mark_remaining_skipped():
@@ -416,6 +417,13 @@ def build_batch_result_rows(
                 link,
                 f"解析执行失败：{type(error).__name__}: {error}",
             )
+
+    def emit_ready_rows():
+        nonlocal next_emit_index
+        while next_emit_index < len(rows) and rows[next_emit_index] is not None:
+            index = next_emit_index
+            next_emit_index += 1
+            yield index, rows[index]
 
     def stop_at_response_deadline():
         mark_remaining_skipped()
@@ -488,6 +496,7 @@ def build_batch_result_rows(
 
             for future in completed:
                 collect_future(future)
+            yield from emit_ready_rows()
             if next_index < len(links):
                 submit_available()
         else:
@@ -502,7 +511,20 @@ def build_batch_result_rows(
                 links[index],
                 BATCH_SKIPPED_MESSAGE,
             )
-    return rows
+    yield from emit_ready_rows()
+
+
+def build_batch_result_rows(request, links, **kwargs):
+    """Collect the progressive scheduler output for synchronous form fallback."""
+    rows = [None] * len(links)
+    for index, row in iter_batch_result_rows(request, links, **kwargs):
+        rows[index] = row
+    return [
+        row
+        if row is not None
+        else build_batch_skipped_row(links[index], BATCH_SKIPPED_MESSAGE)
+        for index, row in enumerate(rows)
+    ]
 
 
 def _missing_display_context_builder(*_args, **_kwargs):

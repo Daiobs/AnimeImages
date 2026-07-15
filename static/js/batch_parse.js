@@ -256,7 +256,7 @@
         });
     }
 
-    function recomputeBatchSummary(batchPage, addedWallDurationMs) {
+    function recomputeBatchSummary(batchPage, wallDurationMs, replaceWallDuration) {
         const summary = batchPage.querySelector("[data-batch-summary]");
         if (!summary) {
             return;
@@ -287,8 +287,13 @@
             }
         });
 
+        const expectedTotal = parseBatchCount(summary.dataset.batchExpectedTotal);
+        values.total_count = Math.max(values.total_count, expectedTotal);
         const previousWallDuration = parseBatchCount(summary.dataset.batchWallDurationMs);
-        const batchWallDuration = previousWallDuration + parseBatchCount(addedWallDurationMs);
+        const nextWallDuration = parseBatchCount(wallDurationMs);
+        const batchWallDuration = replaceWallDuration
+            ? nextWallDuration
+            : previousWallDuration + nextWallDuration;
         summary.dataset.batchWallDurationMs = String(batchWallDuration);
         updateBatchSummaryNode(summary, "total_count", "总链接", values.total_count);
         updateBatchSummaryNode(summary, "success_count", "成功", values.success_count);
@@ -325,14 +330,133 @@
     }
 
     function replaceBatchResultCard(card, cardHtml) {
+        const replacement = parseBatchResultCard(cardHtml);
+        card.replaceWith(replacement);
+        return replacement;
+    }
+
+    function parseBatchResultCard(cardHtml) {
         const template = document.createElement("template");
         template.innerHTML = String(cardHtml || "").trim();
         const replacement = template.content.firstElementChild;
         if (!replacement || !replacement.classList.contains("batch-result-card")) {
             throw new Error("重试结果格式无效");
         }
-        card.replaceWith(replacement);
         return replacement;
+    }
+
+    function appendBatchResultCard(resultList, cardHtml) {
+        const card = parseBatchResultCard(cardHtml);
+        resultList.appendChild(card);
+        return card;
+    }
+
+    function setBatchProgressStatus(batchPage, message, tone) {
+        const status = batchPage.querySelector("[data-batch-progress-status]");
+        if (!status) {
+            return;
+        }
+        const results = batchPage.querySelector("[data-batch-results]");
+        if (results && message) {
+            results.hidden = false;
+        }
+        status.hidden = !message;
+        status.classList.toggle("is-error", tone === "error");
+        status.classList.toggle("is-complete", tone === "complete");
+        status.textContent = message || "";
+    }
+
+    function resetBatchProgressResults(batchPage) {
+        const results = batchPage.querySelector("[data-batch-results]");
+        const resultList = batchPage.querySelector("[data-batch-result-list]");
+        const summary = batchPage.querySelector("[data-batch-summary]");
+        if (results) {
+            results.hidden = false;
+        }
+        if (resultList) {
+            resultList.replaceChildren();
+        }
+        if (summary) {
+            summary.dataset.batchWallDurationMs = "0";
+            summary.dataset.batchExpectedTotal = "0";
+        }
+        recomputeBatchSummary(batchPage, 0, true);
+        applyActiveBatchFilter(batchPage);
+    }
+
+    async function fetchBatchJson(url, payload) {
+        const response = await fetch(url, {
+            method: "POST",
+            body: payload,
+            credentials: "same-origin",
+            headers: {
+                "Accept": "application/json",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+        });
+        let result = {};
+        try {
+            result = await response.json();
+        } catch (error) {
+            result = {};
+        }
+        if (!response.ok || !result.ok) {
+            throw new Error(result.message || `HTTP ${response.status}`);
+        }
+        return result;
+    }
+
+    async function runProgressiveBatchParse(batchPage, batchForm) {
+        const batchStartUrl = batchPage.dataset.batchStartUrl || "";
+        const batchItemUrl = batchPage.dataset.batchItemUrl || "";
+        const resultList = batchPage.querySelector("[data-batch-result-list]");
+        const csrfInput = batchForm.querySelector('input[name="csrfmiddlewaretoken"]');
+        if (!batchStartUrl || !batchItemUrl || !resultList || !csrfInput || !window.fetch) {
+            return false;
+        }
+
+        setBatchProgressStatus(batchPage, "正在准备逐条解析...", "progress");
+        const batchStart = await fetchBatchJson(batchStartUrl, new FormData(batchForm));
+        const totalCount = parseBatchCount(batchStart.total_count);
+        const batchRunToken = String(batchStart.batch_run_token || "");
+        if (!totalCount || !batchRunToken) {
+            throw new Error("批量解析任务格式无效，请重新提交。");
+        }
+
+        resetBatchProgressResults(batchPage);
+        const summary = batchPage.querySelector("[data-batch-summary]");
+        if (summary) {
+            summary.dataset.batchExpectedTotal = String(totalCount);
+        }
+        recomputeBatchSummary(batchPage, 0, true);
+        const batchStartedAt = window.performance.now();
+
+        for (let index = 0; index < totalCount; index += 1) {
+            setBatchProgressStatus(
+                batchPage,
+                `已完成 ${index}/${totalCount}，正在解析第 ${index + 1} 条...`,
+                "progress"
+            );
+            const itemPayload = new FormData();
+            itemPayload.set("csrfmiddlewaretoken", csrfInput.value || "");
+            itemPayload.set("batch_run_token", batchRunToken);
+            itemPayload.set("index", String(index));
+            const itemResult = await fetchBatchJson(batchItemUrl, itemPayload);
+            appendBatchResultCard(resultList, itemResult.card_html);
+            recomputeBatchSummary(
+                batchPage,
+                Math.round(window.performance.now() - batchStartedAt),
+                true
+            );
+            applyActiveBatchFilter(batchPage);
+        }
+
+        setBatchProgressStatus(
+            batchPage,
+            `解析完成，共返回 ${totalCount} 条结果。`,
+            "complete"
+        );
+        return true;
     }
 
     function showBatchRetryError(card, message) {
@@ -447,27 +571,55 @@
         });
 
         if (batchForm && submitButton) {
-            batchForm.addEventListener("submit", (event) => {
+            batchForm.addEventListener("submit", async (event) => {
                 if (!batchForm.checkValidity()) {
                     if (typeof batchForm.reportValidity === "function") {
                         batchForm.reportValidity();
                     }
                     return;
                 }
-                event.preventDefault();
                 if (batchForm.dataset.submitting === "true") {
+                    event.preventDefault();
                     return;
                 }
+                const supportsProgressiveBatch = Boolean(
+                    batchPage.dataset.batchStartUrl
+                    && batchPage.dataset.batchItemUrl
+                    && window.fetch
+                );
+                if (!supportsProgressiveBatch) {
+                    writeDraft();
+                    submitButton.disabled = true;
+                    submitButton.classList.add("is-loading");
+                    if (submitLabel) {
+                        submitLabel.textContent = "正在批量解析...";
+                    }
+                    return;
+                }
+                event.preventDefault();
                 batchForm.dataset.submitting = "true";
                 writeDraft();
                 submitButton.disabled = true;
                 submitButton.classList.add("is-loading");
                 if (submitLabel) {
-                    submitLabel.textContent = "正在批量解析...";
+                    submitLabel.textContent = "正在逐条解析...";
                 }
-                window.setTimeout(() => {
-                    HTMLFormElement.prototype.submit.call(batchForm);
-                }, 120);
+                try {
+                    await runProgressiveBatchParse(batchPage, batchForm);
+                } catch (error) {
+                    setBatchProgressStatus(
+                        batchPage,
+                        error.message || "批量解析请求失败，已完成的结果会保留。",
+                        "error"
+                    );
+                } finally {
+                    batchForm.dataset.submitting = "false";
+                    submitButton.disabled = false;
+                    submitButton.classList.remove("is-loading");
+                    if (submitLabel) {
+                        submitLabel.textContent = "开始批量解析";
+                    }
+                }
             });
         }
 

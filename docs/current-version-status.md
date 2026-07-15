@@ -31,6 +31,9 @@ The `codex/batch-parse-stability-v1` development branch is not deployed. Its can
 - Cooperative Provider deadlines remain the normal path. Because Python threads cannot be safely force-killed, an extreme non-cooperative worker may continue briefly after the request returns; the row is marked `timeout` and a non-sensitive `batch_parse_worker_deadline_overrun` warning identifies the missing deadline path.
 - Separate `success`, `failed`, `timeout`, and `skipped` states.
 - Separate row-duration totals and real Batch wall-clock duration.
+- Interactive Batch runs reserve access and rate limits once, then issue one bounded item request at a time. Each completed shared result card is displayed before the next item starts; signed run tokens are client-bound, short-lived, one-use per index, and server-enforced in input order.
+- Batch-only Douyin ultra-HD requests therefore reach TianTianJieXi serially, matching the upstream batch behavior and avoiding immediate concurrency-limit fallbacks. Single-link parsing is unchanged; the synchronous no-JavaScript fallback still uses the bounded worker scheduler.
+- Each progressive item has its own response boundary. The synchronous fallback response budget remains capped at 55 seconds by default so an uncooperative worker cannot hold that HTTP request past the current 60-second Gunicorn timeout.
 - A POST/CSRF-protected single-card retry that preserves the textarea and all other cards.
 - Batch-only JavaScript in `static/js/batch_parse.js` and a shared result-card template.
 - No optional missing-size CDN probe in the Batch display path; single-link parsing remains unchanged.
@@ -119,8 +122,11 @@ BATCH_PARSE_MAX_LINKS=20
 BATCH_PARSE_STAFF_MAX_LINKS=20
 BATCH_PARSE_PUBLIC_MAX_LINKS=3
 BATCH_PARSE_PER_LINK_TIMEOUT_SECONDS=8
+BATCH_PARSE_ULTRA_PER_LINK_TIMEOUT_SECONDS=12
 BATCH_PARSE_TOTAL_TIMEOUT_SECONDS=60
 BATCH_PARSE_PARALLEL_WORKERS=4
+BATCH_PARSE_TIANTIAN_PARALLEL_WORKERS=1
+BATCH_PARSE_MAX_RESPONSE_TIMEOUT_SECONDS=55
 BATCH_PARSE_IP_INTERVAL_SECONDS=20
 BATCH_PARSE_GLOBAL_MINUTE_LIMIT=30
 BATCH_PARSE_DAILY_IP_LIMIT=100
@@ -129,7 +135,7 @@ BATCH_PARSE_DAILY_IP_LIMIT=100
 Important behavior:
 
 - `/batch/` defaults to Douyin original/ultra when runtime allows it.
-- Parsing uses limited parallelism, not one giant synchronous loop.
+- Interactive parsing uses `/batch/start/` once and `/batch/item/` sequentially, showing each card before starting the next item. The no-JavaScript fallback uses limited parallelism, with Batch Douyin ultra-HD capped to one TianTianJieXi worker.
 - Admin/staff can see copy/open/browser-download controls.
 - Anonymous/public users must not see raw signed direct links.
 - Download strategy matrix is folded at the bottom.
@@ -259,7 +265,7 @@ curl -i https://download.cosflow.icu/health/ready/
 4. Bilibili high quality remains deferred because it commonly requires Cookie, DASH merge, and entitlements.
 5. Some historical docs describe policy/autonomous/KuKuTool/TikHub plans that are not the active production path. Use `docs/codex-handoff.md` and this file as the source of truth.
 6. Unapplied migrations are the most common cause of admin `OperationalError`.
-7. Batch Douyin ultra may occasionally fall back to `mobile_feed` / 本地解析 even when the same link can return ultra-HD in single-link testing. Treat this as an observation item until production feedback or log volume shows it is frequent enough to justify lowering ultra-HD batch concurrency or adding a targeted retry.
+7. Production may still show historical `mobile_feed` / 本地解析 fallbacks until the unreleased Batch candidate is merged and deployed. Local seven-link testing first reproduced two immediate TianTianJieXi concurrency rejections with four workers. The final progressive candidate completed the same seven links as 7/7 TianTianJieXi successes in about 34 seconds, while retaining targeted retry for genuine upstream timeouts.
 8. Release Management v1 does not provide migration-aware Tag rollback. Do not treat the visible Tag list as an enabled version-switch workflow.
 9. The release executor templates are repository artifacts only. Production remains record-only until a separate server installation and controlled-job validation are explicitly approved and completed.
 

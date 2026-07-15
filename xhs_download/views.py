@@ -193,7 +193,6 @@ from .services.region_routing import get_request_country_code
 from .services.batch_parse import (
     batch_link_host,
     batch_parse_access_allowed,
-    batch_parse_effective_per_link_timeout_seconds,
     batch_parse_limit_error_message,
     batch_parse_max_links,
     batch_parse_parallel_workers,
@@ -206,6 +205,8 @@ from .services.batch_parse import (
     batch_parse_user_is_staff,
     build_batch_parse_budget,
     build_batch_parse_context,
+    build_batch_progress_item_response as service_build_batch_progress_item_response,
+    build_batch_progress_start_response as service_build_batch_progress_start_response,
     build_batch_result_row as service_build_batch_result_row,
     build_batch_result_rows as service_build_batch_result_rows,
     build_batch_skipped_row,
@@ -3948,6 +3949,31 @@ def batch_parse_view(request):
             strategy_matrix=build_download_strategy_matrix(),
             proxy_image_url=reverse("media_proxy_image"),
         ),
+    )
+
+
+@require_POST
+@csrf_protect
+def batch_parse_start_view(request):
+    if not batch_parse_access_allowed(request):
+        raise Http404("Batch parse is not available.")
+    return service_build_batch_progress_start_response(
+        request,
+        ultra_hd_available_func=ultra_hd_is_available,
+        youtube_merge_mode_available_func=youtube_merge_mode_is_available,
+    )
+
+
+@require_POST
+@csrf_protect
+def batch_parse_item_view(request):
+    if not batch_parse_access_allowed(request):
+        raise Http404("Batch parse is not available.")
+    return service_build_batch_progress_item_response(
+        request,
+        ultra_hd_available_func=ultra_hd_is_available,
+        youtube_merge_mode_available_func=youtube_merge_mode_is_available,
+        rows_builder=build_batch_result_rows,
     )
 
 

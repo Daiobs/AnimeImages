@@ -39,6 +39,7 @@ def calculate_batch_parse_budget(
     max_scheduling_timeout_seconds=120.0,
     max_per_link_timeout_seconds=30.0,
     completion_grace_seconds=1.0,
+    max_response_timeout_seconds=None,
 ):
     """Return deterministic scheduling capacity without reading runtime state."""
     link_count = max(0, int(link_count or 0))
@@ -59,6 +60,29 @@ def calculate_batch_parse_budget(
     )
     wave_count = math.ceil(link_count / worker_count) if link_count else 0
     theoretical_full_duration = wave_count * per_link_timeout
+    response_timeout_limit = (
+        max(1.0, float(max_response_timeout_seconds))
+        if max_response_timeout_seconds is not None
+        else None
+    )
+    unconstrained_response_duration = min(
+        theoretical_full_duration,
+        scheduling_timeout + per_link_timeout,
+    ) + completion_grace
+    if (
+        link_count
+        and response_timeout_limit is not None
+        and unconstrained_response_duration > response_timeout_limit
+    ):
+        # Keep the request boundary hard, but do not reserve a full worst-case item
+        # timeout before deciding whether a fast final row may still start.
+        scheduling_timeout = min(
+            scheduling_timeout,
+            max(
+                1.0,
+                response_timeout_limit - completion_grace,
+            ),
+        )
     response_work_duration = min(
         theoretical_full_duration,
         scheduling_timeout + per_link_timeout,
@@ -73,6 +97,14 @@ def calculate_batch_parse_budget(
         if wave_count
         else 0
     )
+    effective_response_timeout = (
+        response_work_duration + completion_grace if link_count else 0.0
+    )
+    if response_timeout_limit is not None:
+        effective_response_timeout = min(
+            effective_response_timeout,
+            response_timeout_limit,
+        )
 
     return BatchParseBudget(
         link_count=link_count,
@@ -85,9 +117,7 @@ def calculate_batch_parse_budget(
         fully_schedulable_capacity=min(link_count, schedulable_waves * worker_count),
         fully_completable_capacity=min(link_count, completable_waves * worker_count),
         completion_grace_seconds=completion_grace,
-        max_response_timeout_seconds=(
-            response_work_duration + completion_grace if link_count else 0.0
-        ),
+        max_response_timeout_seconds=effective_response_timeout,
     )
 
 
@@ -196,6 +226,16 @@ def batch_parse_total_timeout_seconds():
     )
 
 
+def batch_parse_progressive_scheduling_timeout_seconds():
+    return min(
+        batch_parse_total_timeout_seconds(),
+        max(
+            1.0,
+            env_runtime_float("BATCH_PARSE_MAX_TOTAL_TIMEOUT_SECONDS", 120.0),
+        ),
+    )
+
+
 def batch_parse_parallel_workers():
     setting = batch_parse_runtime_setting_or_none()
     return max(
@@ -211,6 +251,26 @@ def batch_parse_parallel_workers():
                 )
             ),
         ),
+    )
+
+
+def batch_parse_effective_parallel_workers(prefer_ultra_hd=False):
+    worker_count = batch_parse_parallel_workers()
+    if not prefer_ultra_hd:
+        return worker_count
+
+    tiantian_concurrency_limit = max(
+        1,
+        env_runtime_int("TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY", 2),
+    )
+    batch_tiantian_worker_limit = max(
+        1,
+        env_runtime_int("BATCH_PARSE_TIANTIAN_PARALLEL_WORKERS", 1),
+    )
+    return min(
+        worker_count,
+        tiantian_concurrency_limit,
+        batch_tiantian_worker_limit,
     )
 
 
@@ -242,7 +302,9 @@ def batch_parse_effective_per_link_timeout_seconds(prefer_ultra_hd=False):
 def build_batch_parse_budget(link_count, *, prefer_ultra_hd=False):
     return calculate_batch_parse_budget(
         link_count=link_count,
-        worker_count=batch_parse_parallel_workers(),
+        worker_count=batch_parse_effective_parallel_workers(
+            prefer_ultra_hd=prefer_ultra_hd,
+        ),
         per_link_timeout_seconds=batch_parse_effective_per_link_timeout_seconds(
             prefer_ultra_hd=prefer_ultra_hd,
         ),
@@ -258,6 +320,10 @@ def build_batch_parse_budget(link_count, *, prefer_ultra_hd=False):
         completion_grace_seconds=env_runtime_float(
             "BATCH_PARSE_COMPLETION_GRACE_SECONDS",
             1.0,
+        ),
+        max_response_timeout_seconds=env_runtime_float(
+            "BATCH_PARSE_MAX_RESPONSE_TIMEOUT_SECONDS",
+            55.0,
         ),
     )
 

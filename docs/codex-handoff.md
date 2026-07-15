@@ -172,6 +172,8 @@ Important knobs:
 ```text
 BATCH_PARSE_TOTAL_TIMEOUT_SECONDS=60
 BATCH_PARSE_PARALLEL_WORKERS=4
+BATCH_PARSE_TIANTIAN_PARALLEL_WORKERS=1
+BATCH_PARSE_MAX_RESPONSE_TIMEOUT_SECONDS=55
 BATCH_PARSE_IP_INTERVAL_SECONDS=20
 BATCH_PARSE_DAILY_IP_LIMIT=100
 ```
@@ -181,6 +183,16 @@ Daily changes should happen in:
 ```text
 /admin/xhs_download/batchparseruntimesetting/
 ```
+
+`BATCH_PARSE_TIANTIAN_PARALLEL_WORKERS` and
+`BATCH_PARSE_MAX_RESPONSE_TIMEOUT_SECONDS` are environment safety ceilings, not
+daily admin controls. The interactive page reserves the existing whole-batch
+rate limit through `/batch/start/`, then calls `/batch/item/` one item at a time.
+The short-lived signed run token is bound to the client, each index is one-use,
+and the server requires the previous index to finish before accepting the next;
+parse results are not persisted. The worker and 55-second response
+ceilings protect the synchronous no-JavaScript fallback. None of this changes
+the single-link Provider Strategy.
 
 ## Download Strategy State
 

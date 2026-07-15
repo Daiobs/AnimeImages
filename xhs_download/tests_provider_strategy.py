@@ -44,8 +44,12 @@ from .services.batch_parse.results import (
     build_batch_result_row as service_build_batch_result_row,
     build_batch_result_rows,
     build_batch_summary,
+    iter_batch_result_rows,
 )
-from .services.batch_parse.runtime import calculate_batch_parse_budget
+from .services.batch_parse.runtime import (
+    build_batch_parse_budget,
+    calculate_batch_parse_budget,
+)
 from .services.batch_parse.view_context import build_batch_parse_context
 from .services.provider_manifest import build_provider_manifest_token
 from .services.provider_strategy import (
@@ -174,6 +178,17 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
         self.assertNotIn("card_html:", batch_content)
         self.assertNotIn("signed_url", batch_content)
 
+    def test_batch_javascript_requests_and_appends_each_completed_card(self):
+        content = (PROJECT_ROOT / "static/js/batch_parse.js").read_text()
+
+        self.assertIn("runProgressiveBatchParse", content)
+        self.assertIn("batchStartUrl", content)
+        self.assertIn("batchItemUrl", content)
+        self.assertIn("appendBatchResultCard", content)
+        self.assertIn("for (let index = 0; index < totalCount; index += 1)", content)
+        self.assertIn("resultList.appendChild", content)
+        self.assertNotIn("batchRunToken", content[content.index("window.localStorage.setItem"):])
+
     def test_batch_local_storage_only_contains_input_preferences(self):
         content = (PROJECT_ROOT / "static/js/batch_parse.js").read_text()
         draft_block = content[content.index("window.localStorage.setItem"):]
@@ -280,6 +295,43 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
             "video_items": (),
             "image_items": (),
         }
+
+    def test_serial_iterator_yields_each_row_before_starting_the_next(self):
+        started_links = []
+
+        def row_builder(_request, source_text, **_kwargs):
+            started_links.append(source_text)
+            return self.success_row(source_text)
+
+        started_at = monotonic()
+        rows = iter_batch_result_rows(
+            object(),
+            ["https://example.com/1", "https://example.com/2"],
+            prefer_ultra_hd=True,
+            prefer_youtube_merge=False,
+            deadline=started_at + 1,
+            response_deadline=started_at + 2,
+            parallel_workers=1,
+            per_link_timeout_seconds=0.5,
+            scheduling_timeout_seconds=1,
+            max_response_timeout_seconds=2,
+            row_builder=row_builder,
+        )
+
+        first_index, first_row = next(rows)
+        self.assertEqual(first_index, 0)
+        self.assertEqual(first_row["source_text"], "https://example.com/1")
+        self.assertEqual(started_links, ["https://example.com/1"])
+
+        second_index, second_row = next(rows)
+        self.assertEqual(second_index, 1)
+        self.assertEqual(second_row["source_text"], "https://example.com/2")
+        self.assertEqual(
+            started_links,
+            ["https://example.com/1", "https://example.com/2"],
+        )
+        with self.assertRaises(StopIteration):
+            next(rows)
 
     @patch(
         "xhs_download.services.batch_parse.results.ThreadPoolExecutor",
@@ -778,6 +830,79 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
         self.assertEqual(budget.completion_grace_seconds, 2)
         self.assertEqual(budget.max_response_timeout_seconds, 152)
 
+    @override_settings(
+        BATCH_PARSE_PARALLEL_WORKERS=4,
+        BATCH_PARSE_PER_LINK_TIMEOUT_SECONDS=8,
+        BATCH_PARSE_TIANTIAN_PARALLEL_WORKERS=1,
+        BATCH_PARSE_ULTRA_PER_LINK_TIMEOUT_SECONDS=12,
+        BATCH_PARSE_TOTAL_TIMEOUT_SECONDS=60,
+        TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY=2,
+    )
+    def test_ultra_budget_uses_serial_tiantian_lane_and_response_cap(self):
+        regular_budget = build_batch_parse_budget(7, prefer_ultra_hd=False)
+        ultra_budget = build_batch_parse_budget(7, prefer_ultra_hd=True)
+
+        self.assertEqual(regular_budget.worker_count, 4)
+        self.assertEqual(ultra_budget.worker_count, 1)
+        self.assertEqual(ultra_budget.wave_count, 7)
+        self.assertEqual(ultra_budget.theoretical_full_duration_seconds, 84)
+        self.assertEqual(ultra_budget.scheduling_timeout_seconds, 54)
+        self.assertEqual(ultra_budget.completion_grace_seconds, 1)
+        self.assertEqual(ultra_budget.max_response_timeout_seconds, 55)
+
+    @override_settings(
+        BATCH_PARSE_PARALLEL_WORKERS=4,
+        BATCH_PARSE_TIANTIAN_PARALLEL_WORKERS=1,
+        BATCH_PARSE_ULTRA_PER_LINK_TIMEOUT_SECONDS=12,
+        BATCH_PARSE_TOTAL_TIMEOUT_SECONDS=60,
+        TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY=2,
+    )
+    def test_ultra_scheduler_serializes_tiantian_batch_requests(self):
+        state_lock = threading.Lock()
+        active_count = 0
+        max_active_count = 0
+
+        def concurrency_sensitive_row_builder(_request, source_text, **_kwargs):
+            nonlocal active_count, max_active_count
+            with state_lock:
+                active_count += 1
+                max_active_count = max(max_active_count, active_count)
+                over_limit = active_count > 1
+            try:
+                sleep(0.02)
+                if over_limit:
+                    return {
+                        "status": "failed",
+                        "source_text": source_text,
+                        "duration_ms": 20,
+                        "error_message": "provider concurrency limited",
+                    }
+                return self.success_row(source_text, duration_ms=20)
+            finally:
+                with state_lock:
+                    active_count -= 1
+
+        links = [f"https://www.douyin.com/video/{index}" for index in range(7)]
+        budget = build_batch_parse_budget(len(links), prefer_ultra_hd=True)
+        started_at = monotonic()
+        rows = build_batch_result_rows(
+            object(),
+            links,
+            prefer_ultra_hd=True,
+            prefer_youtube_merge=False,
+            deadline=started_at + budget.scheduling_timeout_seconds,
+            response_deadline=started_at + budget.max_response_timeout_seconds,
+            parallel_workers=budget.worker_count,
+            per_link_timeout_seconds=budget.per_link_timeout_seconds,
+            scheduling_timeout_seconds=budget.scheduling_timeout_seconds,
+            max_response_timeout_seconds=budget.max_response_timeout_seconds,
+            completion_grace_seconds=budget.completion_grace_seconds,
+            row_builder=concurrency_sensitive_row_builder,
+        )
+
+        self.assertEqual(max_active_count, 1)
+        self.assertEqual([row["status"] for row in rows], ["success"] * 7)
+
     def test_view_context_passes_displayed_response_budget_to_scheduler(self):
         budget = calculate_batch_parse_budget(
             link_count=4,
@@ -942,6 +1067,269 @@ class BatchParseViewTests(TestCase):
         self.assertGreater(content.index("高级说明：下载策略矩阵"), content.index("batch-form"))
         self.assertGreater(content.index('name="ultra_hd"'), content.index("batch-settings-panel"))
         self.assertGreater(content.index('name="youtube_merge"'), content.index("batch-settings-panel"))
+        self.assertContains(response, reverse("batch_parse_start"))
+        self.assertContains(response, reverse("batch_parse_item"))
+        self.assertContains(response, "data-batch-results")
+
+    def test_batch_progress_endpoints_are_post_only_and_use_batch_access_gate(self):
+        self.client.force_login(self.staff_user)
+        start_get_response = self.client.get(reverse("batch_parse_start"))
+        item_get_response = self.client.get(reverse("batch_parse_item"))
+        self.client.logout()
+        anonymous_start_response = self.client.post(
+            reverse("batch_parse_start"),
+            {"links": "https://example.com/1"},
+        )
+        anonymous_item_response = self.client.post(
+            reverse("batch_parse_item"),
+            {"batch_run_token": "invalid", "index": "0"},
+        )
+
+        self.assertEqual(start_get_response.status_code, 405)
+        self.assertEqual(item_get_response.status_code, 405)
+        self.assertEqual(anonymous_start_response.status_code, 404)
+        self.assertEqual(anonymous_item_response.status_code, 404)
+
+    def test_batch_progress_endpoints_enforce_csrf(self):
+        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client.force_login(self.staff_user)
+
+        start_response = csrf_client.post(
+            reverse("batch_parse_start"),
+            {"links": "https://example.com/1"},
+        )
+        item_response = csrf_client.post(
+            reverse("batch_parse_item"),
+            {"batch_run_token": "invalid", "index": "0"},
+        )
+
+        self.assertEqual(start_response.status_code, 403)
+        self.assertEqual(item_response.status_code, 403)
+
+    @patch("xhs_download.views.build_batch_result_rows")
+    def test_batch_progress_returns_each_shared_card_in_input_order(self, mock_rows):
+        self.client.force_login(self.staff_user)
+        mock_rows.side_effect = (
+            [
+                {
+                    "status": "success",
+                    "source_text": "https://example.com/1",
+                    "base_filename": "first_video",
+                    "duration_ms": 4,
+                    "platform": "douyin",
+                    "platform_name": "抖音",
+                    "post_type": "video",
+                    "provider_label": "天天解析",
+                    "video_items": (),
+                    "image_items": (),
+                }
+            ],
+            [
+                {
+                    "status": "failed",
+                    "source_text": "https://example.com/2",
+                    "duration_ms": 5,
+                    "error_message": "解析执行失败。",
+                }
+            ],
+        )
+
+        start_response = self.client.post(
+            reverse("batch_parse_start"),
+            {
+                "links": "https://example.com/1\nhttps://example.com/2",
+                "ultra_hd": "1",
+            },
+        )
+        start_payload = start_response.json()
+        first_response = self.client.post(
+            reverse("batch_parse_item"),
+            {"batch_run_token": start_payload["batch_run_token"], "index": "0"},
+        )
+        second_response = self.client.post(
+            reverse("batch_parse_item"),
+            {"batch_run_token": start_payload["batch_run_token"], "index": "1"},
+        )
+
+        self.assertEqual(start_response.status_code, 200)
+        self.assertEqual(start_payload["total_count"], 2)
+        self.assertIn("first_video", first_response.json()["card_html"])
+        self.assertIn("解析执行失败。", second_response.json()["card_html"])
+        self.assertEqual(mock_rows.call_count, 2)
+        self.assertEqual(mock_rows.call_args_list[0].args[1], ["https://example.com/1"])
+        self.assertEqual(mock_rows.call_args_list[1].args[1], ["https://example.com/2"])
+
+    def test_batch_progress_rate_limits_the_whole_batch_once(self):
+        self.client.force_login(self.staff_user)
+
+        with patch(
+            "xhs_download.services.batch_parse.progress.batch_parse_rate_limit_results",
+            return_value=(),
+        ) as mock_limits:
+            response = self.client.post(
+                reverse("batch_parse_start"),
+                {"links": "https://example.com/1\nhttps://example.com/2"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_limits.call_count, 1)
+        self.assertEqual(mock_limits.call_args.args[1], 2)
+
+    @patch("xhs_download.views.build_batch_result_rows")
+    def test_batch_progress_token_item_can_only_be_consumed_once(self, mock_rows):
+        self.client.force_login(self.staff_user)
+        mock_rows.return_value = [
+            {
+                "status": "failed",
+                "source_text": "https://example.com/1",
+                "duration_ms": 1,
+                "error_message": "解析执行失败。",
+            }
+        ]
+        start_response = self.client.post(
+            reverse("batch_parse_start"),
+            {"links": "https://example.com/1"},
+        )
+        payload = {
+            "batch_run_token": start_response.json()["batch_run_token"],
+            "index": "0",
+        }
+
+        first_response = self.client.post(reverse("batch_parse_item"), payload)
+        duplicate_response = self.client.post(reverse("batch_parse_item"), payload)
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(duplicate_response.status_code, 409)
+        self.assertEqual(duplicate_response.json()["error_code"], "BATCH_ITEM_ALREADY_CONSUMED")
+        mock_rows.assert_called_once()
+
+    @patch("xhs_download.views.build_batch_result_rows")
+    def test_batch_progress_rejects_out_of_order_items(self, mock_rows):
+        self.client.force_login(self.staff_user)
+        mock_rows.return_value = [
+            {
+                "status": "failed",
+                "source_text": "https://example.com/item",
+                "duration_ms": 1,
+                "error_message": "解析执行失败。",
+            }
+        ]
+        start_response = self.client.post(
+            reverse("batch_parse_start"),
+            {"links": "https://example.com/1\nhttps://example.com/2"},
+        )
+        token = start_response.json()["batch_run_token"]
+
+        early_response = self.client.post(
+            reverse("batch_parse_item"),
+            {"batch_run_token": token, "index": "1"},
+        )
+
+        self.assertEqual(early_response.status_code, 409)
+        self.assertEqual(
+            early_response.json()["error_code"],
+            "BATCH_ITEM_OUT_OF_ORDER",
+        )
+        mock_rows.assert_not_called()
+
+        first_response = self.client.post(
+            reverse("batch_parse_item"),
+            {"batch_run_token": token, "index": "0"},
+        )
+        second_response = self.client.post(
+            reverse("batch_parse_item"),
+            {"batch_run_token": token, "index": "1"},
+        )
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(second_response.status_code, 200)
+        self.assertEqual(mock_rows.call_count, 2)
+
+    @patch("xhs_download.views.build_batch_result_rows")
+    def test_batch_progress_rejects_tampered_token_before_parse(self, mock_rows):
+        self.client.force_login(self.staff_user)
+
+        response = self.client.post(
+            reverse("batch_parse_item"),
+            {"batch_run_token": "tampered", "index": "0"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error_code"], "INVALID_BATCH_RUN_TOKEN")
+        mock_rows.assert_not_called()
+
+    @patch(
+        "xhs_download.services.batch_parse.progress.claim_batch_progress_item",
+        return_value="claimed",
+    )
+    @patch("xhs_download.services.batch_parse.progress.load_batch_progress_token")
+    @patch("xhs_download.views.build_batch_result_rows")
+    def test_batch_progress_marks_unstarted_item_skipped_after_scheduling_window(
+        self,
+        mock_rows,
+        mock_load_token,
+        _mock_claim,
+    ):
+        self.client.force_login(self.staff_user)
+        mock_load_token.return_value = Mock(
+            links=("https://example.com/late",),
+            prefer_ultra_hd=True,
+            prefer_youtube_merge=False,
+            started_at_epoch=0,
+            scheduling_timeout_seconds=1,
+        )
+
+        response = self.client.post(
+            reverse("batch_parse_item"),
+            {"batch_run_token": "signed-token", "index": "0"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "skipped")
+        self.assertIn("等待执行时批次处理窗口已结束", response.json()["card_html"])
+        mock_rows.assert_not_called()
+
+    @patch("xhs_download.views.build_batch_result_rows")
+    def test_batch_progress_public_item_hides_raw_direct_links(self, mock_rows):
+        BatchParseRuntimeSetting.objects.update_or_create(
+            singleton_key=1,
+            defaults={
+                "access_mode": ProviderAccessMode.PUBLIC,
+                "ip_interval_seconds": 0,
+                "global_minute_limit": 0,
+                "daily_ip_limit": 0,
+            },
+        )
+        signed_url = "https://v5-default.365yg.com/private.mp4?token=secret"
+        mock_rows.return_value = [
+            {
+                "status": "success",
+                "source_text": "https://example.com/1",
+                "base_filename": "public_progress",
+                "duration_ms": 5,
+                "platform": "douyin",
+                "platform_name": "抖音",
+                "post_type": "video",
+                "video_items": ({"direct_url": signed_url, "size_label": "1 MB"},),
+                "image_items": (),
+            }
+        ]
+        start_response = self.client.post(
+            reverse("batch_parse_start"),
+            {"links": "https://example.com/1"},
+        )
+
+        item_response = self.client.post(
+            reverse("batch_parse_item"),
+            {
+                "batch_run_token": start_response.json()["batch_run_token"],
+                "index": "0",
+            },
+        )
+
+        self.assertEqual(item_response.status_code, 200)
+        self.assertNotIn(signed_url, item_response.json()["card_html"])
+        self.assertNotIn("token=secret", item_response.content.decode())
 
     @override_settings(
         BATCH_PARSE_PER_LINK_TIMEOUT_SECONDS=8,
@@ -992,7 +1380,7 @@ class BatchParseViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertFalse(mock_parse.call_args.kwargs["prefer_ultra_hd"])
-        self.assertContains(response, "响应上限：9.0 秒")
+        self.assertContains(response, "同步回退响应上限：9.0 秒")
 
     @override_settings(BATCH_PARSE_TOTAL_TIMEOUT_SECONDS="")
     def test_batch_parse_total_timeout_defaults_to_sixty_seconds(self):
@@ -1033,7 +1421,7 @@ class BatchParseViewTests(TestCase):
         self.assertGreater(mock_parse.call_args.kwargs["timeout_seconds"], 11.9)
         self.assertLessEqual(mock_parse.call_args.kwargs["timeout_seconds"], 12.0)
         self.assertContains(response, "12.0 秒")
-        self.assertContains(response, "响应上限：13.0 秒")
+        self.assertContains(response, "同步回退响应上限：13.0 秒")
 
     @override_settings(BATCH_PARSE_PUBLIC_ENABLED=True, BATCH_PARSE_IP_INTERVAL_SECONDS=20)
     @patch("xhs_download.views.parse_media_page")
