@@ -23,6 +23,7 @@ from .models import (
 from .services.assets import MediaAsset, ParseResult
 from .services.common import XhsProviderTimeoutError, request_get_with_retry
 from .services.platforms.bilibili import api_get_json
+from .services.platforms.douyin import DouyinAdapter
 from .services.platforms.douyin_providers import (
     DouyinKukuToolProvider,
     DouyinMobileFeedProvider,
@@ -41,6 +42,8 @@ from .services.platforms.third_party import (
 from .services.platforms.tiantianjiexi_generic import TianTianJieXiGenericProvider
 from .services.provider_settings import ProviderSettings
 from .services.batch_parse.results import (
+    BATCH_PROVIDER_STAGES,
+    BatchParseStageTracker,
     build_batch_result_row as service_build_batch_result_row,
     build_batch_result_rows,
     build_batch_summary,
@@ -594,7 +597,11 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
         worker_finished = threading.Event()
         release_timer = threading.Timer(0.8, release_worker.set)
 
-        def uncooperative_row_builder(_request, source_text, **_kwargs):
+        def uncooperative_row_builder(_request, source_text, **kwargs):
+            kwargs["stage_tracker"].update(
+                "tiantianjiexi",
+                provider_attempt=True,
+            )
             try:
                 release_worker.wait(timeout=2)
                 return self.success_row(source_text)
@@ -610,10 +617,15 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
             ), patch(
                 "xhs_download.services.batch_parse.results.logger.warning"
             ) as mock_warning:
+                request = Mock(request_id="batch-request-123")
+                source_url = (
+                    "https://www.douyin.com/video/7611146072161047526"
+                    "?token=must-not-be-logged"
+                )
                 rows = build_batch_result_rows(
-                    object(),
+                    request,
                     [
-                        "https://example.com/uncooperative",
+                        source_url,
                         "https://example.com/skipped-1",
                         "https://example.com/skipped-2",
                     ],
@@ -639,19 +651,39 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
                     rows[0]["error_message"],
                     "本条解析超过批次最大响应时间。",
                 )
-                mock_warning.assert_called_once_with(
-                    "batch_parse_worker_deadline_overrun",
-                    extra={
-                        "unresolved_count": 1,
-                        "worker_count": 1,
-                        "link_count": 3,
-                        "configured_scheduling_timeout_seconds": 0.1,
-                        "configured_per_link_timeout_seconds": 1.0,
-                        "configured_completion_grace_seconds": 0.01,
-                        "configured_response_timeout_seconds": 0.2,
+                mock_warning.assert_called_once()
+                self.assertEqual(
+                    mock_warning.call_args.args,
+                    ("batch_parse_worker_deadline_overrun",),
+                )
+                log_fields = mock_warning.call_args.kwargs["extra"]
+                self.assertEqual(log_fields["unresolved_count"], 1)
+                self.assertEqual(log_fields["worker_count"], 1)
+                self.assertEqual(log_fields["link_count"], 3)
+                self.assertEqual(log_fields["platform"], "douyin")
+                self.assertEqual(log_fields["provider_stage"], "tiantianjiexi")
+                self.assertEqual(log_fields["attempted_provider_count"], 1)
+                self.assertGreaterEqual(log_fields["elapsed_ms"], 0)
+                self.assertEqual(log_fields["request_id"], "batch-request-123")
+                self.assertEqual(
+                    set(log_fields),
+                    {
+                        "unresolved_count",
+                        "worker_count",
+                        "link_count",
+                        "configured_scheduling_timeout_seconds",
+                        "configured_per_link_timeout_seconds",
+                        "configured_completion_grace_seconds",
+                        "configured_response_timeout_seconds",
+                        "platform",
+                        "provider_stage",
+                        "attempted_provider_count",
+                        "elapsed_ms",
+                        "request_id",
                     },
                 )
-                self.assertNotIn("example.com", repr(mock_warning.call_args))
+                self.assertNotIn(source_url, repr(mock_warning.call_args))
+                self.assertNotIn("must-not-be-logged", repr(mock_warning.call_args))
         finally:
             release_worker.set()
             release_timer.cancel()
@@ -668,6 +700,22 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
             TrackingThreadPoolExecutor.instances[0].outstanding_count,
             0,
         )
+
+    def test_stage_tracker_restricts_stage_and_platform_values(self):
+        tracker = BatchParseStageTracker(
+            platform="untrusted-platform",
+            request_id="invalid request id with spaces",
+        )
+        tracker.start()
+        tracker.update("untrusted-stage", provider_attempt=True)
+
+        snapshot = tracker.snapshot()
+
+        self.assertEqual(snapshot["platform"], "unknown")
+        self.assertEqual(snapshot["provider_stage"], "unknown")
+        self.assertEqual(snapshot["attempted_provider_count"], 0)
+        self.assertEqual(snapshot["request_id"], "")
+        self.assertIn(snapshot["provider_stage"], BATCH_PROVIDER_STAGES)
 
     def test_started_items_timeout_and_unscheduled_items_skip(self):
         def slow_row_builder(_request, source_text, **_kwargs):
@@ -850,6 +898,52 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
         self.assertEqual(row["status"], "timeout")
         self.assertEqual(row["error_message"], "上游解析服务响应超时，请稍后重试。")
         self.assertNotIn("secret", row["error_message"])
+
+    def test_result_row_passes_stage_callback_and_marks_completion(self):
+        tracker = BatchParseStageTracker(
+            platform="douyin",
+            request_id="batch-request-456",
+        )
+        tracker.start()
+
+        def parser(_source_text, **kwargs):
+            kwargs["stage_callback"](
+                "tiantianjiexi",
+                provider_attempt=True,
+            )
+            return ParseResult(
+                platform="douyin",
+                post_type="video",
+                base_filename="demo",
+                assets=(),
+            )
+
+        row = service_build_batch_result_row(
+            object(),
+            "https://www.douyin.com/video/7611146072161047526",
+            prefer_ultra_hd=True,
+            prefer_youtube_merge=False,
+            per_link_timeout_seconds=1,
+            parser=parser,
+            display_context_builder=Mock(return_value={}),
+            request_country_code_builder=Mock(return_value="CN"),
+            query_uses_third_party_provider_func=Mock(return_value=False),
+            third_party_provider_is_available_func=Mock(return_value=True),
+            stage_tracker=tracker,
+        )
+
+        self.assertEqual(row["status"], "success")
+        snapshot = tracker.snapshot()
+        self.assertEqual(
+            snapshot,
+            {
+                "platform": "douyin",
+                "provider_stage": "completed",
+                "attempted_provider_count": 1,
+                "elapsed_ms": snapshot["elapsed_ms"],
+                "request_id": "batch-request-456",
+            },
+        )
 
     def test_result_row_maps_non_timeout_error_to_failed(self):
         def failed_parser(_source_text, **_kwargs):
@@ -1158,6 +1252,67 @@ class BatchParseAdapterDeadlineTests(SimpleTestCase):
         kwargs = adapter.fetch_mobile_feed_result.call_args.kwargs
         self.assertLessEqual(kwargs["request_timeout"], 0.5)
         self.assertEqual(kwargs["request_deadline"], context.deadline_monotonic)
+
+    def test_douyin_adapter_reports_fixed_provider_stages(self):
+        class FakeProvider:
+            def __init__(self, name, result=None):
+                self.name = name
+                self.result = result
+
+            def parse(self, _adapter, _context):
+                return self.result
+
+        result = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="demo",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url="https://v5-default.365yg.com/demo.mp4",
+                    platform="douyin",
+                    provider="native",
+                ),
+            ),
+        )
+        context = DouyinParseContext(
+            url="https://www.douyin.com/video/7611146072161047526",
+            aweme_id="7611146072161047526",
+            deadline_monotonic=monotonic() + 1,
+        )
+        adapter = DouyinAdapter()
+        stages = []
+
+        def record_stage(stage, **kwargs):
+            stages.append((stage, kwargs))
+
+        with patch.object(
+            adapter,
+            "build_parse_context",
+            return_value=context,
+        ), patch.object(
+            adapter,
+            "get_result_providers",
+            return_value=(
+                FakeProvider("tiantianjiexi"),
+                FakeProvider("native", result),
+            ),
+        ):
+            parsed = adapter.parse(
+                context.url,
+                prefer_ultra_hd=True,
+                stage_callback=record_stage,
+            )
+
+        self.assertIs(parsed, result)
+        self.assertEqual(
+            stages,
+            [
+                ("resolve", {}),
+                ("tiantianjiexi", {"provider_attempt": True}),
+                ("native", {"provider_attempt": True}),
+            ],
+        )
 
 
 @override_settings(

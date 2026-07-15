@@ -618,6 +618,7 @@ class DouyinAdapter(BasePlatformAdapter):
         "douyin_provider_order",
         "timeout_seconds",
         "deadline_monotonic",
+        "stage_callback",
     )
 
     def parse_html(
@@ -965,9 +966,12 @@ class DouyinAdapter(BasePlatformAdapter):
         douyin_provider_order=None,
         timeout_seconds=None,
         deadline_monotonic=None,
+        stage_callback=None,
     ):
         parse_started_at = time()
         self.require_supported_url(url)
+        if callable(stage_callback):
+            stage_callback("resolve")
         request_deadline = float(deadline_monotonic or 0)
         if not request_deadline and timeout_seconds is not None:
             request_deadline = monotonic() + max(0.1, float(timeout_seconds or 0))
@@ -991,6 +995,17 @@ class DouyinAdapter(BasePlatformAdapter):
             prefer_ultra_hd=prefer_ultra_hd,
             provider_order=douyin_provider_order,
         ):
+            provider_name = getattr(provider, "name", "")
+            provider_stage = (
+                provider_name
+                if provider_name in {"tiantianjiexi", "native"}
+                else "unknown"
+            )
+            if callable(stage_callback):
+                stage_callback(
+                    provider_stage,
+                    provider_attempt=provider_stage in {"tiantianjiexi", "native"},
+                )
             provider_started_at = time()
             try:
                 result = provider.parse(self, context)

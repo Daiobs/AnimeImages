@@ -3901,6 +3901,7 @@ def build_batch_result_row(
     prefer_youtube_merge,
     per_link_timeout_seconds,
     deadline=None,
+    stage_tracker=None,
 ):
     def build_batch_display_context(result, *, platform_key="home"):
         return build_result_display_context(
@@ -3916,6 +3917,7 @@ def build_batch_result_row(
         prefer_youtube_merge=prefer_youtube_merge,
         per_link_timeout_seconds=per_link_timeout_seconds,
         deadline=deadline,
+        stage_tracker=stage_tracker,
         parser=parse_media_page,
         display_context_builder=build_batch_display_context,
         request_country_code_builder=get_request_country_code,
@@ -4120,6 +4122,33 @@ def placeholder_image_response(status=200, retry_after=0):
     return response
 
 
+def detect_raster_image_content_type(content):
+    if not isinstance(content, (bytes, bytearray, memoryview)):
+        return ""
+    content = bytes(content)
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if content.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return "image/webp"
+    if len(content) >= 16 and content[4:8] == b"ftyp":
+        box_size = int.from_bytes(content[:4], "big")
+        if box_size >= 16:
+            box_end = min(len(content), box_size)
+            brands = [content[8:12]]
+            brands.extend(
+                content[index:index + 4]
+                for index in range(16, box_end, 4)
+                if len(content[index:index + 4]) == 4
+            )
+            if any(brand in {b"avif", b"avis"} for brand in brands):
+                return "image/avif"
+    return ""
+
+
 @require_GET
 def proxy_image_view(request):
     try:
@@ -4151,12 +4180,17 @@ def proxy_image_view(request):
         )
 
         with response:
-            content_type = response.headers.get("Content-Type", "image/jpeg")
-            if "image" not in content_type.lower():
+            declared_content_type = response.headers.get("Content-Type", "image/jpeg")
+            content = read_limited_response(response, max_bytes=PREVIEW_MAX_IMAGE_BYTES)
+            content_type = declared_content_type
+            normalized_content_type = declared_content_type.split(";", 1)[0].strip().lower()
+            if normalized_content_type == "application/octet-stream":
+                content_type = detect_raster_image_content_type(content)
+            elif not normalized_content_type.startswith("image/"):
+                content_type = ""
+            if not content_type:
                 invalidate_external_provider_caches(provider_item)
                 return placeholder_image_response()
-
-            content = read_limited_response(response, max_bytes=PREVIEW_MAX_IMAGE_BYTES)
 
         try:
             within_limit = record_preview_bytes(identity, len(content))
@@ -4168,12 +4202,16 @@ def proxy_image_view(request):
 
         result = HttpResponse(content, content_type=content_type)
         result["Cache-Control"] = "private, max-age=300"
+        result["X-Content-Type-Options"] = "nosniff"
         return result
 
     except Exception as error:
         if provider_item and is_recoverable_provider_download_error(error):
             invalidate_external_provider_caches(provider_item)
-        logger.warning("XHS preview proxy failed: %s", error)
+        logger.warning(
+            "XHS preview proxy failed: %s",
+            sanitize_observability_text(error),
+        )
         return placeholder_image_response()
 
 

@@ -1,4 +1,6 @@
 import logging
+import re
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from urllib.parse import urlparse
@@ -18,6 +20,14 @@ BATCH_SKIPPED_MESSAGE = "等待执行时批次处理窗口已结束，本条未�
 BATCH_ITEM_TIMEOUT_MESSAGE = "本条解析超过单条时间限制。"
 BATCH_PROVIDER_TIMEOUT_MESSAGE = "上游解析服务响应超时，请稍后重试。"
 BATCH_RESPONSE_TIMEOUT_MESSAGE = "本条解析超过批次最大响应时间。"
+BATCH_PROVIDER_STAGES = frozenset(
+    {"resolve", "tiantianjiexi", "native", "display_context", "completed", "unknown"}
+)
+BATCH_PROVIDER_ATTEMPT_STAGES = frozenset({"tiantianjiexi", "native"})
+BATCH_PLATFORM_IDS = frozenset(
+    {"douyin", "xiaohongshu", "bilibili", "third_party", "unknown"}
+)
+BATCH_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,128}$")
 BATCH_PROVIDER_LABELS = {
     "tiantianjiexi": "天天解析",
     "kukutool": "KuKuTool",
@@ -35,6 +45,86 @@ BATCH_PROVIDER_LABELS = {
 
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_batch_platform(value):
+    value = str(value or "").strip().lower()
+    return value if value in BATCH_PLATFORM_IDS else "unknown"
+
+
+def batch_platform_for_source(source_text):
+    try:
+        return normalize_batch_platform(get_adapter_for_url(source_text).platform_id)
+    except XhsError:
+        return "unknown"
+
+
+def normalize_batch_request_id(value):
+    value = str(value or "").strip()
+    return value if BATCH_REQUEST_ID_RE.fullmatch(value) else ""
+
+
+class BatchParseStageTracker:
+    def __init__(self, *, platform="unknown", request_id=""):
+        self._lock = threading.Lock()
+        self._platform = normalize_batch_platform(platform)
+        self._request_id = normalize_batch_request_id(request_id)
+        self._provider_stage = "unknown"
+        self._attempted_provider_count = 0
+        self._started_at = 0.0
+
+    def start(self):
+        with self._lock:
+            if not self._started_at:
+                self._started_at = time.monotonic()
+
+    def update(self, stage, *, provider_attempt=False):
+        normalized_stage = str(stage or "").strip().lower()
+        if normalized_stage not in BATCH_PROVIDER_STAGES:
+            normalized_stage = "unknown"
+        with self._lock:
+            self._provider_stage = normalized_stage
+            if provider_attempt and normalized_stage in BATCH_PROVIDER_ATTEMPT_STAGES:
+                self._attempted_provider_count += 1
+
+    def snapshot(self):
+        now = time.monotonic()
+        with self._lock:
+            elapsed_ms = (
+                int(max(0.0, now - self._started_at) * 1000)
+                if self._started_at
+                else 0
+            )
+            return {
+                "platform": self._platform,
+                "provider_stage": self._provider_stage,
+                "attempted_provider_count": self._attempted_provider_count,
+                "elapsed_ms": elapsed_ms,
+                "request_id": self._request_id,
+            }
+
+
+def summarize_stage_snapshots(snapshots):
+    if not snapshots:
+        return BatchParseStageTracker().snapshot()
+
+    def common_value(key, fallback):
+        values = {snapshot.get(key, fallback) for snapshot in snapshots}
+        return values.pop() if len(values) == 1 else fallback
+
+    return {
+        "platform": common_value("platform", "unknown"),
+        "provider_stage": common_value("provider_stage", "unknown"),
+        "attempted_provider_count": sum(
+            int(snapshot.get("attempted_provider_count") or 0)
+            for snapshot in snapshots
+        ),
+        "elapsed_ms": max(
+            int(snapshot.get("elapsed_ms") or 0)
+            for snapshot in snapshots
+        ),
+        "request_id": common_value("request_id", ""),
+    }
 
 
 def split_batch_links(value, max_links=None):
@@ -174,6 +264,7 @@ def build_batch_result_row(
     request_country_code_builder=None,
     query_uses_third_party_provider_func=None,
     third_party_provider_is_available_func=None,
+    stage_tracker=None,
 ):
     started_at = time.monotonic()
     execution_deadline = (
@@ -188,6 +279,8 @@ def build_batch_result_row(
             started_at,
         )
     try:
+        if stage_tracker is not None:
+            stage_tracker.update("resolve")
         parser = parser or parse_media_page
         display_context_builder = display_context_builder or _missing_display_context_builder
         request_country_code_builder = request_country_code_builder or get_request_country_code
@@ -213,17 +306,24 @@ def build_batch_result_row(
             and not third_party_provider_is_available_func(request)
         ):
             raise XhsParseError("第三方通用解析暂未开放。")
-        result = parser(
-            source_text,
-            prefer_ultra_hd=prefer_ultra_hd,
-            client_country_code=(
+        parser_kwargs = {
+            "prefer_ultra_hd": prefer_ultra_hd,
+            "client_country_code": (
                 request_country_code_builder(request) if prefer_ultra_hd else ""
             ),
-            prefer_youtube_merge=prefer_youtube_merge,
-            douyin_provider_order=BATCH_DOUYIN_PROVIDER_ORDER,
-            timeout_seconds=remaining_timeout,
-            deadline_monotonic=execution_deadline,
+            "prefer_youtube_merge": prefer_youtube_merge,
+            "douyin_provider_order": BATCH_DOUYIN_PROVIDER_ORDER,
+            "timeout_seconds": remaining_timeout,
+            "deadline_monotonic": execution_deadline,
+        }
+        if stage_tracker is not None:
+            parser_kwargs["stage_callback"] = stage_tracker.update
+        result = parser(
+            source_text,
+            **parser_kwargs,
         )
+        if stage_tracker is not None:
+            stage_tracker.update("display_context")
         display_context = display_context_builder(result, platform_key="home")
         metadata = result.metadata or {}
         selected_provider = metadata.get("selected_provider") or metadata.get("source_provider") or ""
@@ -236,6 +336,8 @@ def build_batch_result_row(
             **display_context,
         }
         enrich_batch_media_items(row)
+        if stage_tracker is not None:
+            stage_tracker.update("completed")
         return row
     except XhsProviderTimeoutError:
         return build_batch_timeout_row(
@@ -279,8 +381,11 @@ def _execute_batch_result_row(
     per_link_timeout_seconds,
     response_deadline,
     row_builder_kwargs,
+    stage_tracker,
 ):
     started_at = time.monotonic()
+    stage_tracker.start()
+    stage_tracker.update("resolve")
     response_deadline = float(response_deadline)
     if started_at >= response_deadline:
         return build_batch_timeout_row(
@@ -300,6 +405,7 @@ def _execute_batch_result_row(
             prefer_youtube_merge=prefer_youtube_merge,
             per_link_timeout_seconds=per_link_timeout_seconds,
             deadline=execution_deadline,
+            stage_tracker=stage_tracker,
             **row_builder_kwargs,
         )
     except Exception as error:
@@ -395,6 +501,10 @@ def iter_batch_result_rows(
             index = next_index
             link = links[index]
             next_index += 1
+            stage_tracker = BatchParseStageTracker(
+                platform=batch_platform_for_source(link),
+                request_id=getattr(request, "request_id", ""),
+            )
             future = executor.submit(
                 _execute_batch_result_row,
                 row_builder,
@@ -405,11 +515,12 @@ def iter_batch_result_rows(
                 per_link_timeout_seconds=per_link_timeout,
                 response_deadline=response_deadline,
                 row_builder_kwargs=row_builder_kwargs,
+                stage_tracker=stage_tracker,
             )
-            active_futures[future] = (index, link)
+            active_futures[future] = (index, link, stage_tracker)
 
     def collect_future(future):
-        index, link = active_futures.pop(future)
+        index, link, _stage_tracker = active_futures.pop(future)
         try:
             rows[index] = future.result()
         except Exception as error:
@@ -428,8 +539,9 @@ def iter_batch_result_rows(
     def stop_at_response_deadline():
         mark_remaining_skipped()
         unresolved_count = 0
+        unresolved_snapshots = []
         for future in tuple(active_futures):
-            index, link = active_futures[future]
+            index, link, stage_tracker = active_futures[future]
             if future.done():
                 collect_future(future)
                 continue
@@ -450,8 +562,10 @@ def iter_batch_result_rows(
                 duration_ms=int(max_response_timeout * 1000),
             )
             unresolved_count += 1
+            unresolved_snapshots.append(stage_tracker.snapshot())
 
         if unresolved_count:
+            stage_diagnostics = summarize_stage_snapshots(unresolved_snapshots)
             logger.warning(
                 "batch_parse_worker_deadline_overrun",
                 extra={
@@ -462,6 +576,7 @@ def iter_batch_result_rows(
                     "configured_per_link_timeout_seconds": per_link_timeout,
                     "configured_completion_grace_seconds": completion_grace,
                     "configured_response_timeout_seconds": max_response_timeout,
+                    **stage_diagnostics,
                 },
             )
         return unresolved_count

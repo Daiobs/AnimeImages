@@ -45,6 +45,7 @@ class PlatformRegistry:
         douyin_provider_order=None,
         timeout_seconds=None,
         deadline_monotonic=None,
+        stage_callback=None,
     ):
         url = extract_url_from_text(url)
         adapter = self.get_adapter_for_url(url)
@@ -56,6 +57,7 @@ class PlatformRegistry:
             douyin_provider_order=douyin_provider_order,
             timeout_seconds=timeout_seconds,
             deadline_monotonic=deadline_monotonic,
+            stage_callback=stage_callback,
         )
 
 
@@ -82,6 +84,7 @@ def parse_media_page(
     douyin_provider_order=None,
     timeout_seconds=None,
     deadline_monotonic=None,
+    stage_callback=None,
 ):
     return default_registry.parse_url(
         url,
@@ -91,4 +94,5 @@ def parse_media_page(
         douyin_provider_order=douyin_provider_order,
         timeout_seconds=timeout_seconds,
         deadline_monotonic=deadline_monotonic,
+        stage_callback=stage_callback,
     )
