@@ -192,6 +192,7 @@ from .models import (
 from .views import (
     build_provider_preview_query,
     build_search_results_context,
+    detect_raster_image_content_type,
     limit_error_response,
     log_parse_request_event,
     third_party_provider_is_available,
@@ -235,6 +236,7 @@ from .services.platforms.third_party import (
 )
 from .services.platforms.bilibili import BILIBILI_HEADERS, resolve_video_page
 from .services.platforms.douyin import DOUYIN_HEADERS, extract_aweme_id, get_video_candidates
+from .services.platforms.xiaohongshu import is_xhs_note_image_candidate
 from .services.platforms.douyin_kukutool import (
     DouyinKukuToolProvider,
     build_kukutool_cache_key,
@@ -1460,6 +1462,115 @@ class XhsParserTests(SimpleTestCase):
             normalize_xhs_preview_image_url("https://sns-img.xhscdn.com/spectrum/abc123!webp"),
             "https://ci.xiaohongshu.com/spectrum/abc123?imageView2/2/w/640/format/webp",
         )
+
+    def test_xhs_image_candidate_rejects_cdn_roots_and_query_only_urls(self):
+        rejected_urls = (
+            "https://sns-webpic-qc.xhscdn.com",
+            "https://sns-webpic-qc.xhscdn.com/",
+            "https://sns-webpic-qc.xhscdn.com/?imageView2/2/w/640",
+            "//sns-webpic-qc.xhscdn.com/",
+            "//sns-webpic-qc.xhscdn.com/?imageView2/2/w/640",
+            "https://ci.xiaohongshu.com/?imageView2/format/jpg",
+        )
+
+        for image_url in rejected_urls:
+            with self.subTest(image_url=image_url):
+                self.assertFalse(is_xhs_note_image_candidate(image_url))
+                self.assertIsNone(normalize_xhs_image_url(image_url))
+
+    def test_xhs_image_candidate_accepts_supported_resource_paths(self):
+        accepted_urls = (
+            "https://sns-img.xhscdn.com/notes_pre_post/resource-key!webp",
+            "https://sns-img.xhscdn.com/spectrum/resource-key!webp",
+            "https://ci.xiaohongshu.com/resource-key?imageView2/format/jpg",
+            "https://sns-webpic-qc.xhscdn.com/resource/path/resource-key.webp",
+            "https://sns-img-qc.xhscdn.com/resource/path/resource-key.webp",
+        )
+
+        for image_url in accepted_urls:
+            with self.subTest(image_url=image_url):
+                self.assertTrue(is_xhs_note_image_candidate(image_url))
+                self.assertTrue(normalize_xhs_image_url(image_url))
+
+    def test_xhs_image_candidate_normalizes_protocol_relative_resource_url(self):
+        image_url = "//sns-webpic-qc.xhscdn.com/resource/path/image.webp"
+
+        self.assertTrue(is_xhs_note_image_candidate(image_url))
+        self.assertEqual(
+            normalize_xhs_image_url(image_url),
+            "https://sns-webpic-qc.xhscdn.com/resource/path/image.webp",
+        )
+
+    def test_xhs_image_candidate_rejects_unsafe_or_empty_values(self):
+        rejected_urls = (
+            "",
+            " ",
+            "null",
+            "undefined",
+            "ftp://sns-img.xhscdn.com/spectrum/resource-key",
+            "data:image/png;base64,AAAA",
+            "https://example.com/spectrum/resource-key",
+            "https://evil.example/sns-webpic/resource-key",
+            "https://fe-static.xhscdn.com/public/runtime.js",
+            "https://fe-platform.xhscdn.com/platform/favicon.png",
+            "https://fe-video-qc.xhscdn.com/fe-platform-file/resources.zip",
+        )
+
+        for image_url in rejected_urls:
+            with self.subTest(image_url=image_url):
+                self.assertFalse(is_xhs_note_image_candidate(image_url))
+                self.assertIsNone(normalize_xhs_image_url(image_url))
+
+    def test_xiaohongshu_adapter_preserves_candidate_order_and_deduplication(self):
+        html = """
+        <html>
+          <meta name="og:image" content="https://sns-webpic-qc.xhscdn.com/">
+          <meta name="og:image" content="https://sns-img.xhscdn.com/spectrum/first-key!webp">
+          <meta name="og:image" content="https://sns-img.xhscdn.com/spectrum/first-key!webp">
+          <meta name="og:image" content="https://ci.xiaohongshu.com/abcdefghijklmnopqrstuv123?imageView2/format/jpg">
+        </html>
+        """
+
+        result = XiaohongshuAdapter().parse_html(html)
+
+        self.assertEqual(
+            [asset.url for asset in result.image_assets],
+            [
+                "https://ci.xiaohongshu.com/spectrum/first-key?imageView2/format/jpg",
+                "https://ci.xiaohongshu.com/abcdefghijklmnopqrstuv123?imageView2/format/jpg",
+            ],
+        )
+
+    def test_detect_raster_image_content_type_supports_safe_signatures(self):
+        signatures = {
+            "image/jpeg": b"\xff\xd8\xff\xe0jpeg-data",
+            "image/png": b"\x89PNG\r\n\x1a\npng-data",
+            "image/gif": b"GIF87a-gif-data",
+            "image/webp": b"RIFF\x0c\x00\x00\x00WEBPVP8 ",
+            "image/avif": b"\x00\x00\x00\x18ftypavif\x00\x00\x00\x00avif",
+        }
+
+        for expected_content_type, content in signatures.items():
+            with self.subTest(expected_content_type=expected_content_type):
+                self.assertEqual(
+                    detect_raster_image_content_type(content),
+                    expected_content_type,
+                )
+
+    def test_detect_raster_image_content_type_rejects_unsafe_content(self):
+        rejected_content = (
+            b"",
+            b"<html>blocked</html>",
+            b'{"error":"blocked"}',
+            b"<?xml version='1.0'?><svg></svg>",
+            b"<svg xmlns='http://www.w3.org/2000/svg'></svg>",
+            b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isom",
+            b"unknown-binary",
+        )
+
+        for content in rejected_content:
+            with self.subTest(content=content):
+                self.assertEqual(detect_raster_image_content_type(content), "")
 
     def test_parse_html_returns_image_post(self):
         html = """
@@ -4615,6 +4726,191 @@ class XhsDownloadViewTests(TestCase):
         self.assertIn("Retry-After", second)
         self.assertEqual(mock_fetch.call_count, 1)
 
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_keeps_declared_jpeg_and_sets_nosniff(self, mock_fetch):
+        mock_fetch.return_value = FakeStreamingResponse(
+            make_image_bytes(),
+            content_type="image/jpeg",
+        )
+
+        response = Client().get(
+            "/media/proxy-image/",
+            {"u": encode_url("https://ci.xiaohongshu.com/spectrum/a.jpg")},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/jpeg")
+        self.assertEqual(response["X-Content-Type-Options"], "nosniff")
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_detects_raster_image_without_content_type(self, mock_fetch):
+        upstream = FakeStreamingResponse(make_image_bytes())
+        upstream.headers.pop("Content-Type")
+        mock_fetch.return_value = upstream
+
+        response = Client().get(
+            "/media/proxy-image/",
+            {"u": encode_url("https://ci.xiaohongshu.com/spectrum/a.jpg")},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/jpeg")
+        self.assertEqual(response["X-Content-Type-Options"], "nosniff")
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_rejects_unsafe_content_without_content_type(self, mock_fetch):
+        upstream = FakeStreamingResponse(b"<html>blocked</html>")
+        upstream.headers.pop("Content-Type")
+        mock_fetch.return_value = upstream
+
+        response = Client().get(
+            "/media/proxy-image/",
+            {"u": encode_url("https://ci.xiaohongshu.com/spectrum/a.jpg")},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/svg+xml")
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_uses_detected_type_instead_of_declared_type(self, mock_fetch):
+        cases = (
+            (
+                "image/jpeg",
+                b"RIFF\x0c\x00\x00\x00WEBPVP8 ",
+                "image/webp",
+            ),
+            (
+                "image/png",
+                b"\x89PNG\r\n\x1a\npng-data",
+                "image/png",
+            ),
+        )
+
+        for declared_type, content, expected_type in cases:
+            with self.subTest(declared_type=declared_type, expected_type=expected_type):
+                mock_fetch.return_value = FakeStreamingResponse(
+                    content,
+                    content_type=declared_type,
+                )
+                response = Client().get(
+                    "/media/proxy-image/",
+                    {"u": encode_url("https://ci.xiaohongshu.com/spectrum/a.jpg")},
+                )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response["Content-Type"], expected_type)
+                self.assertEqual(response["X-Content-Type-Options"], "nosniff")
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_rejects_unsafe_payloads_declared_as_images(self, mock_fetch):
+        cases = (
+            ("image/svg+xml", b"<svg xmlns='http://www.w3.org/2000/svg'></svg>"),
+            ("image/jpeg", b"<html>blocked</html>"),
+            ("image/jpeg", b'{"error":"blocked"}'),
+            ("image/jpeg", b"<?xml version='1.0'?><root></root>"),
+            ("image/jpeg", b"<svg xmlns='http://www.w3.org/2000/svg'></svg>"),
+            ("image/jpeg", b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isom"),
+            ("image/unknown", b"unknown-binary"),
+        )
+
+        for declared_type, content in cases:
+            with self.subTest(declared_type=declared_type, content=content):
+                mock_fetch.return_value = FakeStreamingResponse(
+                    content,
+                    content_type=declared_type,
+                )
+                response = Client().get(
+                    "/media/proxy-image/",
+                    {"u": encode_url("https://ci.xiaohongshu.com/spectrum/a.jpg")},
+                )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response["Content-Type"], "image/svg+xml")
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_sniffs_supported_octet_stream_images(self, mock_fetch):
+        signatures = {
+            "image/jpeg": b"\xff\xd8\xff\xe0jpeg-data",
+            "image/png": b"\x89PNG\r\n\x1a\npng-data",
+            "image/gif": b"GIF89a-gif-data",
+            "image/webp": b"RIFF\x0c\x00\x00\x00WEBPVP8 ",
+            "image/avif": b"\x00\x00\x00\x18ftypavif\x00\x00\x00\x00avif",
+        }
+
+        for expected_content_type, content in signatures.items():
+            with self.subTest(expected_content_type=expected_content_type):
+                mock_fetch.return_value = FakeStreamingResponse(
+                    content,
+                    content_type="application/octet-stream",
+                )
+                response = Client().get(
+                    "/media/proxy-image/",
+                    {"u": encode_url("https://ci.xiaohongshu.com/spectrum/a.jpg")},
+                )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response["Content-Type"], expected_content_type)
+                self.assertEqual(response.content, content)
+                self.assertEqual(response["X-Content-Type-Options"], "nosniff")
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_rejects_unsafe_octet_stream_content(self, mock_fetch):
+        rejected_content = (
+            b"",
+            b"<html>blocked</html>",
+            b'{"error":"blocked"}',
+            b"<?xml version='1.0'?><svg></svg>",
+            b"<svg xmlns='http://www.w3.org/2000/svg'></svg>",
+            b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isom",
+            b"unknown-binary",
+        )
+
+        for content in rejected_content:
+            with self.subTest(content=content):
+                mock_fetch.return_value = FakeStreamingResponse(
+                    content,
+                    content_type="application/octet-stream",
+                )
+                response = Client().get(
+                    "/media/proxy-image/",
+                    {"u": encode_url("https://ci.xiaohongshu.com/spectrum/a.jpg")},
+                )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response["Content-Type"], "image/svg+xml")
+
+    @patch("xhs_download.views.PREVIEW_MAX_IMAGE_BYTES", 8)
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_keeps_maximum_byte_limit_for_octet_stream(self, mock_fetch):
+        mock_fetch.return_value = FakeStreamingResponse(
+            b"\xff\xd8\xff\xe0too-large",
+            content_type="application/octet-stream",
+        )
+
+        response = Client().get(
+            "/media/proxy-image/",
+            {"u": encode_url("https://ci.xiaohongshu.com/spectrum/a.jpg")},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/svg+xml")
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_redacts_source_url_from_error_log(self, mock_fetch):
+        signed_url = "https://ci.xiaohongshu.com/spectrum/a.jpg?token=secret-value"
+        mock_fetch.side_effect = XhsDownloadError(f"upstream failed: {signed_url}")
+
+        with patch("xhs_download.views.logger.warning") as mock_warning:
+            response = Client().get(
+                "/media/proxy-image/",
+                {"u": encode_url(signed_url)},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/svg+xml")
+        self.assertNotIn(signed_url, repr(mock_warning.call_args))
+        self.assertNotIn("secret-value", repr(mock_warning.call_args))
+
     @override_settings(
         PREVIEW_RATE_LIMIT_PER_MINUTE=0,
         PREVIEW_DAILY_REQUEST_LIMIT_PER_IP=0,
@@ -4624,7 +4920,10 @@ class XhsDownloadViewTests(TestCase):
     )
     @patch("xhs_download.views.fetch_media_response")
     def test_preview_proxy_enforces_daily_byte_limit(self, mock_fetch):
-        mock_fetch.return_value = FakeStreamingResponse(make_image_bytes())
+        mock_fetch.return_value = FakeStreamingResponse(
+            make_image_bytes(),
+            content_type="application/octet-stream",
+        )
 
         response = Client().get(
             "/media/proxy-image/",

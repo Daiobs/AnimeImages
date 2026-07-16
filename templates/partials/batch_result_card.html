@@ -1,0 +1,190 @@
+<article class="batch-result-card batch-status-card-{{ row.status }}"
+         data-status="{{ row.status }}"
+         data-platform="{{ row.platform|default:'' }}"
+         data-platform-name="{{ row.platform_name|default:'' }}"
+         data-post-type="{{ row.post_type|default:'' }}"
+         data-duration-ms="{{ row.duration_ms|default:0 }}"
+         data-video-count="{{ row.video_items|length }}"
+         data-image-count="{{ row.image_items|length }}"
+         data-provider-label="{% if row.provider_label %}{{ row.provider_label }}{% elif row.selected_provider %}{{ row.selected_provider }}{% endif %}">
+    {% if row.status == "failed" or row.status == "timeout" or row.status == "skipped" %}
+        <div class="batch-result-main">
+            <div class="batch-result-info">
+                <div class="batch-result-header">
+                    <div>
+                        <div class="batch-result-title">
+                            {% if row.status == "skipped" %}已跳过{% elif row.status == "timeout" %}解析超时{% else %}解析失败{% endif %}
+                        </div>
+                        <div class="batch-result-source">{{ row.source_text }}</div>
+                    </div>
+                    <div class="batch-status-pill batch-status-{{ row.status }}">
+                        {{ row.status }}
+                        {% if row.duration_ms %}· {{ row.duration_ms }}ms{% endif %}
+                    </div>
+                </div>
+                <div class="alert {% if row.status == 'failed' %}alert-danger{% else %}alert-warning{% endif %} mb-3"
+                     data-batch-row-message>
+                    <i class="bi bi-exclamation-triangle me-1"></i>
+                    {{ row.error_message|default:"解析执行失败" }}
+                </div>
+                <div class="batch-result-actions">
+                    <button type="button"
+                            class="btn btn-outline-secondary btn-sm batch-copy-btn"
+                            data-copy-text="{{ row.error_message|default:'解析执行失败' }}">
+                        复制错误
+                    </button>
+                    <button type="button"
+                            class="btn btn-outline-secondary btn-sm batch-copy-btn"
+                            data-copy-text="{{ row.source_text }}">
+                        复制原链接
+                    </button>
+                    <button type="button"
+                            class="btn btn-brand btn-sm batch-retry-btn"
+                            data-retry-link="{{ row.source_text }}">
+                        <span class="spinner-border spinner-border-sm me-1 batch-retry-spinner" aria-hidden="true"></span>
+                        <span data-batch-retry-label>重新解析此链接</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    {% else %}
+        <div class="batch-result-main">
+            <div class="batch-result-info">
+                <div class="batch-result-header">
+                    <div>
+                        <div class="batch-result-title">{{ row.base_filename|default:"已解析素材" }}</div>
+                        <div class="batch-result-source">{{ row.source_text }}</div>
+                    </div>
+                    <div class="batch-status-pill batch-status-{{ row.status }}">
+                        {{ row.status }}
+                        {% if row.duration_ms %}· {{ row.duration_ms }}ms{% endif %}
+                    </div>
+                </div>
+
+                <div class="batch-meta-row">
+                    <span>{{ row.platform_name }}</span>
+                    {% if row.provider_label %}
+                        <span>Provider {{ row.provider_label }}</span>
+                    {% elif row.selected_provider %}
+                        <span>Provider {{ row.selected_provider }}</span>
+                    {% endif %}
+                    <span>{{ row.post_type }}</span>
+                    {% if row.video_items %}<span>视频 {{ row.video_items|length }}</span>{% endif %}
+                    {% if row.image_items %}<span>图片 {{ row.image_items|length }}</span>{% endif %}
+                </div>
+
+                <div class="alert alert-danger mb-3 d-none"
+                     data-batch-retry-request-error></div>
+
+                {% if row.video_items %}
+                    <div class="batch-direct-tools">
+                        {% for item in row.video_items %}
+                            <div class="batch-direct-item">
+                                <div class="batch-direct-summary">
+                                    <span class="batch-direct-icon">
+                                        <i class="bi bi-file-earmark-play"></i>
+                                    </span>
+                                    <span class="batch-direct-text">
+                                        <strong>视频文件</strong>
+                                        <small>{{ item.size_display_label|default:item.size_label|default:"大小未知" }}</small>
+                                    </span>
+                                </div>
+                                {% if batch_direct_links_allowed %}
+                                    <div class="batch-result-actions">
+                                        <button type="button"
+                                                class="btn btn-outline-secondary btn-sm batch-copy-btn"
+                                                data-copy-text="{{ item.direct_url }}">
+                                            复制直链
+                                        </button>
+                                        <a class="btn btn-outline-secondary btn-sm"
+                                           href="{{ item.direct_url }}"
+                                           target="_blank"
+                                           rel="noopener noreferrer">
+                                            打开直链
+                                        </a>
+                                        <button type="button"
+                                                class="btn btn-brand btn-sm batch-browser-download-btn"
+                                                data-batch-direct-download
+                                                data-batch-direct-url="{{ item.direct_url }}"
+                                                data-batch-direct-filename="{{ row.base_filename|default:'video' }}_{{ forloop.counter }}.mp4">
+                                            <span class="spinner-border spinner-border-sm me-1 batch-download-spinner" aria-hidden="true"></span>
+                                            <i class="bi bi-download me-1 batch-download-icon"></i>
+                                            <span class="batch-download-label">浏览器下载</span>
+                                        </button>
+                                    </div>
+                                    <div class="batch-download-progress" data-batch-download-progress hidden>
+                                        <div class="batch-download-progress-track">
+                                            <div class="batch-download-progress-bar" data-batch-download-progress-bar></div>
+                                        </div>
+                                        <div class="batch-download-progress-label" data-batch-download-progress-label>准备下载...</div>
+                                    </div>
+                                    <details class="batch-direct-url">
+                                        <summary>展开链接</summary>
+                                        <code>{{ item.direct_url }}</code>
+                                    </details>
+                                {% endif %}
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+
+                {% if row.image_items %}
+                    <div class="batch-assets">
+                        {% for item in row.image_items %}
+                            {% if batch_direct_links_allowed %}
+                                <a class="batch-asset-link" href="{{ item.url }}" target="_blank" rel="noopener noreferrer">
+                                    <i class="bi bi-image"></i>
+                                    <span>图片 {{ forloop.counter }}</span>
+                                    <small>{{ item.strategy_label|default:item.download_strategy }}</small>
+                                </a>
+                            {% else %}
+                                <div class="batch-asset-link">
+                                    <i class="bi bi-image"></i>
+                                    <span>图片 {{ forloop.counter }}</span>
+                                    <small>{{ item.strategy_label|default:item.download_strategy }}</small>
+                                </div>
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+                {% endif %}
+
+                <div class="batch-result-actions mt-3">
+                    <button type="button"
+                            class="btn btn-brand btn-sm batch-retry-btn"
+                            data-retry-link="{{ row.source_text }}">
+                        <span class="spinner-border spinner-border-sm me-1 batch-retry-spinner" aria-hidden="true"></span>
+                        <span data-batch-retry-label>重新解析此链接</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="batch-result-cover">
+                {% if row.video_items and row.video_items.0.cover_url %}
+                    <img
+                            src="{{ proxy_image_url }}?u={{ row.video_items.0.encoded_preview_cover_url|default:row.video_items.0.encoded_cover_url }}{% if row.video_items.0.cover_preview_provider_query %}&{{ row.video_items.0.cover_preview_provider_query }}{% endif %}"
+                            alt="视频封面"
+                            loading="lazy"
+                            decoding="async"
+                            onerror="retryImage(this)"
+                    >
+                {% elif row.image_items %}
+                    <div class="batch-image-grid">
+                        {% for item in row.image_items|slice:":4" %}
+                            <img
+                                    src="{{ proxy_image_url }}?u={{ item.encoded_preview_url|default:item.encoded_url }}{% if item.preview_provider_query %}&{{ item.preview_provider_query }}{% endif %}"
+                                    alt="图片预览"
+                                    loading="lazy"
+                                    decoding="async"
+                                    onerror="retryImage(this)"
+                            >
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <div class="batch-cover-placeholder">
+                        <i class="bi bi-card-image"></i>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    {% endif %}
+</article>

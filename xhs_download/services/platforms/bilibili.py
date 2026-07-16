@@ -1,4 +1,5 @@
 import re
+import time
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 import requests
@@ -70,17 +71,33 @@ def extract_page_number(value):
         return 1
 
 
-def api_get_json(url, params, referer="https://www.bilibili.com/"):
+def bilibili_request_timeout(deadline_monotonic, fallback):
+    if not deadline_monotonic:
+        return float(fallback)
+    remaining = float(deadline_monotonic) - time.monotonic()
+    if remaining <= 0:
+        raise XhsProviderTimeoutError("哔哩哔哩解析超过时间限制")
+    return min(float(fallback), max(0.001, remaining))
+
+
+def api_get_json(
+    url,
+    params,
+    referer="https://www.bilibili.com/",
+    *,
+    deadline_monotonic=None,
+):
     query = urlencode({key: value for key, value in params.items() if value is not None})
     request_url = f"{url}?{query}" if query else url
     try:
         response = request_get_with_retry(
             request_url,
             headers={**BILIBILI_HEADERS, "Referer": requote_uri(referer)},
-            timeout=15,
+            timeout=bilibili_request_timeout(deadline_monotonic, 15),
             retries=2,
             allowed_final_host_suffixes=("bilibili.com",),
             final_url_message="哔哩哔哩接口跳转到了不允许的域名",
+            deadline_monotonic=deadline_monotonic,
         )
     except (requests.Timeout, requests.ConnectionError) as error:
         raise XhsProviderTimeoutError("哔哩哔哩接口请求超时，请稍后重试") from error
@@ -95,7 +112,7 @@ def api_get_json(url, params, referer="https://www.bilibili.com/"):
     return data.get("data") or {}
 
 
-def resolve_video_page(url):
+def resolve_video_page(url, *, deadline_monotonic=None):
     current_url = normalize_bilibili_url(url)
     max_redirects = 5
     for _ in range(max_redirects + 1):
@@ -107,7 +124,7 @@ def resolve_video_page(url):
         response = requests.get(
             current_url,
             headers=BILIBILI_HEADERS,
-            timeout=5,
+            timeout=bilibili_request_timeout(deadline_monotonic, 5),
             allow_redirects=False,
             stream=True,
         )
@@ -268,13 +285,20 @@ class BilibiliAdapter(BasePlatformAdapter):
         cover=True,
     )
     provider_policy = ProviderPolicy(primary_provider="native")
+    parse_option_names = ("timeout_seconds", "deadline_monotonic")
 
-    def parse_url(self, url):
+    def parse_url(self, url, timeout_seconds=None, deadline_monotonic=None):
         self.require_supported_url(url)
+        deadline = float(deadline_monotonic or 0)
+        if not deadline and timeout_seconds is not None:
+            deadline = time.monotonic() + max(0.001, float(timeout_seconds or 0))
         source_url = normalize_bilibili_url(url)
         page_url = source_url
         if not extract_bvid(source_url) and not extract_aid(source_url):
-            page_url = resolve_video_page(source_url)
+            page_url = resolve_video_page(
+                source_url,
+                deadline_monotonic=deadline or None,
+            )
 
         bvid = extract_bvid(page_url)
         aid = extract_aid(page_url)
@@ -283,6 +307,7 @@ class BilibiliAdapter(BasePlatformAdapter):
             "https://api.bilibili.com/x/web-interface/view",
             build_view_params(bvid, aid),
             referer=page_url,
+            deadline_monotonic=deadline or None,
         )
         page = choose_page(view_data, page_number)
         if not page.get("cid"):
@@ -292,6 +317,7 @@ class BilibiliAdapter(BasePlatformAdapter):
             "https://api.bilibili.com/x/player/playurl",
             build_play_params(view_data, page),
             referer=page_url,
+            deadline_monotonic=deadline or None,
         )
         video_items = get_play_items(play_data)
         if not video_items:
@@ -299,6 +325,7 @@ class BilibiliAdapter(BasePlatformAdapter):
                 "https://api.bilibili.com/x/player/playurl",
                 build_dash_play_params(view_data, page),
                 referer=page_url,
+                deadline_monotonic=deadline or None,
             )
             video_items = get_play_items(play_data)
         if not video_items:

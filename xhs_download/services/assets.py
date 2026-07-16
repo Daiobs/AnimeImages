@@ -13,6 +13,7 @@ class MediaAsset:
     ext: str = ""
     quality_label: str = "原始文件"
     size_bytes: int = 0
+    size_is_estimate: bool = False
     headers: dict = field(default_factory=dict)
     media_host_suffixes: tuple[str, ...] = field(default_factory=tuple)
     asset_id: str = ""

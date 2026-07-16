@@ -478,6 +478,7 @@ def build_youtube_merge_parse_result(source_url, payload):
         cover_preview_url=cover_url,
         quality_label=quality_label,
         size_bytes=int(plan.get("estimated_size_bytes") or 0),
+        size_is_estimate=bool(plan.get("estimated_size_bytes")),
         **asset_fields,
     )
     metadata = {

@@ -182,6 +182,8 @@ TIANTIANJIEXI_ACCOUNT_STATUS_CACHE_TTL_SECONDS=300
 TIANTIANJIEXI_HEALTH_QUERY_ACCOUNT_STATUS_ENABLED=True
 TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY=2
 TIANTIANJIEXI_REQUEST_LIMIT_PER_MINUTE=20
+BATCH_PARSE_TIANTIAN_PARALLEL_WORKERS=1
+BATCH_PARSE_MAX_RESPONSE_TIMEOUT_SECONDS=55
 THIRD_PARTY_PROVIDER_ORDER=kukutool_generic,tiantianjiexi_generic,yt_dlp_generic,gallery_dl_generic
 THIRD_PARTY_PROVIDER_ORDER_DEFAULT=kukutool_generic,tiantianjiexi_generic,yt_dlp_generic,gallery_dl_generic
 THIRD_PARTY_PROVIDER_ORDER_YOUTUBE=yt_dlp_generic,kukutool_generic,tiantianjiexi_generic
@@ -197,9 +199,14 @@ block the page.
 ## Project Integration Notes
 
 Current AnimeImages integration uses TianTianJieXi as the primary Douyin
-ultra-HD provider and KuKuTool as fallback. Both providers can race in the
-user-facing path. TianTianJieXi results must be normalized by expanding nested
-`streams[]` candidates before ranking.
+ultra-HD provider and KuKuTool as fallback in the single-link path, where both
+providers can race. The Batch path is intentionally different: it excludes
+KuKuTool and the interactive page submits one independently bounded item at a
+time, displaying its card before starting the next item. The no-JavaScript
+fallback also caps TianTianJieXi scheduling to one worker and can fall back to
+native parsing.
+TianTianJieXi results must be normalized by expanding nested `streams[]`
+candidates before ranking.
 
 ## Smoke Test
 
