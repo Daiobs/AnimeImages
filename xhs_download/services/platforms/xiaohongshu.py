@@ -24,6 +24,8 @@ def _parse_xhs_image_candidate(url):
     value = normalize_text(url).strip()
     if value.lower() in XHS_EMPTY_RESOURCE_VALUES:
         return None
+    if value.startswith("//"):
+        value = f"https:{value}"
 
     parsed = urlparse(value)
     hostname = (parsed.hostname or "").lower()

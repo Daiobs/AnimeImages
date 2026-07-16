@@ -1468,6 +1468,8 @@ class XhsParserTests(SimpleTestCase):
             "https://sns-webpic-qc.xhscdn.com",
             "https://sns-webpic-qc.xhscdn.com/",
             "https://sns-webpic-qc.xhscdn.com/?imageView2/2/w/640",
+            "//sns-webpic-qc.xhscdn.com/",
+            "//sns-webpic-qc.xhscdn.com/?imageView2/2/w/640",
             "https://ci.xiaohongshu.com/?imageView2/format/jpg",
         )
 
@@ -1489,6 +1491,15 @@ class XhsParserTests(SimpleTestCase):
             with self.subTest(image_url=image_url):
                 self.assertTrue(is_xhs_note_image_candidate(image_url))
                 self.assertTrue(normalize_xhs_image_url(image_url))
+
+    def test_xhs_image_candidate_normalizes_protocol_relative_resource_url(self):
+        image_url = "//sns-webpic-qc.xhscdn.com/resource/path/image.webp"
+
+        self.assertTrue(is_xhs_note_image_candidate(image_url))
+        self.assertEqual(
+            normalize_xhs_image_url(image_url),
+            "https://sns-webpic-qc.xhscdn.com/resource/path/image.webp",
+        )
 
     def test_xhs_image_candidate_rejects_unsafe_or_empty_values(self):
         rejected_urls = (
@@ -4730,6 +4741,91 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "image/jpeg")
         self.assertEqual(response["X-Content-Type-Options"], "nosniff")
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_detects_raster_image_without_content_type(self, mock_fetch):
+        upstream = FakeStreamingResponse(make_image_bytes())
+        upstream.headers.pop("Content-Type")
+        mock_fetch.return_value = upstream
+
+        response = Client().get(
+            "/media/proxy-image/",
+            {"u": encode_url("https://ci.xiaohongshu.com/spectrum/a.jpg")},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/jpeg")
+        self.assertEqual(response["X-Content-Type-Options"], "nosniff")
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_rejects_unsafe_content_without_content_type(self, mock_fetch):
+        upstream = FakeStreamingResponse(b"<html>blocked</html>")
+        upstream.headers.pop("Content-Type")
+        mock_fetch.return_value = upstream
+
+        response = Client().get(
+            "/media/proxy-image/",
+            {"u": encode_url("https://ci.xiaohongshu.com/spectrum/a.jpg")},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/svg+xml")
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_uses_detected_type_instead_of_declared_type(self, mock_fetch):
+        cases = (
+            (
+                "image/jpeg",
+                b"RIFF\x0c\x00\x00\x00WEBPVP8 ",
+                "image/webp",
+            ),
+            (
+                "image/png",
+                b"\x89PNG\r\n\x1a\npng-data",
+                "image/png",
+            ),
+        )
+
+        for declared_type, content, expected_type in cases:
+            with self.subTest(declared_type=declared_type, expected_type=expected_type):
+                mock_fetch.return_value = FakeStreamingResponse(
+                    content,
+                    content_type=declared_type,
+                )
+                response = Client().get(
+                    "/media/proxy-image/",
+                    {"u": encode_url("https://ci.xiaohongshu.com/spectrum/a.jpg")},
+                )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response["Content-Type"], expected_type)
+                self.assertEqual(response["X-Content-Type-Options"], "nosniff")
+
+    @patch("xhs_download.views.fetch_media_response")
+    def test_preview_proxy_rejects_unsafe_payloads_declared_as_images(self, mock_fetch):
+        cases = (
+            ("image/svg+xml", b"<svg xmlns='http://www.w3.org/2000/svg'></svg>"),
+            ("image/jpeg", b"<html>blocked</html>"),
+            ("image/jpeg", b'{"error":"blocked"}'),
+            ("image/jpeg", b"<?xml version='1.0'?><root></root>"),
+            ("image/jpeg", b"<svg xmlns='http://www.w3.org/2000/svg'></svg>"),
+            ("image/jpeg", b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isom"),
+            ("image/unknown", b"unknown-binary"),
+        )
+
+        for declared_type, content in cases:
+            with self.subTest(declared_type=declared_type, content=content):
+                mock_fetch.return_value = FakeStreamingResponse(
+                    content,
+                    content_type=declared_type,
+                )
+                response = Client().get(
+                    "/media/proxy-image/",
+                    {"u": encode_url("https://ci.xiaohongshu.com/spectrum/a.jpg")},
+                )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response["Content-Type"], "image/svg+xml")
 
     @patch("xhs_download.views.fetch_media_response")
     def test_preview_proxy_sniffs_supported_octet_stream_images(self, mock_fetch):

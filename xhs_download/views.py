@@ -4180,15 +4180,9 @@ def proxy_image_view(request):
         )
 
         with response:
-            declared_content_type = response.headers.get("Content-Type", "image/jpeg")
             content = read_limited_response(response, max_bytes=PREVIEW_MAX_IMAGE_BYTES)
-            content_type = declared_content_type
-            normalized_content_type = declared_content_type.split(";", 1)[0].strip().lower()
-            if normalized_content_type == "application/octet-stream":
-                content_type = detect_raster_image_content_type(content)
-            elif not normalized_content_type.startswith("image/"):
-                content_type = ""
-            if not content_type:
+            detected_content_type = detect_raster_image_content_type(content)
+            if not detected_content_type:
                 invalidate_external_provider_caches(provider_item)
                 return placeholder_image_response()
 
@@ -4200,7 +4194,7 @@ def proxy_image_view(request):
         if not within_limit:
             return placeholder_image_response(status=429)
 
-        result = HttpResponse(content, content_type=content_type)
+        result = HttpResponse(content, content_type=detected_content_type)
         result["Cache-Control"] = "private, max-age=300"
         result["X-Content-Type-Options"] = "nosniff"
         return result
