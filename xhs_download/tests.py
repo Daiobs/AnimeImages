@@ -4664,7 +4664,15 @@ class XhsDownloadViewTests(TestCase):
             "static/vendor/bootstrap-icons/1.11.3/bootstrap-icons.css?v=",
         )
         self.assertNotContains(response, "cdn.jsdelivr.net/npm/bootstrap-icons")
+        self.assertContains(response, "js/parse_preferences.js?v=")
         self.assertContains(response, "js/xhs_download.js?v=")
+        content = response.content.decode()
+        self.assertLess(
+            content.index("js/parse_preferences.js?v="),
+            content.index("js/xhs_download.js?v="),
+        )
+        self.assertContains(response, "抖音原画/超清")
+        self.assertContains(response, "YouTube 最高画质合并")
         self.assertContains(response, "data-download-task-url")
         for asset_path in (
             "vendor/bootstrap-icons/1.11.3/bootstrap-icons.css",

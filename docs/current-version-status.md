@@ -42,6 +42,18 @@ The `codex/batch-parse-stability-v1` development branch is not deployed. Its can
 
 Do not treat these items as production behavior until the corresponding PR is reviewed, merged, and deployed.
 
+## Unreleased Shared Parse Preferences Candidate
+
+The `codex/shared-parse-preferences-v1` branch keeps two browser-only parsing preferences consistent across the single-link and Batch pages:
+
+- `animeimages.parsePreferences.v1` stores only versioned Boolean values for Douyin original/ultra and YouTube highest-quality merge.
+- Existing values migrate per field from `xhsDownloadSettings`, then `animeimages.batchParseDraft.v1`, then the server-rendered page defaults. Valid values already present in the new key always win.
+- `animeimages.batchParseDraft.v2` stores only the Batch links text. It never stores parse results, Provider data, manifests, tokens, or media URLs.
+- Disabled controls remain off for submission while the browser may retain the user's preference for a later page where the server makes that capability available.
+- Provider Strategy, Batch Provider order, timeouts, access gates, and server-side rollout decisions are unchanged.
+
+This is browser state only, adds no migration, and is not production behavior until its PR is reviewed, merged, and deployed.
+
 ## Production Runtime Topology
 
 Current deployed topology:

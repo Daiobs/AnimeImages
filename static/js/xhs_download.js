@@ -30,16 +30,23 @@
 
     function loadSettings() {
         try {
-            return JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+            const settings = JSON.parse(window.localStorage.getItem(SETTINGS_KEY) || "{}");
+            return settings && typeof settings === "object" && !Array.isArray(settings)
+                ? settings
+                : {};
         } catch (error) {
-            console.warn("Invalid XHS download settings, reset to defaults.", error);
-            localStorage.removeItem(SETTINGS_KEY);
+            console.warn("Invalid XHS download settings; using page defaults.");
             return {};
         }
     }
 
     function saveSettings(settings) {
-        localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+        try {
+            window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+            return true;
+        } catch (error) {
+            return false;
+        }
     }
 
     function retryImage(img) {
@@ -277,12 +284,21 @@
         const browserLocationHelp = document.getElementById("browser-location-help");
         const saveFormatInput = document.getElementById("save-format");
         const qualityInput = document.getElementById("quality");
+        const settingsModal = document.getElementById("settingsModal");
         const saveSettingsBtn = document.getElementById("save-settings-btn");
         const videoSaveModeInput = document.getElementById("video-save-mode");
         const downloadUrl = page.dataset.downloadUrl;
         const downloadTaskUrl = page.dataset.downloadTaskUrl;
         const downloadAsyncEnabled = page.dataset.downloadAsyncEnabled === "true";
         const savedSettings = loadSettings();
+        const parsePreferencesApi = window.AnimeImagesParsePreferences || null;
+        const renderedParseDefaults = {
+            ultra_hd: Boolean(ultraHdSettingInput && ultraHdSettingInput.checked),
+            youtube_merge: Boolean(youtubeMergeSettingInput && youtubeMergeSettingInput.checked),
+        };
+        let parsePreferences = parsePreferencesApi
+            ? parsePreferencesApi.load({defaults: renderedParseDefaults})
+            : {version: 1, ...renderedParseDefaults};
 
         let selected = [];
         let useFilePicker = Boolean(savedSettings.use_file_picker);
@@ -290,6 +306,7 @@
         let activeParseController = null;
         let parseRequestId = 0;
         let downloadInProgress = false;
+        let pendingParsePreferences = null;
         let lastDownloadProgress = 0;
         const directHandoffAttemptKeys = new Set();
 
@@ -353,6 +370,56 @@
             }
 
             youtubeMergeRequestInput.value = isYoutubeMergeEnabled() ? "1" : "0";
+        }
+
+        function applyParsePreferences(preferences) {
+            parsePreferences = preferences;
+            if (parsePreferencesApi) {
+                parsePreferencesApi.applyToControls(parsePreferences, {
+                    ultraHdInput: ultraHdSettingInput,
+                    ultraHdHiddenInput: ultraHdRequestInput,
+                    youtubeMergeInput: youtubeMergeSettingInput,
+                    youtubeMergeHiddenInput: youtubeMergeRequestInput,
+                });
+                return;
+            }
+            if (ultraHdSettingInput) {
+                ultraHdSettingInput.checked = Boolean(preferences.ultra_hd)
+                    && !ultraHdSettingInput.disabled;
+            }
+            if (youtubeMergeSettingInput) {
+                youtubeMergeSettingInput.checked = Boolean(preferences.youtube_merge)
+                    && !youtubeMergeSettingInput.disabled;
+            }
+            updateUltraHdRequestValue();
+            updateYoutubeMergeRequestValue();
+        }
+
+        function saveParsePreferences() {
+            if (!parsePreferencesApi) {
+                updateUltraHdRequestValue();
+                updateYoutubeMergeRequestValue();
+                return;
+            }
+            const patch = {};
+            if (ultraHdSettingInput && !ultraHdSettingInput.disabled) {
+                patch.ultra_hd = ultraHdSettingInput.checked;
+            }
+            if (youtubeMergeSettingInput && !youtubeMergeSettingInput.disabled) {
+                patch.youtube_merge = youtubeMergeSettingInput.checked;
+            }
+            pendingParsePreferences = null;
+            applyParsePreferences(parsePreferencesApi.update(patch, {
+                defaults: renderedParseDefaults,
+            }));
+        }
+
+        function applyPendingParsePreferences() {
+            if (pendingParsePreferences && !activeParseController && !downloadInProgress) {
+                const pending = pendingParsePreferences;
+                pendingParsePreferences = null;
+                applyParsePreferences(pending);
+            }
         }
 
         function setPageHasResults(value) {
@@ -635,6 +702,7 @@
                 resultsRegion.innerHTML = "";
             }
             setPageHasResults(false);
+            applyPendingParsePreferences();
         }
 
         async function readResponseBlobWithProgress(response, startPercent, endPercent) {
@@ -1305,6 +1373,7 @@
             } finally {
                 downloadInProgress = false;
                 setDownloadButtonsBusy(false);
+                applyPendingParsePreferences();
             }
         }
 
@@ -1403,19 +1472,21 @@
                 if (currentRequestId === parseRequestId) {
                     activeParseController = null;
                     setParseLoading(false);
+                    applyPendingParsePreferences();
                 }
             }
         }
 
-        if (ultraHdSettingInput) {
-            ultraHdSettingInput.checked = Boolean(savedSettings.ultra_hd_enabled) && !ultraHdSettingInput.disabled;
-            updateUltraHdRequestValue();
-        }
+        applyParsePreferences(parsePreferences);
 
-        if (youtubeMergeSettingInput) {
-            youtubeMergeSettingInput.checked = Boolean(savedSettings.youtube_merge_enabled)
-                && !youtubeMergeSettingInput.disabled;
-            updateYoutubeMergeRequestValue();
+        if (parsePreferencesApi) {
+            parsePreferencesApi.subscribe((preferences) => {
+                if (!activeParseController && !downloadInProgress) {
+                    applyParsePreferences(preferences);
+                } else {
+                    pendingParsePreferences = preferences;
+                }
+            });
         }
 
         if (optionExists(downloadModeInput, downloadMode)) {
@@ -1497,6 +1568,21 @@
             downloadModeInput.addEventListener("change", updateModeVisibility);
         }
 
+        [ultraHdSettingInput, youtubeMergeSettingInput].forEach((input) => {
+            if (input) {
+                input.addEventListener("change", () => {
+                    updateUltraHdRequestValue();
+                    updateYoutubeMergeRequestValue();
+                });
+            }
+        });
+
+        if (settingsModal) {
+            settingsModal.addEventListener("hidden.bs.modal", () => {
+                applyParsePreferences(parsePreferences);
+            });
+        }
+
         if (browserDefaultLocationBtn) {
             browserDefaultLocationBtn.addEventListener("click", () => {
                 useFilePicker = false;
@@ -1518,17 +1604,15 @@
         if (saveSettingsBtn) {
             saveSettingsBtn.addEventListener("click", () => {
                 saveSettings({
+                    ...savedSettings,
                     download_mode: normalizeDownloadMode(downloadModeInput ? downloadModeInput.value : "browser"),
                     save_dir: saveDirInput ? saveDirInput.value.trim() : "xhs",
                     save_format: saveFormatInput ? saveFormatInput.value : "original",
                     quality: qualityInput ? qualityInput.value || 95 : 95,
                     video_save_mode: videoSaveModeInput ? videoSaveModeInput.value : "video",
                     use_file_picker: useFilePicker,
-                    ultra_hd_enabled: isUltraHdEnabled(),
-                    youtube_merge_enabled: isYoutubeMergeEnabled(),
                 });
-                updateUltraHdRequestValue();
-                updateYoutubeMergeRequestValue();
+                saveParsePreferences();
 
                 setStatus(getStatusElement(), "设置已保存", "text-success");
             });
