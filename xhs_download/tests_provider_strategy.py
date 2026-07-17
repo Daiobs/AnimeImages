@@ -1,4 +1,5 @@
 import itertools
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
 from io import StringIO
@@ -211,17 +212,57 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
         self.assertIn('decoding="async"', template)
         self.assertNotIn('loading="eager"', template)
 
-    def test_batch_local_storage_only_contains_input_preferences(self):
+    def test_batch_local_storage_only_contains_links(self):
         content = (PROJECT_ROOT / "static/js/batch_parse.js").read_text()
-        draft_block = content[content.index("window.localStorage.setItem"):]
+        draft_block = content[content.index('window.localStorage.setItem("animeimages.batchParseDraft.v2"'):]
         draft_block = draft_block[:draft_block.index("}));")]
 
-        self.assertIn("links:", draft_block)
-        self.assertIn("ultra_hd:", draft_block)
-        self.assertIn("youtube_merge:", draft_block)
+        self.assertIn("version: 2", draft_block)
+        self.assertIn("links,", draft_block)
+        self.assertNotIn("ultra_hd:", draft_block)
+        self.assertNotIn("youtube_merge:", draft_block)
         self.assertNotIn("card_html", draft_block)
         self.assertNotIn("video_items", draft_block)
         self.assertNotIn("direct_url", draft_block)
+
+    def test_shared_parse_preferences_are_page_agnostic_and_storage_scoped(self):
+        preferences_content = (PROJECT_ROOT / "static/js/parse_preferences.js").read_text()
+        single_content = (PROJECT_ROOT / "static/js/xhs_download.js").read_text()
+        batch_content = (PROJECT_ROOT / "static/js/batch_parse.js").read_text()
+
+        self.assertIn('"animeimages.parsePreferences.v1"', preferences_content)
+        self.assertIn('"animeimages.batchParseDraft.v2"', preferences_content)
+        self.assertIn('ultra_hd: "ultra_hd_enabled"', preferences_content)
+        self.assertIn('youtube_merge: "youtube_merge_enabled"', preferences_content)
+        self.assertIn("AnimeImagesParsePreferences", single_content)
+        self.assertIn("AnimeImagesParsePreferences", batch_content)
+        self.assertNotIn("animeimages.batchParseDraft.v1", batch_content)
+        self.assertNotIn("provider_order", preferences_content)
+        self.assertNotIn("signed_url", preferences_content)
+        self.assertNotIn("manifest", preferences_content)
+        self.assertNotIn("card_html", preferences_content)
+
+    def test_batch_retry_uses_effective_available_preferences(self):
+        content = (PROJECT_ROOT / "static/js/batch_parse.js").read_text()
+
+        self.assertIn("function effectiveCheckboxValue(input)", content)
+        self.assertIn("input.checked && !input.disabled", content)
+        self.assertIn('payload.set("ultra_hd", effectiveCheckboxValue(ultraInput)', content)
+        self.assertIn('payload.set("youtube_merge", effectiveCheckboxValue(youtubeInput)', content)
+
+    def test_single_page_keeps_download_settings_out_of_shared_preferences(self):
+        content = (PROJECT_ROOT / "static/js/xhs_download.js").read_text()
+        save_block = content[content.index("saveSettings({"):]
+        save_block = save_block[:save_block.index("});")]
+
+        self.assertIn("download_mode:", save_block)
+        self.assertIn("save_dir:", save_block)
+        self.assertIn("save_format:", save_block)
+        self.assertIn("video_save_mode:", save_block)
+        self.assertIn("use_file_picker:", save_block)
+        self.assertNotIn("ultra_hd_enabled:", save_block)
+        self.assertNotIn("youtube_merge_enabled:", save_block)
+        self.assertIn("saveParsePreferences();", content)
 
     @patch("xhs_download.views.probe_media_size", return_value=2_800_000)
     def test_content_length_size_is_displayed_as_exact(self, _mock_probe):
@@ -1349,6 +1390,59 @@ class BatchParseViewTests(TestCase):
         self.assertContains(response, reverse("batch_parse_start"))
         self.assertContains(response, reverse("batch_parse_item"))
         self.assertContains(response, "data-batch-results")
+
+    def test_batch_settings_separate_preferences_from_read_only_limits(self):
+        self.client.force_login(self.staff_user)
+        response = self.client.get(reverse("batch_parse"))
+        content = response.content.decode()
+        settings_panel = content[
+            content.index('class="batch-settings-panel"'):
+            content.index('class="modal-footer"')
+        ]
+        element_ids = re.findall(r'\sid="([^"]+)"', content)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '<details class="batch-limits-details">', html=False)
+        self.assertContains(response, "批量处理限制")
+        self.assertNotIn("本次最多链接数", settings_panel)
+        self.assertNotIn("同步回退响应上限", settings_panel)
+        self.assertNotIn('<details class="batch-limits-details" open', content)
+        self.assertIn('for="batch-ultra-hd-setting"', content)
+        self.assertIn('for="batch-youtube-merge-setting"', content)
+        self.assertIn('id="batch-cancel-settings-btn"', content)
+        self.assertIn('id="batch-save-settings-btn"', content)
+        self.assertIn("取消", content)
+        self.assertEqual(len(element_ids), len(set(element_ids)))
+
+    def test_batch_settings_use_explicit_save_and_restore_on_modal_close(self):
+        content = (PROJECT_ROOT / "static/js/batch_parse.js").read_text()
+
+        self.assertIn("function saveBatchParsePreferences()", content)
+        self.assertIn(
+            'saveSettingsButton.addEventListener("click", saveBatchParsePreferences)',
+            content,
+        )
+        self.assertIn('settingsModal.addEventListener("show.bs.modal"', content)
+        self.assertIn('settingsModal.addEventListener("hidden.bs.modal"', content)
+        self.assertIn("if (!settingsSaveCommitted)", content)
+        self.assertIn("applyParsePreferences(parsePreferences)", content)
+        self.assertNotIn("function updateSharedPreference", content)
+        self.assertNotIn(
+            'input.addEventListener("change", () => updateSharedPreference(input))',
+            content,
+        )
+
+    def test_batch_loads_shared_preferences_before_page_script(self):
+        self.client.force_login(self.staff_user)
+        response = self.client.get(reverse("batch_parse"))
+        content = response.content.decode()
+
+        self.assertLess(
+            content.index("js/parse_preferences.js?v="),
+            content.index("js/batch_parse.js?v="),
+        )
+        self.assertContains(response, "抖音原画/超清")
+        self.assertContains(response, "YouTube 最高画质合并")
 
     def test_batch_progress_endpoints_are_post_only_and_use_batch_access_gate(self):
         self.client.force_login(self.staff_user)

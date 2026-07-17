@@ -167,6 +167,13 @@ Current behavior:
 - Staff can see raw/direct controls.
 - Anonymous/public users must not see raw signed provider URLs.
 
+Browser state boundaries:
+
+- `animeimages.parsePreferences.v1` is the shared, versioned source for the Douyin original/ultra and YouTube highest-quality merge preferences on single-link and Batch pages.
+- `animeimages.batchParseDraft.v2` contains only the Batch links draft.
+- `xhsDownloadSettings` remains the home of single-page download mode, save location, file format, and other download-only settings. Its old parse fields and `animeimages.batchParseDraft.v1` are migration inputs, not primary stores.
+- Client preferences never override server availability, access, rollout, Provider order, or timeout gates.
+
 Important knobs:
 
 ```text

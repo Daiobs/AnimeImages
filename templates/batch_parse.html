@@ -47,8 +47,8 @@
                                     class="btn btn-outline-secondary batch-settings-toggle"
                                     data-bs-toggle="modal"
                                     data-bs-target="#batchSettingsModal">
-                                <i class="bi bi-sliders me-1"></i>
-                                解析设置
+                                <i class="bi bi-gear me-1"></i>
+                                设置
                             </button>
                             <span class="text-muted small">解析结果会逐条展示，失败链接不会影响其他链接。</span>
 
@@ -65,59 +65,81 @@
                                         </div>
                                         <div class="modal-body">
                                             <div class="batch-settings-panel">
-                                                <label class="form-check batch-option">
-                                                    <input type="hidden" name="ultra_hd" value="0">
+                                                <div class="form-check batch-option">
+                                                    <input type="hidden" name="ultra_hd" value="0"
+                                                           id="batch-ultra-hd-request-input">
                                                     <input
                                                             class="form-check-input"
                                                             type="checkbox"
+                                                            id="batch-ultra-hd-setting"
                                                             name="ultra_hd"
                                                             value="1"
                                                             {% if batch_ultra_hd_checked %}checked{% endif %}
                                                             {% if not ultra_hd_available %}disabled{% endif %}
                                                     >
-                                                    <span class="form-check-label">
+                                                    <label class="form-check-label" for="batch-ultra-hd-setting">
                                                         <strong>抖音原画/超清</strong>
                                                         <small>批量模式优先使用天天解析，未命中时回退本地解析。</small>
-                                                    </span>
-                                                </label>
-                                                <label class="form-check batch-option">
-                                                    <input type="hidden" name="youtube_merge" value="0">
+                                                    </label>
+                                                </div>
+                                                <div class="form-check batch-option">
+                                                    <input type="hidden" name="youtube_merge" value="0"
+                                                           id="batch-youtube-merge-request-input">
                                                     <input
                                                             class="form-check-input"
                                                             type="checkbox"
+                                                            id="batch-youtube-merge-setting"
                                                             name="youtube_merge"
                                                             value="1"
                                                             {% if batch_youtube_merge_checked %}checked{% endif %}
                                                             {% if not youtube_merge_mode_available %}disabled{% endif %}
                                                     >
-                                                    <span class="form-check-label">
+                                                    <label class="form-check-label" for="batch-youtube-merge-setting">
                                                         <strong>YouTube 最高画质合并</strong>
                                                         <small>开启后会优先获取高画质音视频并在服务端合并，耗时可能更长。</small>
-                                                    </span>
-                                                </label>
-                                                <div class="batch-limit-row">
-                                                    <span>本次最多链接数：{{ max_links }}</span>
-                                                    <span>每条执行预算：{{ batch_per_link_timeout_seconds }} 秒</span>
-                                                    <span>配置调度窗口：{{ batch_total_timeout_seconds }} 秒</span>
-                                                    <span>逐条启动窗口：{{ batch_progressive_scheduling_timeout_seconds }} 秒</span>
-                                                    <span>并发解析数：{{ batch_parallel_workers }}</span>
-                                                    <span>预计波次：{{ batch_budget.wave_count }}</span>
-                                                    <span>理论完整耗时：{{ batch_budget.theoretical_full_duration_seconds }} 秒</span>
-                                                    <span>按上限可启动：{{ batch_budget.fully_schedulable_capacity }} 条</span>
-                                                    <span>调度窗内可完成：{{ batch_budget.fully_completable_capacity }} 条</span>
-                                                    <span>逐条模式最长：{{ batch_progressive_max_duration_seconds }} 秒</span>
-                                                    <span>同步回退响应上限：{{ batch_budget.max_response_timeout_seconds }} 秒</span>
+                                                    </label>
                                                 </div>
                                             </div>
                                         </div>
                                         <div class="modal-footer">
-                                            <button type="button" class="btn btn-brand" data-bs-dismiss="modal">保存设置</button>
+                                            <button type="button"
+                                                    class="btn btn-outline-secondary"
+                                                    id="batch-cancel-settings-btn"
+                                                    data-bs-dismiss="modal">
+                                                取消
+                                            </button>
+                                            <button type="button"
+                                                    class="btn btn-brand"
+                                                    id="batch-save-settings-btn"
+                                                    data-bs-dismiss="modal">
+                                                保存设置
+                                            </button>
                                         </div>
                                     </div>
                                 </div>
                             </div>
                         </div>
                     </form>
+
+                    <details class="batch-limits-details">
+                        <summary>
+                            <i class="bi bi-clock-history me-1" aria-hidden="true"></i>
+                            批量处理限制
+                        </summary>
+                        <div class="batch-limit-row">
+                            <span>本次最多链接数：{{ max_links }}</span>
+                            <span>每条执行预算：{{ batch_per_link_timeout_seconds }} 秒</span>
+                            <span>配置调度窗口：{{ batch_total_timeout_seconds }} 秒</span>
+                            <span>逐条启动窗口：{{ batch_progressive_scheduling_timeout_seconds }} 秒</span>
+                            <span>并发解析数：{{ batch_parallel_workers }}</span>
+                            <span>预计波次：{{ batch_budget.wave_count }}</span>
+                            <span>理论完整耗时：{{ batch_budget.theoretical_full_duration_seconds }} 秒</span>
+                            <span>按上限可启动：{{ batch_budget.fully_schedulable_capacity }} 条</span>
+                            <span>调度窗内可完成：{{ batch_budget.fully_completable_capacity }} 条</span>
+                            <span>逐条模式最长：{{ batch_progressive_max_duration_seconds }} 秒</span>
+                            <span>同步回退响应上限：{{ batch_budget.max_response_timeout_seconds }} 秒</span>
+                        </div>
+                    </details>
                 </div>
             </div>
         </div>
@@ -217,5 +239,6 @@
 {% endblock %}
 
 {% block extra_js %}
+<script src="{% static 'js/parse_preferences.js' %}?v={{ static_asset_version }}"></script>
 <script src="{% static 'js/batch_parse.js' %}?v={{ static_asset_version }}"></script>
 {% endblock %}

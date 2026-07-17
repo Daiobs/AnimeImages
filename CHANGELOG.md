@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Shared the Douyin original/ultra and YouTube highest-quality merge preferences between single-link and Batch pages through a versioned, strictly validated browser storage schema, with deterministic migration from both legacy settings stores.
+- Split Batch link drafts into a links-only v2 store and moved runtime budgets from the editable settings modal into a read-only, collapsed `批量处理限制` section without changing Provider order or timeouts.
 - Reworked Batch Parse into a bounded scheduler that separates the batch scheduling window from per-item execution deadlines, distinguishes timeout from skipped work, and reports wall-clock duration separately from row-duration totals.
 - Enforced the displayed Batch response boundary in the scheduler: cooperative workers still finish before return, while an uncooperative worker is reported as timed out, logged without source URLs, and cannot hold the HTTP request in an unbounded wait.
 - Added progressive Batch execution: one CSRF-protected start request reserves the existing whole-batch rate limit, then short-lived client-bound item tokens drive server-ordered, bounded requests and one visible result card at a time without persisting parse results.

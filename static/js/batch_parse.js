@@ -3,6 +3,36 @@
 (function () {
     "use strict";
 
+    function buildEnabledPreferencePatch(ultraInput, youtubeInput) {
+        const patch = {};
+        if (ultraInput && !ultraInput.disabled) {
+            patch.ultra_hd = Boolean(ultraInput.checked);
+        }
+        if (youtubeInput && !youtubeInput.disabled) {
+            patch.youtube_merge = Boolean(youtubeInput.checked);
+        }
+        return patch;
+    }
+
+    function commitEnabledParsePreferences(
+        parsePreferencesApi,
+        currentPreferences,
+        ultraInput,
+        youtubeInput,
+        renderedDefaults
+    ) {
+        const patch = buildEnabledPreferencePatch(ultraInput, youtubeInput);
+        if (parsePreferencesApi && typeof parsePreferencesApi.update === "function") {
+            return parsePreferencesApi.update(patch, {defaults: renderedDefaults});
+        }
+        return {
+            version: 1,
+            ultra_hd: Boolean(currentPreferences && currentPreferences.ultra_hd),
+            youtube_merge: Boolean(currentPreferences && currentPreferences.youtube_merge),
+            ...patch,
+        };
+    }
+
     function fallbackCopy(text) {
         const area = document.createElement("textarea");
         area.value = text || "";
@@ -483,7 +513,18 @@
         }
     }
 
-    async function retryBatchResultCard(batchPage, batchForm, retryButton, ultraInput, youtubeInput) {
+    function effectiveCheckboxValue(input) {
+        return Boolean(input && input.checked && !input.disabled);
+    }
+
+    async function retryBatchResultCard(
+        batchPage,
+        batchForm,
+        retryButton,
+        ultraInput,
+        youtubeInput,
+        onIdle
+    ) {
         const card = retryButton.closest(".batch-result-card");
         const retryUrl = batchPage.dataset.batchRetryUrl || "";
         const csrfInput = batchForm ? batchForm.querySelector('input[name="csrfmiddlewaretoken"]') : null;
@@ -493,8 +534,8 @@
         const payload = new FormData();
         payload.set("csrfmiddlewaretoken", csrfInput.value || "");
         payload.set("link", retryButton.getAttribute("data-retry-link") || "");
-        payload.set("ultra_hd", ultraInput && ultraInput.checked ? "1" : "0");
-        payload.set("youtube_merge", youtubeInput && youtubeInput.checked ? "1" : "0");
+        payload.set("ultra_hd", effectiveCheckboxValue(ultraInput) ? "1" : "0");
+        payload.set("youtube_merge", effectiveCheckboxValue(youtubeInput) ? "1" : "0");
         setBatchRetryLoading(retryButton, true);
         try {
             const response = await fetch(retryUrl, {
@@ -521,6 +562,9 @@
             if (retryButton.isConnected) {
                 setBatchRetryLoading(retryButton, false);
             }
+            if (typeof onIdle === "function") {
+                onIdle();
+            }
         }
     }
 
@@ -535,26 +579,54 @@
         const submitLabel = batchPage.querySelector(".batch-submit-label");
         const ultraInput = batchPage.querySelector('input[name="ultra_hd"][type="checkbox"]');
         const youtubeInput = batchPage.querySelector('input[name="youtube_merge"][type="checkbox"]');
-        const draftKey = "animeimages.batchParseDraft.v1";
+        const ultraHiddenInput = batchPage.querySelector("#batch-ultra-hd-request-input");
+        const youtubeHiddenInput = batchPage.querySelector("#batch-youtube-merge-request-input");
+        const settingsModal = batchPage.querySelector("#batchSettingsModal");
+        const saveSettingsButton = batchPage.querySelector("#batch-save-settings-btn");
+        const parsePreferencesApi = window.AnimeImagesParsePreferences || null;
+        const renderedParseDefaults = {
+            ultra_hd: effectiveCheckboxValue(ultraInput),
+            youtube_merge: effectiveCheckboxValue(youtubeInput),
+        };
+        let parsePreferences = parsePreferencesApi
+            ? parsePreferencesApi.load({defaults: renderedParseDefaults})
+            : {version: 1, ...renderedParseDefaults};
+        let pendingParsePreferences = null;
+        let settingsModalOpen = false;
+        let settingsSaveCommitted = false;
 
         prioritizeFirstBatchPreview(
             batchPage.querySelector(".batch-result-card:not(.is-hidden)")
         );
 
         function readDraft() {
+            if (parsePreferencesApi) {
+                return parsePreferencesApi.loadBatchDraft({
+                    defaultLinks: batchTextarea ? batchTextarea.value : "",
+                });
+            }
             try {
-                return JSON.parse(window.localStorage.getItem(draftKey) || "{}");
+                const draft = JSON.parse(
+                    window.localStorage.getItem("animeimages.batchParseDraft.v2") || "{}"
+                );
+                return draft && draft.version === 2 && typeof draft.links === "string"
+                    ? {version: 2, links: draft.links}
+                    : {version: 2, links: ""};
             } catch (error) {
-                return {};
+                return {version: 2, links: ""};
             }
         }
 
         function writeDraft() {
+            const links = batchTextarea ? batchTextarea.value : "";
+            if (parsePreferencesApi) {
+                parsePreferencesApi.saveBatchDraft(links);
+                return;
+            }
             try {
-                window.localStorage.setItem(draftKey, JSON.stringify({
-                    links: batchTextarea ? batchTextarea.value : "",
-                    ultra_hd: ultraInput ? ultraInput.checked : false,
-                    youtube_merge: youtubeInput ? youtubeInput.checked : false,
+                window.localStorage.setItem("animeimages.batchParseDraft.v2", JSON.stringify({
+                    version: 2,
+                    links,
                 }));
             } catch (error) {
                 // localStorage may be disabled; batch parsing still works without draft persistence.
@@ -566,26 +638,99 @@
             if (batchTextarea && !batchTextarea.value && draft.links) {
                 batchTextarea.value = draft.links;
             }
-            if (batchTextarea && batchTextarea.value) {
-                if (ultraInput && !ultraInput.disabled && typeof draft.ultra_hd === "boolean") {
-                    ultraInput.checked = draft.ultra_hd;
-                }
-                if (youtubeInput && !youtubeInput.disabled && typeof draft.youtube_merge === "boolean") {
-                    youtubeInput.checked = draft.youtube_merge;
+        }
+
+        function applyParsePreferences(preferences) {
+            parsePreferences = preferences;
+            if (parsePreferencesApi) {
+                parsePreferencesApi.applyToControls(parsePreferences, {
+                    ultraHdInput: ultraInput,
+                    ultraHdHiddenInput: ultraHiddenInput,
+                    youtubeMergeInput: youtubeInput,
+                    youtubeMergeHiddenInput: youtubeHiddenInput,
+                });
+                return;
+            }
+            if (ultraHiddenInput) {
+                ultraHiddenInput.value = effectiveCheckboxValue(ultraInput) ? "1" : "0";
+            }
+            if (youtubeHiddenInput) {
+                youtubeHiddenInput.value = effectiveCheckboxValue(youtubeInput) ? "1" : "0";
+            }
+        }
+
+        function saveBatchParsePreferences() {
+            pendingParsePreferences = null;
+            applyParsePreferences(commitEnabledParsePreferences(
+                parsePreferencesApi,
+                parsePreferences,
+                ultraInput,
+                youtubeInput,
+                renderedParseDefaults
+            ));
+            settingsSaveCommitted = true;
+        }
+
+        function batchOperationInProgress() {
+            const retryInProgress = Boolean(batchPage.querySelector(".batch-retry-btn.is-loading"));
+            const batchInProgress = Boolean(
+                batchForm && batchForm.dataset.submitting === "true"
+            );
+            return batchInProgress || retryInProgress;
+        }
+
+        function applyPendingParsePreferences() {
+            if (pendingParsePreferences && !batchOperationInProgress()) {
+                const pending = pendingParsePreferences;
+                pendingParsePreferences = null;
+                if (settingsModalOpen) {
+                    parsePreferences = pending;
+                } else {
+                    applyParsePreferences(pending);
                 }
             }
         }
 
+        applyParsePreferences(parsePreferences);
         restoreDraft();
+
+        if (parsePreferencesApi) {
+            parsePreferencesApi.subscribe((preferences) => {
+                if (batchOperationInProgress()) {
+                    pendingParsePreferences = preferences;
+                } else if (settingsModalOpen) {
+                    parsePreferences = preferences;
+                } else {
+                    applyParsePreferences(preferences);
+                }
+            });
+        }
 
         if (batchTextarea) {
             batchTextarea.addEventListener("input", writeDraft);
         }
-        [ultraInput, youtubeInput].forEach((input) => {
-            if (input) {
-                input.addEventListener("change", writeDraft);
-            }
-        });
+
+        if (settingsModal) {
+            settingsModal.addEventListener("show.bs.modal", () => {
+                settingsModalOpen = true;
+                settingsSaveCommitted = false;
+                applyPendingParsePreferences();
+                applyParsePreferences(parsePreferences);
+            });
+            settingsModal.addEventListener("hidden.bs.modal", () => {
+                settingsModalOpen = false;
+                if (!settingsSaveCommitted) {
+                    applyPendingParsePreferences();
+                }
+                applyParsePreferences(parsePreferences);
+                settingsSaveCommitted = false;
+                applyPendingParsePreferences();
+            });
+        }
+
+        if (saveSettingsButton) {
+            saveSettingsButton.addEventListener("click", saveBatchParsePreferences);
+        }
 
         if (batchForm && submitButton) {
             batchForm.addEventListener("submit", async (event) => {
@@ -636,6 +781,7 @@
                     if (submitLabel) {
                         submitLabel.textContent = "开始批量解析";
                     }
+                    applyPendingParsePreferences();
                 }
             });
         }
@@ -657,7 +803,8 @@
                         batchForm,
                         retryButton,
                         ultraInput,
-                        youtubeInput
+                        youtubeInput,
+                        applyPendingParsePreferences
                     );
                 }
                 return;
@@ -740,6 +887,16 @@
         });
     }
 
+    const testApi = Object.freeze({
+        buildEnabledPreferencePatch,
+        commitEnabledParsePreferences,
+    });
+    if (typeof module === "object" && module.exports) {
+        module.exports = testApi;
+    }
+    if (typeof document === "undefined") {
+        return;
+    }
     if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", initBatchParsePage);
     } else {
