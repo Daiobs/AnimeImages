@@ -1409,7 +1409,28 @@ class BatchParseViewTests(TestCase):
         self.assertNotIn('<details class="batch-limits-details" open', content)
         self.assertIn('for="batch-ultra-hd-setting"', content)
         self.assertIn('for="batch-youtube-merge-setting"', content)
+        self.assertIn('id="batch-cancel-settings-btn"', content)
+        self.assertIn('id="batch-save-settings-btn"', content)
+        self.assertIn("取消", content)
         self.assertEqual(len(element_ids), len(set(element_ids)))
+
+    def test_batch_settings_use_explicit_save_and_restore_on_modal_close(self):
+        content = (PROJECT_ROOT / "static/js/batch_parse.js").read_text()
+
+        self.assertIn("function saveBatchParsePreferences()", content)
+        self.assertIn(
+            'saveSettingsButton.addEventListener("click", saveBatchParsePreferences)',
+            content,
+        )
+        self.assertIn('settingsModal.addEventListener("show.bs.modal"', content)
+        self.assertIn('settingsModal.addEventListener("hidden.bs.modal"', content)
+        self.assertIn("if (!settingsSaveCommitted)", content)
+        self.assertIn("applyParsePreferences(parsePreferences)", content)
+        self.assertNotIn("function updateSharedPreference", content)
+        self.assertNotIn(
+            'input.addEventListener("change", () => updateSharedPreference(input))',
+            content,
+        )
 
     def test_batch_loads_shared_preferences_before_page_script(self):
         self.client.force_login(self.staff_user)

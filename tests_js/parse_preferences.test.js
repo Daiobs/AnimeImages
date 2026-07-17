@@ -2,6 +2,7 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const batchSettings = require("../static/js/batch_parse.js");
 const preferences = require("../static/js/parse_preferences.js");
 
 class MemoryStorage {
@@ -276,4 +277,77 @@ test("cross-tab subscription accepts only the shared key with a complete schema"
     assert.deepEqual(received, [{version: 1, ultra_hd: false, youtube_merge: true}]);
     unsubscribe();
     assert.equal(listeners.has("storage"), false);
+});
+
+test("Batch settings build one patch from both enabled controls", () => {
+    assert.deepEqual(batchSettings.buildEnabledPreferencePatch(
+        {checked: true, disabled: false},
+        {checked: false, disabled: false}
+    ), {
+        ultra_hd: true,
+        youtube_merge: false,
+    });
+});
+
+test("Batch settings omit disabled controls and preserve their stored intent", () => {
+    const storage = new MemoryStorage({
+        [preferences.SHARED_STORAGE_KEY]: JSON.stringify({
+            version: 1,
+            ultra_hd: true,
+            youtube_merge: false,
+        }),
+    });
+    const patch = batchSettings.buildEnabledPreferencePatch(
+        {checked: false, disabled: true},
+        {checked: true, disabled: false}
+    );
+    const saved = preferences.update(patch, {storage});
+    const ultraHidden = {value: "1"};
+    const youtubeHidden = {value: "0"};
+
+    preferences.applyToControls(saved, {
+        ultraHdInput: {checked: false, disabled: true},
+        ultraHdHiddenInput: ultraHidden,
+        youtubeMergeInput: {checked: false, disabled: false},
+        youtubeMergeHiddenInput: youtubeHidden,
+    });
+
+    assert.deepEqual(patch, {youtube_merge: true});
+    assert.deepEqual(saved, {
+        version: 1,
+        ultra_hd: true,
+        youtube_merge: true,
+    });
+    assert.equal(storage.writeCount, 1);
+    assert.equal(ultraHidden.value, "0");
+    assert.equal(youtubeHidden.value, "1");
+});
+
+test("Batch settings commit both enabled values through one update call", () => {
+    const calls = [];
+    const api = {
+        update(patch, options) {
+            calls.push({patch, options});
+            return {version: 1, ...patch};
+        },
+    };
+    const defaults = {ultra_hd: false, youtube_merge: false};
+
+    const saved = batchSettings.commitEnabledParsePreferences(
+        api,
+        {version: 1, ultra_hd: false, youtube_merge: true},
+        {checked: true, disabled: false},
+        {checked: false, disabled: false},
+        defaults
+    );
+
+    assert.deepEqual(saved, {
+        version: 1,
+        ultra_hd: true,
+        youtube_merge: false,
+    });
+    assert.deepEqual(calls, [{
+        patch: {ultra_hd: true, youtube_merge: false},
+        options: {defaults},
+    }]);
 });
