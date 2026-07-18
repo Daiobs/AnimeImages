@@ -52,7 +52,7 @@
             <div class="batch-result-info">
                 <div class="batch-result-header">
                     <div>
-                        <div class="batch-result-title">{{ row.base_filename|default:"已解析素材" }}</div>
+                        <div class="batch-result-title">{{ row.display_title|default:row.base_filename|default:"已解析素材" }}</div>
                         <div class="batch-result-source">{{ row.source_text }}</div>
                     </div>
                     <div class="batch-status-pill batch-status-{{ row.status }}">
@@ -63,6 +63,7 @@
 
                 <div class="batch-meta-row">
                     <span>{{ row.platform_name }}</span>
+                    {% if row.display_author %}<span>作者 {{ row.display_author }}</span>{% endif %}
                     {% if row.provider_label %}
                         <span>Provider {{ row.provider_label }}</span>
                     {% elif row.selected_provider %}

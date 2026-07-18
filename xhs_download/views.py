@@ -297,6 +297,8 @@ def get_video_size_bytes(asset, *, probe_missing=True):
 def get_video_size_details(asset, *, probe_missing=True):
     if asset.size_bytes:
         return asset.size_bytes, bool(getattr(asset, "size_is_estimate", False))
+    if getattr(asset, "platform", "") == "xiaohongshu":
+        return 0, False
     if not probe_missing or asset.provider in SIGNED_THIRD_PARTY_VIDEO_PROVIDERS:
         return 0, False
     return probe_media_size(asset.url), False
@@ -3302,6 +3304,33 @@ def build_result_display_context(
     probe_missing_video_sizes=True,
 ):
     result_metadata = result.metadata or {}
+    is_xhs_result = result.platform == "xiaohongshu"
+    display_title = (
+        " ".join(str(result_metadata.get("title") or "").split())[:200]
+        if is_xhs_result
+        else ""
+    )
+    display_author = (
+        " ".join(str(result_metadata.get("author_name") or "").split())[:80]
+        if is_xhs_result
+        else ""
+    )
+    note_id = (
+        " ".join(str(result_metadata.get("note_id") or "").split())[:64]
+        if is_xhs_result
+        else ""
+    )
+    metadata_source = ""
+    if is_xhs_result:
+        metadata_source = (
+            "structured"
+            if result_metadata.get("structured_state_found")
+            else str(
+                result_metadata.get("title_source")
+                or result_metadata.get("image_source")
+                or ""
+            )[:20]
+        )
     return {
         "platform": result.platform,
         "platform_name": (
@@ -3315,6 +3344,10 @@ def build_result_display_context(
         ),
         "post_type": result.post_type,
         "base_filename": result.base_filename,
+        "display_title": display_title,
+        "display_author": display_author,
+        "note_id": note_id,
+        "metadata_source": metadata_source,
         "image_items": [build_image_item(asset, result) for asset in result.image_assets],
         "video_items": [
             build_video_item(
@@ -3517,6 +3550,10 @@ def build_search_results_context(request, platform_key="home"):
         "is_mobile_request": request_is_mobile(request),
         "error_message": None,
         "base_filename": "",
+        "display_title": "",
+        "display_author": "",
+        "note_id": "",
+        "metadata_source": "",
     }
 
     if not query:
@@ -3775,6 +3812,10 @@ def build_search_results_context(request, platform_key="home"):
                 context["provider_notice"] = "本次未命中超高清上游，已自动回退本地解析。"
         context["post_type"] = display_context["post_type"]
         context["base_filename"] = display_context["base_filename"]
+        context["display_title"] = display_context["display_title"]
+        context["display_author"] = display_context["display_author"]
+        context["note_id"] = display_context["note_id"]
+        context["metadata_source"] = display_context["metadata_source"]
         context["image_items"] = display_context["image_items"]
         context["video_items"] = display_context["video_items"]
 

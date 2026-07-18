@@ -1,6 +1,6 @@
 # Current Version Status
 
-Date: 2026-07-14
+Date: 2026-07-19
 
 Last Audited Runtime Baseline:
 
@@ -53,6 +53,21 @@ The `codex/shared-parse-preferences-v1` branch keeps two browser-only parsing pr
 - Provider Strategy, Batch Provider order, timeouts, access gates, and server-side rollout decisions are unchanged.
 
 This is browser state only, adds no migration, and is not production behavior until its PR is reviewed, merged, and deployed.
+
+## Unreleased XHS Media Fidelity Candidate
+
+The `codex/xhs-media-fidelity-v1` development branch improves the dedicated Xiaohongshu adapter without changing Provider Strategy or production infrastructure:
+
+- Bounded parsing reads only valid JSON hydration data or a valid current-note JSON object from a known state assignment. It never executes page JavaScript, replaces JavaScript expressions, or imports a browser session.
+- The current note is selected by a validated 24-character note ID from the final page URL. A multi-note payload is not allowed to select recommendation content by traversal order.
+- Title and author use structured current-note data first, then explicit meta fields, then current-note DOM selectors.
+- A valid structured image list is authoritative, preserves source order, and is deduplicated after existing XHS URL normalization. Meta, DOM, and restricted URL scanning remain bounded fallbacks only.
+- Video covers prefer an explicit current-note poster/cover, then the first structured note image, then meta and current-note DOM images.
+- XHS video size is exact-known-or-unknown. Only a validated integer byte field attached to the selected structured stream is accepted; no HEAD, Range, partial-download, bitrate, or duration estimate is added.
+- Explicit login-required, private, deleted, and unavailable states return fixed user-safe errors only when no public media was parsed.
+- Single-link and Batch display contexts share the same normalized XHS title, author, cover, gallery order, and size semantics.
+
+The candidate adds no migration, Cookie import, CAPTCHA bypass, third-party Provider, Provider-order change, timeout change, or production deployment. Synthetic fixtures contain no real signed media URLs.
 
 ## Production Runtime Topology
 

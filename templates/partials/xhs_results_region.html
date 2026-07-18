@@ -33,12 +33,15 @@
                         <i class="bi bi-images result-icon me-1"></i>
                         图片笔记
                     {% endif %}
-                    {{ base_filename|default:"xhs_image" }}
+                    {{ display_title|default:base_filename|default:"xhs_image" }}
                 </div>
 
                 <div class="text-muted small">
                     {% if platform_name %}
                         <span class="platform-pill">{{ platform_name }}</span>
+                    {% endif %}
+                    {% if display_author %}
+                        <span>作者 {{ display_author }}</span>
                     {% endif %}
                     {% if post_type == "video" %}
                         已解析到 {{ video_items|length }} 个视频资源

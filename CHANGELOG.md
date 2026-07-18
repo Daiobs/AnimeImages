@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added bounded, non-executing Xiaohongshu page-state extraction for current-note title, author, note ID, ordered galleries, video covers, and explicit availability states, with deterministic meta/DOM fallbacks and no login-cookie or third-party Provider path.
+- Defined Xiaohongshu video size as exact-known-or-unknown from validated structured byte fields and stopped missing-size display from adding media probes; single-link and Batch cards now share the same normalized XHS title, author, cover, and size semantics.
 - Shared the Douyin original/ultra and YouTube highest-quality merge preferences between single-link and Batch pages through a versioned, strictly validated browser storage schema, with deterministic migration from both legacy settings stores.
 - Split Batch link drafts into a links-only v2 store and moved runtime budgets from the editable settings modal into a read-only, collapsed `批量处理限制` section without changing Provider order or timeouts.
 - Reworked Batch Parse into a bounded scheduler that separates the batch scheduling window from per-item execution deadlines, distinguishes timeout from skipped work, and reports wall-clock duration separately from row-duration totals.

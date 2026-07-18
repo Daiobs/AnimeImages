@@ -267,14 +267,14 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
     @patch("xhs_download.views.probe_media_size", return_value=2_800_000)
     def test_content_length_size_is_displayed_as_exact(self, _mock_probe):
         result = ParseResult(
-            platform="xiaohongshu",
+            platform="bilibili",
             post_type="video",
             base_filename="exact-size",
             assets=(
                 MediaAsset(
                     media_type="video",
-                    url="https://sns-video-bd.xhscdn.com/exact.mp4",
-                    platform="xiaohongshu",
+                    url="https://upos-sz-mirrorcos.bilivideo.com/exact.mp4",
+                    platform="bilibili",
                 ),
             ),
         )
