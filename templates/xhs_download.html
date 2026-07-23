@@ -15,6 +15,8 @@
     <section
             class="xhs-download-page {{ theme_class|default:'theme-home' }}{% if image_items or video_items or error_message or platform_notice or provider_notice %} has-results{% endif %}"
             data-download-url="{{ download_url }}"
+            data-download-prepare-url="{{ download_prepare_url }}"
+            data-douyin-continuation-url="{{ douyin_continuation_url }}"
             data-download-task-url="{{ download_task_url }}"
             data-download-async-enabled="{{ download_async_tasks_enabled|yesno:'true,false' }}"
             data-base-filename="{{ base_filename|default:'xhs_image' }}"
@@ -342,5 +344,7 @@
 
 {% block extra_js %}
     <script src="{% static 'js/parse_preferences.js' %}?v={{ static_asset_version }}"></script>
+    <script src="{% static 'js/download_reliability.js' %}?v={{ static_asset_version }}"></script>
+    <script src="{% static 'js/douyin_reliability.js' %}?v={{ static_asset_version }}"></script>
     <script src="{% static 'js/xhs_download.js' %}?v={{ static_asset_version }}"></script>
 {% endblock %}

@@ -75,6 +75,19 @@ from .services.download_tasks import (
     pop_download_task,
     serialize_task,
 )
+from .services.download_handoff import (
+    DownloadHandoffError,
+    issue_download_handoff,
+    load_download_handoff,
+)
+from .services.douyin_continuation import (
+    DOUYIN_CONTINUATION_POLL_AFTER_MS,
+    DOUYIN_CONTINUATION_TTL_SECONDS,
+    DouyinContinuationError,
+    DouyinContinuationPendingError,
+    issue_douyin_continuation_token,
+    poll_douyin_continuation,
+)
 from .services.feedback_loop import build_feedback_loop_context
 from .services.approval_gate import (
     approve_policy_change,
@@ -99,6 +112,7 @@ from .services.downloads import (
     guess_video_extension_from_response,
     invalidate_external_provider_caches,
     is_recoverable_provider_download_error,
+    observable_download_error,
     parse_content_length,
     provider_manifest_allows_public_download,
     probe_media_size,
@@ -143,7 +157,9 @@ from .services.provider_strategy import (
 from .services.provider_runtime_config import runtime_float
 from .services.provider_recovery import (
     get_kukutool_manifest_identity,
+    get_tiantianjiexi_manifest_identity,
     iter_kukutool_download_recovery_urls,
+    refresh_tiantianjiexi_download_item,
 )
 from .services.registry import get_adapter_for_url, parse_media_page
 from .services.provider_manifest import build_provider_manifest_token
@@ -2595,7 +2611,14 @@ def provider_audit_logs_view(request):
 
 
 def limit_error_response(message, retry_after=0, error_code="RATE_LIMITED"):
-    response = JsonResponse({"status": "error", "message": message}, status=429)
+    response = JsonResponse(
+        {
+            "status": "error",
+            "error_code": error_code,
+            "message": message,
+        },
+        status=429,
+    )
     if retry_after:
         response["Retry-After"] = str(retry_after)
     response["X-Error-Code"] = error_code
@@ -2603,7 +2626,14 @@ def limit_error_response(message, retry_after=0, error_code="RATE_LIMITED"):
 
 
 def download_guard_error_response(message, *, status=403, error_code):
-    response = JsonResponse({"status": "error", "message": message}, status=status)
+    response = JsonResponse(
+        {
+            "status": "error",
+            "error_code": error_code,
+            "message": message,
+        },
+        status=status,
+    )
     response["X-Error-Code"] = error_code
     return response
 
@@ -2984,67 +3014,132 @@ def single_attachment_download_filename(item, base_filename, final_url="", conte
     return clean_filename(f"{stem}.{ext}")
 
 
-def open_single_attachment_upstream(item, media_type, request_timeout):
+def open_single_attachment_upstream(
+    item,
+    media_type,
+    request_timeout,
+    *,
+    allow_recovery=True,
+    include_context=False,
+):
     url = item.get("url")
     if not url:
         raise XhsDownloadError("资源 URL 为空")
 
-    recovery_enabled = bool(
+    kukutool_recovery_enabled = bool(
         media_type == "video"
         and isinstance(item, dict)
         and get_kukutool_manifest_identity(item)
     )
+    tiantianjiexi_recovery_enabled = bool(
+        media_type == "video"
+        and isinstance(item, dict)
+        and get_tiantianjiexi_manifest_identity(item)
+    )
+    recovery_enabled = bool(
+        allow_recovery
+        and (kukutool_recovery_enabled or tiantianjiexi_recovery_enabled)
+    )
     provider_item = item if provider_manifest_allows_public_download(item) else None
     attempted_urls = set()
-    candidates = [url]
+    candidates = [(url, provider_item, False)]
     recovery_urls = None
+    recovery_attempted = False
     last_error = None
 
     while candidates or recovery_urls is not None:
         if not candidates:
             try:
-                candidates.append(next(recovery_urls))
+                candidates.append((next(recovery_urls), provider_item, True))
             except StopIteration:
                 recovery_urls = None
                 continue
 
-        candidate_url = candidates.pop(0)
+        candidate_url, candidate_provider_item, recovered = candidates.pop(0)
         if not candidate_url or candidate_url in attempted_urls:
             continue
         attempted_urls.add(candidate_url)
 
-        candidate_provider_item = provider_item
-        if recovery_enabled and not is_byte_cdn_url(candidate_url):
+        if (
+            candidate_provider_item
+            and not provider_manifest_allows_public_download(candidate_provider_item)
+        ):
+            candidate_provider_item = None
+        if kukutool_recovery_enabled and not is_byte_cdn_url(candidate_url):
             candidate_provider_item = None
 
         try:
-            return fetch_media_response(
+            response = fetch_media_response(
                 candidate_url,
                 timeout=request_timeout,
                 retries=1 if recovery_enabled else 3,
                 provider_signed=candidate_provider_item,
             )
+            if include_context:
+                effective_item = dict(candidate_provider_item or item)
+                if recovered and effective_item.get("url") != candidate_url:
+                    if (
+                        effective_item.get("provider") == "kukutool"
+                        and is_byte_cdn_url(candidate_url)
+                    ):
+                        effective_item["url"] = candidate_url
+                        effective_item["provider_manifest_token"] = (
+                            build_provider_manifest_token(
+                                asset_id=effective_item.get("asset_id", ""),
+                                provider=effective_item.get("provider", ""),
+                                provider_resource_id=effective_item.get(
+                                    "provider_resource_id",
+                                    "",
+                                ),
+                                provider_cache_key=effective_item.get(
+                                    "provider_cache_key",
+                                    "",
+                                ),
+                                url=candidate_url,
+                                media_type=effective_item.get("type", ""),
+                            )
+                        )
+                    else:
+                        effective_item = {
+                            "type": media_type,
+                            "url": candidate_url,
+                            "size_bytes": item.get("size_bytes", 0),
+                        }
+                return response, effective_item, recovered
+            return response
         except Exception as error:
             last_error = error
             if provider_item and is_recoverable_provider_download_error(error):
                 invalidate_external_provider_caches(provider_item)
             if (
                 recovery_enabled
-                and recovery_urls is None
+                and not recovery_attempted
                 and len(attempted_urls) == 1
                 and is_recoverable_provider_download_error(error)
             ):
-                recovery_urls = iter(iter_kukutool_download_recovery_urls(item) or ())
+                recovery_attempted = True
+                if tiantianjiexi_recovery_enabled:
+                    try:
+                        refreshed_item = refresh_tiantianjiexi_download_item(item)
+                    except Exception as refresh_error:
+                        last_error = refresh_error
+                    else:
+                        candidates.append(
+                            (
+                                refreshed_item.get("url"),
+                                refreshed_item,
+                                True,
+                            )
+                        )
+                else:
+                    recovery_urls = iter(
+                        iter_kukutool_download_recovery_urls(item) or ()
+                    )
 
     raise last_error or XhsDownloadError("资源下载失败")
 
 
-def build_single_attachment_response(item, base_filename):
-    media_type = str(item.get("type") or "").lower() if isinstance(item, dict) else ""
-    if media_type not in {"image", "video"}:
-        raise XhsDownloadError("单文件下载仅支持图片或视频资源")
-
-    max_bytes = MAX_IMAGE_BYTES if media_type == "image" else MAX_VIDEO_BYTES
+def single_attachment_request_timeout(item, media_type):
     request_timeout = 20 if media_type == "image" else 60
     if provider_manifest_allows_public_download(item) and media_type == "video":
         request_timeout = max(
@@ -3057,7 +3152,84 @@ def build_single_attachment_response(item, base_filename):
                 maximum=180.0,
             ),
         )
-    upstream = open_single_attachment_upstream(item, media_type, request_timeout)
+    return request_timeout
+
+
+def inspect_single_attachment_download(item, base_filename, *, allow_recovery=True):
+    media_type = str(item.get("type") or "").lower() if isinstance(item, dict) else ""
+    if media_type not in {"image", "video"}:
+        raise XhsDownloadError("单文件下载仅支持图片或视频资源")
+
+    max_bytes = MAX_IMAGE_BYTES if media_type == "image" else MAX_VIDEO_BYTES
+    request_timeout = min(
+        single_attachment_request_timeout(item, media_type),
+        8,
+    )
+    upstream, effective_item, recovered = open_single_attachment_upstream(
+        item,
+        media_type,
+        request_timeout,
+        allow_recovery=allow_recovery,
+        include_context=True,
+    )
+    try:
+        content_type = upstream.headers.get("Content-Type", "")
+        validate_response_content_type(content_type, media_type)
+        content_length = parse_content_length(upstream)
+        if content_length and content_length > max_bytes:
+            raise XhsDownloadError("资源超过允许的大小限制")
+
+        first_chunk = b""
+        for chunk in upstream.iter_content(chunk_size=CHUNK_SIZE):
+            if chunk:
+                first_chunk = chunk
+                break
+        if not first_chunk:
+            raise XhsDownloadError("资源内容为空")
+        if response_chunk_looks_like_html(first_chunk):
+            raise XhsDownloadError("资源类型异常：HTML response body")
+        if len(first_chunk) > max_bytes:
+            raise XhsDownloadError("资源超过允许的大小限制")
+
+        prepared_item = dict(effective_item or item)
+        if content_length:
+            prepared_item["size_bytes"] = content_length
+        filename = single_attachment_download_filename(
+            prepared_item,
+            base_filename,
+            final_url=getattr(upstream, "url", "") or prepared_item.get("url", ""),
+            content_type=content_type,
+        )
+        prepared_item["filename"] = filename
+        return {
+            "item": prepared_item,
+            "content_type": content_type,
+            "content_length": content_length,
+            "filename": filename,
+            "recovered": recovered,
+        }
+    finally:
+        upstream.close()
+
+
+def build_single_attachment_response(
+    item,
+    base_filename,
+    *,
+    allow_recovery=True,
+):
+    media_type = str(item.get("type") or "").lower() if isinstance(item, dict) else ""
+    if media_type not in {"image", "video"}:
+        raise XhsDownloadError("单文件下载仅支持图片或视频资源")
+
+    max_bytes = MAX_IMAGE_BYTES if media_type == "image" else MAX_VIDEO_BYTES
+    request_timeout = single_attachment_request_timeout(item, media_type)
+    upstream = open_single_attachment_upstream(
+        item,
+        media_type,
+        request_timeout,
+        allow_recovery=allow_recovery,
+    )
     try:
         content_type = upstream.headers.get("Content-Type", "")
         validate_response_content_type(content_type, media_type)
@@ -3509,6 +3681,10 @@ def get_download_settings_context(platform_key="home", request=None):
         "parse_action_url": reverse(page_config["results_route"]),
         "proxy_image_url": reverse("media_proxy_image"),
         "download_url": reverse("media_download_images_api"),
+        "download_prepare_url": reverse("media_download_prepare"),
+        "douyin_continuation_url": reverse(
+            "media_douyin_continuation"
+        ),
         "download_task_url": (
             reverse("media_download_task_create")
             if settings.DOWNLOAD_ASYNC_TASKS_ENABLED
@@ -3763,6 +3939,8 @@ def build_search_results_context(request, platform_key="home"):
             parse_options["prefer_youtube_merge"] = True
         if client_country_code:
             parse_options["client_country_code"] = client_country_code
+        if prefer_ultra_hd and request_wants_results_partial(request):
+            parse_options["allow_continuation"] = True
         result = parse_media_page(query, **parse_options)
         result_metadata = result.metadata or {}
         display_context = build_result_display_context(result, platform_key=platform_key)
@@ -3835,6 +4013,33 @@ def build_search_results_context(request, platform_key="home"):
             context=context,
         )
 
+    except DouyinContinuationPendingError as error:
+        context["continuation_pending"] = True
+        context["continuation_token"] = issue_douyin_continuation_token(
+            task_id=error.task_id,
+            client_identity=get_client_identity(request),
+            platform_key=platform_key,
+        )
+        context["continuation_poll_after_ms"] = (
+            DOUYIN_CONTINUATION_POLL_AFTER_MS
+        )
+        context["continuation_expires_in_seconds"] = (
+            DOUYIN_CONTINUATION_TTL_SECONDS
+        )
+        context["provider_notice"] = str(error)
+        log_parse_request_event(
+            request,
+            "media_parse_continuation_pending",
+            query=query,
+            platform_key=platform_key,
+            requested_ultra_hd=requested_ultra_hd,
+            prefer_ultra_hd=prefer_ultra_hd,
+            requested_youtube_merge=requested_youtube_merge,
+            prefer_youtube_merge=prefer_youtube_merge,
+            duration_ms=(time.monotonic() - parse_started_at) * 1000,
+            context=context,
+            status=ObservabilityStatus.SUCCESS,
+        )
     except XhsProviderTimeoutError as error:
         context["error_message"] = str(error)
         log_parse_request_event(
@@ -3904,19 +4109,34 @@ def render_results_partial_response(request, context, status_code=200):
         context,
         request=request,
     )
-    response = JsonResponse(
-        {
-            "status": "success" if status_code < 400 else "error",
-            "html": html,
-            "has_results": has_results,
-            "has_content": has_content,
-            "base_filename": context.get("base_filename") or "xhs_image",
-            "result_theme": context.get("result_theme") or "home",
-            "target_page": context.get("target_page") or None,
-            "message": context.get("error_message") or "",
-        },
-        status=status_code,
+    response_status = (
+        "continuation_pending"
+        if context.get("continuation_pending")
+        else ("success" if status_code < 400 else "error")
     )
+    response_payload = {
+        "status": response_status,
+        "html": html,
+        "has_results": has_results,
+        "has_content": has_content,
+        "base_filename": context.get("base_filename") or "xhs_image",
+        "result_theme": context.get("result_theme") or "home",
+        "target_page": context.get("target_page") or None,
+        "message": context.get("error_message") or "",
+    }
+    if context.get("continuation_pending"):
+        response_payload.update(
+            continuation_token=context.get("continuation_token") or "",
+            poll_after_ms=context.get("continuation_poll_after_ms")
+            or DOUYIN_CONTINUATION_POLL_AFTER_MS,
+            expires_in_seconds=context.get(
+                "continuation_expires_in_seconds"
+            )
+            or DOUYIN_CONTINUATION_TTL_SECONDS,
+            message=context.get("provider_notice")
+            or "超高清资源仍在处理中，正在自动续查。",
+        )
+    response = JsonResponse(response_payload, status=status_code)
     if context.get("retry_after"):
         response["Retry-After"] = str(context["retry_after"])
     response["Cache-Control"] = "no-store"
@@ -3931,6 +4151,105 @@ def search_results_view(request, platform_key="home"):
     response = render(request, "xhs_download.html", context, status=status_code)
     if context.get("retry_after"):
         response["Retry-After"] = str(context["retry_after"])
+    return response
+
+
+@require_POST
+@csrf_protect
+def douyin_continuation_view(request):
+    try:
+        data = json.loads(request.body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        response = JsonResponse(
+            {
+                "status": "failed",
+                "error_code": "INVALID_JSON",
+                "message": "解析续查请求格式无效，请重新尝试。",
+            },
+            status=400,
+        )
+        response["Cache-Control"] = "no-store"
+        return response
+
+    try:
+        outcome, platform_key = poll_douyin_continuation(
+            data.get("continuation_token"),
+            client_identity=get_client_identity(request),
+        )
+    except DouyinContinuationError as error:
+        response = JsonResponse(
+            {
+                "status": (
+                    "timeout"
+                    if error.error_code
+                    == "DOUYIN_CONTINUATION_EXPIRED"
+                    else "failed"
+                ),
+                "error_code": error.error_code,
+                "message": str(error),
+            },
+            status=error.status_code,
+        )
+        response["X-Error-Code"] = error.error_code
+        response["Cache-Control"] = "no-store"
+        return response
+
+    if outcome.status == "continuation_pending":
+        response = JsonResponse(
+            {
+                "status": "continuation_pending",
+                "message": outcome.message,
+                "poll_after_ms": outcome.poll_after_ms,
+            }
+        )
+        response["Cache-Control"] = "no-store"
+        return response
+
+    if outcome.status != "success" or outcome.result is None:
+        response = JsonResponse(
+            {
+                "status": outcome.status,
+                "error_code": outcome.error_code,
+                "message": outcome.message,
+            }
+        )
+        response["X-Error-Code"] = outcome.error_code
+        response["Cache-Control"] = "no-store"
+        return response
+
+    if platform_key not in PLATFORM_PAGE_CONFIG:
+        platform_key = "home"
+    context = {
+        **get_download_settings_context(platform_key, request),
+        **build_result_display_context(
+            outcome.result,
+            platform_key=platform_key,
+            probe_missing_video_sizes=False,
+        ),
+        "is_mobile_request": request_is_mobile(request),
+        "error_message": None,
+        "platform_notice": "",
+        "provider_notice": (
+            "超高清资源已完成，结果已自动更新。"
+        ),
+    }
+    html = render_to_string(
+        "partials/xhs_results_region.html",
+        context,
+        request=request,
+    )
+    response = JsonResponse(
+        {
+            "status": "success",
+            "html": html,
+            "has_results": True,
+            "has_content": True,
+            "base_filename": context.get("base_filename") or "douyin",
+            "result_theme": context.get("result_theme") or "tiktok",
+            "message": "",
+        }
+    )
+    response["Cache-Control"] = "no-store"
     return response
 
 
@@ -4248,6 +4567,291 @@ def proxy_image_view(request):
             sanitize_observability_text(error),
         )
         return placeholder_image_response()
+
+
+@require_POST
+@csrf_protect
+def download_prepare_api(request):
+    started_at = time.monotonic()
+    try:
+        data = json.loads(request.body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return download_guard_error_response(
+            "请求数据不是有效 JSON。",
+            status=400,
+            error_code="INVALID_JSON",
+        )
+
+    media_items = data.get("media_items")
+    if not isinstance(media_items, list) or len(media_items) != 1:
+        return download_guard_error_response(
+            "单文件准备接口只接受一个资源。",
+            status=400,
+            error_code="DOWNLOAD_PREPARE_SINGLE_ITEM_REQUIRED",
+        )
+    item = media_items[0]
+    if not isinstance(item, dict):
+        return download_guard_error_response(
+            "下载资源信息无效。",
+            status=400,
+            error_code="DOWNLOAD_PREPARE_INVALID_ITEM",
+        )
+    if download_items_have_invalid_provider_manifest(media_items):
+        return download_guard_error_response(
+            "Provider 签名资源未通过校验。",
+            status=400,
+            error_code="PROVIDER_MANIFEST_REJECTED",
+        )
+
+    runtime_setting = get_download_runtime_setting()
+    guard_result = check_download_cost_preflight(
+        request,
+        media_items,
+        runtime_setting,
+    )
+    if guard_result:
+        error_code, message, status_code = guard_result
+        return download_guard_error_response(
+            message,
+            status=status_code,
+            error_code=error_code,
+        )
+
+    route_info = decide_download_route(
+        request,
+        media_items,
+        requested_mode="server_single",
+        platform_key=data.get("platform_key", ""),
+    )
+    if (
+        route_info.get("route_type") != ROUTE_PROXY
+        or route_info.get("download_strategy") != "server_single_attachment"
+    ):
+        return download_guard_error_response(
+            "当前资源不支持服务器单文件下载。",
+            status=400,
+            error_code="DOWNLOAD_PREPARE_ROUTE_REJECTED",
+        )
+
+    try:
+        identity, limit_response = check_download_request_limits(request)
+    except Exception:
+        logger.exception("Download prepare rate-limit cache failed")
+        return download_guard_error_response(
+            "下载保护服务暂时不可用，请稍后再试。",
+            status=503,
+            error_code="RATE_LIMIT_CACHE_ERROR",
+        )
+    if limit_response:
+        return limit_response
+
+    concurrency_acquired = False
+    try:
+        concurrency = acquire_concurrency(
+            "download-concurrent",
+            identity,
+            runtime_setting.max_concurrent_per_ip,
+        )
+        if not concurrency.allowed:
+            return limit_error_response(
+                "当前已有下载任务正在处理，请等待完成后再试。",
+                error_code="DOWNLOAD_CONCURRENCY_LIMIT",
+            )
+        concurrency_acquired = True
+
+        prepared = inspect_single_attachment_download(
+            item,
+            data.get("base_filename", "media"),
+            allow_recovery=True,
+        )
+        handoff_token = issue_download_handoff(
+            item=prepared["item"],
+            base_filename=data.get("base_filename", "media"),
+            client_identity=identity,
+            recovered=prepared["recovered"],
+            recovery_used=prepared["recovered"],
+        )
+        download_url = reverse(
+            "media_download_stream",
+            args=[handoff_token],
+        )
+        log_download_request_event(
+            request,
+            download_type="single_prepare",
+            media_items=media_items,
+            status=ObservabilityStatus.SUCCESS,
+            started_at=started_at,
+            actual_bytes=0,
+            route_info=route_info,
+        )
+        response = JsonResponse(
+            {
+                "ok": True,
+                "status": "ready",
+                "download_url": download_url,
+                "route_type": "server_stream",
+                "recovered": bool(prepared["recovered"]),
+                "filename": prepared["filename"],
+            }
+        )
+        response["Cache-Control"] = "no-store"
+        return response
+    except Exception as error:
+        contract = observable_download_error(
+            error,
+            provider=str(item.get("provider") or ""),
+        )
+        log_download_request_event(
+            request,
+            download_type="single_prepare",
+            media_items=media_items,
+            status=ObservabilityStatus.FAILED,
+            started_at=started_at,
+            error_code=contract["error_code"],
+            error=error,
+            error_message_short=contract["message"],
+            route_info=route_info,
+        )
+        response = JsonResponse(
+            {
+                "ok": False,
+                "status": "failed",
+                "error_code": contract["error_code"],
+                "message": contract["message"],
+            },
+            status=contract["status_code"],
+        )
+        response["X-Error-Code"] = contract["error_code"]
+        response["Cache-Control"] = "no-store"
+        return response
+    finally:
+        if concurrency_acquired:
+            release_concurrency("download-concurrent", identity)
+
+
+@require_GET
+def download_stream_view(request, token):
+    started_at = time.monotonic()
+    identity = get_client_identity(request)
+    try:
+        handoff = load_download_handoff(
+            token,
+            client_identity=identity,
+            consume=True,
+        )
+    except DownloadHandoffError as error:
+        response = JsonResponse(
+            {
+                "status": "error",
+                "error_code": error.error_code,
+                "message": str(error),
+            },
+            status=error.status_code,
+        )
+        response["X-Error-Code"] = error.error_code
+        response["Cache-Control"] = "no-store"
+        return response
+
+    item = handoff.item
+    media_items = [item]
+    if download_items_have_invalid_provider_manifest(media_items):
+        return download_guard_error_response(
+            "Provider 签名资源未通过校验。",
+            status=400,
+            error_code="PROVIDER_MANIFEST_REJECTED",
+        )
+
+    runtime_setting = get_download_runtime_setting()
+    guard_result = check_download_cost_preflight(
+        request,
+        media_items,
+        runtime_setting,
+    )
+    if guard_result:
+        error_code, message, status_code = guard_result
+        return download_guard_error_response(
+            message,
+            status=status_code,
+            error_code=error_code,
+        )
+
+    concurrency_acquired = False
+    try:
+        concurrency = acquire_concurrency(
+            "download-concurrent",
+            identity,
+            runtime_setting.max_concurrent_per_ip,
+        )
+        if not concurrency.allowed:
+            return limit_error_response(
+                "当前已有下载任务正在处理，请等待完成后再试。",
+                error_code="DOWNLOAD_CONCURRENCY_LIMIT",
+            )
+        concurrency_acquired = True
+
+        response, actual_bytes = build_single_attachment_response(
+            item,
+            handoff.base_filename,
+            allow_recovery=not handoff.recovery_used,
+        )
+        within_limit, bytes_error_code = record_download_archive_bytes(
+            identity,
+            None,
+            actual_bytes,
+        )
+        if not within_limit:
+            response.close()
+            return limit_error_response(
+                "今日下载流量已达到限制，请稍后再试。",
+                error_code=bytes_error_code or "RATE_LIMITED",
+            )
+        response["Cache-Control"] = "private, no-store"
+        log_download_request_event(
+            request,
+            download_type="single_stream",
+            media_items=media_items,
+            status=ObservabilityStatus.SUCCESS,
+            started_at=started_at,
+            actual_bytes=actual_bytes,
+            route_info={
+                "route_type": ROUTE_PROXY,
+                "download_strategy": "server_single_attachment",
+            },
+        )
+        return response
+    except Exception as error:
+        contract = observable_download_error(
+            error,
+            provider=str(item.get("provider") or ""),
+        )
+        log_download_request_event(
+            request,
+            download_type="single_stream",
+            media_items=media_items,
+            status=ObservabilityStatus.FAILED,
+            started_at=started_at,
+            error_code=contract["error_code"],
+            error=error,
+            error_message_short=contract["message"],
+            route_info={
+                "route_type": ROUTE_PROXY,
+                "download_strategy": "server_single_attachment",
+            },
+        )
+        response = JsonResponse(
+            {
+                "status": "error",
+                "error_code": contract["error_code"],
+                "message": contract["message"],
+            },
+            status=contract["status_code"],
+        )
+        response["X-Error-Code"] = contract["error_code"]
+        response["Cache-Control"] = "no-store"
+        return response
+    finally:
+        if concurrency_acquired:
+            release_concurrency("download-concurrent", identity)
 
 
 @require_POST

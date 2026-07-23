@@ -57,8 +57,8 @@ from .services.batch_parse.runtime import (
 from .services.batch_parse.view_context import build_batch_parse_context
 from .services.provider_manifest import build_provider_manifest_token
 from .services.provider_strategy import (
-    DOWNLOAD_STRATEGY_BROWSER_BLOB,
     DOWNLOAD_STRATEGY_BROWSER_DIRECT,
+    DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
     DOWNLOAD_STRATEGY_SERVER_MERGE,
     build_download_strategy,
 )
@@ -109,7 +109,7 @@ class TrackingThreadPoolExecutor:
 
 
 class ProviderDownloadStrategyTests(SimpleTestCase):
-    def test_tiantianjiexi_video_prefers_browser_blob(self):
+    def test_tiantianjiexi_video_uses_observable_server_attachment(self):
         strategy = build_download_strategy(
             MediaAsset(
                 media_type="video",
@@ -119,9 +119,45 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
             )
         )
 
-        self.assertEqual(strategy["download_strategy"], DOWNLOAD_STRATEGY_BROWSER_BLOB)
+        self.assertEqual(
+            strategy["download_strategy"],
+            DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
+        )
         self.assertEqual(strategy["fallback_strategy"], "server_attachment")
-        self.assertTrue(strategy["cors_expected"])
+        self.assertFalse(strategy["cors_expected"])
+        self.assertFalse(strategy["browser_direct_fetch_safe"])
+
+    def test_kukutool_video_requires_explicit_cors_capability(self):
+        strategy = build_download_strategy(
+            MediaAsset(
+                media_type="video",
+                url="https://v5-default.365yg.com/demo.mp4",
+                platform="douyin",
+                provider="kukutool",
+            )
+        )
+
+        self.assertEqual(
+            strategy["download_strategy"],
+            DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
+        )
+        self.assertFalse(strategy["cors_expected"])
+        self.assertFalse(strategy["browser_direct_fetch_safe"])
+
+    def test_native_public_video_keeps_browser_direct_strategy(self):
+        strategy = build_download_strategy(
+            MediaAsset(
+                media_type="video",
+                url="https://v5-default.365yg.com/demo.mp4",
+                platform="douyin",
+            )
+        )
+
+        self.assertEqual(
+            strategy["download_strategy"],
+            DOWNLOAD_STRATEGY_BROWSER_DIRECT,
+        )
+        self.assertTrue(strategy["browser_direct_fetch_safe"])
 
     def test_youtube_merge_requires_server_merge(self):
         strategy = build_download_strategy(

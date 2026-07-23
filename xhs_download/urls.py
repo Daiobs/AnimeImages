@@ -5,7 +5,10 @@ from . import views
 urlpatterns = [
     path("", views.search_view, name="search"),
     path("results/", views.search_results_view, name="results"),
+    path("douyin-continuation/", views.douyin_continuation_view, name="douyin_continuation"),
     path("proxy-image/", views.proxy_image_view, name="proxy_image"),
+    path("download-prepare/", views.download_prepare_api, name="download_prepare"),
+    path("download-stream/<str:token>/", views.download_stream_view, name="download_stream"),
     path("download-images/", views.download_images_api, name="download_images_api"),
     path("download-tasks/", views.create_download_task_api, name="download_task_create"),
     path("download-tasks/<str:task_id>/", views.download_task_status_api, name="download_task_status"),

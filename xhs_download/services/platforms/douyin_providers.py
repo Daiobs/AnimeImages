@@ -22,6 +22,10 @@ from ..assets import MediaAsset, ParseResult
 from ..candidates import MediaCandidate
 from ..common import XhsProviderTimeoutError, validate_external_url
 from ..diagnostics import select_best_media_candidate
+from ..douyin_continuation import (
+    DouyinContinuationCoordinator,
+    DouyinContinuationPendingError,
+)
 from ..env_config import runtime_bool
 from ..provider_settings import get_platform_provider_settings, normalize_provider_order
 from ..provider_manifest import build_provider_manifest_token
@@ -195,6 +199,7 @@ class DouyinParseContext:
     direct_error: Exception | None = None
     deadline_monotonic: float = 0
     client_country_code: str = ""
+    allow_continuation: bool = False
 
 
 @dataclass(frozen=True)
@@ -1000,6 +1005,9 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
             race_loser_count=max(0, enabled_count - 1),
             **result_fields,
         )
+        return self.decorate_result(result, provider_name, enabled_count)
+
+    def decorate_result(self, result, provider_name, enabled_count):
         return with_parse_metadata(
             result,
             selected_provider=provider_name,
@@ -1028,6 +1036,35 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
             DOUYIN_ULTRA_EXECUTOR.submit(provider.parse, adapter, context): provider
             for provider in enabled_providers
         }
+        continuation = None
+        if context.allow_continuation:
+            continuation = DouyinContinuationCoordinator(
+                len(enabled_providers),
+                settle_seconds=self.weak_candidate_settle_seconds,
+            )
+            for future, provider in future_to_provider.items():
+                provider_name = getattr(
+                    provider,
+                    "name",
+                    type(provider).__name__,
+                )
+                future.add_done_callback(
+                    lambda completed_future, name=provider_name: (
+                        continuation.capture_future(
+                            completed_future,
+                            provider_name=name,
+                            score_result=self.result_score,
+                            is_strong_result=self.result_is_strong_candidate,
+                            prepare_result=lambda result, selected=name: (
+                                self.decorate_result(
+                                    result,
+                                    selected,
+                                    len(enabled_providers),
+                                )
+                            ),
+                        )
+                    )
+                )
         last_timeout_error = None
         best_result = None
         best_provider_name = ""
@@ -1065,6 +1102,8 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
                                 best_provider_name = provider_name
                                 best_score = score
                             if self.result_is_strong_candidate(result):
+                                if continuation:
+                                    continuation.abandon()
                                 for pending_future in future_to_provider:
                                     pending_provider = future_to_provider[pending_future]
                                     pending_provider_name = getattr(
@@ -1135,6 +1174,8 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
                 )
 
         if best_result:
+            if continuation:
+                continuation.abandon()
             return self.finalize_result(
                 best_result,
                 best_provider_name,
@@ -1142,6 +1183,30 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
                 context,
                 race_started_at,
             )
+
+        if continuation:
+            (
+                continued_result,
+                continuation_pending,
+            ) = continuation.snapshot_result_and_pending()
+            if continued_result:
+                continuation.abandon()
+                provider_name = str(
+                    (continued_result.metadata or {}).get(
+                        "selected_provider",
+                        "",
+                    )
+                )
+                return self.finalize_result(
+                    continued_result,
+                    provider_name or self.name,
+                    len(enabled_providers),
+                    context,
+                    race_started_at,
+                )
+            if continuation_pending:
+                raise DouyinContinuationPendingError(continuation.task_id)
+            continuation.abandon()
 
         log_provider_event(
             "douyin_ultra_race_exhausted",
