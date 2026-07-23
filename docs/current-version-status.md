@@ -1,6 +1,6 @@
 # Current Version Status
 
-Date: 2026-07-19
+Date: 2026-07-23
 
 Last Audited Runtime Baseline:
 
@@ -68,6 +68,37 @@ The `codex/xhs-media-fidelity-v1` development branch improves the dedicated Xiao
 - Single-link and Batch display contexts share the same normalized XHS title, author, cover, gallery order, and size semantics.
 
 The candidate adds no migration, Cookie import, CAPTCHA bypass, third-party Provider, Provider-order change, timeout change, or production deployment. Synthetic fixtures contain no real signed media URLs.
+
+## Unreleased Douyin Reliability Child Candidate
+
+The `codex/douyin-parse-download-reliability-v1` branch is a child of the
+`codex/xhs-media-fidelity-v1` V1 integration branch. It is not deployed. Its
+candidate behavior includes:
+
+- Single-link Douyin ultra requests can return a short-lived
+  `continuation_pending` state when an already-started race Provider outlives
+  the foreground budget. The browser performs at most five cache-only polls
+  over a 15-second window; polling cannot call a Provider or submit the
+  original parse again.
+- Provider video downloads first use an observable JSON prepare request.
+  Success produces a client-bound, one-use, 60-second same-origin stream URL
+  that contains no raw Provider URL. The iframe is used only after prepare
+  succeeds, so prepare errors can end the spinner and restore controls.
+- Browser fetch is permitted only for an explicitly declared CORS-safe
+  Provider capability. TianTianJieXi and KuKuTool signed resources currently
+  use server prepare/stream; ordinary public native URLs retain their direct
+  path.
+- A recoverable TianTianJieXi signed-resource failure can trigger exactly one
+  server-side refresh through TianTianJieXi and exactly one download retry.
+  The refreshed item must retain the original Douyin resource identity and
+  pass the existing manifest, media-host, content-type, and size checks.
+- The candidate does not increase Provider timeouts, change Provider order,
+  modify Batch scheduling, add a migration, use Cookie state, disable TLS
+  verification, or add a Provider.
+
+These changes are not production behavior until the child PR is reviewed and
+merged into the V1 integration branch, the integration PR is reviewed and
+merged into `main`, and a separate deployment is completed.
 
 ## Production Runtime Topology
 

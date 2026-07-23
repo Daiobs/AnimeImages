@@ -206,8 +206,14 @@ the single-link Provider Strategy.
 Current download strategy is mixed:
 
 - Native image resources can prefer direct/browser paths to reduce server traffic.
-- Provider videos may try browser-first / browser blob handoff.
-- Server attachment fallback remains necessary for reliability.
+- Ordinary public native video URLs can retain their direct/browser path.
+- Provider videos may use browser fetch only when the server explicitly marks
+  that Provider capability as CORS-safe. KuKuTool and TianTianJieXi signed
+  resources currently use observable same-origin prepare/stream instead.
+- Prepare errors remain readable JSON; an iframe is used only after prepare
+  succeeds and receives an opaque, short-lived same-origin stream URL.
+- TianTianJieXi recovery is server-only, bounded to one refresh and one
+  download retry, and must preserve the original signed resource identity.
 - Large provider CDN downloads can be slow on the VPS if all bytes pass through the server.
 
 Known tension:
@@ -215,7 +221,10 @@ Known tension:
 - Browser-managed downloads save server bandwidth but can be blocked by popup/download restrictions.
 - Server attachment is stable but consumes server egress and can be much slower than a third-party site that hands the CDN URL directly to the browser.
 
-When changing this area, verify both local Chrome and the production site. Do not assume localhost download behavior matches HTTPS production behavior.
+When changing this area, verify local Chrome and, in a separately approved
+deployment task, the production site. Do not assume localhost download
+behavior matches HTTPS production behavior. Do not infer CORS support from one
+historical success.
 
 ## Production Deployment Notes
 
