@@ -26,17 +26,38 @@ test("provider resources require an explicit browser direct capability", () => {
 test("prepare success exposes only the same-origin handoff contract", () => {
     const result = reliability.parsePreparePayload({
         ok: true,
-        status: "ready",
+        status: "issued",
         download_url: "/media/download-stream/signed-ticket/",
-        recovered: true,
+        status_url: "/media/download-status/status-ticket/",
+        poll_after_ms: 500,
+        expires_in_seconds: 60,
     });
 
     assert.equal(result.ok, true);
-    assert.equal(result.recovered, true);
     assert.equal(
         result.downloadUrl,
         "/media/download-stream/signed-ticket/",
     );
+    assert.equal(
+        result.statusUrl,
+        "/media/download-status/status-ticket/",
+    );
+    assert.equal(result.pollAfterMs, 500);
+    assert.equal(result.expiresInSeconds, 60);
+});
+
+test("prepare success requires both opaque stream and status URLs", () => {
+    assert.equal(reliability.parsePreparePayload({
+        ok: true,
+        status: "issued",
+        download_url: "/media/download-stream/signed-ticket/",
+    }).ok, false);
+    assert.equal(reliability.parsePreparePayload({
+        ok: true,
+        status: "ready",
+        download_url: "/media/download-stream/signed-ticket/",
+        status_url: "/media/download-status/status-ticket/",
+    }).ok, false);
 });
 
 test("prepare failures map stable error codes to safe user messages", () => {
@@ -88,6 +109,157 @@ test("server attachment routes use prepare before browser handoff", () => {
     }), false);
 });
 
+function fakeJsonResponse(status, payload) {
+    return {
+        ok: status >= 200 && status < 300,
+        status,
+        async json() {
+            return payload;
+        },
+    };
+}
+
+test("bounded status polling stops as soon as streaming is observable", async () => {
+    const payloads = [
+        {ok: true, status: "issued", upstream_attempt_count: 0},
+        {ok: true, status: "connecting", upstream_attempt_count: 1},
+        {
+            ok: true,
+            status: "streaming",
+            recovered: true,
+            upstream_attempt_count: 2,
+        },
+    ];
+    let now = 0;
+    let calls = 0;
+    const result = await reliability.pollDownloadStatus({
+        statusUrl: "/media/download-status/ticket/",
+        pollAfterMs: 500,
+        now: () => now,
+        wait: async (delay) => {
+            now += delay;
+        },
+        fetchStatus: async () => {
+            const payload = payloads[calls];
+            calls += 1;
+            return fakeJsonResponse(200, payload);
+        },
+    });
+
+    assert.equal(result.status, "streaming");
+    assert.equal(result.recovered, true);
+    assert.equal(result.upstreamAttemptCount, 2);
+    assert.equal(calls, 3);
+});
+
+test("failed and expired statuses terminate polling with safe messages", async () => {
+    const failed = await reliability.pollDownloadStatus({
+        statusUrl: "/media/download-status/ticket/",
+        fetchStatus: async () => fakeJsonResponse(502, {
+            ok: false,
+            status: "failed",
+            error_code: "UPSTREAM_SSL_ERROR",
+            message: "unsafe upstream details",
+        }),
+    });
+    const expired = await reliability.pollDownloadStatus({
+        statusUrl: "/media/download-status/ticket/",
+        fetchStatus: async () => fakeJsonResponse(410, {
+            ok: false,
+            status: "expired",
+            error_code: "DOWNLOAD_HANDOFF_EXPIRED",
+        }),
+    });
+
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.message, "上游资源连接异常，请稍后重试。");
+    assert.equal(expired.status, "expired");
+    assert.equal(expired.message, "下载链接已过期，请重新点击下载。");
+});
+
+test("polling timeout is bounded and never remains pending", async () => {
+    let calls = 0;
+    const result = await reliability.pollDownloadStatus({
+        statusUrl: "/media/download-status/ticket/",
+        maxPolls: 3,
+        wait: async () => {},
+        fetchStatus: async () => {
+            calls += 1;
+            return fakeJsonResponse(200, {
+                ok: true,
+                status: "connecting",
+            });
+        },
+    });
+
+    assert.equal(calls, 3);
+    assert.equal(result.status, "poll_timeout");
+    assert.equal(
+        result.message,
+        reliability.DOWNLOAD_STATUS_POLL_TIMEOUT_MESSAGE,
+    );
+});
+
+test("a hanging status request is aborted by the overall polling boundary", async () => {
+    let capturedSignal = null;
+    const startedAt = Date.now();
+    const result = await reliability.pollDownloadStatus({
+        statusUrl: "/media/download-status/ticket/",
+        maxDurationMs: 50,
+        fetchStatus: async (_url, options) => {
+            capturedSignal = options.signal;
+            return new Promise(() => {});
+        },
+    });
+
+    assert.equal(result.status, "poll_timeout");
+    assert.ok(Date.now() - startedAt < 500);
+    assert.equal(capturedSignal.aborted, true);
+});
+
+test("polling clamps caller input to the hard 30-request ceiling", async () => {
+    let calls = 0;
+    const result = await reliability.pollDownloadStatus({
+        statusUrl: "/media/download-status/ticket/",
+        maxPolls: 1000,
+        wait: async () => {},
+        fetchStatus: async () => {
+            calls += 1;
+            return fakeJsonResponse(200, {
+                ok: true,
+                status: "connecting",
+            });
+        },
+    });
+
+    assert.equal(calls, reliability.MAX_STATUS_POLL_COUNT);
+    assert.equal(result.status, "poll_timeout");
+});
+
+test("temporary status rate limiting is retried within the bounded poll", async () => {
+    let calls = 0;
+    const result = await reliability.pollDownloadStatus({
+        statusUrl: "/media/download-status/ticket/",
+        wait: async () => {},
+        fetchStatus: async () => {
+            calls += 1;
+            if (calls === 1) {
+                return fakeJsonResponse(429, {
+                    status: "error",
+                    error_code: "RATE_LIMITED",
+                });
+            }
+            return fakeJsonResponse(200, {
+                ok: true,
+                status: "streaming",
+            });
+        },
+    });
+
+    assert.equal(calls, 2);
+    assert.equal(result.status, "streaming");
+});
+
 test("single-page code no longer submits an unobservable iframe POST", () => {
     const source = fs.readFileSync(
         path.join(__dirname, "../static/js/xhs_download.js"),
@@ -98,8 +270,34 @@ test("single-page code no longer submits an unobservable iframe POST", () => {
     assert.doesNotMatch(source, /submitAutomaticServerSingleFallback/);
     assert.doesNotMatch(source, /PROVIDER_BROWSER_BLOB_PROVIDERS/);
     assert.match(source, /await prepareAndHandoffServerSingle/);
-    assert.match(source, /frame\.src = prepared\.downloadUrl/);
+    assert.match(source, /frame\.src = downloadUrl/);
+    assert.match(source, /sameOriginHandoffPath\(prepared\.statusUrl\)/);
+    assert.match(source, /pollDownloadStatus/);
     assert.match(source, /setProgress\(0\)/);
     assert.match(source, /setDownloadButtonsBusy\(false\)/);
     assert.doesNotMatch(source, /console\.(?:warn|error)\([^)]*item\.url/s);
+});
+
+test("server handoff starts the iframe before awaiting bounded status polling", () => {
+    const source = fs.readFileSync(
+        path.join(__dirname, "../static/js/xhs_download.js"),
+        "utf8",
+    );
+    const start = source.indexOf(
+        "async function prepareAndHandoffServerSingle",
+    );
+    const end = source.indexOf(
+        "async function writeResponseToFileWithProgress",
+        start,
+    );
+    const implementation = source.slice(start, end);
+
+    assert.ok(
+        implementation.indexOf("handoffPreparedDownload(prepared)")
+        < implementation.indexOf("await downloadReliabilityApi.pollDownloadStatus"),
+    );
+    assert.doesNotMatch(implementation, /fetch\(prepared\.downloadUrl/);
+    assert.doesNotMatch(implementation, /response\.blob\(\)/);
+    assert.doesNotMatch(implementation, /URL\.createObjectURL/);
+    assert.doesNotMatch(implementation, /console\.(?:log|warn|error)/);
 });

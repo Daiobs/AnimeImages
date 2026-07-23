@@ -65,6 +65,7 @@ urlpatterns = [
                   path("media/proxy-image/", download_views.proxy_image_view, name="media_proxy_image"),
                   path("media/download-prepare/", download_views.download_prepare_api, name="media_download_prepare"),
                   path("media/download-stream/<str:token>/", download_views.download_stream_view, name="media_download_stream"),
+                  path("media/download-status/<str:token>/", download_views.download_status_view, name="media_download_status"),
                   path("media/download-images/", download_views.download_images_api, name="media_download_images_api"),
                   path("media/download-tasks/", download_views.create_download_task_api, name="media_download_task_create"),
                   path("media/download-tasks/<str:task_id>/", download_views.download_task_status_api, name="media_download_task_status"),

@@ -77,8 +77,10 @@ from .services.download_tasks import (
 )
 from .services.download_handoff import (
     DownloadHandoffError,
-    issue_download_handoff,
+    issue_download_handoff_tokens,
     load_download_handoff,
+    load_download_status,
+    update_download_status,
 )
 from .services.douyin_continuation import (
     DOUYIN_CONTINUATION_POLL_AFTER_MS,
@@ -3014,6 +3016,117 @@ def single_attachment_download_filename(item, base_filename, final_url="", conte
     return clean_filename(f"{stem}.{ext}")
 
 
+class DownloadStreamStatusError(XhsDownloadError):
+    def __init__(self, message, *, error_code):
+        super().__init__(message)
+        self.error_code = error_code
+
+
+def notify_download_stream_status(status_callback, status, telemetry, error=None):
+    if not callable(status_callback):
+        return
+    status_callback(
+        status,
+        dict(telemetry or {}),
+        error,
+    )
+
+
+class SingleAttachmentStream:
+    def __init__(
+        self,
+        *,
+        upstream,
+        upstream_chunks,
+        first_chunk,
+        max_bytes,
+        status_callback=None,
+        telemetry=None,
+        close_callback=None,
+    ):
+        self.upstream = upstream
+        self.upstream_chunks = upstream_chunks
+        self.first_chunk = first_chunk
+        self.max_bytes = max_bytes
+        self.status_callback = status_callback
+        self.telemetry = telemetry if isinstance(telemetry, dict) else {}
+        self.close_callback = close_callback
+        self.completed = False
+        self.failed = False
+        self.closed = False
+
+    def notify(self, status, error=None):
+        try:
+            notify_download_stream_status(
+                self.status_callback,
+                status,
+                self.telemetry,
+                error,
+            )
+        except Exception:
+            logger.exception("download_stream_status_callback_failed")
+
+    def complete(self):
+        if self.completed or self.failed:
+            return
+        self.completed = True
+        self.notify("completed")
+
+    def fail(self, error):
+        if self.completed or self.failed:
+            return
+        self.failed = True
+        self.notify("failed", error)
+
+    def __iter__(self):
+        total = 0
+        try:
+            total += len(self.first_chunk)
+            yield self.first_chunk
+            for chunk in self.upstream_chunks:
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > self.max_bytes:
+                    raise XhsDownloadError("资源超过允许的大小限制")
+                yield chunk
+        except GeneratorExit:
+            self.fail(
+                DownloadStreamStatusError(
+                    "下载连接提前关闭。",
+                    error_code="UPSTREAM_CONNECTION_ERROR",
+                )
+            )
+            raise
+        except BaseException as error:
+            self.fail(error)
+            raise
+        else:
+            self.complete()
+        finally:
+            self.close()
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        if not self.completed and not self.failed:
+            self.fail(
+                DownloadStreamStatusError(
+                    "下载连接提前关闭。",
+                    error_code="UPSTREAM_CONNECTION_ERROR",
+                )
+            )
+        try:
+            self.upstream.close()
+        finally:
+            if callable(self.close_callback):
+                try:
+                    self.close_callback()
+                except Exception:
+                    logger.exception("download_stream_close_callback_failed")
+
+
 def open_single_attachment_upstream(
     item,
     media_type,
@@ -3021,6 +3134,8 @@ def open_single_attachment_upstream(
     *,
     allow_recovery=True,
     include_context=False,
+    status_callback=None,
+    telemetry=None,
 ):
     url = item.get("url")
     if not url:
@@ -3043,21 +3158,19 @@ def open_single_attachment_upstream(
     provider_item = item if provider_manifest_allows_public_download(item) else None
     attempted_urls = set()
     candidates = [(url, provider_item, False)]
-    recovery_urls = None
     recovery_attempted = False
     last_error = None
+    telemetry = telemetry if isinstance(telemetry, dict) else {}
+    telemetry.setdefault("upstream_attempt_count", 0)
+    telemetry.setdefault("recovery_used", False)
+    telemetry.setdefault("recovered", False)
 
-    while candidates or recovery_urls is not None:
-        if not candidates:
-            try:
-                candidates.append((next(recovery_urls), provider_item, True))
-            except StopIteration:
-                recovery_urls = None
-                continue
-
+    while candidates:
         candidate_url, candidate_provider_item, recovered = candidates.pop(0)
         if not candidate_url or candidate_url in attempted_urls:
             continue
+        if telemetry["upstream_attempt_count"] >= 2:
+            break
         attempted_urls.add(candidate_url)
 
         if (
@@ -3069,6 +3182,15 @@ def open_single_attachment_upstream(
             candidate_provider_item = None
 
         try:
+            telemetry["upstream_attempt_count"] += 1
+            telemetry["recovery_used"] = bool(
+                telemetry["recovery_used"] or recovered
+            )
+            notify_download_stream_status(
+                status_callback,
+                "connecting",
+                telemetry,
+            )
             response = fetch_media_response(
                 candidate_url,
                 timeout=request_timeout,
@@ -3105,7 +3227,9 @@ def open_single_attachment_upstream(
                             "url": candidate_url,
                             "size_bytes": item.get("size_bytes", 0),
                         }
+                telemetry["recovered"] = bool(recovered)
                 return response, effective_item, recovered
+            telemetry["recovered"] = bool(recovered)
             return response
         except Exception as error:
             last_error = error
@@ -3118,6 +3242,11 @@ def open_single_attachment_upstream(
                 and is_recoverable_provider_download_error(error)
             ):
                 recovery_attempted = True
+                notify_download_stream_status(
+                    status_callback,
+                    "refreshing",
+                    telemetry,
+                )
                 if tiantianjiexi_recovery_enabled:
                     try:
                         refreshed_item = refresh_tiantianjiexi_download_item(item)
@@ -3132,9 +3261,25 @@ def open_single_attachment_upstream(
                             )
                         )
                 else:
-                    recovery_urls = iter(
-                        iter_kukutool_download_recovery_urls(item) or ()
-                    )
+                    try:
+                        recovery_url = next(
+                            iter(
+                                iter_kukutool_download_recovery_urls(item)
+                                or ()
+                            ),
+                            "",
+                        )
+                    except Exception as refresh_error:
+                        last_error = refresh_error
+                    else:
+                        if recovery_url:
+                            candidates.append(
+                                (
+                                    recovery_url,
+                                    provider_item,
+                                    True,
+                                )
+                            )
 
     raise last_error or XhsDownloadError("资源下载失败")
 
@@ -3217,6 +3362,9 @@ def build_single_attachment_response(
     base_filename,
     *,
     allow_recovery=True,
+    status_callback=None,
+    close_callback=None,
+    telemetry=None,
 ):
     media_type = str(item.get("type") or "").lower() if isinstance(item, dict) else ""
     if media_type not in {"image", "video"}:
@@ -3224,11 +3372,19 @@ def build_single_attachment_response(
 
     max_bytes = MAX_IMAGE_BYTES if media_type == "image" else MAX_VIDEO_BYTES
     request_timeout = single_attachment_request_timeout(item, media_type)
-    upstream = open_single_attachment_upstream(
+    telemetry = telemetry if isinstance(telemetry, dict) else {}
+    connect_started_at = time.monotonic()
+    upstream, effective_item, recovered = open_single_attachment_upstream(
         item,
         media_type,
         request_timeout,
         allow_recovery=allow_recovery,
+        include_context=True,
+        status_callback=status_callback,
+        telemetry=telemetry,
+    )
+    telemetry["stream_connect_duration_ms"] = int(
+        (time.monotonic() - connect_started_at) * 1000
     )
     try:
         content_type = upstream.headers.get("Content-Type", "")
@@ -3243,37 +3399,41 @@ def build_single_attachment_response(
             if chunk:
                 first_chunk = chunk
                 break
-        if first_chunk and response_chunk_looks_like_html(first_chunk):
+        telemetry["time_to_first_chunk_ms"] = int(
+            (time.monotonic() - connect_started_at) * 1000
+        )
+        if not first_chunk:
+            raise XhsDownloadError("资源内容为空")
+        if response_chunk_looks_like_html(first_chunk):
             raise XhsDownloadError("资源类型异常：HTML response body")
         if len(first_chunk) > max_bytes:
             raise XhsDownloadError("资源超过允许的大小限制")
 
-        def stream_media():
-            total = 0
-            try:
-                if first_chunk:
-                    total += len(first_chunk)
-                    yield first_chunk
-                for chunk in upstream_chunks:
-                    if not chunk:
-                        continue
-                    total += len(chunk)
-                    if total > max_bytes:
-                        raise XhsDownloadError("资源超过允许的大小限制")
-                    yield chunk
-            finally:
-                upstream.close()
+        telemetry["recovered"] = bool(recovered)
+        stream = SingleAttachmentStream(
+            upstream=upstream,
+            upstream_chunks=upstream_chunks,
+            first_chunk=first_chunk,
+            max_bytes=max_bytes,
+            status_callback=status_callback,
+            telemetry=telemetry,
+            close_callback=close_callback,
+        )
 
         filename = single_attachment_download_filename(
-            item,
+            effective_item,
             base_filename,
-            final_url=getattr(upstream, "url", "") or item.get("url", ""),
+            final_url=(
+                getattr(upstream, "url", "")
+                or effective_item.get("url", "")
+            ),
             content_type=content_type,
         )
         response = StreamingHttpResponse(
-            stream_media(),
+            stream,
             content_type=content_type or "application/octet-stream",
         )
+        response._animeimages_attachment_stream = stream
         disposition = content_disposition_header(True, filename)
         if disposition:
             response["Content-Disposition"] = disposition
@@ -4645,35 +4805,19 @@ def download_prepare_api(request):
     if limit_response:
         return limit_response
 
-    concurrency_acquired = False
     try:
-        concurrency = acquire_concurrency(
-            "download-concurrent",
-            identity,
-            runtime_setting.max_concurrent_per_ip,
-        )
-        if not concurrency.allowed:
-            return limit_error_response(
-                "当前已有下载任务正在处理，请等待完成后再试。",
-                error_code="DOWNLOAD_CONCURRENCY_LIMIT",
-            )
-        concurrency_acquired = True
-
-        prepared = inspect_single_attachment_download(
-            item,
-            data.get("base_filename", "media"),
-            allow_recovery=True,
-        )
-        handoff_token = issue_download_handoff(
-            item=prepared["item"],
+        handoff_tokens = issue_download_handoff_tokens(
+            item=item,
             base_filename=data.get("base_filename", "media"),
             client_identity=identity,
-            recovered=prepared["recovered"],
-            recovery_used=prepared["recovered"],
         )
         download_url = reverse(
             "media_download_stream",
-            args=[handoff_token],
+            args=[handoff_tokens.stream_token],
+        )
+        status_url = reverse(
+            "media_download_status",
+            args=[handoff_tokens.status_token],
         )
         log_download_request_event(
             request,
@@ -4684,23 +4828,42 @@ def download_prepare_api(request):
             actual_bytes=0,
             route_info=route_info,
         )
+        prepare_duration_ms = int((time.monotonic() - started_at) * 1000)
+        logger.info(
+            "download_prepare_issued",
+            extra={
+                "prepare_duration_ms": prepare_duration_ms,
+                "final_status": "issued",
+                "request_id": str(
+                    getattr(request, "request_id", "") or ""
+                ),
+            },
+        )
         response = JsonResponse(
             {
                 "ok": True,
-                "status": "ready",
+                "status": "issued",
                 "download_url": download_url,
+                "status_url": status_url,
+                "poll_after_ms": 500,
+                "expires_in_seconds": handoff_tokens.expires_in_seconds,
                 "route_type": "server_stream",
-                "recovered": bool(prepared["recovered"]),
-                "filename": prepared["filename"],
             }
         )
         response["Cache-Control"] = "no-store"
         return response
     except Exception as error:
-        contract = observable_download_error(
-            error,
-            provider=str(item.get("provider") or ""),
-        )
+        if isinstance(error, DownloadHandoffError):
+            contract = {
+                "error_code": error.error_code,
+                "message": str(error),
+                "status_code": error.status_code,
+            }
+        else:
+            contract = observable_download_error(
+                error,
+                provider=str(item.get("provider") or ""),
+            )
         log_download_request_event(
             request,
             download_type="single_prepare",
@@ -4724,9 +4887,76 @@ def download_prepare_api(request):
         response["X-Error-Code"] = contract["error_code"]
         response["Cache-Control"] = "no-store"
         return response
-    finally:
-        if concurrency_acquired:
-            release_concurrency("download-concurrent", identity)
+
+
+@require_GET
+def download_status_view(request, token):
+    identity = get_client_identity(request)
+    try:
+        status_record = load_download_status(
+            token,
+            client_identity=identity,
+        )
+    except DownloadHandoffError as error:
+        response = JsonResponse(
+            {
+                "ok": False,
+                "status": (
+                    "expired"
+                    if error.error_code == "DOWNLOAD_HANDOFF_EXPIRED"
+                    else "failed"
+                ),
+                "error_code": error.error_code,
+                "message": str(error),
+            },
+            status=error.status_code,
+        )
+        response["X-Error-Code"] = error.error_code
+        response["Cache-Control"] = "no-store"
+        return response
+
+    try:
+        token_limit = consume_fixed_window(
+            "download-status-token",
+            status_record.ticket_id,
+            4,
+            1,
+        )
+        client_limit = consume_fixed_window(
+            "download-status-client",
+            identity,
+            20,
+            1,
+        )
+    except Exception:
+        logger.exception("download_status_rate_limit_cache_failed")
+        response = JsonResponse(
+            {
+                "ok": False,
+                "status": "failed",
+                "error_code": "RATE_LIMIT_CACHE_ERROR",
+                "message": "下载状态服务暂时不可用，请稍后再试。",
+            },
+            status=503,
+        )
+        response["X-Error-Code"] = "RATE_LIMIT_CACHE_ERROR"
+        response["Cache-Control"] = "no-store"
+        return response
+    if not token_limit.allowed or not client_limit.allowed:
+        response = limit_error_response(
+            "下载状态查询过于频繁，请稍后再试。",
+            retry_after=max(
+                token_limit.retry_after,
+                client_limit.retry_after,
+            ),
+            error_code="RATE_LIMITED",
+        )
+        response["Cache-Control"] = "no-store"
+        return response
+
+    response = JsonResponse(status_record.as_public_dict())
+    response["Cache-Control"] = "no-store"
+    return response
 
 
 @require_GET
@@ -4754,7 +4984,85 @@ def download_stream_view(request, token):
 
     item = handoff.item
     media_items = [item]
+    telemetry = {
+        "upstream_attempt_count": 0,
+        "recovery_used": False,
+        "recovered": bool(handoff.recovered),
+    }
+    logged_statuses = set()
+
+    def stream_status_callback(status, snapshot, error=None):
+        error_code = ""
+        if status == "failed":
+            error_code = str(getattr(error, "error_code", "") or "")
+            if not error_code:
+                error_code = observable_download_error(
+                    error,
+                    provider=str(item.get("provider") or ""),
+                )["error_code"]
+        try:
+            update_download_status(
+                handoff.ticket_id,
+                status,
+                error_code=error_code,
+                recovered=snapshot.get("recovered"),
+                upstream_attempt_count=snapshot.get(
+                    "upstream_attempt_count",
+                    0,
+                ),
+            )
+        except Exception:
+            logger.exception(
+                "download_stream_status_update_failed",
+                extra={
+                    "final_status": status,
+                    "request_id": str(
+                        getattr(request, "request_id", "") or ""
+                    ),
+                },
+            )
+
+        if status in logged_statuses and status in {"connecting", "refreshing"}:
+            return
+        logged_statuses.add(status)
+        log_fields = {
+            "stream_connect_duration_ms": int(
+                snapshot.get("stream_connect_duration_ms") or 0
+            ),
+            "time_to_first_chunk_ms": int(
+                snapshot.get("time_to_first_chunk_ms") or 0
+            ),
+            "upstream_attempt_count": int(
+                snapshot.get("upstream_attempt_count") or 0
+            ),
+            "recovery_used": bool(snapshot.get("recovery_used")),
+            "final_status": status,
+            "request_id": str(
+                getattr(request, "request_id", "") or ""
+            ),
+        }
+        if error_code:
+            log_fields["error_code"] = error_code
+        event_name = f"download_stream_{status}"
+        if status == "failed":
+            logger.warning(event_name, extra=log_fields)
+        elif status in {
+            "connecting",
+            "refreshing",
+            "streaming",
+            "completed",
+        }:
+            logger.info(event_name, extra=log_fields)
+
     if download_items_have_invalid_provider_manifest(media_items):
+        stream_status_callback(
+            "failed",
+            telemetry,
+            DownloadStreamStatusError(
+                "Provider 签名资源未通过校验。",
+                error_code="PROVIDER_MANIFEST_REJECTED",
+            ),
+        )
         return download_guard_error_response(
             "Provider 签名资源未通过校验。",
             status=400,
@@ -4769,6 +5077,14 @@ def download_stream_view(request, token):
     )
     if guard_result:
         error_code, message, status_code = guard_result
+        stream_status_callback(
+            "failed",
+            telemetry,
+            DownloadStreamStatusError(
+                message,
+                error_code=error_code,
+            ),
+        )
         return download_guard_error_response(
             message,
             status=status_code,
@@ -4776,6 +5092,16 @@ def download_stream_view(request, token):
         )
 
     concurrency_acquired = False
+    concurrency_released = False
+    stream_owns_concurrency = False
+    stream_response = None
+
+    def release_stream_concurrency():
+        nonlocal concurrency_released
+        if concurrency_acquired and not concurrency_released:
+            concurrency_released = True
+            release_concurrency("download-concurrent", identity)
+
     try:
         concurrency = acquire_concurrency(
             "download-concurrent",
@@ -4783,29 +5109,55 @@ def download_stream_view(request, token):
             runtime_setting.max_concurrent_per_ip,
         )
         if not concurrency.allowed:
+            stream_status_callback(
+                "failed",
+                telemetry,
+                DownloadStreamStatusError(
+                    "当前已有下载任务正在处理，请等待完成后再试。",
+                    error_code="DOWNLOAD_CONCURRENCY_LIMIT",
+                ),
+            )
             return limit_error_response(
                 "当前已有下载任务正在处理，请等待完成后再试。",
                 error_code="DOWNLOAD_CONCURRENCY_LIMIT",
             )
         concurrency_acquired = True
+        stream_status_callback("connecting", telemetry)
 
-        response, actual_bytes = build_single_attachment_response(
+        stream_response, actual_bytes = build_single_attachment_response(
             item,
             handoff.base_filename,
             allow_recovery=not handoff.recovery_used,
+            status_callback=stream_status_callback,
+            close_callback=release_stream_concurrency,
+            telemetry=telemetry,
         )
+        stream_owns_concurrency = True
         within_limit, bytes_error_code = record_download_archive_bytes(
             identity,
             None,
             actual_bytes,
         )
         if not within_limit:
-            response.close()
+            stream = getattr(
+                stream_response,
+                "_animeimages_attachment_stream",
+                None,
+            )
+            if stream is not None:
+                stream.fail(
+                    DownloadStreamStatusError(
+                        "今日下载流量已达到限制，请稍后再试。",
+                        error_code=bytes_error_code or "RATE_LIMITED",
+                    )
+                )
+            stream_response.close()
             return limit_error_response(
                 "今日下载流量已达到限制，请稍后再试。",
                 error_code=bytes_error_code or "RATE_LIMITED",
             )
-        response["Cache-Control"] = "private, no-store"
+        stream_status_callback("streaming", telemetry)
+        stream_response["Cache-Control"] = "private, no-store"
         log_download_request_event(
             request,
             download_type="single_stream",
@@ -4818,8 +5170,19 @@ def download_stream_view(request, token):
                 "download_strategy": "server_single_attachment",
             },
         )
-        return response
+        return stream_response
     except Exception as error:
+        if stream_response is not None:
+            stream = getattr(
+                stream_response,
+                "_animeimages_attachment_stream",
+                None,
+            )
+            if stream is not None:
+                stream.fail(error)
+            stream_response.close()
+        else:
+            stream_status_callback("failed", telemetry, error)
         contract = observable_download_error(
             error,
             provider=str(item.get("provider") or ""),
@@ -4850,8 +5213,8 @@ def download_stream_view(request, token):
         response["Cache-Control"] = "no-store"
         return response
     finally:
-        if concurrency_acquired:
-            release_concurrency("download-concurrent", identity)
+        if not stream_owns_concurrency:
+            release_stream_concurrency()
 
 
 @require_POST

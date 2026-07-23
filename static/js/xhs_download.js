@@ -955,9 +955,14 @@
                     response.ok ? "ready" : "failed",
                 )
                 : {
-                    ok: Boolean(response.ok && rawPayload.download_url),
+                    ok: Boolean(
+                        response.ok
+                        && rawPayload.download_url
+                        && rawPayload.status_url
+                    ),
                     downloadUrl: String(rawPayload.download_url || ""),
-                    recovered: Boolean(rawPayload.recovered),
+                    statusUrl: String(rawPayload.status_url || ""),
+                    pollAfterMs: 500,
                     errorCode: String(rawPayload.error_code || ""),
                     message: String(rawPayload.message || "下载准备失败，请稍后再试。"),
                 };
@@ -969,30 +974,65 @@
             return prepared;
         }
 
+        function sameOriginHandoffPath(value) {
+            const parsed = new URL(String(value || ""), window.location.origin);
+            if (parsed.origin !== window.location.origin) {
+                throw new Error("下载通道来源无效，请重新点击下载。");
+            }
+            return `${parsed.pathname}${parsed.search}`;
+        }
+
         function handoffPreparedDownload(prepared) {
             const frame = getServerDownloadFrame();
             if (!prepared || !prepared.downloadUrl) {
                 throw new Error("下载准备结果缺少有效链接。");
             }
+            const downloadUrl = sameOriginHandoffPath(prepared.downloadUrl);
             if (frame) {
-                frame.src = prepared.downloadUrl;
+                frame.src = downloadUrl;
             } else {
-                window.location.assign(prepared.downloadUrl);
+                window.location.assign(downloadUrl);
             }
         }
 
         async function prepareAndHandoffServerSingle(payload, warnings) {
             setProgressPending("准备下载");
-            setStatus(getStatusElement(), "正在校验资源并准备安全下载通道...");
+            setStatus(getStatusElement(), "正在签发安全下载通道...");
             const prepared = await prepareServerSingleDownload(payload);
+            const statusUrl = sameOriginHandoffPath(prepared.statusUrl);
+            setProgressPending("连接下载");
+            setStatus(getStatusElement(), "下载通道已签发，正在连接上游资源...");
             handoffPreparedDownload(prepared);
+            const statusResult = downloadReliabilityApi
+                ? await downloadReliabilityApi.pollDownloadStatus({
+                    statusUrl,
+                    pollAfterMs: prepared.pollAfterMs,
+                })
+                : {
+                    ok: true,
+                    status: "streaming",
+                    recovered: false,
+                };
+            if (!["streaming", "completed"].includes(statusResult.status)) {
+                const error = new Error(
+                    statusResult.message
+                    || "下载启动失败，请稍后重试。",
+                );
+                error.errorCode = statusResult.errorCode || "DOWNLOAD_FAILED";
+                throw error;
+            }
             setProgress(100);
             setStatus(
                 getStatusElement(),
-                `${prepared.recovered ? "资源已自动刷新，" : ""}已交给浏览器下载管理器。请查看浏览器下载栏。${routeWarningText(warnings)}`,
+                `${statusResult.recovered ? "资源已自动刷新，" : ""}浏览器已开始接收文件。请查看浏览器下载栏。${routeWarningText(warnings)}`,
                 "text-success",
             );
-            return prepared;
+            return {
+                ...prepared,
+                status: statusResult.status,
+                recovered: Boolean(statusResult.recovered),
+                upstreamAttemptCount: statusResult.upstreamAttemptCount || 0,
+            };
         }
 
         async function writeResponseToFileWithProgress(response, fileHandle, startPercent, endPercent) {

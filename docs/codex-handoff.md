@@ -210,10 +210,22 @@ Current download strategy is mixed:
 - Provider videos may use browser fetch only when the server explicitly marks
   that Provider capability as CORS-safe. KuKuTool and TianTianJieXi signed
   resources currently use observable same-origin prepare/stream instead.
-- Prepare errors remain readable JSON; an iframe is used only after prepare
-  succeeds and receives an opaque, short-lived same-origin stream URL.
+- Prepare is local-only: it performs request/schema, manifest, route, limit,
+  and client-binding checks, then issues separate opaque stream and status
+  URLs without contacting the media CDN. The stream claim is one-use; status
+  polling is repeatable, cache-only, client-bound, and does not extend the
+  60-second TTL.
+- The normal server attachment path opens one upstream media response, checks
+  its first non-empty chunk, and continues the `StreamingHttpResponse` from
+  that same iterator. Active responses, sockets, and generators are never
+  stored in cache. The stream owns its concurrency slot until completion,
+  failure, or client disconnect.
+- The frontend polls only the download startup states and stops at
+  `streaming`, `failed`, `expired`, or its 15-second hard ceiling. It never
+  fetches the media body or creates a large JavaScript Blob for this path.
 - TianTianJieXi recovery is server-only, bounded to one refresh and one
-  download retry, and must preserve the original signed resource identity.
+  download retry (at most two media GETs), and must preserve the original
+  signed resource identity.
 - Large provider CDN downloads can be slow on the VPS if all bytes pass through the server.
 
 Known tension:

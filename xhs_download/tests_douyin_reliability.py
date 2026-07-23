@@ -14,8 +14,10 @@ from .services.assets import MediaAsset, ParseResult
 from .services.common import XhsDownloadError, XhsProviderTimeoutError
 from .services.download_handoff import (
     DownloadHandoffError,
-    issue_download_handoff,
+    issue_download_handoff_tokens,
     load_download_handoff,
+    load_download_status,
+    update_download_status,
 )
 from .services.downloads import fetch_item_to_temp_path, observable_download_error
 from .services.douyin_continuation import (
@@ -40,7 +42,11 @@ from .services.provider_recovery import (
     refresh_tiantianjiexi_download_item,
 )
 from .services.rate_limits import LimitResult
-from .views import inspect_single_attachment_download, open_single_attachment_upstream
+from .views import (
+    build_single_attachment_response,
+    inspect_single_attachment_download,
+    open_single_attachment_upstream,
+)
 
 
 AWEME_ID = "123456789012345678"
@@ -351,27 +357,43 @@ class DownloadHandoffTests(SimpleTestCase):
 
     def test_handoff_is_client_bound_one_use_and_opaque(self):
         raw_url = "https://ci.xiaohongshu.com/path/image.jpg?token=secret"
-        token = issue_download_handoff(
+        tokens = issue_download_handoff_tokens(
             item={"type": "image", "url": raw_url},
             base_filename="demo",
             client_identity="client-a",
         )
 
-        self.assertNotIn(raw_url, token)
+        self.assertNotIn(raw_url, tokens.stream_token)
+        self.assertNotIn(raw_url, tokens.status_token)
+        initial_status = load_download_status(
+            tokens.status_token,
+            client_identity="client-a",
+        )
+        self.assertEqual(initial_status.status, "issued")
         loaded = load_download_handoff(
-            token,
+            tokens.stream_token,
             client_identity="client-a",
         )
         self.assertEqual(loaded.item["url"], raw_url)
         with self.assertRaises(DownloadHandoffError) as reused:
             load_download_handoff(
-                token,
+                tokens.stream_token,
                 client_identity="client-a",
             )
-        self.assertEqual(reused.exception.error_code, "DOWNLOAD_HANDOFF_USE_LIMIT")
+        self.assertEqual(
+            reused.exception.error_code,
+            "DOWNLOAD_HANDOFF_ALREADY_USED",
+        )
+        self.assertEqual(
+            load_download_status(
+                tokens.status_token,
+                client_identity="client-a",
+            ).status,
+            "issued",
+        )
         with self.assertRaises(DownloadHandoffError) as mismatched:
             load_download_handoff(
-                token,
+                tokens.stream_token,
                 client_identity="client-b",
                 consume=False,
             )
@@ -379,16 +401,25 @@ class DownloadHandoffTests(SimpleTestCase):
             mismatched.exception.error_code,
             "DOWNLOAD_HANDOFF_CLIENT_MISMATCH",
         )
+        with self.assertRaises(DownloadHandoffError) as status_mismatch:
+            load_download_status(
+                tokens.status_token,
+                client_identity="client-b",
+            )
+        self.assertEqual(
+            status_mismatch.exception.error_code,
+            "DOWNLOAD_HANDOFF_CLIENT_MISMATCH",
+        )
 
     def test_handoff_tamper_and_expiry_are_rejected(self):
-        token = issue_download_handoff(
+        tokens = issue_download_handoff_tokens(
             item={"type": "image", "url": "https://ci.xiaohongshu.com/demo.jpg"},
             base_filename="demo",
             client_identity="client-a",
         )
         with self.assertRaises(DownloadHandoffError) as tampered:
             load_download_handoff(
-                f"{token}tampered",
+                f"{tokens.stream_token}tampered",
                 client_identity="client-a",
             )
         self.assertEqual(tampered.exception.error_code, "DOWNLOAD_HANDOFF_INVALID")
@@ -399,10 +430,72 @@ class DownloadHandoffTests(SimpleTestCase):
         ):
             with self.assertRaises(DownloadHandoffError) as expired:
                 load_download_handoff(
-                    token,
+                    tokens.stream_token,
+                    client_identity="client-a",
+                )
+            with self.assertRaises(DownloadHandoffError) as status_expired:
+                load_download_status(
+                    tokens.status_token,
                     client_identity="client-a",
                 )
         self.assertEqual(expired.exception.error_code, "DOWNLOAD_HANDOFF_EXPIRED")
+        self.assertEqual(
+            status_expired.exception.error_code,
+            "DOWNLOAD_HANDOFF_EXPIRED",
+        )
+
+    def test_status_states_are_safe_repeatable_and_reads_do_not_extend_ttl(self):
+        tokens = issue_download_handoff_tokens(
+            item={
+                "type": "video",
+                "url": "https://v3-dy-o.zjcdn.com/video.mp4?token=secret",
+            },
+            base_filename="demo",
+            client_identity="client-a",
+        )
+
+        for status in (
+            "connecting",
+            "refreshing",
+            "streaming",
+            "completed",
+            "failed",
+        ):
+            updated = update_download_status(
+                load_download_status(
+                    tokens.status_token,
+                    client_identity="client-a",
+                ).ticket_id,
+                status,
+                error_code=(
+                    "UPSTREAM_SSL_ERROR"
+                    if status == "failed"
+                    else ""
+                ),
+                recovered=status in {"streaming", "completed"},
+                upstream_attempt_count=2,
+            )
+            self.assertTrue(updated)
+            with patch.object(cache, "set") as mock_cache_set:
+                loaded = load_download_status(
+                    tokens.status_token,
+                    client_identity="client-a",
+                )
+            self.assertEqual(loaded.status, status)
+            mock_cache_set.assert_not_called()
+            serialized = json.dumps(loaded.as_public_dict())
+            self.assertNotIn("zjcdn.com", serialized)
+            self.assertNotIn("token=secret", serialized)
+
+        failed = load_download_status(
+            tokens.status_token,
+            client_identity="client-a",
+        ).as_public_dict()
+        self.assertEqual(failed["error_code"], "UPSTREAM_SSL_ERROR")
+        self.assertEqual(
+            failed["message"],
+            "上游资源连接异常，请稍后重试。",
+        )
 
 
 class DownloadPrepareViewTests(TestCase):
@@ -419,19 +512,7 @@ class DownloadPrepareViewTests(TestCase):
             "base_filename": "demo",
         }
 
-    @patch("xhs_download.views.release_concurrency")
-    @patch(
-        "xhs_download.views.record_download_archive_bytes",
-        return_value=(True, ""),
-    )
-    @patch("xhs_download.views.build_single_attachment_response")
-    def test_prepare_returns_observable_same_origin_stream(
-        self,
-        mock_build_response,
-        _mock_record_bytes,
-        _mock_release,
-    ):
-        mock_build_response.return_value = (HttpResponse(b"image"), 5)
+    def test_prepare_is_local_only_and_returns_stream_and_status_urls(self):
         client_identity = hashlib.sha256(
             b"127.0.0.1"
         ).hexdigest()[:24]
@@ -451,16 +532,19 @@ class DownloadPrepareViewTests(TestCase):
                     "download_strategy": "server_single_attachment",
                 },
             ),
+            patch("xhs_download.views.acquire_concurrency") as mock_acquire,
             patch(
-                "xhs_download.views.inspect_single_attachment_download",
-                return_value={
-                    "item": self.payload["media_items"][0],
-                    "content_type": "image/jpeg",
-                    "content_length": 5,
-                    "filename": "demo.jpg",
-                    "recovered": False,
-                },
-            ),
+                "xhs_download.views.inspect_single_attachment_download"
+            ) as mock_inspect,
+            patch(
+                "xhs_download.views.open_single_attachment_upstream"
+            ) as mock_open,
+            patch(
+                "xhs_download.views.fetch_media_response"
+            ) as mock_fetch,
+            patch(
+                "xhs_download.views.build_single_attachment_response"
+            ) as mock_build,
         ):
             response = self.client.post(
                 "/media/download-prepare/",
@@ -471,17 +555,25 @@ class DownloadPrepareViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertTrue(body["ok"])
+        self.assertEqual(body["status"], "issued")
         self.assertTrue(body["download_url"].startswith("/media/download-stream/"))
+        self.assertTrue(body["status_url"].startswith("/media/download-status/"))
+        self.assertEqual(body["poll_after_ms"], 500)
+        self.assertEqual(body["expires_in_seconds"], 60)
         self.assertNotIn(self.payload["media_items"][0]["url"], body["download_url"])
+        self.assertNotIn(self.payload["media_items"][0]["url"], body["status_url"])
         self.assertNotIn(
             self.payload["media_items"][0]["url"],
             response.content.decode(),
         )
-        stream_response = self.client.get(body["download_url"])
-        self.assertEqual(stream_response.status_code, 200)
-        self.assertEqual(stream_response.content, b"image")
-        second_stream = self.client.get(body["download_url"])
-        self.assertEqual(second_stream.status_code, 409)
+        status_response = self.client.get(body["status_url"])
+        self.assertEqual(status_response.status_code, 200)
+        self.assertEqual(status_response.json()["status"], "issued")
+        mock_acquire.assert_not_called()
+        mock_inspect.assert_not_called()
+        mock_open.assert_not_called()
+        mock_fetch.assert_not_called()
+        mock_build.assert_not_called()
 
     def test_prepare_errors_are_json_and_csrf_is_enforced(self):
         bad = self.client.post(
@@ -499,42 +591,6 @@ class DownloadPrepareViewTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(forbidden.status_code, 403)
-
-    @patch(
-        "xhs_download.views.inspect_single_attachment_download",
-        side_effect=requests.exceptions.SSLError("signed-url-secret"),
-    )
-    @patch(
-        "xhs_download.views.decide_download_route",
-        return_value={
-            "route_type": "proxy",
-            "download_strategy": "server_single_attachment",
-        },
-    )
-    @patch(
-        "xhs_download.views.acquire_concurrency",
-        return_value=LimitResult(allowed=True),
-    )
-    @patch(
-        "xhs_download.views.check_download_request_limits",
-        return_value=("identity", None),
-    )
-    def test_prepare_failure_has_stable_safe_error(
-        self,
-        _mock_limits,
-        _mock_acquire,
-        _mock_route,
-        _mock_inspect,
-    ):
-        response = self.client.post(
-            "/media/download-prepare/",
-            data=json.dumps(self.payload),
-            content_type="application/json",
-        )
-
-        self.assertEqual(response.status_code, 502)
-        self.assertEqual(response.json()["error_code"], "UPSTREAM_SSL_ERROR")
-        self.assertNotIn("signed-url-secret", response.content.decode())
 
     def test_prepare_guard_and_rate_limit_failures_are_observable_json(self):
         with patch(
@@ -584,7 +640,7 @@ class DownloadPrepareViewTests(TestCase):
         self.assertEqual(limited.json()["error_code"], "RATE_LIMITED")
 
     @patch("xhs_download.views.open_single_attachment_upstream")
-    def test_prepare_probe_reads_only_the_first_nonempty_chunk(self, mock_open):
+    def test_legacy_inspection_helper_reads_only_first_nonempty_chunk(self, mock_open):
         upstream = Mock()
         upstream.headers = {
             "Content-Type": "video/mp4",
@@ -611,6 +667,456 @@ class DownloadPrepareViewTests(TestCase):
         self.assertEqual(prepared["content_length"], 18)
         self.assertEqual(yielded, [b"first-"])
         upstream.close.assert_called_once_with()
+
+
+class DownloadSingleConnectionStreamTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = Client()
+        self.client_identity = hashlib.sha256(
+            b"127.0.0.1"
+        ).hexdigest()[:24]
+        self.item = {
+            "type": "image",
+            "url": "https://ci.xiaohongshu.com/demo.jpg",
+            "size_bytes": 11,
+        }
+
+    def tearDown(self):
+        cache.clear()
+
+    def issue(self, item=None):
+        return issue_download_handoff_tokens(
+            item=item or self.item,
+            base_filename="demo",
+            client_identity=self.client_identity,
+        )
+
+    def build_upstream(self, chunks, *, content_type="image/jpeg", url=None):
+        upstream = Mock()
+        upstream.headers = {
+            "Content-Type": content_type,
+            "Content-Length": str(
+                sum(len(chunk) for chunk in chunks if isinstance(chunk, bytes))
+            ),
+        }
+        upstream.url = url or self.item["url"]
+        upstream.iter_content.side_effect = lambda *, chunk_size: iter(chunks)
+        return upstream
+
+    def stream_request_patches(self, upstream):
+        return (
+            patch(
+                "xhs_download.views.fetch_media_response",
+                return_value=upstream,
+            ),
+            patch(
+                "xhs_download.views.acquire_concurrency",
+                return_value=LimitResult(allowed=True),
+            ),
+            patch(
+                "xhs_download.views.record_download_archive_bytes",
+                return_value=(True, ""),
+            ),
+            patch("xhs_download.views.release_concurrency"),
+        )
+
+    def test_normal_stream_uses_one_connection_and_releases_after_completion(self):
+        tokens = self.issue()
+        upstream = self.build_upstream([b"first-", b"last"])
+        fetch_patch, acquire_patch, bytes_patch, release_patch = (
+            self.stream_request_patches(upstream)
+        )
+
+        with (
+            fetch_patch as mock_fetch,
+            acquire_patch,
+            bytes_patch,
+            release_patch as mock_release,
+        ):
+            response = self.client.get(
+                f"/media/download-stream/{tokens.stream_token}/"
+            )
+            self.assertEqual(response.status_code, 200)
+            mock_fetch.assert_called_once()
+            mock_release.assert_not_called()
+            status_before_body = load_download_status(
+                tokens.status_token,
+                client_identity=self.client_identity,
+            )
+            self.assertEqual(status_before_body.status, "streaming")
+            self.assertEqual(status_before_body.upstream_attempt_count, 1)
+
+            content = b"".join(response.streaming_content)
+
+            self.assertEqual(content, b"first-last")
+            mock_fetch.assert_called_once()
+            upstream.close.assert_called_once_with()
+            mock_release.assert_called_once_with(
+                "download-concurrent",
+                self.client_identity,
+            )
+
+        completed = load_download_status(
+            tokens.status_token,
+            client_identity=self.client_identity,
+        )
+        self.assertEqual(completed.status, "completed")
+        self.assertFalse(completed.recovered)
+        self.assertEqual(completed.upstream_attempt_count, 1)
+
+    def test_first_chunk_is_validated_then_yielded_from_same_iterator(self):
+        yielded = []
+        upstream = Mock()
+        upstream.headers = {
+            "Content-Type": "image/jpeg",
+            "Content-Length": "18",
+        }
+        upstream.url = self.item["url"]
+
+        def iter_content(*, chunk_size):
+            self.assertGreater(chunk_size, 0)
+            for chunk in (b"first-", b"second", b"-third"):
+                yielded.append(chunk)
+                yield chunk
+
+        upstream.iter_content.side_effect = iter_content
+        events = []
+        telemetry = {}
+
+        with patch(
+            "xhs_download.views.fetch_media_response",
+            return_value=upstream,
+        ) as mock_fetch:
+            response, _actual_bytes = build_single_attachment_response(
+                self.item,
+                "demo",
+                telemetry=telemetry,
+                status_callback=(
+                    lambda status, snapshot, error=None:
+                    events.append((status, snapshot, error))
+                ),
+            )
+            self.assertEqual(yielded, [b"first-"])
+            self.assertEqual(
+                [event[0] for event in events],
+                ["connecting"],
+            )
+
+            self.assertEqual(
+                b"".join(response.streaming_content),
+                b"first-second-third",
+            )
+
+        mock_fetch.assert_called_once()
+        self.assertEqual(yielded, [b"first-", b"second", b"-third"])
+        self.assertEqual(events[-1][0], "completed")
+        upstream.close.assert_called_once_with()
+
+    def test_streaming_status_waits_for_download_bytes_guard(self):
+        tokens = self.issue()
+        upstream = self.build_upstream([b"image-data"])
+
+        with (
+            patch(
+                "xhs_download.views.fetch_media_response",
+                return_value=upstream,
+            ),
+            patch(
+                "xhs_download.views.acquire_concurrency",
+                return_value=LimitResult(allowed=True),
+            ),
+            patch(
+                "xhs_download.views.record_download_archive_bytes",
+                return_value=(False, "DOWNLOAD_DAILY_BYTES_LIMIT_IP"),
+            ),
+            patch("xhs_download.views.release_concurrency") as mock_release,
+        ):
+            response = self.client.get(
+                f"/media/download-stream/{tokens.stream_token}/"
+            )
+
+        self.assertEqual(response.status_code, 429)
+        status = load_download_status(
+            tokens.status_token,
+            client_identity=self.client_identity,
+        )
+        self.assertEqual(status.status, "failed")
+        self.assertEqual(
+            status.error_code,
+            "DOWNLOAD_DAILY_BYTES_LIMIT_IP",
+        )
+        upstream.close.assert_called_once_with()
+        mock_release.assert_called_once_with(
+            "download-concurrent",
+            self.client_identity,
+        )
+
+    def test_duplicate_stream_claim_is_rejected_before_second_open(self):
+        tokens = self.issue()
+        upstream = self.build_upstream([b"image-data"])
+        fetch_patch, acquire_patch, bytes_patch, release_patch = (
+            self.stream_request_patches(upstream)
+        )
+
+        with (
+            fetch_patch as mock_fetch,
+            acquire_patch,
+            bytes_patch,
+            release_patch,
+        ):
+            first = self.client.get(
+                f"/media/download-stream/{tokens.stream_token}/"
+            )
+            second = self.client.get(
+                f"/media/download-stream/{tokens.stream_token}/"
+            )
+            self.assertEqual(second.status_code, 409)
+            self.assertEqual(
+                second.json()["error_code"],
+                "DOWNLOAD_HANDOFF_ALREADY_USED",
+            )
+            self.assertEqual(mock_fetch.call_count, 1)
+            self.assertEqual(
+                b"".join(first.streaming_content),
+                b"image-data",
+            )
+
+    def test_expired_stream_is_rejected_before_open(self):
+        tokens = self.issue()
+        with (
+            patch(
+                "xhs_download.services.download_handoff."
+                "DOWNLOAD_HANDOFF_TTL_SECONDS",
+                -1,
+            ),
+            patch("xhs_download.views.fetch_media_response") as mock_fetch,
+        ):
+            response = self.client.get(
+                f"/media/download-stream/{tokens.stream_token}/"
+            )
+
+        self.assertEqual(response.status_code, 410)
+        self.assertEqual(
+            response.json()["error_code"],
+            "DOWNLOAD_HANDOFF_EXPIRED",
+        )
+        mock_fetch.assert_not_called()
+
+    def test_initial_connection_failure_is_safe_and_releases_concurrency(self):
+        tokens = self.issue()
+        with (
+            patch(
+                "xhs_download.views.fetch_media_response",
+                side_effect=requests.exceptions.SSLError(
+                    "https://secret.example/video?token=secret"
+                ),
+            ) as mock_fetch,
+            patch(
+                "xhs_download.views.acquire_concurrency",
+                return_value=LimitResult(allowed=True),
+            ),
+            patch("xhs_download.views.release_concurrency") as mock_release,
+        ):
+            response = self.client.get(
+                f"/media/download-stream/{tokens.stream_token}/"
+            )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()["error_code"], "UPSTREAM_SSL_ERROR")
+        self.assertNotIn("secret.example", response.content.decode())
+        mock_fetch.assert_called_once()
+        mock_release.assert_called_once()
+        failed = load_download_status(
+            tokens.status_token,
+            client_identity=self.client_identity,
+        )
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(failed.error_code, "UPSTREAM_SSL_ERROR")
+        self.assertEqual(failed.upstream_attempt_count, 1)
+
+    def test_recovery_refreshes_once_and_uses_at_most_two_media_gets(self):
+        original = build_tiantianjiexi_item()
+        refreshed = build_tiantianjiexi_item(
+            "https://v5-dy-o.zjcdn.com/path/refreshed.mp4"
+        )
+        tokens = self.issue(original)
+        upstream = self.build_upstream(
+            [b"video-data"],
+            content_type="video/mp4",
+            url=refreshed["url"],
+        )
+
+        with (
+            patch(
+                "xhs_download.views.fetch_media_response",
+                side_effect=[
+                    requests.exceptions.SSLError("first connection failed"),
+                    upstream,
+                ],
+            ) as mock_fetch,
+            patch(
+                "xhs_download.views.refresh_tiantianjiexi_download_item",
+                return_value=refreshed,
+            ) as mock_refresh,
+            patch(
+                "xhs_download.views.invalidate_external_provider_caches"
+            ),
+            patch(
+                "xhs_download.views.acquire_concurrency",
+                return_value=LimitResult(allowed=True),
+            ),
+            patch(
+                "xhs_download.views.record_download_archive_bytes",
+                return_value=(True, ""),
+            ),
+            patch("xhs_download.views.release_concurrency"),
+        ):
+            response = self.client.get(
+                f"/media/download-stream/{tokens.stream_token}/"
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                b"".join(response.streaming_content),
+                b"video-data",
+            )
+
+        self.assertEqual(mock_fetch.call_count, 2)
+        mock_refresh.assert_called_once_with(original)
+        completed = load_download_status(
+            tokens.status_token,
+            client_identity=self.client_identity,
+        )
+        self.assertEqual(completed.status, "completed")
+        self.assertTrue(completed.recovered)
+        self.assertEqual(completed.upstream_attempt_count, 2)
+
+    def test_recovery_failure_never_opens_a_third_media_connection(self):
+        original = build_tiantianjiexi_item()
+        refreshed = build_tiantianjiexi_item(
+            "https://v5-dy-o.zjcdn.com/path/refreshed.mp4"
+        )
+        tokens = self.issue(original)
+
+        with (
+            patch(
+                "xhs_download.views.fetch_media_response",
+                side_effect=[
+                    requests.exceptions.ConnectionError("first"),
+                    requests.exceptions.ConnectionError("second"),
+                ],
+            ) as mock_fetch,
+            patch(
+                "xhs_download.views.refresh_tiantianjiexi_download_item",
+                return_value=refreshed,
+            ) as mock_refresh,
+            patch(
+                "xhs_download.views.invalidate_external_provider_caches"
+            ),
+            patch(
+                "xhs_download.views.acquire_concurrency",
+                return_value=LimitResult(allowed=True),
+            ),
+            patch("xhs_download.views.release_concurrency"),
+        ):
+            response = self.client.get(
+                f"/media/download-stream/{tokens.stream_token}/"
+            )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(mock_fetch.call_count, 2)
+        mock_refresh.assert_called_once_with(original)
+        failed = load_download_status(
+            tokens.status_token,
+            client_identity=self.client_identity,
+        )
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(failed.upstream_attempt_count, 2)
+
+    def test_generator_failure_marks_failed_and_releases_concurrency(self):
+        tokens = self.issue()
+        upstream = Mock()
+        upstream.headers = {
+            "Content-Type": "image/jpeg",
+            "Content-Length": "12",
+        }
+        upstream.url = self.item["url"]
+
+        def failing_chunks(*, chunk_size):
+            yield b"first-"
+            raise requests.exceptions.ConnectionError(
+                "https://secret.example/image?token=secret"
+            )
+
+        upstream.iter_content.side_effect = failing_chunks
+        fetch_patch, acquire_patch, bytes_patch, release_patch = (
+            self.stream_request_patches(upstream)
+        )
+
+        with (
+            fetch_patch,
+            acquire_patch,
+            bytes_patch,
+            release_patch as mock_release,
+            self.assertLogs("xhs_download.views", level="WARNING") as logs,
+        ):
+            response = self.client.get(
+                f"/media/download-stream/{tokens.stream_token}/"
+            )
+            with self.assertRaises(requests.exceptions.ConnectionError):
+                b"".join(response.streaming_content)
+
+        failed = load_download_status(
+            tokens.status_token,
+            client_identity=self.client_identity,
+        )
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(failed.error_code, "UPSTREAM_CONNECTION_ERROR")
+        mock_release.assert_called_once()
+        self.assertNotIn("secret.example", "\n".join(logs.output))
+        self.assertNotIn("token=secret", "\n".join(logs.output))
+
+    def test_status_endpoint_is_bound_safe_and_never_touches_upstream(self):
+        tokens = self.issue()
+        issued = load_download_status(
+            tokens.status_token,
+            client_identity=self.client_identity,
+        )
+        update_download_status(
+            issued.ticket_id,
+            "refreshing",
+            recovered=False,
+            upstream_attempt_count=1,
+        )
+
+        with (
+            patch("xhs_download.views.fetch_media_response") as mock_fetch,
+            patch(
+                "xhs_download.views.refresh_tiantianjiexi_download_item"
+            ) as mock_refresh,
+        ):
+            response = self.client.get(
+                f"/media/download-status/{tokens.status_token}/"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Cache-Control"], "no-store")
+        self.assertEqual(response.json()["status"], "refreshing")
+        self.assertEqual(response.json()["upstream_attempt_count"], 1)
+        serialized = response.content.decode()
+        self.assertNotIn(self.item["url"], serialized)
+        mock_fetch.assert_not_called()
+        mock_refresh.assert_not_called()
+
+        mismatched = self.client.get(
+            f"/media/download-status/{tokens.status_token}/",
+            REMOTE_ADDR="127.0.0.2",
+        )
+        self.assertEqual(mismatched.status_code, 403)
+        tampered = self.client.get(
+            f"/media/download-status/{tokens.status_token}tampered/"
+        )
+        self.assertEqual(tampered.status_code, 403)
 
 
 class TianTianJieXiRecoveryTests(SimpleTestCase):
@@ -676,12 +1182,19 @@ class TianTianJieXiRecoveryTests(SimpleTestCase):
             upstream,
         ]
         mock_refresh.return_value = refreshed
+        events = []
+        telemetry = {}
 
         response, effective_item, recovered = open_single_attachment_upstream(
             original,
             "video",
             5,
             include_context=True,
+            telemetry=telemetry,
+            status_callback=(
+                lambda status, snapshot, error=None:
+                events.append((status, snapshot, error))
+            ),
         )
 
         self.assertIs(response, upstream)
@@ -689,6 +1202,33 @@ class TianTianJieXiRecoveryTests(SimpleTestCase):
         self.assertTrue(recovered)
         self.assertEqual(mock_fetch.call_count, 2)
         mock_refresh.assert_called_once_with(original)
+        self.assertEqual(
+            [event[0] for event in events],
+            ["connecting", "refreshing", "connecting"],
+        )
+        self.assertEqual(telemetry["upstream_attempt_count"], 2)
+        self.assertTrue(telemetry["recovery_used"])
+
+    @patch("xhs_download.views.refresh_tiantianjiexi_download_item")
+    @patch("xhs_download.views.fetch_media_response")
+    def test_nonrecoverable_stream_error_never_refreshes(
+        self,
+        mock_fetch,
+        mock_refresh,
+    ):
+        mock_fetch.side_effect = XhsDownloadError(
+            "资源超过允许的大小限制"
+        )
+
+        with self.assertRaisesRegex(XhsDownloadError, "大小限制"):
+            open_single_attachment_upstream(
+                build_tiantianjiexi_item(),
+                "video",
+                5,
+            )
+
+        mock_fetch.assert_called_once()
+        mock_refresh.assert_not_called()
 
     @patch("xhs_download.views.invalidate_external_provider_caches")
     @patch("xhs_download.views.refresh_tiantianjiexi_download_item")

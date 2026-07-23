@@ -3,8 +3,8 @@
 ## Unreleased
 
 - Added a bounded, cache-only continuation for single-link Douyin ultra parsing so an already-running Provider can finish without requiring a second user click; signed tokens are client-bound, expire after 15 seconds, and permit at most five polls without starting another Provider call.
-- Replaced unobservable iframe POST fallback for Provider videos with a JSON prepare step and an opaque, one-use, same-origin streaming handoff. Provider resources require an explicit CORS-safe capability before browser fetch is attempted.
-- Added one controlled TianTianJieXi resource refresh and one download retry for recoverable signed-resource failures, preserving SSL verification, media allowlists, Provider order, and existing timeout ceilings.
+- Replaced unobservable iframe POST fallback for Provider videos with a local-only JSON prepare step, separate client-bound stream/status tickets, and bounded status polling. Normal server attachment now opens one upstream media connection, keeps that connection through the streaming response, and releases its concurrency slot when the stream ends.
+- Added one controlled TianTianJieXi resource refresh and one download retry for recoverable signed-resource failures, capping recovery at two upstream media GETs while preserving SSL verification, media allowlists, Provider order, and existing timeout ceilings.
 - Added bounded, non-executing Xiaohongshu page-state extraction for current-note title, author, note ID, ordered galleries, video covers, and explicit availability states, with deterministic meta/DOM fallbacks and no login-cookie or third-party Provider path.
 - Defined Xiaohongshu video size as exact-known-or-unknown from validated structured byte fields and stopped missing-size display from adding media probes; single-link and Batch cards now share the same normalized XHS title, author, cover, and size semantics.
 - Shared the Douyin original/ultra and YouTube highest-quality merge preferences between single-link and Batch pages through a versioned, strictly validated browser storage schema, with deterministic migration from both legacy settings stores.

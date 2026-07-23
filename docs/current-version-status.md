@@ -80,16 +80,26 @@ candidate behavior includes:
   the foreground budget. The browser performs at most five cache-only polls
   over a 15-second window; polling cannot call a Provider or submit the
   original parse again.
-- Provider video downloads first use an observable JSON prepare request.
-  Success produces a client-bound, one-use, 60-second same-origin stream URL
-  that contains no raw Provider URL. The iframe is used only after prepare
-  succeeds, so prepare errors can end the spinner and restore controls.
+- Provider video downloads first use a local-only JSON prepare request.
+  Prepare performs no upstream media request and produces separate
+  client-bound, 60-second stream and status URLs that contain no raw Provider
+  URL. The stream URL is one-use; the status URL is repeatable within the
+  original TTL and exposes only fixed states and safe errors.
+- The browser opens the same-origin stream URL and polls the status URL at a
+  bounded interval until `streaming`, `failed`, `expired`, or a client-side
+  15-second ceiling. Status polling is cache-only and cannot contact a
+  Provider, extend the handoff TTL, or read media bytes.
+- The normal stream path opens one upstream media GET, validates its first
+  non-empty chunk, then yields that chunk and the remaining iterator from the
+  same response. The response object, socket, and generator are never stored
+  in cache; the download concurrency slot is released when streaming ends.
 - Browser fetch is permitted only for an explicitly declared CORS-safe
   Provider capability. TianTianJieXi and KuKuTool signed resources currently
   use server prepare/stream; ordinary public native URLs retain their direct
   path.
 - A recoverable TianTianJieXi signed-resource failure can trigger exactly one
-  server-side refresh through TianTianJieXi and exactly one download retry.
+  server-side refresh through TianTianJieXi and exactly one download retry,
+  capping the recovery path at two upstream media GETs.
   The refreshed item must retain the original Douyin resource identity and
   pass the existing manifest, media-host, content-type, and size checks.
 - The candidate does not increase Provider timeouts, change Provider order,
