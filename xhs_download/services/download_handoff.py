@@ -1,10 +1,10 @@
 import json
+import os
 import secrets
 import time
 from dataclasses import dataclass
 from uuid import uuid4
 
-from django.conf import settings
 from django.core import signing
 from django.core.cache import cache
 
@@ -14,19 +14,24 @@ from .downloads import provider_manifest_allows_public_download
 
 DOWNLOAD_HANDOFF_SALT = "xhs_download.download_handoff.stream.v2"
 DOWNLOAD_STATUS_SALT = "xhs_download.download_handoff.status.v2"
-DOWNLOAD_STREAM_START_TIMEOUT_SECONDS = max(
-    1.0,
-    min(
-        55.0,
-        float(
-            getattr(
-                settings,
+
+
+def configured_download_stream_start_timeout_seconds():
+    try:
+        configured = float(
+            os.environ.get(
                 "DOWNLOAD_STREAM_START_TIMEOUT_SECONDS",
-                50.0,
+                "50",
             )
-            or 50.0
-        ),
-    ),
+            or 50
+        )
+    except (TypeError, ValueError):
+        configured = 50.0
+    return max(1.0, min(55.0, configured))
+
+
+DOWNLOAD_STREAM_START_TIMEOUT_SECONDS = (
+    configured_download_stream_start_timeout_seconds()
 )
 DOWNLOAD_HANDOFF_TTL_SECONDS = max(
     60,

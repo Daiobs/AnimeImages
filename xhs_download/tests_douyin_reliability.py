@@ -16,6 +16,7 @@ from .services.download_handoff import (
     DOWNLOAD_HANDOFF_TTL_SECONDS,
     DOWNLOAD_STREAM_START_TIMEOUT_SECONDS,
     DownloadHandoffError,
+    configured_download_stream_start_timeout_seconds,
     issue_download_handoff_tokens,
     load_download_handoff,
     load_download_status,
@@ -790,6 +791,43 @@ class DownloadHandoffTests(SimpleTestCase):
             DOWNLOAD_HANDOFF_TTL_SECONDS,
             int(DOWNLOAD_STREAM_START_TIMEOUT_SECONDS) + 10,
         )
+
+    def test_stream_start_timeout_environment_value_is_safe_and_bounded(self):
+        environment = (
+            "xhs_download.services.download_handoff.os.environ"
+        )
+        with patch.dict(environment, {}, clear=True):
+            self.assertEqual(
+                configured_download_stream_start_timeout_seconds(),
+                50.0,
+            )
+        with patch.dict(
+            environment,
+            {"DOWNLOAD_STREAM_START_TIMEOUT_SECONDS": "invalid"},
+            clear=True,
+        ):
+            self.assertEqual(
+                configured_download_stream_start_timeout_seconds(),
+                50.0,
+            )
+        with patch.dict(
+            environment,
+            {"DOWNLOAD_STREAM_START_TIMEOUT_SECONDS": "0"},
+            clear=True,
+        ):
+            self.assertEqual(
+                configured_download_stream_start_timeout_seconds(),
+                1.0,
+            )
+        with patch.dict(
+            environment,
+            {"DOWNLOAD_STREAM_START_TIMEOUT_SECONDS": "120"},
+            clear=True,
+        ):
+            self.assertEqual(
+                configured_download_stream_start_timeout_seconds(),
+                55.0,
+            )
 
     def test_handoff_tamper_and_expiry_are_rejected(self):
         tokens = issue_download_handoff_tokens(
