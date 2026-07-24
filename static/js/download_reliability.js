@@ -28,7 +28,7 @@
         "expired",
     ]);
     const DOWNLOAD_STATUS_POLL_TIMEOUT_MESSAGE =
-        "下载启动状态确认超时，请查看浏览器下载栏或重新尝试。";
+        "下载请求仍在连接，请查看浏览器下载栏；若未开始可重新尝试。";
     const DEFAULT_STATUS_POLL_INTERVAL_MS = 500;
     const MAX_STATUS_POLL_INTERVAL_MS = 1000;
     const MAX_STATUS_POLL_DURATION_MS = 15000;
@@ -113,6 +113,7 @@
             ok: Boolean(data.ok),
             status,
             recovered: Boolean(data.recovered),
+            streamStarted: Boolean(data.stream_started),
             upstreamAttemptCount: boundedInteger(
                 data.upstream_attempt_count,
                 0,
@@ -135,10 +136,25 @@
             ok: false,
             status: "poll_timeout",
             recovered: false,
+            streamStarted: false,
             upstreamAttemptCount: 0,
             errorCode: "DOWNLOAD_STATUS_POLL_TIMEOUT",
             message: DOWNLOAD_STATUS_POLL_TIMEOUT_MESSAGE,
         };
+    }
+
+    function downloadStartDisposition(result) {
+        const status = String(result && result.status || "");
+        if (result && result.streamStarted) {
+            return "started";
+        }
+        if (["streaming", "completed"].includes(status)) {
+            return "started";
+        }
+        if (status === "poll_timeout") {
+            return "unconfirmed";
+        }
+        return "failed";
     }
 
     function fetchStatusWithTimeout(fetchStatus, statusUrl, timeoutMs) {
@@ -257,6 +273,18 @@
                 payload,
                 response.status,
             );
+            if (parsed.streamStarted) {
+                return {
+                    ...parsed,
+                    ok: true,
+                    finalStatus: parsed.status,
+                    status: (
+                        parsed.status === "completed"
+                            ? "completed"
+                            : "streaming"
+                    ),
+                };
+            }
             if (isDownloadStartTerminal(parsed.status)) {
                 return parsed;
             }
@@ -279,6 +307,7 @@
         MAX_STATUS_POLL_COUNT,
         MAX_STATUS_POLL_DURATION_MS,
         browserDirectFetchSafe,
+        downloadStartDisposition,
         errorMessage,
         isDownloadStartTerminal,
         parseDownloadStatusPayload,

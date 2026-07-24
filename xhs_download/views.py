@@ -3862,6 +3862,102 @@ def get_download_settings_context(platform_key="home", request=None):
     }
 
 
+def apply_search_result_to_context(
+    context,
+    result,
+    *,
+    platform_key,
+    prefer_ultra_hd,
+    provider_notice_override=None,
+):
+    result_metadata = result.metadata or {}
+    display_context = build_result_display_context(
+        result,
+        platform_key=platform_key,
+        probe_missing_video_sizes=not (
+            prefer_ultra_hd and result.platform == "douyin"
+        ),
+    )
+    context["platform"] = result.platform
+    target_platform_key = get_platform_key_for_result(
+        result.platform,
+        result_metadata,
+    )
+    if (
+        platform_key != "home"
+        and target_platform_key
+        and target_platform_key != platform_key
+    ):
+        context["target_page"] = get_page_payload(target_platform_key)
+    context["result_theme"] = display_context["result_theme"]
+    context["platform_name"] = display_context["platform_name"]
+    if (
+        context["page_platform_id"]
+        and context["page_platform_id"] != result.platform
+    ):
+        context["platform_notice"] = (
+            f"你粘贴的是{context['platform_name']}链接，已自动使用对应解析器。"
+        )
+    if result.platform == "third_party":
+        provider_label = (
+            result_metadata.get("provider_label") or "第三方 Provider"
+        )
+        context["provider_notice"] = (
+            f"本次由 {provider_label} 第三方解析，"
+            "资源可用性取决于上游平台。"
+        )
+        if result_metadata.get("selected_provider") == "youtube_merge":
+            context["provider_notice"] = (
+                "本次使用 YouTube 最高画质任务；下载时将在服务端"
+                "合并音频和视频，文件可能更大。"
+            )
+        elif result_metadata.get("selected_provider") == "yt_dlp_merge":
+            context["provider_notice"] = (
+                "本次使用 yt-dlp 高清合并；默认优先 1080p，"
+                "下载时将在服务端合并音频和视频。"
+            )
+    if prefer_ultra_hd and result.platform == "douyin":
+        ultra_provider = (
+            result_metadata.get("ultra_race_winner")
+            or result_metadata.get("selected_provider")
+            or result_metadata.get("source_provider")
+        )
+        ultra_provider_label = {
+            "tiantianjiexi": "天天解析",
+            "kukutool": "KuKuTool",
+            "native": "本地解析",
+            "mobile_feed": "本地解析",
+            "mobile_share": "本地解析",
+        }.get(ultra_provider, "")
+        if ultra_provider_label in {"天天解析", "KuKuTool"}:
+            context["provider_notice"] = (
+                f"本次由 {ultra_provider_label} 返回抖音原画 / "
+                "超高清资源；若上游不可用会自动回退本地解析。"
+            )
+        elif result_metadata.get("kukutool_background_refresh"):
+            context["provider_notice"] = (
+                "超高清上游仍在后台解析，本次先回退本地解析；"
+                "稍后重新解析此链接可能命中原画 / 超高清资源。"
+            )
+        else:
+            context["provider_notice"] = (
+                "本次未命中超高清上游，已自动回退本地解析。"
+            )
+    if provider_notice_override is not None:
+        context["provider_notice"] = provider_notice_override
+    context["post_type"] = display_context["post_type"]
+    context["base_filename"] = display_context["base_filename"]
+    context["display_title"] = display_context["display_title"]
+    context["display_author"] = display_context["display_author"]
+    context["note_id"] = display_context["note_id"]
+    context["metadata_source"] = display_context["metadata_source"]
+    context["image_items"] = display_context["image_items"]
+    context["video_items"] = display_context["video_items"]
+
+    if not context["image_items"] and not context["video_items"]:
+        context["error_message"] = "没有解析到图片或视频。"
+
+
 def build_search_results_context(request, platform_key="home"):
     query = request.GET.get("q", "").strip()
     requested_ultra_hd = request_flag(request.GET.get("ultra_hd"))
@@ -4102,63 +4198,12 @@ def build_search_results_context(request, platform_key="home"):
         if prefer_ultra_hd and request_wants_results_partial(request):
             parse_options["allow_continuation"] = True
         result = parse_media_page(query, **parse_options)
-        result_metadata = result.metadata or {}
-        display_context = build_result_display_context(result, platform_key=platform_key)
-        context["platform"] = result.platform
-        target_platform_key = get_platform_key_for_result(result.platform, result_metadata)
-        if (
-            platform_key != "home"
-            and target_platform_key
-            and target_platform_key != platform_key
-        ):
-            context["target_page"] = get_page_payload(target_platform_key)
-        context["result_theme"] = display_context["result_theme"]
-        context["platform_name"] = display_context["platform_name"]
-        if context["page_platform_id"] and context["page_platform_id"] != result.platform:
-            context["platform_notice"] = f"你粘贴的是{context['platform_name']}链接，已自动使用对应解析器。"
-        if result.platform == "third_party":
-            provider_label = result_metadata.get("provider_label") or "第三方 Provider"
-            context["provider_notice"] = f"本次由 {provider_label} 第三方解析，资源可用性取决于上游平台。"
-            if result_metadata.get("selected_provider") == "youtube_merge":
-                context["provider_notice"] = "本次使用 YouTube 最高画质任务；下载时将在服务端合并音频和视频，文件可能更大。"
-            elif result_metadata.get("selected_provider") == "yt_dlp_merge":
-                context["provider_notice"] = "本次使用 yt-dlp 高清合并；默认优先 1080p，下载时将在服务端合并音频和视频。"
-        if prefer_ultra_hd and result.platform == "douyin":
-            ultra_provider = (
-                result_metadata.get("ultra_race_winner")
-                or result_metadata.get("selected_provider")
-                or result_metadata.get("source_provider")
-            )
-            ultra_provider_label = {
-                "tiantianjiexi": "天天解析",
-                "kukutool": "KuKuTool",
-                "native": "本地解析",
-                "mobile_feed": "本地解析",
-                "mobile_share": "本地解析",
-            }.get(ultra_provider, "")
-            if ultra_provider_label in {"天天解析", "KuKuTool"}:
-                context["provider_notice"] = (
-                    f"本次由 {ultra_provider_label} 返回抖音原画 / 超高清资源；"
-                    "若上游不可用会自动回退本地解析。"
-                )
-            elif result_metadata.get("kukutool_background_refresh"):
-                context["provider_notice"] = (
-                    "超高清上游仍在后台解析，本次先回退本地解析；"
-                    "稍后重新解析此链接可能命中原画 / 超高清资源。"
-                )
-            else:
-                context["provider_notice"] = "本次未命中超高清上游，已自动回退本地解析。"
-        context["post_type"] = display_context["post_type"]
-        context["base_filename"] = display_context["base_filename"]
-        context["display_title"] = display_context["display_title"]
-        context["display_author"] = display_context["display_author"]
-        context["note_id"] = display_context["note_id"]
-        context["metadata_source"] = display_context["metadata_source"]
-        context["image_items"] = display_context["image_items"]
-        context["video_items"] = display_context["video_items"]
-
-        if not context["image_items"] and not context["video_items"]:
-            context["error_message"] = "没有解析到图片或视频。"
+        apply_search_result_to_context(
+            context,
+            result,
+            platform_key=platform_key,
+            prefer_ultra_hd=prefer_ultra_hd,
+        )
         log_parse_request_event(
             request,
             "media_parse_completed",
@@ -4174,6 +4219,17 @@ def build_search_results_context(request, platform_key="home"):
         )
 
     except DouyinContinuationPendingError as error:
+        if error.fallback_result is not None:
+            apply_search_result_to_context(
+                context,
+                error.fallback_result,
+                platform_key=platform_key,
+                prefer_ultra_hd=prefer_ultra_hd,
+                provider_notice_override=(
+                    "已先返回当前可用资源；更高清版本仍在本次请求内"
+                    "自动续查。"
+                ),
+            )
         context["continuation_pending"] = True
         context["continuation_token"] = issue_douyin_continuation_token(
             task_id=error.task_id,
@@ -4186,7 +4242,8 @@ def build_search_results_context(request, platform_key="home"):
         context["continuation_expires_in_seconds"] = (
             DOUYIN_CONTINUATION_TTL_SECONDS
         )
-        context["provider_notice"] = str(error)
+        if error.fallback_result is None:
+            context["provider_notice"] = str(error)
         log_parse_request_event(
             request,
             "media_parse_continuation_pending",
@@ -4197,6 +4254,7 @@ def build_search_results_context(request, platform_key="home"):
             requested_youtube_merge=requested_youtube_merge,
             prefer_youtube_merge=prefer_youtube_merge,
             duration_ms=(time.monotonic() - parse_started_at) * 1000,
+            result=error.fallback_result,
             context=context,
             status=ObservabilityStatus.SUCCESS,
         )

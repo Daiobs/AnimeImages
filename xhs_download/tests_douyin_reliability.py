@@ -59,6 +59,7 @@ def build_provider_result(
     url=MEDIA_URL,
     size_bytes=80 * 1024 * 1024,
     aweme_id=AWEME_ID,
+    quality_label="超高清",
 ):
     asset_id = f"douyin:{aweme_id}:video:{provider}"
     cache_key = f"douyin:{provider}:validated:{aweme_id}"
@@ -79,7 +80,7 @@ def build_provider_result(
                 media_type="video",
                 url=url,
                 platform="douyin",
-                quality_label="超高清",
+                quality_label=quality_label,
                 size_bytes=size_bytes,
                 asset_id=asset_id,
                 provider=provider,
@@ -99,10 +100,39 @@ def build_tiantianjiexi_item(url=MEDIA_URL, *, aweme_id=AWEME_ID):
     ).video_assets[0].to_download_item()
 
 
+def build_native_fallback_result(*, quality_label="4k"):
+    return ParseResult(
+        platform="douyin",
+        post_type="video",
+        base_filename="douyin_native",
+        assets=(
+            MediaAsset(
+                media_type="video",
+                url=MEDIA_URL,
+                platform="douyin",
+                quality_label=quality_label,
+            ),
+        ),
+        metadata={
+            "selected_provider": "native",
+            "fallback_reason": "kukutool_deadline",
+            "kukutool_background_refresh": True,
+        },
+    )
+
+
 class SlowRaceProvider:
     name = "tiantianjiexi"
 
-    def __init__(self, *, result=None, error=None, delay_seconds=0.06):
+    def __init__(
+        self,
+        *,
+        name="tiantianjiexi",
+        result=None,
+        error=None,
+        delay_seconds=0.06,
+    ):
+        self.name = name
         self.result = result
         self.error = error
         self.delay_seconds = delay_seconds
@@ -195,6 +225,182 @@ class DouyinContinuationServiceTests(SimpleTestCase):
         self.assertEqual(outcome.status, "failed")
         self.assertNotIn("secret", outcome.message)
         self.assertEqual(fake_provider.calls, 1)
+
+    def test_weak_candidate_preserves_running_upgrade_for_continuation(self):
+        weak_result = build_provider_result(
+            provider="kukutool",
+            size_bytes=4 * 1024 * 1024,
+            quality_label="1080p",
+        )
+        strong_result = build_provider_result(
+            size_bytes=105 * 1024 * 1024,
+            quality_label="4K",
+        )
+        weak_provider = SlowRaceProvider(
+            name="kukutool",
+            result=weak_result,
+            delay_seconds=0.002,
+        )
+        strong_provider = SlowRaceProvider(
+            result=strong_result,
+            delay_seconds=0.06,
+        )
+        settings = SimpleNamespace(
+            ultra_total_timeout_seconds=0.02,
+            provider_is_enabled=lambda _name: True,
+        )
+        provider = DouyinUltraRaceProvider(
+            provider_settings=settings,
+            providers=(weak_provider, strong_provider),
+        )
+        context = DouyinParseContext(
+            url=f"https://www.douyin.com/video/{AWEME_ID}",
+            aweme_id=AWEME_ID,
+            prefer_ultra_hd=True,
+            deadline_monotonic=time.monotonic() + 0.02,
+            allow_continuation=True,
+        )
+
+        with self.assertRaises(DouyinContinuationPendingError) as raised:
+            provider.parse(Mock(), context)
+
+        fallback = raised.exception.fallback_result
+        self.assertIsNotNone(fallback)
+        self.assertEqual(
+            fallback.video_assets[0].provider,
+            "kukutool",
+        )
+        self.assertEqual(
+            fallback.video_assets[0].size_bytes,
+            4 * 1024 * 1024,
+        )
+
+        token = issue_douyin_continuation_token(
+            task_id=raised.exception.task_id,
+            client_identity="client-a",
+            platform_key="home",
+        )
+        pending, _platform_key = poll_douyin_continuation(
+            token,
+            client_identity="client-a",
+        )
+        self.assertEqual(pending.status, "continuation_pending")
+
+        time.sleep(0.08)
+        completed, _platform_key = poll_douyin_continuation(
+            token,
+            client_identity="client-a",
+        )
+        self.assertEqual(completed.status, "success")
+        self.assertEqual(
+            completed.result.video_assets[0].provider,
+            "tiantianjiexi",
+        )
+        self.assertEqual(
+            completed.result.video_assets[0].size_bytes,
+            105 * 1024 * 1024,
+        )
+        self.assertEqual(weak_provider.calls, 1)
+        self.assertEqual(strong_provider.calls, 1)
+
+    def test_native_fallback_label_does_not_end_external_race(self):
+        native_fallback = build_native_fallback_result()
+        strong_result = build_provider_result(
+            size_bytes=105 * 1024 * 1024,
+            quality_label="4K",
+        )
+        fallback_provider = SlowRaceProvider(
+            name="kukutool",
+            result=native_fallback,
+            delay_seconds=0.002,
+        )
+        strong_provider = SlowRaceProvider(
+            result=strong_result,
+            delay_seconds=0.06,
+        )
+        settings = SimpleNamespace(
+            ultra_total_timeout_seconds=0.02,
+            provider_is_enabled=lambda _name: True,
+        )
+        provider = DouyinUltraRaceProvider(
+            provider_settings=settings,
+            providers=(fallback_provider, strong_provider),
+        )
+        context = DouyinParseContext(
+            url=f"https://www.douyin.com/video/{AWEME_ID}",
+            aweme_id=AWEME_ID,
+            prefer_ultra_hd=True,
+            deadline_monotonic=time.monotonic() + 0.02,
+            allow_continuation=True,
+        )
+
+        with self.assertRaises(DouyinContinuationPendingError) as raised:
+            provider.parse(Mock(), context)
+
+        fallback = raised.exception.fallback_result
+        self.assertEqual(
+            fallback.metadata["selected_provider"],
+            "native",
+        )
+        self.assertEqual(
+            fallback.metadata["ultra_race_winner"],
+            "native",
+        )
+
+        token = issue_douyin_continuation_token(
+            task_id=raised.exception.task_id,
+            client_identity="client-a",
+            platform_key="home",
+        )
+        time.sleep(0.08)
+        completed, _platform_key = poll_douyin_continuation(
+            token,
+            client_identity="client-a",
+        )
+        self.assertEqual(completed.status, "success")
+        self.assertEqual(
+            completed.result.video_assets[0].provider,
+            "tiantianjiexi",
+        )
+        self.assertEqual(fallback_provider.calls, 1)
+        self.assertEqual(strong_provider.calls, 1)
+
+    def test_weak_candidate_is_not_terminal_while_upgrade_is_pending(self):
+        coordinator = DouyinContinuationCoordinator(
+            2,
+            settle_seconds=0,
+        )
+        weak_future = Future()
+        weak_future.set_result(
+            build_provider_result(
+                provider="kukutool",
+                size_bytes=4 * 1024 * 1024,
+                quality_label="1080p",
+            )
+        )
+        coordinator.capture_future(
+            weak_future,
+            provider_name="kukutool",
+            score_result=lambda result: (
+                result.video_assets[0].size_bytes,
+                0,
+            ),
+            is_strong_result=lambda _result: False,
+            prepare_result=lambda value: value,
+        )
+        token = issue_douyin_continuation_token(
+            task_id=coordinator.task_id,
+            client_identity="client-a",
+            platform_key="home",
+        )
+
+        outcome, _platform_key = poll_douyin_continuation(
+            token,
+            client_identity="client-a",
+        )
+
+        self.assertEqual(outcome.status, "continuation_pending")
+        coordinator.abandon()
 
     def test_tampered_expired_and_cross_client_tokens_are_rejected(self):
         token = issue_douyin_continuation_token(
@@ -294,6 +500,41 @@ class DouyinContinuationServiceTests(SimpleTestCase):
             MEDIA_URL,
         )
         self.assertFalse(coordinator.has_pending_work())
+        coordinator.abandon()
+
+    def test_strong_candidate_is_terminal_while_other_work_is_pending(self):
+        future = Future()
+        coordinator = DouyinContinuationCoordinator(2)
+        result = build_provider_result(
+            size_bytes=105 * 1024 * 1024,
+            quality_label="4K",
+        )
+        future.set_result(result)
+        coordinator.capture_future(
+            future,
+            provider_name="tiantianjiexi",
+            score_result=lambda _result: (1000, 1000),
+            is_strong_result=lambda _result: True,
+            prepare_result=lambda value: value,
+        )
+
+        best_result, pending, is_strong = (
+            coordinator.snapshot_result_state()
+        )
+
+        self.assertEqual(best_result.video_assets[0].url, MEDIA_URL)
+        self.assertTrue(pending)
+        self.assertTrue(is_strong)
+        token = issue_douyin_continuation_token(
+            task_id=coordinator.task_id,
+            client_identity="client-a",
+            platform_key="home",
+        )
+        outcome, _platform_key = poll_douyin_continuation(
+            token,
+            client_identity="client-a",
+        )
+        self.assertEqual(outcome.status, "success")
         coordinator.abandon()
 
     def test_pending_continuation_is_not_hidden_by_native_fallback(self):
@@ -482,6 +723,10 @@ class DownloadHandoffTests(SimpleTestCase):
                     client_identity="client-a",
                 )
             self.assertEqual(loaded.status, status)
+            self.assertEqual(
+                loaded.stream_started,
+                status in {"streaming", "completed", "failed"},
+            )
             mock_cache_set.assert_not_called()
             serialized = json.dumps(loaded.as_public_dict())
             self.assertNotIn("zjcdn.com", serialized)
@@ -496,6 +741,36 @@ class DownloadHandoffTests(SimpleTestCase):
             failed["message"],
             "上游资源连接异常，请稍后重试。",
         )
+        self.assertTrue(failed["stream_started"])
+
+    def test_failed_after_streaming_preserves_sticky_start_fact(self):
+        tokens = issue_download_handoff_tokens(
+            item={
+                "type": "video",
+                "url": "https://v3-dy-o.zjcdn.com/video.mp4?token=secret",
+            },
+            base_filename="demo",
+            client_identity="client-a",
+        )
+        ticket_id = load_download_status(
+            tokens.status_token,
+            client_identity="client-a",
+        ).ticket_id
+
+        update_download_status(ticket_id, "streaming")
+        update_download_status(
+            ticket_id,
+            "failed",
+            error_code="UPSTREAM_CONNECTION_ERROR",
+        )
+        failed = load_download_status(
+            tokens.status_token,
+            client_identity="client-a",
+        )
+
+        self.assertEqual(failed.status, "failed")
+        self.assertTrue(failed.stream_started)
+        self.assertTrue(failed.as_public_dict()["stream_started"])
 
 
 class DownloadPrepareViewTests(TestCase):
@@ -1503,6 +1778,77 @@ class DouyinContinuationViewTests(TestCase):
         self.assertTrue(
             mock_parse.call_args.kwargs["allow_continuation"]
         )
+
+    @patch("xhs_download.views.parse_media_page")
+    @patch(
+        "xhs_download.views.consume_fixed_window",
+        return_value=LimitResult(allowed=True),
+    )
+    @patch("xhs_download.views.ultra_hd_is_available", return_value=True)
+    def test_initial_ajax_pending_renders_available_fallback(
+        self,
+        _mock_available,
+        _mock_limit,
+        mock_parse,
+    ):
+        fallback = build_provider_result(
+            provider="kukutool",
+            size_bytes=4 * 1024 * 1024,
+            quality_label="1080p",
+        )
+        mock_parse.side_effect = DouyinContinuationPendingError(
+            "task-id",
+            fallback_result=fallback,
+        )
+
+        response = Client().get(
+            "/tiktok/results/",
+            {
+                "q": f"https://www.douyin.com/video/{AWEME_ID}",
+                "ultra_hd": "1",
+            },
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["status"], "continuation_pending")
+        self.assertTrue(body["has_results"])
+        self.assertIn("asset-card", body["html"])
+        self.assertTrue(body["continuation_token"])
+        self.assertIn("自动续查", body["message"])
+
+    @patch("xhs_download.views.probe_media_size")
+    @patch("xhs_download.views.parse_media_page")
+    @patch(
+        "xhs_download.views.consume_fixed_window",
+        return_value=LimitResult(allowed=True),
+    )
+    @patch("xhs_download.views.ultra_hd_is_available", return_value=True)
+    def test_ultra_result_render_does_not_add_media_size_probe(
+        self,
+        _mock_available,
+        _mock_limit,
+        mock_parse,
+        mock_probe_size,
+    ):
+        mock_parse.return_value = build_native_fallback_result()
+
+        response = Client().get(
+            "/tiktok/results/",
+            {
+                "q": f"https://www.douyin.com/video/{AWEME_ID}",
+                "ultra_hd": "1",
+            },
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        html = response.json()["html"]
+        self.assertIn("大小未知", html)
+        self.assertIn("本次先回退本地解析", html)
+        self.assertNotIn("本次由 KuKuTool 返回", html)
+        mock_probe_size.assert_not_called()
 
     @patch("xhs_download.views.parse_media_page")
     def test_poll_success_renders_cache_without_provider_call(

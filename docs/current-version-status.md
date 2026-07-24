@@ -80,6 +80,14 @@ candidate behavior includes:
   the foreground budget. The browser performs at most five cache-only polls
   over a 15-second window; polling cannot call a Provider or submit the
   original parse again.
+- A weak or native fallback can be rendered immediately while that bounded
+  continuation remains active. It does not cancel a still-running external
+  Provider, and a later strong result replaces the fallback in the same
+  request lifecycle. Provider provenance comes from the actual parsed result,
+  so an inner native fallback is not relabeled as KuKuTool or TianTianJieXi.
+- Ultra Douyin result rendering does not start a separate missing-size media
+  probe after parsing. Unknown fallback sizes remain unknown rather than
+  consuming response time outside the Provider budget.
 - Provider video downloads first use a local-only JSON prepare request.
   Prepare performs no upstream media request and produces separate
   client-bound, 60-second stream and status URLs that contain no raw Provider
@@ -89,6 +97,11 @@ candidate behavior includes:
   bounded interval until `streaming`, `failed`, `expired`, or a client-side
   15-second ceiling. Status polling is cache-only and cannot contact a
   Provider, extend the handoff TTL, or read media bytes.
+- Once the first guarded stream chunk has been published, `stream_started`
+  remains true even if the connection later closes. The UI treats that as a
+  confirmed browser handoff; reaching the polling ceiling without a terminal
+  state is reported neutrally as unconfirmed, while a failure before streaming
+  remains an error.
 - The normal stream path opens one upstream media GET, validates its first
   non-empty chunk, then yields that chunk and the remaining iterator from the
   same response. The response object, socket, and generator are never stored

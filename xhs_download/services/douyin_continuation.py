@@ -46,9 +46,10 @@ def douyin_media_host_suffixes():
 
 
 class DouyinContinuationPendingError(XhsProviderTimeoutError):
-    def __init__(self, task_id):
+    def __init__(self, task_id, *, fallback_result=None):
         super().__init__("超高清资源仍在处理中，正在自动续查。")
         self.task_id = str(task_id or "")
+        self.fallback_result = fallback_result
 
 
 class DouyinContinuationError(ValueError):
@@ -240,6 +241,7 @@ class DouyinContinuationCoordinator:
         self._best_payload = None
         self._best_score = (0, 0)
         self._best_provider = ""
+        self._best_is_strong = False
         self._candidate_ready_at = 0.0
         self._write_record()
 
@@ -251,8 +253,8 @@ class DouyinContinuationCoordinator:
     def _record(self):
         status = "pending"
         if self._best_payload and (
-            self._unresolved_count == 0
-            or time.time() >= self._candidate_ready_at
+            self._best_is_strong
+            or self._unresolved_count == 0
         ):
             status = "success"
         elif self._unresolved_count == 0:
@@ -264,6 +266,7 @@ class DouyinContinuationCoordinator:
             "timeout_count": self._timeout_count,
             "failure_count": self._failure_count,
             "provider": self._best_provider,
+            "best_is_strong": self._best_is_strong,
             "candidate_ready_at": self._candidate_ready_at,
         }
         if self._best_payload:
@@ -322,11 +325,14 @@ class DouyinContinuationCoordinator:
                         self._best_payload = payload
                         self._best_score = score
                         self._best_provider = str(provider_name or "")[:40]
-                        self._candidate_ready_at = (
-                            time.time() + self.settle_seconds
+                        self._best_is_strong = bool(
+                            is_strong_result(prepared_result)
                         )
-                    if is_strong_result(prepared_result):
-                        self._candidate_ready_at = 0.0
+                        self._candidate_ready_at = (
+                            0.0
+                            if self._best_is_strong
+                            else time.time() + self.settle_seconds
+                        )
             except XhsProviderTimeoutError:
                 self._timeout_count += 1
             except Exception:
@@ -346,6 +352,18 @@ class DouyinContinuationCoordinator:
                     and self._available
                     and self._unresolved_count > 0
                 ),
+            )
+
+    def snapshot_result_state(self):
+        with self._lock:
+            return (
+                self._best_result,
+                bool(
+                    self._active
+                    and self._available
+                    and self._unresolved_count > 0
+                ),
+                self._best_is_strong,
             )
 
     def has_pending_work(self):
@@ -473,12 +491,6 @@ def poll_douyin_continuation(token, *, client_identity):
 
     status = str(record.get("status") or "pending")
     result_payload = record.get("result")
-    if (
-        status == "pending"
-        and result_payload
-        and time.time() >= float(record.get("candidate_ready_at") or 0)
-    ):
-        status = "success"
     if status == "success":
         try:
             result = deserialize_douyin_continuation_result(result_payload)

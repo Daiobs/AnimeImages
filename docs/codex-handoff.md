@@ -223,6 +223,10 @@ Current download strategy is mixed:
 - The frontend polls only the download startup states and stops at
   `streaming`, `failed`, `expired`, or its 15-second hard ceiling. It never
   fetches the media body or creates a large JavaScript Blob for this path.
+- `stream_started` is sticky after the first guarded chunk. A later connection
+  failure must not turn an already-confirmed browser handoff into a false
+  startup error. Exhausting the polling window without confirmation is an
+  unconfirmed, retryable state rather than proof that the download failed.
 - TianTianJieXi recovery is server-only, bounded to one refresh and one
   download retry (at most two media GETs), and must preserve the original
   signed resource identity.

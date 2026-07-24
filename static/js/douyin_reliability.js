@@ -52,6 +52,32 @@
         };
     }
 
+    function resolveContinuationResult(initialPayload, outcomePayload) {
+        const initial = initialPayload && typeof initialPayload === "object"
+            ? initialPayload
+            : {};
+        const outcome = outcomePayload && typeof outcomePayload === "object"
+            ? outcomePayload
+            : {};
+        const hasFallback = Boolean(initial.has_results && initial.html);
+        const outcomeStatus = String(outcome.status || "failed");
+        if (
+            hasFallback
+            && ["failed", "timeout", "error"].includes(outcomeStatus)
+        ) {
+            return {
+                ...initial,
+                status: "success",
+                continuation_status: outcomeStatus,
+                continuation_error_code: String(
+                    outcome.error_code || "",
+                ),
+                continuation_message: String(outcome.message || ""),
+            };
+        }
+        return outcome;
+    }
+
     async function runBoundedContinuation(options) {
         const settings = options || {};
         const requestPoll = settings.requestPoll;
@@ -116,6 +142,7 @@
         MAX_POLLS,
         boundedPollDelay,
         normalizeContinuationPayload,
+        resolveContinuationResult,
         runBoundedContinuation,
     });
 }));

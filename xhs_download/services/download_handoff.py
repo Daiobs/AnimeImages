@@ -75,6 +75,7 @@ class DownloadStatus:
     error_code: str
     message: str
     recovered: bool
+    stream_started: bool
     upstream_attempt_count: int
     updated_at: float
     expires_at: float
@@ -84,6 +85,7 @@ class DownloadStatus:
             "ok": self.status not in {"failed", "expired"},
             "status": self.status,
             "recovered": self.recovered,
+            "stream_started": self.stream_started,
             "upstream_attempt_count": self.upstream_attempt_count,
         }
         if self.error_code:
@@ -225,6 +227,7 @@ def issue_download_handoff_tokens(
             "error_code": "",
             "message": "",
             "recovered": bool(recovered),
+            "stream_started": False,
             "upstream_attempt_count": 0,
             "updated_at": issued_at,
             "expires_at": expires_at,
@@ -336,6 +339,7 @@ def load_download_status(token, *, client_identity):
         error_code=error_code,
         message=message,
         recovered=bool(record.get("recovered")),
+        stream_started=bool(record.get("stream_started")),
         upstream_attempt_count=_bounded_attempt_count(
             record.get("upstream_attempt_count")
         ),
@@ -380,6 +384,10 @@ def update_download_status(
         "status": status,
         "error_code": normalized_error_code,
         "message": message,
+        "stream_started": bool(
+            record.get("stream_started")
+            or status in {"streaming", "completed"}
+        ),
         "updated_at": time.time(),
     }
     if recovered is not None:

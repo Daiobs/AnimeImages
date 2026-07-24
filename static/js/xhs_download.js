@@ -743,20 +743,31 @@
                     message: "当前浏览器无法继续解析，请刷新页面后重试。",
                 };
             }
-            return douyinReliabilityApi.runBoundedContinuation({
+            const preserveRenderedResult = Boolean(
+                initialPayload
+                && initialPayload.has_results
+                && initialPayload.html
+            );
+            const outcome = await douyinReliabilityApi.runBoundedContinuation({
                 initialPayload,
                 signal,
                 requestPoll: (token, pollContext) => (
                     requestDouyinContinuation(token, pollContext.signal)
                 ),
                 onPending: (payload, attempt, maxPolls) => {
-                    showParseContinuationPending(
-                        payload.message,
-                        attempt,
-                        maxPolls,
-                    );
+                    if (!preserveRenderedResult) {
+                        showParseContinuationPending(
+                            payload.message,
+                            attempt,
+                            maxPolls,
+                        );
+                    }
                 },
             });
+            return douyinReliabilityApi.resolveContinuationResult(
+                initialPayload,
+                outcome,
+            );
         }
 
         function resetResults() {
@@ -1013,7 +1024,26 @@
                     status: "streaming",
                     recovered: false,
                 };
-            if (!["streaming", "completed"].includes(statusResult.status)) {
+            const startDisposition = downloadReliabilityApi
+                ? downloadReliabilityApi.downloadStartDisposition(
+                    statusResult,
+                )
+                : "started";
+            if (startDisposition === "unconfirmed") {
+                setProgress(0);
+                setStatus(
+                    getStatusElement(),
+                    `${statusResult.message}${routeWarningText(warnings)}`,
+                    "text-muted",
+                );
+                return {
+                    ...prepared,
+                    status: statusResult.status,
+                    recovered: false,
+                    upstreamAttemptCount: 0,
+                };
+            }
+            if (startDisposition !== "started") {
                 const error = new Error(
                     statusResult.message
                     || "下载启动失败，请稍后重试。",
@@ -1617,6 +1647,9 @@
                     return;
                 }
                 if (payload.status === "continuation_pending") {
+                    if (payload.has_results && payload.html) {
+                        applyParsePayload(payload);
+                    }
                     payload = await continueDouyinParse(
                         payload,
                         activeParseController.signal,

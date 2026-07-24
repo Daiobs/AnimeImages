@@ -177,6 +177,37 @@ test("failed and expired statuses terminate polling with safe messages", async (
     assert.equal(expired.message, "下载链接已过期，请重新点击下载。");
 });
 
+test("a post-start disconnect still confirms browser download startup", async () => {
+    const failedPayload = reliability.parseDownloadStatusPayload({
+        ok: false,
+        status: "failed",
+        stream_started: true,
+        error_code: "UPSTREAM_CONNECTION_ERROR",
+    }, 200);
+    assert.equal(
+        reliability.downloadStartDisposition(failedPayload),
+        "started",
+    );
+
+    const result = await reliability.pollDownloadStatus({
+        statusUrl: "/media/download-status/ticket/",
+        fetchStatus: async () => fakeJsonResponse(200, {
+            ok: false,
+            status: "failed",
+            stream_started: true,
+            error_code: "UPSTREAM_CONNECTION_ERROR",
+        }),
+    });
+
+    assert.equal(result.status, "streaming");
+    assert.equal(result.finalStatus, "failed");
+    assert.equal(result.streamStarted, true);
+    assert.equal(
+        reliability.downloadStartDisposition(result),
+        "started",
+    );
+});
+
 test("polling timeout is bounded and never remains pending", async () => {
     let calls = 0;
     const result = await reliability.pollDownloadStatus({
@@ -197,6 +228,10 @@ test("polling timeout is bounded and never remains pending", async () => {
     assert.equal(
         result.message,
         reliability.DOWNLOAD_STATUS_POLL_TIMEOUT_MESSAGE,
+    );
+    assert.equal(
+        reliability.downloadStartDisposition(result),
+        "unconfirmed",
     );
 });
 

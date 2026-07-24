@@ -120,3 +120,39 @@ test("abort ends an active continuation without another request", async () => {
     );
     assert.equal(pollCount, 0);
 });
+
+test("a bounded continuation failure preserves an already rendered fallback", () => {
+    const initial = {
+        status: "continuation_pending",
+        continuation_token: "opaque-token",
+        has_results: true,
+        html: "<div>1080p fallback</div>",
+    };
+    const resolved = reliability.resolveContinuationResult(initial, {
+        status: "timeout",
+        error_code: "DOUYIN_CONTINUATION_CLIENT_LIMIT",
+        message: "bounded timeout",
+    });
+
+    assert.equal(resolved.status, "success");
+    assert.equal(resolved.html, initial.html);
+    assert.equal(resolved.continuation_status, "timeout");
+    assert.equal(
+        resolved.continuation_error_code,
+        "DOUYIN_CONTINUATION_CLIENT_LIMIT",
+    );
+});
+
+test("a completed continuation replaces the rendered fallback", () => {
+    const completed = {
+        status: "success",
+        html: "<div>4K upgrade</div>",
+    };
+    const resolved = reliability.resolveContinuationResult({
+        status: "continuation_pending",
+        has_results: true,
+        html: "<div>1080p fallback</div>",
+    }, completed);
+
+    assert.deepEqual(resolved, completed);
+});
