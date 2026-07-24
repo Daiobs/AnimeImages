@@ -1559,7 +1559,7 @@ class DownloadSingleConnectionStreamTests(TestCase):
             response = self.client.get(
                 f"/media/download-stream/{tokens.stream_token}/"
             )
-            response.close()
+            response._animeimages_attachment_stream.close()
 
         failed = load_download_status(
             tokens.status_token,
