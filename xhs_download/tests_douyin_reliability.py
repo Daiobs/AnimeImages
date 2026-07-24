@@ -41,8 +41,10 @@ from .services.platforms.douyin import DouyinAdapter
 from .services.platforms.douyin_kukutool import DouyinKukuToolProvider
 from .services.platforms.douyin_providers import (
     DouyinParseContext,
+    DouyinTianTianJieXiProvider,
     DouyinUltraRaceProvider,
 )
+from .services.provider_settings import ProviderSettings
 from .services.provider_manifest import build_provider_manifest_token
 from .services.provider_recovery import (
     TianTianJieXiRecoveryError,
@@ -166,6 +168,115 @@ class SlowRaceProvider:
         if self.error:
             raise self.error
         return self.result
+
+
+class DouyinExternalMetadataDeadlineTests(SimpleTestCase):
+    def setUp(self):
+        cache.clear()
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_tiantianjiexi_media_does_not_wait_for_optional_native_metadata(self):
+        class FakeTianTianProvider:
+            def parse(self, _url, timeout_seconds=None):
+                return {
+                    "title": "天天解析视频",
+                    "cover": "https://p3.douyinpic.com/cover.jpeg",
+                    "videos": [
+                        {
+                            "url": MEDIA_URL,
+                            "quality": "4K",
+                            "size": 80 * 1024 * 1024,
+                        },
+                    ],
+                }
+
+        adapter = DouyinAdapter()
+        adapter.fetch_mobile_feed_result = Mock(
+            side_effect=AssertionError(
+                "optional native metadata must not delay a valid media result"
+            )
+        )
+        provider = DouyinTianTianJieXiProvider(
+            provider_settings=ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tiantianjiexi", "native"),
+            ),
+            provider=FakeTianTianProvider(),
+            reserve_fallback_grace=False,
+        )
+        context = DouyinParseContext(
+            url=f"https://www.douyin.com/video/{AWEME_ID}",
+            final_url=f"https://www.douyin.com/video/{AWEME_ID}",
+            aweme_id=AWEME_ID,
+            deadline_monotonic=time.monotonic() + 12.0,
+        )
+
+        result = provider.parse(adapter, context)
+
+        self.assertEqual(result.video_assets[0].provider, "tiantianjiexi")
+        self.assertEqual(result.video_assets[0].quality_label, "4K")
+        self.assertEqual(result.base_filename, "天天解析视频")
+        self.assertEqual(
+            result.video_assets[0].cover_url,
+            "https://p3.douyinpic.com/cover.jpeg",
+        )
+        adapter.fetch_mobile_feed_result.assert_not_called()
+
+    def test_tiantianjiexi_can_fill_missing_display_metadata_from_native(self):
+        class FakeTianTianProvider:
+            def parse(self, _url, timeout_seconds=None):
+                return {
+                    "title": "",
+                    "cover": "",
+                    "videos": [
+                        {
+                            "url": MEDIA_URL,
+                            "quality": "4K",
+                            "size": 80 * 1024 * 1024,
+                        },
+                    ],
+                }
+
+        native_result = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="native title",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url="https://v3-dy-o.zjcdn.com/path/native.mp4",
+                    platform="douyin",
+                    cover_url="https://p3.douyinpic.com/native-cover.jpeg",
+                ),
+            ),
+        )
+        adapter = DouyinAdapter()
+        adapter.fetch_mobile_feed_result = Mock(return_value=native_result)
+        provider = DouyinTianTianJieXiProvider(
+            provider_settings=ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tiantianjiexi", "native"),
+            ),
+            provider=FakeTianTianProvider(),
+            reserve_fallback_grace=False,
+        )
+        context = DouyinParseContext(
+            url=f"https://www.douyin.com/video/{AWEME_ID}",
+            final_url=f"https://www.douyin.com/video/{AWEME_ID}",
+            aweme_id=AWEME_ID,
+            deadline_monotonic=time.monotonic() + 12.0,
+        )
+
+        result = provider.parse(adapter, context)
+
+        self.assertEqual(result.base_filename, "native title")
+        self.assertEqual(
+            result.video_assets[0].cover_url,
+            "https://p3.douyinpic.com/native-cover.jpeg",
+        )
+        adapter.fetch_mobile_feed_result.assert_called_once()
 
 
 class DouyinContinuationServiceTests(SimpleTestCase):

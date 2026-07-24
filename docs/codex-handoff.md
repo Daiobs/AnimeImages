@@ -199,7 +199,13 @@ The short-lived signed run token is bound to the client, each index is one-use,
 and the server requires the previous index to finish before accepting the next;
 parse results are not persisted. The worker and 55-second response
 ceilings protect the synchronous no-JavaScript fallback. None of this changes
-the single-link Provider Strategy.
+the single-link Provider Strategy. A Provider still receives only its configured
+per-link deadline; the existing bounded completion grace may retain a row that
+has already reached the fixed `completed` stage just after that deadline.
+Incomplete work remains a timeout. When TianTianJieXi already supplies a usable
+title and cover, its valid media result also skips an additional synchronous
+native metadata request; cached/direct native metadata and missing-metadata
+fallback remain available.
 
 ## Download Strategy State
 

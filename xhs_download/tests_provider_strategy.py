@@ -820,6 +820,54 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
             ["timeout", "timeout", "skipped", "skipped"],
         )
 
+    def test_completed_success_inside_response_grace_is_preserved(self):
+        def just_late_success(_request, source_text, **kwargs):
+            sleep(0.03)
+            kwargs["stage_tracker"].update("completed")
+            return self.success_row(source_text, duration_ms=30)
+
+        started_at = monotonic()
+        rows = build_batch_result_rows(
+            object(),
+            ["https://example.com/just-late"],
+            prefer_ultra_hd=False,
+            prefer_youtube_merge=False,
+            deadline=started_at + 0.1,
+            response_deadline=started_at + 0.1,
+            parallel_workers=1,
+            per_link_timeout_seconds=0.02,
+            scheduling_timeout_seconds=0.1,
+            max_response_timeout_seconds=0.1,
+            completion_grace_seconds=0.05,
+            row_builder=just_late_success,
+        )
+
+        self.assertEqual(rows[0]["status"], "success")
+
+    def test_completed_success_outside_response_grace_is_timeout(self):
+        def too_late_success(_request, source_text, **kwargs):
+            sleep(0.05)
+            kwargs["stage_tracker"].update("completed")
+            return self.success_row(source_text, duration_ms=50)
+
+        started_at = monotonic()
+        rows = build_batch_result_rows(
+            object(),
+            ["https://example.com/too-late"],
+            prefer_ultra_hd=False,
+            prefer_youtube_merge=False,
+            deadline=started_at + 0.1,
+            response_deadline=started_at + 0.1,
+            parallel_workers=1,
+            per_link_timeout_seconds=0.02,
+            scheduling_timeout_seconds=0.1,
+            max_response_timeout_seconds=0.1,
+            completion_grace_seconds=0.01,
+            row_builder=too_late_success,
+        )
+
+        self.assertEqual(rows[0]["status"], "timeout")
+
     def test_parallel_results_preserve_input_order(self):
         def out_of_order_row_builder(_request, source_text, **_kwargs):
             if source_text.endswith("/0"):

@@ -380,6 +380,7 @@ def _execute_batch_result_row(
     prefer_youtube_merge,
     per_link_timeout_seconds,
     response_deadline,
+    completion_grace_seconds,
     row_builder_kwargs,
     stage_tracker,
 ):
@@ -422,7 +423,21 @@ def _execute_batch_result_row(
             "解析执行失败：返回结果格式无效。",
             started_at,
         )
-    if finished_at >= execution_deadline and row.get("status") != "timeout":
+    completed_within_grace = (
+        row.get("status") == "success"
+        and stage_tracker.snapshot().get("provider_stage") == "completed"
+        and finished_at
+        <= min(
+            response_deadline,
+            execution_deadline
+            + min(max(0.0, float(completion_grace_seconds or 0)), 2.0),
+        )
+    )
+    if (
+        finished_at >= execution_deadline
+        and row.get("status") != "timeout"
+        and not completed_within_grace
+    ):
         return build_batch_timeout_row(
             source_text,
             BATCH_ITEM_TIMEOUT_MESSAGE,
@@ -514,6 +529,7 @@ def iter_batch_result_rows(
                 prefer_youtube_merge=prefer_youtube_merge,
                 per_link_timeout_seconds=per_link_timeout,
                 response_deadline=response_deadline,
+                completion_grace_seconds=completion_grace,
                 row_builder_kwargs=row_builder_kwargs,
                 stage_tracker=stage_tracker,
             )

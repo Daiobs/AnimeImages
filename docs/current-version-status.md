@@ -88,6 +88,17 @@ candidate behavior includes:
 - Ultra Douyin result rendering does not start a separate missing-size media
   probe after parsing. Unknown fallback sizes remain unknown rather than
   consuming response time outside the Provider budget.
+- A valid TianTianJieXi result with a usable Provider title and cover no longer
+  starts an additional native metadata request before returning. Existing
+  cached/direct native metadata is still reused, and native enrichment remains
+  available when the Provider metadata is incomplete. This reduces avoidable
+  Batch deadline overruns without increasing the 12-second item budget or
+  changing the Batch Provider order.
+- The existing one-second response-completion grace may retain a fully
+  completed successful Batch row when a cooperative fallback returns just
+  after its Provider deadline. The Provider still receives only the configured
+  12-second deadline; unfinished work, explicit Provider timeouts, and results
+  outside the bounded grace remain `timeout`.
 - Provider video downloads first use a local-only JSON prepare request.
   Prepare performs no upstream media request and produces separate
   client-bound, 60-second stream and status URLs that contain no raw Provider

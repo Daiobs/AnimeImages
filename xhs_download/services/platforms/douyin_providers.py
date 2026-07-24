@@ -521,13 +521,13 @@ def with_parse_metadata(result, **metadata):
     )
 
 
-def get_reference_result(adapter, context):
+def get_reference_result(adapter, context, *, allow_network=True):
     cached = get_cached_douyin_metadata(context.aweme_id)
     if cached and cached.assets:
         return cached
     if context.direct_result and context.direct_result.assets:
         return context.direct_result
-    if context.aweme_id:
+    if allow_network and context.aweme_id:
         started_at = time()
         try:
             request_options = {}
@@ -861,7 +861,16 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             )
             raise ValueError("天天解析未返回可用抖音视频资源")
 
-        reference_result = get_reference_result(adapter, context)
+        provider_title = safe_external_base_filename(payload.get("title"))
+        provider_cover_url = self.clean_cover_url(payload, adapter)
+        # Reuse existing native metadata when available. When the provider
+        # already supplied usable display metadata, do not spend the remaining
+        # media deadline on an optional native enrichment request.
+        reference_result = get_reference_result(
+            adapter,
+            context,
+            allow_network=not (provider_title and provider_cover_url),
+        )
         candidate = candidates[0]
         result = build_external_parse_result(
             adapter,
@@ -869,8 +878,8 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             candidate,
             reference_result,
             provider_name=self.name,
-            base_filename=str(payload.get("title") or ""),
-            cover_url=self.clean_cover_url(payload, adapter),
+            base_filename=provider_title,
+            cover_url=provider_cover_url,
         )
         result = with_parse_metadata(
             result,
