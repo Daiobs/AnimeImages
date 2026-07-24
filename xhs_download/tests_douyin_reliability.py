@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 import requests
 from django.core.cache import cache
 from django.http import HttpResponse
-from django.test import Client, SimpleTestCase, TestCase
+from django.test import Client, SimpleTestCase, TestCase, override_settings
 
 from .services.assets import MediaAsset, ParseResult
 from .services.common import XhsDownloadError, XhsProviderTimeoutError
@@ -170,6 +170,12 @@ class SlowRaceProvider:
         return self.result
 
 
+@override_settings(
+    THIRD_PARTY_PROVIDER_ENABLED=True,
+    TIANTIANJIEXI_PROVIDER_ENABLED=True,
+    TIANTIANJIEXI_PHONE="phone",
+    TIANTIANJIEXI_PASSWORD="password",
+)
 class DouyinExternalMetadataDeadlineTests(SimpleTestCase):
     def setUp(self):
         cache.clear()
