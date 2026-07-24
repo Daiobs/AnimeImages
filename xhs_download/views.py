@@ -76,6 +76,7 @@ from .services.download_tasks import (
     serialize_task,
 )
 from .services.download_handoff import (
+    DOWNLOAD_STREAM_START_TIMEOUT_SECONDS,
     DownloadHandoffError,
     issue_download_handoff_tokens,
     load_download_handoff,
@@ -3022,6 +3023,54 @@ class DownloadStreamStatusError(XhsDownloadError):
         self.error_code = error_code
 
 
+class DownloadStreamStartTimeout(DownloadStreamStatusError):
+    def __init__(self):
+        super().__init__(
+            "资源连接超时，请重新点击下载或重新解析后再试。",
+            error_code="DOWNLOAD_STREAM_START_TIMEOUT",
+        )
+
+
+def remaining_download_stream_start_seconds(startup_deadline):
+    if startup_deadline is None:
+        return None
+    remaining = float(startup_deadline) - time.monotonic()
+    if remaining <= 0:
+        raise DownloadStreamStartTimeout()
+    return max(0.001, remaining)
+
+
+def apply_upstream_startup_read_timeout(upstream, timeout_seconds):
+    if timeout_seconds is None or not isinstance(upstream, requests.Response):
+        return
+
+    raw = getattr(upstream, "raw", None)
+    connection = getattr(raw, "_connection", None)
+    sockets = [
+        getattr(connection, "sock", None),
+        getattr(
+            getattr(
+                getattr(
+                    getattr(raw, "_fp", None),
+                    "fp",
+                    None,
+                ),
+                "raw",
+                None,
+            ),
+            "_sock",
+            None,
+        ),
+    ]
+    for upstream_socket in sockets:
+        settimeout = getattr(upstream_socket, "settimeout", None)
+        if callable(settimeout):
+            settimeout(max(0.001, float(timeout_seconds)))
+            return
+
+    raise DownloadStreamStartTimeout()
+
+
 def notify_download_stream_status(status_callback, status, telemetry, error=None):
     if not callable(status_callback):
         return
@@ -3054,6 +3103,7 @@ class SingleAttachmentStream:
         self.completed = False
         self.failed = False
         self.closed = False
+        self.streaming_notified = False
 
     def notify(self, status, error=None):
         try:
@@ -3072,6 +3122,12 @@ class SingleAttachmentStream:
         self.completed = True
         self.notify("completed")
 
+    def start(self):
+        if self.streaming_notified:
+            return
+        self.streaming_notified = True
+        self.notify("streaming")
+
     def fail(self, error):
         if self.completed or self.failed:
             return
@@ -3081,6 +3137,7 @@ class SingleAttachmentStream:
     def __iter__(self):
         total = 0
         try:
+            self.start()
             total += len(self.first_chunk)
             yield self.first_chunk
             for chunk in self.upstream_chunks:
@@ -3136,6 +3193,7 @@ def open_single_attachment_upstream(
     include_context=False,
     status_callback=None,
     telemetry=None,
+    startup_deadline=None,
 ):
     url = item.get("url")
     if not url:
@@ -3176,6 +3234,7 @@ def open_single_attachment_upstream(
         if telemetry["upstream_attempt_count"] >= 2:
             break
         attempted_urls.add(candidate_url)
+        remaining = remaining_download_stream_start_seconds(startup_deadline)
 
         if (
             candidate_provider_item
@@ -3186,6 +3245,7 @@ def open_single_attachment_upstream(
             candidate_provider_item = None
 
         attempt_started_at = time.monotonic()
+        response = None
         try:
             telemetry["upstream_attempt_count"] += 1
             attempt_number = telemetry["upstream_attempt_count"]
@@ -3197,12 +3257,18 @@ def open_single_attachment_upstream(
                 "connecting",
                 telemetry,
             )
-            response = fetch_media_response(
-                candidate_url,
-                timeout=request_timeout,
-                retries=1 if recovery_enabled else 3,
-                provider_signed=candidate_provider_item,
-            )
+            fetch_options = {
+                "timeout": (
+                    min(float(request_timeout), remaining)
+                    if remaining is not None
+                    else request_timeout
+                ),
+                "retries": 1 if recovery_enabled else 3,
+                "provider_signed": candidate_provider_item,
+            }
+            if startup_deadline is not None:
+                fetch_options["deadline_monotonic"] = startup_deadline
+            response = fetch_media_response(candidate_url, **fetch_options)
             telemetry[
                 f"upstream_attempt_{attempt_number}_duration_ms"
             ] = int((time.monotonic() - attempt_started_at) * 1000)
@@ -3241,11 +3307,22 @@ def open_single_attachment_upstream(
             telemetry["recovered"] = bool(recovered)
             return response
         except Exception as error:
+            if response is not None:
+                response.close()
             attempt_number = telemetry["upstream_attempt_count"]
             telemetry[
                 f"upstream_attempt_{attempt_number}_duration_ms"
             ] = int((time.monotonic() - attempt_started_at) * 1000)
             telemetry["last_upstream_error_type"] = type(error).__name__
+            if isinstance(error, DownloadStreamStartTimeout):
+                last_error = error
+                break
+            if (
+                startup_deadline is not None
+                and time.monotonic() >= float(startup_deadline)
+            ):
+                last_error = DownloadStreamStartTimeout()
+                break
             last_error = error
             if provider_item and is_recoverable_provider_download_error(error):
                 invalidate_external_provider_caches(provider_item)
@@ -3262,9 +3339,20 @@ def open_single_attachment_upstream(
                     telemetry,
                 )
                 if tiantianjiexi_recovery_enabled:
+                    remaining_download_stream_start_seconds(startup_deadline)
                     refresh_started_at = time.monotonic()
                     try:
-                        refreshed_item = refresh_tiantianjiexi_download_item(item)
+                        if startup_deadline is None:
+                            refreshed_item = (
+                                refresh_tiantianjiexi_download_item(item)
+                            )
+                        else:
+                            refreshed_item = (
+                                refresh_tiantianjiexi_download_item(
+                                    item,
+                                    deadline_monotonic=startup_deadline,
+                                )
+                            )
                     except Exception as refresh_error:
                         last_error = refresh_error
                     else:
@@ -3279,11 +3367,26 @@ def open_single_attachment_upstream(
                         telemetry["provider_refresh_duration_ms"] = int(
                             (time.monotonic() - refresh_started_at) * 1000
                         )
+                    if (
+                        startup_deadline is not None
+                        and time.monotonic() >= float(startup_deadline)
+                    ):
+                        last_error = DownloadStreamStartTimeout()
+                        break
                 else:
+                    remaining_download_stream_start_seconds(startup_deadline)
                     try:
+                        recovery_options = {}
+                        if startup_deadline is not None:
+                            recovery_options["deadline_monotonic"] = (
+                                startup_deadline
+                            )
                         recovery_url = next(
                             iter(
-                                iter_kukutool_download_recovery_urls(item)
+                                iter_kukutool_download_recovery_urls(
+                                    item,
+                                    **recovery_options,
+                                )
                                 or ()
                             ),
                             "",
@@ -3299,6 +3402,12 @@ def open_single_attachment_upstream(
                                     True,
                                 )
                             )
+                    if (
+                        startup_deadline is not None
+                        and time.monotonic() >= float(startup_deadline)
+                    ):
+                        last_error = DownloadStreamStartTimeout()
+                        break
 
     raise last_error or XhsDownloadError("资源下载失败")
 
@@ -3384,6 +3493,7 @@ def build_single_attachment_response(
     status_callback=None,
     close_callback=None,
     telemetry=None,
+    startup_deadline=None,
 ):
     media_type = str(item.get("type") or "").lower() if isinstance(item, dict) else ""
     if media_type not in {"image", "video"}:
@@ -3392,6 +3502,13 @@ def build_single_attachment_response(
     max_bytes = MAX_IMAGE_BYTES if media_type == "image" else MAX_VIDEO_BYTES
     request_timeout = single_attachment_request_timeout(item, media_type)
     telemetry = telemetry if isinstance(telemetry, dict) else {}
+    if startup_deadline is None:
+        startup_deadline = (
+            time.monotonic() + DOWNLOAD_STREAM_START_TIMEOUT_SECONDS
+        )
+    telemetry["stream_start_timeout_seconds"] = (
+        DOWNLOAD_STREAM_START_TIMEOUT_SECONDS
+    )
     connect_started_at = time.monotonic()
     upstream, effective_item, recovered = open_single_attachment_upstream(
         item,
@@ -3401,6 +3518,7 @@ def build_single_attachment_response(
         include_context=True,
         status_callback=status_callback,
         telemetry=telemetry,
+        startup_deadline=startup_deadline,
     )
     telemetry["stream_connect_duration_ms"] = int(
         (time.monotonic() - connect_started_at) * 1000
@@ -3412,12 +3530,17 @@ def build_single_attachment_response(
         if content_length and content_length > max_bytes:
             raise XhsDownloadError("资源超过允许的大小限制")
 
+        apply_upstream_startup_read_timeout(
+            upstream,
+            remaining_download_stream_start_seconds(startup_deadline),
+        )
         upstream_chunks = upstream.iter_content(chunk_size=CHUNK_SIZE)
         first_chunk = b""
         for chunk in upstream_chunks:
             if chunk:
                 first_chunk = chunk
                 break
+        remaining_download_stream_start_seconds(startup_deadline)
         telemetry["time_to_first_chunk_ms"] = int(
             (time.monotonic() - connect_started_at) * 1000
         )
@@ -3427,6 +3550,10 @@ def build_single_attachment_response(
             raise XhsDownloadError("资源类型异常：HTML response body")
         if len(first_chunk) > max_bytes:
             raise XhsDownloadError("资源超过允许的大小限制")
+        apply_upstream_startup_read_timeout(
+            upstream,
+            request_timeout,
+        )
 
         telemetry["recovered"] = bool(recovered)
         stream = SingleAttachmentStream(
@@ -5103,6 +5230,9 @@ def download_stream_view(request, token):
             return
         logged_statuses.add(status)
         log_fields = {
+            "stream_start_timeout_seconds": float(
+                snapshot.get("stream_start_timeout_seconds") or 0
+            ),
             "stream_connect_duration_ms": int(
                 snapshot.get("stream_connect_duration_ms") or 0
             ),
@@ -5220,6 +5350,10 @@ def download_stream_view(request, token):
             status_callback=stream_status_callback,
             close_callback=release_stream_concurrency,
             telemetry=telemetry,
+            startup_deadline=(
+                time.monotonic()
+                + DOWNLOAD_STREAM_START_TIMEOUT_SECONDS
+            ),
         )
         stream_owns_concurrency = True
         within_limit, bytes_error_code = record_download_archive_bytes(
@@ -5245,7 +5379,6 @@ def download_stream_view(request, token):
                 "今日下载流量已达到限制，请稍后再试。",
                 error_code=bytes_error_code or "RATE_LIMITED",
             )
-        stream_status_callback("streaming", telemetry)
         stream_response["Cache-Control"] = "private, no-store"
         log_download_request_event(
             request,

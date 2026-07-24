@@ -144,7 +144,7 @@ def invalidate_tiantianjiexi_download_cache(aweme_id, cache_key):
         ) from error
 
 
-def refresh_tiantianjiexi_download_item(item):
+def refresh_tiantianjiexi_download_item(item, *, deadline_monotonic=None):
     identity = get_tiantianjiexi_manifest_identity(item)
     if not identity:
         raise TianTianJieXiRecoveryError(
@@ -153,20 +153,32 @@ def refresh_tiantianjiexi_download_item(item):
         )
 
     aweme_id, cache_key = identity
+    now = monotonic()
+    if (
+        deadline_monotonic is not None
+        and float(deadline_monotonic) <= now
+    ):
+        raise TianTianJieXiRecoveryError(
+            "资源连接超时，请重新点击下载或重新解析后再试。",
+            error_code="DOWNLOAD_STREAM_START_TIMEOUT",
+        )
     invalidate_tiantianjiexi_download_cache(aweme_id, cache_key)
     source_url = f"https://www.douyin.com/video/{aweme_id}"
     provider_settings = get_platform_provider_settings("douyin")
-    timeout_seconds = max(
+    configured_timeout_seconds = max(
         0.1,
         float(provider_settings.ultra_total_timeout_seconds or 0),
     )
+    provider_deadline = now + configured_timeout_seconds
+    if deadline_monotonic is not None:
+        provider_deadline = min(provider_deadline, float(deadline_monotonic))
     adapter = DouyinAdapter()
     context = DouyinParseContext(
         url=source_url,
         final_url=source_url,
         aweme_id=aweme_id,
         prefer_ultra_hd=True,
-        deadline_monotonic=monotonic() + timeout_seconds,
+        deadline_monotonic=provider_deadline,
     )
     try:
         result = DouyinTianTianJieXiProvider(
@@ -175,9 +187,21 @@ def refresh_tiantianjiexi_download_item(item):
             suppress_selected_log=True,
         ).parse(adapter, context)
     except XhsProviderTimeoutError as error:
+        startup_deadline_exhausted = bool(
+            deadline_monotonic is not None
+            and monotonic() >= float(deadline_monotonic)
+        )
         raise TianTianJieXiRecoveryError(
-            "资源刷新超时，请重新解析后再试。",
-            error_code="TIANTIANJIEXI_REFRESH_TIMEOUT",
+            (
+                "资源连接超时，请重新点击下载或重新解析后再试。"
+                if startup_deadline_exhausted
+                else "资源刷新超时，请重新解析后再试。"
+            ),
+            error_code=(
+                "DOWNLOAD_STREAM_START_TIMEOUT"
+                if startup_deadline_exhausted
+                else "TIANTIANJIEXI_REFRESH_TIMEOUT"
+            ),
         ) from error
     except Exception as error:
         logger.warning(
@@ -208,23 +232,33 @@ def refresh_tiantianjiexi_download_item(item):
     return refreshed_item
 
 
-def iter_kukutool_download_recovery_urls(item):
+def iter_kukutool_download_recovery_urls(item, *, deadline_monotonic=None):
     identity = get_kukutool_manifest_identity(item)
     if not identity:
         return
 
     aweme_id, cache_key = identity
+    if (
+        deadline_monotonic is not None
+        and monotonic() >= float(deadline_monotonic)
+    ):
+        return
     invalidate_kukutool_download_cache(aweme_id, cache_key)
     adapter = DouyinAdapter()
     context = DouyinParseContext(
         url=f"https://www.douyin.com/video/{aweme_id}",
         final_url=f"https://www.douyin.com/video/{aweme_id}",
         aweme_id=aweme_id,
+        deadline_monotonic=deadline_monotonic,
     )
 
     if (
         settings.ULTRA_HD_PROVIDER_ENABLED
         and settings.KUKUTOOL_PROVIDER_ENABLED
+        and (
+            deadline_monotonic is None
+            or monotonic() < float(deadline_monotonic)
+        )
     ):
         try:
             validated = DouyinKukuToolProvider().refresh_for_download(
@@ -240,12 +274,24 @@ def iter_kukutool_download_recovery_urls(item):
             )
 
     try:
+        remaining = None
+        if deadline_monotonic is not None:
+            remaining = float(deadline_monotonic) - monotonic()
+            if remaining <= 0:
+                return
         native_result = get_fast_native_result(
             adapter,
             context,
-            timeout_seconds=float(
-                getattr(settings, "DOUYIN_ULTRA_NATIVE_TIMEOUT_SECONDS", 3.0)
-                or 3.0
+            timeout_seconds=min(
+                float(
+                    getattr(
+                        settings,
+                        "DOUYIN_ULTRA_NATIVE_TIMEOUT_SECONDS",
+                        3.0,
+                    )
+                    or 3.0
+                ),
+                remaining if remaining is not None else float("inf"),
             ),
         )
     except Exception:

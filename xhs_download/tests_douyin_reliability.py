@@ -13,13 +13,19 @@ from django.test import Client, SimpleTestCase, TestCase
 from .services.assets import MediaAsset, ParseResult
 from .services.common import XhsDownloadError, XhsProviderTimeoutError
 from .services.download_handoff import (
+    DOWNLOAD_HANDOFF_TTL_SECONDS,
+    DOWNLOAD_STREAM_START_TIMEOUT_SECONDS,
     DownloadHandoffError,
     issue_download_handoff_tokens,
     load_download_handoff,
     load_download_status,
     update_download_status,
 )
-from .services.downloads import fetch_item_to_temp_path, observable_download_error
+from .services.downloads import (
+    fetch_item_to_temp_path,
+    observable_download_error,
+    request_public_provider_get_with_retry,
+)
 from .services.douyin_continuation import (
     DOUYIN_CONTINUATION_MAX_POLLS,
     DouyinContinuationCoordinator,
@@ -31,6 +37,7 @@ from .services.douyin_continuation import (
     serialize_douyin_continuation_result,
 )
 from .services.platforms.douyin import DouyinAdapter
+from .services.platforms.douyin_kukutool import DouyinKukuToolProvider
 from .services.platforms.douyin_providers import (
     DouyinParseContext,
     DouyinUltraRaceProvider,
@@ -38,11 +45,14 @@ from .services.platforms.douyin_providers import (
 from .services.provider_manifest import build_provider_manifest_token
 from .services.provider_recovery import (
     TianTianJieXiRecoveryError,
+    get_kukutool_manifest_identity,
     get_tiantianjiexi_manifest_identity,
     refresh_tiantianjiexi_download_item,
 )
 from .services.rate_limits import LimitResult
 from .views import (
+    DownloadStreamStartTimeout,
+    apply_upstream_startup_read_timeout,
     build_single_attachment_response,
     inspect_single_attachment_download,
     open_single_attachment_upstream,
@@ -51,6 +61,17 @@ from .views import (
 
 AWEME_ID = "123456789012345678"
 MEDIA_URL = "https://v3-dy-o.zjcdn.com/path/video.mp4"
+
+
+class FakeMonotonicClock:
+    def __init__(self, value=100.0):
+        self.value = float(value)
+
+    def __call__(self):
+        return self.value
+
+    def advance(self, seconds):
+        self.value += float(seconds)
 
 
 def build_provider_result(
@@ -652,6 +673,124 @@ class DownloadHandoffTests(SimpleTestCase):
             "DOWNLOAD_HANDOFF_CLIENT_MISMATCH",
         )
 
+    def test_handoff_item_is_allowlisted_and_sensitive_fields_are_removed(self):
+        item = {
+            **build_tiantianjiexi_item(),
+            "filename": "douyin-demo.mp4",
+            "size_bytes": 1024,
+            "cookie": "secret-cookie",
+            "headers": {"Authorization": "secret"},
+            "source_url": "https://www.douyin.com/video/secret",
+            "provider_response": {"token": "secret"},
+            "unknown_client_field": "secret",
+        }
+        tokens = issue_download_handoff_tokens(
+            item=item,
+            base_filename="demo",
+            client_identity="client-a",
+        )
+
+        loaded = load_download_handoff(
+            tokens.stream_token,
+            client_identity="client-a",
+            consume=False,
+        )
+
+        self.assertEqual(
+            set(loaded.item),
+            {
+                "type",
+                "url",
+                "filename",
+                "size_bytes",
+                "provider",
+                "provider_resource_id",
+                "provider_cache_key",
+                "provider_manifest_token",
+                "asset_id",
+            },
+        )
+        serialized = json.dumps(loaded.item)
+        for forbidden in (
+            "secret-cookie",
+            "Authorization",
+            "source_url",
+            "provider_response",
+            "unknown_client_field",
+        ):
+            self.assertNotIn(forbidden, serialized)
+        status_payload = load_download_status(
+            tokens.status_token,
+            client_identity="client-a",
+        ).as_public_dict()
+        self.assertNotIn("url", json.dumps(status_payload).lower())
+
+    def test_handoff_rejects_oversized_fields_and_unsafe_urls(self):
+        with self.assertRaises(DownloadHandoffError) as oversized:
+            issue_download_handoff_tokens(
+                item={
+                    "type": "image",
+                    "url": "https://ci.xiaohongshu.com/demo.jpg",
+                    "filename": "x" * 241,
+                },
+                base_filename="demo",
+                client_identity="client-a",
+            )
+        self.assertEqual(
+            oversized.exception.error_code,
+            "DOWNLOAD_HANDOFF_INVALID",
+        )
+
+        with self.assertRaises(DownloadHandoffError) as unsafe:
+            issue_download_handoff_tokens(
+                item={
+                    "type": "image",
+                    "url": "https://evil.example/private.jpg",
+                },
+                base_filename="demo",
+                client_identity="client-a",
+            )
+        self.assertEqual(
+            unsafe.exception.error_code,
+            "DOWNLOAD_HANDOFF_INVALID",
+        )
+
+    def test_provider_recovery_identity_survives_handoff_sanitization(self):
+        tiantianjiexi_item = build_tiantianjiexi_item()
+        kukutool_item = build_provider_result(
+            provider="kukutool",
+            url="https://v26.douyinvod.com/path/video.mp4",
+        ).video_assets[0].to_download_item()
+
+        loaded_items = []
+        for item in (tiantianjiexi_item, kukutool_item):
+            tokens = issue_download_handoff_tokens(
+                item=item,
+                base_filename="demo",
+                client_identity="client-a",
+            )
+            loaded_items.append(
+                load_download_handoff(
+                    tokens.stream_token,
+                    client_identity="client-a",
+                ).item
+            )
+
+        self.assertEqual(
+            get_tiantianjiexi_manifest_identity(loaded_items[0]),
+            get_tiantianjiexi_manifest_identity(tiantianjiexi_item),
+        )
+        self.assertEqual(
+            get_kukutool_manifest_identity(loaded_items[1]),
+            get_kukutool_manifest_identity(kukutool_item),
+        )
+
+    def test_handoff_ttl_covers_startup_budget_with_buffer(self):
+        self.assertGreaterEqual(
+            DOWNLOAD_HANDOFF_TTL_SECONDS,
+            int(DOWNLOAD_STREAM_START_TIMEOUT_SECONDS) + 10,
+        )
+
     def test_handoff_tamper_and_expiry_are_rejected(self):
         tokens = issue_download_handoff_tokens(
             item={"type": "image", "url": "https://ci.xiaohongshu.com/demo.jpg"},
@@ -944,6 +1083,322 @@ class DownloadPrepareViewTests(TestCase):
         upstream.close.assert_called_once_with()
 
 
+class DownloadStreamStartupDeadlineTests(SimpleTestCase):
+    def build_upstream(self, chunks, *, content_type="video/mp4"):
+        upstream = Mock()
+        upstream.headers = {
+            "Content-Type": content_type,
+            "Content-Length": str(sum(len(chunk) for chunk in chunks)),
+        }
+        upstream.url = MEDIA_URL
+        upstream.iter_content.side_effect = lambda *, chunk_size: iter(chunks)
+        return upstream
+
+    def test_recovery_attempts_share_one_startup_budget(self):
+        clock = FakeMonotonicClock()
+        original = build_tiantianjiexi_item()
+        refreshed = build_tiantianjiexi_item(
+            "https://v5-dy-o.zjcdn.com/path/refreshed.mp4"
+        )
+        upstream = self.build_upstream([b"video"])
+        attempts = []
+
+        def fetch(_url, **kwargs):
+            attempts.append(kwargs)
+            if len(attempts) == 1:
+                clock.advance(30)
+                raise requests.exceptions.ConnectionError("first")
+            return upstream
+
+        def refresh(_item, **kwargs):
+            self.assertEqual(kwargs["deadline_monotonic"], 150.0)
+            clock.advance(10)
+            return refreshed
+
+        with (
+            patch("xhs_download.views.time.monotonic", side_effect=clock),
+            patch(
+                "xhs_download.views.fetch_media_response",
+                side_effect=fetch,
+            ),
+            patch(
+                "xhs_download.views.refresh_tiantianjiexi_download_item",
+                side_effect=refresh,
+            ),
+            patch(
+                "xhs_download.views.invalidate_external_provider_caches"
+            ),
+        ):
+            response, _item, recovered = open_single_attachment_upstream(
+                original,
+                "video",
+                60,
+                include_context=True,
+                startup_deadline=150.0,
+            )
+
+        self.assertTrue(recovered)
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[0]["timeout"], 50.0)
+        self.assertEqual(attempts[1]["timeout"], 10.0)
+        self.assertEqual(attempts[0]["deadline_monotonic"], 150.0)
+        self.assertEqual(attempts[1]["deadline_monotonic"], 150.0)
+        response.close()
+
+    def test_provider_request_retries_use_remaining_deadline(self):
+        clock = FakeMonotonicClock()
+        observed_timeouts = []
+
+        def request_get(*_args, **kwargs):
+            observed_timeouts.append(kwargs["timeout"])
+            if len(observed_timeouts) == 1:
+                clock.advance(30)
+                raise requests.exceptions.ConnectionError("first")
+            clock.advance(21)
+            raise requests.exceptions.ReadTimeout("second")
+
+        with (
+            patch(
+                "xhs_download.services.downloads.time.monotonic",
+                side_effect=clock,
+            ),
+            patch(
+                "xhs_download.services.downloads."
+                "validate_provider_signed_download_url"
+            ),
+            patch(
+                "xhs_download.services.downloads.requests.get",
+                side_effect=request_get,
+            ),
+        ):
+            with self.assertRaises(requests.exceptions.ReadTimeout):
+                request_public_provider_get_with_retry(
+                    MEDIA_URL,
+                    timeout=60,
+                    retries=2,
+                    provider_item=build_tiantianjiexi_item(),
+                    deadline_monotonic=150.0,
+                )
+
+        self.assertEqual(observed_timeouts, [50.0, 20.0])
+
+    def test_first_chunk_socket_timeout_uses_remaining_budget(self):
+        response = requests.Response()
+        upstream_socket = Mock()
+        response.raw = SimpleNamespace(
+            _connection=SimpleNamespace(sock=upstream_socket),
+            _fp=None,
+        )
+
+        apply_upstream_startup_read_timeout(response, 12.5)
+
+        upstream_socket.settimeout.assert_called_once_with(12.5)
+
+    def test_first_connection_exhaustion_stops_before_refresh(self):
+        clock = FakeMonotonicClock()
+
+        def fetch(_url, **_kwargs):
+            clock.advance(51)
+            raise requests.exceptions.ReadTimeout("slow")
+
+        with (
+            patch("xhs_download.views.time.monotonic", side_effect=clock),
+            patch(
+                "xhs_download.views.fetch_media_response",
+                side_effect=fetch,
+            ),
+            patch(
+                "xhs_download.views.refresh_tiantianjiexi_download_item"
+            ) as mock_refresh,
+        ):
+            with self.assertRaises(DownloadStreamStartTimeout) as raised:
+                open_single_attachment_upstream(
+                    build_tiantianjiexi_item(),
+                    "video",
+                    60,
+                    startup_deadline=150.0,
+                )
+
+        self.assertEqual(
+            raised.exception.error_code,
+            "DOWNLOAD_STREAM_START_TIMEOUT",
+        )
+        mock_refresh.assert_not_called()
+
+    def test_refresh_exhaustion_stops_before_second_connection(self):
+        clock = FakeMonotonicClock()
+        refreshed = build_tiantianjiexi_item(
+            "https://v5-dy-o.zjcdn.com/path/refreshed.mp4"
+        )
+
+        def fetch(_url, **_kwargs):
+            clock.advance(20)
+            raise requests.exceptions.ConnectionError("first")
+
+        def refresh(_item, **_kwargs):
+            clock.advance(31)
+            return refreshed
+
+        with (
+            patch("xhs_download.views.time.monotonic", side_effect=clock),
+            patch(
+                "xhs_download.views.fetch_media_response",
+                side_effect=fetch,
+            ) as mock_fetch,
+            patch(
+                "xhs_download.views.refresh_tiantianjiexi_download_item",
+                side_effect=refresh,
+            ),
+            patch(
+                "xhs_download.views.invalidate_external_provider_caches"
+            ),
+        ):
+            with self.assertRaises(DownloadStreamStartTimeout):
+                open_single_attachment_upstream(
+                    build_tiantianjiexi_item(),
+                    "video",
+                    60,
+                    startup_deadline=150.0,
+                )
+
+        self.assertEqual(mock_fetch.call_count, 1)
+
+    def test_first_chunk_must_arrive_inside_startup_budget(self):
+        clock = FakeMonotonicClock()
+        upstream = self.build_upstream([], content_type="image/jpeg")
+        upstream.url = "https://ci.xiaohongshu.com/demo.jpg"
+
+        def slow_chunks(*, chunk_size):
+            self.assertGreater(chunk_size, 0)
+            clock.advance(51)
+            yield b"image-data"
+
+        upstream.iter_content.side_effect = slow_chunks
+        with (
+            patch("xhs_download.views.time.monotonic", side_effect=clock),
+            patch(
+                "xhs_download.views.fetch_media_response",
+                return_value=upstream,
+            ),
+        ):
+            with self.assertRaises(DownloadStreamStartTimeout):
+                build_single_attachment_response(
+                    {
+                        "type": "image",
+                        "url": "https://ci.xiaohongshu.com/demo.jpg",
+                    },
+                    "demo",
+                    startup_deadline=150.0,
+                )
+
+        upstream.close.assert_called_once_with()
+
+    def test_startup_deadline_stops_limiting_after_first_chunk(self):
+        clock = FakeMonotonicClock()
+        upstream = self.build_upstream(
+            [b"first", b"-second"],
+            content_type="image/jpeg",
+        )
+        upstream.url = "https://ci.xiaohongshu.com/demo.jpg"
+
+        with (
+            patch("xhs_download.views.time.monotonic", side_effect=clock),
+            patch(
+                "xhs_download.views.fetch_media_response",
+                return_value=upstream,
+            ),
+        ):
+            response, _actual_bytes = build_single_attachment_response(
+                {
+                    "type": "image",
+                    "url": "https://ci.xiaohongshu.com/demo.jpg",
+                },
+                "demo",
+                startup_deadline=150.0,
+            )
+            clock.advance(1000)
+            content = b"".join(response.streaming_content)
+
+        self.assertEqual(content, b"first-second")
+        upstream.close.assert_called_once_with()
+
+    def test_first_chunk_restores_the_normal_stream_read_timeout(self):
+        clock = FakeMonotonicClock()
+        upstream_socket = Mock()
+        upstream = requests.Response()
+        upstream.status_code = 200
+        upstream.headers = {
+            "Content-Type": "image/jpeg",
+            "Content-Length": "12",
+        }
+        upstream.url = "https://ci.xiaohongshu.com/demo.jpg"
+        upstream.raw = SimpleNamespace(
+            _connection=SimpleNamespace(sock=upstream_socket),
+            _fp=None,
+        )
+        upstream.iter_content = Mock(
+            return_value=iter([b"first", b"-second"])
+        )
+        upstream.close = Mock()
+
+        with (
+            patch("xhs_download.views.time.monotonic", side_effect=clock),
+            patch(
+                "xhs_download.views.fetch_media_response",
+                return_value=upstream,
+            ),
+        ):
+            response, _actual_bytes = build_single_attachment_response(
+                {
+                    "type": "image",
+                    "url": "https://ci.xiaohongshu.com/demo.jpg",
+                },
+                "demo",
+                startup_deadline=150.0,
+            )
+            content = b"".join(response.streaming_content)
+
+        self.assertEqual(content, b"first-second")
+        self.assertEqual(
+            [
+                call.args[0]
+                for call in upstream_socket.settimeout.call_args_list
+            ],
+            [50.0, 20],
+        )
+        upstream.close.assert_called_once_with()
+
+    @patch(
+        "xhs_download.services.platforms.douyin_kukutool."
+        "submit_provider_task"
+    )
+    def test_kukutool_download_refresh_preserves_startup_deadline(
+        self,
+        mock_submit,
+    ):
+        cache.clear()
+        self.addCleanup(cache.clear)
+        completed = Future()
+        completed.set_result(None)
+        mock_submit.return_value = completed
+        deadline = time.monotonic() + 20
+        context = DouyinParseContext(
+            url=f"https://www.douyin.com/video/{AWEME_ID}",
+            final_url=f"https://www.douyin.com/video/{AWEME_ID}",
+            aweme_id=AWEME_ID,
+            deadline_monotonic=deadline,
+        )
+
+        result = DouyinKukuToolProvider().refresh_for_download(
+            DouyinAdapter(),
+            context,
+        )
+
+        self.assertIsNone(result)
+        submitted_context = mock_submit.call_args.args[5]
+        self.assertEqual(submitted_context.deadline_monotonic, deadline)
+
+
 class DownloadSingleConnectionStreamTests(TestCase):
     def setUp(self):
         cache.clear()
@@ -1019,10 +1474,19 @@ class DownloadSingleConnectionStreamTests(TestCase):
                 tokens.status_token,
                 client_identity=self.client_identity,
             )
-            self.assertEqual(status_before_body.status, "streaming")
+            self.assertEqual(status_before_body.status, "connecting")
+            self.assertFalse(status_before_body.stream_started)
             self.assertEqual(status_before_body.upstream_attempt_count, 1)
 
-            content = b"".join(response.streaming_content)
+            iterator = iter(response.streaming_content)
+            first_chunk = next(iterator)
+            status_after_first_next = load_download_status(
+                tokens.status_token,
+                client_identity=self.client_identity,
+            )
+            self.assertEqual(status_after_first_next.status, "streaming")
+            self.assertTrue(status_after_first_next.stream_started)
+            content = first_chunk + b"".join(iterator)
 
             self.assertEqual(content, b"first-last")
             mock_fetch.assert_called_once()
@@ -1037,8 +1501,39 @@ class DownloadSingleConnectionStreamTests(TestCase):
             client_identity=self.client_identity,
         )
         self.assertEqual(completed.status, "completed")
+        self.assertTrue(completed.stream_started)
         self.assertFalse(completed.recovered)
         self.assertEqual(completed.upstream_attempt_count, 1)
+
+    def test_close_before_iteration_fails_without_marking_stream_started(self):
+        tokens = self.issue()
+        upstream = self.build_upstream([b"image-data"])
+        fetch_patch, acquire_patch, bytes_patch, release_patch = (
+            self.stream_request_patches(upstream)
+        )
+
+        with (
+            fetch_patch,
+            acquire_patch,
+            bytes_patch,
+            release_patch as mock_release,
+        ):
+            response = self.client.get(
+                f"/media/download-stream/{tokens.stream_token}/"
+            )
+            response.close()
+
+        failed = load_download_status(
+            tokens.status_token,
+            client_identity=self.client_identity,
+        )
+        self.assertEqual(failed.status, "failed")
+        self.assertFalse(failed.stream_started)
+        upstream.close.assert_called_once_with()
+        mock_release.assert_called_once_with(
+            "download-concurrent",
+            self.client_identity,
+        )
 
     def test_first_chunk_is_validated_then_yielded_from_same_iterator(self):
         yielded = []
@@ -1085,7 +1580,10 @@ class DownloadSingleConnectionStreamTests(TestCase):
 
         mock_fetch.assert_called_once()
         self.assertEqual(yielded, [b"first-", b"second", b"-third"])
-        self.assertEqual(events[-1][0], "completed")
+        self.assertEqual(
+            [event[0] for event in events],
+            ["connecting", "streaming", "completed"],
+        )
         upstream.close.assert_called_once_with()
 
     def test_streaming_status_waits_for_download_bytes_guard(self):
@@ -1210,6 +1708,67 @@ class DownloadSingleConnectionStreamTests(TestCase):
         self.assertEqual(failed.error_code, "UPSTREAM_SSL_ERROR")
         self.assertEqual(failed.upstream_attempt_count, 1)
 
+    def test_startup_timeout_is_stable_and_releases_concurrency(self):
+        tokens = self.issue(build_tiantianjiexi_item())
+        clock = FakeMonotonicClock()
+        upstream = self.build_upstream(
+            [],
+            content_type="video/mp4",
+            url=MEDIA_URL,
+        )
+
+        def slow_chunks(*, chunk_size):
+            self.assertGreater(chunk_size, 0)
+            clock.advance(51)
+            yield b"video-data"
+
+        upstream.iter_content.side_effect = slow_chunks
+
+        with (
+            patch("xhs_download.views.time.monotonic", side_effect=clock),
+            patch(
+                "xhs_download.views.fetch_media_response",
+                return_value=upstream,
+            ),
+            patch(
+                "xhs_download.views.acquire_concurrency",
+                return_value=LimitResult(allowed=True),
+            ),
+            patch("xhs_download.views.release_concurrency") as mock_release,
+            patch(
+                "xhs_download.views.refresh_tiantianjiexi_download_item"
+            ) as mock_refresh,
+        ):
+            response = self.client.get(
+                f"/media/download-stream/{tokens.stream_token}/"
+            )
+
+        self.assertEqual(response.status_code, 504)
+        self.assertEqual(
+            response.json()["error_code"],
+            "DOWNLOAD_STREAM_START_TIMEOUT",
+        )
+        self.assertEqual(
+            response.json()["message"],
+            "资源连接超时，请重新点击下载或重新解析后再试。",
+        )
+        mock_refresh.assert_not_called()
+        upstream.close.assert_called_once_with()
+        mock_release.assert_called_once_with(
+            "download-concurrent",
+            self.client_identity,
+        )
+        failed = load_download_status(
+            tokens.status_token,
+            client_identity=self.client_identity,
+        )
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(
+            failed.error_code,
+            "DOWNLOAD_STREAM_START_TIMEOUT",
+        )
+        self.assertFalse(failed.stream_started)
+
     def test_recovery_refreshes_once_and_uses_at_most_two_media_gets(self):
         original = build_tiantianjiexi_item()
         refreshed = build_tiantianjiexi_item(
@@ -1257,7 +1816,12 @@ class DownloadSingleConnectionStreamTests(TestCase):
             )
 
         self.assertEqual(mock_fetch.call_count, 2)
-        mock_refresh.assert_called_once_with(original)
+        mock_refresh.assert_called_once()
+        self.assertEqual(mock_refresh.call_args.args[0], original)
+        self.assertIn(
+            "deadline_monotonic",
+            mock_refresh.call_args.kwargs,
+        )
         completed = load_download_status(
             tokens.status_token,
             client_identity=self.client_identity,
@@ -1300,7 +1864,12 @@ class DownloadSingleConnectionStreamTests(TestCase):
 
         self.assertEqual(response.status_code, 502)
         self.assertEqual(mock_fetch.call_count, 2)
-        mock_refresh.assert_called_once_with(original)
+        mock_refresh.assert_called_once()
+        self.assertEqual(mock_refresh.call_args.args[0], original)
+        self.assertIn(
+            "deadline_monotonic",
+            mock_refresh.call_args.kwargs,
+        )
         failed = load_download_status(
             tokens.status_token,
             client_identity=self.client_identity,
@@ -1347,6 +1916,7 @@ class DownloadSingleConnectionStreamTests(TestCase):
         )
         self.assertEqual(failed.status, "failed")
         self.assertEqual(failed.error_code, "UPSTREAM_CONNECTION_ERROR")
+        self.assertTrue(failed.stream_started)
         mock_release.assert_called_once()
         self.assertNotIn("secret.example", "\n".join(logs.output))
         self.assertNotIn("token=secret", "\n".join(logs.output))

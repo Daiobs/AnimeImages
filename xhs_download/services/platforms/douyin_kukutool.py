@@ -1387,7 +1387,13 @@ class DouyinKukuToolProvider:
                 release_concurrency("kukutool-provider-global", "all")
             self.release_single_flight(lock_key, lock_token, context)
 
-    def get_or_start_kukutool_future(self, adapter, context):
+    def get_or_start_kukutool_future(
+        self,
+        adapter,
+        context,
+        *,
+        preserve_deadline=False,
+    ):
         failure_key = build_kukutool_failure_cache_key(context.aweme_id)
         try:
             if cache.get(failure_key):
@@ -1441,7 +1447,14 @@ class DouyinKukuToolProvider:
             if not lock_acquired:
                 return None, "remote_single_flight"
 
-            background_context = replace(context, deadline_monotonic=0)
+            background_context = replace(
+                context,
+                deadline_monotonic=(
+                    context.deadline_monotonic
+                    if preserve_deadline
+                    else 0
+                ),
+            )
             try:
                 future = submit_provider_task(
                     "douyin-kukutool",
@@ -1478,9 +1491,15 @@ class DouyinKukuToolProvider:
     def refresh_for_download(self, adapter, context):
         from .douyin_providers import log_provider_failure
 
+        if (
+            context.deadline_monotonic
+            and monotonic() >= context.deadline_monotonic
+        ):
+            return None
         future, flight_state = self.get_or_start_kukutool_future(
             adapter,
             context,
+            preserve_deadline=True,
         )
         if future is None and flight_state != "remote_single_flight":
             return None
@@ -1489,6 +1508,8 @@ class DouyinKukuToolProvider:
             0.1,
             self.provider_settings.kukutool_timeout_seconds,
         )
+        if context.deadline_monotonic:
+            deadline = min(deadline, context.deadline_monotonic)
         poll_interval = self.provider_settings.kukutool_cache_poll_interval_seconds
         while monotonic() < deadline:
             if future is not None and future.done():

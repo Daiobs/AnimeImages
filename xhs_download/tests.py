@@ -61,6 +61,7 @@ from .services.download_routing import (
     ROUTE_ZIP,
     decide_download_route,
 )
+from .services.download_handoff import DOWNLOAD_STREAM_START_TIMEOUT_SECONDS
 from .services.routing_policy_adjuster import build_routing_policy_recommendations
 from .services.routing_v3 import compute_routing_score, decide_route_v3
 from .services.assets import MediaAsset, ParseResult
@@ -7554,7 +7555,10 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(b"".join(response.streaming_content), b"video-content")
         self.assertEqual(mock_fetch.call_count, 2)
         self.assertEqual(mock_fetch.call_args_list[1].kwargs["provider_signed"], item)
-        mock_recovery_urls.assert_called_once_with(item)
+        mock_recovery_urls.assert_called_once()
+        recovery_args, recovery_kwargs = mock_recovery_urls.call_args
+        self.assertEqual(recovery_args, (item,))
+        self.assertGreater(recovery_kwargs["deadline_monotonic"], 0)
         mock_invalidate_caches.assert_called()
 
     @patch("xhs_download.views.fetch_media_response")
@@ -7614,7 +7618,10 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(mock_fetch.call_count, 0)
 
     @patch("xhs_download.views.fetch_media_response")
-    def test_download_signed_kukutool_video_uses_runtime_timeout_override(self, mock_fetch):
+    def test_download_signed_kukutool_video_runtime_timeout_is_capped_by_startup_budget(
+        self,
+        mock_fetch,
+    ):
         setting = ProviderRuntimeSetting.load()
         setting.kukutool_download_timeout_seconds = 120
         setting.kukutool_download_delivery_mode = KukuToolDownloadDeliveryMode.SERVER_STREAM
@@ -7642,7 +7649,15 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(mock_fetch.call_args.kwargs["timeout"], 120)
+        self.assertGreater(mock_fetch.call_args.kwargs["timeout"], 0)
+        self.assertLessEqual(
+            mock_fetch.call_args.kwargs["timeout"],
+            DOWNLOAD_STREAM_START_TIMEOUT_SECONDS,
+        )
+        self.assertGreater(
+            mock_fetch.call_args.kwargs["deadline_monotonic"],
+            time.monotonic(),
+        )
 
     @patch("xhs_download.views.fetch_media_response")
     def test_download_form_payload_json_returns_single_file_response(self, mock_fetch):

@@ -4,15 +4,56 @@ import time
 from dataclasses import dataclass
 from uuid import uuid4
 
+from django.conf import settings
 from django.core import signing
 from django.core.cache import cache
+
+from .common import validate_media_url
+from .downloads import provider_manifest_allows_public_download
 
 
 DOWNLOAD_HANDOFF_SALT = "xhs_download.download_handoff.stream.v2"
 DOWNLOAD_STATUS_SALT = "xhs_download.download_handoff.status.v2"
-DOWNLOAD_HANDOFF_TTL_SECONDS = 60
+DOWNLOAD_STREAM_START_TIMEOUT_SECONDS = max(
+    1.0,
+    min(
+        55.0,
+        float(
+            getattr(
+                settings,
+                "DOWNLOAD_STREAM_START_TIMEOUT_SECONDS",
+                50.0,
+            )
+            or 50.0
+        ),
+    ),
+)
+DOWNLOAD_HANDOFF_TTL_SECONDS = max(
+    60,
+    int(DOWNLOAD_STREAM_START_TIMEOUT_SECONDS) + 10,
+)
 DOWNLOAD_HANDOFF_MAX_USES = 1
 DOWNLOAD_HANDOFF_MAX_CACHE_BYTES = 32 * 1024
+DOWNLOAD_HANDOFF_ITEM_STRING_LIMITS = {
+    "type": 16,
+    "url": 8192,
+    "filename": 240,
+    "provider": 64,
+    "provider_resource_id": 1024,
+    "provider_cache_key": 1024,
+    "provider_manifest_token": 16384,
+    "asset_id": 1024,
+}
+DOWNLOAD_HANDOFF_PROVIDER_FIELDS = frozenset(
+    {
+        "provider",
+        "provider_resource_id",
+        "provider_cache_key",
+        "provider_manifest_token",
+        "asset_id",
+    }
+)
+DOWNLOAD_HANDOFF_MAX_SIZE_BYTES = (1 << 63) - 1
 DOWNLOAD_STATUS_STATES = frozenset(
     {
         "issued",
@@ -29,6 +70,7 @@ DOWNLOAD_STATUS_ERROR_MESSAGES = {
     "DOWNLOAD_DAILY_BYTES_LIMIT_GLOBAL": "今日全站下载流量已达到限制，请稍后再试。",
     "DOWNLOAD_DAILY_BYTES_LIMIT_IP": "今日下载流量已达到限制，请明天再试。",
     "DOWNLOAD_HANDOFF_EXPIRED": "下载链接已过期，请重新点击下载。",
+    "DOWNLOAD_STREAM_START_TIMEOUT": "资源连接超时，请重新点击下载或重新解析后再试。",
     "PROVIDER_MANIFEST_REJECTED": "Provider 签名资源未通过校验。",
     "PROXY_FAILED_RECOVERY_BLOCKED": "资源连接失败，自动恢复未成功，请重新解析后再试。",
     "SINGLE_ARCHIVE_SIZE_LIMIT": "本次下载资源超过当前大小限制。",
@@ -183,6 +225,91 @@ def _expired_handoff_error():
     )
 
 
+def _invalid_handoff_item(message="下载资源信息无效，请重新解析后再试。"):
+    return DownloadHandoffError(
+        message,
+        error_code="DOWNLOAD_HANDOFF_INVALID",
+        status_code=400,
+    )
+
+
+def _bounded_handoff_text(item, key, *, required=False):
+    value = item.get(key)
+    if value in (None, ""):
+        if required:
+            raise _invalid_handoff_item()
+        return ""
+    if not isinstance(value, str):
+        raise _invalid_handoff_item()
+    value = value.strip()
+    if required and not value:
+        raise _invalid_handoff_item()
+    if len(value) > DOWNLOAD_HANDOFF_ITEM_STRING_LIMITS[key]:
+        raise _invalid_handoff_item("下载资源信息过长，请重新解析后再试。")
+    return value
+
+
+def _bounded_handoff_record_text(value, *, default, max_length):
+    if value in (None, ""):
+        return default
+    if not isinstance(value, str):
+        raise _invalid_handoff_item()
+    value = value.strip() or default
+    if len(value) > max_length:
+        raise _invalid_handoff_item("下载资源信息过长，请重新解析后再试。")
+    return value
+
+
+def sanitize_download_handoff_item(item):
+    if not isinstance(item, dict):
+        raise _invalid_handoff_item()
+
+    media_type = _bounded_handoff_text(item, "type", required=True).lower()
+    if media_type not in {"image", "video"}:
+        raise _invalid_handoff_item()
+    sanitized = {
+        "type": media_type,
+        "url": _bounded_handoff_text(item, "url", required=True),
+    }
+
+    for key in (
+        "filename",
+        "provider",
+        "provider_resource_id",
+        "provider_cache_key",
+        "provider_manifest_token",
+        "asset_id",
+    ):
+        value = _bounded_handoff_text(item, key)
+        if value:
+            sanitized[key] = value
+
+    if "size_bytes" in item:
+        size_bytes = item.get("size_bytes")
+        if isinstance(size_bytes, bool) or not isinstance(size_bytes, int):
+            raise _invalid_handoff_item()
+        if not 0 <= size_bytes <= DOWNLOAD_HANDOFF_MAX_SIZE_BYTES:
+            raise _invalid_handoff_item()
+        sanitized["size_bytes"] = size_bytes
+
+    if sanitized.get("provider"):
+        if not provider_manifest_allows_public_download(sanitized):
+            raise DownloadHandoffError(
+                "Provider 签名资源未通过校验。",
+                error_code="PROVIDER_MANIFEST_REJECTED",
+                status_code=400,
+            )
+    else:
+        for key in DOWNLOAD_HANDOFF_PROVIDER_FIELDS:
+            sanitized.pop(key, None)
+        try:
+            validate_media_url(sanitized["url"])
+        except (TypeError, ValueError) as error:
+            raise _invalid_handoff_item() from error
+
+    return sanitized
+
+
 def issue_download_handoff_tokens(
     *,
     item,
@@ -195,9 +322,17 @@ def issue_download_handoff_tokens(
     issued_at = time.time()
     expires_at = issued_at + DOWNLOAD_HANDOFF_TTL_SECONDS
     record = {
-        "item": dict(item or {}),
-        "base_filename": str(base_filename or "media")[:200],
-        "client_identity": str(client_identity or ""),
+        "item": sanitize_download_handoff_item(item),
+        "base_filename": _bounded_handoff_record_text(
+            base_filename,
+            default="media",
+            max_length=200,
+        ),
+        "client_identity": _bounded_handoff_record_text(
+            client_identity,
+            default="",
+            max_length=256,
+        ),
         "recovered": bool(recovered),
         "recovery_used": bool(recovery_used),
         "expires_at": expires_at,
@@ -288,13 +423,7 @@ def load_download_handoff(token, *, client_identity, consume=True):
                 status_code=409,
             )
 
-    item = record.get("item")
-    if not isinstance(item, dict):
-        raise DownloadHandoffError(
-            "下载资源信息无效，请重新解析后再试。",
-            error_code="DOWNLOAD_HANDOFF_INVALID",
-            status_code=400,
-        )
+    item = sanitize_download_handoff_item(record.get("item"))
     return DownloadHandoff(
         ticket_id=ticket_id,
         item=dict(item),

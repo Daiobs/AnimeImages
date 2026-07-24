@@ -214,7 +214,10 @@ Current download strategy is mixed:
   and client-binding checks, then issues separate opaque stream and status
   URLs without contacting the media CDN. The stream claim is one-use; status
   polling is repeatable, cache-only, client-bound, and does not extend the
-  60-second TTL.
+  60-second TTL. The server-private handoff cache uses a typed field allowlist
+  and retains one manifest-validated minimal media URL for the initial GET;
+  it never places that URL in the token, status payload, logs, database, or
+  browser storage.
 - The normal server attachment path opens one upstream media response, checks
   its first non-empty chunk, and continues the `StreamingHttpResponse` from
   that same iterator. Active responses, sockets, and generators are never
@@ -223,9 +226,10 @@ Current download strategy is mixed:
 - The frontend polls only the download startup states and stops at
   `streaming`, `failed`, `expired`, or its 15-second hard ceiling. It never
   fetches the media body or creates a large JavaScript Blob for this path.
-- `stream_started` is sticky after the first guarded chunk. A later connection
-  failure must not turn an already-confirmed browser handoff into a false
-  startup error. Exhausting the polling window without confirmation is an
+- Response construction does not set `stream_started`. The stream iterator
+  sets it once, immediately before yielding the already-validated first chunk.
+  It then remains sticky across later failures; closing before iteration keeps
+  it false. Exhausting the polling window without confirmation is an
   unconfirmed, retryable state rather than proof that the download failed.
 - For server single-file handoff, the page progress bar represents that the
   request has been handed to browser download management, not media bytes
@@ -235,6 +239,12 @@ Current download strategy is mixed:
 - TianTianJieXi recovery is server-only, bounded to one refresh and one
   download retry (at most two media GETs), and must preserve the original
   signed resource identity.
+- Server-stream startup has one absolute 50-second budget across the first
+  media GET, Provider refresh, recovery GET, and first non-empty chunk.
+  Operations receive only the remaining budget. Exhaustion uses
+  `DOWNLOAD_STREAM_START_TIMEOUT`, closes the upstream, releases concurrency,
+  and does not continue refreshing. The budget stops applying once normal
+  stream iteration begins.
 - Large provider CDN downloads can be slow on the VPS if all bytes pass through the server.
 
 Known tension:

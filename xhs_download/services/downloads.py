@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -169,13 +170,28 @@ def public_download_error_message(error, limit=120):
 
 
 def observable_download_error(error, *, provider=""):
+    if (
+        str(getattr(error, "error_code", "") or "")
+        == "DOWNLOAD_STREAM_START_TIMEOUT"
+    ):
+        return {
+            "error_code": "DOWNLOAD_STREAM_START_TIMEOUT",
+            "message": "资源连接超时，请重新点击下载或重新解析后再试。",
+            "status_code": 504,
+        }
     if isinstance(error, TianTianJieXiRecoveryError):
         return {
             "error_code": error.error_code,
             "message": public_download_error_message(error),
-            "status_code": 504
-            if error.error_code == "TIANTIANJIEXI_REFRESH_TIMEOUT"
-            else 400,
+            "status_code": (
+                504
+                if error.error_code
+                in {
+                    "DOWNLOAD_STREAM_START_TIMEOUT",
+                    "TIANTIANJIEXI_REFRESH_TIMEOUT",
+                }
+                else 400
+            ),
         }
     if isinstance(error, requests.exceptions.SSLError):
         return {
@@ -629,6 +645,7 @@ def request_public_provider_get_with_retry(
     stream=True,
     max_redirects=5,
     provider_item=None,
+    deadline_monotonic=None,
 ):
     if provider_item is not None and not provider_manifest_allows_public_download(provider_item):
         raise XhsDownloadError("Provider 签名资源未通过校验")
@@ -642,6 +659,22 @@ def request_public_provider_get_with_retry(
             current_url = candidate_url
             try:
                 for _ in range(max_redirects + 1):
+                    request_timeout = timeout
+                    if deadline_monotonic is not None:
+                        remaining = float(deadline_monotonic) - time.monotonic()
+                        if remaining <= 0:
+                            raise requests.Timeout("请求超过时间限制")
+                        if isinstance(timeout, (tuple, list)):
+                            phase_budget = remaining / max(1, len(timeout))
+                            request_timeout = tuple(
+                                min(max(0.001, float(value)), phase_budget)
+                                for value in timeout
+                            )
+                        else:
+                            request_timeout = min(
+                                max(0.001, float(timeout)),
+                                remaining,
+                            )
                     validate_provider_signed_download_url(
                         candidate_item,
                         current_url,
@@ -650,7 +683,7 @@ def request_public_provider_get_with_retry(
                     response = requests.get(
                         current_url,
                         headers=headers or get_media_headers(current_url),
-                        timeout=timeout,
+                        timeout=request_timeout,
                         allow_redirects=False,
                         stream=stream,
                     )
@@ -689,28 +722,39 @@ def request_public_provider_get_with_retry(
     raise last_error
 
 
-def fetch_media_response(url, headers=None, timeout=30, retries=3, provider_signed=False):
+def fetch_media_response(
+    url,
+    headers=None,
+    timeout=30,
+    retries=3,
+    provider_signed=False,
+    deadline_monotonic=None,
+):
     if provider_signed:
         if not isinstance(provider_signed, dict):
             raise XhsDownloadError("Provider signed request is missing manifest context")
-        return request_public_provider_get_with_retry(
-            url,
-            headers=headers or get_media_headers(url),
-            timeout=timeout,
-            retries=retries,
-            stream=True,
-            provider_item=provider_signed,
-        )
+        request_options = {
+            "headers": headers or get_media_headers(url),
+            "timeout": timeout,
+            "retries": retries,
+            "stream": True,
+            "provider_item": provider_signed,
+        }
+        if deadline_monotonic is not None:
+            request_options["deadline_monotonic"] = deadline_monotonic
+        return request_public_provider_get_with_retry(url, **request_options)
     validate_media_url(url)
-    return request_get_with_retry(
-        url,
-        headers=headers or get_media_headers(url),
-        timeout=timeout,
-        retries=max(1, int(retries or 1)),
-        stream=True,
-        allowed_final_host_suffixes=MEDIA_HOST_SUFFIXES,
-        final_url_message="资源 URL 跳转到了不允许的下载域名",
-    )
+    request_options = {
+        "headers": headers or get_media_headers(url),
+        "timeout": timeout,
+        "retries": max(1, int(retries or 1)),
+        "stream": True,
+        "allowed_final_host_suffixes": MEDIA_HOST_SUFFIXES,
+        "final_url_message": "资源 URL 跳转到了不允许的下载域名",
+    }
+    if deadline_monotonic is not None:
+        request_options["deadline_monotonic"] = deadline_monotonic
+    return request_get_with_retry(url, **request_options)
 
 
 def probe_media_size(url, headers=None, timeout=6):

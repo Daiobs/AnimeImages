@@ -92,16 +92,20 @@ candidate behavior includes:
   Prepare performs no upstream media request and produces separate
   client-bound, 60-second stream and status URLs that contain no raw Provider
   URL. The stream URL is one-use; the status URL is repeatable within the
-  original TTL and exposes only fixed states and safe errors.
+  original TTL and exposes only fixed states and safe errors. The opaque token
+  points to a server-private, allowlisted cache record. That record contains
+  only the typed fields needed for download and recovery; it currently retains
+  one manifest-validated minimal media URL because Provider identity alone
+  cannot reliably reconstruct the initial media request.
 - The browser opens the same-origin stream URL and polls the status URL at a
   bounded interval until `streaming`, `failed`, `expired`, or a client-side
   15-second ceiling. Status polling is cache-only and cannot contact a
   Provider, extend the handoff TTL, or read media bytes.
-- Once the first guarded stream chunk has been published, `stream_started`
-  remains true even if the connection later closes. The UI treats that as a
-  confirmed browser handoff; reaching the polling ceiling without a terminal
-  state is reported neutrally as unconfirmed, while a failure before streaming
-  remains an error.
+- Constructing the streaming response leaves `stream_started` false. The first
+  actual stream iteration marks it true immediately before yielding the
+  already-validated first chunk. It remains true if the connection later
+  closes. Closing before iteration leaves it false; the UI therefore
+  distinguishes a confirmed browser handoff from a pre-stream failure.
 - The page progress bar reaches 100% when the same-origin download request is
   handed to browser download management; it is not a byte-progress meter for
   the proxied media body. Browser download UI owns actual byte progress.
@@ -111,6 +115,12 @@ candidate behavior includes:
   non-empty chunk, then yields that chunk and the remaining iterator from the
   same response. The response object, socket, and generator are never stored
   in cache; the download concurrency slot is released when streaming ends.
+- Stream startup has one absolute 50-second deadline shared by the first media
+  GET, one allowed Provider refresh, the recovery GET, and the first non-empty
+  chunk. Each operation receives only the remaining budget. Exhaustion returns
+  `DOWNLOAD_STREAM_START_TIMEOUT` with a safe retry message, closes any open
+  upstream, and releases concurrency. Once the first chunk is yielded, this
+  startup deadline no longer limits normal file transfer.
 - Browser fetch is permitted only for an explicitly declared CORS-safe
   Provider capability. TianTianJieXi and KuKuTool signed resources currently
   use server prepare/stream; ordinary public native URLs retain their direct
