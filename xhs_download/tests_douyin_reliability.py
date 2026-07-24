@@ -1441,8 +1441,13 @@ class TianTianJieXiRecoveryTests(SimpleTestCase):
     @patch("xhs_download.views.invalidate_external_provider_caches")
     @patch("xhs_download.views.refresh_tiantianjiexi_download_item")
     @patch("xhs_download.views.fetch_media_response")
+    @patch(
+        "xhs_download.views.time.monotonic",
+        side_effect=(10.0, 12.5, 13.0, 14.0, 15.0, 18.25),
+    )
     def test_recoverable_failure_refreshes_and_retries_once(
         self,
+        _mock_monotonic,
         mock_fetch,
         mock_refresh,
         _mock_invalidate,
@@ -1483,6 +1488,22 @@ class TianTianJieXiRecoveryTests(SimpleTestCase):
         )
         self.assertEqual(telemetry["upstream_attempt_count"], 2)
         self.assertTrue(telemetry["recovery_used"])
+        self.assertEqual(
+            telemetry["upstream_attempt_1_duration_ms"],
+            2500,
+        )
+        self.assertEqual(
+            telemetry["provider_refresh_duration_ms"],
+            1000,
+        )
+        self.assertEqual(
+            telemetry["upstream_attempt_2_duration_ms"],
+            3250,
+        )
+        self.assertEqual(
+            telemetry["last_upstream_error_type"],
+            "XhsDownloadError",
+        )
 
     @patch("xhs_download.views.refresh_tiantianjiexi_download_item")
     @patch("xhs_download.views.fetch_media_response")

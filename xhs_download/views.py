@@ -3164,6 +3164,10 @@ def open_single_attachment_upstream(
     telemetry.setdefault("upstream_attempt_count", 0)
     telemetry.setdefault("recovery_used", False)
     telemetry.setdefault("recovered", False)
+    telemetry.setdefault("upstream_attempt_1_duration_ms", 0)
+    telemetry.setdefault("upstream_attempt_2_duration_ms", 0)
+    telemetry.setdefault("provider_refresh_duration_ms", 0)
+    telemetry.setdefault("last_upstream_error_type", "")
 
     while candidates:
         candidate_url, candidate_provider_item, recovered = candidates.pop(0)
@@ -3181,8 +3185,10 @@ def open_single_attachment_upstream(
         if kukutool_recovery_enabled and not is_byte_cdn_url(candidate_url):
             candidate_provider_item = None
 
+        attempt_started_at = time.monotonic()
         try:
             telemetry["upstream_attempt_count"] += 1
+            attempt_number = telemetry["upstream_attempt_count"]
             telemetry["recovery_used"] = bool(
                 telemetry["recovery_used"] or recovered
             )
@@ -3197,6 +3203,9 @@ def open_single_attachment_upstream(
                 retries=1 if recovery_enabled else 3,
                 provider_signed=candidate_provider_item,
             )
+            telemetry[
+                f"upstream_attempt_{attempt_number}_duration_ms"
+            ] = int((time.monotonic() - attempt_started_at) * 1000)
             if include_context:
                 effective_item = dict(candidate_provider_item or item)
                 if recovered and effective_item.get("url") != candidate_url:
@@ -3232,6 +3241,11 @@ def open_single_attachment_upstream(
             telemetry["recovered"] = bool(recovered)
             return response
         except Exception as error:
+            attempt_number = telemetry["upstream_attempt_count"]
+            telemetry[
+                f"upstream_attempt_{attempt_number}_duration_ms"
+            ] = int((time.monotonic() - attempt_started_at) * 1000)
+            telemetry["last_upstream_error_type"] = type(error).__name__
             last_error = error
             if provider_item and is_recoverable_provider_download_error(error):
                 invalidate_external_provider_caches(provider_item)
@@ -3248,6 +3262,7 @@ def open_single_attachment_upstream(
                     telemetry,
                 )
                 if tiantianjiexi_recovery_enabled:
+                    refresh_started_at = time.monotonic()
                     try:
                         refreshed_item = refresh_tiantianjiexi_download_item(item)
                     except Exception as refresh_error:
@@ -3259,6 +3274,10 @@ def open_single_attachment_upstream(
                                 refreshed_item,
                                 True,
                             )
+                        )
+                    finally:
+                        telemetry["provider_refresh_duration_ms"] = int(
+                            (time.monotonic() - refresh_started_at) * 1000
                         )
                 else:
                     try:
@@ -5090,6 +5109,18 @@ def download_stream_view(request, token):
             "time_to_first_chunk_ms": int(
                 snapshot.get("time_to_first_chunk_ms") or 0
             ),
+            "upstream_attempt_1_duration_ms": int(
+                snapshot.get("upstream_attempt_1_duration_ms") or 0
+            ),
+            "upstream_attempt_2_duration_ms": int(
+                snapshot.get("upstream_attempt_2_duration_ms") or 0
+            ),
+            "provider_refresh_duration_ms": int(
+                snapshot.get("provider_refresh_duration_ms") or 0
+            ),
+            "last_upstream_error_type": str(
+                snapshot.get("last_upstream_error_type") or ""
+            )[:80],
             "upstream_attempt_count": int(
                 snapshot.get("upstream_attempt_count") or 0
             ),

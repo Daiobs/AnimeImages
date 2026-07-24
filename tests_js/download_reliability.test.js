@@ -308,12 +308,12 @@ test("single-page code no longer submits an unobservable iframe POST", () => {
     assert.match(source, /frame\.src = downloadUrl/);
     assert.match(source, /sameOriginHandoffPath\(prepared\.statusUrl\)/);
     assert.match(source, /pollDownloadStatus/);
-    assert.match(source, /setProgress\(0\)/);
+    assert.match(source, /setProgress\(100\)/);
     assert.match(source, /setDownloadButtonsBusy\(false\)/);
     assert.doesNotMatch(source, /console\.(?:warn|error)\([^)]*item\.url/s);
 });
 
-test("server handoff starts the iframe before awaiting bounded status polling", () => {
+test("server handoff completes UI progress before bounded status polling", () => {
     const source = fs.readFileSync(
         path.join(__dirname, "../static/js/xhs_download.js"),
         "utf8",
@@ -326,11 +326,20 @@ test("server handoff starts the iframe before awaiting bounded status polling", 
         start,
     );
     const implementation = source.slice(start, end);
-
-    assert.ok(
-        implementation.indexOf("handoffPreparedDownload(prepared)")
-        < implementation.indexOf("await downloadReliabilityApi.pollDownloadStatus"),
+    const handoffIndex = implementation.indexOf(
+        "handoffPreparedDownload(prepared)",
     );
+    const completeProgressIndex = implementation.indexOf(
+        "setProgress(100)",
+    );
+    const pollIndex = implementation.indexOf(
+        "await downloadReliabilityApi.pollDownloadStatus",
+    );
+
+    assert.ok(handoffIndex >= 0);
+    assert.ok(completeProgressIndex > handoffIndex);
+    assert.ok(pollIndex > completeProgressIndex);
+    assert.doesNotMatch(implementation, /unconfirmed"\) \{\s*setProgress\(0\)/);
     assert.doesNotMatch(implementation, /fetch\(prepared\.downloadUrl/);
     assert.doesNotMatch(implementation, /response\.blob\(\)/);
     assert.doesNotMatch(implementation, /URL\.createObjectURL/);

@@ -102,6 +102,11 @@ candidate behavior includes:
   confirmed browser handoff; reaching the polling ceiling without a terminal
   state is reported neutrally as unconfirmed, while a failure before streaming
   remains an error.
+- The page progress bar reaches 100% when the same-origin download request is
+  handed to browser download management; it is not a byte-progress meter for
+  the proxied media body. Browser download UI owns actual byte progress.
+  URL-free telemetry separates the first and second upstream connection
+  attempts, Provider refresh, and time to first chunk.
 - The normal stream path opens one upstream media GET, validates its first
   non-empty chunk, then yields that chunk and the remaining iterator from the
   same response. The response object, socket, and generator are never stored

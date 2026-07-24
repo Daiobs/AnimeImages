@@ -1014,6 +1014,12 @@
             setProgressPending("连接下载");
             setStatus(getStatusElement(), "下载通道已签发，正在连接上游资源...");
             handoffPreparedDownload(prepared);
+            setProgress(100);
+            setStatus(
+                getStatusElement(),
+                "下载请求已交给浏览器，服务器正在建立资源连接...",
+                "text-muted",
+            );
             const statusResult = downloadReliabilityApi
                 ? await downloadReliabilityApi.pollDownloadStatus({
                     statusUrl,
@@ -1030,7 +1036,6 @@
                 )
                 : "started";
             if (startDisposition === "unconfirmed") {
-                setProgress(0);
                 setStatus(
                     getStatusElement(),
                     `${statusResult.message}${routeWarningText(warnings)}`,

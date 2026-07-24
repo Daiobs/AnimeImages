@@ -28,7 +28,8 @@
         "expired",
     ]);
     const DOWNLOAD_STATUS_POLL_TIMEOUT_MESSAGE =
-        "下载请求仍在连接，请查看浏览器下载栏；若未开始可重新尝试。";
+        "下载请求已交给浏览器，服务器仍在连接资源；"
+        + "请查看浏览器下载栏，若未开始可重新尝试。";
     const DEFAULT_STATUS_POLL_INTERVAL_MS = 500;
     const MAX_STATUS_POLL_INTERVAL_MS = 1000;
     const MAX_STATUS_POLL_DURATION_MS = 15000;
