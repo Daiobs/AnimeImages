@@ -231,11 +231,12 @@ Current download strategy is mixed:
   It then remains sticky across later failures; closing before iteration keeps
   it false. Exhausting the polling window without confirmation is an
   unconfirmed, retryable state rather than proof that the download failed.
-- For server single-file handoff, the page progress bar represents that the
-  request has been handed to browser download management, not media bytes
-  transferred through Django. Actual byte progress belongs to the browser
-  download UI. Safe stream logs record attempt, refresh, and first-byte
-  durations without source or signed media URLs.
+- For server single-file handoff, issuing the browser request keeps the page
+  progress bar in its connecting state. It reaches 100% only after status
+  confirms `stream_started`, representing confirmed browser handoff rather
+  than media bytes transferred through Django. Actual byte progress belongs
+  to the browser download UI. Safe stream logs record attempt, refresh, and
+  first-byte durations without source or signed media URLs.
 - TianTianJieXi recovery is server-only, bounded to one refresh and one
   download retry (at most two media GETs), and must preserve the original
   signed resource identity.

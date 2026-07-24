@@ -106,11 +106,12 @@ candidate behavior includes:
   already-validated first chunk. It remains true if the connection later
   closes. Closing before iteration leaves it false; the UI therefore
   distinguishes a confirmed browser handoff from a pre-stream failure.
-- The page progress bar reaches 100% when the same-origin download request is
-  handed to browser download management; it is not a byte-progress meter for
-  the proxied media body. Browser download UI owns actual byte progress.
-  URL-free telemetry separates the first and second upstream connection
-  attempts, Provider refresh, and time to first chunk.
+- After the same-origin request is handed to browser download management, the
+  page progress bar remains in its connecting state until status confirms
+  `stream_started`. It then reaches 100% to represent confirmed browser
+  handoff, not byte progress for the proxied media body. Browser download UI
+  owns actual byte progress. URL-free telemetry separates the first and second
+  upstream connection attempts, Provider refresh, and time to first chunk.
 - The normal stream path opens one upstream media GET, validates its first
   non-empty chunk, then yields that chunk and the remaining iterator from the
   same response. The response object, socket, and generator are never stored

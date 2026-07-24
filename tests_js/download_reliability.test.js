@@ -313,7 +313,7 @@ test("single-page code no longer submits an unobservable iframe POST", () => {
     assert.doesNotMatch(source, /console\.(?:warn|error)\([^)]*item\.url/s);
 });
 
-test("server handoff completes UI progress before bounded status polling", () => {
+test("server handoff completes UI progress only after confirmed stream start", () => {
     const source = fs.readFileSync(
         path.join(__dirname, "../static/js/xhs_download.js"),
         "utf8",
@@ -337,8 +337,16 @@ test("server handoff completes UI progress before bounded status polling", () =>
     );
 
     assert.ok(handoffIndex >= 0);
-    assert.ok(completeProgressIndex > handoffIndex);
-    assert.ok(pollIndex > completeProgressIndex);
+    assert.ok(pollIndex > handoffIndex);
+    assert.ok(completeProgressIndex > pollIndex);
+    assert.match(
+        implementation.slice(0, pollIndex),
+        /setProgressPending\("连接下载"\)/,
+    );
+    assert.doesNotMatch(
+        implementation.slice(handoffIndex, pollIndex),
+        /setProgress\(100\)/,
+    );
     assert.doesNotMatch(implementation, /unconfirmed"\) \{\s*setProgress\(0\)/);
     assert.doesNotMatch(implementation, /fetch\(prepared\.downloadUrl/);
     assert.doesNotMatch(implementation, /response\.blob\(\)/);

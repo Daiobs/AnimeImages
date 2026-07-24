@@ -1014,7 +1014,6 @@
             setProgressPending("连接下载");
             setStatus(getStatusElement(), "下载通道已签发，正在连接上游资源...");
             handoffPreparedDownload(prepared);
-            setProgress(100);
             setStatus(
                 getStatusElement(),
                 "下载请求已交给浏览器，服务器正在建立资源连接...",
