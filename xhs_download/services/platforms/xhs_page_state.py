@@ -21,6 +21,9 @@ XHS_MAX_JSON_DEPTH = 32
 XHS_MAX_TITLE_LENGTH = 200
 XHS_MAX_AUTHOR_LENGTH = 80
 XHS_MAX_VIDEO_SIZE_BYTES = 100 * 1024 * 1024 * 1024
+XHS_TERMINAL_PAGE_STATES = frozenset(
+    {"login_required", "private", "deleted", "unavailable"}
+)
 
 
 @dataclass(frozen=True)
@@ -34,8 +37,16 @@ class XhsPageState:
     cover_urls: tuple[str, ...] = ()
     video_size_bytes: int = 0
     page_state: str = "unknown"
+    current_note_page_state: str = "unknown"
+    explicit_page_state: str = "unknown"
     structured_state_found: bool = False
     structured_payload_found: bool = False
+    current_note_found: bool = False
+    note_candidate_found: bool = False
+    other_note_candidate_found: bool = False
+    structured_image_list_present: bool = False
+    structured_video_present: bool = False
+    terminal_page_state: bool = False
 
 
 def normalize_xhs_note_id(value):
@@ -226,6 +237,28 @@ def _looks_like_note(mapping):
     return (identity and group_count >= 1) or group_count >= 3
 
 
+def _is_note_candidate(mapping, path):
+    if not _looks_like_note(mapping):
+        return False
+    if _candidate_note_id(mapping, path):
+        return True
+    path_tokens = {_key_token(part) for part in path}
+    return bool(
+        path_tokens
+        & {
+            "currentnote",
+            "feed",
+            "feeds",
+            "note",
+            "notedata",
+            "notedetail",
+            "notedetailmap",
+            "recommend",
+            "recommendations",
+        }
+    )
+
+
 def _candidate_score(mapping, path, *, source_note_id):
     note_id = _candidate_note_id(mapping, path)
     if source_note_id:
@@ -257,24 +290,42 @@ def _candidate_score(mapping, path, *, source_note_id):
 
 def _select_current_note(payloads, source_note_id):
     candidates = []
+    note_candidate_found = False
+    other_note_candidate_found = False
     for payload in payloads:
         for mapping, path in _iter_nodes(payload):
-            if not _looks_like_note(mapping):
+            if not _is_note_candidate(mapping, path):
                 continue
+            note_candidate_found = True
+            candidate_note_id = _candidate_note_id(mapping, path)
+            if source_note_id and candidate_note_id != source_note_id:
+                path_tokens = {_key_token(part) for part in path}
+                if candidate_note_id or path_tokens & {
+                    "feed",
+                    "feeds",
+                    "recommend",
+                    "recommendations",
+                }:
+                    other_note_candidate_found = True
             score = _candidate_score(mapping, path, source_note_id=source_note_id)
             if score >= 0:
-                candidates.append((score, _candidate_note_id(mapping, path), path, mapping))
+                candidates.append((score, candidate_note_id, path, mapping))
     if not candidates:
-        return None, ""
+        return None, "", note_candidate_found, other_note_candidate_found
 
     if not source_note_id:
         candidate_ids = {candidate[1] for candidate in candidates if candidate[1]}
         if len(candidate_ids) != 1:
-            return None, ""
+            return None, "", note_candidate_found, len(candidate_ids) > 1
 
     candidates.sort(key=lambda candidate: (-candidate[0], tuple(candidate[2])))
     selected = candidates[0]
-    return selected[3], selected[1]
+    return (
+        selected[3],
+        selected[1],
+        note_candidate_found,
+        other_note_candidate_found,
+    )
 
 
 def _unique_strings(values):
@@ -348,6 +399,17 @@ def _extract_image_urls(note):
     if not isinstance(image_list, list):
         return ()
     return _unique_strings(_best_image_url(item) for item in image_list)
+
+
+def _structured_image_list_present(note):
+    return isinstance(
+        _mapping_value(note, ("imageList", "image_list", "imageItems", "images")),
+        list,
+    )
+
+
+def _structured_video_present(note):
+    return isinstance(_mapping_value(note, ("video", "videoInfo", "video_info")), dict)
 
 
 def _iter_nested_mappings(root, max_depth=6):
@@ -518,19 +580,29 @@ def _extract_explicit_page_state(payloads):
 def extract_xhs_page_state(soup, source_url=None):
     source_note_id = extract_xhs_note_id(source_url)
     payloads = tuple(_iter_script_payloads(soup, source_note_id=source_note_id))
-    note, selected_note_id = _select_current_note(payloads, source_note_id)
+    (
+        note,
+        selected_note_id,
+        note_candidate_found,
+        other_note_candidate_found,
+    ) = _select_current_note(payloads, source_note_id)
     explicit_page_state = _extract_explicit_page_state(payloads)
     if note is None:
         return XhsPageState(
             note_id=source_note_id,
             page_state=explicit_page_state,
+            explicit_page_state=explicit_page_state,
             structured_state_found=explicit_page_state != "unknown",
             structured_payload_found=bool(payloads),
+            note_candidate_found=note_candidate_found,
+            other_note_candidate_found=other_note_candidate_found,
+            terminal_page_state=explicit_page_state in XHS_TERMINAL_PAGE_STATES,
         )
 
     image_urls = _extract_image_urls(note)
     video_urls, video_size_bytes = _extract_video_details(note)
-    page_state = _mapping_page_state(note)
+    current_note_page_state = _mapping_page_state(note)
+    page_state = current_note_page_state
     if page_state == "unknown":
         page_state = explicit_page_state
     if page_state == "unknown":
@@ -546,6 +618,17 @@ def extract_xhs_page_state(soup, source_url=None):
         cover_urls=_extract_cover_urls(note),
         video_size_bytes=video_size_bytes,
         page_state=page_state,
+        current_note_page_state=current_note_page_state,
+        explicit_page_state=explicit_page_state,
         structured_state_found=True,
         structured_payload_found=True,
+        current_note_found=True,
+        note_candidate_found=note_candidate_found,
+        other_note_candidate_found=other_note_candidate_found,
+        structured_image_list_present=_structured_image_list_present(note),
+        structured_video_present=_structured_video_present(note),
+        terminal_page_state=(
+            current_note_page_state in XHS_TERMINAL_PAGE_STATES
+            or explicit_page_state in XHS_TERMINAL_PAGE_STATES
+        ),
     )

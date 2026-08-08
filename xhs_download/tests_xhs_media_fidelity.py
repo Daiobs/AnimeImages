@@ -27,6 +27,9 @@ IMAGE_ONE = "https://sns-webpic-qc.xhscdn.com/notes_pre_post/gallery-one"
 IMAGE_TWO = "https://sns-img-qc.xhscdn.com/spectrum/gallery-two"
 COVER_URL = "https://sns-webpic-qc.xhscdn.com/notes_pre_post/video-cover"
 VIDEO_URL = "https://sns-video-bd.xhscdn.com/stream/video-one.mp4"
+META_IMAGE = "https://sns-webpic-qc.xhscdn.com/notes_pre_post/meta-image"
+DOM_IMAGE = "https://sns-webpic-qc.xhscdn.com/notes_pre_post/dom-image"
+BROAD_IMAGE = "https://sns-webpic-qc.xhscdn.com/notes_pre_post/broad-image"
 
 
 def hydration_html(payload, *, extra_html=""):
@@ -511,3 +514,399 @@ class XhsMediaFidelityAdapterTests(SimpleTestCase):
         self.assertNotIn("noteDetailMap", serialized)
         self.assertEqual(result.metadata["note_id"], NOTE_ID)
         self.assertEqual(result.metadata["page_state"], "available")
+
+
+class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
+    def setUp(self):
+        self.adapter = XiaohongshuAdapter()
+
+    def parse_payload(self, payload, *, extra_html=""):
+        return self.adapter.parse_html(
+            hydration_html(payload, extra_html=extra_html),
+            source_url=NOTE_URL,
+        )
+
+    def note_without_media(self, **overrides):
+        note = {
+            "noteId": NOTE_ID,
+            "type": "normal",
+            "title": "仅元数据标题",
+            "user": {"nickname": "仅元数据作者"},
+        }
+        note.update(overrides)
+        return note
+
+    def other_note_payload(self, note=None):
+        return note_payload(
+            note or image_note(noteId=OTHER_NOTE_ID, title="推荐标题"),
+            note_id=OTHER_NOTE_ID,
+        )
+
+    def test_unrelated_json_ld_allows_safe_image_fallback(self):
+        html = f'''
+        <script type="application/ld+json">
+          {{"@context":"https://schema.org","@type":"WebSite"}}
+        </script>
+        <script>const fallback = "{BROAD_IMAGE}";</script>
+        '''
+
+        result = self.adapter.parse_html(html, source_url=NOTE_URL)
+
+        self.assertEqual(
+            [asset.url for asset in result.image_assets],
+            [normalize_xhs_image_url(BROAD_IMAGE)],
+        )
+        self.assertEqual(result.metadata["fallback_policy"], "allow")
+
+    def test_unrelated_application_json_allows_safe_image_fallback(self):
+        config = {
+            "siteConfig": {
+                "title": "站点配置",
+                "author": "站点",
+                "type": "website",
+                "images": ["https://example.com/site-logo.png"],
+            }
+        }
+        html = (
+            '<script type="application/json">'
+            + json.dumps(config, ensure_ascii=False)
+            + "</script>"
+            + f'<script>const fallback = "{BROAD_IMAGE}";</script>'
+        )
+
+        result = self.adapter.parse_html(html, source_url=NOTE_URL)
+
+        self.assertEqual(len(result.image_assets), 1)
+        self.assertEqual(result.metadata["image_source"], "fallback")
+        self.assertFalse(result.metadata["note_candidate_found"])
+
+    def test_unrelated_hydration_config_allows_safe_image_fallback(self):
+        payload = {
+            "siteConfig": {
+                "title": "配置标题",
+                "author": "配置作者",
+                "type": "website",
+                "images": ["https://example.com/static.png"],
+            }
+        }
+
+        result = self.parse_payload(
+            payload,
+            extra_html=f'<script>const fallback = "{BROAD_IMAGE}";</script>',
+        )
+
+        self.assertEqual(result.metadata["image_source"], "fallback")
+        self.assertEqual(result.metadata["fallback_policy"], "allow")
+
+    def test_unrelated_json_does_not_block_video_fallback(self):
+        html = '''
+        <script type="application/json">{"siteConfig":{"theme":"light"}}</script>
+        <script>{"originVideoKey":"legacy-video-key-1234567890"}</script>
+        '''
+
+        result = self.adapter.parse_html(html, source_url=NOTE_URL)
+
+        self.assertEqual(len(result.video_assets), 1)
+        self.assertEqual(result.metadata["video_source"], "fallback")
+
+    def test_current_note_without_media_uses_meta_image(self):
+        result = self.parse_payload(
+            note_payload(self.note_without_media()),
+            extra_html=f'<meta property="og:image" content="{META_IMAGE}">',
+        )
+
+        self.assertEqual(result.metadata["image_source"], "meta")
+        self.assertEqual(result.image_assets[0].url, normalize_xhs_image_url(META_IMAGE))
+
+    def test_current_note_without_media_uses_current_dom_image(self):
+        result = self.parse_payload(
+            note_payload(self.note_without_media()),
+            extra_html=f'<div id="noteContainer"><img src="{DOM_IMAGE}"></div>',
+        )
+
+        self.assertEqual(result.metadata["image_source"], "dom")
+        self.assertEqual(result.image_assets[0].url, normalize_xhs_image_url(DOM_IMAGE))
+
+    def test_current_note_without_media_uses_safe_broad_image(self):
+        result = self.parse_payload(
+            note_payload(self.note_without_media()),
+            extra_html=f'<script>const fallback = "{BROAD_IMAGE}";</script>',
+        )
+
+        self.assertEqual(result.metadata["image_source"], "fallback")
+        self.assertEqual(result.image_assets[0].url, normalize_xhs_image_url(BROAD_IMAGE))
+
+    def test_empty_structured_image_list_allows_fallback(self):
+        note = self.note_without_media(imageList=[])
+        state = extract_xhs_page_state(
+            BeautifulSoup(hydration_html(note_payload(note)), "html.parser"),
+            source_url=NOTE_URL,
+        )
+        result = self.parse_payload(
+            note_payload(note),
+            extra_html=f'<script>const fallback = "{BROAD_IMAGE}";</script>',
+        )
+
+        self.assertTrue(state.structured_image_list_present)
+        self.assertEqual(state.image_urls, ())
+        self.assertEqual(result.metadata["image_source"], "fallback")
+
+    def test_invalid_structured_image_list_allows_fallback(self):
+        note = self.note_without_media(
+            imageList=[
+                {"urlDefault": "https://sns-webpic-qc.xhscdn.com/"},
+                {"urlDefault": "https://sns-webpic-qc.xhscdn.com/avatar/user"},
+                {"urlDefault": "https://example.com/not-xhs.jpg"},
+            ]
+        )
+
+        result = self.parse_payload(
+            note_payload(note),
+            extra_html=f'<script>const fallback = "{BROAD_IMAGE}";</script>',
+        )
+
+        self.assertEqual(result.metadata["image_source"], "fallback")
+        self.assertFalse(result.metadata["structured_image_authoritative"])
+
+    def test_valid_structured_gallery_does_not_append_meta_image(self):
+        result = self.parse_payload(
+            note_payload(image_note(imageList=[{"urlDefault": IMAGE_ONE}])),
+            extra_html=f'<meta property="og:image" content="{META_IMAGE}">',
+        )
+
+        self.assertEqual(
+            [asset.url for asset in result.image_assets],
+            [normalize_xhs_image_url(IMAGE_ONE)],
+        )
+
+    def test_valid_structured_gallery_does_not_append_dom_image(self):
+        result = self.parse_payload(
+            note_payload(image_note(imageList=[{"urlDefault": IMAGE_ONE}])),
+            extra_html=f'<div id="noteContainer"><img src="{DOM_IMAGE}"></div>',
+        )
+
+        self.assertEqual(
+            [asset.url for asset in result.image_assets],
+            [normalize_xhs_image_url(IMAGE_ONE)],
+        )
+
+    def test_valid_structured_gallery_does_not_append_broad_noise(self):
+        result = self.parse_payload(
+            note_payload(image_note(imageList=[{"urlDefault": IMAGE_ONE}])),
+            extra_html=f'<script>const noise = "{BROAD_IMAGE}";</script>',
+        )
+
+        self.assertEqual(
+            [asset.url for asset in result.image_assets],
+            [normalize_xhs_image_url(IMAGE_ONE)],
+        )
+        self.assertTrue(result.metadata["structured_image_authoritative"])
+
+    def test_structured_gallery_deduplicates_after_normalization(self):
+        result = self.parse_payload(
+            note_payload(
+                image_note(
+                    imageList=[
+                        {"urlDefault": IMAGE_ONE},
+                        {"urlDefault": f"{IMAGE_ONE}?token=fixture"},
+                        {"urlDefault": IMAGE_TWO},
+                    ]
+                )
+            )
+        )
+
+        self.assertEqual(
+            [asset.url for asset in result.image_assets],
+            [normalize_xhs_image_url(IMAGE_ONE), normalize_xhs_image_url(IMAGE_TWO)],
+        )
+
+    def test_mismatched_note_can_use_explicit_page_meta(self):
+        result = self.parse_payload(
+            self.other_note_payload(),
+            extra_html=f'<meta property="og:image" content="{META_IMAGE}">',
+        )
+
+        self.assertEqual(result.metadata["image_source"], "meta")
+        self.assertEqual(result.metadata["fallback_policy"], "suppress_broad_scan")
+        self.assertNotIn("推荐标题", result.base_filename)
+
+    def test_mismatched_note_can_use_strict_current_dom(self):
+        result = self.parse_payload(
+            self.other_note_payload(),
+            extra_html=f'<div id="noteContainer"><img src="{DOM_IMAGE}"></div>',
+        )
+
+        self.assertEqual(result.metadata["image_source"], "dom")
+        self.assertEqual(result.image_assets[0].url, normalize_xhs_image_url(DOM_IMAGE))
+
+    def test_mismatched_note_suppresses_broad_recommendation_image(self):
+        result = self.parse_payload(self.other_note_payload())
+
+        self.assertEqual(result.assets, ())
+        self.assertEqual(result.metadata["fallback_policy"], "suppress_broad_scan")
+        self.assertNotIn("title", result.metadata)
+
+    def test_mismatched_note_suppresses_recommendation_video(self):
+        recommendation = video_note(noteId=OTHER_NOTE_ID, title="推荐视频")
+
+        result = self.parse_payload(self.other_note_payload(recommendation))
+
+        self.assertEqual(result.assets, ())
+        self.assertEqual(result.metadata["video_source"], "")
+
+    def test_login_terminal_precedes_meta_image(self):
+        html = hydration_html(
+            {"pageState": "login_required"},
+            extra_html=f'<meta property="og:image" content="{META_IMAGE}">',
+        )
+
+        with self.assertRaisesMessage(XhsParseError, "当前页面需要登录后访问"):
+            self.adapter.parse_html(html, source_url=NOTE_URL)
+
+    def test_login_terminal_precedes_current_dom_image(self):
+        html = hydration_html(
+            {"pageState": "login_required"},
+            extra_html=f'<div id="noteContainer"><img src="{DOM_IMAGE}"></div>',
+        )
+
+        with self.assertRaisesMessage(XhsParseError, "当前页面需要登录后访问"):
+            self.adapter.parse_html(html, source_url=NOTE_URL)
+
+    def test_login_terminal_precedes_broad_image(self):
+        html = hydration_html(
+            {"pageState": "login_required"},
+            extra_html=f'<script>const fallback = "{BROAD_IMAGE}";</script>',
+        )
+
+        with self.assertRaisesMessage(XhsParseError, "当前页面需要登录后访问"):
+            self.adapter.parse_html(html, source_url=NOTE_URL)
+
+    def test_private_terminal_precedes_meta_image(self):
+        html = hydration_html(
+            {"pageState": "private"},
+            extra_html=f'<meta property="og:image" content="{META_IMAGE}">',
+        )
+
+        with self.assertRaisesMessage(XhsParseError, "当前笔记不可公开访问"):
+            self.adapter.parse_html(html, source_url=NOTE_URL)
+
+    def test_deleted_terminal_precedes_dom_image(self):
+        html = f'''
+        <div class="error-page">当前笔记已删除，请返回</div>
+        <div id="noteContainer"><img src="{DOM_IMAGE}"></div>
+        '''
+
+        with self.assertRaisesMessage(XhsParseError, "当前笔记已不可用"):
+            self.adapter.parse_html(html, source_url=NOTE_URL)
+
+    def test_unavailable_terminal_precedes_broad_image(self):
+        html = hydration_html(
+            {"pageState": "unavailable"},
+            extra_html=f'<script>const fallback = "{BROAD_IMAGE}";</script>',
+        )
+
+        with self.assertRaisesMessage(XhsParseError, "当前笔记已不可用"):
+            self.adapter.parse_html(html, source_url=NOTE_URL)
+
+    def test_generic_terminal_does_not_kill_verified_current_note_media(self):
+        payload = note_payload(image_note(imageList=[{"urlDefault": IMAGE_ONE}]))
+        payload["pageState"] = "login_required"
+
+        result = self.parse_payload(payload)
+
+        self.assertEqual(len(result.image_assets), 1)
+        self.assertEqual(result.metadata["page_state"], "available")
+        self.assertTrue(result.metadata["terminal_page_state"])
+
+    def test_dom_terminal_does_not_kill_verified_current_note_media(self):
+        result = self.parse_payload(
+            note_payload(image_note(imageList=[{"urlDefault": IMAGE_ONE}])),
+            extra_html='<div class="error-page">当前笔记已删除，请返回</div>',
+        )
+
+        self.assertEqual(len(result.image_assets), 1)
+        self.assertEqual(result.metadata["page_state"], "available")
+        self.assertTrue(result.metadata["terminal_page_state"])
+
+    def test_current_note_private_state_wins_over_valid_media(self):
+        note = image_note(
+            pageState="private",
+            imageList=[{"urlDefault": IMAGE_ONE}],
+        )
+
+        with self.assertRaisesMessage(XhsParseError, "当前笔记不可公开访问"):
+            self.parse_payload(note_payload(note))
+
+    def test_other_note_media_cannot_bypass_terminal_state(self):
+        payload = self.other_note_payload()
+        payload["pageState"] = "private"
+
+        with self.assertRaisesMessage(XhsParseError, "当前笔记不可公开访问"):
+            self.parse_payload(payload)
+
+    def test_ordinary_deleted_word_in_title_is_not_terminal(self):
+        result = self.parse_payload(note_payload(image_note(title="删除照片的方法")))
+
+        self.assertEqual(len(result.image_assets), 2)
+        self.assertEqual(result.metadata["page_state"], "available")
+
+    def test_ordinary_private_word_in_title_is_not_terminal(self):
+        result = self.parse_payload(note_payload(image_note(title="私密空间摄影")))
+
+        self.assertEqual(len(result.image_assets), 2)
+        self.assertEqual(result.metadata["page_state"], "available")
+
+    def test_matched_video_without_structured_url_uses_safe_video_fallback(self):
+        note = self.note_without_media(type="video")
+        state = extract_xhs_page_state(
+            BeautifulSoup(hydration_html(note_payload(note)), "html.parser"),
+            source_url=NOTE_URL,
+        )
+
+        result = self.parse_payload(
+            note_payload(note),
+            extra_html='<script>{"originVideoKey":"current-video-key-1234567890"}</script>',
+        )
+
+        self.assertEqual(len(result.video_assets), 1)
+        self.assertEqual(result.metadata["video_source"], "fallback")
+        self.assertFalse(state.structured_video_present)
+
+    def test_matched_video_does_not_scan_other_note_recommendation(self):
+        payload = note_payload(self.note_without_media(type="video"))
+        payload["recommend"] = video_note(
+            noteId=OTHER_NOTE_ID,
+            title="推荐视频",
+        )
+
+        result = self.parse_payload(payload)
+
+        self.assertEqual(result.assets, ())
+        self.assertEqual(result.metadata["fallback_policy"], "suppress_broad_scan")
+
+    def test_metadata_exposes_only_small_policy_facts(self):
+        result = self.parse_payload(note_payload(image_note()))
+
+        self.assertTrue(result.metadata["current_note_found"])
+        self.assertTrue(result.metadata["note_candidate_found"])
+        self.assertEqual(
+            result.metadata["fallback_policy"],
+            "current_note_authoritative",
+        )
+        self.assertTrue(result.metadata["structured_image_authoritative"])
+        serialized = json.dumps(result.metadata, ensure_ascii=False)
+        self.assertNotIn("https://", serialized)
+        self.assertNotIn("noteDetailMap", serialized)
+
+    def test_unrelated_payload_remains_diagnostic_not_authoritative(self):
+        html = f'''
+        <script type="application/json">{{"siteConfig":{{"theme":"light"}}}}</script>
+        <script>const fallback = "{BROAD_IMAGE}";</script>
+        '''
+
+        result = self.adapter.parse_html(html, source_url=NOTE_URL)
+
+        self.assertTrue(result.metadata["structured_payload_found"])
+        self.assertFalse(result.metadata["current_note_found"])
+        self.assertFalse(result.metadata["note_candidate_found"])
+        self.assertEqual(result.metadata["fallback_policy"], "allow")
