@@ -265,15 +265,18 @@ def _meta_image_urls(soup):
     return _normalize_image_urls(values)
 
 
-def _dom_image_urls(soup):
+def _dom_image_urls(soup, *, strict_current_note=False):
     values = []
-    selectors = (
+    strict_selectors = (
         "#noteContainer img",
         ".note-detail img",
         ".note-content img",
+    )
+    legacy_selectors = strict_selectors + (
         ".carousel-container img",
         ".swiper-slide img",
     )
+    selectors = strict_selectors if strict_current_note else legacy_selectors
     for selector in selectors:
         for tag in soup.select(selector):
             marker = " ".join(
@@ -455,7 +458,12 @@ class XiaohongshuAdapter(BasePlatformAdapter):
             _meta_image_urls(soup) if fallback_policy.allow_meta_images else []
         )
         dom_image_urls = (
-            _dom_image_urls(soup) if fallback_policy.allow_dom_images else []
+            _dom_image_urls(
+                soup,
+                strict_current_note=fallback_policy.name == "suppress_broad_scan",
+            )
+            if fallback_policy.allow_dom_images
+            else []
         )
         if structured_image_urls:
             image_urls = structured_image_urls

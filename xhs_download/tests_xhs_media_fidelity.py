@@ -739,6 +739,50 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
         self.assertEqual(result.metadata["image_source"], "dom")
         self.assertEqual(result.image_assets[0].url, normalize_xhs_image_url(DOM_IMAGE))
 
+    def test_mismatched_note_rejects_page_level_swiper_recommendation(self):
+        result = self.parse_payload(
+            self.other_note_payload(),
+            extra_html=f'<div class="swiper-slide"><img src="{DOM_IMAGE}"></div>',
+        )
+
+        self.assertEqual(result.assets, ())
+        self.assertEqual(result.metadata["fallback_policy"], "suppress_broad_scan")
+
+    def test_mismatched_note_rejects_page_level_carousel_recommendation(self):
+        result = self.parse_payload(
+            self.other_note_payload(),
+            extra_html=(
+                f'<div class="carousel-container"><img src="{DOM_IMAGE}"></div>'
+            ),
+        )
+
+        self.assertEqual(result.assets, ())
+        self.assertEqual(result.metadata["fallback_policy"], "suppress_broad_scan")
+
+    def test_mismatched_note_allows_swiper_scoped_to_note_container(self):
+        result = self.parse_payload(
+            self.other_note_payload(),
+            extra_html=(
+                '<div id="noteContainer"><div class="swiper-slide">'
+                f'<img src="{DOM_IMAGE}"></div></div>'
+            ),
+        )
+
+        self.assertEqual(result.metadata["image_source"], "dom")
+        self.assertEqual(result.image_assets[0].url, normalize_xhs_image_url(DOM_IMAGE))
+
+    def test_unrelated_json_keeps_legacy_page_level_swiper_fallback(self):
+        html = f'''
+        <script type="application/json">{{"siteConfig":{{"theme":"light"}}}}</script>
+        <div class="swiper-slide"><img src="{DOM_IMAGE}"></div>
+        '''
+
+        result = self.adapter.parse_html(html, source_url=NOTE_URL)
+
+        self.assertEqual(result.metadata["fallback_policy"], "allow")
+        self.assertEqual(result.metadata["image_source"], "dom")
+        self.assertEqual(result.image_assets[0].url, normalize_xhs_image_url(DOM_IMAGE))
+
     def test_mismatched_note_suppresses_broad_recommendation_image(self):
         result = self.parse_payload(self.other_note_payload())
 
@@ -781,6 +825,18 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
         with self.assertRaisesMessage(XhsParseError, "当前页面需要登录后访问"):
             self.adapter.parse_html(html, source_url=NOTE_URL)
 
+    def test_login_terminal_precedes_generic_carousel_and_swiper_images(self):
+        html = hydration_html(
+            {"pageState": "login_required"},
+            extra_html=(
+                f'<div class="carousel-container"><img src="{META_IMAGE}"></div>'
+                f'<div class="swiper-slide"><img src="{DOM_IMAGE}"></div>'
+            ),
+        )
+
+        with self.assertRaisesMessage(XhsParseError, "当前页面需要登录后访问"):
+            self.adapter.parse_html(html, source_url=NOTE_URL)
+
     def test_private_terminal_precedes_meta_image(self):
         html = hydration_html(
             {"pageState": "private"},
@@ -817,6 +873,23 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
         self.assertEqual(len(result.image_assets), 1)
         self.assertEqual(result.metadata["page_state"], "available")
         self.assertTrue(result.metadata["terminal_page_state"])
+
+    def test_structured_gallery_remains_authoritative_over_generic_carousel(self):
+        result = self.parse_payload(
+            note_payload(image_note(imageList=[{"urlDefault": IMAGE_ONE}])),
+            extra_html=(
+                f'<div class="carousel-container"><img src="{DOM_IMAGE}"></div>'
+            ),
+        )
+
+        self.assertEqual(
+            [asset.url for asset in result.image_assets],
+            [normalize_xhs_image_url(IMAGE_ONE)],
+        )
+        self.assertEqual(
+            result.metadata["fallback_policy"],
+            "current_note_authoritative",
+        )
 
     def test_dom_terminal_does_not_kill_verified_current_note_media(self):
         result = self.parse_payload(
