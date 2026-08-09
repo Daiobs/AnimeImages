@@ -102,6 +102,9 @@ AnimeImages is no longer just a Xiaohongshu downloader. The current product shap
 - Preserve original image bytes.
 - Multi-image and video baseline downloads.
 - Avoid unnecessary image transcode.
+- Treat parsed JSON as diagnostic until it contains a note-like candidate; unrelated JSON must not suppress safe compatibility fallback.
+- A matched structured gallery is authoritative only when normalization leaves valid resources. Other-note candidates may use explicit page meta/current-note DOM, but must suppress broad recommendation scans.
+- Explicit login/private/deleted/unavailable states precede generic media fallback. Only verified structured public media from the matched current note can override a generic page marker; a current-note terminal declaration always wins.
 
 ### Douyin
 

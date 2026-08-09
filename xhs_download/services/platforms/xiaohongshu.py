@@ -14,6 +14,7 @@ from ..common import (
     request_get_with_retry,
 )
 from .base import BasePlatformAdapter, PlatformCapabilities, ProviderPolicy
+from .xhs_fallback_policy import resolve_xhs_fallback_policy
 from .xhs_page_state import (
     XHS_MAX_AUTHOR_LENGTH,
     XHS_MAX_TITLE_LENGTH,
@@ -264,15 +265,18 @@ def _meta_image_urls(soup):
     return _normalize_image_urls(values)
 
 
-def _dom_image_urls(soup):
+def _dom_image_urls(soup, *, strict_current_note=False):
     values = []
-    selectors = (
+    strict_selectors = (
         "#noteContainer img",
         ".note-detail img",
         ".note-content img",
+    )
+    legacy_selectors = strict_selectors + (
         ".carousel-container img",
         ".swiper-slide img",
     )
+    selectors = strict_selectors if strict_current_note else legacy_selectors
     for selector in selectors:
         for tag in soup.select(selector):
             marker = " ".join(
@@ -344,6 +348,7 @@ def _build_xhs_metadata(
     video_source,
     cover_source,
     structured_state,
+    fallback_policy,
 ):
     metadata = {
         "page_state": page_state,
@@ -353,6 +358,14 @@ def _build_xhs_metadata(
         "video_source": video_source,
         "cover_source": cover_source,
         "structured_state_found": bool(structured_state.structured_state_found),
+        "structured_payload_found": bool(structured_state.structured_payload_found),
+        "current_note_found": bool(structured_state.current_note_found),
+        "note_candidate_found": bool(structured_state.note_candidate_found),
+        "fallback_policy": fallback_policy.name,
+        "structured_image_authoritative": bool(
+            fallback_policy.structured_image_authoritative
+        ),
+        "terminal_page_state": bool(fallback_policy.terminal_marker_detected),
     }
     if title:
         metadata["title"] = title
@@ -380,6 +393,28 @@ class XiaohongshuAdapter(BasePlatformAdapter):
     def parse_html(self, html, source_url=None):
         soup = BeautifulSoup(html, "html.parser")
         structured_state = extract_xhs_page_state(soup, source_url=source_url)
+
+        structured_image_urls = _normalize_image_urls(structured_state.image_urls)
+        structured_video_urls = []
+        structured_video_size_bytes = 0
+        for index, raw_url in enumerate(structured_state.video_urls):
+            video_url = normalize_video_url(raw_url)
+            if not video_url or video_url in structured_video_urls:
+                continue
+            structured_video_urls.append(video_url)
+            if index == 0:
+                structured_video_size_bytes = structured_state.video_size_bytes
+
+        fallback_policy = resolve_xhs_fallback_policy(
+            structured_state,
+            structured_image_urls=structured_image_urls,
+            structured_video_urls=structured_video_urls,
+            dom_page_state=_detect_dom_page_state(soup),
+        )
+        if fallback_policy.terminal_state:
+            raise XhsParseError(
+                XHS_PAGE_STATE_MESSAGES[fallback_policy.terminal_state]
+            )
 
         structured_title = normalize_xhs_title(structured_state.title)
         meta_title = _meta_content(
@@ -419,9 +454,17 @@ class XiaohongshuAdapter(BasePlatformAdapter):
             else ""
         )
 
-        structured_image_urls = _normalize_image_urls(structured_state.image_urls)
-        meta_image_urls = _meta_image_urls(soup)
-        dom_image_urls = _dom_image_urls(soup)
+        meta_image_urls = (
+            _meta_image_urls(soup) if fallback_policy.allow_meta_images else []
+        )
+        dom_image_urls = (
+            _dom_image_urls(
+                soup,
+                strict_current_note=fallback_policy.name == "suppress_broad_scan",
+            )
+            if fallback_policy.allow_dom_images
+            else []
+        )
         if structured_image_urls:
             image_urls = structured_image_urls
             image_source = "structured"
@@ -431,39 +474,24 @@ class XiaohongshuAdapter(BasePlatformAdapter):
         elif dom_image_urls:
             image_urls = dom_image_urls
             image_source = "dom"
-        elif structured_state.structured_payload_found:
-            image_urls = []
-            image_source = ""
-        else:
+        elif fallback_policy.allow_broad_image_scan:
             image_urls = self.extract_fallback_image_urls(html)
             image_source = "fallback" if image_urls else ""
-
-        structured_video_urls = []
-        structured_video_size_bytes = 0
-        for index, raw_url in enumerate(structured_state.video_urls):
-            video_url = normalize_video_url(raw_url)
-            if not video_url or video_url in structured_video_urls:
-                continue
-            structured_video_urls.append(video_url)
-            if index == 0:
-                structured_video_size_bytes = structured_state.video_size_bytes
+        else:
+            image_urls = []
+            image_source = ""
 
         if structured_video_urls:
             video_urls = structured_video_urls
             video_source = "structured"
-        elif structured_state.post_type == "image" and structured_state.structured_state_found:
-            video_urls = []
-            video_source = ""
-        elif structured_state.structured_payload_found and not structured_state.structured_state_found:
-            video_urls = []
-            video_source = ""
-        else:
+        elif fallback_policy.allow_broad_video_scan:
             video_urls = extract_video_urls(html)
             video_source = "fallback" if video_urls else ""
+        else:
+            video_urls = []
+            video_source = ""
 
-        page_state = structured_state.page_state
-        if page_state == "unknown":
-            page_state = _detect_dom_page_state(soup)
+        page_state = fallback_policy.page_state
 
         base_filename = _build_base_filename(
             author_name,
@@ -492,13 +520,14 @@ class XiaohongshuAdapter(BasePlatformAdapter):
             metadata = _build_xhs_metadata(
                 title=title,
                 author_name=author_name,
-                page_state="available",
+                page_state=page_state,
                 title_source=title_source,
                 author_source=author_source,
                 image_source=image_source,
                 video_source=video_source,
                 cover_source=cover_source,
                 structured_state=structured_state,
+                fallback_policy=fallback_policy,
             )
             return ParseResult(
                 platform=self.platform_id,
@@ -522,13 +551,14 @@ class XiaohongshuAdapter(BasePlatformAdapter):
             metadata = _build_xhs_metadata(
                 title=title,
                 author_name=author_name,
-                page_state="available",
+                page_state=page_state,
                 title_source=title_source,
                 author_source=author_source,
                 image_source=image_source,
                 video_source=video_source,
                 cover_source="",
                 structured_state=structured_state,
+                fallback_policy=fallback_policy,
             )
             return ParseResult(
                 platform=self.platform_id,
@@ -546,9 +576,6 @@ class XiaohongshuAdapter(BasePlatformAdapter):
                 metadata=metadata,
             )
 
-        if page_state in XHS_PAGE_STATE_MESSAGES:
-            raise XhsParseError(XHS_PAGE_STATE_MESSAGES[page_state])
-
         return ParseResult(
             platform=self.platform_id,
             post_type="video" if is_video_note else "image",
@@ -564,6 +591,7 @@ class XiaohongshuAdapter(BasePlatformAdapter):
                 video_source=video_source,
                 cover_source="",
                 structured_state=structured_state,
+                fallback_policy=fallback_policy,
             ),
         )
 

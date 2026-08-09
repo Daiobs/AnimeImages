@@ -60,11 +60,12 @@ The `codex/xhs-media-fidelity-v1` development branch improves the dedicated Xiao
 
 - Bounded parsing reads only valid JSON hydration data or a valid current-note JSON object from a known state assignment. It never executes page JavaScript, replaces JavaScript expressions, or imports a browser session.
 - The current note is selected by a validated 24-character note ID from the final page URL. A multi-note payload is not allowed to select recommendation content by traversal order.
+- Parsed JSON is diagnostic only until it contains a note-like candidate. Unrelated JSON-LD, application JSON, and hydration configuration do not suppress compatible safe fallbacks.
 - Title and author use structured current-note data first, then explicit meta fields, then current-note DOM selectors.
-- A valid structured image list is authoritative, preserves source order, and is deduplicated after existing XHS URL normalization. Meta, DOM, and restricted URL scanning remain bounded fallbacks only.
+- A matched structured image list becomes authoritative only after normalization leaves at least one valid resource. Missing, empty, or wholly invalid lists may use meta, current-note DOM, and safe broad fallback; when only another note is found, broad image/video scanning is suppressed to prevent recommendation leakage.
 - Video covers prefer an explicit current-note poster/cover, then the first structured note image, then meta and current-note DOM images.
 - XHS video size is exact-known-or-unknown. Only a validated integer byte field attached to the selected structured stream is accepted; no HEAD, Range, partial-download, bitrate, or duration estimate is added.
-- Explicit login-required, private, deleted, and unavailable states return fixed user-safe errors only when no public media was parsed.
+- Explicit login-required, private, deleted, and unavailable states precede meta, DOM, and broad media fallbacks. Verified structured public media from the matched current note may override only a generic page-level marker; a terminal state declared by the current note itself always wins.
 - Single-link and Batch display contexts share the same normalized XHS title, author, cover, gallery order, and size semantics.
 
 The candidate adds no migration, Cookie import, CAPTCHA bypass, third-party Provider, Provider-order change, timeout change, or production deployment. Synthetic fixtures contain no real signed media URLs.
