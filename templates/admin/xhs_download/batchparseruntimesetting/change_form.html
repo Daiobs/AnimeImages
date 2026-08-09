@@ -1,0 +1,111 @@
+{% extends "admin/change_form.html" %}
+{% load static %}
+
+{% block extrastyle %}
+    {{ block.super }}
+    <link rel="stylesheet" href="{% static 'css/batch_runtime_admin.css' %}">
+{% endblock %}
+
+{% block extrahead %}
+    {{ block.super }}
+    <script src="{% static 'js/batch_runtime_admin.js' %}" defer></script>
+{% endblock %}
+
+{% block form_top %}
+    {{ block.super }}
+    {% with state=batch_runtime_effective_state %}
+        <section
+            class="batch-runtime-state"
+            id="batch-runtime-saved-state"
+            aria-labelledby="batch-runtime-state-title"
+            data-saved-exists="{{ state.exists|yesno:'true,false' }}"
+            data-saved-access-mode="{{ state.risk_access_mode }}"
+            data-saved-rollout-percent="{{ state.risk_rollout_percent }}"
+            data-saved-public-ultra-hd="{{ state.public_ultra_hd_enabled|yesno:'true,false' }}"
+            data-saved-public-youtube-merge="{{ state.public_youtube_merge_enabled|yesno:'true,false' }}"
+            data-server-unpersisted="{{ batch_runtime_unpersisted_post|yesno:'true,false' }}"
+        >
+            <div class="batch-runtime-state__header">
+                <div>
+                    <p class="batch-runtime-state__eyebrow">Saved / Effective State</p>
+                    <h2 id="batch-runtime-state-title">当前生效状态</h2>
+                </div>
+                {% if state.exists %}
+                    <span class="batch-runtime-state__badge is-live">已保存并生效</span>
+                {% else %}
+                    <span class="batch-runtime-state__badge is-pending">尚未创建</span>
+                {% endif %}
+            </div>
+
+            <div class="batch-runtime-state__grid">
+                <div class="batch-runtime-state__item">
+                    <span>开放模式</span>
+                    <strong>{{ state.access_mode_label }}</strong>
+                </div>
+                <div class="batch-runtime-state__item">
+                    <span>内部值</span>
+                    <strong><code>{{ state.access_mode|default:"-" }}</code></strong>
+                </div>
+                <div class="batch-runtime-state__item">
+                    <span>配置来源</span>
+                    <strong>{{ state.source_label }}</strong>
+                </div>
+                <div class="batch-runtime-state__item">
+                    <span>匿名访客</span>
+                    <strong>{{ state.anonymous_state }}</strong>
+                </div>
+                <div class="batch-runtime-state__item">
+                    <span>Staff</span>
+                    <strong>{{ state.staff_state }}</strong>
+                </div>
+                <div class="batch-runtime-state__item">
+                    <span>公开灰度</span>
+                    <strong>
+                        {% if state.rollout_active %}{{ state.rollout_percent }}%{% else %}不适用{% endif %}
+                    </strong>
+                </div>
+                <div class="batch-runtime-state__item">
+                    <span>最近更新时间</span>
+                    <strong>
+                        {% if state.updated_at %}{{ state.updated_at|date:"Y-m-d H:i:s" }}{% else %}-{% endif %}
+                    </strong>
+                </div>
+            </div>
+            <p class="batch-runtime-state__source">{{ state.source_help }}</p>
+        </section>
+    {% endwith %}
+
+    <div class="batch-runtime-edit-heading">
+        <div>
+            <p class="batch-runtime-state__eyebrow">Draft</p>
+            <h2>正在编辑配置</h2>
+        </div>
+        <p>保存后，后续请求会立即读取数据库配置，无需重启服务。</p>
+    </div>
+
+    <div class="batch-runtime-dirty" id="batch-runtime-dirty-state" role="status"{% if not batch_runtime_unpersisted_post %} hidden{% endif %}>
+        有未保存的更改
+    </div>
+
+    <dialog class="batch-runtime-confirm" id="batch-runtime-public-confirm">
+        <div class="batch-runtime-confirm__body">
+            <h2>确认扩大批量解析公网访问？</h2>
+            <dl class="batch-runtime-confirm__change">
+                <div><dt>当前</dt><dd id="batch-runtime-confirm-current">-</dd></div>
+                <div><dt>将变更为</dt><dd id="batch-runtime-confirm-target">-</dd></div>
+            </dl>
+            <p>保存后将扩大以下公网能力：</p>
+            <ul id="batch-runtime-confirm-impacts"></ul>
+            <div class="batch-runtime-confirm__actions">
+                <button type="button" class="button" id="batch-runtime-confirm-cancel">取消</button>
+                <button type="button" class="button default" id="batch-runtime-confirm-apply">确认并生效</button>
+            </div>
+        </div>
+    </dialog>
+{% endblock %}
+
+{% block submit_buttons_bottom %}
+    <div class="submit-row">
+        <input type="submit" value="保存并生效" class="default" name="_save">
+    </div>
+{% endblock %}

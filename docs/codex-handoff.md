@@ -204,6 +204,16 @@ Daily changes should happen in:
 /admin/xhs_download/batchparseruntimesetting/
 ```
 
+The Batch runtime Admin is a singleton direct-edit surface. Its top panel is
+the saved/effective database state; the editable fields below it are only a
+draft until `保存并生效` succeeds. An existing database row is authoritative,
+while environment values are first-row defaults or database-failure fallback.
+Public-expansion changes require explicit client confirmation and server-side
+validation, stale forms are rejected using `updated_at`, and successful saves
+emit a non-sensitive structured mutation log. This Admin hardening does not
+change `batch_parse_access_allowed()`, gray rollout, Provider order, parsing,
+scheduling, rate limits, or downloads.
+
 `BATCH_PARSE_TIANTIAN_PARALLEL_WORKERS` and
 `BATCH_PARSE_MAX_RESPONSE_TIMEOUT_SECONDS` are environment safety ceilings, not
 daily admin controls. The interactive page reserves the existing whole-batch
