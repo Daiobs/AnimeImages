@@ -89,7 +89,8 @@ AnimeImages is no longer just a Xiaohongshu downloader. The current product shap
 - Dedicated pages for Xiaohongshu, Douyin, Bilibili.
 - Runtime-gated batch parsing page.
   - Staff can see raw/direct controls.
-  - Public users must not see raw signed provider URLs.
+  - Allowed public users can parse and download, but must not receive raw-link
+    copy/open/export tools.
 - Provider runtime/admin console.
 - Observability and health-test admin tools.
 - Download strategy experiments to reduce server bandwidth while preserving stable downloads.
@@ -164,11 +165,20 @@ Do not treat `.env *_ENABLED=True` as public launch approval. Routine rollout is
 Current behavior:
 
 - It supports multiple links.
+- `BatchParseRuntimeSetting.access_mode` is the single source for Batch
+  navigation visibility, page access, and start/item/retry API access.
+- `disabled` closes Batch for website visitors and staff, `staff` limits it to
+  staff, `public_gray` uses the existing deterministic request rollout, and
+  `public` allows everyone.
 - Douyin original/ultra is checked by default when runtime allows it.
 - Runtime settings are stored in `BatchParseRuntimeSetting`.
 - Env values are fallback/initial defaults, not the day-to-day operating console.
-- Staff can see raw/direct controls.
-- Anonymous/public users must not see raw signed provider URLs.
+- Allowed public users can download individual videos and images through the
+  existing validated route/prepare/stream/status contract.
+- Staff can additionally see raw copy/open/export tools and the strategy matrix.
+- Public cards may contain only the existing allowlisted client media fields
+  needed for validated routing; do not add Provider responses, headers,
+  credentials, cache objects, or raw-link tools.
 
 Browser state boundaries:
 

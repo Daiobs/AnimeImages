@@ -7,6 +7,8 @@ from django.conf import settings
 STATIC_VERSION_FILES = (
     "static/css/app.css",
     "static/js/app.js",
+    "static/js/batch_parse.js",
+    "static/js/download_reliability.js",
     "static/js/xhs_download.js",
 )
 
@@ -41,6 +43,9 @@ def get_static_asset_version():
 
 
 def static_asset_version(request):
+    from xhs_download.context_processors import batch_parse_visibility
+
     return {
         "static_asset_version": get_static_asset_version(),
+        **batch_parse_visibility(request),
     }

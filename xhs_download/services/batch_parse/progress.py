@@ -12,6 +12,7 @@ from django.urls import reverse
 from ..rate_limits import get_client_identity
 from .results import build_batch_skipped_row, split_batch_links
 from .runtime import (
+    batch_parse_access_allowed,
     batch_parse_effective_per_link_timeout_seconds,
     batch_parse_limit_error_message,
     batch_parse_max_links,
@@ -314,7 +315,8 @@ def build_batch_progress_item_response(
         "partials/batch_result_card.html",
         {
             "row": row,
-            "batch_direct_links_allowed": batch_parse_user_is_staff(request),
+            "batch_download_allowed": batch_parse_access_allowed(request),
+            "batch_raw_links_allowed": batch_parse_user_is_staff(request),
             "proxy_image_url": reverse("media_proxy_image"),
         },
         request=request,

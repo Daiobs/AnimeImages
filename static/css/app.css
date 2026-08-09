@@ -1140,6 +1140,28 @@ body {
     color: var(--text-muted);
 }
 
+.batch-asset-download {
+    display: grid;
+    min-width: min(100%, 260px);
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--line-soft);
+    border-radius: 8px;
+    background: #fbfbfd;
+}
+
+.batch-asset-download .batch-asset-link {
+    min-height: 32px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+}
+
+.batch-asset-download .batch-asset-link:hover {
+    color: var(--text-main);
+    background: transparent;
+}
+
 .batch-result-cover {
     position: relative;
     min-height: 190px;

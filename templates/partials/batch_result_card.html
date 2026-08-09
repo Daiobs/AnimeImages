@@ -80,7 +80,26 @@
                 {% if row.video_items %}
                     <div class="batch-direct-tools">
                         {% for item in row.video_items %}
-                            <div class="batch-direct-item">
+                            <div class="batch-direct-item batch-download-item"
+                                 data-batch-download-item
+                                 data-type="video"
+                                 data-url="{{ item.direct_url }}"
+                                 data-cover-url="{{ item.cover_url|default:'' }}"
+                                 data-size-bytes="{{ item.size_bytes|default:0 }}"
+                                 data-asset-id="{{ item.asset_id|default:'' }}"
+                                 data-provider="{{ item.provider|default:'' }}"
+                                 data-provider-resource-id="{{ item.provider_resource_id|default:'' }}"
+                                 data-provider-cache-key="{{ item.provider_cache_key|default:'' }}"
+                                 data-provider-manifest-token="{{ item.provider_manifest_token|default:'' }}"
+                                 data-download-strategy="{{ item.download_strategy|default:'' }}"
+                                 data-fallback-strategy="{{ item.fallback_strategy|default:'' }}"
+                                 data-cors-expected="{{ item.cors_expected|yesno:'true,false' }}"
+                                 data-browser-direct-fetch-safe="{{ item.browser_direct_fetch_safe|yesno:'true,false' }}"
+                                 data-requires-merge="{{ item.requires_merge|yesno:'true,false' }}"
+                                 data-requires-cookie="{{ item.requires_cookie|yesno:'true,false' }}"
+                                 data-platform-key="{{ row.platform|default:'' }}"
+                                 data-base-filename="{{ row.base_filename|default:'video' }}"
+                                 data-download-filename="{{ row.base_filename|default:'video' }}_{{ forloop.counter }}.mp4">
                                 <div class="batch-direct-summary">
                                     <span class="batch-direct-icon">
                                         <i class="bi bi-file-earmark-play"></i>
@@ -90,27 +109,32 @@
                                         <small>{{ item.size_display_label|default:item.size_label|default:"大小未知" }}</small>
                                     </span>
                                 </div>
-                                {% if batch_direct_links_allowed %}
+                                {% if batch_download_allowed %}
                                     <div class="batch-result-actions">
-                                        <button type="button"
-                                                class="btn btn-outline-secondary btn-sm batch-copy-btn"
-                                                data-copy-text="{{ item.direct_url }}">
-                                            复制直链
-                                        </button>
-                                        <a class="btn btn-outline-secondary btn-sm"
-                                           href="{{ item.direct_url }}"
-                                           target="_blank"
-                                           rel="noopener noreferrer">
-                                            打开直链
-                                        </a>
+                                        {% if batch_raw_links_allowed %}
+                                            <button type="button"
+                                                    class="btn btn-outline-secondary btn-sm batch-copy-btn"
+                                                    data-copy-text="{{ item.direct_url }}">
+                                                复制直链
+                                            </button>
+                                            <a class="btn btn-outline-secondary btn-sm"
+                                               href="{{ item.direct_url }}"
+                                               target="_blank"
+                                               rel="noopener noreferrer">
+                                                打开直链
+                                            </a>
+                                        {% endif %}
                                         <button type="button"
                                                 class="btn btn-brand btn-sm batch-browser-download-btn"
-                                                data-batch-direct-download
-                                                data-batch-direct-url="{{ item.direct_url }}"
-                                                data-batch-direct-filename="{{ row.base_filename|default:'video' }}_{{ forloop.counter }}.mp4">
+                                                data-batch-download
+                                                {% if batch_raw_links_allowed %}
+                                                    data-batch-direct-download
+                                                    data-batch-direct-url="{{ item.direct_url }}"
+                                                    data-batch-direct-filename="{{ row.base_filename|default:'video' }}_{{ forloop.counter }}.mp4"
+                                                {% endif %}>
                                             <span class="spinner-border spinner-border-sm me-1 batch-download-spinner" aria-hidden="true"></span>
                                             <i class="bi bi-download me-1 batch-download-icon"></i>
-                                            <span class="batch-download-label">浏览器下载</span>
+                                            <span class="batch-download-label">下载</span>
                                         </button>
                                     </div>
                                     <div class="batch-download-progress" data-batch-download-progress hidden>
@@ -119,10 +143,12 @@
                                         </div>
                                         <div class="batch-download-progress-label" data-batch-download-progress-label>准备下载...</div>
                                     </div>
-                                    <details class="batch-direct-url">
-                                        <summary>展开链接</summary>
-                                        <code>{{ item.direct_url }}</code>
-                                    </details>
+                                    {% if batch_raw_links_allowed %}
+                                        <details class="batch-direct-url">
+                                            <summary>展开链接</summary>
+                                            <code>{{ item.direct_url }}</code>
+                                        </details>
+                                    {% endif %}
                                 {% endif %}
                             </div>
                         {% endfor %}
@@ -132,19 +158,61 @@
                 {% if row.image_items %}
                     <div class="batch-assets">
                         {% for item in row.image_items %}
-                            {% if batch_direct_links_allowed %}
-                                <a class="batch-asset-link" href="{{ item.url }}" target="_blank" rel="noopener noreferrer">
-                                    <i class="bi bi-image"></i>
-                                    <span>图片 {{ forloop.counter }}</span>
-                                    <small>{{ item.strategy_label|default:item.download_strategy }}</small>
-                                </a>
-                            {% else %}
+                            <div class="batch-asset-download batch-download-item"
+                                 data-batch-download-item
+                                 data-type="image"
+                                 data-url="{{ item.url }}"
+                                 data-size-bytes="{{ item.size_bytes|default:0 }}"
+                                 data-asset-id="{{ item.asset_id|default:'' }}"
+                                 data-provider="{{ item.provider|default:'' }}"
+                                 data-provider-resource-id="{{ item.provider_resource_id|default:'' }}"
+                                 data-provider-cache-key="{{ item.provider_cache_key|default:'' }}"
+                                 data-provider-manifest-token="{{ item.provider_manifest_token|default:'' }}"
+                                 data-download-strategy="{{ item.download_strategy|default:'' }}"
+                                 data-fallback-strategy="{{ item.fallback_strategy|default:'' }}"
+                                 data-cors-expected="{{ item.cors_expected|yesno:'true,false' }}"
+                                 data-browser-direct-fetch-safe="{{ item.browser_direct_fetch_safe|yesno:'true,false' }}"
+                                 data-requires-merge="{{ item.requires_merge|yesno:'true,false' }}"
+                                 data-requires-cookie="{{ item.requires_cookie|yesno:'true,false' }}"
+                                 data-platform-key="{{ row.platform|default:'' }}"
+                                 data-base-filename="{{ row.base_filename|default:'image' }}"
+                                 data-download-filename="{{ row.base_filename|default:'image' }}_{{ forloop.counter }}.jpg">
                                 <div class="batch-asset-link">
                                     <i class="bi bi-image"></i>
                                     <span>图片 {{ forloop.counter }}</span>
                                     <small>{{ item.strategy_label|default:item.download_strategy }}</small>
                                 </div>
-                            {% endif %}
+                                {% if batch_download_allowed %}
+                                    <div class="batch-result-actions">
+                                        <button type="button"
+                                                class="btn btn-brand btn-sm batch-browser-download-btn"
+                                                data-batch-download>
+                                            <span class="spinner-border spinner-border-sm me-1 batch-download-spinner" aria-hidden="true"></span>
+                                            <i class="bi bi-download me-1 batch-download-icon"></i>
+                                            <span class="batch-download-label">下载</span>
+                                        </button>
+                                        {% if batch_raw_links_allowed %}
+                                            <button type="button"
+                                                    class="btn btn-outline-secondary btn-sm batch-copy-btn"
+                                                    data-copy-text="{{ item.url }}">
+                                                复制直链
+                                            </button>
+                                            <a class="btn btn-outline-secondary btn-sm"
+                                               href="{{ item.url }}"
+                                               target="_blank"
+                                               rel="noopener noreferrer">
+                                                打开直链
+                                            </a>
+                                        {% endif %}
+                                    </div>
+                                    <div class="batch-download-progress" data-batch-download-progress hidden>
+                                        <div class="batch-download-progress-track">
+                                            <div class="batch-download-progress-bar" data-batch-download-progress-bar></div>
+                                        </div>
+                                        <div class="batch-download-progress-label" data-batch-download-progress-label>准备下载...</div>
+                                    </div>
+                                {% endif %}
+                            </div>
                         {% endfor %}
                     </div>
                 {% endif %}
