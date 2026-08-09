@@ -14,6 +14,7 @@ BROWSER_BLOB_VIDEO_PROVIDERS = {
     "kukutool_generic",
     "tiantianjiexi_generic",
 }
+BROWSER_DIRECT_FETCH_SAFE_PROVIDERS = frozenset()
 SERVER_MERGE_PROVIDERS = {"youtube_merge", "yt_dlp_merge"}
 SERVER_ATTACHMENT_VIDEO_PROVIDERS = {"yt_dlp_generic"}
 
@@ -38,6 +39,7 @@ def build_download_strategy(asset, *, result_platform="", result_metadata=None):
             "download_strategy": DOWNLOAD_STRATEGY_BROWSER_DIRECT,
             "fallback_strategy": FALLBACK_SERVER_ZIP,
             "cors_expected": False,
+            "browser_direct_fetch_safe": not bool(effective_provider),
             "requires_merge": False,
             "requires_cookie": False,
             "strategy_label": "图片直链优先",
@@ -48,19 +50,32 @@ def build_download_strategy(asset, *, result_platform="", result_metadata=None):
             "download_strategy": DOWNLOAD_STRATEGY_SERVER_MERGE,
             "fallback_strategy": FALLBACK_NONE,
             "cors_expected": False,
+            "browser_direct_fetch_safe": False,
             "requires_merge": True,
             "requires_cookie": False,
             "strategy_label": "服务端合并下载",
         }
 
     if effective_provider in BROWSER_BLOB_VIDEO_PROVIDERS:
+        browser_direct_fetch_safe = (
+            effective_provider in BROWSER_DIRECT_FETCH_SAFE_PROVIDERS
+        )
         return {
-            "download_strategy": DOWNLOAD_STRATEGY_BROWSER_BLOB,
+            "download_strategy": (
+                DOWNLOAD_STRATEGY_BROWSER_BLOB
+                if browser_direct_fetch_safe
+                else DOWNLOAD_STRATEGY_SERVER_ATTACHMENT
+            ),
             "fallback_strategy": FALLBACK_SERVER_ATTACHMENT,
-            "cors_expected": True,
+            "cors_expected": browser_direct_fetch_safe,
+            "browser_direct_fetch_safe": browser_direct_fetch_safe,
             "requires_merge": False,
             "requires_cookie": False,
-            "strategy_label": "浏览器 Blob 优先",
+            "strategy_label": (
+                "浏览器 Blob 优先"
+                if browser_direct_fetch_safe
+                else "服务端可观测下载"
+            ),
         }
 
     if effective_provider in SERVER_ATTACHMENT_VIDEO_PROVIDERS:
@@ -68,6 +83,7 @@ def build_download_strategy(asset, *, result_platform="", result_metadata=None):
             "download_strategy": DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
             "fallback_strategy": FALLBACK_NONE,
             "cors_expected": False,
+            "browser_direct_fetch_safe": False,
             "requires_merge": False,
             "requires_cookie": False,
             "strategy_label": "服务端单文件下载",
@@ -78,6 +94,7 @@ def build_download_strategy(asset, *, result_platform="", result_metadata=None):
             "download_strategy": DOWNLOAD_STRATEGY_BROWSER_DIRECT,
             "fallback_strategy": FALLBACK_SERVER_ATTACHMENT,
             "cors_expected": False,
+            "browser_direct_fetch_safe": not bool(effective_provider),
             "requires_merge": False,
             "requires_cookie": False,
             "strategy_label": "视频直链优先",
@@ -87,6 +104,7 @@ def build_download_strategy(asset, *, result_platform="", result_metadata=None):
         "download_strategy": DOWNLOAD_STRATEGY_SERVER_ZIP,
         "fallback_strategy": FALLBACK_NONE,
         "cors_expected": False,
+        "browser_direct_fetch_safe": False,
         "requires_merge": False,
         "requires_cookie": False,
         "strategy_label": "服务端打包",
@@ -97,15 +115,15 @@ def build_download_strategy_matrix():
     return (
         {
             "source": "抖音天天解析",
-            "strategy": DOWNLOAD_STRATEGY_BROWSER_BLOB,
+            "strategy": DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
             "fallback": FALLBACK_SERVER_ATTACHMENT,
-            "note": "原画视频优先由浏览器拉取 CDN，失败自动切换服务端单文件。",
+            "note": "签名资源默认先走同源 prepare，再交给浏览器接收服务端流。",
         },
         {
             "source": "抖音 KuKuTool",
-            "strategy": DOWNLOAD_STRATEGY_BROWSER_BLOB,
+            "strategy": DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
             "fallback": FALLBACK_SERVER_ATTACHMENT,
-            "note": "与天天解析一致，适合支持 CORS 的字节 CDN 链接。",
+            "note": "未明确证明 CORS 能力时使用同源 prepare/stream。",
         },
         {
             "source": "小红书图片",

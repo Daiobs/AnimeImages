@@ -102,6 +102,9 @@ AnimeImages is no longer just a Xiaohongshu downloader. The current product shap
 - Preserve original image bytes.
 - Multi-image and video baseline downloads.
 - Avoid unnecessary image transcode.
+- Treat parsed JSON as diagnostic until it contains a note-like candidate; unrelated JSON must not suppress safe compatibility fallback.
+- A matched structured gallery is authoritative only when normalization leaves valid resources. Other-note candidates may use explicit page meta/current-note DOM, but must suppress broad recommendation scans.
+- Explicit login/private/deleted/unavailable states precede generic media fallback. Only verified structured public media from the matched current note can override a generic page marker; a current-note terminal declaration always wins.
 
 ### Douyin
 
@@ -199,15 +202,59 @@ The short-lived signed run token is bound to the client, each index is one-use,
 and the server requires the previous index to finish before accepting the next;
 parse results are not persisted. The worker and 55-second response
 ceilings protect the synchronous no-JavaScript fallback. None of this changes
-the single-link Provider Strategy.
+the single-link Provider Strategy. A Provider still receives only its configured
+per-link deadline; the existing bounded completion grace may retain a row that
+has already reached the fixed `completed` stage just after that deadline.
+Incomplete work remains a timeout. When TianTianJieXi already supplies a usable
+title and cover, its valid media result also skips an additional synchronous
+native metadata request; cached/direct native metadata and missing-metadata
+fallback remain available.
 
 ## Download Strategy State
 
 Current download strategy is mixed:
 
 - Native image resources can prefer direct/browser paths to reduce server traffic.
-- Provider videos may try browser-first / browser blob handoff.
-- Server attachment fallback remains necessary for reliability.
+- Ordinary public native video URLs can retain their direct/browser path.
+- Provider videos may use browser fetch only when the server explicitly marks
+  that Provider capability as CORS-safe. KuKuTool and TianTianJieXi signed
+  resources currently use observable same-origin prepare/stream instead.
+- Prepare is local-only: it performs request/schema, manifest, route, limit,
+  and client-binding checks, then issues separate opaque stream and status
+  URLs without contacting the media CDN. The stream claim is one-use; status
+  polling is repeatable, cache-only, client-bound, and does not extend the
+  60-second TTL. The server-private handoff cache uses a typed field allowlist
+  and retains one manifest-validated minimal media URL for the initial GET;
+  it never places that URL in the token, status payload, logs, database, or
+  browser storage.
+- The normal server attachment path opens one upstream media response, checks
+  its first non-empty chunk, and continues the `StreamingHttpResponse` from
+  that same iterator. Active responses, sockets, and generators are never
+  stored in cache. The stream owns its concurrency slot until completion,
+  failure, or client disconnect.
+- The frontend polls only the download startup states and stops at
+  `streaming`, `failed`, `expired`, or its 15-second hard ceiling. It never
+  fetches the media body or creates a large JavaScript Blob for this path.
+- Response construction does not set `stream_started`. The stream iterator
+  sets it once, immediately before yielding the already-validated first chunk.
+  It then remains sticky across later failures; closing before iteration keeps
+  it false. Exhausting the polling window without confirmation is an
+  unconfirmed, retryable state rather than proof that the download failed.
+- For server single-file handoff, issuing the browser request keeps the page
+  progress bar in its connecting state. It reaches 100% only after status
+  confirms `stream_started`, representing confirmed browser handoff rather
+  than media bytes transferred through Django. Actual byte progress belongs
+  to the browser download UI. Safe stream logs record attempt, refresh, and
+  first-byte durations without source or signed media URLs.
+- TianTianJieXi recovery is server-only, bounded to one refresh and one
+  download retry (at most two media GETs), and must preserve the original
+  signed resource identity.
+- Server-stream startup has one absolute 50-second budget across the first
+  media GET, Provider refresh, recovery GET, and first non-empty chunk.
+  Operations receive only the remaining budget. Exhaustion uses
+  `DOWNLOAD_STREAM_START_TIMEOUT`, closes the upstream, releases concurrency,
+  and does not continue refreshing. The budget stops applying once normal
+  stream iteration begins.
 - Large provider CDN downloads can be slow on the VPS if all bytes pass through the server.
 
 Known tension:
@@ -215,7 +262,10 @@ Known tension:
 - Browser-managed downloads save server bandwidth but can be blocked by popup/download restrictions.
 - Server attachment is stable but consumes server egress and can be much slower than a third-party site that hands the CDN URL directly to the browser.
 
-When changing this area, verify both local Chrome and the production site. Do not assume localhost download behavior matches HTTPS production behavior.
+When changing this area, verify local Chrome and, in a separately approved
+deployment task, the production site. Do not assume localhost download
+behavior matches HTTPS production behavior. Do not infer CORS support from one
+historical success.
 
 ## Production Deployment Notes
 

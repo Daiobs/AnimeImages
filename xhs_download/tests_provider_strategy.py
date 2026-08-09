@@ -57,8 +57,8 @@ from .services.batch_parse.runtime import (
 from .services.batch_parse.view_context import build_batch_parse_context
 from .services.provider_manifest import build_provider_manifest_token
 from .services.provider_strategy import (
-    DOWNLOAD_STRATEGY_BROWSER_BLOB,
     DOWNLOAD_STRATEGY_BROWSER_DIRECT,
+    DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
     DOWNLOAD_STRATEGY_SERVER_MERGE,
     build_download_strategy,
 )
@@ -109,7 +109,7 @@ class TrackingThreadPoolExecutor:
 
 
 class ProviderDownloadStrategyTests(SimpleTestCase):
-    def test_tiantianjiexi_video_prefers_browser_blob(self):
+    def test_tiantianjiexi_video_uses_observable_server_attachment(self):
         strategy = build_download_strategy(
             MediaAsset(
                 media_type="video",
@@ -119,9 +119,45 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
             )
         )
 
-        self.assertEqual(strategy["download_strategy"], DOWNLOAD_STRATEGY_BROWSER_BLOB)
+        self.assertEqual(
+            strategy["download_strategy"],
+            DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
+        )
         self.assertEqual(strategy["fallback_strategy"], "server_attachment")
-        self.assertTrue(strategy["cors_expected"])
+        self.assertFalse(strategy["cors_expected"])
+        self.assertFalse(strategy["browser_direct_fetch_safe"])
+
+    def test_kukutool_video_requires_explicit_cors_capability(self):
+        strategy = build_download_strategy(
+            MediaAsset(
+                media_type="video",
+                url="https://v5-default.365yg.com/demo.mp4",
+                platform="douyin",
+                provider="kukutool",
+            )
+        )
+
+        self.assertEqual(
+            strategy["download_strategy"],
+            DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
+        )
+        self.assertFalse(strategy["cors_expected"])
+        self.assertFalse(strategy["browser_direct_fetch_safe"])
+
+    def test_native_public_video_keeps_browser_direct_strategy(self):
+        strategy = build_download_strategy(
+            MediaAsset(
+                media_type="video",
+                url="https://v5-default.365yg.com/demo.mp4",
+                platform="douyin",
+            )
+        )
+
+        self.assertEqual(
+            strategy["download_strategy"],
+            DOWNLOAD_STRATEGY_BROWSER_DIRECT,
+        )
+        self.assertTrue(strategy["browser_direct_fetch_safe"])
 
     def test_youtube_merge_requires_server_merge(self):
         strategy = build_download_strategy(
@@ -267,14 +303,14 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
     @patch("xhs_download.views.probe_media_size", return_value=2_800_000)
     def test_content_length_size_is_displayed_as_exact(self, _mock_probe):
         result = ParseResult(
-            platform="xiaohongshu",
+            platform="bilibili",
             post_type="video",
             base_filename="exact-size",
             assets=(
                 MediaAsset(
                     media_type="video",
-                    url="https://sns-video-bd.xhscdn.com/exact.mp4",
-                    platform="xiaohongshu",
+                    url="https://upos-sz-mirrorcos.bilivideo.com/exact.mp4",
+                    platform="bilibili",
                 ),
             ),
         )
@@ -783,6 +819,54 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
             [row["status"] for row in rows],
             ["timeout", "timeout", "skipped", "skipped"],
         )
+
+    def test_completed_success_inside_response_grace_is_preserved(self):
+        def just_late_success(_request, source_text, **kwargs):
+            sleep(0.03)
+            kwargs["stage_tracker"].update("completed")
+            return self.success_row(source_text, duration_ms=30)
+
+        started_at = monotonic()
+        rows = build_batch_result_rows(
+            object(),
+            ["https://example.com/just-late"],
+            prefer_ultra_hd=False,
+            prefer_youtube_merge=False,
+            deadline=started_at + 0.1,
+            response_deadline=started_at + 0.1,
+            parallel_workers=1,
+            per_link_timeout_seconds=0.02,
+            scheduling_timeout_seconds=0.1,
+            max_response_timeout_seconds=0.1,
+            completion_grace_seconds=0.05,
+            row_builder=just_late_success,
+        )
+
+        self.assertEqual(rows[0]["status"], "success")
+
+    def test_completed_success_outside_response_grace_is_timeout(self):
+        def too_late_success(_request, source_text, **kwargs):
+            sleep(0.05)
+            kwargs["stage_tracker"].update("completed")
+            return self.success_row(source_text, duration_ms=50)
+
+        started_at = monotonic()
+        rows = build_batch_result_rows(
+            object(),
+            ["https://example.com/too-late"],
+            prefer_ultra_hd=False,
+            prefer_youtube_merge=False,
+            deadline=started_at + 0.1,
+            response_deadline=started_at + 0.1,
+            parallel_workers=1,
+            per_link_timeout_seconds=0.02,
+            scheduling_timeout_seconds=0.1,
+            max_response_timeout_seconds=0.1,
+            completion_grace_seconds=0.01,
+            row_builder=too_late_success,
+        )
+
+        self.assertEqual(rows[0]["status"], "timeout")
 
     def test_parallel_results_preserve_input_order(self):
         def out_of_order_row_builder(_request, source_text, **_kwargs):

@@ -1,6 +1,6 @@
 # Current Version Status
 
-Date: 2026-07-14
+Date: 2026-07-23
 
 Last Audited Runtime Baseline:
 
@@ -53,6 +53,103 @@ The `codex/shared-parse-preferences-v1` branch keeps two browser-only parsing pr
 - Provider Strategy, Batch Provider order, timeouts, access gates, and server-side rollout decisions are unchanged.
 
 This is browser state only, adds no migration, and is not production behavior until its PR is reviewed, merged, and deployed.
+
+## Unreleased XHS Media Fidelity Candidate
+
+The `codex/xhs-media-fidelity-v1` development branch improves the dedicated Xiaohongshu adapter without changing Provider Strategy or production infrastructure:
+
+- Bounded parsing reads only valid JSON hydration data or a valid current-note JSON object from a known state assignment. It never executes page JavaScript, replaces JavaScript expressions, or imports a browser session.
+- The current note is selected by a validated 24-character note ID from the final page URL. A multi-note payload is not allowed to select recommendation content by traversal order.
+- Parsed JSON is diagnostic only until it contains a note-like candidate. Unrelated JSON-LD, application JSON, and hydration configuration do not suppress compatible safe fallbacks.
+- Title and author use structured current-note data first, then explicit meta fields, then current-note DOM selectors.
+- A matched structured image list becomes authoritative only after normalization leaves at least one valid resource. Missing, empty, or wholly invalid lists may use meta, current-note DOM, and safe broad fallback; when only another note is found, broad image/video scanning is suppressed to prevent recommendation leakage.
+- Video covers prefer an explicit current-note poster/cover, then the first structured note image, then meta and current-note DOM images.
+- XHS video size is exact-known-or-unknown. Only a validated integer byte field attached to the selected structured stream is accepted; no HEAD, Range, partial-download, bitrate, or duration estimate is added.
+- Explicit login-required, private, deleted, and unavailable states precede meta, DOM, and broad media fallbacks. Verified structured public media from the matched current note may override only a generic page-level marker; a terminal state declared by the current note itself always wins.
+- Single-link and Batch display contexts share the same normalized XHS title, author, cover, gallery order, and size semantics.
+
+The candidate adds no migration, Cookie import, CAPTCHA bypass, third-party Provider, Provider-order change, timeout change, or production deployment. Synthetic fixtures contain no real signed media URLs.
+
+## Unreleased Douyin Reliability Child Candidate
+
+The `codex/douyin-parse-download-reliability-v1` branch is a child of the
+`codex/xhs-media-fidelity-v1` V1 integration branch. It is not deployed. Its
+candidate behavior includes:
+
+- Single-link Douyin ultra requests can return a short-lived
+  `continuation_pending` state when an already-started race Provider outlives
+  the foreground budget. The browser performs at most five cache-only polls
+  over a 15-second window; polling cannot call a Provider or submit the
+  original parse again.
+- A weak or native fallback can be rendered immediately while that bounded
+  continuation remains active. It does not cancel a still-running external
+  Provider, and a later strong result replaces the fallback in the same
+  request lifecycle. Provider provenance comes from the actual parsed result,
+  so an inner native fallback is not relabeled as KuKuTool or TianTianJieXi.
+- Ultra Douyin result rendering does not start a separate missing-size media
+  probe after parsing. Unknown fallback sizes remain unknown rather than
+  consuming response time outside the Provider budget.
+- A valid TianTianJieXi result with a usable Provider title and cover no longer
+  starts an additional native metadata request before returning. Existing
+  cached/direct native metadata is still reused, and native enrichment remains
+  available when the Provider metadata is incomplete. This reduces avoidable
+  Batch deadline overruns without increasing the 12-second item budget or
+  changing the Batch Provider order.
+- The existing one-second response-completion grace may retain a fully
+  completed successful Batch row when a cooperative fallback returns just
+  after its Provider deadline. The Provider still receives only the configured
+  12-second deadline; unfinished work, explicit Provider timeouts, and results
+  outside the bounded grace remain `timeout`.
+- Provider video downloads first use a local-only JSON prepare request.
+  Prepare performs no upstream media request and produces separate
+  client-bound, 60-second stream and status URLs that contain no raw Provider
+  URL. The stream URL is one-use; the status URL is repeatable within the
+  original TTL and exposes only fixed states and safe errors. The opaque token
+  points to a server-private, allowlisted cache record. That record contains
+  only the typed fields needed for download and recovery; it currently retains
+  one manifest-validated minimal media URL because Provider identity alone
+  cannot reliably reconstruct the initial media request.
+- The browser opens the same-origin stream URL and polls the status URL at a
+  bounded interval until `streaming`, `failed`, `expired`, or a client-side
+  15-second ceiling. Status polling is cache-only and cannot contact a
+  Provider, extend the handoff TTL, or read media bytes.
+- Constructing the streaming response leaves `stream_started` false. The first
+  actual stream iteration marks it true immediately before yielding the
+  already-validated first chunk. It remains true if the connection later
+  closes. Closing before iteration leaves it false; the UI therefore
+  distinguishes a confirmed browser handoff from a pre-stream failure.
+- After the same-origin request is handed to browser download management, the
+  page progress bar remains in its connecting state until status confirms
+  `stream_started`. It then reaches 100% to represent confirmed browser
+  handoff, not byte progress for the proxied media body. Browser download UI
+  owns actual byte progress. URL-free telemetry separates the first and second
+  upstream connection attempts, Provider refresh, and time to first chunk.
+- The normal stream path opens one upstream media GET, validates its first
+  non-empty chunk, then yields that chunk and the remaining iterator from the
+  same response. The response object, socket, and generator are never stored
+  in cache; the download concurrency slot is released when streaming ends.
+- Stream startup has one absolute 50-second deadline shared by the first media
+  GET, one allowed Provider refresh, the recovery GET, and the first non-empty
+  chunk. Each operation receives only the remaining budget. Exhaustion returns
+  `DOWNLOAD_STREAM_START_TIMEOUT` with a safe retry message, closes any open
+  upstream, and releases concurrency. Once the first chunk is yielded, this
+  startup deadline no longer limits normal file transfer.
+- Browser fetch is permitted only for an explicitly declared CORS-safe
+  Provider capability. TianTianJieXi and KuKuTool signed resources currently
+  use server prepare/stream; ordinary public native URLs retain their direct
+  path.
+- A recoverable TianTianJieXi signed-resource failure can trigger exactly one
+  server-side refresh through TianTianJieXi and exactly one download retry,
+  capping the recovery path at two upstream media GETs.
+  The refreshed item must retain the original Douyin resource identity and
+  pass the existing manifest, media-host, content-type, and size checks.
+- The candidate does not increase Provider timeouts, change Provider order,
+  modify Batch scheduling, add a migration, use Cookie state, disable TLS
+  verification, or add a Provider.
+
+These changes are not production behavior until the child PR is reviewed and
+merged into the V1 integration branch, the integration PR is reviewed and
+merged into `main`, and a separate deployment is completed.
 
 ## Production Runtime Topology
 

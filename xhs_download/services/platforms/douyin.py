@@ -18,6 +18,7 @@ from ..common import (
     request_get_with_retry,
     validate_external_url,
 )
+from ..douyin_continuation import DouyinContinuationPendingError
 from ..diagnostics import select_best_media_candidate
 from .base import BasePlatformAdapter, PlatformCapabilities, ProviderPolicy
 from .douyin_providers import DouyinParseContext, build_douyin_result_providers
@@ -619,6 +620,7 @@ class DouyinAdapter(BasePlatformAdapter):
         "timeout_seconds",
         "deadline_monotonic",
         "stage_callback",
+        "allow_continuation",
     )
 
     def parse_html(
@@ -967,6 +969,7 @@ class DouyinAdapter(BasePlatformAdapter):
         timeout_seconds=None,
         deadline_monotonic=None,
         stage_callback=None,
+        allow_continuation=False,
     ):
         parse_started_at = time()
         self.require_supported_url(url)
@@ -989,6 +992,9 @@ class DouyinAdapter(BasePlatformAdapter):
         )
         context.client_country_code = client_country_code
         context.prefer_ultra_hd = prefer_ultra_hd
+        context.allow_continuation = bool(
+            allow_continuation and prefer_ultra_hd
+        )
 
         last_timeout_error = None
         for provider in self.get_result_providers(
@@ -1024,6 +1030,23 @@ class DouyinAdapter(BasePlatformAdapter):
                         },
                     )
                     return result
+            except DouyinContinuationPendingError as error:
+                logger.info(
+                    "douyin_provider_continuation_pending",
+                    extra={
+                        "provider": getattr(
+                            provider,
+                            "name",
+                            type(provider).__name__,
+                        ),
+                        "aweme_id": context.aweme_id,
+                        "duration_ms": int(
+                            (time() - provider_started_at) * 1000
+                        ),
+                        "prefer_ultra_hd": prefer_ultra_hd,
+                    },
+                )
+                raise
             except XhsProviderTimeoutError as error:
                 last_timeout_error = error
                 logger.info(

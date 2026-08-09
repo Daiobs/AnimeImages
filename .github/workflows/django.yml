@@ -86,6 +86,10 @@ jobs:
           node --check xhs_download/services/platforms/kukutool_provider.js
           node --check static/js/app.js
           node --check static/js/batch_parse.js
+          node --check static/js/douyin_reliability.js
+          node --check static/js/download_reliability.js
           node --check static/js/parse_preferences.js
           node --check static/js/xhs_download.js
+          node --test tests_js/douyin_reliability.test.js
+          node --test tests_js/download_reliability.test.js
           node --test tests_js/parse_preferences.test.js

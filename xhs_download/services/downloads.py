@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -38,7 +39,10 @@ from .platforms.kukutool_generic import (
 from .platforms.douyin_kukutool import is_byte_cdn_url
 from .provider_recovery import (
     get_kukutool_manifest_identity,
+    get_tiantianjiexi_manifest_identity,
     iter_kukutool_download_recovery_urls,
+    refresh_tiantianjiexi_download_item,
+    TianTianJieXiRecoveryError,
 )
 from .provider_runtime_config import runtime_float
 from .provider_manifest import build_provider_manifest_token, provider_manifest_is_valid
@@ -163,6 +167,67 @@ def public_download_error_message(error, limit=120):
         text,
     )
     return text[: max(0, int(limit or 0))]
+
+
+def observable_download_error(error, *, provider=""):
+    if (
+        str(getattr(error, "error_code", "") or "")
+        == "DOWNLOAD_STREAM_START_TIMEOUT"
+    ):
+        return {
+            "error_code": "DOWNLOAD_STREAM_START_TIMEOUT",
+            "message": "资源连接超时，请重新点击下载或重新解析后再试。",
+            "status_code": 504,
+        }
+    if isinstance(error, TianTianJieXiRecoveryError):
+        return {
+            "error_code": error.error_code,
+            "message": public_download_error_message(error),
+            "status_code": (
+                504
+                if error.error_code
+                in {
+                    "DOWNLOAD_STREAM_START_TIMEOUT",
+                    "TIANTIANJIEXI_REFRESH_TIMEOUT",
+                }
+                else 400
+            ),
+        }
+    if isinstance(error, requests.exceptions.SSLError):
+        return {
+            "error_code": "UPSTREAM_SSL_ERROR",
+            "message": "上游资源连接异常，请稍后重试。",
+            "status_code": 502,
+        }
+    if isinstance(
+        error,
+        (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.ConnectTimeout,
+            requests.exceptions.ReadTimeout,
+        ),
+    ):
+        return {
+            "error_code": "UPSTREAM_CONNECTION_ERROR",
+            "message": "上游资源暂时无法连接，请稍后重试。",
+            "status_code": 502,
+        }
+
+    message = str(error or "")
+    if provider == "tiantianjiexi" and (
+        message.startswith("HTTP 403")
+        or message.startswith("HTTP 404")
+    ):
+        return {
+            "error_code": "TIANTIANJIEXI_RESOURCE_EXPIRED",
+            "message": "资源已失效，请重新解析后再试。",
+            "status_code": 409,
+        }
+    return {
+        "error_code": "PROXY_FAILED_RECOVERY_BLOCKED",
+        "message": "资源连接失败，自动恢复未成功，请重新解析后再试。",
+        "status_code": 400,
+    }
 
 
 def safe_download_size(value):
@@ -580,6 +645,7 @@ def request_public_provider_get_with_retry(
     stream=True,
     max_redirects=5,
     provider_item=None,
+    deadline_monotonic=None,
 ):
     if provider_item is not None and not provider_manifest_allows_public_download(provider_item):
         raise XhsDownloadError("Provider 签名资源未通过校验")
@@ -593,6 +659,22 @@ def request_public_provider_get_with_retry(
             current_url = candidate_url
             try:
                 for _ in range(max_redirects + 1):
+                    request_timeout = timeout
+                    if deadline_monotonic is not None:
+                        remaining = float(deadline_monotonic) - time.monotonic()
+                        if remaining <= 0:
+                            raise requests.Timeout("请求超过时间限制")
+                        if isinstance(timeout, (tuple, list)):
+                            phase_budget = remaining / max(1, len(timeout))
+                            request_timeout = tuple(
+                                min(max(0.001, float(value)), phase_budget)
+                                for value in timeout
+                            )
+                        else:
+                            request_timeout = min(
+                                max(0.001, float(timeout)),
+                                remaining,
+                            )
                     validate_provider_signed_download_url(
                         candidate_item,
                         current_url,
@@ -601,7 +683,7 @@ def request_public_provider_get_with_retry(
                     response = requests.get(
                         current_url,
                         headers=headers or get_media_headers(current_url),
-                        timeout=timeout,
+                        timeout=request_timeout,
                         allow_redirects=False,
                         stream=stream,
                     )
@@ -640,28 +722,39 @@ def request_public_provider_get_with_retry(
     raise last_error
 
 
-def fetch_media_response(url, headers=None, timeout=30, retries=3, provider_signed=False):
+def fetch_media_response(
+    url,
+    headers=None,
+    timeout=30,
+    retries=3,
+    provider_signed=False,
+    deadline_monotonic=None,
+):
     if provider_signed:
         if not isinstance(provider_signed, dict):
             raise XhsDownloadError("Provider signed request is missing manifest context")
-        return request_public_provider_get_with_retry(
-            url,
-            headers=headers or get_media_headers(url),
-            timeout=timeout,
-            retries=retries,
-            stream=True,
-            provider_item=provider_signed,
-        )
+        request_options = {
+            "headers": headers or get_media_headers(url),
+            "timeout": timeout,
+            "retries": retries,
+            "stream": True,
+            "provider_item": provider_signed,
+        }
+        if deadline_monotonic is not None:
+            request_options["deadline_monotonic"] = deadline_monotonic
+        return request_public_provider_get_with_retry(url, **request_options)
     validate_media_url(url)
-    return request_get_with_retry(
-        url,
-        headers=headers or get_media_headers(url),
-        timeout=timeout,
-        retries=max(1, int(retries or 1)),
-        stream=True,
-        allowed_final_host_suffixes=MEDIA_HOST_SUFFIXES,
-        final_url_message="资源 URL 跳转到了不允许的下载域名",
-    )
+    request_options = {
+        "headers": headers or get_media_headers(url),
+        "timeout": timeout,
+        "retries": max(1, int(retries or 1)),
+        "stream": True,
+        "allowed_final_host_suffixes": MEDIA_HOST_SUFFIXES,
+        "final_url_message": "资源 URL 跳转到了不允许的下载域名",
+    }
+    if deadline_monotonic is not None:
+        request_options["deadline_monotonic"] = deadline_monotonic
+    return request_get_with_retry(url, **request_options)
 
 
 def probe_media_size(url, headers=None, timeout=6):
@@ -740,7 +833,11 @@ def fetch_item_to_temp_path(
         return download_ytdlp_merge_to_temp_path(item, progress_callback=progress_callback)
 
     initial_url = url or item.get("url")
-    recovery_enabled = bool(get_kukutool_manifest_identity(item))
+    kukutool_recovery_enabled = bool(get_kukutool_manifest_identity(item))
+    tiantianjiexi_recovery_enabled = bool(
+        get_tiantianjiexi_manifest_identity(item)
+    )
+    recovery_enabled = kukutool_recovery_enabled or tiantianjiexi_recovery_enabled
     provider_item = {
         **item,
         "url": initial_url,
@@ -751,11 +848,12 @@ def fetch_item_to_temp_path(
         else None
     )
     attempted_urls = set()
-    candidates = [initial_url]
+    candidates = [(initial_url, provider_item)]
     recovery_urls = None
+    recovery_attempted = False
     last_error = None
     provider_download_timeout = timeout
-    if recovery_enabled:
+    if kukutool_recovery_enabled:
         try:
             configured_timeout = runtime_float(
                 "kukutool_download_timeout_seconds",
@@ -771,16 +869,20 @@ def fetch_item_to_temp_path(
     while candidates or recovery_urls is not None:
         if not candidates:
             try:
-                candidates.append(next(recovery_urls))
+                candidates.append((next(recovery_urls), provider_item))
             except StopIteration:
                 recovery_urls = None
                 continue
-        candidate_url = candidates.pop(0)
+        candidate_url, candidate_provider_item = candidates.pop(0)
         if not candidate_url or candidate_url in attempted_urls:
             continue
         attempted_urls.add(candidate_url)
-        candidate_provider_signed = provider_signed
-        if recovery_enabled and not is_byte_cdn_url(candidate_url):
+        candidate_provider_signed = (
+            candidate_provider_item
+            if provider_manifest_allows_public_download(candidate_provider_item)
+            else None
+        )
+        if kukutool_recovery_enabled and not is_byte_cdn_url(candidate_url):
             candidate_provider_signed = None
         try:
             return fetch_to_temp_path(
@@ -802,13 +904,24 @@ def fetch_item_to_temp_path(
                 invalidate_external_provider_caches(provider_item)
             if (
                 recovery_enabled
-                and recovery_urls is None
+                and not recovery_attempted
                 and len(attempted_urls) == 1
                 and is_recoverable_provider_download_error(error)
             ):
-                recovery_urls = iter(
-                    iter_kukutool_download_recovery_urls(item) or ()
-                )
+                recovery_attempted = True
+                if tiantianjiexi_recovery_enabled:
+                    try:
+                        refreshed_item = refresh_tiantianjiexi_download_item(item)
+                    except Exception as refresh_error:
+                        last_error = refresh_error
+                    else:
+                        candidates.append(
+                            (refreshed_item.get("url"), refreshed_item)
+                        )
+                else:
+                    recovery_urls = iter(
+                        iter_kukutool_download_recovery_urls(item) or ()
+                    )
 
     raise last_error or XhsDownloadError("资源下载失败")
 

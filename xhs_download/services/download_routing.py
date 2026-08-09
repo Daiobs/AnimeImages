@@ -4,6 +4,7 @@ from download_console.models import DownloadRuntimeSetting
 from ..models import KukuToolDownloadDeliveryMode, ProviderRuntimeSetting
 
 from .downloads import provider_manifest_allows_public_download
+from .provider_strategy import BROWSER_DIRECT_FETCH_SAFE_PROVIDERS
 
 
 ROUTE_DIRECT = "direct"
@@ -24,7 +25,8 @@ SERVER_SIDE_PROVIDERS = {
     "youtube_merge",
     "yt_dlp_merge",
 }
-BROWSER_DIRECT_VIDEO_PROVIDERS = set()
+BROWSER_DIRECT_FETCH_SAFE_VIDEO_PROVIDERS = BROWSER_DIRECT_FETCH_SAFE_PROVIDERS
+BROWSER_DIRECT_VIDEO_PROVIDERS = BROWSER_DIRECT_FETCH_SAFE_VIDEO_PROVIDERS
 BROWSER_FIRST_VIDEO_PROVIDERS = {
     "kukutool",
     "tiantianjiexi",
@@ -172,6 +174,7 @@ def item_can_browser_direct_video(item):
     provider = item_provider(item)
     return (
         provider in BROWSER_DIRECT_VIDEO_PROVIDERS
+        and provider in BROWSER_DIRECT_FETCH_SAFE_VIDEO_PROVIDERS
         and provider_manifest_allows_public_download(item)
     )
 
@@ -231,7 +234,8 @@ def single_video_prefers_browser_direct(item, runtime_setting=None):
         return False
     runtime_setting = runtime_setting or ProviderRuntimeSetting.load()
     return (
-        kukutool_browser_first_enabled(runtime_setting)
+        item_provider(item) in BROWSER_DIRECT_FETCH_SAFE_VIDEO_PROVIDERS
+        and kukutool_browser_first_enabled(runtime_setting)
         and provider_manifest_allows_public_download(item)
     )
 
@@ -260,12 +264,20 @@ def public_route_item(item):
         "size_bytes",
         "source_platform",
         "filename",
+        "browser_direct_fetch_safe",
     )
-    return {
+    public_item = {
         key: item.get(key)
         for key in allowed_keys
         if isinstance(item, dict) and item.get(key) not in (None, "")
     }
+    if isinstance(item, dict):
+        public_item["browser_direct_fetch_safe"] = bool(
+            item_provider(item) in BROWSER_DIRECT_FETCH_SAFE_VIDEO_PROVIDERS
+            if item_provider(item)
+            else True
+        )
+    return public_item
 
 
 def route_payload(
