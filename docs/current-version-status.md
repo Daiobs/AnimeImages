@@ -21,6 +21,35 @@ Production site:
 https://download.cosflow.icu/
 ```
 
+## Unreleased Batch Runtime Admin Clarity Candidate
+
+The `codex/batch-runtime-admin-clarity-v1` branch improves only the Django
+Admin control surface for `BatchParseRuntimeSetting`:
+
+- The singleton changelist redirects directly to the one change form, removes
+  Admin actions, denies deletion, and offers the add flow only while no row
+  exists. Opening the empty changelist/add flow does not create the row.
+- A read-only panel separates the saved/effective database state from the form
+  draft and shows the access mode, internal value, anonymous/staff effect,
+  rollout percentage, source, and `updated_at` value.
+- An existing database singleton remains authoritative. Environment values are
+  first-row defaults or database-failure fallback, not an override for a saved
+  row.
+- Save is labeled `保存并生效`; successful changes are read by subsequent
+  requests without a restart. Unsaved edits are visibly marked.
+- Public-expansion transitions require explicit UI confirmation and the same
+  confirmation marker is enforced by the server. Access contractions and
+  ordinary limit changes do not add confirmation friction.
+- An `updated_at` version token plus a locked fresh read rejects stale Admin
+  forms instead of silently overwriting a newer save.
+- Successful changes emit a structured application log containing only the
+  actor, request ID, changed field names, old/new access and rollout values,
+  and public-expansion classification.
+
+This candidate adds no migration or parallel settings page and does not change
+Batch access semantics, rollout, parsing, scheduling, downloads, Provider,
+Policy, or infrastructure. It has not been deployed.
+
 ## Unreleased Batch Public Download Candidate
 
 The `codex/batch-public-download-visibility-v1` branch aligns the existing

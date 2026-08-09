@@ -92,7 +92,14 @@ class BatchAccessVisibilityTests(TestCase):
         admin_response = self.client.get(
             reverse("admin:xhs_download_batchparseruntimesetting_changelist")
         )
-        self.assertEqual(admin_response.status_code, 200)
+        self.assertRedirects(
+            admin_response,
+            reverse(
+                "admin:xhs_download_batchparseruntimesetting_change",
+                args=(BatchParseRuntimeSetting.objects.get(singleton_key=1).pk,),
+            ),
+            fetch_redirect_response=False,
+        )
 
     def test_staff_mode_hides_anonymous_and_allows_staff(self):
         self.set_access_mode(ProviderAccessMode.STAFF)

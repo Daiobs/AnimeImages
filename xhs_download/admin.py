@@ -1,6 +1,13 @@
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.shortcuts import redirect
 
+from .admin_batch_runtime import (
+    BATCH_RUNTIME_MUTATION_FIELDS,
+    BatchParseRuntimeSettingAdminForm,
+    batch_runtime_effective_state,
+    batch_runtime_snapshot,
+    log_batch_runtime_admin_mutation,
+)
 from .models import (
     BatchParseRuntimeSetting,
     DownloadRequestLog,
@@ -20,6 +27,10 @@ from .models import (
 
 @admin.register(BatchParseRuntimeSetting)
 class BatchParseRuntimeSettingAdmin(admin.ModelAdmin):
+    form = BatchParseRuntimeSettingAdminForm
+    change_form_template = "admin/xhs_download/batchparseruntimesetting/change_form.html"
+    actions = None
+    save_as = False
     list_display = (
         "__str__",
         "access_mode",
@@ -49,12 +60,100 @@ class BatchParseRuntimeSettingAdmin(admin.ModelAdmin):
         "public_ultra_hd_enabled",
         "public_youtube_merge_enabled",
         "updated_at",
+        "runtime_version",
+        "public_expansion_confirmed",
     )
 
     def has_add_permission(self, request):
         if BatchParseRuntimeSetting.objects.exists():
             return False
         return super().has_add_permission(request)
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def add_view(self, request, form_url="", extra_context=None):
+        # The global navigation context normally calls the runtime loader. On the
+        # singleton's add page that would create the row during a GET request.
+        request._skip_batch_runtime_visibility_load = True
+        return super().add_view(request, form_url, extra_context)
+
+    def changelist_view(self, request, extra_context=None):
+        setting = BatchParseRuntimeSetting.objects.filter(singleton_key=1).first()
+        if setting is not None:
+            return redirect(
+                "admin:xhs_download_batchparseruntimesetting_change",
+                setting.pk,
+            )
+        return redirect("admin:xhs_download_batchparseruntimesetting_add")
+
+    def render_change_form(
+        self,
+        request,
+        context,
+        add=False,
+        change=False,
+        form_url="",
+        obj=None,
+    ):
+        saved_setting = None
+        object_id = context.get("object_id")
+        if object_id:
+            saved_setting = BatchParseRuntimeSetting.objects.filter(pk=object_id).first()
+        elif request.method == "POST":
+            saved_setting = BatchParseRuntimeSetting.objects.filter(singleton_key=1).first()
+        context["batch_runtime_effective_state"] = batch_runtime_effective_state(
+            saved_setting
+        )
+        context["batch_runtime_unpersisted_post"] = request.method == "POST"
+        context["show_delete"] = False
+        context["show_save_and_add_another"] = False
+        context["show_save_and_continue"] = False
+        return super().render_change_form(
+            request,
+            context,
+            add=add,
+            change=change,
+            form_url=form_url,
+            obj=obj,
+        )
+
+    def save_model(self, request, obj, form, change):
+        previous = getattr(form, "persisted_snapshot", None)
+        super().save_model(request, obj, form, change)
+        obj.refresh_from_db()
+        current = batch_runtime_snapshot(obj)
+        if previous is None:
+            changed_fields = list(BATCH_RUNTIME_MUTATION_FIELDS)
+        else:
+            changed_fields = [
+                field_name
+                for field_name in form.changed_data
+                if field_name in BATCH_RUNTIME_MUTATION_FIELDS
+            ]
+        log_batch_runtime_admin_mutation(
+            request,
+            previous=previous,
+            current=current,
+            changed_fields=changed_fields,
+            public_expansion=bool(
+                getattr(form, "public_expansion_reasons", ())
+            ),
+        )
+
+    def response_add(self, request, obj, post_url_continue=None):
+        self.message_user(request, "批量解析运行配置已保存并生效。", messages.SUCCESS)
+        return redirect(
+            "admin:xhs_download_batchparseruntimesetting_change",
+            obj.pk,
+        )
+
+    def response_change(self, request, obj):
+        self.message_user(request, "批量解析运行配置已保存并生效。", messages.SUCCESS)
+        return redirect(
+            "admin:xhs_download_batchparseruntimesetting_change",
+            obj.pk,
+        )
 
 
 @admin.register(ProviderRuntimeSetting)
