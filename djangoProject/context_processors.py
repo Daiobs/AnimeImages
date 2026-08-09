@@ -43,6 +43,9 @@ def get_static_asset_version():
 
 
 def static_asset_version(request):
+    from xhs_download.context_processors import batch_parse_visibility
+
     return {
         "static_asset_version": get_static_asset_version(),
+        **batch_parse_visibility(request),
     }
