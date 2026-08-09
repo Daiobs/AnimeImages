@@ -195,14 +195,16 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
                 content = (PROJECT_ROOT / relative_path).read_text()
                 self.assertNotIn("BATCH_PARSE_MINUTE_IP_LIMIT", content)
 
-    def test_batch_direct_download_falls_back_to_handoff_when_fetch_fails(self):
+    def test_batch_download_reuses_validated_route_and_prepare_contracts(self):
         content = (PROJECT_ROOT / "static/js/batch_parse.js").read_text()
 
-        self.assertIn("function handoffBatchDirectUrl", content)
-        self.assertIn("handoffBatchDirectUrl(url, filename)", content)
-        self.assertIn("Blob 不可用", content)
-        self.assertIn("已改用直链", content)
-        self.assertNotIn("server_single", content)
+        self.assertIn("function executeBatchDownload(options)", content)
+        self.assertIn("route_only: true", content)
+        self.assertIn("prepareBatchServerDownload", content)
+        self.assertIn("pollDownloadStatus", content)
+        self.assertIn("downloadStartDisposition", content)
+        self.assertIn('download_mode: "server_single"', content)
+        self.assertIn("fallbackDirectToPrepared: true", content)
 
     def test_batch_javascript_is_page_scoped_and_retry_preserves_form(self):
         global_content = (PROJECT_ROOT / "static/js/app.js").read_text()
@@ -1747,7 +1749,7 @@ class BatchParseViewTests(TestCase):
         mock_rows.assert_not_called()
 
     @patch("xhs_download.views.build_batch_result_rows")
-    def test_batch_progress_public_item_hides_raw_direct_links(self, mock_rows):
+    def test_batch_progress_public_item_keeps_download_and_hides_raw_tools(self, mock_rows):
         BatchParseRuntimeSetting.objects.update_or_create(
             singleton_key=1,
             defaults={
@@ -1785,8 +1787,12 @@ class BatchParseViewTests(TestCase):
         )
 
         self.assertEqual(item_response.status_code, 200)
-        self.assertNotIn(signed_url, item_response.json()["card_html"])
-        self.assertNotIn("token=secret", item_response.content.decode())
+        card_html = item_response.json()["card_html"]
+        self.assertIn("data-batch-download", card_html)
+        self.assertIn("data-url=", card_html)
+        self.assertNotIn("data-batch-direct-url", card_html)
+        self.assertNotIn("复制直链", card_html)
+        self.assertNotIn("打开直链", card_html)
 
     @override_settings(
         BATCH_PARSE_PER_LINK_TIMEOUT_SECONDS=8,
@@ -2015,9 +2021,10 @@ class BatchParseViewTests(TestCase):
         self.assertContains(response, "batch-result-cover")
         self.assertContains(response, "复制直链")
         self.assertContains(response, "打开直链")
-        self.assertContains(response, "浏览器下载")
+        self.assertContains(response, ">下载</span>", html=False)
         self.assertContains(response, "data-batch-direct-url")
         self.assertContains(response, "data-batch-direct-download")
+        self.assertContains(response, "data-batch-download")
         self.assertContains(response, "data-batch-download-progress")
         self.assertContains(response, 'onerror="retryImage(this)"')
         self.assertNotContains(response, "v5-default.365yg.com</span>")
@@ -2194,7 +2201,7 @@ class BatchParseViewTests(TestCase):
 
     @override_settings(BATCH_PARSE_PUBLIC_ENABLED=True)
     @patch("xhs_download.views.parse_media_page")
-    def test_batch_public_mode_does_not_render_raw_video_url(self, mock_parse):
+    def test_batch_public_mode_renders_download_contract_without_raw_tools(self, mock_parse):
         mock_parse.return_value = ParseResult(
             platform="douyin",
             post_type="video",
@@ -2219,6 +2226,8 @@ class BatchParseViewTests(TestCase):
         self.assertNotContains(response, 'href="https://v5-default.365yg.com/private-demo.mp4"')
         self.assertNotContains(response, "复制全部成功视频直链")
         self.assertNotContains(response, "data-batch-direct-url")
+        self.assertContains(response, "data-batch-download")
+        self.assertContains(response, 'data-url="https://v5-default.365yg.com/private-demo.mp4"')
 
     @override_settings(BATCH_PARSE_PUBLIC_ENABLED=True)
     @patch("xhs_download.views.parse_media_page")
@@ -2404,7 +2413,7 @@ class BatchParseViewTests(TestCase):
                 mock_row.assert_called_once()
 
     @patch("xhs_download.views.build_batch_result_row")
-    def test_batch_retry_public_response_hides_raw_direct_links(self, mock_row):
+    def test_batch_retry_public_response_keeps_download_and_hides_raw_tools(self, mock_row):
         BatchParseRuntimeSetting.objects.update_or_create(
             singleton_key=1,
             defaults={
@@ -2433,8 +2442,12 @@ class BatchParseViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertNotIn(signed_url, response.json()["card_html"])
-        self.assertNotIn("token=secret", response.content.decode())
+        card_html = response.json()["card_html"]
+        self.assertIn("data-batch-download", card_html)
+        self.assertIn("data-url=", card_html)
+        self.assertNotIn("data-batch-direct-url", card_html)
+        self.assertNotIn("复制直链", card_html)
+        self.assertNotIn("打开直链", card_html)
 
 
 class TianTianJieXiHealthHardeningTests(TestCase):

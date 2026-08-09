@@ -7,6 +7,8 @@ from django.conf import settings
 STATIC_VERSION_FILES = (
     "static/css/app.css",
     "static/js/app.js",
+    "static/js/batch_parse.js",
+    "static/js/download_reliability.js",
     "static/js/xhs_download.js",
 )
 

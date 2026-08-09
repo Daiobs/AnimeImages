@@ -218,6 +218,7 @@ TEMPLATES = [
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
                 "djangoProject.context_processors.static_asset_version",
+                "xhs_download.context_processors.batch_parse_visibility",
             ],
         },
     },

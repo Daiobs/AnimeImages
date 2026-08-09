@@ -4799,7 +4799,8 @@ def batch_parse_retry_view(request):
         "partials/batch_result_card.html",
         {
             "row": row,
-            "batch_direct_links_allowed": batch_parse_user_is_staff(request),
+            "batch_download_allowed": batch_parse_access_allowed(request),
+            "batch_raw_links_allowed": batch_parse_user_is_staff(request),
             "proxy_image_url": reverse("media_proxy_image"),
         },
         request=request,

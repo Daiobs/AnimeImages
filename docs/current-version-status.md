@@ -21,6 +21,31 @@ Production site:
 https://download.cosflow.icu/
 ```
 
+## Unreleased Batch Public Download Candidate
+
+The `codex/batch-public-download-visibility-v1` branch aligns the existing
+`BatchParseRuntimeSetting.access_mode` with all Batch product surfaces:
+
+- `disabled` hides the navigation and returns 404 for Batch page/API requests,
+  including staff website requests; Django Admin remains available for changing
+  the runtime setting.
+- `staff` exposes Batch only to active staff users.
+- `public_gray` uses the existing deterministic rollout helper for navigation,
+  page access, and start/item/retry access; staff remains allowed.
+- `public` exposes parsing and downloads to visitors and staff.
+- Allowed public users can download individual video and image results through
+  the same server-validated route decision used by the single-result page.
+  Provider single-file routes use the existing prepare, same-origin stream, and
+  bounded status-polling contract. A 100% state means browser handoff was
+  confirmed, not that the browser finished receiving the file.
+- Public download cards carry only the existing allowlisted client media fields
+  required by that contract. Copy/open raw URLs, raw exports, aria2 exports, and
+  the advanced strategy matrix remain staff-only.
+
+This candidate adds no migration and does not change Provider order, Provider
+timeouts, Batch deadlines, Nginx, systemd, or production configuration. It has
+not been deployed.
+
 ## Unreleased Batch Parse Candidate
 
 The `codex/batch-parse-stability-v1` development branch is not deployed. Its candidate behavior includes:
@@ -174,7 +199,7 @@ Production does not currently use `/run/animeimages/gunicorn.sock`. A systemd-ma
   - KuKuTool remains fallback/race backup.
   - Native remains fallback.
 - Bilibili remains baseline-only. Do not pursue cookie/member/DASH work unless explicitly requested.
-- `/batch/` supports batch parsing with runtime settings, limited parallelism, and staff-only/raw-link controls.
+- `/batch/` supports runtime-gated batch parsing with limited parallelism; public download capability and staff-only raw-link tools are separate permissions.
 - yt-dlp and gallery-dl are optional generic long-tail providers behind capability, runtime, platform and safety gates.
 - Admin UI includes Provider settings, health tests, logs center, policy center, download runtime settings, batch parse runtime settings, and Release Management.
 - PR #17 and PR #18 are merged into `main` and deployed. Release Management v1 is main-only, record-only by default, and restricted to read-only local Git refs in Web requests.
@@ -192,7 +217,7 @@ Production does not currently use `/run/animeimages/gunicorn.sock`. A systemd-ma
 | Bilibili | Dedicated baseline adapter | High-quality DASH/cookie path deferred. |
 | YouTube | yt-dlp / merge provider | 1080p+ often requires server-side ffmpeg merge; keep gated. |
 | Image galleries | gallery-dl generic provider | Only via runtime/platform gates. |
-| Batch parse | `/batch/` + `BatchParseRuntimeSetting` | Staff can see raw controls; public/raw exposure must stay restricted. |
+| Batch parse | `/batch/` + `BatchParseRuntimeSetting` | Access mode controls navigation/page/API; allowed public users may download, while raw-link tools remain staff-only. |
 
 ## Provider Strategy v1
 
@@ -247,8 +272,9 @@ Important behavior:
 
 - `/batch/` defaults to Douyin original/ultra when runtime allows it.
 - Interactive parsing uses `/batch/start/` once and `/batch/item/` sequentially, showing each card before starting the next item. The no-JavaScript fallback uses limited parallelism, with Batch Douyin ultra-HD capped to one TianTianJieXi worker.
-- Admin/staff can see copy/open/browser-download controls.
-- Anonymous/public users must not see raw signed direct links.
+- Allowed public users can use validated video/image download controls.
+- Admin/staff can additionally see copy/open/raw-export controls.
+- Anonymous/public users must not receive raw-link UI or exports; only the existing allowlisted client media fields needed for validated routing may be rendered.
 - Download strategy matrix is folded at the bottom.
 
 Production observation from PR #15 deployment:

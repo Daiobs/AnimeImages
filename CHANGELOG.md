@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Aligned Batch `access_mode` across the shared navigation, `/batch/`, and the start/item/retry APIs. Public and gray-rollout visitors can now download video and image results through the existing validated route/prepare/status contracts, while raw-link copy/open/export tools remain staff-only.
 - Added a bounded, cache-only continuation for single-link Douyin ultra parsing so an already-running Provider can finish without requiring a second user click; signed tokens are client-bound, expire after 15 seconds, and permit at most five polls without starting another Provider call.
 - Kept the first usable Douyin result visible while that continuation finishes, prevented native fallbacks from being mislabeled as external 4K winners, and skipped out-of-budget display-size probes so a running high-quality Provider can upgrade the same request instead of requiring repeated clicks.
 - Stopped a valid TianTianJieXi media result from spending its remaining parse deadline on an extra native metadata request when the Provider already supplied a usable title and cover; cached/direct native metadata and missing-metadata fallback remain supported.
