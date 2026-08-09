@@ -1,0 +1,253 @@
+{
+  "schema_version": 1,
+  "audit": "admin-runtime-control-audit-v1",
+  "base_sha": "27c68b94710eeede6d0318d0cfe55cee87d39198",
+  "scope": "research_only",
+  "production_observation": "not_accessed",
+  "production_mutation": false,
+  "deployment": false,
+  "batch_root_cause": {
+    "status": "ROOT_CAUSE_CONFIRMED",
+    "primary": "The changelist checkbox is Django Admin's _selected_action control, not the four-state access_mode setting.",
+    "secondary": [
+      "No explicit saved-versus-effective state panel",
+      "No visible env/default/fallback source",
+      "No risk-based public-expansion confirmation",
+      "No optimistic concurrency guard",
+      "Standard Admin audit lacks before/after values and request ID"
+    ],
+    "not_causes": [
+      "database_save_failure",
+      "boolean_field_mismatch",
+      "process_cache",
+      "gunicorn_restart_required",
+      "navigation_api_gate_divergence",
+      "env_overrides_existing_database_row"
+    ]
+  },
+  "batch_state": {
+    "field": "access_mode",
+    "choices": [
+      "disabled",
+      "staff",
+      "public_gray",
+      "public"
+    ],
+    "database_row_wins_when_present": true,
+    "environment_initializes_first_row": true,
+    "environment_is_failure_fallback": true,
+    "process_cache": false,
+    "restart_required": false,
+    "fresh_request_reads_database": true,
+    "singleton_absolute": false,
+    "navigation_and_api_gates_aligned": true
+  },
+  "counts": {
+    "control_surfaces": 11,
+    "risk": {
+      "LOW": 1,
+      "MEDIUM": 2,
+      "HIGH": 7,
+      "CRITICAL": 1
+    },
+    "truthfulness_gaps": 7,
+    "apply_verification_gaps": 3,
+    "source_of_truth_gaps": 7,
+    "multiple_writer_domains": 2,
+    "substantial_audit_gaps": 8
+  },
+  "multiple_writer_domains": [
+    {
+      "domain": "provider_kukutool_disable",
+      "writers": [
+        "Provider Settings DB checkbox",
+        "provider-health control cache endpoint"
+      ]
+    },
+    {
+      "domain": "policy_runtime",
+      "writers": [
+        "standard PolicyRuntimeSetting ModelAdmin",
+        "custom Policy Engine page",
+        "eligible historical Policy Control rollback"
+      ]
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "batch_runtime",
+      "url": "/admin/xhs_download/batchparseruntimesetting/",
+      "storage": "BatchParseRuntimeSetting",
+      "ui": "django_admin",
+      "type": "A",
+      "risk": "HIGH",
+      "truthfulness_gap": true,
+      "apply_verification_gap": true,
+      "source_of_truth_gap": true,
+      "audit_gap": true
+    },
+    {
+      "id": "download_runtime",
+      "url": "/admin/download_console/downloadruntimesetting/",
+      "storage": "DownloadRuntimeSetting",
+      "ui": "django_admin",
+      "type": "A",
+      "risk": "HIGH",
+      "truthfulness_gap": true,
+      "apply_verification_gap": true,
+      "source_of_truth_gap": true,
+      "audit_gap": true
+    },
+    {
+      "id": "provider_runtime",
+      "url": "/admin/provider-settings/",
+      "storage": "ProviderRuntimeSetting",
+      "ui": "custom",
+      "type": "F",
+      "risk": "HIGH",
+      "truthfulness_gap": false,
+      "apply_verification_gap": false,
+      "source_of_truth_gap": true,
+      "audit_gap": false
+    },
+    {
+      "id": "provider_emergency_cache",
+      "url": "/admin/provider-health/control/",
+      "storage": "cache plus ProviderRuntimeSetting",
+      "ui": "json_post",
+      "type": "F",
+      "risk": "HIGH",
+      "truthfulness_gap": true,
+      "apply_verification_gap": false,
+      "source_of_truth_gap": true,
+      "audit_gap": true
+    },
+    {
+      "id": "provider_health_test_urls",
+      "url": "/admin/provider-health-tests/",
+      "storage": "ProviderHealthTestSetting",
+      "ui": "custom",
+      "type": "A",
+      "risk": "MEDIUM",
+      "truthfulness_gap": true,
+      "apply_verification_gap": false,
+      "source_of_truth_gap": false,
+      "audit_gap": true
+    },
+    {
+      "id": "provider_health_test_execution",
+      "url": "/admin/provider-health-tests/",
+      "storage": "ProviderHealthTestRun plus external calls",
+      "ui": "custom_actions",
+      "type": "A",
+      "risk": "MEDIUM",
+      "truthfulness_gap": false,
+      "apply_verification_gap": false,
+      "source_of_truth_gap": false,
+      "audit_gap": false
+    },
+    {
+      "id": "policy_runtime_admin",
+      "url": "/admin/xhs_download/policyruntimesetting/",
+      "storage": "PolicyRuntimeSetting",
+      "ui": "django_admin",
+      "type": "F",
+      "risk": "HIGH",
+      "truthfulness_gap": true,
+      "apply_verification_gap": true,
+      "source_of_truth_gap": true,
+      "audit_gap": true
+    },
+    {
+      "id": "policy_runtime_custom",
+      "url": "/admin/policy-engine/",
+      "storage": "PolicyRuntimeSetting",
+      "ui": "custom",
+      "type": "F",
+      "risk": "HIGH",
+      "truthfulness_gap": true,
+      "apply_verification_gap": false,
+      "source_of_truth_gap": true,
+      "audit_gap": false
+    },
+    {
+      "id": "policy_control",
+      "url": "/admin/policy-control/",
+      "storage": "PolicyOptimizationProposal and PolicyControlRecord",
+      "ui": "custom_workflow",
+      "type": "D",
+      "risk": "HIGH",
+      "truthfulness_gap": false,
+      "apply_verification_gap": false,
+      "source_of_truth_gap": false,
+      "audit_gap": true
+    },
+    {
+      "id": "self_healing_diagnostic",
+      "url": "/admin/self-healing/run/",
+      "storage": "SelfHealingEvent",
+      "ui": "custom_action",
+      "type": "D",
+      "risk": "LOW",
+      "truthfulness_gap": false,
+      "apply_verification_gap": false,
+      "source_of_truth_gap": false,
+      "audit_gap": true
+    },
+    {
+      "id": "release_management",
+      "url": "/admin/release-management/",
+      "storage": "ReleaseDeployJob plus local Git refs plus env executor",
+      "ui": "custom_workflow",
+      "type": "F",
+      "risk": "CRITICAL",
+      "truthfulness_gap": true,
+      "apply_verification_gap": false,
+      "source_of_truth_gap": true,
+      "audit_gap": true
+    }
+  ],
+  "concurrency": {
+    "optimistic_guard_present": false,
+    "batch": "silent_last_write_wins",
+    "provider": "silent_last_write_wins_with_two_success_audit_rows",
+    "policy_cross_entry": "silent_last_write_wins_with_unequal_audit_quality"
+  },
+  "adjacent_side_effect": {
+    "url": "/admin/control-convergence/",
+    "method": "GET",
+    "writes": [
+      "PolicyControlRecord.feedback_summary",
+      "PolicyControlRecord.control_confidence",
+      "PolicyControlRecord.drift_score",
+      "PolicyControlRecord.consistency_score",
+      "PolicyControlRecord.updated_at"
+    ],
+    "direct_live_runtime_change": false,
+    "counted_as_runtime_surface": false
+  },
+  "verification": {
+    "django_check": "passed",
+    "migration_check": "no_changes_detected",
+    "focused_admin_runtime_tests": 155,
+    "focused_admin_runtime_tests_result": "passed",
+    "real_provider_network_used": false
+  },
+  "recommended_next_pr": {
+    "name": "Batch Runtime Admin Clarity v1",
+    "scope": [
+      "remove singleton Admin action checkbox",
+      "show saved/effective/source state",
+      "risk-based confirmation for public expansion",
+      "before/after/request-ID audit",
+      "stale-form rejection",
+      "preserve runtime gate behavior"
+    ],
+    "excluded": [
+      "Policy changes",
+      "Provider refactor",
+      "shared runtime framework",
+      "production deployment"
+    ]
+  }
+}
