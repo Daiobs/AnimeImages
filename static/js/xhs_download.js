@@ -1,7 +1,6 @@
 (function () {
     const SETTINGS_KEY = "xhsDownloadSettings";
     const MAX_IMAGE_RETRIES = 3;
-    const PROVIDER_BROWSER_BLOB_MAX_BYTES = 1024 * 1024 * 1024;
     const downloadReliabilityApi = window.AnimeImagesDownloadReliability || null;
     const douyinReliabilityApi = window.AnimeImagesDouyinReliability || null;
 
@@ -87,6 +86,7 @@
             fallback_strategy: card.dataset.fallbackStrategy || "",
             cors_expected: card.dataset.corsExpected === "true",
             browser_direct_fetch_safe: card.dataset.browserDirectFetchSafe === "true",
+            browser_native_handoff_capable: card.dataset.browserNativeHandoffCapable === "true",
             requires_merge: card.dataset.requiresMerge === "true",
             requires_cookie: card.dataset.requiresCookie === "true",
         };
@@ -880,12 +880,24 @@
             return frame;
         }
 
-        function directRouteShouldUseNativeBrowserDownload(items) {
+        function directRouteSingleVideo(items) {
             const directItems = (items || []).filter((item) => item && item.url);
             if (directItems.length !== 1) {
-                return false;
+                return null;
             }
-            return String(directItems[0].type || "").toLowerCase() === "video";
+            const item = directItems[0];
+            return String(item.type || "").toLowerCase() === "video"
+                ? item
+                : null;
+        }
+
+        function directRouteShouldUseNativeBrowserDownload(items) {
+            const item = directRouteSingleVideo(items);
+            return Boolean(
+                item
+                && downloadReliabilityApi
+                && downloadReliabilityApi.browserNativeHandoffSafe(item)
+            );
         }
 
         function directRouteHandoffKey(items) {
@@ -899,40 +911,43 @@
         }
 
         function directRouteNeedsServerFallback(items) {
-            if (!directRouteShouldUseNativeBrowserDownload(items)) {
+            const item = directRouteSingleVideo(items);
+            if (!item) {
                 return false;
             }
-
-            const item = (items || []).find((candidate) => candidate && candidate.url) || {};
-            const provider = String(item.provider || "").trim();
-            const browserDirectFetchSafe = downloadReliabilityApi
-                ? downloadReliabilityApi.browserDirectFetchSafe(item)
-                : item.browser_direct_fetch_safe === true;
-            return Boolean(provider) && !browserDirectFetchSafe;
+            const browserNativeHandoffSafe = downloadReliabilityApi
+                ? downloadReliabilityApi.browserNativeHandoffSafe(item)
+                : false;
+            const browserDirectFetchBlobSafe = downloadReliabilityApi
+                ? downloadReliabilityApi.browserDirectFetchBlobSafe(item)
+                : false;
+            return !browserNativeHandoffSafe && !browserDirectFetchBlobSafe;
         }
 
         function directRouteCanUseProviderBlobDownload(items) {
-            if (!directRouteShouldUseNativeBrowserDownload(items)) {
+            const item = directRouteSingleVideo(items);
+            if (!item) {
                 return false;
             }
-
-            const item = (items || []).find((candidate) => candidate && candidate.url) || {};
-            const provider = String(item.provider || "").trim();
             const url = String(item.url || "");
-            const sizeBytes = Number.parseInt(item.size_bytes || item.sizeBytes || "0", 10) || 0;
-            const browserDirectFetchSafe = downloadReliabilityApi
-                ? downloadReliabilityApi.browserDirectFetchSafe(item)
-                : item.browser_direct_fetch_safe === true;
             return (
-                Boolean(provider)
-                && browserDirectFetchSafe
+                Boolean(downloadReliabilityApi)
+                && downloadReliabilityApi.browserDirectFetchBlobSafe(item)
                 && /^https?:\/\//i.test(url)
-                && (!sizeBytes || sizeBytes <= PROVIDER_BROWSER_BLOB_MAX_BYTES)
             );
         }
 
         function directRouteRetryHint() {
             return "如果浏览器拦截、只打开直链或未开始下载，请再次点击下载，系统会改用服务器单文件下载。";
+        }
+
+        function showNativeDirectHandoff(route, filenames) {
+            setProgressPending("浏览器接管中");
+            setStatus(
+                getStatusElement(),
+                `${route.route_reason || "已交给浏览器下载管理器"}：${filenames.join("、")}。服务器无法确认文件是否下载完成，请查看浏览器下载栏。${directRouteRetryHint()}${routeWarningText(route.warnings)}`,
+                "text-muted",
+            );
         }
 
         async function prepareServerSingleDownload(payload) {
@@ -1391,12 +1406,7 @@
                         if (handoffKey && !directHandoffAttemptKeys.has(handoffKey)) {
                             directHandoffAttemptKeys.add(handoffKey);
                             const filenames = handoffDirectRouteItemsToBrowser(previewItems);
-                            setProgress(100);
-                            setStatus(
-                                getStatusElement(),
-                                `${routePreview.route_reason || "已交给浏览器直接下载源文件"}：${filenames.join("、")}。${directRouteRetryHint()}${routeWarningText(routePreview.warnings)}`,
-                                "text-muted",
-                            );
+                            showNativeDirectHandoff(routePreview, filenames);
                             return;
                         }
                     }
@@ -1478,12 +1488,7 @@
                         if (handoffKey && !directHandoffAttemptKeys.has(handoffKey)) {
                             directHandoffAttemptKeys.add(handoffKey);
                             const filenames = handoffDirectRouteItemsToBrowser(directItems);
-                            setProgress(100);
-                            setStatus(
-                                getStatusElement(),
-                                `${data.route_reason || "已交给浏览器直接下载源文件"}：${filenames.join("、")}。${directRouteRetryHint()}${routeWarningText(data.warnings)}`,
-                                "text-muted",
-                            );
+                            showNativeDirectHandoff(data, filenames);
                             return;
                         }
                         try {

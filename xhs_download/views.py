@@ -2914,6 +2914,89 @@ def log_download_request_event(
     )
 
 
+def build_download_stream_terminal_logger(
+    request,
+    *,
+    download_type,
+    media_items,
+    started_at,
+    route_info,
+):
+    state = {"logged": False}
+
+    def callback(status, snapshot, error=None):
+        if status not in {"completed", "failed"} or state["logged"]:
+            return
+        state["logged"] = True
+        actual_bytes = max(0, int(snapshot.get("yielded_bytes") or 0))
+        error_code = ""
+        error_message = ""
+        if status == "failed":
+            provider = str(
+                (media_items[0] if media_items else {}).get("provider") or ""
+            )
+            contract = observable_download_error(
+                error or XhsDownloadError("下载流提前结束"),
+                provider=provider,
+            )
+            error_code = str(
+                getattr(error, "error_code", "")
+                or contract["error_code"]
+            )
+            error_message = contract["message"]
+        log_download_request_event(
+            request,
+            download_type=download_type,
+            media_items=media_items,
+            status=(
+                ObservabilityStatus.SUCCESS
+                if status == "completed"
+                else ObservabilityStatus.FAILED
+            ),
+            started_at=started_at,
+            actual_bytes=actual_bytes,
+            error_code=error_code,
+            error=error,
+            error_message_short=error_message,
+            route_info=route_info,
+        )
+
+    callback.suppress = lambda: state.update(logged=True)
+    return callback
+
+
+def log_direct_route_selected(request, *, media_items, started_at, route_info):
+    provider = str(route_info.get("provider") or "")[:80]
+    if not provider:
+        provider = next(
+            (
+                str(item.get("provider") or "")[:80]
+                for item in media_items or ()
+                if isinstance(item, dict) and item.get("provider")
+            ),
+            "",
+        )
+    logger.info(
+        "download_direct_route_selected",
+        extra={
+            "item_count": len(media_items or ()),
+            "provider": provider,
+            "route_type": ROUTE_DIRECT,
+            "handoff_state": "route_selected",
+            "request_id": str(getattr(request, "request_id", "") or ""),
+        },
+    )
+    log_download_request_event(
+        request,
+        download_type="direct_route_selected",
+        media_items=media_items,
+        status=ObservabilityStatus.SUCCESS,
+        started_at=started_at,
+        actual_bytes=0,
+        route_info=route_info,
+    )
+
+
 def blocked_download_route_info(media_items, reason, error_code=""):
     estimated_bytes = estimated_media_items_bytes(media_items)
     return {
@@ -3104,6 +3187,7 @@ class SingleAttachmentStream:
         self.failed = False
         self.closed = False
         self.streaming_notified = False
+        self.telemetry.setdefault("yielded_bytes", 0)
 
     def notify(self, status, error=None):
         try:
@@ -3139,6 +3223,7 @@ class SingleAttachmentStream:
         try:
             self.start()
             total += len(self.first_chunk)
+            self.telemetry["yielded_bytes"] = total
             yield self.first_chunk
             for chunk in self.upstream_chunks:
                 if not chunk:
@@ -3146,6 +3231,7 @@ class SingleAttachmentStream:
                 total += len(chunk)
                 if total > self.max_bytes:
                     raise XhsDownloadError("资源超过允许的大小限制")
+                self.telemetry["yielded_bytes"] = total
                 yield chunk
         except GeneratorExit:
             self.fail(
@@ -5193,8 +5279,19 @@ def download_stream_view(request, token):
         "upstream_attempt_count": 0,
         "recovery_used": False,
         "recovered": bool(handoff.recovered),
+        "yielded_bytes": 0,
     }
     logged_statuses = set()
+    terminal_log_callback = build_download_stream_terminal_logger(
+        request,
+        download_type="single_stream",
+        media_items=media_items,
+        started_at=started_at,
+        route_info={
+            "route_type": ROUTE_PROXY,
+            "download_strategy": "server_single_attachment",
+        },
+    )
 
     def stream_status_callback(status, snapshot, error=None):
         error_code = ""
@@ -5273,6 +5370,7 @@ def download_stream_view(request, token):
             "completed",
         }:
             logger.info(event_name, extra=log_fields)
+        terminal_log_callback(status, snapshot, error)
 
     if download_items_have_invalid_provider_manifest(media_items):
         stream_status_callback(
@@ -5344,7 +5442,7 @@ def download_stream_view(request, token):
         concurrency_acquired = True
         stream_status_callback("connecting", telemetry)
 
-        stream_response, actual_bytes = build_single_attachment_response(
+        stream_response, estimated_bytes = build_single_attachment_response(
             item,
             handoff.base_filename,
             allow_recovery=not handoff.recovery_used,
@@ -5360,7 +5458,7 @@ def download_stream_view(request, token):
         within_limit, bytes_error_code = record_download_archive_bytes(
             identity,
             None,
-            actual_bytes,
+            estimated_bytes,
         )
         if not within_limit:
             stream = getattr(
@@ -5381,18 +5479,6 @@ def download_stream_view(request, token):
                 error_code=bytes_error_code or "RATE_LIMITED",
             )
         stream_response["Cache-Control"] = "private, no-store"
-        log_download_request_event(
-            request,
-            download_type="single_stream",
-            media_items=media_items,
-            status=ObservabilityStatus.SUCCESS,
-            started_at=started_at,
-            actual_bytes=actual_bytes,
-            route_info={
-                "route_type": ROUTE_PROXY,
-                "download_strategy": "server_single_attachment",
-            },
-        )
         return stream_response
     except Exception as error:
         if stream_response is not None:
@@ -5409,20 +5495,6 @@ def download_stream_view(request, token):
         contract = observable_download_error(
             error,
             provider=str(item.get("provider") or ""),
-        )
-        log_download_request_event(
-            request,
-            download_type="single_stream",
-            media_items=media_items,
-            status=ObservabilityStatus.FAILED,
-            started_at=started_at,
-            error_code=contract["error_code"],
-            error=error,
-            error_message_short=contract["message"],
-            route_info={
-                "route_type": ROUTE_PROXY,
-                "download_strategy": "server_single_attachment",
-            },
         )
         response = JsonResponse(
             {
@@ -5587,13 +5659,10 @@ def download_images_api(request):
         )
 
     if download_mode in routed_download_modes and route_info.get("route_type") == ROUTE_DIRECT:
-        log_download_request_event(
+        log_direct_route_selected(
             request,
-            download_type=route_info.get("route_type", "auto"),
             media_items=media_items,
-            status=ObservabilityStatus.SUCCESS,
             started_at=started_at,
-            actual_bytes=0,
             route_info=route_info,
         )
         return JsonResponse(
@@ -5727,10 +5796,18 @@ def download_images_api(request):
 
     try:
         if route_info.get("download_strategy") == "server_single_attachment":
+            stream_terminal_logger = build_download_stream_terminal_logger(
+                request,
+                download_type="single_file",
+                media_items=media_items,
+                started_at=started_at,
+                route_info=route_info,
+            )
             try:
-                single_response, actual_bytes = build_single_attachment_response(
+                single_response, estimated_bytes = build_single_attachment_response(
                     media_items[0],
                     data.get("base_filename", "xhs"),
+                    status_callback=stream_terminal_logger,
                 )
             except Exception as error:
                 recovery_decision = proxy_failure_recovery(media_items, route_info, error)
@@ -5744,13 +5821,10 @@ def download_images_api(request):
                         trigger="proxy_failure",
                         error=error,
                     )
-                    log_download_request_event(
+                    log_direct_route_selected(
                         request,
-                        download_type=ROUTE_DIRECT,
                         media_items=media_items,
-                        status=ObservabilityStatus.SUCCESS,
                         started_at=started_at,
-                        actual_bytes=0,
                         route_info=recovered_route,
                     )
                     return JsonResponse(
@@ -5805,9 +5879,10 @@ def download_images_api(request):
             within_limit, bytes_error_code = record_download_archive_bytes(
                 identity,
                 None,
-                actual_bytes,
+                estimated_bytes,
             )
             if not within_limit:
+                stream_terminal_logger.suppress()
                 single_response.close()
                 log_download_request_event(
                     request,
@@ -5815,7 +5890,7 @@ def download_images_api(request):
                     media_items=media_items,
                     status=ObservabilityStatus.RATE_LIMITED,
                     started_at=started_at,
-                    actual_bytes=actual_bytes,
+                    actual_bytes=0,
                     error_code=bytes_error_code or "RATE_LIMITED",
                     route_info=blocked_download_route_info(
                         media_items,
@@ -5827,15 +5902,6 @@ def download_images_api(request):
                     "今日下载流量已达到限制，请稍后再试。",
                     error_code=bytes_error_code or "RATE_LIMITED",
                 )
-            log_download_request_event(
-                request,
-                download_type="single_file",
-                media_items=media_items,
-                status=ObservabilityStatus.SUCCESS,
-                started_at=started_at,
-                actual_bytes=actual_bytes,
-                route_info=route_info,
-            )
             return single_response
 
         if download_mode == "server":
@@ -5900,10 +5966,20 @@ def download_images_api(request):
                     trigger="zip_failure",
                     error=error,
                 )
+                recovery_stream_terminal_logger = (
+                    build_download_stream_terminal_logger(
+                        request,
+                        download_type="single_file",
+                        media_items=media_items,
+                        started_at=started_at,
+                        route_info=recovered_route,
+                    )
+                )
                 try:
-                    single_response, actual_bytes = build_single_attachment_response(
+                    single_response, estimated_bytes = build_single_attachment_response(
                         media_items[0],
                         data.get("base_filename", "xhs"),
+                        status_callback=recovery_stream_terminal_logger,
                     )
                 except Exception as proxy_error:
                     proxy_recovery = proxy_failure_recovery(media_items, recovered_route, proxy_error)
@@ -5943,9 +6019,10 @@ def download_images_api(request):
                 within_limit, bytes_error_code = record_download_archive_bytes(
                     identity,
                     None,
-                    actual_bytes,
+                    estimated_bytes,
                 )
                 if not within_limit:
+                    recovery_stream_terminal_logger.suppress()
                     single_response.close()
                     blocked_route = blocked_download_route_info(
                         media_items,
@@ -5968,7 +6045,7 @@ def download_images_api(request):
                         media_items=media_items,
                         status=ObservabilityStatus.RATE_LIMITED,
                         started_at=started_at,
-                        actual_bytes=actual_bytes,
+                        actual_bytes=0,
                         error_code=bytes_error_code or "RATE_LIMITED",
                         route_info=blocked_route,
                     )
@@ -5976,17 +6053,6 @@ def download_images_api(request):
                         "今日下载流量已达到限制，请稍后再试。",
                         error_code=bytes_error_code or "RATE_LIMITED",
                     )
-
-                recovered_route["recovery"] = recovery_decision.log_fields()
-                log_download_request_event(
-                    request,
-                    download_type="single_file",
-                    media_items=media_items,
-                    status=ObservabilityStatus.SUCCESS,
-                    started_at=started_at,
-                    actual_bytes=actual_bytes,
-                    route_info=recovered_route,
-                )
                 return single_response
 
             blocked_route = blocked_download_route_info(

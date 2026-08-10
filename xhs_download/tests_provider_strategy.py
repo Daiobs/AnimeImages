@@ -58,7 +58,6 @@ from .services.batch_parse.view_context import build_batch_parse_context
 from .services.provider_manifest import build_provider_manifest_token
 from .services.provider_strategy import (
     DOWNLOAD_STRATEGY_BROWSER_DIRECT,
-    DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
     DOWNLOAD_STRATEGY_SERVER_MERGE,
     build_download_strategy,
 )
@@ -109,7 +108,7 @@ class TrackingThreadPoolExecutor:
 
 
 class ProviderDownloadStrategyTests(SimpleTestCase):
-    def test_tiantianjiexi_video_uses_observable_server_attachment(self):
+    def test_tiantianjiexi_video_uses_native_handoff_without_fetch_cors(self):
         strategy = build_download_strategy(
             MediaAsset(
                 media_type="video",
@@ -121,13 +120,14 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
 
         self.assertEqual(
             strategy["download_strategy"],
-            DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
+            DOWNLOAD_STRATEGY_BROWSER_DIRECT,
         )
         self.assertEqual(strategy["fallback_strategy"], "server_attachment")
         self.assertFalse(strategy["cors_expected"])
         self.assertFalse(strategy["browser_direct_fetch_safe"])
+        self.assertTrue(strategy["browser_native_handoff_capable"])
 
-    def test_kukutool_video_requires_explicit_cors_capability(self):
+    def test_kukutool_video_native_handoff_does_not_require_fetch_cors(self):
         strategy = build_download_strategy(
             MediaAsset(
                 media_type="video",
@@ -139,10 +139,11 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
 
         self.assertEqual(
             strategy["download_strategy"],
-            DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
+            DOWNLOAD_STRATEGY_BROWSER_DIRECT,
         )
         self.assertFalse(strategy["cors_expected"])
         self.assertFalse(strategy["browser_direct_fetch_safe"])
+        self.assertTrue(strategy["browser_native_handoff_capable"])
 
     def test_native_public_video_keeps_browser_direct_strategy(self):
         strategy = build_download_strategy(

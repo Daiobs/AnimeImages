@@ -23,6 +23,47 @@ test("provider resources require an explicit browser direct capability", () => {
     }), true);
 });
 
+test("native handoff and fetch Blob are independent capabilities", () => {
+    const nativeOnly = {
+        type: "video",
+        provider: "tiantianjiexi",
+        browser_direct_mode: "native_handoff",
+        browser_native_handoff_safe: true,
+        browser_direct_fetch_safe: false,
+        size_bytes: 500 * 1024 * 1024,
+    };
+
+    assert.equal(reliability.browserNativeHandoffSafe(nativeOnly), true);
+    assert.equal(reliability.browserDirectFetchSafe(nativeOnly), false);
+    assert.equal(reliability.browserDirectFetchBlobSafe(nativeOnly), false);
+});
+
+test("fetch Blob is limited to known small CORS-safe resources", () => {
+    const small = {
+        type: "video",
+        browser_direct_fetch_safe: true,
+        size_bytes: reliability.BROWSER_DIRECT_FETCH_BLOB_MAX_BYTES,
+    };
+
+    assert.equal(reliability.browserDirectFetchBlobSafe(small), true);
+    assert.equal(reliability.browserDirectFetchBlobSafe({
+        ...small,
+        size_bytes: reliability.BROWSER_DIRECT_FETCH_BLOB_MAX_BYTES + 1,
+    }), false);
+    assert.equal(reliability.browserDirectFetchBlobSafe({
+        ...small,
+        size_bytes: 0,
+    }), false);
+    assert.equal(reliability.browserDirectFetchBlobSafe({
+        ...small,
+        requires_cookie: true,
+    }), false);
+    assert.equal(reliability.browserDirectFetchBlobSafe({
+        ...small,
+        requires_merge: true,
+    }), false);
+});
+
 test("prepare success exposes only the same-origin handoff contract", () => {
     const result = reliability.parsePreparePayload({
         ok: true,
@@ -352,4 +393,18 @@ test("server handoff completes UI progress only after confirmed stream start", (
     assert.doesNotMatch(implementation, /response\.blob\(\)/);
     assert.doesNotMatch(implementation, /URL\.createObjectURL/);
     assert.doesNotMatch(implementation, /console\.(?:log|warn|error)/);
+});
+
+test("native direct handoff stays pending instead of claiming completion", () => {
+    const source = fs.readFileSync(
+        path.join(__dirname, "../static/js/xhs_download.js"),
+        "utf8",
+    );
+    const start = source.indexOf("function showNativeDirectHandoff");
+    const end = source.indexOf("async function prepareServerSingleDownload", start);
+    const implementation = source.slice(start, end);
+
+    assert.match(implementation, /setProgressPending\("浏览器接管中"\)/);
+    assert.match(implementation, /服务器无法确认文件是否下载完成/);
+    assert.doesNotMatch(implementation, /setProgress\(100\)/);
 });

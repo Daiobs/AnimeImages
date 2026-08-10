@@ -1,6 +1,6 @@
 # Codex Handoff
 
-Last updated: 2026-07-14
+Last updated: 2026-08-10
 
 This document is the first stop when a new Codex project or thread takes over AnimeImages.
 
@@ -232,13 +232,44 @@ fallback remain available.
 
 ## Download Strategy State
 
-Current download strategy is mixed:
+Architecture north star for the unreleased Browser Direct restoration
+candidate:
 
-- Native image resources can prefer direct/browser paths to reduce server traffic.
-- Ordinary public native video URLs can retain their direct/browser path.
-- Provider videos may use browser fetch only when the server explicitly marks
-  that Provider capability as CORS-safe. KuKuTool and TianTianJieXi signed
-  resources currently use observable same-origin prepare/stream instead.
+> Server is the download control plane, not the default media data plane.
+
+AnimeImages owns parsing, authorization, Provider-manifest validation, route
+selection, and handoff. A validated direct resource should send its large media
+body from the Provider/CDN to the browser. The user has accepted that the final
+signed URL is visible in browser Network tools; that does not permit public
+raw-link buttons or exports.
+
+- Browser native handoff and browser fetch/Blob are separate capabilities.
+  Native navigation does not require fetch CORS. Fetch/Blob is allowed only for
+  explicitly CORS-safe resources with a known size of at most 32 MiB.
+- Manifest-validated TianTianJieXi videos prefer native browser handoff.
+  KuKuTool does the same only in its `browser_first` runtime mode; its explicit
+  server-stream/server-only modes continue to use relay.
+- Large or unknown-size videos must not use Blob-first. Native handoff leaves
+  transfer progress and completion to the browser download manager.
+- Direct remains subject to Provider identity, resource ID, cache key, signed
+  manifest, scheme, host allowlist, private-address rejection, media type, and
+  expected-resource checks. CORS failure alone is not a relay reason.
+- Explicit relay reasons include cookie-bound resources, merge requirements,
+  server-only Provider behavior, and a browser handoff that cannot be safely
+  authorized. Relay is a fallback, not the default way to hide a signed URL.
+- Single-result and Batch pages use the same route contract. Allowed public
+  users may invoke validated downloads, while raw-link copy/open/export UI
+  remains staff-only.
+- A Direct response records only a successful routing decision and emits a
+  `route_selected` structured event. It does not create a completed-download
+  record because the server cannot observe browser completion.
+- A retained server stream writes `DownloadRequestLog.success` only when its
+  iterator exhausts normally. `actual_bytes` counts bytes actually yielded;
+  disconnects and generator/upstream errors are failures.
+
+The following server-relay details remain relevant only when a route has an
+explicit relay requirement or the user invokes the controlled fallback:
+
 - Prepare is local-only: it performs request/schema, manifest, route, limit,
   and client-binding checks, then issues separate opaque stream and status
   URLs without contacting the media CDN. The stream claim is one-use; status
@@ -282,10 +313,11 @@ Known tension:
 - Browser-managed downloads save server bandwidth but can be blocked by popup/download restrictions.
 - Server attachment is stable but consumes server egress and can be much slower than a third-party site that hands the CDN URL directly to the browser.
 
-When changing this area, verify local Chrome and, in a separately approved
-deployment task, the production site. Do not assume localhost download
-behavior matches HTTPS production behavior. Do not infer CORS support from one
-historical success.
+This candidate is not production behavior until its PR is reviewed, merged,
+and deployed. When changing this area, verify local Chrome and, in a separately
+approved deployment task, the production site. Do not assume localhost
+download behavior matches HTTPS production behavior. Do not infer fetch CORS
+support from a successful native browser navigation.
 
 ## Production Deployment Notes
 

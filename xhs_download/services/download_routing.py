@@ -4,7 +4,10 @@ from download_console.models import DownloadRuntimeSetting
 from ..models import KukuToolDownloadDeliveryMode, ProviderRuntimeSetting
 
 from .downloads import provider_manifest_allows_public_download
-from .provider_strategy import BROWSER_DIRECT_FETCH_SAFE_PROVIDERS
+from .provider_strategy import (
+    BROWSER_DIRECT_FETCH_SAFE_PROVIDERS,
+    BROWSER_NATIVE_HANDOFF_VIDEO_PROVIDERS as NATIVE_HANDOFF_VIDEO_PROVIDERS,
+)
 
 
 ROUTE_DIRECT = "direct"
@@ -27,6 +30,7 @@ SERVER_SIDE_PROVIDERS = {
 }
 BROWSER_DIRECT_FETCH_SAFE_VIDEO_PROVIDERS = BROWSER_DIRECT_FETCH_SAFE_PROVIDERS
 BROWSER_DIRECT_VIDEO_PROVIDERS = BROWSER_DIRECT_FETCH_SAFE_VIDEO_PROVIDERS
+BROWSER_NATIVE_HANDOFF_VIDEO_PROVIDERS = NATIVE_HANDOFF_VIDEO_PROVIDERS
 BROWSER_FIRST_VIDEO_PROVIDERS = {
     "kukutool",
     "tiantianjiexi",
@@ -179,6 +183,29 @@ def item_can_browser_direct_video(item):
     )
 
 
+def item_can_browser_native_handoff(item, runtime_setting=None):
+    if not isinstance(item, dict) or not item_is_video(item):
+        return False
+    if bool(item.get("requires_cookie")) or bool(item.get("requires_merge")):
+        return False
+    if not is_http_url(item_url(item)):
+        return False
+    provider = item_provider(item)
+    if provider not in BROWSER_NATIVE_HANDOFF_VIDEO_PROVIDERS:
+        return False
+    if (
+        provider == "kukutool"
+        and str(
+            (
+                runtime_setting or ProviderRuntimeSetting.load()
+            ).kukutool_download_delivery_mode
+        )
+        != KukuToolDownloadDeliveryMode.BROWSER_FIRST
+    ):
+        return False
+    return provider_manifest_allows_public_download(item)
+
+
 def single_video_can_server_proxy_download(item):
     if not isinstance(item, dict) or not item_is_video(item):
         return False
@@ -202,7 +229,9 @@ def single_video_can_attachment_download(item):
 
 
 def single_video_can_browser_direct_download(item):
-    return item_can_browser_direct_video(item)
+    return item_can_browser_direct_video(item) or item_can_browser_native_handoff(
+        item
+    )
 
 
 def kukutool_browser_first_enabled(runtime_setting):
@@ -226,6 +255,8 @@ def single_video_can_browser_direct_attempt(item):
 
 
 def single_video_prefers_browser_direct(item, runtime_setting=None):
+    if item_can_browser_native_handoff(item, runtime_setting):
+        return True
     if single_video_can_browser_direct_attempt(item):
         return True
     if not isinstance(item, dict) or not item_is_browser_first_provider_video(item):
@@ -265,6 +296,9 @@ def public_route_item(item):
         "source_platform",
         "filename",
         "browser_direct_fetch_safe",
+        "browser_native_handoff_capable",
+        "requires_merge",
+        "requires_cookie",
     )
     public_item = {
         key: item.get(key)
@@ -272,10 +306,21 @@ def public_route_item(item):
         if isinstance(item, dict) and item.get(key) not in (None, "")
     }
     if isinstance(item, dict):
+        browser_native_handoff_safe = item_can_browser_native_handoff(item)
         public_item["browser_direct_fetch_safe"] = bool(
             item_provider(item) in BROWSER_DIRECT_FETCH_SAFE_VIDEO_PROVIDERS
             if item_provider(item)
             else True
+        )
+        public_item["browser_native_handoff_safe"] = bool(
+            browser_native_handoff_safe
+        )
+        public_item["browser_direct_mode"] = (
+            "native_handoff"
+            if browser_native_handoff_safe
+            else "fetch_blob"
+            if public_item["browser_direct_fetch_safe"]
+            else "server"
         )
     return public_item
 

@@ -90,6 +90,7 @@ test("direct images and explicitly safe Provider videos use browser Blob downloa
             url: "https://media.example.com/video.mp4",
             provider: "safe-provider",
             browser_direct_fetch_safe: true,
+            size_bytes: 1024 * 1024,
         },
     ], reliability), true);
     assert.equal(batch.batchDirectRouteUsesBlob([
@@ -99,6 +100,38 @@ test("direct images and explicitly safe Provider videos use browser Blob downloa
             provider: "",
         },
     ], reliability), false);
+    assert.equal(batch.batchDirectRouteUsesBlob([
+        {
+            type: "video",
+            url: "https://media.example.com/video.mp4",
+            provider: "safe-provider",
+            browser_direct_fetch_safe: true,
+            size_bytes: reliability.BROWSER_DIRECT_FETCH_BLOB_MAX_BYTES + 1,
+        },
+    ], reliability), false);
+});
+
+
+test("Batch native handoff requires the distinct server-approved capability", () => {
+    const item = {
+        type: "video",
+        url: "https://media.example.com/video.mp4",
+        provider: "tiantianjiexi",
+        browser_direct_mode: "native_handoff",
+        browser_native_handoff_safe: true,
+        browser_direct_fetch_safe: false,
+        size_bytes: 500 * 1024 * 1024,
+    };
+
+    assert.equal(batch.batchDirectRouteUsesNativeHandoff(
+        [item],
+        reliability,
+    ), true);
+    assert.equal(batch.batchDirectRouteUsesBlob([item], reliability), false);
+    assert.equal(batch.batchDirectRouteUsesNativeHandoff(
+        [{...item, browser_native_handoff_safe: false}],
+        reliability,
+    ), false);
 });
 
 
@@ -115,8 +148,37 @@ test("direct-safe route is handed to the browser without prepare", async () => {
     });
 
     assert.equal(outcome.kind, "direct");
-    assert.equal(outcome.handoffConfirmed, true);
+    assert.equal(outcome.handoffConfirmed, false);
+    assert.equal(outcome.handoffIssued, true);
+    assert.equal(outcome.completed, false);
     assert.deepEqual(calls, [["direct", 1]]);
+});
+
+test("native direct route never invokes prepare or server download", async () => {
+    const calls = [];
+    const outcome = await batch.executeBatchDownload({
+        reliabilityApi: reliability,
+        fetchRoute: async () => directRoute([{
+            type: "video",
+            url: "https://media.example.com/video.mp4",
+            browser_direct_mode: "native_handoff",
+            browser_native_handoff_safe: true,
+        }]),
+        handoffDirect: async () => {
+            calls.push("native-handoff");
+            return {completed: false, mode: "native_handoff"};
+        },
+        prepare: async () => calls.push("prepare"),
+        handoffPrepared: async () => calls.push("prepared-handoff"),
+        pollStatus: async () => calls.push("status"),
+        downloadServer: async () => calls.push("server"),
+    });
+
+    assert.deepEqual(calls, ["native-handoff"]);
+    assert.equal(outcome.kind, "direct");
+    assert.equal(outcome.handoffIssued, true);
+    assert.equal(outcome.handoffConfirmed, false);
+    assert.equal(outcome.completed, false);
 });
 
 
