@@ -97,6 +97,32 @@ test("validated native open navigates the preopened visible context", () => {
     assert.equal(reliability.closeBrowserDirectContext(context), false);
 });
 
+test("focus failure does not undo an issued native navigation", () => {
+    const events = [];
+    const target = {
+        opener: {},
+        closed: false,
+        location: {
+            replace: (url) => events.push(new URL(url).hostname),
+        },
+        focus: () => {
+            throw new Error("focus unavailable");
+        },
+        close: () => events.push("close"),
+    };
+    const context = reliability.preopenBrowserDirectContext(() => target);
+
+    const result = reliability.issueBrowserDirectOpen(
+        context,
+        nativeOpenItem(),
+    );
+
+    assert.equal(result.state, reliability.DIRECT_LAUNCH_ISSUED);
+    assert.equal(context.issued, true);
+    assert.deepEqual(events, ["media.example.com"]);
+    assert.equal(reliability.closeBrowserDirectContext(context), false);
+});
+
 test("popup blocking is explicit and never implies download success", () => {
     const context = reliability.preopenBrowserDirectContext(() => null);
 

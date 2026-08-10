@@ -149,9 +149,6 @@
         }
         try {
             context.target.location.replace(parsed.href);
-            if (typeof context.target.focus === "function") {
-                context.target.focus();
-            }
         } catch (error) {
             throw directLaunchError(
                 "浏览器未能打开原始资源，请重试或使用兼容下载。",
@@ -159,6 +156,13 @@
             );
         }
         context.issued = true;
+        try {
+            if (typeof context.target.focus === "function") {
+                context.target.focus();
+            }
+        } catch (error) {
+            // Navigation was issued successfully; focus is best-effort only.
+        }
         return {
             state: DIRECT_LAUNCH_ISSUED,
             mode: "native_open",
