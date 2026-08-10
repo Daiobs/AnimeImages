@@ -28,6 +28,29 @@ function preparedRoute() {
 }
 
 
+function streamingItem(overrides = {}) {
+    return {
+        type: "video",
+        url: "https://media.example.com/video.mp4",
+        filename: "demo.mp4",
+        size_bytes: 110691390,
+        size_is_estimate: false,
+        asset_id: "asset-1",
+        provider: "tiantianjiexi",
+        provider_resource_id: "resource-1",
+        provider_cache_key: "cache-1",
+        provider_manifest_token: "opaque-manifest",
+        browser_streaming_direct_capable: true,
+        browser_direct_handoff_version: 2,
+        browser_direct_delivery_mode: "filesystem_stream",
+        browser_direct_expires_at: Math.floor(Date.now() / 1000) + 300,
+        requires_merge: false,
+        requires_cookie: false,
+        ...overrides,
+    };
+}
+
+
 test("Batch media payload matches the existing allowlisted download contract", () => {
     const payload = batch.buildBatchDownloadPayload({
         dataset: {
@@ -45,6 +68,11 @@ test("Batch media payload matches the existing allowlisted download contract", (
             corsExpected: "false",
             browserDirectFetchSafe: "false",
             browserNativeHandoffCapable: "true",
+            browserStreamingDirectCapable: "true",
+            browserDirectHandoffVersion: "2",
+            browserDirectDeliveryMode: "filesystem_stream",
+            browserDirectExpiresAt: "2000000000",
+            downloadFilename: "demo.mp4",
             requiresMerge: "false",
             requiresCookie: "false",
             platformKey: "douyin",
@@ -57,6 +85,14 @@ test("Batch media payload matches the existing allowlisted download contract", (
     assert.equal(payload.media_items[0].url, "https://media.example.com/video.mp4");
     assert.equal(payload.media_items[0].provider_manifest_token, "opaque-manifest");
     assert.equal(payload.media_items[0].browser_native_handoff_capable, true);
+    assert.equal(payload.media_items[0].browser_streaming_direct_capable, true);
+    assert.equal(payload.media_items[0].browser_direct_handoff_version, 2);
+    assert.equal(
+        payload.media_items[0].browser_direct_delivery_mode,
+        "filesystem_stream",
+    );
+    assert.equal(payload.media_items[0].browser_direct_expires_at, 2000000000);
+    assert.equal(payload.media_items[0].filename, "demo.mp4");
     assert.equal(payload.media_items[0].ignoredProviderBody, undefined);
     assert.equal(payload.download_mode, "auto");
     assert.equal(payload.platform_key, "douyin");
@@ -116,24 +152,16 @@ test("direct images and explicitly safe Provider videos use browser Blob downloa
 });
 
 
-test("Batch native handoff requires the distinct server-approved capability", () => {
-    const item = {
-        type: "video",
-        url: "https://media.example.com/video.mp4",
-        provider: "tiantianjiexi",
-        browser_direct_mode: "native_handoff",
-        browser_native_handoff_safe: true,
-        browser_direct_fetch_safe: false,
-        size_bytes: 500 * 1024 * 1024,
-    };
+test("Batch streaming handoff requires the complete server-approved descriptor", () => {
+    const item = streamingItem();
 
-    assert.equal(batch.batchDirectRouteUsesNativeHandoff(
+    assert.equal(batch.batchDirectRouteUsesStreaming(
         [item],
         reliability,
     ), true);
     assert.equal(batch.batchDirectRouteUsesBlob([item], reliability), false);
-    assert.equal(batch.batchDirectRouteUsesNativeHandoff(
-        [{...item, browser_native_handoff_safe: false}],
+    assert.equal(batch.batchDirectRouteUsesStreaming(
+        [{...item, provider_manifest_token: ""}],
         reliability,
     ), false);
 });
@@ -158,22 +186,17 @@ test("direct-safe route is handed to the browser without prepare", async () => {
     assert.deepEqual(calls, [["direct", 1]]);
 });
 
-test("native direct route never invokes prepare or server download", async () => {
+test("parse-issued streaming direct never invokes route, prepare, or server download", async () => {
     const calls = [];
     const outcome = await batch.executeBatchDownload({
         reliabilityApi: reliability,
-        fetchRoute: async () => directRoute([{
-            type: "video",
-            url: "https://media.example.com/video.mp4",
-            browser_direct_mode: "native_handoff",
-            browser_native_handoff_safe: true,
-        }]),
-        handoffDirect: async () => {
-            calls.push("native-open");
+        directItem: streamingItem(),
+        fetchRoute: async () => calls.push("route"),
+        streamDirect: async () => {
+            calls.push("stream-to-disk");
             return {
-                completed: false,
-                mode: "native_open",
-                state: reliability.DIRECT_LAUNCH_ISSUED,
+                completed: true,
+                state: reliability.DIRECT_STATES.COMPLETED,
             };
         },
         prepare: async () => calls.push("prepare"),
@@ -182,13 +205,12 @@ test("native direct route never invokes prepare or server download", async () =>
         downloadServer: async () => calls.push("server"),
     });
 
-    assert.deepEqual(calls, ["native-open"]);
+    assert.deepEqual(calls, ["stream-to-disk"]);
     assert.equal(outcome.kind, "direct");
-    assert.equal(outcome.routeState, reliability.DIRECT_ROUTE_SELECTED);
-    assert.equal(outcome.directState, reliability.DIRECT_LAUNCH_ISSUED);
-    assert.equal(outcome.handoffIssued, true);
-    assert.equal(outcome.handoffConfirmed, false);
-    assert.equal(outcome.completed, false);
+    assert.equal(outcome.directState, reliability.DIRECT_STATES.COMPLETED);
+    assert.equal(outcome.handoffIssued, false);
+    assert.equal(outcome.handoffConfirmed, true);
+    assert.equal(outcome.completed, true);
 });
 
 
@@ -239,61 +261,26 @@ test("failed direct browser launch never silently falls back to server relay", a
 });
 
 
-test("explicit compatibility action is the only prepared relay path", async () => {
-    const calls = [];
-    const outcome = await batch.executeBatchCompatibilityDownload({
-        reliabilityApi: reliability,
-        fetchRoute: async () => calls.push("route"),
-        prepare: async () => {
-            calls.push("prepare");
-            return {
-                downloadUrl: "/media/download-stream/opaque/",
-                statusUrl: "/media/download-status/opaque/",
-            };
-        },
-        handoffPrepared: async () => calls.push("prepared-handoff"),
-        pollStatus: async () => ({
-            status: "streaming",
-            streamStarted: true,
-        }),
-        onPhase: () => {},
-    });
-
-    assert.equal(outcome.kind, "prepared");
-    assert.equal(outcome.handoffConfirmed, true);
-    assert.deepEqual(calls, ["prepare", "prepared-handoff"]);
+test("Browser Direct exposes no compatibility relay action", () => {
+    assert.equal(batch.executeBatchCompatibilityDownload, undefined);
 });
 
 
-test("Batch native open uses a preopened context and never completes the download", () => {
-    const events = [];
-    const context = batch.preopenBatchDirectContext(
-        reliability,
-        () => ({
-            opener: {},
-            closed: false,
-            location: {
-                replace: (url) => events.push(new URL(url).hostname),
-            },
-            focus: () => events.push("focus"),
-            close: () => events.push("close"),
-        }),
+test("validated Batch streaming route never accepts an incomplete descriptor", () => {
+    assert.deepEqual(
+        batch.validateBatchStreamingRoute([streamingItem()], reliability),
+        streamingItem(),
     );
-    const result = batch.openBatchDirectItem([{
-        type: "video",
-        url: "https://media.example.com/video.mp4",
-        browser_direct_mode: "native_handoff",
-        browser_native_handoff_safe: true,
-    }], context, reliability);
-
-    assert.equal(result.mode, "native_open");
-    assert.equal(result.completed, false);
-    assert.equal(result.downloadStarted, false);
-    assert.deepEqual(events, ["media.example.com", "focus"]);
+    assert.throws(
+        () => batch.validateBatchStreamingRoute([
+            streamingItem({browser_direct_delivery_mode: "native_open"}),
+        ], reliability),
+        /没有经过验证的浏览器流式直连能力/,
+    );
 });
 
 
-test("Single and Batch expose the same explicit direct and compatibility actions", () => {
+test("Single and Batch expose one download action for Browser Direct media", () => {
     const batchSource = fs.readFileSync(
         path.join(__dirname, "../static/js/batch_parse.js"),
         "utf8",
@@ -309,12 +296,14 @@ test("Single and Batch expose the same explicit direct and compatibility actions
 
     assert.doesNotMatch(batchSource, /batch-direct-download-frame/);
     assert.doesNotMatch(batchSource, /direct_fallback/);
-    assert.match(singleTemplate, /高速直连/);
-    assert.match(singleTemplate, /compat-download-btn/);
-    assert.match(singleTemplate, /兼容下载/);
-    assert.match(batchTemplate, /data-batch-compat-download/);
-    assert.match(batchTemplate, /高速直连/);
-    assert.match(batchTemplate, /兼容下载/);
+    assert.doesNotMatch(batchSource, /window\.open\(/);
+    assert.match(batchSource, /streamBrowserDirectDownload/);
+    assert.match(singleTemplate, /id="download-btn"/);
+    assert.match(singleTemplate, /下载选中资源/);
+    assert.doesNotMatch(singleTemplate, /compat-download-btn|兼容下载|高速直连/);
+    assert.match(batchTemplate, /data-batch-download/);
+    assert.match(batchTemplate, /batch-download-label">下载</);
+    assert.doesNotMatch(batchTemplate, /data-batch-compat-download|兼容下载|高速直连/);
 });
 
 

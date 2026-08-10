@@ -1,6 +1,8 @@
 # Download Cost Guard
 
-AnimeImages 的 ZIP 下载、视频下载、YouTube merge 和 KuKuTool 超清下载都会经过服务器中转。用户下载一个 400MB 视频时，服务器通常会先从上游 CDN 拉取资源，再把文件返回给用户浏览器；这会消耗服务器带宽、出网流量、磁盘临时空间和 Python worker 时间。
+AnimeImages is the media resolution and handoff control plane, not a media relay service.
+
+普通 Browser Direct 单视频采用 `Provider / CDN -> Browser -> Disk`，媒体 body 不经过 AnimeImages。Download Cost Guard 保护的是 ZIP、多资源打包、服务端合流、必须携带服务端凭据的资源和其他服务器生成型输出；这些路径会消耗服务器带宽、出网流量、磁盘临时空间和 Python worker 时间。
 
 本阶段的 Download Cost Guard 目标是先做最小可用的成本保护，不引入 Celery、CDN、支付、复杂队列或外部监控系统。
 
@@ -59,13 +61,15 @@ large_download_warning_bytes = 104857600    # 100 MB
 
 ## 下载前保护
 
-同步下载接口 `/media/download-images/` 会在真正下载资源前做 preflight：
+同步下载接口 `/media/download-images/` 会在进入服务器媒体处理前做 preflight：
 
 - 访客视频下载关闭时，非 staff 下载 video 会被阻止。
 - 已知 `size_bytes` 的单个视频超过 `single_video_bytes_limit` 会被阻止。
 - 已知 `size_bytes` 的资源总和超过 `single_archive_bytes_limit` 会被阻止。
 
 为了避免额外成本，preflight 不会主动对所有 URL 发送 HEAD 或 Range 请求。缺少 `size_bytes` 的资源不会在下载前被假定为 0 后强行通过，第一版只对已知大小做保护，真实 ZIP 大小仍会在打包后检查。
+
+Browser Direct 普通视频不调用 `/media/download-prepare/`、`/media/download-stream/` 或 `/media/download-status/`，也不通过该同步接口传输媒体 body。Direct 失败只能重试浏览器下载或重新解析，不会降级为 Server Relay。
 
 ## Routing Engine v2 兼容
 
@@ -78,9 +82,9 @@ Download Routing Engine v2 不会绕过 Download Cost Guard。即使请求使用
 - 每日 IP / 全站流量容量检查
 - Provider manifest 校验
 
-当请求被阻止时，`DownloadRequestLog.route_type` 会写入 `blocked`，并继续记录 `error_code`。当智能下载选择 `direct` 时，已知大小会计入 `browser_egress_estimated_bytes`；选择 `zip` 或 `proxy` 时，已知大小会计入 `server_egress_estimated_bytes`。
+当服务器路由请求被阻止时，`DownloadRequestLog.route_type` 会写入 `blocked`，并继续记录 `error_code`。显式路由审计选择 `direct` 时，已知大小会计入 `browser_egress_estimated_bytes`；选择 `zip` 或 `proxy` 时，已知大小会计入 `server_egress_estimated_bytes`。
 
-默认下载仍然是 ZIP。只有请求体显式传入 `download_mode=auto` 时，才启用路由决策并可能返回 direct/proxy JSON。
+当前产品页面对已签发 Browser Direct descriptor 的普通单视频直接启动浏览器流式保存。ZIP、merge 和其他服务器生成型输出仍按各自处理类型进入服务器路径；Server Relay 不属于 Browser Direct 的 fallback。
 
 ## 下载后保护
 

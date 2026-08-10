@@ -122,7 +122,7 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
             strategy["download_strategy"],
             DOWNLOAD_STRATEGY_BROWSER_DIRECT,
         )
-        self.assertEqual(strategy["fallback_strategy"], "server_attachment")
+        self.assertEqual(strategy["fallback_strategy"], "none")
         self.assertFalse(strategy["cors_expected"])
         self.assertFalse(strategy["browser_direct_fetch_safe"])
         self.assertTrue(strategy["browser_native_handoff_capable"])
@@ -196,17 +196,19 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
                 content = (PROJECT_ROOT / relative_path).read_text()
                 self.assertNotIn("BATCH_PARSE_MINUTE_IP_LIMIT", content)
 
-    def test_batch_download_reuses_validated_route_and_prepare_contracts(self):
+    def test_batch_direct_download_bypasses_route_and_relay_contracts(self):
         content = (PROJECT_ROOT / "static/js/batch_parse.js").read_text()
 
         self.assertIn("function executeBatchDownload(options)", content)
+        self.assertIn("settings.directItem", content)
+        self.assertIn("settings.streamDirect", content)
         self.assertIn("route_only: true", content)
         self.assertIn("prepareBatchServerDownload", content)
         self.assertIn("pollDownloadStatus", content)
         self.assertIn("downloadStartDisposition", content)
         self.assertIn('download_mode: "server_single"', content)
-        self.assertIn("executeBatchCompatibilityDownload", content)
-        self.assertIn("data-batch-compat-download", content)
+        self.assertNotIn("executeBatchCompatibilityDownload", content)
+        self.assertNotIn("data-batch-compat-download", content)
         self.assertNotIn("fallbackDirectToPrepared: true", content)
 
     def test_batch_javascript_is_page_scoped_and_retry_preserves_form(self):
@@ -1994,6 +1996,12 @@ class BatchParseViewTests(TestCase):
     @patch("xhs_download.views.parse_media_page")
     def test_batch_parse_post_renders_successful_result(self, mock_parse):
         self.client.force_login(self.staff_user)
+        provider_url = "https://v5-default.365yg.com/demo.mp4"
+        aweme_id = "7611146072161047526"
+        asset_id = f"douyin:{aweme_id}:video:tiantianjiexi"
+        provider_cache_key = (
+            f"douyin:tiantianjiexi:validated:{aweme_id}"
+        )
         mock_parse.return_value = ParseResult(
             platform="douyin",
             post_type="video",
@@ -2001,9 +2009,20 @@ class BatchParseViewTests(TestCase):
             assets=(
                 MediaAsset(
                     media_type="video",
-                    url="https://v5-default.365yg.com/demo.mp4",
+                    url=provider_url,
                     platform="douyin",
                     provider="tiantianjiexi",
+                    asset_id=asset_id,
+                    provider_resource_id=aweme_id,
+                    provider_cache_key=provider_cache_key,
+                    provider_manifest_token=build_provider_manifest_token(
+                        asset_id=asset_id,
+                        provider="tiantianjiexi",
+                        provider_resource_id=aweme_id,
+                        provider_cache_key=provider_cache_key,
+                        url=provider_url,
+                        media_type="video",
+                    ),
                     size_bytes=123456,
                     quality_label="原画",
                     cover_url="https://p3.douyinpic.com/cover.jpeg",
@@ -2024,8 +2043,9 @@ class BatchParseViewTests(TestCase):
         self.assertContains(response, "batch-result-cover")
         self.assertContains(response, "复制直链")
         self.assertContains(response, "打开直链")
-        self.assertContains(response, "高速直连")
-        self.assertContains(response, "兼容下载")
+        self.assertContains(response, '<span class="batch-download-label">下载</span>')
+        self.assertNotContains(response, "高速直连")
+        self.assertNotContains(response, "兼容下载")
         self.assertContains(response, "data-batch-direct-url")
         self.assertContains(response, "data-batch-direct-download")
         self.assertContains(response, "data-batch-download")

@@ -36,9 +36,18 @@
     const MAX_STATUS_POLL_DURATION_MS = 15000;
     const MAX_STATUS_POLL_COUNT = 30;
     const BROWSER_DIRECT_FETCH_BLOB_MAX_BYTES = 32 * 1024 * 1024;
+    const BROWSER_DIRECT_HANDOFF_VERSION = 2;
+    const BROWSER_DIRECT_DELIVERY_MODE = "filesystem_stream";
     const DIRECT_ROUTE_SELECTED = "DIRECT_ROUTE_SELECTED";
-    const DIRECT_LAUNCH_ISSUED = "DIRECT_LAUNCH_ISSUED";
-    const DIRECT_DOWNLOAD_STARTED = "DIRECT_DOWNLOAD_STARTED";
+    const DIRECT_STATES = Object.freeze({
+        IDLE: "idle",
+        CHOOSING_DESTINATION: "choosing_destination",
+        CONNECTING: "connecting",
+        WRITING: "writing",
+        COMPLETED: "completed",
+        CANCELLED: "cancelled",
+        FAILED: "failed",
+    });
 
     function booleanValue(value) {
         return value === true || String(value || "").toLowerCase() === "true";
@@ -54,120 +63,355 @@
         return booleanValue(item.browser_direct_fetch_safe);
     }
 
-    function browserNativeHandoffSafe(item) {
-        if (!item || typeof item !== "object") {
+    function validDirectUrl(value) {
+        let parsed;
+        try {
+            parsed = new URL(String(value || ""));
+        } catch (error) {
             return false;
         }
-        return Boolean(
-            booleanValue(item.browser_native_handoff_safe)
-            && String(item.browser_direct_mode || "") === "native_handoff"
-            && !booleanValue(item.requires_merge)
-            && !booleanValue(item.requires_cookie)
-        );
+        return ["http:", "https:"].includes(parsed.protocol);
     }
 
-    function browserNativeOpenCandidate(item) {
+    function browserDirectStreamingSafe(item) {
         if (!item || typeof item !== "object") {
             return false;
         }
+        const provider = String(item.provider || "").trim();
+        const providerIdentityComplete = !provider || Boolean(
+            String(item.asset_id || "").trim()
+            && String(item.provider_resource_id || "").trim()
+            && String(item.provider_cache_key || "").trim()
+            && String(item.provider_manifest_token || "").trim()
+        );
         return Boolean(
             String(item.type || "").toLowerCase() === "video"
-            && booleanValue(item.browser_native_handoff_capable)
+            && validDirectUrl(item.url)
+            && Number.parseInt(
+                item.browser_direct_handoff_version || item.version || "0",
+                10,
+            ) === BROWSER_DIRECT_HANDOFF_VERSION
+            && String(
+                item.browser_direct_delivery_mode
+                || item.browser_direct_mode
+                || "",
+            ) === BROWSER_DIRECT_DELIVERY_MODE
+            && (
+                booleanValue(item.browser_streaming_direct_capable)
+                || booleanValue(item.browser_streaming_direct_safe)
+            )
+            && providerIdentityComplete
             && !booleanValue(item.requires_merge)
             && !booleanValue(item.requires_cookie)
         );
     }
 
-    function directLaunchError(message, errorCode) {
+    function directDownloadError(message, errorCode, cause) {
         const error = new Error(message);
         error.errorCode = errorCode;
+        if (cause) {
+            error.cause = cause;
+        }
         return error;
     }
 
-    function preopenBrowserDirectContext(openWindow) {
-        const opener = typeof openWindow === "function" ? openWindow : null;
-        if (!opener) {
-            return {ok: false, target: null, issued: false};
+    function browserDirectHandoffExpired(item, nowMilliseconds) {
+        const expiresAt = Number.parseInt(
+            item && (
+                item.browser_direct_expires_at
+                || item.expires_at
+            ) || "0",
+            10,
+        ) || 0;
+        if (!expiresAt) {
+            return false;
         }
-        let target = null;
-        try {
-            target = opener("about:blank", "_blank");
-            if (target) {
-                target.opener = null;
-            }
-        } catch (error) {
-            target = null;
-        }
+        const now = Number.isFinite(nowMilliseconds)
+            ? nowMilliseconds
+            : Date.now();
+        return expiresAt <= Math.floor(now / 1000);
+    }
+
+    function sanitizeDirectFilename(value) {
+        const cleaned = String(value || "video.mp4")
+            .replace(/[\\/:*?"<>|]+/g, "_")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 180);
+        return cleaned || "video.mp4";
+    }
+
+    function directPickerOptions(item) {
+        const filename = sanitizeDirectFilename(
+            item.filename || item.download_filename || "video.mp4",
+        );
+        const suffix = filename.match(/\.[a-z0-9]{1,8}$/i);
+        const extension = suffix ? suffix[0].toLowerCase() : ".mp4";
         return {
-            ok: Boolean(target),
-            target,
-            issued: false,
+            suggestedName: suffix ? filename : `${filename}.mp4`,
+            types: [{
+                description: "Video file",
+                accept: {
+                    "video/mp4": [extension],
+                },
+            }],
         };
     }
 
-    function closeBrowserDirectContext(context) {
-        if (!context || !context.target || context.issued) {
-            return false;
+    function directClock(options) {
+        if (options && typeof options.now === "function") {
+            return options.now;
         }
-        try {
-            if (!context.target.closed && typeof context.target.close === "function") {
-                context.target.close();
-            }
-        } catch (error) {
-            return false;
+        if (
+            typeof performance !== "undefined"
+            && typeof performance.now === "function"
+        ) {
+            return performance.now.bind(performance);
         }
-        return true;
+        return Date.now;
     }
 
-    function issueBrowserDirectOpen(context, item) {
-        if (!context || !context.ok || !context.target) {
-            throw directLaunchError(
-                "浏览器阻止了新标签页，请允许弹出窗口后重试，或使用兼容下载。",
-                "DIRECT_POPUP_BLOCKED",
-            );
+    function notifyDirectState(callback, state, details) {
+        if (typeof callback !== "function") {
+            return;
         }
-        if (!browserNativeHandoffSafe(item)) {
-            throw directLaunchError(
-                "当前资源没有经过验证的浏览器高速直连能力。",
-                "DIRECT_ROUTE_NOT_VALIDATED",
-            );
-        }
-        let parsed;
         try {
-            parsed = new URL(String(item.url || ""));
+            callback(state, details || {});
         } catch (error) {
-            throw directLaunchError(
-                "下载路由返回了无效资源。",
-                "DIRECT_URL_INVALID",
+            // UI observers must not interrupt media streaming.
+        }
+    }
+
+    function directExpectedSizes(item, response) {
+        const values = [];
+        const responseSize = Number.parseInt(
+            response.headers.get("Content-Length") || "0",
+            10,
+        ) || 0;
+        const itemSize = Number.parseInt(
+            item.size_bytes || item.sizeBytes || "0",
+            10,
+        ) || 0;
+        if (responseSize > 0) {
+            values.push(responseSize);
+        }
+        if (itemSize > 0 && !booleanValue(item.size_is_estimate)) {
+            values.push(itemSize);
+        }
+        return [...new Set(values)];
+    }
+
+    async function streamBrowserDirectDownload(item, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        if (!browserDirectStreamingSafe(item)) {
+            throw directDownloadError(
+                "当前资源没有经过验证的浏览器流式直连能力。",
+                "DIRECT_HANDOFF_NOT_VALIDATED",
             );
         }
-        if (!["http:", "https:"].includes(parsed.protocol)) {
-            throw directLaunchError(
-                "下载路由返回了无效资源。",
-                "DIRECT_URL_INVALID",
+        const picker = settings.showSaveFilePicker || (
+            typeof showSaveFilePicker === "function"
+                ? showSaveFilePicker.bind(globalThis)
+                : null
+        );
+        if (!picker) {
+            throw directDownloadError(
+                "当前浏览器不支持流式保存，请使用最新版 Chrome 后重试。",
+                "DIRECT_BROWSER_API_UNAVAILABLE",
             );
         }
+        const fetchMedia = settings.fetch || (
+            typeof fetch === "function" ? fetch.bind(globalThis) : null
+        );
+        if (!fetchMedia) {
+            throw directDownloadError(
+                "当前浏览器不支持直接下载，请使用最新版 Chrome 后重试。",
+                "DIRECT_FETCH_UNAVAILABLE",
+            );
+        }
+
+        const now = directClock(settings);
+        const startedAt = now();
+        notifyDirectState(
+            settings.onState,
+            DIRECT_STATES.CHOOSING_DESTINATION,
+        );
+        let fileHandle;
         try {
-            context.target.location.replace(parsed.href);
+            fileHandle = await picker(directPickerOptions(item));
         } catch (error) {
-            throw directLaunchError(
-                "浏览器未能打开原始资源，请重试或使用兼容下载。",
-                "DIRECT_LAUNCH_FAILED",
-            );
-        }
-        context.issued = true;
-        try {
-            if (typeof context.target.focus === "function") {
-                context.target.focus();
+            if (error && error.name === "AbortError") {
+                notifyDirectState(settings.onState, DIRECT_STATES.CANCELLED);
+                return {
+                    state: DIRECT_STATES.CANCELLED,
+                    completed: false,
+                    cancelled: true,
+                    receivedBytes: 0,
+                    writtenBytes: 0,
+                };
             }
-        } catch (error) {
-            // Navigation was issued successfully; focus is best-effort only.
+            notifyDirectState(settings.onState, DIRECT_STATES.FAILED, {
+                errorCode: "DIRECT_PICKER_FAILED",
+            });
+            throw directDownloadError(
+                "无法选择保存位置，请重试。",
+                "DIRECT_PICKER_FAILED",
+                error,
+            );
         }
+
+        if (!fileHandle || typeof fileHandle.createWritable !== "function") {
+            notifyDirectState(settings.onState, DIRECT_STATES.FAILED, {
+                errorCode: "DIRECT_WRITER_UNAVAILABLE",
+            });
+            throw directDownloadError(
+                "浏览器无法写入所选文件，请重试。",
+                "DIRECT_WRITER_UNAVAILABLE",
+            );
+        }
+
+        if (browserDirectHandoffExpired(item, settings.nowEpochMs)) {
+            notifyDirectState(settings.onState, DIRECT_STATES.FAILED, {
+                errorCode: "PROVIDER_MANIFEST_EXPIRED",
+            });
+            throw directDownloadError(
+                "解析结果已过期，请重新解析后下载。",
+                "PROVIDER_MANIFEST_EXPIRED",
+            );
+        }
+
+        notifyDirectState(settings.onState, DIRECT_STATES.CONNECTING);
+        let response;
+        try {
+            response = await fetchMedia(String(item.url), {
+                method: "GET",
+                credentials: "omit",
+                cache: "no-store",
+            });
+        } catch (error) {
+            notifyDirectState(settings.onState, DIRECT_STATES.FAILED, {
+                errorCode: "DIRECT_NETWORK_FAILED",
+            });
+            throw directDownloadError(
+                "无法连接资源，请重试下载；若仍失败，请重新解析。",
+                "DIRECT_NETWORK_FAILED",
+                error,
+            );
+        }
+        if (!response || !response.ok) {
+            notifyDirectState(settings.onState, DIRECT_STATES.FAILED, {
+                errorCode: "DIRECT_HTTP_FAILED",
+            });
+            throw directDownloadError(
+                "资源暂时不可用，请重新解析后再试。",
+                "DIRECT_HTTP_FAILED",
+            );
+        }
+        if (!response.body || typeof response.body.getReader !== "function") {
+            notifyDirectState(settings.onState, DIRECT_STATES.FAILED, {
+                errorCode: "DIRECT_BODY_UNAVAILABLE",
+            });
+            throw directDownloadError(
+                "浏览器无法读取资源流，请使用最新版 Chrome 重试。",
+                "DIRECT_BODY_UNAVAILABLE",
+            );
+        }
+        const reader = response.body.getReader();
+        let writer = null;
+        let writerClosed = false;
+        let receivedBytes = 0;
+        let writtenBytes = 0;
+        let firstChunkAt = 0;
+        let writerStartedAt = 0;
+        const expectedSizes = directExpectedSizes(item, response);
+        const expectedBytes = expectedSizes[0] || 0;
+        try {
+            writer = await fileHandle.createWritable();
+            writerStartedAt = now();
+            notifyDirectState(settings.onState, DIRECT_STATES.WRITING, {
+                expectedBytes,
+            });
+            while (true) {
+                const chunk = await reader.read();
+                if (chunk.done) {
+                    break;
+                }
+                if (!chunk.value || !chunk.value.byteLength) {
+                    continue;
+                }
+                if (!firstChunkAt) {
+                    firstChunkAt = now();
+                }
+                receivedBytes += chunk.value.byteLength;
+                await writer.write(chunk.value);
+                writtenBytes += chunk.value.byteLength;
+                if (typeof settings.onProgress === "function") {
+                    const percent = expectedBytes > 0
+                        ? Math.min(99, Math.floor(
+                            (writtenBytes / expectedBytes) * 100,
+                        ))
+                        : null;
+                    settings.onProgress({
+                        expectedBytes,
+                        percent,
+                        receivedBytes,
+                        writtenBytes,
+                    });
+                }
+            }
+            if (
+                receivedBytes !== writtenBytes
+                || expectedSizes.some((size) => size !== writtenBytes)
+            ) {
+                throw directDownloadError(
+                    "文件大小校验失败，请重新解析后重试。",
+                    "DIRECT_SIZE_MISMATCH",
+                );
+            }
+            await writer.close();
+            writerClosed = true;
+        } catch (error) {
+            try {
+                await reader.cancel();
+            } catch (cancelError) {
+                // The stream may already be closed after a read failure.
+            }
+            if (writer && !writerClosed && typeof writer.abort === "function") {
+                try {
+                    await writer.abort();
+                } catch (abortError) {
+                    // Preserve the original stream or writer failure.
+                }
+            }
+            const failure = error && error.errorCode
+                ? error
+                : directDownloadError(
+                    "下载未完成，请重试；若仍失败，请重新解析。",
+                    "DIRECT_STREAM_FAILED",
+                    error,
+                );
+            notifyDirectState(settings.onState, DIRECT_STATES.FAILED, {
+                errorCode: failure.errorCode,
+            });
+            throw failure;
+        }
+
+        const completedAt = now();
+        notifyDirectState(settings.onState, DIRECT_STATES.COMPLETED, {
+            expectedBytes,
+            receivedBytes,
+            writtenBytes,
+        });
         return {
-            state: DIRECT_LAUNCH_ISSUED,
-            mode: "native_open",
-            completed: false,
-            downloadStarted: false,
+            state: DIRECT_STATES.COMPLETED,
+            completed: true,
+            cancelled: false,
+            expectedBytes,
+            firstChunkLatencyMs: firstChunkAt ? firstChunkAt - startedAt : null,
+            receivedBytes,
+            totalDurationMs: completedAt - startedAt,
+            writerStartLatencyMs: writerStartedAt - startedAt,
+            writtenBytes,
         };
     }
 
@@ -442,9 +686,10 @@
     return Object.freeze({
         DEFAULT_STATUS_POLL_INTERVAL_MS,
         BROWSER_DIRECT_FETCH_BLOB_MAX_BYTES,
-        DIRECT_DOWNLOAD_STARTED,
-        DIRECT_LAUNCH_ISSUED,
+        BROWSER_DIRECT_DELIVERY_MODE,
+        BROWSER_DIRECT_HANDOFF_VERSION,
         DIRECT_ROUTE_SELECTED,
+        DIRECT_STATES,
         DOWNLOAD_STATUS_POLL_TIMEOUT_MESSAGE,
         DOWNLOAD_STATUS_STATES,
         ERROR_MESSAGES,
@@ -452,17 +697,15 @@
         MAX_STATUS_POLL_DURATION_MS,
         browserDirectFetchSafe,
         browserDirectFetchBlobSafe,
-        browserNativeHandoffSafe,
-        browserNativeOpenCandidate,
-        closeBrowserDirectContext,
+        browserDirectHandoffExpired,
+        browserDirectStreamingSafe,
         downloadStartDisposition,
         errorMessage,
         isDownloadStartTerminal,
         parseDownloadStatusPayload,
         parsePreparePayload,
         pollDownloadStatus,
-        preopenBrowserDirectContext,
-        issueBrowserDirectOpen,
+        streamBrowserDirectDownload,
         shouldUsePreparedServerDownload,
     });
 }));

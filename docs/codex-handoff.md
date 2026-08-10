@@ -235,94 +235,42 @@ fallback remain available.
 Architecture north star for the unreleased Browser Direct restoration
 candidate:
 
-> Server is the download control plane, not the default media data plane.
+> AnimeImages is the media resolution and handoff control plane, not a media relay service.
 
 AnimeImages owns parsing, authorization, Provider-manifest validation, route
-selection, and handoff. A validated direct resource should send its large media
-body from the Provider/CDN to the browser. The user has accepted that the final
-signed URL is visible in browser Network tools; that does not permit public
-raw-link buttons or exports.
+selection, and handoff. A validated direct resource sends its media body from
+the Provider/CDN to the browser and then to disk. The approved signed URL is
+visible in browser Network tools; that does not permit public raw-link buttons
+or exports.
 
-- Browser native handoff and browser fetch/Blob are separate capabilities.
-  Visible native navigation does not require fetch CORS. Fetch/Blob is allowed
-  only for explicitly CORS-safe resources with a known size of at most 32 MiB.
-- Manifest-validated TianTianJieXi videos prefer native browser handoff.
-  KuKuTool does the same only in its `browser_first` runtime mode; its explicit
-  server-stream/server-only modes continue to use relay.
-- Large or unknown-size videos must not use Blob-first. If the CDN serves media
-  inline, native handoff opens a visible source tab and must not claim that a
-  browser download item started or completed.
+- Manifest-validated TianTianJieXi MP4 videos use Browser Streaming Direct.
+  Eligible KuKuTool MP4 videos use the same capability when runtime settings
+  authorize it.
+- The user click opens `showSaveFilePicker()` before network I/O. The browser
+  then streams `response.body` into `FileSystemWritableFileStream`; large and
+  unknown-size videos never use a whole-file Blob.
+- Single and Batch expose one action named `下载` and share the same streaming
+  state machine. Opening a media playback tab is not a download.
+- Completion requires EOF, writer close, and exact byte equality when a
+  reliable expected size exists. Picker cancellation starts no CDN request.
 - Direct remains subject to Provider identity, resource ID, cache key, signed
   manifest, scheme, host allowlist, private-address rejection, media type, and
-  expected-resource checks. CORS failure alone is not a relay reason.
-- Explicit relay reasons include cookie-bound resources, merge requirements,
-  server-only Provider behavior, and a browser handoff that cannot be safely
-  authorized. For Direct-capable inline media, relay is available only through
-  the separately labeled compatibility action; Direct failure never silently
-  changes the next click into relay.
-- Single-result and Batch pages use the same route contract. Allowed public
-  users may invoke validated downloads, while raw-link copy/open/export UI
-  remains staff-only.
-- A Direct response records only a successful routing decision and emits a
-  `route_selected` structured event. It does not create a completed-download
-  record because the server cannot observe browser completion.
+  expected-resource checks, and requires no merge or Cookie-bound retrieval.
+- A direct-capable ordinary video never invokes download prepare, stream, or
+  status endpoints. A direct failure may be retried or reparsed; it is not
+  converted into a server media path by the frontend, routing layer, or Policy
+  Engine.
 - Expired Provider manifests use a distinct reparse message. Invalid, payload-
   mismatched, and forged manifests remain security rejections.
-- A retained server stream writes `DownloadRequestLog.success` only when its
-  iterator exhausts normally. `actual_bytes` counts bytes actually yielded;
-  disconnects and generator/upstream errors are failures.
-
-The following server-relay details remain relevant only when a route has an
-explicit relay requirement or the user invokes the controlled fallback:
-
-- Prepare is local-only: it performs request/schema, manifest, route, limit,
-  and client-binding checks, then issues separate opaque stream and status
-  URLs without contacting the media CDN. The stream claim is one-use; status
-  polling is repeatable, cache-only, client-bound, and does not extend the
-  60-second TTL. The server-private handoff cache uses a typed field allowlist
-  and retains one manifest-validated minimal media URL for the initial GET;
-  it never places that URL in the token, status payload, logs, database, or
-  browser storage.
-- The normal server attachment path opens one upstream media response, checks
-  its first non-empty chunk, and continues the `StreamingHttpResponse` from
-  that same iterator. Active responses, sockets, and generators are never
-  stored in cache. The stream owns its concurrency slot until completion,
-  failure, or client disconnect.
-- The frontend polls only the download startup states and stops at
-  `streaming`, `failed`, `expired`, or its 15-second hard ceiling. It never
-  fetches the media body or creates a large JavaScript Blob for this path.
-- Response construction does not set `stream_started`. The stream iterator
-  sets it once, immediately before yielding the already-validated first chunk.
-  It then remains sticky across later failures; closing before iteration keeps
-  it false. Exhausting the polling window without confirmation is an
-  unconfirmed, retryable state rather than proof that the download failed.
-- For server single-file handoff, issuing the browser request keeps the page
-  progress bar in its connecting state. It reaches 100% only after status
-  confirms `stream_started`, representing confirmed browser handoff rather
-  than media bytes transferred through Django. Actual byte progress belongs
-  to the browser download UI. Safe stream logs record attempt, refresh, and
-  first-byte durations without source or signed media URLs.
-- TianTianJieXi recovery is server-only, bounded to one refresh and one
-  download retry (at most two media GETs), and must preserve the original
-  signed resource identity.
-- Server-stream startup has one absolute 50-second budget across the first
-  media GET, Provider refresh, recovery GET, and first non-empty chunk.
-  Operations receive only the remaining budget. Exhaustion uses
-  `DOWNLOAD_STREAM_START_TIMEOUT`, closes the upstream, releases concurrency,
-  and does not continue refreshing. The budget stops applying once normal
-  stream iteration begins.
-- Large provider CDN downloads can be slow on the VPS if all bytes pass through the server.
-
-Known tension:
-
-- Browser-managed downloads save server bandwidth but can be blocked by popup/download restrictions.
-- Server attachment is stable but consumes server egress and can be much slower than a third-party site that hands the CDN URL directly to the browser.
+- Server-side media paths remain only for inherently different work: merge,
+  multi-resource ZIP, server-generated output, or required Cookie/header
+  retrieval that the browser cannot perform. They are not Browser Direct
+  fallback paths.
 
 This candidate is not production behavior until its PR is reviewed, merged,
 and deployed. When changing this area, verify local Chrome and, in a separately
 approved deployment task, the production site. Do not assume localhost
-download behavior matches HTTPS production behavior. Do not infer fetch CORS
-support from a successful native browser navigation.
+download behavior matches HTTPS production behavior.
 
 ### Web Concurrency Candidate
 

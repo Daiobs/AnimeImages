@@ -206,10 +206,19 @@ def item_can_browser_native_handoff(item, runtime_setting=None):
     return provider_manifest_allows_public_download(item)
 
 
+def item_can_browser_streaming_direct(item, runtime_setting=None):
+    return item_can_browser_direct_video(item) or item_can_browser_native_handoff(
+        item,
+        runtime_setting,
+    )
+
+
 def single_video_can_server_proxy_download(item):
     if not isinstance(item, dict) or not item_is_video(item):
         return False
     if not is_http_url(item_url(item)):
+        return False
+    if item_can_browser_streaming_direct(item):
         return False
     provider = item_provider(item)
     if not provider:
@@ -229,9 +238,7 @@ def single_video_can_attachment_download(item):
 
 
 def single_video_can_browser_direct_download(item):
-    return item_can_browser_direct_video(item) or item_can_browser_native_handoff(
-        item
-    )
+    return item_can_browser_streaming_direct(item)
 
 
 def kukutool_browser_first_enabled(runtime_setting):
@@ -297,6 +304,11 @@ def public_route_item(item):
         "filename",
         "browser_direct_fetch_safe",
         "browser_native_handoff_capable",
+        "browser_streaming_direct_capable",
+        "browser_direct_handoff_version",
+        "browser_direct_delivery_mode",
+        "browser_direct_expires_at",
+        "size_is_estimate",
         "requires_merge",
         "requires_cookie",
     )
@@ -315,9 +327,12 @@ def public_route_item(item):
         public_item["browser_native_handoff_safe"] = bool(
             browser_native_handoff_safe
         )
+        public_item["browser_streaming_direct_safe"] = bool(
+            item_can_browser_streaming_direct(item)
+        )
         public_item["browser_direct_mode"] = (
-            "native_handoff"
-            if browser_native_handoff_safe
+            "filesystem_stream"
+            if public_item["browser_streaming_direct_safe"]
             else "fetch_blob"
             if public_item["browser_direct_fetch_safe"]
             else "server"
@@ -395,6 +410,18 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
     if requested_mode in {"proxy", "server_single"}:
         if len(normalized_items) == 1:
             item = normalized_items[0]
+            if item_can_browser_streaming_direct(item):
+                return route_payload(
+                    route_type=ROUTE_BLOCKED,
+                    route_reason=(
+                        "该视频由浏览器直接保存，不进入服务器媒体传输路径"
+                    ),
+                    download_strategy="browser_direct_relay_blocked",
+                    media_items=normalized_items,
+                    estimated_bytes=estimated_bytes,
+                    error_code="BROWSER_DIRECT_RELAY_NOT_ALLOWED",
+                    warnings=warnings,
+                )
             if single_image_can_attachment_download(item) or single_video_can_server_proxy_download(item):
                 return route_payload(
                     route_type=ROUTE_PROXY,
@@ -413,6 +440,23 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
             warnings=warnings,
         )
 
+    if (
+        requested_mode == "zip"
+        and len(normalized_items) == 1
+        and item_can_browser_streaming_direct(normalized_items[0])
+    ):
+        return route_payload(
+            route_type=ROUTE_BLOCKED,
+            route_reason=(
+                "该视频由浏览器直接保存，单视频不进入服务器打包路径"
+            ),
+            download_strategy="browser_direct_relay_blocked",
+            media_items=normalized_items,
+            estimated_bytes=estimated_bytes,
+            error_code="BROWSER_DIRECT_RELAY_NOT_ALLOWED",
+            warnings=warnings,
+        )
+
     if requested_mode in {"zip", "browser"}:
         if (
             requested_mode == "browser"
@@ -421,7 +465,7 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
         ):
             return route_payload(
                 route_type=ROUTE_DIRECT,
-                route_reason="单个视频资源优先使用浏览器高速直连，减少服务器中转等待",
+                route_reason="单个视频资源由浏览器直接保存",
                 download_strategy="browser_direct_provider_video",
                 media_items=normalized_items,
                 estimated_bytes=estimated_bytes,
@@ -486,7 +530,7 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
         if single_video_prefers_browser_direct(normalized_items[0]):
             return route_payload(
                 route_type=ROUTE_DIRECT,
-                route_reason="Provider 视频优先在浏览器中打开源站资源，减少服务器中转等待",
+                route_reason="Provider 视频由浏览器直接流式保存，避免服务器中转",
                 download_strategy="browser_direct_provider_video",
                 media_items=normalized_items,
                 estimated_bytes=estimated_bytes,

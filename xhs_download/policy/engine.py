@@ -309,6 +309,20 @@ def build_policy_route_payload(context, decision):
             error_code="POLICY_ENGINE_BLOCKED",
             warnings=warnings,
         )
+    if (
+        len(media_items) == 1
+        and single_video_prefers_browser_direct(media_items[0])
+    ):
+        return route_payload(
+            route_type=ROUTE_DIRECT,
+            route_reason=(
+                "Browser Direct 视频保持浏览器流式保存，不进入服务器媒体传输路径"
+            ),
+            download_strategy="browser_direct_provider_video",
+            media_items=media_items,
+            estimated_bytes=estimated_bytes,
+            warnings=warnings,
+        )
     if decision.route == ROUTE_ZIP:
         return route_payload(
             route_type=ROUTE_ZIP,

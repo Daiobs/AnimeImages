@@ -6,17 +6,101 @@ const path = require("node:path");
 const test = require("node:test");
 const reliability = require("../static/js/download_reliability.js");
 
-function nativeOpenItem(overrides = {}) {
+function streamingItem(overrides = {}) {
     return {
         type: "video",
         url: "https://media.example.com/video.mp4",
+        filename: "video.mp4",
+        size_bytes: 6,
+        size_is_estimate: false,
+        asset_id: "douyin:demo:video:tiantianjiexi",
         provider: "tiantianjiexi",
-        browser_native_handoff_capable: true,
-        browser_native_handoff_safe: true,
-        browser_direct_mode: "native_handoff",
+        provider_resource_id: "demo",
+        provider_cache_key: "douyin:tiantianjiexi:validated:demo",
+        provider_manifest_token: "opaque-signed-manifest",
+        browser_streaming_direct_capable: true,
+        browser_direct_handoff_version: reliability.BROWSER_DIRECT_HANDOFF_VERSION,
+        browser_direct_delivery_mode: reliability.BROWSER_DIRECT_DELIVERY_MODE,
+        browser_direct_expires_at: 4102444800,
         requires_merge: false,
         requires_cookie: false,
         ...overrides,
+    };
+}
+
+function streamingResponse(chunks, contentLength) {
+    let index = 0;
+    return {
+        ok: true,
+        status: 200,
+        headers: {
+            get: (name) => String(name).toLowerCase() === "content-length"
+                ? String(contentLength || "")
+                : "",
+        },
+        body: {
+            getReader: () => ({
+                read: async () => index < chunks.length
+                    ? {done: false, value: chunks[index++]}
+                    : {done: true, value: undefined},
+                cancel: async () => {},
+            }),
+        },
+    };
+}
+
+function streamingHarness(options = {}) {
+    const events = [];
+    const writes = [];
+    const chunks = options.chunks || [
+        Uint8Array.from([1, 2, 3]),
+        Uint8Array.from([4, 5, 6]),
+    ];
+    const writer = {
+        write: async (chunk) => {
+            events.push(`write:${chunk.byteLength}`);
+            writes.push(...chunk);
+            if (options.writeError) {
+                throw options.writeError;
+            }
+        },
+        close: async () => {
+            events.push("close");
+            if (options.closeError) {
+                throw options.closeError;
+            }
+        },
+        abort: async () => events.push("abort"),
+    };
+    return {
+        events,
+        writes,
+        fetch: async (_url, init) => {
+            events.push(`fetch:${init.credentials}:${init.cache}`);
+            if (options.fetchError) {
+                throw options.fetchError;
+            }
+            return streamingResponse(
+                chunks,
+                options.contentLength === undefined
+                    ? chunks.reduce((total, chunk) => total + chunk.byteLength, 0)
+                    : options.contentLength,
+            );
+        },
+        showSaveFilePicker: async () => {
+            events.push("picker");
+            if (options.pickerError) {
+                throw options.pickerError;
+            }
+            return options.missingWriter
+                ? {}
+                : {
+                    createWritable: async () => {
+                        events.push("create-writer");
+                        return writer;
+                    },
+                };
+        },
     };
 }
 
@@ -37,119 +121,133 @@ test("provider resources require an explicit browser direct capability", () => {
     }), true);
 });
 
-test("native handoff and fetch Blob are independent capabilities", () => {
-    const nativeOnly = {
-        type: "video",
-        provider: "tiantianjiexi",
-        browser_direct_mode: "native_handoff",
-        browser_native_handoff_safe: true,
-        browser_direct_fetch_safe: false,
-        size_bytes: 500 * 1024 * 1024,
-    };
+test("DIRECT_STREAM_WRITER_REQUIRED and picker precedes CDN fetch", async () => {
+    const harness = streamingHarness();
+    const states = [];
+    const promise = reliability.streamBrowserDirectDownload(
+        streamingItem(),
+        {
+            ...harness,
+            nowEpochMs: 2000000000000,
+            onState: (state) => states.push(state),
+        },
+    );
 
-    assert.equal(reliability.browserNativeHandoffSafe(nativeOnly), true);
-    assert.equal(reliability.browserDirectFetchSafe(nativeOnly), false);
-    assert.equal(reliability.browserDirectFetchBlobSafe(nativeOnly), false);
+    assert.deepEqual(harness.events, ["picker"]);
+    const result = await promise;
+    assert.equal(result.completed, true);
+    assert.equal(result.writtenBytes, 6);
+    assert.deepEqual(harness.writes, [1, 2, 3, 4, 5, 6]);
+    assert.deepEqual(harness.events, [
+        "picker",
+        "fetch:omit:no-store",
+        "create-writer",
+        "write:3",
+        "write:3",
+        "close",
+    ]);
+    assert.deepEqual(states, [
+        reliability.DIRECT_STATES.CHOOSING_DESTINATION,
+        reliability.DIRECT_STATES.CONNECTING,
+        reliability.DIRECT_STATES.WRITING,
+        reliability.DIRECT_STATES.COMPLETED,
+    ]);
 });
 
-test("native open candidate is decided before the async route request", async () => {
-    const events = [];
-    const target = {
-        opener: {},
-        closed: false,
-        close: () => events.push("close"),
-    };
+test("DIRECT_WRITER_UNAVAILABLE stops before the CDN request", async () => {
+    const harness = streamingHarness({missingWriter: true});
+    await assert.rejects(
+        reliability.streamBrowserDirectDownload(streamingItem(), {
+            ...harness,
+            nowEpochMs: 2000000000000,
+        }),
+        (error) => error.errorCode === "DIRECT_WRITER_UNAVAILABLE",
+    );
+    assert.deepEqual(harness.events, ["picker"]);
+});
 
-    assert.equal(reliability.browserNativeOpenCandidate(nativeOpenItem()), true);
-    const context = reliability.preopenBrowserDirectContext((url, name) => {
-        events.push(`${url}:${name}`);
-        return target;
+test("DIRECT_COMPLETES_AFTER_WRITER_CLOSE", async () => {
+    const harness = streamingHarness();
+    const completedSnapshots = [];
+    await reliability.streamBrowserDirectDownload(streamingItem(), {
+        ...harness,
+        nowEpochMs: 2000000000000,
+        onState: (state) => {
+            if (state === reliability.DIRECT_STATES.COMPLETED) {
+                completedSnapshots.push([...harness.events]);
+            }
+        },
     });
-    events.push("route-start");
-    await Promise.resolve();
 
-    assert.equal(context.ok, true);
-    assert.equal(target.opener, null);
-    assert.deepEqual(events, ["about:blank:_blank", "route-start"]);
+    assert.equal(completedSnapshots.length, 1);
+    assert.equal(completedSnapshots[0].at(-1), "close");
 });
 
-test("validated native open navigates the preopened visible context", () => {
-    const events = [];
-    const target = {
-        opener: {},
-        closed: false,
-        location: {
-            replace: (url) => events.push(new URL(url).hostname),
-        },
-        focus: () => events.push("focus"),
-        close: () => events.push("close"),
-    };
-    const context = reliability.preopenBrowserDirectContext(() => target);
-    const result = reliability.issueBrowserDirectOpen(
-        context,
-        nativeOpenItem(),
+test("DIRECT_SIZE_MISMATCH_FAILS and aborts the writer", async () => {
+    const harness = streamingHarness({contentLength: 7});
+    await assert.rejects(
+        reliability.streamBrowserDirectDownload(streamingItem(), {
+            ...harness,
+            nowEpochMs: 2000000000000,
+        }),
+        (error) => error.errorCode === "DIRECT_SIZE_MISMATCH",
+    );
+    assert.equal(harness.events.includes("close"), false);
+    assert.equal(harness.events.includes("abort"), true);
+});
+
+test("DIRECT_PICKER_CANCEL_IS_NEUTRAL and starts no fetch", async () => {
+    const cancelled = new Error("cancelled");
+    cancelled.name = "AbortError";
+    const harness = streamingHarness({pickerError: cancelled});
+    const result = await reliability.streamBrowserDirectDownload(
+        streamingItem(),
+        {...harness, nowEpochMs: 2000000000000},
     );
 
-    assert.equal(result.state, reliability.DIRECT_LAUNCH_ISSUED);
-    assert.equal(result.completed, false);
-    assert.equal(result.downloadStarted, false);
-    assert.deepEqual(events, ["media.example.com", "focus"]);
-    assert.equal(reliability.closeBrowserDirectContext(context), false);
+    assert.equal(result.cancelled, true);
+    assert.equal(result.state, reliability.DIRECT_STATES.CANCELLED);
+    assert.deepEqual(harness.events, ["picker"]);
 });
 
-test("focus failure does not undo an issued native navigation", () => {
-    const events = [];
-    const target = {
-        opener: {},
-        closed: false,
-        location: {
-            replace: (url) => events.push(new URL(url).hostname),
-        },
-        focus: () => {
-            throw new Error("focus unavailable");
-        },
-        close: () => events.push("close"),
-    };
-    const context = reliability.preopenBrowserDirectContext(() => target);
-
-    const result = reliability.issueBrowserDirectOpen(
-        context,
-        nativeOpenItem(),
-    );
-
-    assert.equal(result.state, reliability.DIRECT_LAUNCH_ISSUED);
-    assert.equal(context.issued, true);
-    assert.deepEqual(events, ["media.example.com"]);
-    assert.equal(reliability.closeBrowserDirectContext(context), false);
-});
-
-test("popup blocking is explicit and never implies download success", () => {
-    const context = reliability.preopenBrowserDirectContext(() => null);
-
-    assert.equal(context.ok, false);
-    assert.throws(
-        () => reliability.issueBrowserDirectOpen(context, nativeOpenItem()),
-        (error) => error.errorCode === "DIRECT_POPUP_BLOCKED",
-    );
-});
-
-test("route rejection closes an unused preopened context", () => {
-    let closed = 0;
-    const context = reliability.preopenBrowserDirectContext(() => ({
-        opener: {},
-        closed: false,
-        close: () => { closed += 1; },
-    }));
-
-    assert.throws(
-        () => reliability.issueBrowserDirectOpen(
-            context,
-            nativeOpenItem({browser_native_handoff_safe: false}),
+test("expired parse-issued handoff stops before CDN fetch", async () => {
+    const harness = streamingHarness();
+    await assert.rejects(
+        reliability.streamBrowserDirectDownload(
+            streamingItem({browser_direct_expires_at: 1000}),
+            {...harness, nowEpochMs: 1001000},
         ),
-        (error) => error.errorCode === "DIRECT_ROUTE_NOT_VALIDATED",
+        (error) => error.errorCode === "PROVIDER_MANIFEST_EXPIRED",
     );
-    assert.equal(reliability.closeBrowserDirectContext(context), true);
-    assert.equal(closed, 1);
+    assert.deepEqual(harness.events, ["picker"]);
+});
+
+test("DIRECT_NETWORK_FAILURE_DOES_NOT_AUTO_RELAY", async () => {
+    const harness = streamingHarness({fetchError: new TypeError("network")});
+    await assert.rejects(
+        reliability.streamBrowserDirectDownload(streamingItem(), {
+            ...harness,
+            nowEpochMs: 2000000000000,
+        }),
+        (error) => error.errorCode === "DIRECT_NETWORK_FAILED",
+    );
+    assert.deepEqual(harness.events, ["picker", "fetch:omit:no-store"]);
+});
+
+test("streaming capability rejects incomplete or unsafe descriptors", () => {
+    assert.equal(reliability.browserDirectStreamingSafe(streamingItem()), true);
+    assert.equal(reliability.browserDirectStreamingSafe(
+        streamingItem({provider_manifest_token: ""}),
+    ), false);
+    assert.equal(reliability.browserDirectStreamingSafe(
+        streamingItem({url: "javascript:alert(1)"}),
+    ), false);
+    assert.equal(reliability.browserDirectStreamingSafe(
+        streamingItem({requires_cookie: true}),
+    ), false);
+    assert.equal(reliability.browserDirectStreamingSafe(
+        streamingItem({requires_merge: true}),
+    ), false);
 });
 
 test("manifest expiry maps to a reparse message", () => {
@@ -516,21 +614,68 @@ test("server handoff completes UI progress only after confirmed stream start", (
     assert.doesNotMatch(implementation, /console\.(?:log|warn|error)/);
 });
 
-test("single-page native direct open stays truthful and keeps relay explicit", () => {
-    const source = fs.readFileSync(
+test("INLINE_NAVIGATION_IS_NOT_DOWNLOAD and LARGE_DIRECT_MEDIA_DOES_NOT_USE_BLOB", () => {
+    const sharedSource = fs.readFileSync(
+        path.join(__dirname, "../static/js/download_reliability.js"),
+        "utf8",
+    );
+    const singleSource = fs.readFileSync(
         path.join(__dirname, "../static/js/xhs_download.js"),
         "utf8",
     );
-    const start = source.indexOf("function showNativeDirectOpen");
-    const end = source.indexOf("async function prepareServerSingleDownload", start);
-    const implementation = source.slice(start, end);
+    const start = sharedSource.indexOf("async function streamBrowserDirectDownload");
+    const end = sharedSource.indexOf("function browserDirectFetchBlobSafe", start);
+    const implementation = sharedSource.slice(start, end);
 
-    assert.match(implementation, /setProgressPending\("源站已打开"\)/);
-    assert.match(implementation, /已打开原始资源/);
-    assert.match(implementation, /浏览器的保存功能/);
-    assert.doesNotMatch(implementation, /setProgress\(100\)/);
-    assert.doesNotMatch(source, /xhs-direct-download-frame/);
-    assert.doesNotMatch(source, /directHandoffAttemptKeys/);
-    assert.doesNotMatch(source, /再次点击下载.*服务器单文件下载/);
-    assert.match(source, /compat-download-btn/);
+    assert.match(implementation, /response\.body\.getReader\(\)/);
+    assert.match(implementation, /fileHandle\.createWritable\(\)/);
+    assert.match(implementation, /await writer\.write\(chunk\.value\)/);
+    assert.match(implementation, /await writer\.close\(\)/);
+    assert.doesNotMatch(implementation, /\.blob\(\)/);
+    assert.doesNotMatch(implementation, /URL\.createObjectURL/);
+    assert.doesNotMatch(implementation, /window\.open|location\.replace/);
+    assert.doesNotMatch(singleSource, /issueBrowserDirectOpen|window\.open/);
+    assert.doesNotMatch(singleSource, /compat-download-btn|兼容下载|高速直连/);
+});
+
+test("SINGLE_BATCH_DIRECT_PARITY uses the shared streaming state machine", () => {
+    const singleSource = fs.readFileSync(
+        path.join(__dirname, "../static/js/xhs_download.js"),
+        "utf8",
+    );
+    const batchSource = fs.readFileSync(
+        path.join(__dirname, "../static/js/batch_parse.js"),
+        "utf8",
+    );
+
+    assert.match(singleSource, /streamBrowserDirectDownload/);
+    assert.match(batchSource, /streamBrowserDirectDownload/);
+    assert.doesNotMatch(singleSource, /issueBrowserDirectOpen/);
+    assert.doesNotMatch(batchSource, /issueBrowserDirectOpen/);
+    assert.doesNotMatch(singleSource, /兼容下载|高速直连/);
+    assert.doesNotMatch(batchSource, /兼容下载|高速直连/);
+});
+
+test("DIRECT_NO_SERVER_RELAY and DIRECT_NO_SERVER_MEDIA_PROBE", () => {
+    const singleSource = fs.readFileSync(
+        path.join(__dirname, "../static/js/xhs_download.js"),
+        "utf8",
+    );
+    const batchSource = fs.readFileSync(
+        path.join(__dirname, "../static/js/batch_parse.js"),
+        "utf8",
+    );
+    const sharedSource = fs.readFileSync(
+        path.join(__dirname, "../static/js/download_reliability.js"),
+        "utf8",
+    );
+    const start = sharedSource.indexOf("async function streamBrowserDirectDownload");
+    const end = sharedSource.indexOf("function browserDirectFetchBlobSafe", start);
+    const implementation = sharedSource.slice(start, end);
+
+    assert.doesNotMatch(implementation, /download-prepare|download-stream|download-status/);
+    assert.doesNotMatch(implementation, /method:\s*["'](?:HEAD|POST)["']/);
+    assert.doesNotMatch(implementation, /Range|first-byte|availability/i);
+    assert.match(singleSource, /if \(selectedUsesBrowserStreamingDirect\(\)\) \{\s*await streamSelectedBrowserDirect/);
+    assert.match(batchSource, /settings\.directItem[\s\S]*settings\.streamDirect/);
 });

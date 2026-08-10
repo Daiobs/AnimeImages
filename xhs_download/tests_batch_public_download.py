@@ -201,8 +201,8 @@ class BatchPublicDownloadTemplateTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "batch-browser-download-btn", count=3)
-        self.assertContains(response, "data-batch-compat-download", count=1)
+        self.assertContains(response, "batch-browser-download-btn", count=2)
+        self.assertNotContains(response, "data-batch-compat-download")
         self.assertContains(response, "data-batch-download-item", count=2)
         self.assertContains(response, "data-batch-download-route-url")
         self.assertContains(response, "data-batch-download-prepare-url")
@@ -227,8 +227,8 @@ class BatchPublicDownloadTemplateTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "batch-browser-download-btn", count=3)
-        self.assertContains(response, "data-batch-compat-download", count=1)
+        self.assertContains(response, "batch-browser-download-btn", count=2)
+        self.assertNotContains(response, "data-batch-compat-download")
         self.assertContains(response, "复制直链")
         self.assertContains(response, "打开直链")
         self.assertContains(response, "展开链接")
@@ -271,7 +271,7 @@ class BatchPublicDownloadTemplateTests(TestCase):
         self.assertNotIn("打开直链", card_html)
         self.assertNotIn("data-batch-direct-url", card_html)
 
-    def test_public_provider_item_uses_validated_direct_with_explicit_relay_fallback(self):
+    def test_public_provider_item_uses_direct_and_rejects_relay(self):
         aweme_id = "123456789012345678"
         item = {
             "type": "video",
@@ -323,14 +323,13 @@ class BatchPublicDownloadTemplateTests(TestCase):
                 "browser_direct_fetch_safe"
             ]
         )
-        self.assertEqual(prepare_response.status_code, 200)
-        self.assertEqual(prepare_response.json()["status"], "issued")
-        self.assertTrue(prepare_response.json()["download_url"].startswith(
-            "/media/download-stream/"
-        ))
-        self.assertTrue(prepare_response.json()["status_url"].startswith(
-            "/media/download-status/"
-        ))
+        self.assertEqual(prepare_response.status_code, 400)
+        self.assertEqual(
+            prepare_response.json()["error_code"],
+            "BROWSER_DIRECT_RELAY_NOT_ALLOWED",
+        )
+        self.assertNotIn("download_url", prepare_response.json())
+        self.assertNotIn("status_url", prepare_response.json())
 
     def test_public_download_rejects_tampered_provider_manifest_safely(self):
         provider_url = "https://media.example.com/provider-video.mp4?token=test-secret"

@@ -7200,16 +7200,17 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(route["server_egress_estimated_bytes"], 0)
         self.assertEqual(route["browser_egress_estimated_bytes"], 2000)
 
-    def test_download_route_proxy_signed_kukutool_cdn_video_forces_server_attachment(self):
+    def test_download_route_proxy_signed_kukutool_direct_video_is_blocked(self):
         request = RequestFactory().post("/media/download-images/")
         item = make_kukutool_download_item("https://v6-default.365yg.com/a.mp4")
         item["size_bytes"] = 2000
 
         route = decide_download_route(request, [item], requested_mode="proxy")
 
-        self.assertEqual(route["route_type"], ROUTE_PROXY)
-        self.assertEqual(route["download_strategy"], "server_single_attachment")
-        self.assertEqual(route["server_egress_estimated_bytes"], 2000)
+        self.assertEqual(route["route_type"], ROUTE_BLOCKED)
+        self.assertEqual(route["download_strategy"], "browser_direct_relay_blocked")
+        self.assertEqual(route["error_code"], "BROWSER_DIRECT_RELAY_NOT_ALLOWED")
+        self.assertEqual(route["server_egress_estimated_bytes"], 0)
         self.assertEqual(route["browser_egress_estimated_bytes"], 0)
 
     def test_download_route_mixed_items_use_zip(self):
@@ -7661,14 +7662,9 @@ class XhsDownloadViewTests(TestCase):
         )
 
     @patch("xhs_download.views.fetch_media_response")
-    def test_download_form_payload_json_returns_single_file_response(self, mock_fetch):
+    def test_download_form_payload_json_blocks_direct_video_server_relay(self, mock_fetch):
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
-        mock_fetch.return_value = FakeStreamingResponse(
-            b"video-content",
-            url=item["url"],
-            content_type="video/mp4",
-        )
 
         response = Client(enforce_csrf_checks=False).post(
             "/media/download-images/",
@@ -7680,20 +7676,17 @@ class XhsDownloadViewTests(TestCase):
             },
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "video/mp4")
-        self.assertIn("attachment", response["Content-Disposition"])
-        self.assertEqual(b"".join(response.streaming_content), b"video-content")
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json()["error_code"],
+            "BROWSER_DIRECT_RELAY_NOT_ALLOWED",
+        )
+        mock_fetch.assert_not_called()
 
     @patch("xhs_download.views.fetch_media_response")
-    def test_download_proxy_signed_kukutool_video_returns_single_file_response(self, mock_fetch):
+    def test_download_proxy_signed_kukutool_video_blocks_server_relay(self, mock_fetch):
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
-        mock_fetch.return_value = FakeStreamingResponse(
-            b"video-content",
-            url=item["url"],
-            content_type="video/mp4",
-        )
 
         response = Client().post(
             "/media/download-images/",
@@ -7704,14 +7697,16 @@ class XhsDownloadViewTests(TestCase):
             content_type="application/json",
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "video/mp4")
-        self.assertIn("attachment", response["Content-Disposition"])
-        self.assertEqual(b"".join(response.streaming_content), b"video-content")
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json()["error_code"],
+            "BROWSER_DIRECT_RELAY_NOT_ALLOWED",
+        )
+        mock_fetch.assert_not_called()
         log = DownloadRequestLog.objects.get()
-        self.assertEqual(log.download_type, "single_file")
-        self.assertEqual(log.route_type, ROUTE_PROXY)
-        self.assertEqual(log.server_egress_estimated_bytes, 2000)
+        self.assertEqual(log.download_type, "auto")
+        self.assertEqual(log.route_type, ROUTE_BLOCKED)
+        self.assertEqual(log.server_egress_estimated_bytes, 0)
 
     @patch("xhs_download.views.fetch_media_response")
     def test_download_proxy_single_video_returns_single_file_response(self, mock_fetch):
@@ -7904,15 +7899,9 @@ class XhsDownloadViewTests(TestCase):
 
     @patch("xhs_download.views.fetch_media_response")
     @patch("xhs_download.views.build_download_archive_file")
-    def test_provider_timeout_during_zip_falls_back_to_proxy(self, mock_archive, mock_fetch):
+    def test_direct_video_zip_is_blocked_before_archive_or_proxy(self, mock_archive, mock_fetch):
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
-        mock_archive.side_effect = XhsProviderTimeoutError("provider timeout")
-        mock_fetch.return_value = FakeStreamingResponse(
-            b"video-content",
-            url=item["url"],
-            content_type="video/mp4",
-        )
 
         response = Client().post(
             "/media/download-images/",
@@ -7923,25 +7912,20 @@ class XhsDownloadViewTests(TestCase):
             content_type="application/json",
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "video/mp4")
-        self.assertIn("attachment", response["Content-Disposition"])
-        self.assertEqual(b"".join(response.streaming_content), b"video-content")
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json()["error_code"],
+            "BROWSER_DIRECT_RELAY_NOT_ALLOWED",
+        )
+        mock_archive.assert_not_called()
+        mock_fetch.assert_not_called()
         log = DownloadRequestLog.objects.get()
-        self.assertEqual(log.download_type, "single_file")
-        self.assertEqual(log.route_type, ROUTE_PROXY)
-        self.assertEqual(log.recovery_count, 1)
-        self.assertEqual(log.fallback_count, 1)
-        self.assertEqual(log.fallback_from_route, ROUTE_ZIP)
-        self.assertEqual(log.fallback_to_route, ROUTE_PROXY)
-        self.assertEqual(log.failure_type, FAILURE_PROVIDER_TIMEOUT)
-        self.assertEqual(log.auto_recovery_count, 1)
-        self.assertEqual(log.provider_auto_switch_count, 1)
-        self.assertEqual(log.healing_action, HEAL_ACTION_SWITCH_PROVIDER)
-        event = SelfHealingEvent.objects.get()
-        self.assertEqual(event.failure_type, FAILURE_PROVIDER_TIMEOUT)
-        self.assertEqual(event.switched_from_provider, "kukutool")
-        self.assertEqual(event.switched_to_provider, "yt_dlp_generic")
+        self.assertEqual(log.download_type, "auto")
+        self.assertEqual(log.route_type, ROUTE_BLOCKED)
+        self.assertEqual(log.server_egress_estimated_bytes, 0)
+        self.assertEqual(log.recovery_count, 0)
+        self.assertEqual(log.fallback_count, 0)
+        self.assertFalse(SelfHealingEvent.objects.exists())
 
     @patch("xhs_download.views.fetch_media_response")
     @patch("xhs_download.views.build_download_archive_file")

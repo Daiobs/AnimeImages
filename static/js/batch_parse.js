@@ -138,8 +138,10 @@
         return {
             type: dataset.type === "video" ? "video" : "image",
             url: String(dataset.url || ""),
+            filename: String(dataset.downloadFilename || "media.mp4"),
             cover_url: String(dataset.coverUrl || ""),
             size_bytes: Number.parseInt(dataset.sizeBytes || "0", 10) || 0,
+            size_is_estimate: batchBooleanValue(dataset.sizeIsEstimate),
             asset_id: String(dataset.assetId || ""),
             provider: String(dataset.provider || ""),
             provider_resource_id: String(dataset.providerResourceId || ""),
@@ -154,6 +156,20 @@
             browser_native_handoff_capable: batchBooleanValue(
                 dataset.browserNativeHandoffCapable
             ),
+            browser_streaming_direct_capable: batchBooleanValue(
+                dataset.browserStreamingDirectCapable
+            ),
+            browser_direct_handoff_version: Number.parseInt(
+                dataset.browserDirectHandoffVersion || "0",
+                10
+            ) || 0,
+            browser_direct_delivery_mode: String(
+                dataset.browserDirectDeliveryMode || ""
+            ),
+            browser_direct_expires_at: Number.parseInt(
+                dataset.browserDirectExpiresAt || "0",
+                10
+            ) || 0,
             requires_merge: batchBooleanValue(dataset.requiresMerge),
             requires_cookie: batchBooleanValue(dataset.requiresCookie),
         };
@@ -226,7 +242,7 @@
         );
     }
 
-    function batchDirectRouteUsesNativeHandoff(items, reliabilityApi) {
+    function batchDirectRouteUsesStreaming(items, reliabilityApi) {
         const directItems = Array.isArray(items) ? items : [];
         if (directItems.length !== 1) {
             return false;
@@ -235,16 +251,16 @@
         return Boolean(
             String(item.type || "").toLowerCase() === "video"
             && reliabilityApi
-            && typeof reliabilityApi.browserNativeHandoffSafe === "function"
-            && reliabilityApi.browserNativeHandoffSafe(item)
+            && typeof reliabilityApi.browserDirectStreamingSafe === "function"
+            && reliabilityApi.browserDirectStreamingSafe(item)
         );
     }
 
-    function batchItemMayUseNativeOpen(item, reliabilityApi) {
+    function batchItemCanStreamDirect(item, reliabilityApi) {
         return Boolean(
             reliabilityApi
-            && typeof reliabilityApi.browserNativeOpenCandidate === "function"
-            && reliabilityApi.browserNativeOpenCandidate(item)
+            && typeof reliabilityApi.browserDirectStreamingSafe === "function"
+            && reliabilityApi.browserDirectStreamingSafe(item)
         );
     }
 
@@ -272,24 +288,32 @@
         };
     }
 
-    async function executeBatchCompatibilityDownload(options) {
-        const settings = options && typeof options === "object" ? options : {};
-        const onPhase = typeof settings.onPhase === "function"
-            ? settings.onPhase
-            : (() => {});
-        return executePreparedBatchDownload({...settings, onPhase}, {
-            status: "routed",
-            route_type: "proxy",
-            download_strategy: "server_single_attachment",
-        });
-    }
-
     async function executeBatchDownload(options) {
         const settings = options && typeof options === "object" ? options : {};
         const reliabilityApi = settings.reliabilityApi || null;
         const onPhase = typeof settings.onPhase === "function"
             ? settings.onPhase
             : (() => {});
+        if (
+            settings.directItem
+            && batchItemCanStreamDirect(settings.directItem, reliabilityApi)
+        ) {
+            const directResult = await settings.streamDirect(settings.directItem);
+            return {
+                kind: "direct",
+                completed: Boolean(directResult && directResult.completed),
+                cancelled: Boolean(directResult && directResult.cancelled),
+                directState: String(
+                    directResult && directResult.state
+                    || reliabilityApi.DIRECT_STATES.FAILED
+                ),
+                handoffIssued: false,
+                handoffConfirmed: Boolean(
+                    directResult && directResult.completed
+                ),
+                result: directResult,
+            };
+        }
         onPhase("routing");
         const route = await settings.fetchRoute();
         const disposition = batchDownloadRouteDisposition(route, reliabilityApi);
@@ -305,8 +329,8 @@
                 ),
                 directState: String(
                     handoffResult && handoffResult.state
-                    || (reliabilityApi && reliabilityApi.DIRECT_LAUNCH_ISSUED)
-                    || "DIRECT_LAUNCH_ISSUED"
+                    || (reliabilityApi && reliabilityApi.DIRECT_STATES.FAILED)
+                    || "failed"
                 ),
                 routeState: String(
                     reliabilityApi && reliabilityApi.DIRECT_ROUTE_SELECTED
@@ -351,36 +375,15 @@
         return frame;
     }
 
-    function preopenBatchDirectContext(reliabilityApi, openWindow) {
-        if (
-            !reliabilityApi
-            || typeof reliabilityApi.preopenBrowserDirectContext !== "function"
-        ) {
-            return null;
-        }
-        const context = reliabilityApi.preopenBrowserDirectContext(openWindow);
-        if (!context.ok) {
-            const error = new Error(
-                "浏览器阻止了新标签页，请允许弹出窗口后重试，或使用兼容下载。"
-            );
-            error.errorCode = "DIRECT_POPUP_BLOCKED";
-            throw error;
-        }
-        return context;
-    }
-
-    function openBatchDirectItem(items, context, reliabilityApi) {
+    function validateBatchStreamingRoute(items, reliabilityApi) {
         const directItems = validatedDirectRouteItems({items});
         if (
             directItems.length !== 1
-            || !batchDirectRouteUsesNativeHandoff(directItems, reliabilityApi)
+            || !batchDirectRouteUsesStreaming(directItems, reliabilityApi)
         ) {
-            throw new Error("当前资源没有经过验证的浏览器高速直连能力。");
+            throw new Error("当前资源没有经过验证的浏览器流式直连能力。");
         }
-        return reliabilityApi.issueBrowserDirectOpen(
-            context,
-            directItems[0]
-        );
+        return directItems[0];
     }
 
     async function downloadBatchDirectItems(items, itemNode, onProgress) {
@@ -543,7 +546,7 @@
                 && data.route_type === "direct"
             ) {
                 throw new Error(
-                    "下载路径已切换为高速直连，请重新点击高速直连。"
+                    "当前资源应由浏览器直接保存，请重新点击下载。"
                 );
             }
             throw new Error(
@@ -1227,50 +1230,77 @@
                 const itemNode = downloadButton.closest("[data-batch-download-item]");
                 if (
                     !itemNode
-                    || !batchDownloadRouteUrl
-                    || !batchDownloadPrepareUrl
                     || !downloadReliabilityApi
                 ) {
                     showBatchDownloadButtonMessage(downloadButton, "下载不可用");
                     return;
                 }
                 const payload = buildBatchDownloadPayload(itemNode);
-                const compatibilityMode = downloadButton.hasAttribute(
-                    "data-batch-compat-download"
-                );
-                setBatchDownloadButtonLoading(downloadButton, true, "准备下载...");
-                updateBatchDownloadProgress(downloadButton, null, "准备下载...");
-                let directLaunchContext = null;
+                const directItem = batchItemCanStreamDirect(
+                        payload.media_items[0],
+                        downloadReliabilityApi
+                    )
+                    ? payload.media_items[0]
+                    : null;
+                if (!directItem && !batchDownloadRouteUrl) {
+                    showBatchDownloadButtonMessage(downloadButton, "下载不可用");
+                    return;
+                }
+                const initialLabel = directItem
+                    ? "选择保存位置..."
+                    : "准备下载...";
+                setBatchDownloadButtonLoading(downloadButton, true, initialLabel);
+                updateBatchDownloadProgress(downloadButton, null, initialLabel);
                 try {
-                    if (
-                        !compatibilityMode
-                        && batchItemMayUseNativeOpen(
-                            payload.media_items[0],
-                            downloadReliabilityApi
-                        )
-                    ) {
-                        directLaunchContext = preopenBatchDirectContext(
-                            downloadReliabilityApi,
-                            window.open.bind(window)
-                        );
-                    }
                     const downloadSettings = {
                         reliabilityApi: downloadReliabilityApi,
-                        fetchRoute: async () => {
-                            const route = await postBatchDownloadJson(
-                                batchDownloadRouteUrl,
-                                {...payload, route_only: true}
-                            );
-                            if (
-                                directLaunchContext
-                                && route.route_type !== "direct"
-                            ) {
-                                throw new Error(
-                                    "当前资源不能高速直连，请使用兼容下载。"
-                                );
-                            }
-                            return route;
-                        },
+                        directItem,
+                        streamDirect: (item) => downloadReliabilityApi
+                            .streamBrowserDirectDownload(item, {
+                                fetch: window.fetch.bind(window),
+                                showSaveFilePicker: window.showSaveFilePicker
+                                    ? window.showSaveFilePicker.bind(window)
+                                    : null,
+                                onState: (state) => {
+                                    const states = downloadReliabilityApi.DIRECT_STATES;
+                                    const labels = {
+                                        [states.CHOOSING_DESTINATION]: "选择保存位置...",
+                                        [states.CONNECTING]: "正在连接 Provider/CDN...",
+                                        [states.WRITING]: "正在写入文件...",
+                                    };
+                                    if (labels[state]) {
+                                        setBatchDownloadButtonLoading(
+                                            downloadButton,
+                                            true,
+                                            labels[state]
+                                        );
+                                        updateBatchDownloadProgress(
+                                            downloadButton,
+                                            null,
+                                            labels[state]
+                                        );
+                                    }
+                                },
+                                onProgress: (progress) => {
+                                    if (typeof progress.percent === "number") {
+                                        updateBatchDownloadProgress(
+                                            downloadButton,
+                                            progress.percent,
+                                            `${progress.percent}%`
+                                        );
+                                    } else {
+                                        updateBatchDownloadProgress(
+                                            downloadButton,
+                                            null,
+                                            "正在写入文件..."
+                                        );
+                                    }
+                                },
+                            }),
+                        fetchRoute: () => postBatchDownloadJson(
+                            batchDownloadRouteUrl,
+                            {...payload, route_only: true}
+                        ),
                         prepare: () => prepareBatchServerDownload(
                             batchDownloadPrepareUrl,
                             payload,
@@ -1304,10 +1334,12 @@
                                     mode: "fetch_blob",
                                 }));
                             }
-                            return openBatchDirectItem(
+                            validateBatchStreamingRoute(
                                 items,
-                                directLaunchContext,
                                 downloadReliabilityApi
+                            );
+                            throw new Error(
+                                "当前资源支持浏览器下载，请重新点击下载并选择保存位置。"
                             );
                         },
                         handoffPrepared: (prepared) => {
@@ -1342,7 +1374,7 @@
                                 routing: "正在确认下载路径...",
                                 preparing: "正在签发安全下载通道...",
                                 connecting: "正在连接资源...",
-                                direct_handoff: "正在打开源站资源...",
+                                direct_handoff: "正在保存直连资源...",
                                 server_download: "正在接收文件...",
                             };
                             const label = labels[phase] || "准备下载...";
@@ -1350,17 +1382,22 @@
                             updateBatchDownloadProgress(downloadButton, null, label);
                         },
                     };
-                    const outcome = compatibilityMode
-                        ? await executeBatchCompatibilityDownload(downloadSettings)
-                        : await executeBatchDownload(downloadSettings);
+                    const outcome = await executeBatchDownload(downloadSettings);
                     setBatchDownloadButtonLoading(downloadButton, false);
-                    if (outcome.kind === "direct" && !outcome.completed) {
+                    if (outcome.cancelled) {
                         updateBatchDownloadProgress(
                             downloadButton,
                             null,
-                            "已打开原始资源；如浏览器直接播放视频，请使用浏览器的保存功能"
+                            "已取消保存位置选择"
                         );
-                        showBatchDownloadButtonMessage(downloadButton, "已打开");
+                        showBatchDownloadButtonMessage(downloadButton, "下载");
+                    } else if (outcome.kind === "direct" && outcome.completed) {
+                        updateBatchDownloadProgress(
+                            downloadButton,
+                            100,
+                            "文件已完整保存到所选位置"
+                        );
+                        showBatchDownloadButtonMessage(downloadButton, "已保存");
                     } else if (outcome.unconfirmed) {
                         updateBatchDownloadProgress(
                             downloadButton,
@@ -1386,12 +1423,6 @@
                     );
                     setBatchDownloadButtonLoading(downloadButton, false);
                     showBatchDownloadButtonMessage(downloadButton, "重新下载");
-                } finally {
-                    if (downloadReliabilityApi) {
-                        downloadReliabilityApi.closeBrowserDirectContext(
-                            directLaunchContext
-                        );
-                    }
                 }
                 return;
             }
@@ -1408,17 +1439,15 @@
 
     const testApi = Object.freeze({
         batchDirectRouteUsesBlob,
-        batchDirectRouteUsesNativeHandoff,
-        batchItemMayUseNativeOpen,
+        batchDirectRouteUsesStreaming,
+        batchItemCanStreamDirect,
         batchDownloadRouteDisposition,
         buildBatchDownloadItem,
         buildBatchDownloadPayload,
         buildEnabledPreferencePatch,
         commitEnabledParsePreferences,
-        executeBatchCompatibilityDownload,
         executeBatchDownload,
-        openBatchDirectItem,
-        preopenBatchDirectContext,
+        validateBatchStreamingRoute,
         validatedDirectRouteItems,
     });
     if (typeof module === "object" && module.exports) {

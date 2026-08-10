@@ -11,6 +11,20 @@ PROVIDER_MANIFEST_EXPIRED = "expired"
 PROVIDER_MANIFEST_INVALID = "invalid"
 
 
+def provider_manifest_max_age_seconds():
+    return max(
+        1,
+        int(
+            getattr(
+                settings,
+                "PROVIDER_MANIFEST_MAX_AGE_SECONDS",
+                3600,
+            )
+            or 3600
+        ),
+    )
+
+
 def build_provider_manifest_token(
     *,
     asset_id,
@@ -40,17 +54,7 @@ def provider_manifest_validation_status(item):
         payload = signing.loads(
             token,
             salt=PROVIDER_MANIFEST_SALT,
-            max_age=max(
-                1,
-                int(
-                    getattr(
-                        settings,
-                        "PROVIDER_MANIFEST_MAX_AGE_SECONDS",
-                        3600,
-                    )
-                    or 3600
-                ),
-            ),
+            max_age=provider_manifest_max_age_seconds(),
         )
     except signing.SignatureExpired:
         logger.info("provider_download_manifest_expired")
@@ -76,3 +80,20 @@ def provider_manifest_validation_status(item):
 
 def provider_manifest_is_valid(item):
     return provider_manifest_validation_status(item) == PROVIDER_MANIFEST_VALID
+
+
+def provider_manifest_expires_at(token):
+    """Return a verified manifest expiry timestamp without exposing its payload."""
+    value = str(token or "")
+    if not value:
+        return 0
+    signer = signing.TimestampSigner(salt=PROVIDER_MANIFEST_SALT)
+    try:
+        signer.unsign(value)
+        parts = value.rsplit(signer.sep, 2)
+        if len(parts) != 3:
+            return 0
+        issued_at = signing.b62_decode(parts[1])
+    except (signing.BadSignature, TypeError, ValueError):
+        return 0
+    return int(issued_at) + provider_manifest_max_age_seconds()

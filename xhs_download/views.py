@@ -103,6 +103,7 @@ from .services.download_routing import (
     ROUTE_PROXY,
     ROUTE_ZIP,
     decide_download_route,
+    item_can_browser_streaming_direct,
     request_is_mobile,
 )
 from .services.downloads import (
@@ -128,6 +129,7 @@ from .services.downloads import (
 from .services.platforms.douyin_kukutool import (
     get_kukutool_provider_health,
     is_byte_cdn_url,
+    parse_byte_cdn_url,
     set_kukutool_admin_disabled,
 )
 from .services.platforms.gallerydl_generic import GalleryDlGenericProvider
@@ -168,6 +170,7 @@ from .services.registry import get_adapter_for_url, parse_media_page
 from .services.provider_manifest import (
     PROVIDER_MANIFEST_EXPIRED,
     build_provider_manifest_token,
+    provider_manifest_expires_at,
     provider_manifest_validation_status,
 )
 from .services.observability import (
@@ -3849,16 +3852,41 @@ def build_image_item(asset, result):
     }
 
 
+def browser_direct_expiry_timestamp(item):
+    expiries = []
+    manifest_expiry = provider_manifest_expires_at(
+        item.get("provider_manifest_token")
+    )
+    if manifest_expiry:
+        expiries.append(manifest_expiry)
+    if is_byte_cdn_url(item.get("url")):
+        resource_expiry = int(
+            parse_byte_cdn_url(item.get("url")).get("expires_at") or 0
+        )
+        if resource_expiry:
+            expiries.append(resource_expiry)
+    return min(expiries) if expiries else 0
+
+
+def browser_direct_filename(asset, result):
+    raw_name = str(asset.filename or result.base_filename or "video").strip()
+    if Path(raw_name).suffix:
+        return clean_filename(raw_name)
+    extension = str(asset.ext or "mp4").strip().lstrip(".") or "mp4"
+    return clean_filename(f"{raw_name}.{extension}")
+
+
 def build_video_item(asset, result, *, probe_missing_size=True):
     size_bytes, size_is_estimate = get_video_size_details(
         asset,
         probe_missing=probe_missing_size,
     )
-    return {
+    item = {
         **asset.to_download_item(),
         **build_asset_strategy_fields(asset, result),
         "type": "video",
         "video_url": asset.url,
+        "filename": browser_direct_filename(asset, result),
         "cover_url": asset.cover_url,
         "size_bytes": size_bytes,
         "size_label": format_file_size(size_bytes),
@@ -3879,6 +3907,20 @@ def build_video_item(asset, result, *, probe_missing_size=True):
             "cover",
         ),
     }
+    streaming_direct_safe = item_can_browser_streaming_direct(item)
+    item.update(
+        browser_streaming_direct_capable=streaming_direct_safe,
+        browser_direct_handoff_version=2 if streaming_direct_safe else 0,
+        browser_direct_delivery_mode=(
+            "filesystem_stream" if streaming_direct_safe else ""
+        ),
+        browser_direct_expires_at=(
+            browser_direct_expiry_timestamp(item)
+            if streaming_direct_safe
+            else 0
+        ),
+    )
+    return item
 
 
 def build_result_display_context(
@@ -5099,10 +5141,15 @@ def download_prepare_api(request):
         route_info.get("route_type") != ROUTE_PROXY
         or route_info.get("download_strategy") != "server_single_attachment"
     ):
+        route_error_code = route_info.get("error_code")
         return download_guard_error_response(
-            "当前资源不支持服务器单文件下载。",
+            route_info.get("route_reason")
+            if route_error_code
+            else "当前资源不支持服务器单文件下载。",
             status=400,
-            error_code="DOWNLOAD_PREPARE_ROUTE_REJECTED",
+            error_code=(
+                route_error_code or "DOWNLOAD_PREPARE_ROUTE_REJECTED"
+            ),
         )
 
     try:

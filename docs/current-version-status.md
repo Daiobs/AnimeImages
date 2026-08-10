@@ -1,11 +1,11 @@
 # Current Version Status
 
-Date: 2026-08-10
+Date: 2026-08-11
 
 Last Audited Runtime Baseline:
 
 ```text
-6b1787f Make release Git state read-only (#18)
+23bcd9e Fix browser-direct native launch behavior (#31)
 ```
 
 This is the application runtime baseline used for this documentation audit. It is not a real-time pointer to `main`. Read the current remote baseline with:
@@ -21,45 +21,44 @@ Production site:
 https://download.cosflow.icu/
 ```
 
-## Browser Direct State And Unreleased Launch Hotfix
+## Browser Streaming Direct v2 Candidate
 
-The current Browser Direct baseline and the unreleased
-`codex/browser-direct-native-launch-hotfix-v1` branch use this download
+The unreleased `codex/browser-streaming-direct-download-v2` branch uses this
 architecture north star:
 
-> Server is the download control plane, not the default media data plane.
+> AnimeImages is the media resolution and handoff control plane, not a media relay service.
 
-AnimeImages continues to parse, authorize, validate Provider manifests, choose
-the route, and issue the handoff. For a manifest-validated TianTianJieXi video,
-and for KuKuTool when its runtime delivery mode is `browser_first`, the normal
-media-byte path becomes Provider/CDN to browser rather than Provider/CDN to
-AnimeImages to browser. The final signed Provider/CDN URL may therefore be
-visible in browser Network tools; public raw-link UI and exports remain
-staff-only.
+AnimeImages parses platforms, selects high-quality resources, applies Provider
+and access controls, validates signed manifests, and issues a bounded handoff
+descriptor. For a manifest-validated TianTianJieXi MP4, and for KuKuTool when
+its runtime mode authorizes the same capability, the media body follows:
 
-The candidate separates two capabilities that CORS cannot safely conflate:
+```text
+Provider/CDN -> Browser fetch -> FileSystemWritableFileStream -> Disk
+```
 
-- Native handoff uses visible browser navigation and does not require
-  JavaScript fetch CORS permission. When the CDN serves inline media, the UI
-  reports a visible source open rather than claiming a download item exists.
-- Fetch/Blob is limited to explicitly CORS-safe resources with a known size no
-  greater than 32 MiB. Large and unknown-size videos are never Blob-first.
+The first click opens the save picker before any network request. The browser
+then reads `response.body` incrementally and writes each chunk to disk without
+building a whole-file Blob. Completion requires normal response EOF, a closed
+writer, and exact byte equality when a reliable size is known. Picker
+cancellation is neutral and starts no CDN request.
 
-Direct routing still requires the existing Provider identity, resource ID,
-cache key, signed manifest, allowed host and scheme, public address, media type,
-and expected-resource validation. Cookie-bound, merge-required, server-only,
-or otherwise non-handoff-safe resources retain the bounded server path. Single
-and Batch pages consume the same server route decision.
+Single and Batch use the same state machine and present one action named
+`下载`. A direct-capable ordinary video does not call `/media/download-prepare/`,
+`/media/download-stream/`, or `/media/download-status/`. Direct failure offers
+only another Browser Direct attempt or a fresh parse; routing and Policy Engine
+decisions cannot move that video onto the AnimeImages media data plane.
 
-Direct observability means `route_selected` on the control plane, followed by
-a browser launch request; neither state claims that a download item started or
-that the file completed. The hotfix preopens a visible tab during the user
-gesture and navigates it only after the server validates the Direct route.
-Server relay is a separate explicit compatibility action. For that retained
-relay path, `DownloadRequestLog.success` is written only after the stream
-iterator exhausts normally, and `actual_bytes` is the number of bytes actually
-yielded. Early close and generator/upstream errors are failures, never
-successful completion.
+Server-side media code remains for different output types: audio/video merge,
+multi-resource ZIP, server-generated files, and resources whose required
+Cookie/header contract cannot be satisfied by the browser. Those paths are not
+fallbacks for an ordinary Browser Direct video.
+
+Direct eligibility still requires Provider identity, resource ID, cache key,
+signed manifest, allowed scheme and host, public-address checks, media type,
+expected-resource validation, no merge requirement, and no Cookie requirement.
+The final approved CDN URL is necessarily visible to the browser during its
+fetch; public raw-link UI and exports remain staff-only.
 
 This candidate does not change Gunicorn, Provider parsing order or timeouts,
 permissions, migrations, Nginx, systemd, or production configuration. It has
@@ -316,7 +315,7 @@ Production does not currently use `/run/animeimages/gunicorn.sock`. A systemd-ma
 | Area | Current path | Notes |
 | --- | --- | --- |
 | Xiaohongshu images | Dedicated adapter | Preserve original bytes; no needless transcode. |
-| Xiaohongshu video | Dedicated adapter + download strategy | Server fallback remains important for reliability. |
+| Xiaohongshu video | Dedicated adapter + capability-based download strategy | A server path is a distinct retrieval type only when required headers/Cookie make Browser Direct unavailable; it is not a Direct fallback. |
 | Douyin normal | Native adapter/provider path | Expected baseline is stable 1080p/public source when available. |
 | Douyin ultra | TianTianJieXi + KuKuTool + native race/fallback | TianTianJieXi should get fair race budget; KuKuTool is not disabled. |
 | Bilibili | Dedicated baseline adapter | High-quality DASH/cookie path deferred. |
@@ -502,7 +501,7 @@ curl -i https://download.cosflow.icu/health/ready/
 ## Known Issues
 
 1. Browser-first/provider download behavior differs between localhost and HTTPS production. Always verify both if touching download handoff code.
-2. Server attachment fallback is stable but consumes VPS egress and can be slower than third-party browser handoff.
+2. Server attachment remains available only for non-Direct output types such as merge, ZIP, server-generated files, or browser-incompatible header/Cookie retrieval. It consumes VPS egress and must not be used as a fallback for an ordinary Browser Direct video.
 3. yt-dlp/YouTube merge can be slow and large; public exposure should remain gated until queue/progress behavior is proven.
 4. Bilibili high quality remains deferred because it commonly requires Cookie, DASH merge, and entitlements.
 5. Some historical docs describe policy/autonomous/KuKuTool/TikHub plans that are not the active production path. Use `docs/codex-handoff.md` and this file as the source of truth.
