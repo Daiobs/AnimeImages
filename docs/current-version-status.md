@@ -61,6 +61,38 @@ This candidate does not change Gunicorn, Provider parsing order or timeouts,
 permissions, migrations, Nginx, systemd, or production configuration. It has
 not been deployed.
 
+## Unreleased Web Concurrency And Provider Isolation Candidate
+
+The stacked `codex/web-concurrency-provider-isolation-v1` branch adds a
+repository-controlled Gunicorn candidate at `ops/systemd/animeimages.service`:
+
+```text
+worker_class = gthread
+workers = 2
+threads = 4
+timeout = 60
+```
+
+This increases synchronous Django I/O capacity without changing the existing
+request timeout. It does not increase TianTianJieXi capacity. Every real
+TianTianJieXi parse from Single, Batch, or a Provider race must acquire the
+same Redis-backed global lease, whose effective maximum is fixed at one.
+Payload cache hits do not acquire it. A busy caller waits no more than the
+configured short interval, capped at 250 ms, records `provider_busy` without a
+source URL, and continues through the existing Provider fallback chain.
+
+The lease uses atomic cache add, an owner token, Redis compare-and-delete on
+release, and a bounded TTL. A crashed worker therefore cannot retain the slot
+forever, and an expired old owner cannot delete a newer lease. Cold account
+status refresh has a separate lease and cache; it never consumes the parse
+slot. Production TianTianJieXi configuration requires the shared Redis cache
+backend and fails closed when that boundary is unavailable.
+
+The tracked systemd unit is a candidate, not evidence of the current server
+unit. Until a separately approved rollout compares and installs it,
+`PRODUCTION_UNIT_DRIFT` remains expected. No production unit, Nginx setting,
+environment, database, or Provider timeout has been changed by this branch.
+
 ## Unreleased Batch Runtime Admin Clarity Candidate
 
 The `codex/batch-runtime-admin-clarity-v1` branch improves only the Django

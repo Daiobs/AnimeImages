@@ -1,9 +1,10 @@
 import logging
+import math
 import time
 from urllib.parse import parse_qs, urlsplit
-from uuid import uuid4
 
 import requests
+from django.conf import settings
 from django.core.cache import cache
 
 from ..assets import MediaAsset, ParseResult
@@ -15,7 +16,11 @@ from ..env_config import (
     runtime_str,
 )
 from ..provider_manifest import build_provider_manifest_token
-from ..rate_limits import acquire_concurrency, consume_fixed_window, release_concurrency
+from ..provider_concurrency import (
+    TIANTIANJIEXI_PARSE_LEASE_KEY,
+    acquire_cache_lease,
+)
+from ..rate_limits import consume_fixed_window
 from .kukutool_generic import (
     canonicalize_source_url,
     integer_value,
@@ -29,6 +34,7 @@ logger = logging.getLogger(__name__)
 PROVIDER_ID = "tiantianjiexi_generic"
 PROVIDER_LABEL = "天天解析"
 ACCOUNT_STATUS_CACHE_KEY = "third-party:tiantianjiexi:account-status"
+ACCOUNT_STATUS_REFRESH_LEASE_KEY = "provider-lease:tiantianjiexi:account-status"
 FAILURE_HIT_COUNT_KEY = "third-party:tiantianjiexi:failure-hit-count"
 
 
@@ -41,6 +47,10 @@ class TianTianJieXiAuthError(TianTianJieXiApiError):
 
 
 class TianTianJieXiRateLimitError(TianTianJieXiApiError):
+    pass
+
+
+class TianTianJieXiProviderBusyError(TianTianJieXiApiError):
     pass
 
 
@@ -62,6 +72,35 @@ def build_circuit_open_key():
 
 def build_circuit_failure_key(window):
     return f"third-party:tiantianjiexi:circuit:failures:{window}"
+
+
+def require_cross_process_provider_lease():
+    return bool(
+        getattr(settings, "REQUIRE_PRODUCTION_CONFIG", not settings.DEBUG)
+    )
+
+
+def parse_lease_ttl_seconds(timeout_seconds):
+    configured = runtime_int("TIANTIANJIEXI_GLOBAL_LEASE_TTL_SECONDS", 30)
+    assigned_budget = max(0.1, float(timeout_seconds or 0.0))
+    request_timeout = min(
+        assigned_budget,
+        max(0.1, runtime_float("TIANTIANJIEXI_TIMEOUT_SECONDS", 15)),
+    )
+    return min(
+        120,
+        max(
+            5,
+            math.ceil(assigned_budget) + 5,
+            math.ceil(request_timeout * 2) + 5,
+            configured,
+        ),
+    )
+
+
+def parse_lease_wait_seconds(timeout_seconds):
+    configured = runtime_float("TIANTIANJIEXI_GLOBAL_SLOT_WAIT_SECONDS", 0.05)
+    return min(0.25, max(0.0, float(timeout_seconds or 0)), max(0.0, configured))
 
 
 def provider_configured():
@@ -322,34 +361,50 @@ class TianTianJieXiApiClient:
             cached = cache.get(ACCOUNT_STATUS_CACHE_KEY)
             if isinstance(cached, dict):
                 return {**cached, "cached": True}
-        timeout = runtime_float("TIANTIANJIEXI_TIMEOUT_SECONDS", 15)
-        try:
-            response = self.session.get(
-                self.base_url,
-                params={
-                    "action": "query",
-                    "phone": self.phone,
-                    "password": self.password,
-                },
-                timeout=max(0.1, min(timeout, 5.0)),
-            )
-            response.raise_for_status()
-            payload = response.json()
-            status = {
-                "available": True,
-                "cached": False,
-                "metadata": safe_metadata_value(payload),
-            }
-        except Exception as error:
-            status = {
+        refresh_lease_attempt = acquire_cache_lease(
+            ACCOUNT_STATUS_REFRESH_LEASE_KEY,
+            ttl_seconds=10,
+            wait_seconds=0,
+            require_cross_process=require_cross_process_provider_lease(),
+        )
+        if not refresh_lease_attempt.acquired:
+            return {
                 "available": False,
                 "cached": False,
-                "error_type": type(error).__name__,
-                "error": "account_status_unavailable",
+                "error_type": "TianTianJieXiProviderBusyError",
+                "error": "account_status_refresh_busy",
             }
-        if ttl_seconds > 0:
-            cache.set(ACCOUNT_STATUS_CACHE_KEY, status, timeout=ttl_seconds)
-        return status
+        timeout = runtime_float("TIANTIANJIEXI_TIMEOUT_SECONDS", 15)
+        try:
+            try:
+                response = self.session.get(
+                    self.base_url,
+                    params={
+                        "action": "query",
+                        "phone": self.phone,
+                        "password": self.password,
+                    },
+                    timeout=max(0.1, min(timeout, 5.0)),
+                )
+                response.raise_for_status()
+                payload = response.json()
+                status = {
+                    "available": True,
+                    "cached": False,
+                    "metadata": safe_metadata_value(payload),
+                }
+            except Exception as error:
+                status = {
+                    "available": False,
+                    "cached": False,
+                    "error_type": type(error).__name__,
+                    "error": "account_status_unavailable",
+                }
+            if ttl_seconds > 0:
+                cache.set(ACCOUNT_STATUS_CACHE_KEY, status, timeout=ttl_seconds)
+            return status
+        finally:
+            refresh_lease_attempt.lease.release()
 
 
 class TianTianJieXiGenericProvider:
@@ -450,13 +505,6 @@ class TianTianJieXiGenericProvider:
             time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
         return self.get_cached_payload(source_key)
 
-    def release_single_flight(self, lock_key, lock_token):
-        try:
-            if lock_key and cache.get(lock_key) == lock_token:
-                cache.delete(lock_key)
-        except Exception:
-            logger.exception("tiantianjiexi_single_flight_release_failed", extra={"provider": PROVIDER_ID})
-
     def parse(self, url, timeout_seconds=None):
         if not provider_configured():
             raise TianTianJieXiAuthError("天天解析 Provider 未启用或账号未配置")
@@ -469,26 +517,71 @@ class TianTianJieXiGenericProvider:
         if self.failure_cache_hit(source_key):
             raise XhsProviderTimeoutError("天天解析刚刚失败，请稍后再试")
 
-        timeout_seconds = float(timeout_seconds if timeout_seconds is not None else runtime_float("THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS", 3.0) or 3.0)
+        timeout_seconds = max(
+            0.1,
+            float(
+                timeout_seconds
+                if timeout_seconds is not None
+                else runtime_float("THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS", 3.0)
+                or 3.0
+            ),
+        )
+        deadline = time.monotonic() + timeout_seconds
         lock_key = build_single_flight_key(source_key)
-        lock_token = uuid4().hex
         lock_ttl = max(
             int(timeout_seconds) + 5,
             runtime_int("TIANTIANJIEXI_TIMEOUT_SECONDS", 15) + 5,
         )
-        try:
-            lock_acquired = cache.add(lock_key, lock_token, timeout=lock_ttl)
-        except Exception:
-            logger.exception("tiantianjiexi_single_flight_acquire_failed", extra={"provider": PROVIDER_ID})
-            lock_acquired = True
-        if not lock_acquired:
-            cached = self.wait_for_cached_payload(source_key, timeout_seconds)
+        single_flight_attempt = acquire_cache_lease(
+            lock_key,
+            ttl_seconds=lock_ttl,
+            wait_seconds=0,
+            require_cross_process=False,
+        )
+        if not single_flight_attempt.acquired:
+            cached = self.wait_for_cached_payload(
+                source_key,
+                min(max(0.0, deadline - time.monotonic()), 0.2),
+            )
             if cached:
                 return cached
-            raise XhsProviderTimeoutError("天天解析正在处理中，请稍后重试同一链接。")
+            logger.info(
+                "provider_busy",
+                extra={
+                    "provider": PROVIDER_ID,
+                    "busy_scope": "same_source",
+                    "busy_reason": single_flight_attempt.reason,
+                    "waited_ms": single_flight_attempt.waited_ms,
+                },
+            )
+            raise TianTianJieXiProviderBusyError(
+                "天天解析正在处理同一链接，已切换备用解析。"
+            )
 
-        concurrency_acquired = False
+        parse_lease_attempt = None
         try:
+            remaining_for_slot = max(0.0, deadline - time.monotonic())
+            parse_lease_attempt = acquire_cache_lease(
+                TIANTIANJIEXI_PARSE_LEASE_KEY,
+                ttl_seconds=parse_lease_ttl_seconds(timeout_seconds),
+                wait_seconds=parse_lease_wait_seconds(remaining_for_slot),
+                require_cross_process=require_cross_process_provider_lease(),
+            )
+            if not parse_lease_attempt.acquired:
+                logger.info(
+                    "provider_busy",
+                    extra={
+                        "provider": PROVIDER_ID,
+                        "busy_scope": "global_parse",
+                        "busy_reason": parse_lease_attempt.reason,
+                        "waited_ms": parse_lease_attempt.waited_ms,
+                        "lease_ttl_seconds": parse_lease_ttl_seconds(timeout_seconds),
+                        "shared_backend": parse_lease_attempt.shared_backend,
+                    },
+                )
+                raise TianTianJieXiProviderBusyError(
+                    "天天解析当前繁忙，已切换备用解析。"
+                )
             request_limit = consume_fixed_window(
                 "third-party-tiantianjiexi",
                 "all",
@@ -497,17 +590,8 @@ class TianTianJieXiGenericProvider:
             )
             if not request_limit.allowed:
                 raise TianTianJieXiRateLimitError("天天解析请求频率受限")
-            concurrency = acquire_concurrency(
-                "third-party-tiantianjiexi-global",
-                "all",
-                runtime_int("TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY", 2),
-            )
-            if not concurrency.allowed:
-                raise TianTianJieXiRateLimitError("天天解析并发受限")
-            concurrency_acquired = True
 
             attempts = max(1, runtime_int("TIANTIANJIEXI_RETRIES", 2))
-            deadline = time.monotonic() + max(0.1, timeout_seconds)
             last_error = None
             for attempt in range(attempts):
                 try:
@@ -534,14 +618,17 @@ class TianTianJieXiGenericProvider:
                     if attempt >= attempts - 1:
                         raise
             raise last_error or TianTianJieXiApiError("天天解析失败")
+        except TianTianJieXiProviderBusyError:
+            raise
         except Exception as error:
             self.cache_failure(source_key, type(error).__name__)
             self.record_failure()
             raise
         finally:
-            if concurrency_acquired:
-                release_concurrency("third-party-tiantianjiexi-global", "all")
-            self.release_single_flight(lock_key, lock_token)
+            if parse_lease_attempt and parse_lease_attempt.lease:
+                parse_lease_attempt.lease.release()
+            if single_flight_attempt.lease:
+                single_flight_attempt.lease.release()
 
     def query_account_status(self):
         return self.client.query_account_status()

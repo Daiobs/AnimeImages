@@ -153,7 +153,8 @@ Add `gunicorn` to dependencies when a deployment target is chosen.
 
 The current production service runs Gunicorn as `www-data`, binds TCP `127.0.0.1:8000`, and receives traffic from Nginx on that local address. The application checkout remains owned by `ubuntu:ubuntu`.
 
-Current systemd shape:
+Last audited production systemd shape (the tracked gthread candidate is not yet
+installed):
 
 ```ini
 [Service]
@@ -162,10 +163,16 @@ Group=www-data
 WorkingDirectory=/srv/animeimages
 EnvironmentFile=/srv/animeimages/.env.production
 UMask=0007
-ExecStart=/srv/animeimages/.venv/bin/gunicorn djangoProject.wsgi:application --bind 127.0.0.1:8000 --workers 2 --timeout 120
+ExecStart=/srv/animeimages/.venv/bin/gunicorn djangoProject.wsgi:application --bind 127.0.0.1:8000 --workers 2 --timeout 60
 Restart=on-failure
 RestartSec=5
 ```
+
+The repository-controlled rollout candidate is
+`ops/systemd/animeimages.service`, which keeps two workers and the 60-second
+timeout while adding `--worker-class gthread --threads 4`. Until a separately
+approved maintenance operation validates and installs that file, report the
+difference as `PRODUCTION_UNIT_DRIFT`; do not describe gthread as deployed.
 
 Gunicorn runs as `www-data`, while the application checkout remains owned by `ubuntu:ubuntu`. The Web process needs read access to application files and approved local Git refs, but it must not own the checkout, run `git fetch`, or receive the production deploy key.
 
