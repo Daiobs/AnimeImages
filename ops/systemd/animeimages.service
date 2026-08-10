@@ -1,0 +1,19 @@
+[Unit]
+Description=AnimeImages Django application
+After=network.target postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/srv/animeimages
+EnvironmentFile=/srv/animeimages/.env.production
+UMask=0007
+ExecStart=/srv/animeimages/.venv/bin/gunicorn djangoProject.wsgi:application --bind 127.0.0.1:8000 --worker-class gthread --workers 2 --threads 4 --timeout 60 --access-logfile - --error-logfile -
+Restart=on-failure
+RestartSec=5
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

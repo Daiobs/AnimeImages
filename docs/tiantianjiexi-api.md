@@ -180,7 +180,9 @@ TIANTIANJIEXI_PAYLOAD_CACHE_TTL_SECONDS=120
 TIANTIANJIEXI_FAILURE_CACHE_TTL_SECONDS=30
 TIANTIANJIEXI_ACCOUNT_STATUS_CACHE_TTL_SECONDS=300
 TIANTIANJIEXI_HEALTH_QUERY_ACCOUNT_STATUS_ENABLED=True
-TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY=2
+TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY=1
+TIANTIANJIEXI_GLOBAL_LEASE_TTL_SECONDS=30
+TIANTIANJIEXI_GLOBAL_SLOT_WAIT_SECONDS=0.05
 TIANTIANJIEXI_REQUEST_LIMIT_PER_MINUTE=20
 BATCH_PARSE_TIANTIAN_PARALLEL_WORKERS=1
 BATCH_PARSE_MAX_RESPONSE_TIMEOUT_SECONDS=55
@@ -205,6 +207,14 @@ KuKuTool and the interactive page submits one independently bounded item at a
 time, displaying its card before starting the next item. The no-JavaScript
 fallback also caps TianTianJieXi scheduling to one worker and can fall back to
 native parsing.
+
+All real TianTianJieXi parse calls share one Redis-backed lease across Single,
+Batch, worker processes, and provider-race threads. Cache hits do not take the
+lease. A busy lease is checked only for a short bounded interval before the
+caller continues through the existing fallback chain with a `provider_busy`
+diagnostic. The lease token has a TTL and is deleted with an ownership check,
+so a stale worker cannot delete a newer owner's lease. Production must use the
+shared Redis cache backend when TianTianJieXi is enabled.
 TianTianJieXi results must be normalized by expanding nested `streams[]`
 candidates before ranking.
 

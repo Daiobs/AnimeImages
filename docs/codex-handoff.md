@@ -319,6 +319,23 @@ approved deployment task, the production site. Do not assume localhost
 download behavior matches HTTPS production behavior. Do not infer fetch CORS
 support from a successful native browser navigation.
 
+### Web Concurrency Candidate
+
+The stacked `codex/web-concurrency-provider-isolation-v1` candidate tracks a
+`2 workers x 4 gthread` Gunicorn unit with the existing 60-second timeout in
+`ops/systemd/animeimages.service`. Web concurrency and Provider concurrency are
+separate: Single, Batch, and Provider-race TianTianJieXi calls share one
+cross-process Redis lease, so at most one real parse request reaches that
+upstream. Cache hits bypass the lease; a busy caller waits at most 250 ms and
+falls through the existing provider chain with a URL-free `provider_busy`
+event. The token-owned lease has a TTL and compare-and-delete release.
+
+Production must use Redis when TianTianJieXi is enabled. LocMem is only a
+single-process development fallback and is rejected by the production system
+check. The tracked unit has not been installed, so treat the current server as
+`PRODUCTION_UNIT_DRIFT` until an explicitly approved rollout verifies the live
+unit. Do not mutate production from a feature PR.
+
 ## Production Deployment Notes
 
 Production should run with:

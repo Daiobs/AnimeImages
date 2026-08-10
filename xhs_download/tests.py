@@ -1806,7 +1806,7 @@ class TianTianJieXiProviderTests(TestCase):
     )
     @patch(
         "xhs_download.services.platforms.tiantianjiexi_generic.time.monotonic",
-        side_effect=(100.0, 101.0, 106.0),
+        side_effect=(100.0, 100.0, 101.0, 106.0),
     )
     def test_tiantianjiexi_timeout_budget_is_total_not_per_attempt(self, _mock_monotonic):
         class TimeoutClient:
