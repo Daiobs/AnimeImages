@@ -62,15 +62,25 @@
                         type="button"
                         class="btn btn-brand btn-sm"
                         id="download-btn"
-                        title="下载选中资源：图片/单视频优先浏览器下载，多资源自动打包 ZIP"
+                        title="下载选中资源"
                     >
                         <i class="bi bi-download me-1"></i>
-                        下载选中资源
+                        <span data-download-label>下载选中资源</span>
+                    </button>
+                    <button
+                        type="button"
+                        class="btn btn-outline-secondary btn-sm"
+                        id="compat-download-btn"
+                        title="通过 AnimeImages 服务器中转单个视频"
+                        hidden
+                    >
+                        <i class="bi bi-hdd-network me-1"></i>
+                        兼容下载
                     </button>
                 </div>
 
                 <div class="download-action-help small text-muted">
-                    图片优先浏览器直链；单视频优先直接下载；多图、多资源或需合并/恢复的 Provider 资源自动使用服务端处理。
+                    高速直连会在新标签页从源站打开视频；兼容下载会通过服务器中转，可能受服务器线路和带宽影响。
                 </div>
             </div>
         </div>

@@ -9,6 +9,7 @@
 }(typeof window !== "undefined" ? window : globalThis, function () {
     const ERROR_MESSAGES = Object.freeze({
         DOWNLOAD_HANDOFF_EXPIRED: "下载链接已过期，请重新点击下载。",
+        PROVIDER_MANIFEST_EXPIRED: "解析结果已过期，请重新解析后下载。",
         PROXY_FAILED_RECOVERY_BLOCKED: "资源连接失败，自动恢复未成功，请重新解析后再试。",
         RATE_LIMIT_CACHE_ERROR: "下载状态服务暂时不可用，请稍后再试。",
         UPSTREAM_SSL_ERROR: "上游资源连接异常，请稍后重试。",
@@ -35,6 +36,9 @@
     const MAX_STATUS_POLL_DURATION_MS = 15000;
     const MAX_STATUS_POLL_COUNT = 30;
     const BROWSER_DIRECT_FETCH_BLOB_MAX_BYTES = 32 * 1024 * 1024;
+    const DIRECT_ROUTE_SELECTED = "DIRECT_ROUTE_SELECTED";
+    const DIRECT_LAUNCH_ISSUED = "DIRECT_LAUNCH_ISSUED";
+    const DIRECT_DOWNLOAD_STARTED = "DIRECT_DOWNLOAD_STARTED";
 
     function booleanValue(value) {
         return value === true || String(value || "").toLowerCase() === "true";
@@ -60,6 +64,111 @@
             && !booleanValue(item.requires_merge)
             && !booleanValue(item.requires_cookie)
         );
+    }
+
+    function browserNativeOpenCandidate(item) {
+        if (!item || typeof item !== "object") {
+            return false;
+        }
+        return Boolean(
+            String(item.type || "").toLowerCase() === "video"
+            && booleanValue(item.browser_native_handoff_capable)
+            && !booleanValue(item.requires_merge)
+            && !booleanValue(item.requires_cookie)
+        );
+    }
+
+    function directLaunchError(message, errorCode) {
+        const error = new Error(message);
+        error.errorCode = errorCode;
+        return error;
+    }
+
+    function preopenBrowserDirectContext(openWindow) {
+        const opener = typeof openWindow === "function" ? openWindow : null;
+        if (!opener) {
+            return {ok: false, target: null, issued: false};
+        }
+        let target = null;
+        try {
+            target = opener("about:blank", "_blank");
+            if (target) {
+                target.opener = null;
+            }
+        } catch (error) {
+            target = null;
+        }
+        return {
+            ok: Boolean(target),
+            target,
+            issued: false,
+        };
+    }
+
+    function closeBrowserDirectContext(context) {
+        if (!context || !context.target || context.issued) {
+            return false;
+        }
+        try {
+            if (!context.target.closed && typeof context.target.close === "function") {
+                context.target.close();
+            }
+        } catch (error) {
+            return false;
+        }
+        return true;
+    }
+
+    function issueBrowserDirectOpen(context, item) {
+        if (!context || !context.ok || !context.target) {
+            throw directLaunchError(
+                "浏览器阻止了新标签页，请允许弹出窗口后重试，或使用兼容下载。",
+                "DIRECT_POPUP_BLOCKED",
+            );
+        }
+        if (!browserNativeHandoffSafe(item)) {
+            throw directLaunchError(
+                "当前资源没有经过验证的浏览器高速直连能力。",
+                "DIRECT_ROUTE_NOT_VALIDATED",
+            );
+        }
+        let parsed;
+        try {
+            parsed = new URL(String(item.url || ""));
+        } catch (error) {
+            throw directLaunchError(
+                "下载路由返回了无效资源。",
+                "DIRECT_URL_INVALID",
+            );
+        }
+        if (!["http:", "https:"].includes(parsed.protocol)) {
+            throw directLaunchError(
+                "下载路由返回了无效资源。",
+                "DIRECT_URL_INVALID",
+            );
+        }
+        try {
+            context.target.location.replace(parsed.href);
+        } catch (error) {
+            throw directLaunchError(
+                "浏览器未能打开原始资源，请重试或使用兼容下载。",
+                "DIRECT_LAUNCH_FAILED",
+            );
+        }
+        context.issued = true;
+        try {
+            if (typeof context.target.focus === "function") {
+                context.target.focus();
+            }
+        } catch (error) {
+            // Navigation was issued successfully; focus is best-effort only.
+        }
+        return {
+            state: DIRECT_LAUNCH_ISSUED,
+            mode: "native_open",
+            completed: false,
+            downloadStarted: false,
+        };
     }
 
     function browserDirectFetchBlobSafe(item) {
@@ -333,6 +442,9 @@
     return Object.freeze({
         DEFAULT_STATUS_POLL_INTERVAL_MS,
         BROWSER_DIRECT_FETCH_BLOB_MAX_BYTES,
+        DIRECT_DOWNLOAD_STARTED,
+        DIRECT_LAUNCH_ISSUED,
+        DIRECT_ROUTE_SELECTED,
         DOWNLOAD_STATUS_POLL_TIMEOUT_MESSAGE,
         DOWNLOAD_STATUS_STATES,
         ERROR_MESSAGES,
@@ -341,12 +453,16 @@
         browserDirectFetchSafe,
         browserDirectFetchBlobSafe,
         browserNativeHandoffSafe,
+        browserNativeOpenCandidate,
+        closeBrowserDirectContext,
         downloadStartDisposition,
         errorMessage,
         isDownloadStartTerminal,
         parseDownloadStatusPayload,
         parsePreparePayload,
         pollDownloadStatus,
+        preopenBrowserDirectContext,
+        issueBrowserDirectOpen,
         shouldUsePreparedServerDownload,
     });
 }));

@@ -244,25 +244,30 @@ signed URL is visible in browser Network tools; that does not permit public
 raw-link buttons or exports.
 
 - Browser native handoff and browser fetch/Blob are separate capabilities.
-  Native navigation does not require fetch CORS. Fetch/Blob is allowed only for
-  explicitly CORS-safe resources with a known size of at most 32 MiB.
+  Visible native navigation does not require fetch CORS. Fetch/Blob is allowed
+  only for explicitly CORS-safe resources with a known size of at most 32 MiB.
 - Manifest-validated TianTianJieXi videos prefer native browser handoff.
   KuKuTool does the same only in its `browser_first` runtime mode; its explicit
   server-stream/server-only modes continue to use relay.
-- Large or unknown-size videos must not use Blob-first. Native handoff leaves
-  transfer progress and completion to the browser download manager.
+- Large or unknown-size videos must not use Blob-first. If the CDN serves media
+  inline, native handoff opens a visible source tab and must not claim that a
+  browser download item started or completed.
 - Direct remains subject to Provider identity, resource ID, cache key, signed
   manifest, scheme, host allowlist, private-address rejection, media type, and
   expected-resource checks. CORS failure alone is not a relay reason.
 - Explicit relay reasons include cookie-bound resources, merge requirements,
   server-only Provider behavior, and a browser handoff that cannot be safely
-  authorized. Relay is a fallback, not the default way to hide a signed URL.
+  authorized. For Direct-capable inline media, relay is available only through
+  the separately labeled compatibility action; Direct failure never silently
+  changes the next click into relay.
 - Single-result and Batch pages use the same route contract. Allowed public
   users may invoke validated downloads, while raw-link copy/open/export UI
   remains staff-only.
 - A Direct response records only a successful routing decision and emits a
   `route_selected` structured event. It does not create a completed-download
   record because the server cannot observe browser completion.
+- Expired Provider manifests use a distinct reparse message. Invalid, payload-
+  mismatched, and forged manifests remain security rejections.
 - A retained server stream writes `DownloadRequestLog.success` only when its
   iterator exhausts normally. `actual_bytes` counts bytes actually yielded;
   disconnects and generator/upstream errors are failures.

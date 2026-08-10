@@ -421,7 +421,7 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
         ):
             return route_payload(
                 route_type=ROUTE_DIRECT,
-                route_reason="单个视频资源优先使用浏览器直连下载，减少服务器中转等待",
+                route_reason="单个视频资源优先使用浏览器高速直连，减少服务器中转等待",
                 download_strategy="browser_direct_provider_video",
                 media_items=normalized_items,
                 estimated_bytes=estimated_bytes,
@@ -486,7 +486,7 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
         if single_video_prefers_browser_direct(normalized_items[0]):
             return route_payload(
                 route_type=ROUTE_DIRECT,
-                route_reason="Provider 视频优先交给浏览器下载管理器，减少服务器中转等待",
+                route_reason="Provider 视频优先在浏览器中打开源站资源，减少服务器中转等待",
                 download_strategy="browser_direct_provider_video",
                 media_items=normalized_items,
                 estimated_bytes=estimated_bytes,

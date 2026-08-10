@@ -1,6 +1,8 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const test = require("node:test");
 const batch = require("../static/js/batch_parse.js");
 const reliability = require("../static/js/download_reliability.js");
@@ -42,6 +44,7 @@ test("Batch media payload matches the existing allowlisted download contract", (
             fallbackStrategy: "server_attachment",
             corsExpected: "false",
             browserDirectFetchSafe: "false",
+            browserNativeHandoffCapable: "true",
             requiresMerge: "false",
             requiresCookie: "false",
             platformKey: "douyin",
@@ -53,6 +56,7 @@ test("Batch media payload matches the existing allowlisted download contract", (
     assert.equal(payload.media_items.length, 1);
     assert.equal(payload.media_items[0].url, "https://media.example.com/video.mp4");
     assert.equal(payload.media_items[0].provider_manifest_token, "opaque-manifest");
+    assert.equal(payload.media_items[0].browser_native_handoff_capable, true);
     assert.equal(payload.media_items[0].ignoredProviderBody, undefined);
     assert.equal(payload.download_mode, "auto");
     assert.equal(payload.platform_key, "douyin");
@@ -165,8 +169,12 @@ test("native direct route never invokes prepare or server download", async () =>
             browser_native_handoff_safe: true,
         }]),
         handoffDirect: async () => {
-            calls.push("native-handoff");
-            return {completed: false, mode: "native_handoff"};
+            calls.push("native-open");
+            return {
+                completed: false,
+                mode: "native_open",
+                state: reliability.DIRECT_LAUNCH_ISSUED,
+            };
         },
         prepare: async () => calls.push("prepare"),
         handoffPrepared: async () => calls.push("prepared-handoff"),
@@ -174,8 +182,10 @@ test("native direct route never invokes prepare or server download", async () =>
         downloadServer: async () => calls.push("server"),
     });
 
-    assert.deepEqual(calls, ["native-handoff"]);
+    assert.deepEqual(calls, ["native-open"]);
     assert.equal(outcome.kind, "direct");
+    assert.equal(outcome.routeState, reliability.DIRECT_ROUTE_SELECTED);
+    assert.equal(outcome.directState, reliability.DIRECT_LAUNCH_ISSUED);
     assert.equal(outcome.handoffIssued, true);
     assert.equal(outcome.handoffConfirmed, false);
     assert.equal(outcome.completed, false);
@@ -206,18 +216,34 @@ test("prepared download waits for stream_started before confirming handoff", asy
 });
 
 
-test("failed direct browser fetch falls back to prepared stream in one click", async () => {
+test("failed direct browser launch never silently falls back to server relay", async () => {
     const calls = [];
-    const outcome = await batch.executeBatchDownload({
+    await assert.rejects(
+        batch.executeBatchDownload({
+            reliabilityApi: reliability,
+            fetchRoute: async () => directRoute([
+                {type: "image", url: "https://media.example.com/image.jpg"},
+            ]),
+            handoffDirect: async () => {
+                calls.push("direct");
+                throw new Error("browser launch failed");
+            },
+            fallbackDirectToPrepared: true,
+            prepare: async () => calls.push("prepare"),
+            handoffPrepared: async () => calls.push("prepared-handoff"),
+        }),
+        /browser launch failed/,
+    );
+
+    assert.deepEqual(calls, ["direct"]);
+});
+
+
+test("explicit compatibility action is the only prepared relay path", async () => {
+    const calls = [];
+    const outcome = await batch.executeBatchCompatibilityDownload({
         reliabilityApi: reliability,
-        fetchRoute: async () => directRoute([
-            {type: "image", url: "https://media.example.com/image.jpg"},
-        ]),
-        handoffDirect: async () => {
-            calls.push("direct");
-            throw new Error("cors blocked");
-        },
-        fallbackDirectToPrepared: true,
+        fetchRoute: async () => calls.push("route"),
         prepare: async () => {
             calls.push("prepare");
             return {
@@ -230,11 +256,65 @@ test("failed direct browser fetch falls back to prepared stream in one click", a
             status: "streaming",
             streamStarted: true,
         }),
+        onPhase: () => {},
     });
 
     assert.equal(outcome.kind, "prepared");
     assert.equal(outcome.handoffConfirmed, true);
-    assert.deepEqual(calls, ["direct", "prepare", "prepared-handoff"]);
+    assert.deepEqual(calls, ["prepare", "prepared-handoff"]);
+});
+
+
+test("Batch native open uses a preopened context and never completes the download", () => {
+    const events = [];
+    const context = batch.preopenBatchDirectContext(
+        reliability,
+        () => ({
+            opener: {},
+            closed: false,
+            location: {
+                replace: (url) => events.push(new URL(url).hostname),
+            },
+            focus: () => events.push("focus"),
+            close: () => events.push("close"),
+        }),
+    );
+    const result = batch.openBatchDirectItem([{
+        type: "video",
+        url: "https://media.example.com/video.mp4",
+        browser_direct_mode: "native_handoff",
+        browser_native_handoff_safe: true,
+    }], context, reliability);
+
+    assert.equal(result.mode, "native_open");
+    assert.equal(result.completed, false);
+    assert.equal(result.downloadStarted, false);
+    assert.deepEqual(events, ["media.example.com", "focus"]);
+});
+
+
+test("Single and Batch expose the same explicit direct and compatibility actions", () => {
+    const batchSource = fs.readFileSync(
+        path.join(__dirname, "../static/js/batch_parse.js"),
+        "utf8",
+    );
+    const singleTemplate = fs.readFileSync(
+        path.join(__dirname, "../templates/partials/xhs_results_region.html"),
+        "utf8",
+    );
+    const batchTemplate = fs.readFileSync(
+        path.join(__dirname, "../templates/partials/batch_result_card.html"),
+        "utf8",
+    );
+
+    assert.doesNotMatch(batchSource, /batch-direct-download-frame/);
+    assert.doesNotMatch(batchSource, /direct_fallback/);
+    assert.match(singleTemplate, /高速直连/);
+    assert.match(singleTemplate, /compat-download-btn/);
+    assert.match(singleTemplate, /兼容下载/);
+    assert.match(batchTemplate, /data-batch-compat-download/);
+    assert.match(batchTemplate, /高速直连/);
+    assert.match(batchTemplate, /兼容下载/);
 });
 
 
