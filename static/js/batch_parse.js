@@ -151,6 +151,9 @@
             browser_direct_fetch_safe: batchBooleanValue(
                 dataset.browserDirectFetchSafe
             ),
+            browser_native_handoff_capable: batchBooleanValue(
+                dataset.browserNativeHandoffCapable
+            ),
             requires_merge: batchBooleanValue(dataset.requiresMerge),
             requires_cookie: batchBooleanValue(dataset.requiresCookie),
         };
@@ -218,8 +221,22 @@
         return Boolean(
             String(item.provider || "").trim()
             && reliabilityApi
-            && typeof reliabilityApi.browserDirectFetchSafe === "function"
-            && reliabilityApi.browserDirectFetchSafe(item)
+            && typeof reliabilityApi.browserDirectFetchBlobSafe === "function"
+            && reliabilityApi.browserDirectFetchBlobSafe(item)
+        );
+    }
+
+    function batchDirectRouteUsesNativeHandoff(items, reliabilityApi) {
+        const directItems = Array.isArray(items) ? items : [];
+        if (directItems.length !== 1) {
+            return false;
+        }
+        const item = directItems[0] || {};
+        return Boolean(
+            String(item.type || "").toLowerCase() === "video"
+            && reliabilityApi
+            && typeof reliabilityApi.browserNativeHandoffSafe === "function"
+            && reliabilityApi.browserNativeHandoffSafe(item)
         );
     }
 
@@ -261,8 +278,16 @@
             const directItems = validatedDirectRouteItems(route);
             onPhase("direct_handoff");
             try {
-                await settings.handoffDirect(directItems);
-                return {kind: "direct", handoffConfirmed: true, route};
+                const handoffResult = await settings.handoffDirect(directItems);
+                return {
+                    kind: "direct",
+                    completed: Boolean(
+                        handoffResult && handoffResult.completed
+                    ),
+                    handoffIssued: true,
+                    handoffConfirmed: false,
+                    route,
+                };
             } catch (error) {
                 if (!settings.fallbackDirectToPrepared || !reliabilityApi) {
                     throw error;
@@ -1225,10 +1250,24 @@
                                             );
                                         }
                                     }
+                                ).then(() => ({
+                                    completed: true,
+                                    mode: "fetch_blob",
+                                }));
+                            }
+                            if (!batchDirectRouteUsesNativeHandoff(
+                                items,
+                                downloadReliabilityApi
+                            )) {
+                                throw new Error(
+                                    "当前资源没有经过验证的浏览器直连能力。"
                                 );
                             }
                             handoffBatchDirectItems(items, itemNode);
-                            return undefined;
+                            return {
+                                completed: false,
+                                mode: "native_handoff",
+                            };
                         },
                         fallbackDirectToPrepared: true,
                         handoffPrepared: (prepared) => {
@@ -1273,7 +1312,14 @@
                         },
                     });
                     setBatchDownloadButtonLoading(downloadButton, false);
-                    if (outcome.unconfirmed) {
+                    if (outcome.kind === "direct" && !outcome.completed) {
+                        updateBatchDownloadProgress(
+                            downloadButton,
+                            null,
+                            "已交给浏览器下载管理器；请查看下载栏"
+                        );
+                        showBatchDownloadButtonMessage(downloadButton, "已交接");
+                    } else if (outcome.unconfirmed) {
                         updateBatchDownloadProgress(
                             downloadButton,
                             null,
@@ -1314,6 +1360,7 @@
 
     const testApi = Object.freeze({
         batchDirectRouteUsesBlob,
+        batchDirectRouteUsesNativeHandoff,
         batchDownloadRouteDisposition,
         buildBatchDownloadItem,
         buildBatchDownloadPayload,

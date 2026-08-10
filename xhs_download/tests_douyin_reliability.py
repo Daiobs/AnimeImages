@@ -10,6 +10,7 @@ from django.core.cache import cache
 from django.http import HttpResponse
 from django.test import Client, SimpleTestCase, TestCase, override_settings
 
+from .models import DownloadRequestLog, ObservabilityStatus
 from .services.assets import MediaAsset, ParseResult
 from .services.common import XhsDownloadError, XhsProviderTimeoutError
 from .services.download_handoff import (
@@ -1632,6 +1633,7 @@ class DownloadSingleConnectionStreamTests(TestCase):
             self.assertEqual(status_before_body.status, "connecting")
             self.assertFalse(status_before_body.stream_started)
             self.assertEqual(status_before_body.upstream_attempt_count, 1)
+            self.assertEqual(DownloadRequestLog.objects.count(), 0)
 
             iterator = iter(response.streaming_content)
             first_chunk = next(iterator)
@@ -1659,6 +1661,10 @@ class DownloadSingleConnectionStreamTests(TestCase):
         self.assertTrue(completed.stream_started)
         self.assertFalse(completed.recovered)
         self.assertEqual(completed.upstream_attempt_count, 1)
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.SUCCESS)
+        self.assertEqual(log.download_type, "single_stream")
+        self.assertEqual(log.actual_bytes, len(b"first-last"))
 
     def test_close_before_iteration_fails_without_marking_stream_started(self):
         tokens = self.issue()
@@ -2073,6 +2079,14 @@ class DownloadSingleConnectionStreamTests(TestCase):
         self.assertEqual(failed.error_code, "UPSTREAM_CONNECTION_ERROR")
         self.assertTrue(failed.stream_started)
         mock_release.assert_called_once()
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual(log.status, ObservabilityStatus.FAILED)
+        self.assertEqual(log.actual_bytes, len(b"first-"))
+        self.assertFalse(
+            DownloadRequestLog.objects.filter(
+                status=ObservabilityStatus.SUCCESS
+            ).exists()
+        )
         self.assertNotIn("secret.example", "\n".join(logs.output))
         self.assertNotIn("token=secret", "\n".join(logs.output))
 

@@ -269,7 +269,7 @@ class BatchPublicDownloadTemplateTests(TestCase):
         self.assertNotIn("打开直链", card_html)
         self.assertNotIn("data-batch-direct-url", card_html)
 
-    def test_public_provider_item_uses_validated_route_and_prepare_contract(self):
+    def test_public_provider_item_uses_validated_direct_with_explicit_relay_fallback(self):
         aweme_id = "123456789012345678"
         item = {
             "type": "video",
@@ -306,10 +306,20 @@ class BatchPublicDownloadTemplateTests(TestCase):
         )
 
         self.assertEqual(route_response.status_code, 200)
-        self.assertEqual(route_response.json()["route_type"], "proxy")
+        self.assertEqual(route_response.json()["route_type"], "direct")
         self.assertEqual(
             route_response.json()["download_strategy"],
-            "server_single_attachment",
+            "browser_direct_provider_video",
+        )
+        self.assertTrue(
+            route_response.json()["items"][0][
+                "browser_native_handoff_safe"
+            ]
+        )
+        self.assertFalse(
+            route_response.json()["items"][0][
+                "browser_direct_fetch_safe"
+            ]
         )
         self.assertEqual(prepare_response.status_code, 200)
         self.assertEqual(prepare_response.json()["status"], "issued")

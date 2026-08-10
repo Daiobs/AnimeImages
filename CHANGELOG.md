@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Restored a Browser Direct-first download candidate for manifest-validated TianTianJieXi and browser-first KuKuTool videos: native browser handoff is now distinct from CORS-dependent fetch/Blob, large or unknown-size videos avoid Blob buffering, and server relay remains an explicit fallback. Direct routing records route selection rather than download completion, while retained relay streams record success and actual bytes only after normal iterator exhaustion.
 - Clarified the Batch runtime Django Admin as a singleton direct-edit control: the page now separates saved/effective database state from the form draft, labels save as immediately effective, confirms only public-expansion changes on both client and server, rejects stale concurrent edits, and emits a non-sensitive structured mutation event without changing Batch runtime behavior.
 - Aligned Batch `access_mode` across the shared navigation, `/batch/`, and the start/item/retry APIs. Public and gray-rollout visitors can now download video and image results through the existing validated route/prepare/status contracts, while raw-link copy/open/export tools remain staff-only.
 - Added a bounded, cache-only continuation for single-link Douyin ultra parsing so an already-running Provider can finish without requiring a second user click; signed tokens are client-bound, expire after 15 seconds, and permit at most five polls without starting another Provider call.

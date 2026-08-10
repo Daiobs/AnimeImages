@@ -34,6 +34,7 @@
     const MAX_STATUS_POLL_INTERVAL_MS = 1000;
     const MAX_STATUS_POLL_DURATION_MS = 15000;
     const MAX_STATUS_POLL_COUNT = 30;
+    const BROWSER_DIRECT_FETCH_BLOB_MAX_BYTES = 32 * 1024 * 1024;
 
     function booleanValue(value) {
         return value === true || String(value || "").toLowerCase() === "true";
@@ -47,6 +48,35 @@
             return true;
         }
         return booleanValue(item.browser_direct_fetch_safe);
+    }
+
+    function browserNativeHandoffSafe(item) {
+        if (!item || typeof item !== "object") {
+            return false;
+        }
+        return Boolean(
+            booleanValue(item.browser_native_handoff_safe)
+            && String(item.browser_direct_mode || "") === "native_handoff"
+            && !booleanValue(item.requires_merge)
+            && !booleanValue(item.requires_cookie)
+        );
+    }
+
+    function browserDirectFetchBlobSafe(item) {
+        if (!item || typeof item !== "object") {
+            return false;
+        }
+        const sizeBytes = Number.parseInt(
+            item.size_bytes || item.sizeBytes || "0",
+            10,
+        ) || 0;
+        return Boolean(
+            browserDirectFetchSafe(item)
+            && sizeBytes > 0
+            && sizeBytes <= BROWSER_DIRECT_FETCH_BLOB_MAX_BYTES
+            && !booleanValue(item.requires_merge)
+            && !booleanValue(item.requires_cookie)
+        );
     }
 
     function shouldUsePreparedServerDownload(route) {
@@ -302,12 +332,15 @@
 
     return Object.freeze({
         DEFAULT_STATUS_POLL_INTERVAL_MS,
+        BROWSER_DIRECT_FETCH_BLOB_MAX_BYTES,
         DOWNLOAD_STATUS_POLL_TIMEOUT_MESSAGE,
         DOWNLOAD_STATUS_STATES,
         ERROR_MESSAGES,
         MAX_STATUS_POLL_COUNT,
         MAX_STATUS_POLL_DURATION_MS,
         browserDirectFetchSafe,
+        browserDirectFetchBlobSafe,
+        browserNativeHandoffSafe,
         downloadStartDisposition,
         errorMessage,
         isDownloadStartTerminal,

@@ -1,6 +1,6 @@
 # Current Version Status
 
-Date: 2026-07-23
+Date: 2026-08-10
 
 Last Audited Runtime Baseline:
 
@@ -20,6 +20,46 @@ Production site:
 ```text
 https://download.cosflow.icu/
 ```
+
+## Unreleased Browser Direct Restoration Candidate
+
+The `codex/browser-direct-restoration-v1` branch adopts this download
+architecture north star:
+
+> Server is the download control plane, not the default media data plane.
+
+AnimeImages continues to parse, authorize, validate Provider manifests, choose
+the route, and issue the handoff. For a manifest-validated TianTianJieXi video,
+and for KuKuTool when its runtime delivery mode is `browser_first`, the normal
+media-byte path becomes Provider/CDN to browser rather than Provider/CDN to
+AnimeImages to browser. The final signed Provider/CDN URL may therefore be
+visible in browser Network tools; public raw-link UI and exports remain
+staff-only.
+
+The candidate separates two capabilities that CORS cannot safely conflate:
+
+- Native handoff uses browser navigation/download management and does not
+  require JavaScript fetch CORS permission.
+- Fetch/Blob is limited to explicitly CORS-safe resources with a known size no
+  greater than 32 MiB. Large and unknown-size videos are never Blob-first.
+
+Direct routing still requires the existing Provider identity, resource ID,
+cache key, signed manifest, allowed host and scheme, public address, media type,
+and expected-resource validation. Cookie-bound, merge-required, server-only,
+or otherwise non-handoff-safe resources retain the bounded server path. Single
+and Batch pages consume the same server route decision.
+
+Direct observability means `route_selected` on the control plane; it does not
+claim that the browser completed the file. A native handoff therefore remains
+visibly pending in the page while the browser download manager owns the real
+transfer. For the retained relay path, `DownloadRequestLog.success` is written
+only after the stream iterator exhausts normally, and `actual_bytes` is the
+number of bytes actually yielded. Early close and generator/upstream errors are
+failures, never successful completion.
+
+This candidate does not change Gunicorn, Provider parsing order or timeouts,
+permissions, migrations, Nginx, systemd, or production configuration. It has
+not been deployed.
 
 ## Unreleased Batch Runtime Admin Clarity Candidate
 

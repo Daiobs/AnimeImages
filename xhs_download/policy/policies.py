@@ -76,7 +76,16 @@ class CostPolicy:
             )
 
         estimated_bytes = estimate_media_items_bytes(context.media_items)
-        if estimated_bytes >= HIGH_COST_BYTES and len(context.media_items) == 1:
+        shape_route = route_for_media_shape(context.media_items)
+        if (
+            estimated_bytes >= HIGH_COST_BYTES
+            and len(context.media_items) == 1
+            and shape_route == ROUTE_DIRECT
+        ):
+            route = ROUTE_DIRECT
+            reason = "high-cost-direct-safe-resource-avoids-server-egress"
+            score = 0.94
+        elif estimated_bytes >= HIGH_COST_BYTES and len(context.media_items) == 1:
             route = ROUTE_PROXY
             reason = "high-cost-single-resource-prefers-non-zip"
             score = 0.88
@@ -85,7 +94,7 @@ class CostPolicy:
             reason = "high-cost-multi-resource-requires-archive"
             score = 0.72
         else:
-            route = route_for_media_shape(context.media_items)
+            route = shape_route
             reason = f"{cost_level}-cost-default-shape-route"
             score = 0.82 if cost_level == "low" else 0.76
 
