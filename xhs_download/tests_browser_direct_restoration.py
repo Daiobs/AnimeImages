@@ -1,7 +1,7 @@
 import json
 from unittest.mock import patch
 
-from django.test import Client, RequestFactory, TestCase
+from django.test import Client, RequestFactory, TestCase, override_settings
 
 from download_console.models import DownloadRuntimeSetting
 
@@ -17,7 +17,12 @@ from .services.download_routing import (
     decide_download_route,
     item_can_browser_native_handoff,
 )
-from .services.provider_manifest import build_provider_manifest_token
+from .services.provider_manifest import (
+    PROVIDER_MANIFEST_EXPIRED,
+    PROVIDER_MANIFEST_INVALID,
+    build_provider_manifest_token,
+    provider_manifest_validation_status,
+)
 from .services.provider_strategy import (
     DOWNLOAD_STRATEGY_BROWSER_DIRECT,
     build_download_strategy,
@@ -215,8 +220,47 @@ class BrowserDirectRouteViewTests(TestCase):
             )
 
         self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json()["error_code"],
+            "PROVIDER_MANIFEST_REJECTED",
+        )
         mock_fetch.assert_not_called()
         self.assertNotIn("tampered.mp4", response.content.decode())
+
+    @override_settings(PROVIDER_MANIFEST_MAX_AGE_SECONDS=1)
+    def test_expired_manifest_has_distinct_reparse_response(self):
+        with patch(
+            "xhs_download.services.provider_manifest.signing.time.time",
+            return_value=1000,
+        ):
+            item = build_tiantian_item()
+
+        with patch(
+            "xhs_download.services.provider_manifest.signing.time.time",
+            return_value=1002,
+        ):
+            route_response = self.client.post(
+                "/media/download-images/",
+                data=json.dumps(self.route_payload(item)),
+                content_type="application/json",
+            )
+            prepare_response = self.client.post(
+                "/media/download-prepare/",
+                data=json.dumps(self.route_payload(item)),
+                content_type="application/json",
+            )
+
+        for response in (route_response, prepare_response):
+            self.assertEqual(response.status_code, 410)
+            self.assertEqual(
+                response.json()["error_code"],
+                "PROVIDER_MANIFEST_EXPIRED",
+            )
+            self.assertEqual(
+                response.json()["message"],
+                "解析结果已过期，请重新解析后下载。",
+            )
+            self.assertNotContains(response, MEDIA_URL, status_code=410)
 
     def test_route_only_and_normal_auto_use_the_same_direct_decision(self):
         item = build_tiantian_item()
@@ -243,4 +287,30 @@ class BrowserDirectRouteViewTests(TestCase):
         self.assertEqual(
             route_only.json()["download_strategy"],
             normal.json()["download_strategy"],
+        )
+
+
+class ProviderManifestStatusTests(TestCase):
+    @override_settings(PROVIDER_MANIFEST_MAX_AGE_SECONDS=1)
+    def test_timestamp_expiry_is_not_classified_as_tampering(self):
+        with patch(
+            "xhs_download.services.provider_manifest.signing.time.time",
+            return_value=1000,
+        ):
+            item = build_tiantian_item()
+        with patch(
+            "xhs_download.services.provider_manifest.signing.time.time",
+            return_value=1002,
+        ):
+            status = provider_manifest_validation_status(item)
+
+        self.assertEqual(status, PROVIDER_MANIFEST_EXPIRED)
+
+    def test_forged_manifest_remains_invalid(self):
+        item = build_tiantian_item()
+        item["provider_manifest_token"] = "forged"
+
+        self.assertEqual(
+            provider_manifest_validation_status(item),
+            PROVIDER_MANIFEST_INVALID,
         )

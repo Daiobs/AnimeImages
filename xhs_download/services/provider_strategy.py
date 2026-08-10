@@ -87,7 +87,7 @@ def build_download_strategy(asset, *, result_platform="", result_metadata=None):
             "strategy_label": (
                 "浏览器 Blob 优先"
                 if browser_direct_fetch_safe
-                else "浏览器原生下载优先"
+                else "浏览器高速直连优先"
                 if browser_native_handoff_capable
                 else "服务端可观测下载"
             ),
@@ -135,13 +135,13 @@ def build_download_strategy_matrix():
             "source": "抖音天天解析",
             "strategy": DOWNLOAD_STRATEGY_BROWSER_DIRECT,
             "fallback": FALLBACK_SERVER_ATTACHMENT,
-            "note": "签名资源校验后交给浏览器原生下载；服务端流仅作明确兜底。",
+            "note": "签名资源校验后在可见标签页打开源站；服务端流仅作明确兼容下载。",
         },
         {
             "source": "抖音 KuKuTool",
             "strategy": DOWNLOAD_STRATEGY_BROWSER_DIRECT,
             "fallback": FALLBACK_SERVER_ATTACHMENT,
-            "note": "原生浏览器下载不依赖 fetch CORS；服务端流仅作明确兜底。",
+            "note": "浏览器高速直连不依赖 fetch CORS；服务端流仅作明确兼容下载。",
         },
         {
             "source": "小红书图片",

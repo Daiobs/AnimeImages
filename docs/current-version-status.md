@@ -21,9 +21,10 @@ Production site:
 https://download.cosflow.icu/
 ```
 
-## Unreleased Browser Direct Restoration Candidate
+## Browser Direct State And Unreleased Launch Hotfix
 
-The `codex/browser-direct-restoration-v1` branch adopts this download
+The current Browser Direct baseline and the unreleased
+`codex/browser-direct-native-launch-hotfix-v1` branch use this download
 architecture north star:
 
 > Server is the download control plane, not the default media data plane.
@@ -38,8 +39,9 @@ staff-only.
 
 The candidate separates two capabilities that CORS cannot safely conflate:
 
-- Native handoff uses browser navigation/download management and does not
-  require JavaScript fetch CORS permission.
+- Native handoff uses visible browser navigation and does not require
+  JavaScript fetch CORS permission. When the CDN serves inline media, the UI
+  reports a visible source open rather than claiming a download item exists.
 - Fetch/Blob is limited to explicitly CORS-safe resources with a known size no
   greater than 32 MiB. Large and unknown-size videos are never Blob-first.
 
@@ -49,13 +51,15 @@ and expected-resource validation. Cookie-bound, merge-required, server-only,
 or otherwise non-handoff-safe resources retain the bounded server path. Single
 and Batch pages consume the same server route decision.
 
-Direct observability means `route_selected` on the control plane; it does not
-claim that the browser completed the file. A native handoff therefore remains
-visibly pending in the page while the browser download manager owns the real
-transfer. For the retained relay path, `DownloadRequestLog.success` is written
-only after the stream iterator exhausts normally, and `actual_bytes` is the
-number of bytes actually yielded. Early close and generator/upstream errors are
-failures, never successful completion.
+Direct observability means `route_selected` on the control plane, followed by
+a browser launch request; neither state claims that a download item started or
+that the file completed. The hotfix preopens a visible tab during the user
+gesture and navigates it only after the server validates the Direct route.
+Server relay is a separate explicit compatibility action. For that retained
+relay path, `DownloadRequestLog.success` is written only after the stream
+iterator exhausts normally, and `actual_bytes` is the number of bytes actually
+yielded. Early close and generator/upstream errors are failures, never
+successful completion.
 
 This candidate does not change Gunicorn, Provider parsing order or timeouts,
 permissions, migrations, Nginx, systemd, or production configuration. It has

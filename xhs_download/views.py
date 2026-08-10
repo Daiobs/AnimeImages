@@ -165,7 +165,11 @@ from .services.provider_recovery import (
     refresh_tiantianjiexi_download_item,
 )
 from .services.registry import get_adapter_for_url, parse_media_page
-from .services.provider_manifest import build_provider_manifest_token
+from .services.provider_manifest import (
+    PROVIDER_MANIFEST_EXPIRED,
+    build_provider_manifest_token,
+    provider_manifest_validation_status,
+)
 from .services.observability import (
     provider_runtime_snapshot,
     record_download_request_log,
@@ -3707,12 +3711,28 @@ def apply_route_v3_metadata(request, media_items, route_info, *, requested_mode=
     return updated
 
 
-def download_items_have_invalid_provider_manifest(media_items):
+def download_items_provider_manifest_error(media_items):
     for item in media_items or ():
         if isinstance(item, dict) and item.get("provider"):
-            if not provider_manifest_allows_public_download(item):
-                return True
-    return False
+            if provider_manifest_allows_public_download(item):
+                continue
+            manifest_status = provider_manifest_validation_status(item)
+            if manifest_status == PROVIDER_MANIFEST_EXPIRED:
+                return {
+                    "error_code": "PROVIDER_MANIFEST_EXPIRED",
+                    "message": "解析结果已过期，请重新解析后下载。",
+                    "status": 410,
+                }
+            return {
+                "error_code": "PROVIDER_MANIFEST_REJECTED",
+                "message": "Provider 签名资源未通过校验。",
+                "status": 400,
+            }
+    return None
+
+
+def download_items_have_invalid_provider_manifest(media_items):
+    return download_items_provider_manifest_error(media_items) is not None
 
 
 def check_preview_request_limits(request):
@@ -5047,11 +5067,12 @@ def download_prepare_api(request):
             status=400,
             error_code="DOWNLOAD_PREPARE_INVALID_ITEM",
         )
-    if download_items_have_invalid_provider_manifest(media_items):
+    manifest_error = download_items_provider_manifest_error(media_items)
+    if manifest_error:
         return download_guard_error_response(
-            "Provider 签名资源未通过校验。",
-            status=400,
-            error_code="PROVIDER_MANIFEST_REJECTED",
+            manifest_error["message"],
+            status=manifest_error["status"],
+            error_code=manifest_error["error_code"],
         )
 
     runtime_setting = get_download_runtime_setting()
@@ -5372,19 +5393,20 @@ def download_stream_view(request, token):
             logger.info(event_name, extra=log_fields)
         terminal_log_callback(status, snapshot, error)
 
-    if download_items_have_invalid_provider_manifest(media_items):
+    manifest_error = download_items_provider_manifest_error(media_items)
+    if manifest_error:
         stream_status_callback(
             "failed",
             telemetry,
             DownloadStreamStatusError(
-                "Provider 签名资源未通过校验。",
-                error_code="PROVIDER_MANIFEST_REJECTED",
+                manifest_error["message"],
+                error_code=manifest_error["error_code"],
             ),
         )
         return download_guard_error_response(
-            "Provider 签名资源未通过校验。",
-            status=400,
-            error_code="PROVIDER_MANIFEST_REJECTED",
+            manifest_error["message"],
+            status=manifest_error["status"],
+            error_code=manifest_error["error_code"],
         )
 
     runtime_setting = get_download_runtime_setting()
@@ -5550,11 +5572,12 @@ def download_images_api(request):
         reason="默认兼容旧 ZIP 下载流程",
         record_healing=download_mode not in routed_download_modes,
     )
-    if download_items_have_invalid_provider_manifest(media_items):
+    manifest_error = download_items_provider_manifest_error(media_items)
+    if manifest_error:
         route_info = blocked_download_route_info(
             media_items,
-            "Provider 签名资源未通过校验",
-            "PROVIDER_MANIFEST_REJECTED",
+            manifest_error["message"],
+            manifest_error["error_code"],
         )
         log_download_request_event(
             request,
@@ -5562,13 +5585,17 @@ def download_images_api(request):
             media_items=media_items,
             status=ObservabilityStatus.FAILED,
             started_at=started_at,
-            error_code="PROVIDER_MANIFEST_REJECTED",
-            error=ValueError("Provider 签名资源未通过校验"),
+            error_code=manifest_error["error_code"],
+            error=ValueError(manifest_error["message"]),
             route_info=route_info,
         )
         return JsonResponse(
-            {"status": "error", "message": "Provider 签名资源未通过校验"},
-            status=400,
+            {
+                "status": "error",
+                "error_code": manifest_error["error_code"],
+                "message": manifest_error["message"],
+            },
+            status=manifest_error["status"],
         )
 
     runtime_setting = get_download_runtime_setting()
@@ -6276,19 +6303,24 @@ def create_download_task_api(request):
             error_code="NO_MEDIA_SELECTED",
         )
         return JsonResponse({"status": "error", "message": "没有选择资源"}, status=400)
-    if download_items_have_invalid_provider_manifest(media_items):
+    manifest_error = download_items_provider_manifest_error(media_items)
+    if manifest_error:
         log_download_request_event(
             request,
             download_type="task_create",
             media_items=media_items,
             status=ObservabilityStatus.FAILED,
             started_at=started_at,
-            error_code="PROVIDER_MANIFEST_REJECTED",
-            error=ValueError("Provider 签名资源未通过校验"),
+            error_code=manifest_error["error_code"],
+            error=ValueError(manifest_error["message"]),
         )
         return JsonResponse(
-            {"status": "error", "message": "Provider 签名资源未通过校验"},
-            status=400,
+            {
+                "status": "error",
+                "error_code": manifest_error["error_code"],
+                "message": manifest_error["message"],
+            },
+            status=manifest_error["status"],
         )
 
     runtime_setting = get_download_runtime_setting()

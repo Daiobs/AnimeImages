@@ -205,7 +205,9 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
         self.assertIn("pollDownloadStatus", content)
         self.assertIn("downloadStartDisposition", content)
         self.assertIn('download_mode: "server_single"', content)
-        self.assertIn("fallbackDirectToPrepared: true", content)
+        self.assertIn("executeBatchCompatibilityDownload", content)
+        self.assertIn("data-batch-compat-download", content)
+        self.assertNotIn("fallbackDirectToPrepared: true", content)
 
     def test_batch_javascript_is_page_scoped_and_retry_preserves_form(self):
         global_content = (PROJECT_ROOT / "static/js/app.js").read_text()
@@ -2022,7 +2024,8 @@ class BatchParseViewTests(TestCase):
         self.assertContains(response, "batch-result-cover")
         self.assertContains(response, "复制直链")
         self.assertContains(response, "打开直链")
-        self.assertContains(response, ">下载</span>", html=False)
+        self.assertContains(response, "高速直连")
+        self.assertContains(response, "兼容下载")
         self.assertContains(response, "data-batch-direct-url")
         self.assertContains(response, "data-batch-direct-download")
         self.assertContains(response, "data-batch-download")

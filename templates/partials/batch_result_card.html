@@ -135,8 +135,20 @@
                                                 {% endif %}>
                                             <span class="spinner-border spinner-border-sm me-1 batch-download-spinner" aria-hidden="true"></span>
                                             <i class="bi bi-download me-1 batch-download-icon"></i>
-                                            <span class="batch-download-label">下载</span>
+                                            <span class="batch-download-label">
+                                                {% if item.browser_native_handoff_capable %}高速直连{% else %}下载{% endif %}
+                                            </span>
                                         </button>
+                                        {% if item.browser_native_handoff_capable %}
+                                            <button type="button"
+                                                    class="btn btn-outline-secondary btn-sm batch-browser-download-btn"
+                                                    data-batch-download
+                                                    data-batch-compat-download>
+                                                <span class="spinner-border spinner-border-sm me-1 batch-download-spinner" aria-hidden="true"></span>
+                                                <i class="bi bi-hdd-network me-1 batch-download-icon"></i>
+                                                <span class="batch-download-label">兼容下载</span>
+                                            </button>
+                                        {% endif %}
                                     </div>
                                     <div class="batch-download-progress" data-batch-download-progress hidden>
                                         <div class="batch-download-progress-track">

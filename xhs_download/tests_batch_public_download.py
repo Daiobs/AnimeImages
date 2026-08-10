@@ -201,7 +201,8 @@ class BatchPublicDownloadTemplateTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "batch-browser-download-btn", count=2)
+        self.assertContains(response, "batch-browser-download-btn", count=3)
+        self.assertContains(response, "data-batch-compat-download", count=1)
         self.assertContains(response, "data-batch-download-item", count=2)
         self.assertContains(response, "data-batch-download-route-url")
         self.assertContains(response, "data-batch-download-prepare-url")
@@ -226,7 +227,8 @@ class BatchPublicDownloadTemplateTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "batch-browser-download-btn", count=2)
+        self.assertContains(response, "batch-browser-download-btn", count=3)
+        self.assertContains(response, "data-batch-compat-download", count=1)
         self.assertContains(response, "复制直链")
         self.assertContains(response, "打开直链")
         self.assertContains(response, "展开链接")
