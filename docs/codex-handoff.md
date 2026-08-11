@@ -212,60 +212,43 @@ fallback remain available.
 
 ## Download Strategy State
 
-Current download strategy is mixed:
+The V1 stabilization contract is:
 
-- Native image resources can prefer direct/browser paths to reduce server traffic.
-- Ordinary public native video URLs can retain their direct/browser path.
-- Provider videos may use browser fetch only when the server explicitly marks
-  that Provider capability as CORS-safe. KuKuTool and TianTianJieXi signed
-  resources currently use observable same-origin prepare/stream instead.
-- Prepare is local-only: it performs request/schema, manifest, route, limit,
-  and client-binding checks, then issues separate opaque stream and status
-  URLs without contacting the media CDN. The stream claim is one-use; status
-  polling is repeatable, cache-only, client-bound, and does not extend the
-  60-second TTL. The server-private handoff cache uses a typed field allowlist
-  and retains one manifest-validated minimal media URL for the initial GET;
-  it never places that URL in the token, status payload, logs, database, or
-  browser storage.
-- The normal server attachment path opens one upstream media response, checks
-  its first non-empty chunk, and continues the `StreamingHttpResponse` from
-  that same iterator. Active responses, sockets, and generators are never
-  stored in cache. The stream owns its concurrency slot until completion,
-  failure, or client disconnect.
-- The frontend polls only the download startup states and stops at
-  `streaming`, `failed`, `expired`, or its 15-second hard ceiling. It never
-  fetches the media body or creates a large JavaScript Blob for this path.
-- Response construction does not set `stream_started`. The stream iterator
-  sets it once, immediately before yielding the already-validated first chunk.
-  It then remains sticky across later failures; closing before iteration keeps
-  it false. Exhausting the polling window without confirmation is an
-  unconfirmed, retryable state rather than proof that the download failed.
-- For server single-file handoff, issuing the browser request keeps the page
-  progress bar in its connecting state. It reaches 100% only after status
-  confirms `stream_started`, representing confirmed browser handoff rather
-  than media bytes transferred through Django. Actual byte progress belongs
-  to the browser download UI. Safe stream logs record attempt, refresh, and
-  first-byte durations without source or signed media URLs.
-- TianTianJieXi recovery is server-only, bounded to one refresh and one
-  download retry (at most two media GETs), and must preserve the original
-  signed resource identity.
-- Server-stream startup has one absolute 50-second budget across the first
-  media GET, Provider refresh, recovery GET, and first non-empty chunk.
-  Operations receive only the remaining budget. Exhaustion uses
-  `DOWNLOAD_STREAM_START_TIMEOUT`, closes the upstream, releases concurrency,
-  and does not continue refreshing. The budget stops applying once normal
-  stream iteration begins.
-- Large provider CDN downloads can be slow on the VPS if all bytes pass through the server.
+```text
+ordinary Provider video: Provider/CDN -> user browser -> user disk
+server-generated output: upstream -> AnimeImages processing -> user browser
+```
 
-Known tension:
+- Manifest-validated ordinary TianTianJieXi and KuKuTool videos use the shared
+  `static/js/ordinary_media_download.js` primitive on both Single and Batch.
+- The browser performs a credential-free, no-cache, no-Referer fetch, validates
+  the media response and exact `Content-Length` when present, enforces a bounded
+  Blob size, then saves through an object URL and a download anchor.
+- The ordinary path does not call `/media/download-prepare/`,
+  `/media/download-stream/`, or `/media/download-status/`. It does not fall back
+  to server proxy, single-video ZIP, or another AnimeImages media relay.
+- Ordinary failures offer only retry or reparse. The user sees `下载` and generic
+  preparation/acquisition/save states, not transport architecture choices.
+- The final signed media URL is intentionally visible to the receiving browser;
+  it must not be written to logs, browser storage, documentation, or reports.
+- Existing server attachment code remains only for a distinct resource class:
+  generated YouTube merges, ZIPs, resources that genuinely require server-held
+  Cookie/header context, and other server-generated outputs.
+- The removed Batch ordinary-media progress implementation is documented in
+  `docs/research/v1-batch-blob-progress-archive.md`; do not restore it as a
+  second downloader.
+- Real Chrome proof for a 110,691,390-byte TianTianJieXi MP4 completed with an
+  exact saved size, no playback navigation, and zero AnimeImages media requests
+  or bytes. KuKuTool shares the same declared CDN/browser contract but still
+  requires a fresh live smoke before claiming an equivalent provider-specific
+  production result.
+- Browser Blob is Recovery v1, not the permanent large-file architecture.
+  `BROWSER_BLOB_LARGE_FILE_LIMITATION` remains open for 300 MiB and 500 MiB+
+  memory behavior.
 
-- Browser-managed downloads save server bandwidth but can be blocked by popup/download restrictions.
-- Server attachment is stable but consumes server egress and can be much slower than a third-party site that hands the CDN URL directly to the browser.
-
-When changing this area, verify local Chrome and, in a separately approved
-deployment task, the production site. Do not assume localhost download
-behavior matches HTTPS production behavior. Do not infer CORS support from one
-historical success.
+The canonical evidence and deployment state are in
+`docs/recovery/v1-autonomous-recovery-20260812.md`. Verify real Chrome behavior,
+not only route metadata or unit tests, before changing the capability list.
 
 ## Production Deployment Notes
 

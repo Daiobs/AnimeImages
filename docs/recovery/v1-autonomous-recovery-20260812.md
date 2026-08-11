@@ -62,8 +62,8 @@ checkpoint remains useful for genuinely server-required outputs.
 | Milestone | Status | Commit | Production | Evidence |
 | --- | --- | --- | --- | --- |
 | M0 autonomy checkpoint | complete | `bbbf87b` | unchanged at `485951b` | checkpoint branch pushed; production readiness 200 |
-| M1 TianTian browser recovery | proof complete; product implementation pending | pending | not deployed | 110,691,390-byte Chrome Blob save passed with zero AnimeImages media bytes |
-| M2 Single/Batch unified direct download | pending | pending | not deployed | shared ordinary download primitive |
+| M1 TianTian browser recovery | candidate implemented | `530d0cc` | not deployed | 110,691,390-byte Chrome Blob save passed with zero AnimeImages media bytes; product-flow Chrome gate pending |
+| M2 Single/Batch unified direct download | candidate implemented | `530d0cc` | not deployed | shared bounded ordinary download primitive; Django 967/967 and focused Node 14/14 passed |
 | M3 YouTube verification | pending | pending | not deployed | server-required merge remains separate |
 | M4 Batch/Admin clarity | pending | pending | not deployed | begins only after ordinary download stability |
 
@@ -83,9 +83,10 @@ checkpoint remains useful for genuinely server-required outputs.
 
 ## Next Gate
 
-Implement and validate one shared Single/Batch ordinary-media browser Blob
-primitive using the proven no-Referer request context. Preserve server paths
-only for generated outputs such as YouTube merges and ZIPs.
+Run the shared implementation through real Single and Batch product flows, then
+through an isolated Linux candidate. Preserve server paths only for generated
+outputs such as YouTube merges and ZIPs. Production rollout is allowed only
+after exact-file, zero-server-media, and no-playback gates pass.
 
 ## P0 Provider And Browser-Native Feasibility Audit
 
@@ -247,3 +248,32 @@ Do not automatically use Server Relay for ordinary media. Preserve
 server-required paths for generated output only. Track
 `BROWSER_BLOB_LARGE_FILE_LIMITATION` for 300 MiB and 500 MiB+ memory behavior;
 the 100 MiB class is the current recovery gate.
+
+## Shared Ordinary Download Candidate
+
+Commit `530d0cc` implements the recovery primitive and is pushed to
+`origin/stabilize/v1-autonomous-recovery-20260812`.
+
+- `static/js/ordinary_media_download.js` is the only ordinary TianTianJieXi /
+  KuKuTool browser-media implementation used by Single and Batch.
+- It sends a credential-free, no-cache, no-Referer request, accepts only the
+  declared ordinary-video content classes, enforces the configured 1 GiB Blob
+  ceiling while reading even when `Content-Length` is absent, verifies exact
+  response length when supplied, and saves through an object URL without a
+  playback target.
+- The server route validates the Provider manifest and capability, reports zero
+  server egress, and blocks explicit proxy/server-single attempts for ordinary
+  Provider videos. The prepare endpoint therefore cannot mint a stream ticket
+  for that resource class.
+- Browser failure stops with retry/reparse guidance. No automatic relay, ZIP,
+  prepare, stream, or status request is permitted for the ordinary path.
+- The Batch-only chunk progress UI was removed from this path and documented in
+  `docs/research/v1-batch-blob-progress-archive.md` for possible reuse by work
+  AnimeImages actually owns, such as ZIP or YouTube merge jobs.
+- Automated candidate evidence: `xhs_download` 967/967, Provider Strategy
+  118/118, and the shared primitive 14/14. A final full gate follows the
+  documentation commit and real product-flow browser acceptance.
+
+The completed 110,691,390-byte proof satisfies the 100 MiB memory gate. No 300
+MiB or 500 MiB+ claim has been made; those sizes remain explicitly unverified
+under `BROWSER_BLOB_LARGE_FILE_LIMITATION`.

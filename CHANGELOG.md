@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Restored one shared Single/Batch browser-side download path for ordinary TianTianJieXi and KuKuTool videos: the browser fetches the Provider CDN with credentials and Referer omitted, validates the complete bounded response, then saves it through a Blob object URL without calling AnimeImages prepare, stream, or status endpoints.
+- Removed the Batch-only ordinary-video transfer meter and archived its implementation history for future server-generated ZIP/merge job progress. Browser failures now stop with retry/reparse guidance instead of entering Server Relay.
 - Added a bounded, cache-only continuation for single-link Douyin ultra parsing so an already-running Provider can finish without requiring a second user click; signed tokens are client-bound, expire after 15 seconds, and permit at most five polls without starting another Provider call.
 - Kept the first usable Douyin result visible while that continuation finishes, prevented native fallbacks from being mislabeled as external 4K winners, and skipped out-of-budget display-size probes so a running high-quality Provider can upgrade the same request instead of requiring repeated clicks.
 - Stopped a valid TianTianJieXi media result from spending its remaining parse deadline on an extra native metadata request when the Provider already supplied a usable title and cover; cached/direct native metadata and missing-metadata fallback remain supported.

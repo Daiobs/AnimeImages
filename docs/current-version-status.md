@@ -21,6 +21,39 @@ Production site:
 https://download.cosflow.icu/
 ```
 
+## V1 Autonomous Recovery Candidate - 2026-08-12
+
+The active recovery branch is `stabilize/v1-autonomous-recovery-20260812`, based
+on the confirmed V1 production line rather than post-incident `main`. Commit
+`530d0cc` restores one shared ordinary-video browser data path for Single and
+Batch:
+
+```text
+TianTianJieXi / KuKuTool CDN -> user browser -> user disk
+```
+
+- AnimeImages performs parsing, Provider selection, manifest validation, route
+  control, and handoff only. Ordinary media requests and bytes remain zero.
+- The browser fetches with omitted credentials and Referer, receives a bounded
+  complete Blob, and uses an object URL download anchor. A real Chrome proof
+  saved a 110,691,390-byte TianTianJieXi MP4 with exact byte equality and no
+  playback navigation.
+- Single and Batch call the same browser primitive. Ordinary failures stop with
+  retry/reparse guidance and never call prepare, stream, status, server proxy,
+  or single-video ZIP fallback.
+- YouTube audio/video merge, ZIP creation, and other genuinely generated files
+  remain server-required outputs and retain their separate server paths.
+- The 100 MiB recovery gate passed. The 300 MiB and 500 MiB+ browser-memory
+  behavior remains `BROWSER_BLOB_LARGE_FILE_LIMITATION` and is not yet claimed.
+- Historical native CDN handoff code was identified, but current playable CDN
+  responses no longer create a native attachment task because they do not send
+  `Content-Disposition: attachment`. Browser Blob is the approved Recovery v1
+  mechanism after that archaeology.
+
+This section describes the pushed stabilization candidate. Production remains
+on the SHA recorded in `docs/recovery/v1-autonomous-recovery-20260812.md` until
+the isolated Linux candidate and controlled deployment gates pass.
+
 ## Unreleased Batch Parse Candidate
 
 The `codex/batch-parse-stability-v1` development branch is not deployed. Its candidate behavior includes:
@@ -100,49 +133,11 @@ candidate behavior includes:
   after its Provider deadline. The Provider still receives only the configured
   12-second deadline; unfinished work, explicit Provider timeouts, and results
   outside the bounded grace remain `timeout`.
-- Provider video downloads first use a local-only JSON prepare request.
-  Prepare performs no upstream media request and produces separate
-  client-bound, 60-second stream and status URLs that contain no raw Provider
-  URL. The stream URL is one-use; the status URL is repeatable within the
-  original TTL and exposes only fixed states and safe errors. The opaque token
-  points to a server-private, allowlisted cache record. That record contains
-  only the typed fields needed for download and recovery; it currently retains
-  one manifest-validated minimal media URL because Provider identity alone
-  cannot reliably reconstruct the initial media request.
-- The browser opens the same-origin stream URL and polls the status URL at a
-  bounded interval until `streaming`, `failed`, `expired`, or a client-side
-  15-second ceiling. Status polling is cache-only and cannot contact a
-  Provider, extend the handoff TTL, or read media bytes.
-- Constructing the streaming response leaves `stream_started` false. The first
-  actual stream iteration marks it true immediately before yielding the
-  already-validated first chunk. It remains true if the connection later
-  closes. Closing before iteration leaves it false; the UI therefore
-  distinguishes a confirmed browser handoff from a pre-stream failure.
-- After the same-origin request is handed to browser download management, the
-  page progress bar remains in its connecting state until status confirms
-  `stream_started`. It then reaches 100% to represent confirmed browser
-  handoff, not byte progress for the proxied media body. Browser download UI
-  owns actual byte progress. URL-free telemetry separates the first and second
-  upstream connection attempts, Provider refresh, and time to first chunk.
-- The normal stream path opens one upstream media GET, validates its first
-  non-empty chunk, then yields that chunk and the remaining iterator from the
-  same response. The response object, socket, and generator are never stored
-  in cache; the download concurrency slot is released when streaming ends.
-- Stream startup has one absolute 50-second deadline shared by the first media
-  GET, one allowed Provider refresh, the recovery GET, and the first non-empty
-  chunk. Each operation receives only the remaining budget. Exhaustion returns
-  `DOWNLOAD_STREAM_START_TIMEOUT` with a safe retry message, closes any open
-  upstream, and releases concurrency. Once the first chunk is yielded, this
-  startup deadline no longer limits normal file transfer.
-- Browser fetch is permitted only for an explicitly declared CORS-safe
-  Provider capability. TianTianJieXi and KuKuTool signed resources currently
-  use server prepare/stream; ordinary public native URLs retain their direct
-  path.
-- A recoverable TianTianJieXi signed-resource failure can trigger exactly one
-  server-side refresh through TianTianJieXi and exactly one download retry,
-  capping the recovery path at two upstream media GETs.
-  The refreshed item must retain the original Douyin resource identity and
-  pass the existing manifest, media-host, content-type, and size checks.
+- The former same-origin prepare/stream/status path and its bounded Provider
+  refresh remain historical context for server-required outputs. The V1
+  stabilization candidate does not use them for ordinary TianTianJieXi or
+  KuKuTool videos; the recovery contract near the top of this document takes
+  precedence for those resources.
 - The candidate does not increase Provider timeouts, change Provider order,
   modify Batch scheduling, add a migration, use Cookie state, disable TLS
   verification, or add a Provider.
