@@ -1,7 +1,7 @@
 (function () {
     const SETTINGS_KEY = "xhsDownloadSettings";
     const MAX_IMAGE_RETRIES = 3;
-    const PROVIDER_BROWSER_BLOB_MAX_BYTES = 1024 * 1024 * 1024;
+    const ordinaryMediaDownloadApi = window.AnimeImagesOrdinaryMediaDownload || null;
     const downloadReliabilityApi = window.AnimeImagesDownloadReliability || null;
     const douyinReliabilityApi = window.AnimeImagesDouyinReliability || null;
 
@@ -307,7 +307,6 @@
         let downloadInProgress = false;
         let pendingParsePreferences = null;
         let lastDownloadProgress = 0;
-        const directHandoffAttemptKeys = new Set();
 
         function getBaseFilename() {
             return page.dataset.baseFilename || "xhs_image";
@@ -561,6 +560,15 @@
             lastDownloadProgress = 0;
         }
 
+        function hideDownloadProgress() {
+            const {progressWrap} = getProgressElements();
+            if (progressWrap) {
+                progressWrap.hidden = true;
+                progressWrap.classList.remove("is-pending");
+            }
+            lastDownloadProgress = 0;
+        }
+
         function setProgress(percent, options) {
             const rawValue = Math.max(0, Math.min(100, Math.round(percent || 0)));
             const allowDecrease = Boolean(options && options.allowDecrease);
@@ -627,7 +635,6 @@
                 return;
             }
             selected = [];
-            directHandoffAttemptKeys.clear();
             setPageHasResults(true);
             resultsRegion.innerHTML = `
                 <div class="parse-loading-card">
@@ -663,7 +670,6 @@
                 return;
             }
             selected = [];
-            directHandoffAttemptKeys.clear();
             setPageHasResults(true);
             page.dataset.baseFilename = "xhs_image";
             resultsRegion.innerHTML = `
@@ -695,7 +701,6 @@
             }
             applyTargetPage(payload.target_page);
             selected = [];
-            directHandoffAttemptKeys.clear();
             resultsRegion.innerHTML = payload.html || "";
             page.dataset.baseFilename = payload.base_filename || "xhs_image";
             setPageHasResults(Boolean(payload.has_content || payload.has_results));
@@ -776,7 +781,6 @@
                 activeParseController = null;
             }
             selected = [];
-            directHandoffAttemptKeys.clear();
             parseRequestId += 1;
             setParseLoading(false);
             page.dataset.baseFilename = "xhs_image";
@@ -825,46 +829,6 @@
             return getDispositionFilename(response) || item.filename || `${fallbackBase}${suffix}.${extension}`;
         }
 
-        function directLinkFilename(item, index, total) {
-            const fallbackBase = getBaseFilename();
-            const suffix = total > 1 ? `_${index + 1}` : "";
-            const rawFilename = item.filename || "";
-            if (rawFilename) {
-                return rawFilename;
-            }
-            return `${fallbackBase}${suffix}.${item.type === "video" ? "mp4" : "jpg"}`;
-        }
-
-        function handoffDirectItemToBrowser(item, index, total) {
-            const frame = getDirectDownloadFrame();
-            const link = document.createElement("a");
-            const filename = directLinkFilename(item, index, total);
-            link.href = item.url;
-            link.download = filename;
-            link.target = frame ? frame.name : "_blank";
-            link.referrerPolicy = "no-referrer";
-            link.rel = "noopener noreferrer";
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-            return filename;
-        }
-
-        function getDirectDownloadFrame() {
-            let frame = document.getElementById("xhs-direct-download-frame");
-            if (frame) {
-                return frame;
-            }
-
-            frame = document.createElement("iframe");
-            frame.id = "xhs-direct-download-frame";
-            frame.name = "xhs-direct-download-frame";
-            frame.hidden = true;
-            frame.style.display = "none";
-            document.body.appendChild(frame);
-            return frame;
-        }
-
         function getServerDownloadFrame() {
             let frame = document.getElementById("xhs-server-download-frame");
             if (frame) {
@@ -880,59 +844,23 @@
             return frame;
         }
 
-        function directRouteShouldUseNativeBrowserDownload(items) {
+        function directRouteHasOrdinaryMedia(items) {
             const directItems = (items || []).filter((item) => item && item.url);
-            if (directItems.length !== 1) {
-                return false;
-            }
-            return String(directItems[0].type || "").toLowerCase() === "video";
-        }
-
-        function directRouteHandoffKey(items) {
-            if (!directRouteShouldUseNativeBrowserDownload(items)) {
-                return "";
-            }
-
-            const item = (items || []).find((candidate) => candidate && candidate.url) || {};
-            const identity = item.asset_id || item.provider_resource_id || item.url;
-            return `${item.provider || "native"}:${identity}`;
-        }
-
-        function directRouteNeedsServerFallback(items) {
-            if (!directRouteShouldUseNativeBrowserDownload(items)) {
-                return false;
-            }
-
-            const item = (items || []).find((candidate) => candidate && candidate.url) || {};
-            const provider = String(item.provider || "").trim();
-            const browserDirectFetchSafe = downloadReliabilityApi
-                ? downloadReliabilityApi.browserDirectFetchSafe(item)
-                : item.browser_direct_fetch_safe === true;
-            return Boolean(provider) && !browserDirectFetchSafe;
-        }
-
-        function directRouteCanUseProviderBlobDownload(items) {
-            if (!directRouteShouldUseNativeBrowserDownload(items)) {
-                return false;
-            }
-
-            const item = (items || []).find((candidate) => candidate && candidate.url) || {};
-            const provider = String(item.provider || "").trim();
-            const url = String(item.url || "");
-            const sizeBytes = Number.parseInt(item.size_bytes || item.sizeBytes || "0", 10) || 0;
-            const browserDirectFetchSafe = downloadReliabilityApi
-                ? downloadReliabilityApi.browserDirectFetchSafe(item)
-                : item.browser_direct_fetch_safe === true;
-            return (
-                Boolean(provider)
-                && browserDirectFetchSafe
-                && /^https?:\/\//i.test(url)
-                && (!sizeBytes || sizeBytes <= PROVIDER_BROWSER_BLOB_MAX_BYTES)
+            return Boolean(
+                directItems.length === 1
+                && ordinaryMediaDownloadApi
+                && ordinaryMediaDownloadApi.isOrdinaryMediaItem(directItems[0])
             );
         }
 
-        function directRouteRetryHint() {
-            return "如果浏览器拦截、只打开直链或未开始下载，请再次点击下载，系统会改用服务器单文件下载。";
+        function ordinaryMediaFailure(error) {
+            const wrapped = new Error(
+                ordinaryMediaDownloadApi
+                    ? ordinaryMediaDownloadApi.safeErrorMessage(error)
+                    : "当前浏览器无法保存文件，请重试下载。",
+            );
+            wrapped.errorCode = String(error && error.errorCode || "BROWSER_DOWNLOAD_FAILED");
+            return wrapped;
         }
 
         async function prepareServerSingleDownload(payload) {
@@ -1148,30 +1076,16 @@
             return filename;
         }
 
-        function handoffDirectRouteItemsToBrowser(items) {
+        async function downloadDirectRouteItems(items) {
             const directItems = (items || []).filter((item) => item && item.url);
             if (directItems.length === 0) {
                 throw new Error("没有可下载的直链资源");
             }
 
-            const filenames = [];
-            for (let index = 0; index < directItems.length; index += 1) {
-                filenames.push(handoffDirectItemToBrowser(directItems[index], index, directItems.length));
-            }
-            return filenames;
-        }
-
-        async function downloadDirectRouteItems(items, options) {
-            const directItems = (items || []).filter((item) => item && item.url);
-            if (directItems.length === 0) {
-                throw new Error("没有可下载的直链资源");
-            }
-
-            const statusPrefix = options && options.providerBlob ? "Provider 源文件" : "源文件";
             const onStatus = (message) => {
-                setStatus(getStatusElement(), `${statusPrefix}${message}`);
+                setStatus(getStatusElement(), message);
             };
-            onStatus("正在连接资源...");
+            onStatus("正在获取文件...");
             const filenames = [];
             for (let index = 0; index < directItems.length; index += 1) {
                 filenames.push(await downloadDirectItem(directItems[index], index, directItems.length, onStatus));
@@ -1179,10 +1093,20 @@
             return filenames;
         }
 
-        async function downloadProviderBlobRouteItems(items) {
-            setProgressPending("浏览器下载");
-            setStatus(getStatusElement(), "Provider 源文件正在连接资源...");
-            return downloadDirectRouteItems(items, {providerBlob: true});
+        async function downloadOrdinaryMediaRouteItems(items) {
+            const directItems = (items || []).filter((item) => item && item.url);
+            if (!ordinaryMediaDownloadApi || directItems.length !== 1) {
+                throw new Error("当前资源无法由浏览器直接保存。");
+            }
+            hideDownloadProgress();
+            const item = directItems[0];
+            const result = await ordinaryMediaDownloadApi.download(item, {
+                filename: item.filename || `${getBaseFilename()}.mp4`,
+                onStage(_stage, message) {
+                    setStatus(getStatusElement(), message);
+                },
+            });
+            return [result.filename];
         }
 
         async function postDownloadPayload(payload) {
@@ -1205,6 +1129,38 @@
                 throw new Error(await parseErrorResponse(response));
             }
             return response.json();
+        }
+
+        async function handleDirectRoute(routeData) {
+            const directItems = routeData.items || [];
+            if (directRouteHasOrdinaryMedia(directItems)) {
+                try {
+                    const filenames = await downloadOrdinaryMediaRouteItems(directItems);
+                    setStatus(
+                        getStatusElement(),
+                        `已开始保存：${filenames.join("、")}${routeWarningText(routeData.warnings)}`,
+                        "text-success",
+                    );
+                } catch (error) {
+                    if (error && error.name === "AbortError") {
+                        throw error;
+                    }
+                    console.warn(
+                        "Ordinary browser download failed",
+                        String(error && error.errorCode || "BROWSER_DOWNLOAD_FAILED"),
+                    );
+                    throw ordinaryMediaFailure(error);
+                }
+                return;
+            }
+
+            const filenames = await downloadDirectRouteItems(directItems);
+            setProgress(100);
+            setStatus(
+                getStatusElement(),
+                `${routeData.route_reason || "已开始保存"}：${filenames.join("、")}${routeWarningText(routeData.warnings)}`,
+                "text-success",
+            );
         }
 
         async function saveDownloadResponse(response, fallbackName, startPercent, endPercent) {
@@ -1306,35 +1262,22 @@
             resetDownloadProgressBaseline();
             const busyLabel = forceAutoMode ? "智能处理中" : "保存中";
             setDownloadButtonsBusy(true, downloadBtn, busyLabel);
-            setStatus(
-                getStatusElement(),
-                forceAutoMode ? "正在智能判断下载方式，请稍候..." : "正在保存，请稍候...",
-            );
+            setStatus(getStatusElement(), "正在准备下载...");
 
             try {
-                const directRetryKey = directRouteHandoffKey(selected);
-                const retryDirectViaServer = Boolean(
-                    forceAutoMode
-                    && directRetryKey
-                    && directHandoffAttemptKeys.has(directRetryKey)
-                );
                 const payload = {
                     media_items: selected,
                     base_filename: getBaseFilename(),
-                    download_mode: retryDirectViaServer
-                        ? "server_single"
-                        : (
-                            forceAutoMode
-                                ? "auto"
-                                : normalizeDownloadMode(downloadModeInput ? downloadModeInput.value : "browser")
-                        ),
+                    download_mode: forceAutoMode
+                        ? "auto"
+                        : normalizeDownloadMode(downloadModeInput ? downloadModeInput.value : "browser"),
                     save_dir: saveDirInput ? saveDirInput.value.trim() : "xhs",
                     save_format: saveFormatInput ? saveFormatInput.value : "original",
                     quality: qualityInput ? qualityInput.value || 95 : 95,
                     video_save_mode: videoSaveModeInput ? videoSaveModeInput.value : "video",
                 };
 
-                if (!useFilePicker && selectedSingleItem(selected)) {
+                if (selectedSingleItem(selected)) {
                     const routePreview = await fetchRouteOnly(payload);
                     if (
                         routePreview
@@ -1353,57 +1296,9 @@
                         && routePreview.status === "routed"
                         && routePreview.route_type === "direct"
                     ) {
-                        const previewItems = routePreview.items || [];
-                        if (directRouteCanUseProviderBlobDownload(previewItems)) {
-                            try {
-                                const filenames = await downloadProviderBlobRouteItems(previewItems);
-                                setProgress(100);
-                                setStatus(
-                                    getStatusElement(),
-                                    `${routePreview.route_reason || "已通过浏览器直连保存 Provider 源文件"}：${filenames.join("、")}${routeWarningText(routePreview.warnings)}`,
-                                    "text-success",
-                                );
-                            } catch (directError) {
-                                if (directError && directError.name === "AbortError") {
-                                    throw directError;
-                                }
-                                console.warn(
-                                    "Provider browser download failed; using prepared server download",
-                                    directError && directError.errorCode
-                                        ? directError.errorCode
-                                        : "BROWSER_FETCH_FAILED",
-                                );
-                                await prepareAndHandoffServerSingle(
-                                    payload,
-                                    routePreview.warnings,
-                                );
-                            }
-                            return;
-                        }
-                        if (directRouteNeedsServerFallback(previewItems)) {
-                            await prepareAndHandoffServerSingle(
-                                payload,
-                                routePreview.warnings,
-                            );
-                            return;
-                        }
-                        const handoffKey = directRouteHandoffKey(routePreview.items || []);
-                        if (handoffKey && !directHandoffAttemptKeys.has(handoffKey)) {
-                            directHandoffAttemptKeys.add(handoffKey);
-                            const filenames = handoffDirectRouteItemsToBrowser(previewItems);
-                            setProgress(100);
-                            setStatus(
-                                getStatusElement(),
-                                `${routePreview.route_reason || "已交给浏览器直接下载源文件"}：${filenames.join("、")}。${directRouteRetryHint()}${routeWarningText(routePreview.warnings)}`,
-                                "text-muted",
-                            );
-                            return;
-                        }
+                        await handleDirectRoute(routePreview);
+                        return;
                     }
-                }
-
-                if (retryDirectViaServer) {
-                    setStatus(getStatusElement(), "正在切换服务器单文件下载，请稍候...");
                 }
 
                 if (
@@ -1440,79 +1335,7 @@
                     setProgress(0);
                     const data = await response.json();
                     if (data.status === "routed" && data.route_type === "direct") {
-                        const directItems = data.items || [];
-                        if (directRouteCanUseProviderBlobDownload(directItems)) {
-                            try {
-                                const filenames = await downloadProviderBlobRouteItems(directItems);
-                                setProgress(100);
-                                setStatus(
-                                    getStatusElement(),
-                                    `${data.route_reason || "已通过浏览器直连保存 Provider 源文件"}：${filenames.join("、")}${routeWarningText(data.warnings)}`,
-                                    "text-success",
-                                );
-                            } catch (directError) {
-                                if (directError && directError.name === "AbortError") {
-                                    throw directError;
-                                }
-                                console.warn(
-                                    "Provider browser download failed; using prepared server download",
-                                    directError && directError.errorCode
-                                        ? directError.errorCode
-                                        : "BROWSER_FETCH_FAILED",
-                                );
-                                await prepareAndHandoffServerSingle(
-                                    payload,
-                                    data.warnings,
-                                );
-                            }
-                            return;
-                        }
-                        if (directRouteNeedsServerFallback(directItems)) {
-                            await prepareAndHandoffServerSingle(
-                                payload,
-                                data.warnings,
-                            );
-                            return;
-                        }
-                        const handoffKey = directRouteHandoffKey(directItems);
-                        if (handoffKey && !directHandoffAttemptKeys.has(handoffKey)) {
-                            directHandoffAttemptKeys.add(handoffKey);
-                            const filenames = handoffDirectRouteItemsToBrowser(directItems);
-                            setProgress(100);
-                            setStatus(
-                                getStatusElement(),
-                                `${data.route_reason || "已交给浏览器直接下载源文件"}：${filenames.join("、")}。${directRouteRetryHint()}${routeWarningText(data.warnings)}`,
-                                "text-muted",
-                            );
-                            return;
-                        }
-                        try {
-                            const filenames = await downloadDirectRouteItems(data.items || []);
-                            setProgress(100);
-                            setStatus(
-                                getStatusElement(),
-                                `${data.route_reason || "已使用浏览器直链下载"}：${filenames.join("、")}${routeWarningText(data.warnings)}`,
-                                "text-success",
-                            );
-                        } catch (directError) {
-                            if (directError && directError.name === "AbortError") {
-                                throw directError;
-                            }
-                            if (!selectedSingleItem(selected)) {
-                                throw directError;
-                            }
-                            console.warn(
-                                "Native direct download fetch failed; handing off to browser",
-                                "BROWSER_FETCH_FAILED",
-                            );
-                            const filenames = handoffDirectRouteItemsToBrowser(data.items || []);
-                            setProgress(100);
-                            setStatus(
-                                getStatusElement(),
-                                `${data.route_reason || "已交给浏览器处理原始直链"}：${filenames.join("、")}。如浏览器打开原始视频页，请使用浏览器下载栏或视频菜单保存。${routeWarningText(data.warnings)}`,
-                                "text-success",
-                            );
-                        }
+                        await handleDirectRoute(data);
                         return;
                     }
                     if (data.status === "routed" && data.route_type === "proxy") {
@@ -1556,7 +1379,11 @@
                             : "DOWNLOAD_FAILED",
                     );
                     console.warn("Download request failed", errorCode);
-                    setProgress(0);
+                    if (errorCode.startsWith("BROWSER_")) {
+                        hideDownloadProgress();
+                    } else {
+                        setProgress(0);
+                    }
                     setStatus(
                         getStatusElement(),
                         error && error.message

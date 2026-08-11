@@ -76,7 +76,14 @@ class CostPolicy:
             )
 
         estimated_bytes = estimate_media_items_bytes(context.media_items)
-        if estimated_bytes >= HIGH_COST_BYTES and len(context.media_items) == 1:
+        if (
+            len(context.media_items) == 1
+            and single_video_prefers_browser_direct(context.media_items[0])
+        ):
+            route = ROUTE_DIRECT
+            reason = "ordinary-provider-video-requires-browser-data-plane"
+            score = 0.95
+        elif estimated_bytes >= HIGH_COST_BYTES and len(context.media_items) == 1:
             route = ROUTE_PROXY
             reason = "high-cost-single-resource-prefers-non-zip"
             score = 0.88

@@ -90,35 +90,40 @@
                                         <small>{{ item.size_display_label|default:item.size_label|default:"大小未知" }}</small>
                                     </span>
                                 </div>
-                                {% if batch_direct_links_allowed %}
+                                {% if batch_direct_links_allowed or item.browser_direct_fetch_safe and not item.requires_merge and not item.requires_cookie %}
                                     <div class="batch-result-actions">
-                                        <button type="button"
-                                                class="btn btn-outline-secondary btn-sm batch-copy-btn"
-                                                data-copy-text="{{ item.direct_url }}">
-                                            复制直链
-                                        </button>
-                                        <a class="btn btn-outline-secondary btn-sm"
-                                           href="{{ item.direct_url }}"
-                                           target="_blank"
-                                           rel="noopener noreferrer">
-                                            打开直链
-                                        </a>
-                                        <button type="button"
-                                                class="btn btn-brand btn-sm batch-browser-download-btn"
-                                                data-batch-direct-download
-                                                data-batch-direct-url="{{ item.direct_url }}"
-                                                data-batch-direct-filename="{{ row.base_filename|default:'video' }}_{{ forloop.counter }}.mp4">
-                                            <span class="spinner-border spinner-border-sm me-1 batch-download-spinner" aria-hidden="true"></span>
-                                            <i class="bi bi-download me-1 batch-download-icon"></i>
-                                            <span class="batch-download-label">浏览器下载</span>
-                                        </button>
+                                        {% if batch_direct_links_allowed %}
+                                            <button type="button"
+                                                    class="btn btn-outline-secondary btn-sm batch-copy-btn"
+                                                    data-copy-text="{{ item.direct_url }}">
+                                                复制直链
+                                            </button>
+                                            <a class="btn btn-outline-secondary btn-sm"
+                                               href="{{ item.direct_url }}"
+                                               target="_blank"
+                                               rel="noopener noreferrer">
+                                                打开直链
+                                            </a>
+                                        {% endif %}
+                                        {% if item.browser_direct_fetch_safe and not item.requires_merge and not item.requires_cookie %}
+                                            <button type="button"
+                                                    class="btn btn-brand btn-sm batch-browser-download-btn"
+                                                    data-batch-direct-download
+                                                    data-batch-direct-url="{{ item.direct_url }}"
+                                                    data-batch-direct-filename="{{ row.base_filename|default:'video' }}_{{ forloop.counter }}.mp4"
+                                                    data-batch-direct-provider="{{ item.provider|default:'' }}"
+                                                    data-batch-direct-size-bytes="{{ item.size_bytes|default:0 }}"
+                                                    data-batch-browser-fetch-safe="true"
+                                                    data-batch-requires-merge="false"
+                                                    data-batch-requires-cookie="false">
+                                                <span class="spinner-border spinner-border-sm me-1 batch-download-spinner" aria-hidden="true"></span>
+                                                <i class="bi bi-download me-1 batch-download-icon"></i>
+                                                <span class="batch-download-label">下载</span>
+                                            </button>
+                                        {% endif %}
                                     </div>
-                                    <div class="batch-download-progress" data-batch-download-progress hidden>
-                                        <div class="batch-download-progress-track">
-                                            <div class="batch-download-progress-bar" data-batch-download-progress-bar></div>
-                                        </div>
-                                        <div class="batch-download-progress-label" data-batch-download-progress-label>准备下载...</div>
-                                    </div>
+                                {% endif %}
+                                {% if batch_direct_links_allowed %}
                                     <details class="batch-direct-url">
                                         <summary>展开链接</summary>
                                         <code>{{ item.direct_url }}</code>

@@ -214,7 +214,7 @@
             <section class="batch-strategy-section">
                 <details class="batch-strategy-details">
                     <summary><i class="bi bi-info-circle me-1"></i>高级说明：下载策略矩阵</summary>
-                    <p class="text-muted mb-3">后端为每个资源声明推荐策略，前端按策略选择 Blob、直链、服务端单文件、ZIP 或合并。</p>
+                    <p class="text-muted mb-3">后端按资源类型区分浏览器保存与服务端生成文件；普通视频不经过服务器中转。</p>
                     <div class="row g-3">
                         {% for item in strategy_matrix %}
                             <div class="col-md-6 col-xl-4">
@@ -240,5 +240,6 @@
 
 {% block extra_js %}
 <script src="{% static 'js/parse_preferences.js' %}?v={{ static_asset_version }}"></script>
+<script src="{% static 'js/ordinary_media_download.js' %}?v={{ static_asset_version }}"></script>
 <script src="{% static 'js/batch_parse.js' %}?v={{ static_asset_version }}"></script>
 {% endblock %}

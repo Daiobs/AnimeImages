@@ -184,6 +184,8 @@ def single_video_can_server_proxy_download(item):
         return False
     if not is_http_url(item_url(item)):
         return False
+    if item_can_browser_direct_video(item):
+        return False
     provider = item_provider(item)
     if not provider:
         return True
@@ -265,6 +267,8 @@ def public_route_item(item):
         "source_platform",
         "filename",
         "browser_direct_fetch_safe",
+        "requires_merge",
+        "requires_cookie",
     )
     public_item = {
         key: item.get(key)
@@ -272,11 +276,11 @@ def public_route_item(item):
         if isinstance(item, dict) and item.get(key) not in (None, "")
     }
     if isinstance(item, dict):
-        public_item["browser_direct_fetch_safe"] = bool(
-            item_provider(item) in BROWSER_DIRECT_FETCH_SAFE_VIDEO_PROVIDERS
-            if item_provider(item)
-            else True
-        )
+        browser_direct_fetch_safe = item_can_browser_direct_video(item)
+        public_item["browser_direct_fetch_safe"] = browser_direct_fetch_safe
+        if browser_direct_fetch_safe:
+            public_item["requires_merge"] = False
+            public_item["requires_cookie"] = False
     return public_item
 
 
@@ -348,6 +352,19 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
         )
 
     if requested_mode in {"proxy", "server_single"}:
+        if (
+            len(normalized_items) == 1
+            and item_can_browser_direct_video(normalized_items[0])
+        ):
+            return route_payload(
+                route_type=ROUTE_BLOCKED,
+                route_reason="普通视频必须由浏览器直接获取；请重试下载或重新解析。",
+                download_strategy="browser_download_required",
+                media_items=normalized_items,
+                estimated_bytes=estimated_bytes,
+                error_code="ORDINARY_BROWSER_DOWNLOAD_REQUIRED",
+                warnings=warnings,
+            )
         if len(normalized_items) == 1:
             item = normalized_items[0]
             if single_image_can_attachment_download(item) or single_video_can_server_proxy_download(item):
@@ -370,13 +387,12 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
 
     if requested_mode in {"zip", "browser"}:
         if (
-            requested_mode == "browser"
-            and len(normalized_items) == 1
+            len(normalized_items) == 1
             and single_video_prefers_browser_direct(normalized_items[0])
         ):
             return route_payload(
                 route_type=ROUTE_DIRECT,
-                route_reason="单个视频资源优先使用浏览器直连下载，减少服务器中转等待",
+                route_reason="浏览器将直接获取并保存视频文件",
                 download_strategy="browser_direct_provider_video",
                 media_items=normalized_items,
                 estimated_bytes=estimated_bytes,
@@ -441,7 +457,7 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
         if single_video_prefers_browser_direct(normalized_items[0]):
             return route_payload(
                 route_type=ROUTE_DIRECT,
-                route_reason="Provider 视频优先交给浏览器下载管理器，减少服务器中转等待",
+                route_reason="浏览器将直接获取并保存视频文件",
                 download_strategy="browser_direct_provider_video",
                 media_items=normalized_items,
                 estimated_bytes=estimated_bytes,

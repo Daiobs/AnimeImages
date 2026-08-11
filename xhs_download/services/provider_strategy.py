@@ -14,7 +14,7 @@ BROWSER_BLOB_VIDEO_PROVIDERS = {
     "kukutool_generic",
     "tiantianjiexi_generic",
 }
-BROWSER_DIRECT_FETCH_SAFE_PROVIDERS = frozenset()
+BROWSER_DIRECT_FETCH_SAFE_PROVIDERS = frozenset({"kukutool", "tiantianjiexi"})
 SERVER_MERGE_PROVIDERS = {"youtube_merge", "yt_dlp_merge"}
 SERVER_ATTACHMENT_VIDEO_PROVIDERS = {"yt_dlp_generic"}
 
@@ -66,13 +66,17 @@ def build_download_strategy(asset, *, result_platform="", result_metadata=None):
                 if browser_direct_fetch_safe
                 else DOWNLOAD_STRATEGY_SERVER_ATTACHMENT
             ),
-            "fallback_strategy": FALLBACK_SERVER_ATTACHMENT,
+            "fallback_strategy": (
+                FALLBACK_NONE
+                if browser_direct_fetch_safe
+                else FALLBACK_SERVER_ATTACHMENT
+            ),
             "cors_expected": browser_direct_fetch_safe,
             "browser_direct_fetch_safe": browser_direct_fetch_safe,
             "requires_merge": False,
             "requires_cookie": False,
             "strategy_label": (
-                "浏览器 Blob 优先"
+                "浏览器下载"
                 if browser_direct_fetch_safe
                 else "服务端可观测下载"
             ),
@@ -115,15 +119,15 @@ def build_download_strategy_matrix():
     return (
         {
             "source": "抖音天天解析",
-            "strategy": DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
-            "fallback": FALLBACK_SERVER_ATTACHMENT,
-            "note": "签名资源默认先走同源 prepare，再交给浏览器接收服务端流。",
+            "strategy": DOWNLOAD_STRATEGY_BROWSER_BLOB,
+            "fallback": FALLBACK_NONE,
+            "note": "浏览器获取并保存源文件；失败时重试或重新解析，不转服务器中转。",
         },
         {
             "source": "抖音 KuKuTool",
-            "strategy": DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
-            "fallback": FALLBACK_SERVER_ATTACHMENT,
-            "note": "未明确证明 CORS 能力时使用同源 prepare/stream。",
+            "strategy": DOWNLOAD_STRATEGY_BROWSER_BLOB,
+            "fallback": FALLBACK_NONE,
+            "note": "普通视频由浏览器获取并保存；服务端不传输媒体正文。",
         },
         {
             "source": "小红书图片",

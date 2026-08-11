@@ -57,6 +57,7 @@ from .services.batch_parse.runtime import (
 from .services.batch_parse.view_context import build_batch_parse_context
 from .services.provider_manifest import build_provider_manifest_token
 from .services.provider_strategy import (
+    DOWNLOAD_STRATEGY_BROWSER_BLOB,
     DOWNLOAD_STRATEGY_BROWSER_DIRECT,
     DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
     DOWNLOAD_STRATEGY_SERVER_MERGE,
@@ -109,7 +110,7 @@ class TrackingThreadPoolExecutor:
 
 
 class ProviderDownloadStrategyTests(SimpleTestCase):
-    def test_tiantianjiexi_video_uses_observable_server_attachment(self):
+    def test_tiantianjiexi_video_uses_browser_blob_without_server_fallback(self):
         strategy = build_download_strategy(
             MediaAsset(
                 media_type="video",
@@ -121,13 +122,13 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
 
         self.assertEqual(
             strategy["download_strategy"],
-            DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
+            DOWNLOAD_STRATEGY_BROWSER_BLOB,
         )
-        self.assertEqual(strategy["fallback_strategy"], "server_attachment")
-        self.assertFalse(strategy["cors_expected"])
-        self.assertFalse(strategy["browser_direct_fetch_safe"])
+        self.assertEqual(strategy["fallback_strategy"], "none")
+        self.assertTrue(strategy["cors_expected"])
+        self.assertTrue(strategy["browser_direct_fetch_safe"])
 
-    def test_kukutool_video_requires_explicit_cors_capability(self):
+    def test_kukutool_video_uses_proven_browser_blob_capability(self):
         strategy = build_download_strategy(
             MediaAsset(
                 media_type="video",
@@ -139,10 +140,11 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
 
         self.assertEqual(
             strategy["download_strategy"],
-            DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
+            DOWNLOAD_STRATEGY_BROWSER_BLOB,
         )
-        self.assertFalse(strategy["cors_expected"])
-        self.assertFalse(strategy["browser_direct_fetch_safe"])
+        self.assertEqual(strategy["fallback_strategy"], "none")
+        self.assertTrue(strategy["cors_expected"])
+        self.assertTrue(strategy["browser_direct_fetch_safe"])
 
     def test_native_public_video_keeps_browser_direct_strategy(self):
         strategy = build_download_strategy(
@@ -195,13 +197,14 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
                 content = (PROJECT_ROOT / relative_path).read_text()
                 self.assertNotIn("BATCH_PARSE_MINUTE_IP_LIMIT", content)
 
-    def test_batch_direct_download_falls_back_to_handoff_when_fetch_fails(self):
+    def test_batch_ordinary_download_uses_shared_primitive_without_fallback(self):
         content = (PROJECT_ROOT / "static/js/batch_parse.js").read_text()
 
-        self.assertIn("function handoffBatchDirectUrl", content)
-        self.assertIn("handoffBatchDirectUrl(url, filename)", content)
-        self.assertIn("Blob 不可用", content)
-        self.assertIn("已改用直链", content)
+        self.assertIn("AnimeImagesOrdinaryMediaDownload", content)
+        self.assertIn("ordinaryMediaDownloadApi.download", content)
+        self.assertNotIn("function handoffBatchDirectUrl", content)
+        self.assertNotIn("handoffBatchDirectUrl(url, filename)", content)
+        self.assertNotIn("Blob 不可用", content)
         self.assertNotIn("server_single", content)
 
     def test_batch_javascript_is_page_scoped_and_retry_preserves_form(self):
@@ -1747,7 +1750,7 @@ class BatchParseViewTests(TestCase):
         mock_rows.assert_not_called()
 
     @patch("xhs_download.views.build_batch_result_rows")
-    def test_batch_progress_public_item_hides_raw_direct_links(self, mock_rows):
+    def test_batch_progress_public_item_can_download_without_raw_link_tools(self, mock_rows):
         BatchParseRuntimeSetting.objects.update_or_create(
             singleton_key=1,
             defaults={
@@ -1767,7 +1770,15 @@ class BatchParseViewTests(TestCase):
                 "platform": "douyin",
                 "platform_name": "抖音",
                 "post_type": "video",
-                "video_items": ({"direct_url": signed_url, "size_label": "1 MB"},),
+                "video_items": ({
+                    "direct_url": signed_url,
+                    "size_label": "1 MB",
+                    "size_bytes": 1_000_000,
+                    "provider": "tiantianjiexi",
+                    "browser_direct_fetch_safe": True,
+                    "requires_merge": False,
+                    "requires_cookie": False,
+                },),
                 "image_items": (),
             }
         ]
@@ -1785,8 +1796,13 @@ class BatchParseViewTests(TestCase):
         )
 
         self.assertEqual(item_response.status_code, 200)
-        self.assertNotIn(signed_url, item_response.json()["card_html"])
-        self.assertNotIn("token=secret", item_response.content.decode())
+        card_html = item_response.json()["card_html"]
+        self.assertIn("data-batch-direct-download", card_html)
+        self.assertIn("data-batch-browser-fetch-safe=\"true\"", card_html)
+        self.assertIn(signed_url.replace("&", "&amp;"), card_html)
+        self.assertNotIn("复制直链", card_html)
+        self.assertNotIn("打开直链", card_html)
+        self.assertNotIn("<summary>展开链接</summary>", card_html)
 
     @override_settings(
         BATCH_PARSE_PER_LINK_TIMEOUT_SECONDS=8,
@@ -2015,10 +2031,10 @@ class BatchParseViewTests(TestCase):
         self.assertContains(response, "batch-result-cover")
         self.assertContains(response, "复制直链")
         self.assertContains(response, "打开直链")
-        self.assertContains(response, "浏览器下载")
+        self.assertContains(response, '<span class="batch-download-label">下载</span>', html=True)
         self.assertContains(response, "data-batch-direct-url")
         self.assertContains(response, "data-batch-direct-download")
-        self.assertContains(response, "data-batch-download-progress")
+        self.assertNotContains(response, "data-batch-download-progress")
         self.assertContains(response, 'onerror="retryImage(this)"')
         self.assertNotContains(response, "v5-default.365yg.com</span>")
         self.assertNotContains(response, "质量未知")
@@ -2194,7 +2210,7 @@ class BatchParseViewTests(TestCase):
 
     @override_settings(BATCH_PARSE_PUBLIC_ENABLED=True)
     @patch("xhs_download.views.parse_media_page")
-    def test_batch_public_mode_does_not_render_raw_video_url(self, mock_parse):
+    def test_batch_public_mode_renders_download_handoff_without_raw_link_tools(self, mock_parse):
         mock_parse.return_value = ParseResult(
             platform="douyin",
             post_type="video",
@@ -2218,7 +2234,11 @@ class BatchParseViewTests(TestCase):
         self.assertContains(response, "public_video")
         self.assertNotContains(response, 'href="https://v5-default.365yg.com/private-demo.mp4"')
         self.assertNotContains(response, "复制全部成功视频直链")
-        self.assertNotContains(response, "data-batch-direct-url")
+        self.assertNotContains(response, "复制直链")
+        self.assertNotContains(response, "打开直链")
+        self.assertContains(response, "data-batch-direct-download")
+        self.assertContains(response, "data-batch-direct-url")
+        self.assertContains(response, 'data-batch-browser-fetch-safe="true"')
 
     @override_settings(BATCH_PARSE_PUBLIC_ENABLED=True)
     @patch("xhs_download.views.parse_media_page")

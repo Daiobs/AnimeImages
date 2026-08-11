@@ -1162,6 +1162,32 @@ class DownloadPrepareViewTests(TestCase):
         )
         self.assertEqual(forbidden.status_code, 403)
 
+    @patch("xhs_download.views.issue_download_handoff_tokens")
+    @patch("xhs_download.views.fetch_media_response")
+    def test_prepare_rejects_ordinary_tiantian_video_without_media_io(
+        self,
+        mock_fetch,
+        mock_issue_tokens,
+    ):
+        payload = {
+            "media_items": [build_tiantianjiexi_item()],
+            "base_filename": "ordinary-video",
+        }
+
+        response = self.client.post(
+            "/media/download-prepare/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json()["error_code"],
+            "DOWNLOAD_PREPARE_ROUTE_REJECTED",
+        )
+        mock_fetch.assert_not_called()
+        mock_issue_tokens.assert_not_called()
+
     def test_prepare_guard_and_rate_limit_failures_are_observable_json(self):
         with patch(
             "xhs_download.views.check_download_cost_preflight",

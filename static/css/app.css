@@ -1239,49 +1239,6 @@ body {
     margin-top: 10px;
 }
 
-.batch-download-progress {
-    margin-top: 10px;
-}
-
-.batch-download-progress-track {
-    height: 8px;
-    overflow: hidden;
-    border-radius: 999px;
-    background: #e5e7eb;
-}
-
-.batch-download-progress-bar {
-    width: 0;
-    height: 100%;
-    border-radius: inherit;
-    background: linear-gradient(90deg, var(--brand), #20c997);
-    transition: width .18s ease;
-}
-
-.batch-download-progress.is-indeterminate .batch-download-progress-bar {
-    width: 45%;
-    animation: batch-progress-slide 1.1s ease-in-out infinite;
-}
-
-.batch-download-progress-label {
-    margin-top: 4px;
-    color: var(--text-muted);
-    font-size: .8rem;
-    font-weight: 700;
-}
-
-@keyframes batch-progress-slide {
-    0% {
-        transform: translateX(-120%);
-    }
-    50% {
-        transform: translateX(35%);
-    }
-    100% {
-        transform: translateX(230%);
-    }
-}
-
 .batch-direct-url > summary {
     cursor: pointer;
     color: var(--brand);

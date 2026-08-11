@@ -5974,6 +5974,40 @@ def download_images_api(request):
         except Exception as error:
             recovery_decision = zip_failure_recovery(media_items, route_info, error)
             recovered_route = recovery_decision.route_info
+            if recovered_route and recovered_route.get("route_type") == ROUTE_DIRECT:
+                recovered_route["recovery"] = recovery_decision.log_fields()
+                recovered_route = attach_self_healing_event(
+                    request,
+                    recovered_route,
+                    media_items,
+                    trigger="zip_failure",
+                    error=error,
+                )
+                log_download_request_event(
+                    request,
+                    download_type=ROUTE_DIRECT,
+                    media_items=media_items,
+                    status=ObservabilityStatus.SUCCESS,
+                    started_at=started_at,
+                    actual_bytes=0,
+                    route_info=recovered_route,
+                )
+                return JsonResponse(
+                    {
+                        "status": "routed",
+                        "route_type": recovered_route.get("route_type"),
+                        "route_reason": recovered_route.get("route_reason"),
+                        "download_strategy": recovered_route.get("download_strategy"),
+                        "items": recovered_route.get("items", []),
+                        "warnings": recovered_route.get("warnings", []),
+                        "estimated_bytes": recovered_route.get("estimated_bytes", 0),
+                        "server_egress_estimated_bytes": recovered_route.get("server_egress_estimated_bytes", 0),
+                        "browser_egress_estimated_bytes": recovered_route.get("browser_egress_estimated_bytes", 0),
+                        "strategy_version": recovered_route.get("strategy_version", "recovery"),
+                        "confidence": recovered_route.get("confidence", 0),
+                        "routing_score": recovered_route.get("routing_score", 0),
+                    }
+                )
             if recovered_route and recovered_route.get("route_type") == ROUTE_PROXY:
                 recovered_route["recovery"] = recovery_decision.log_fields()
                 recovered_route = attach_self_healing_event(
