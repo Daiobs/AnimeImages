@@ -10,6 +10,7 @@
     "use strict";
 
     const MAX_BROWSER_BLOB_BYTES = 1024 * 1024 * 1024;
+    const DEFAULT_BROWSER_FETCH_IDLE_TIMEOUT_MS = 30000;
     const SAFE_VIDEO_CONTENT_TYPES = Object.freeze([
         "application/octet-stream",
         "binary/octet-stream",
@@ -88,6 +89,67 @@
         return error;
     }
 
+    function createBrowserFetchGuard(options) {
+        const settings = options && typeof options === "object" ? options : {};
+        const externalSignal = settings.signal;
+        const idleTimeoutMs = positiveInteger(settings.idleTimeoutMs)
+            || DEFAULT_BROWSER_FETCH_IDLE_TIMEOUT_MS;
+        const schedule = settings.schedule || (
+            typeof setTimeout === "function" ? setTimeout : null
+        );
+        const clearSchedule = settings.clearSchedule || (
+            typeof clearTimeout === "function" ? clearTimeout : null
+        );
+        const Controller = typeof AbortController === "function" ? AbortController : null;
+        if (!Controller || !schedule || !clearSchedule) {
+            return {
+                signal: externalSignal,
+                touch() {},
+                clear() {},
+                didTimeout() { return false; },
+            };
+        }
+
+        const controller = new Controller();
+        let timer = null;
+        let timedOut = false;
+        const externalAbort = () => controller.abort();
+        if (externalSignal) {
+            if (externalSignal.aborted) {
+                externalAbort();
+            } else if (typeof externalSignal.addEventListener === "function") {
+                externalSignal.addEventListener("abort", externalAbort, {once: true});
+            }
+        }
+
+        function clearTimer() {
+            if (timer !== null) {
+                clearSchedule(timer);
+                timer = null;
+            }
+        }
+
+        return {
+            signal: controller.signal,
+            touch() {
+                clearTimer();
+                timer = schedule(() => {
+                    timedOut = true;
+                    controller.abort();
+                }, idleTimeoutMs);
+            },
+            clear() {
+                clearTimer();
+                if (externalSignal && typeof externalSignal.removeEventListener === "function") {
+                    externalSignal.removeEventListener("abort", externalAbort);
+                }
+            },
+            didTimeout() {
+                return timedOut;
+            },
+        };
+    }
+
     function safeErrorMessage(error) {
         const errorCode = String(error && error.errorCode || "");
         if (errorCode === "BROWSER_DOWNLOAD_SIZE_MISMATCH") {
@@ -98,6 +160,9 @@
         }
         if (errorCode === "BROWSER_DOWNLOAD_UNSUPPORTED_CONTENT") {
             return "上游没有返回可保存的视频文件，请重新解析后再试。";
+        }
+        if (errorCode === "BROWSER_DOWNLOAD_STALLED") {
+            return "资源连接长时间没有进展，请重试下载；若仍失败，请重新解析。";
         }
         return "资源获取失败，请重试下载；若仍失败，请重新解析。";
     }
@@ -135,7 +200,11 @@
         }
     }
 
-    async function readBlobWithinLimit(response, maxBytes, contentType) {
+    async function readBlobWithinLimit(response, maxBytes, contentType, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        const onChunk = typeof settings.onChunk === "function"
+            ? settings.onChunk
+            : (() => {});
         if (!response.body || typeof response.body.getReader !== "function") {
             const blob = await response.blob();
             if (positiveInteger(blob && blob.size) > maxBytes) {
@@ -160,6 +229,7 @@
                     continue;
                 }
                 receivedBytes += value.byteLength;
+                onChunk(receivedBytes);
                 if (receivedBytes > maxBytes) {
                     if (typeof reader.cancel === "function") {
                         try {
@@ -217,13 +287,22 @@
         onStage("preparing", STAGE_MESSAGES.preparing);
         onStage("fetching", STAGE_MESSAGES.fetching);
 
+        const fetchGuard = createBrowserFetchGuard(settings);
         let response;
         try {
+            fetchGuard.touch();
             response = await fetchImpl(
                 String(item.url || item.video_url),
-                browserFetchOptions(settings.signal),
+                browserFetchOptions(fetchGuard.signal),
             );
         } catch (error) {
+            fetchGuard.clear();
+            if (fetchGuard.didTimeout()) {
+                throw downloadError(
+                    "BROWSER_DOWNLOAD_STALLED",
+                    "资源连接长时间没有进展。",
+                );
+            }
             if (error && error.name === "AbortError") {
                 throw error;
             }
@@ -233,6 +312,7 @@
             );
         }
         if (!response || !response.ok) {
+            fetchGuard.clear();
             throw downloadError(
                 "BROWSER_FETCH_HTTP_ERROR",
                 "上游资源请求失败。",
@@ -245,6 +325,7 @@
                 : "",
         );
         if (!contentTypeAllowsOrdinaryVideo(contentType)) {
+            fetchGuard.clear();
             throw downloadError(
                 "BROWSER_DOWNLOAD_UNSUPPORTED_CONTENT",
                 "上游没有返回视频文件。",
@@ -257,13 +338,33 @@
                 : 0,
         );
         if (expectedBytes > maxBytes) {
+            fetchGuard.clear();
             throw downloadError(
                 "BROWSER_BLOB_TOO_LARGE",
                 "当前资源超过浏览器保存上限。",
             );
         }
 
-        const blob = await readBlobWithinLimit(response, maxBytes, contentType);
+        let blob;
+        try {
+            fetchGuard.touch();
+            blob = await readBlobWithinLimit(response, maxBytes, contentType, {
+                onChunk: () => fetchGuard.touch(),
+            });
+        } catch (error) {
+            if (fetchGuard.didTimeout()) {
+                throw downloadError(
+                    "BROWSER_DOWNLOAD_STALLED",
+                    "资源连接长时间没有进展。",
+                );
+            }
+            if (error && error.name === "AbortError") {
+                throw error;
+            }
+            throw error;
+        } finally {
+            fetchGuard.clear();
+        }
         const receivedBytes = positiveInteger(blob && blob.size);
         if (!receivedBytes) {
             throw downloadError(
@@ -299,9 +400,11 @@
 
     return Object.freeze({
         MAX_BROWSER_BLOB_BYTES,
+        DEFAULT_BROWSER_FETCH_IDLE_TIMEOUT_MS,
         STAGE_MESSAGES,
         browserFetchOptions,
         contentTypeAllowsOrdinaryVideo,
+        createBrowserFetchGuard,
         defaultBlobHandoff,
         download,
         isOrdinaryMediaItem,

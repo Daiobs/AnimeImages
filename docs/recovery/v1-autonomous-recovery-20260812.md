@@ -259,8 +259,8 @@ Commit `530d0cc` implements the recovery primitive and is pushed to
 - It sends a credential-free, no-cache, no-Referer request, accepts only the
   declared ordinary-video content classes, enforces the configured 1 GiB Blob
   ceiling while reading even when `Content-Length` is absent, verifies exact
-  response length when supplied, and saves through an object URL without a
-  playback target.
+  response length when supplied, aborts after 30 seconds without response/chunk
+  progress, and saves through an object URL without a playback target.
 - The server route validates the Provider manifest and capability, reports zero
   server egress, and blocks explicit proxy/server-single attempts for ordinary
   Provider videos. The prepare endpoint therefore cannot mint a stream ticket
@@ -271,9 +271,26 @@ Commit `530d0cc` implements the recovery primitive and is pushed to
   `docs/research/v1-batch-blob-progress-archive.md` for possible reuse by work
   AnimeImages actually owns, such as ZIP or YouTube merge jobs.
 - Automated candidate evidence: `xhs_download` 967/967, Provider Strategy
-  118/118, and the shared primitive 14/14. A final full gate follows the
+  118/118, and the shared primitive 16/16. A final full gate follows the
   documentation commit and real product-flow browser acceptance.
 
 The completed 110,691,390-byte proof satisfies the 100 MiB memory gate. No 300
 MiB or 500 MiB+ claim has been made; those sizes remain explicitly unverified
 under `BROWSER_BLOB_LARGE_FILE_LIMITATION`.
+
+### First product-flow attempt and bounded-stall correction
+
+The first real Single product-flow attempt parsed a TianTianJieXi result in
+1.826 seconds and issued exactly one local route-control request. AnimeImages
+received no ordinary media request: prepare, stream, and status counts were all
+zero. The browser-side media acquisition did not produce a file within 90
+seconds, so this attempt is explicitly not a product PASS.
+
+A separately reparsed fresh CDN control then transferred the same
+`110,691,390`-byte class in 20.254 seconds at about 5.47 MB/s with HTTP 200,
+`video/mp4`, and permissive CORS. This proves that AnimeImages throughput was not
+the bottleneck, but it does not prove why the earlier browser request stopped
+making progress. The implementation therefore gained a 30-second inactivity
+guard that resets on every received chunk. It produces safe retry/reparse
+guidance and cannot enter Server Relay. The post-fix real Single and Batch
+Chrome gates remain required before Linux canary or production deployment.

@@ -199,6 +199,64 @@ test("a missing Content-Length is still bounded while the response body is read"
     assert.equal(cancelled, true);
 });
 
+test("a stalled browser fetch is aborted with a safe retryable error", async () => {
+    let aborted = false;
+    await assert.rejects(
+        ordinary.download(ordinaryItem(), {
+            idleTimeoutMs: 5,
+            fetchImpl: async (_url, options) => new Promise((_resolve, reject) => {
+                options.signal.addEventListener("abort", () => {
+                    aborted = true;
+                    const error = new Error("aborted");
+                    error.name = "AbortError";
+                    reject(error);
+                }, {once: true});
+            }),
+        }),
+        (error) => {
+            assert.equal(error.errorCode, "BROWSER_DOWNLOAD_STALLED");
+            assert.doesNotMatch(ordinary.safeErrorMessage(error), /服务器|中转|Relay/);
+            return true;
+        },
+    );
+    assert.equal(aborted, true);
+});
+
+test("a stalled response body is aborted by the same inactivity guard", async () => {
+    let bodyAborted = false;
+    await assert.rejects(
+        ordinary.download(ordinaryItem(), {
+            idleTimeoutMs: 5,
+            fetchImpl: async (_url, options) => ({
+                ok: true,
+                headers: headers({
+                    "Content-Type": "video/mp4",
+                    "Content-Length": 5,
+                }),
+                body: {
+                    getReader() {
+                        return {
+                            async read() {
+                                return new Promise((_resolve, reject) => {
+                                    options.signal.addEventListener("abort", () => {
+                                        bodyAborted = true;
+                                        const error = new Error("aborted");
+                                        error.name = "AbortError";
+                                        reject(error);
+                                    }, {once: true});
+                                });
+                            },
+                            releaseLock() {},
+                        };
+                    },
+                },
+            }),
+        }),
+        (error) => error.errorCode === "BROWSER_DOWNLOAD_STALLED",
+    );
+    assert.equal(bodyAborted, true);
+});
+
 test("network and HTTP errors never include the signed URL", async () => {
     const signedUrl = "https://media.example.test/video.mp4?token=secret";
     for (const fetchImpl of [

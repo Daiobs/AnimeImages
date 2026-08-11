@@ -35,9 +35,10 @@ TianTianJieXi / KuKuTool CDN -> user browser -> user disk
 - AnimeImages performs parsing, Provider selection, manifest validation, route
   control, and handoff only. Ordinary media requests and bytes remain zero.
 - The browser fetches with omitted credentials and Referer, receives a bounded
-  complete Blob, and uses an object URL download anchor. A real Chrome proof
-  saved a 110,691,390-byte TianTianJieXi MP4 with exact byte equality and no
-  playback navigation.
+  complete Blob, aborts after 30 seconds without response/chunk progress, and
+  uses an object URL download anchor. A real Chrome proof saved a
+  110,691,390-byte TianTianJieXi MP4 with exact byte equality and no playback
+  navigation.
 - Single and Batch call the same browser primitive. Ordinary failures stop with
   retry/reparse guidance and never call prepare, stream, status, server proxy,
   or single-video ZIP fallback.

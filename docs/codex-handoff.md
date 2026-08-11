@@ -223,7 +223,9 @@ server-generated output: upstream -> AnimeImages processing -> user browser
   `static/js/ordinary_media_download.js` primitive on both Single and Batch.
 - The browser performs a credential-free, no-cache, no-Referer fetch, validates
   the media response and exact `Content-Length` when present, enforces a bounded
-  Blob size, then saves through an object URL and a download anchor.
+  Blob size, and aborts a connection after 30 seconds with no response/chunk
+  progress. A continuously transferring file is not constrained by that idle
+  timer. The completed Blob is saved through an object URL and download anchor.
 - The ordinary path does not call `/media/download-prepare/`,
   `/media/download-stream/`, or `/media/download-status/`. It does not fall back
   to server proxy, single-video ZIP, or another AnimeImages media relay.
