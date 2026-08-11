@@ -62,8 +62,8 @@ checkpoint remains useful for genuinely server-required outputs.
 | Milestone | Status | Commit | Production | Evidence |
 | --- | --- | --- | --- | --- |
 | M0 autonomy checkpoint | complete | `bbbf87b` | unchanged at `485951b` | checkpoint branch pushed; production readiness 200 |
-| M1 TianTian browser recovery | candidate implemented | `530d0cc`, `4fb735b` | not deployed | 110,691,390-byte Chrome Blob save passed with zero AnimeImages media bytes; post-fix product-flow Chrome gate pending |
-| M2 Single/Batch unified direct download | candidate implemented | `530d0cc`, `4fb735b` | not deployed | shared bounded ordinary download primitive; Django 967/967 and Node 53/53 passed |
+| M1 TianTian browser recovery | local browser gate passed | `530d0cc`, `4fb735b` | not deployed | real Single and Batch flows saved an exact 110,691,390-byte file with zero AnimeImages media-body requests |
+| M2 Single/Batch unified direct download | local browser gate passed | `530d0cc`, `4fb735b` | not deployed | both product surfaces loaded the shared bounded primitive; Django 967/967 and Node 53/53 passed |
 | M3 YouTube verification | pending | pending | not deployed | server-required merge remains separate |
 | M4 Batch/Admin clarity | pending | pending | not deployed | begins only after ordinary download stability |
 
@@ -83,10 +83,10 @@ checkpoint remains useful for genuinely server-required outputs.
 
 ## Next Gate
 
-Run the shared implementation through real Single and Batch product flows, then
-through an isolated Linux candidate. Preserve server paths only for generated
-outputs such as YouTube merges and ZIPs. Production rollout is allowed only
-after exact-file, zero-server-media, and no-playback gates pass.
+Run the pushed shared implementation through an isolated Linux candidate.
+Preserve server paths only for generated outputs such as YouTube merges and
+ZIPs. Production rollout is allowed only after the Linux candidate preserves
+the exact-file, zero-server-media, and no-playback gates proven locally.
 
 ## P0 Provider And Browser-Native Feasibility Audit
 
@@ -273,8 +273,43 @@ Both are pushed to `origin/stabilize/v1-autonomous-recovery-20260812`.
   AnimeImages actually owns, such as ZIP or YouTube merge jobs.
 - Automated candidate evidence after the correction: `xhs_download` 967/967,
   Provider Strategy 118/118, the shared primitive 16/16, and all selected Node
-  suites 53/53. Real post-fix product-flow browser acceptance remains the next
-  hard gate.
+  suites 53/53.
+
+## Post-Fix Product-Flow Browser Acceptance
+
+The pushed candidate was served locally on an isolated port and exercised in
+real Chrome macOS through both product surfaces. The test used a real, fresh
+TianTian ordinary MP4 without recording its source or signed URL.
+
+Single flow:
+
+- parse selected `tiantianjiexi` and a `*.365yg.com` ordinary MP4
+- browser save completed in about 3.4 seconds
+- CDN response status `200`
+- CDN `Content-Length`: `110,691,390`
+- saved file size: `110,691,390`
+- one AnimeImages control-plane route request
+- AnimeImages prepare, stream, and status requests: zero
+- CDN media requests: one
+- no playback navigation and no page console warning/error
+
+Batch flow:
+
+- progressive parse returned one successful ordinary MP4 card
+- the card loaded `ordinary_media_download.js` and used the shared primitive
+- CDN response status `200`
+- CDN `Content-Length`: `110,691,390`
+- saved file size: `110,691,390`
+- observed transfer duration: about 55.7 seconds on the selected CDN host
+- AnimeImages route, prepare, stream, and status requests: zero
+- CDN media requests: one
+- no playback navigation and no page console warning/error
+
+The large Single/Batch duration difference occurred between Chrome and two CDN
+hosts; it was not an AnimeImages media relay. The Batch transfer continued to
+make progress and therefore correctly remained inside the 30-second idle guard.
+The local runtime access setting used for the anonymous Batch acceptance was
+restored to its original value immediately after the test.
 
 The completed 110,691,390-byte proof satisfies the 100 MiB memory gate. No 300
 MiB or 500 MiB+ claim has been made; those sizes remain explicitly unverified
