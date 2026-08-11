@@ -22,13 +22,19 @@ not the deployment source for this recovery phase.
 Ordinary complete media must follow:
 
 ```text
-Provider/CDN -> browser native download task -> user disk
+Provider/CDN -> user browser -> user disk
 ```
 
 AnimeImages remains the parsing, quality-selection, policy, and handoff control
 plane. Ordinary media must not use AnimeImages as a media relay. Server-required
 outputs, such as a generated YouTube audio/video merge or ZIP, remain a separate
 class.
+
+Recovery v1 may use browser `fetch`, a complete browser-side Blob, an object
+URL, and an anchor save. This is a user-browser data path: AnimeImages ordinary
+media requests and bytes remain zero. A failed ordinary browser download may be
+retried or reparsed, but it must not automatically fall back to Server Relay.
+File System Access and Service Worker designs remain research-only alternatives.
 
 ## Pre-Recovery Evidence
 
@@ -56,7 +62,7 @@ checkpoint remains useful for genuinely server-required outputs.
 | Milestone | Status | Commit | Production | Evidence |
 | --- | --- | --- | --- | --- |
 | M0 autonomy checkpoint | complete | `bbbf87b` | unchanged at `485951b` | checkpoint branch pushed; production readiness 200 |
-| M1 TianTian native download | blocked | pending | not deployed | CDN lacks attachment semantics; all allowed standard primitives opened a video document instead of a download task |
+| M1 TianTian browser recovery | proof complete; product implementation pending | pending | not deployed | 110,691,390-byte Chrome Blob save passed with zero AnimeImages media bytes |
 | M2 Single/Batch unified direct download | pending | pending | not deployed | shared ordinary download primitive |
 | M3 YouTube verification | pending | pending | not deployed | server-required merge remains separate |
 | M4 Batch/Admin clarity | pending | pending | not deployed | begins only after ordinary download stability |
@@ -68,16 +74,18 @@ checkpoint remains useful for genuinely server-required outputs.
    phase.
 3. Every deployable candidate must be committed and pushed before a canary or
    production rollout.
-4. A browser handoff is successful only when the browser creates a standard
-   download task and the complete file lands on disk.
-5. Playback tabs, Blob downloads, File System Access, Server Relay, and frontend
-   progress completion are not substitutes for the ordinary download contract.
+4. A browser handoff is successful only when the complete file lands on disk
+   without an AnimeImages media-body request or playback-page result.
+5. Browser Blob is permitted for Recovery v1. File System Access, Service
+   Worker downloaders, and ordinary-media Server Relay remain outside this
+   recovery path.
+6. Single and Batch must use the same ordinary-media browser primitive.
 
 ## Next Gate
 
-Audit TianTianJieXi provider payload selection and historical native-download
-implementations. Prove which provider field represents a download-capable URL
-before changing the browser handoff.
+Implement and validate one shared Single/Batch ordinary-media browser Blob
+primitive using the proven no-Referer request context. Preserve server paths
+only for generated outputs such as YouTube merges and ZIPs.
 
 ## P0 Provider And Browser-Native Feasibility Audit
 
@@ -152,12 +160,12 @@ zero server reads. They did not assert a real Chrome download task and complete
 file. The remembered compatibility came from combining several transport
 paths, not from a lost standard-browser primitive that can be restored as-is.
 
-### Contract blocker
+### Superseded contract blocker
 
 With the currently returned CDN response, a normal web page cannot force a
-cross-origin playable MP4 into a standard browser download task. Meeting that
-goal requires at least one capability currently excluded by the recovery
-contract:
+cross-origin playable MP4 navigation into a native attachment task. The first
+recovery contract excluded every browser-side mechanism that could turn the
+fetchable response into a saved file. That constraint was later corrected.
 
 - an upstream URL/endpoint that returns `Content-Disposition: attachment`
 - Browser fetch followed by Blob/object-URL save
@@ -166,15 +174,76 @@ contract:
 - a browser extension or manual browser save action
 - an AnimeImages media relay that supplies attachment semantics
 
-Implementing any of these without an explicit contract decision would redefine
-the P0 requirement rather than satisfy it. No product code, deployment, runtime
-configuration, database, systemd, Nginx, or environment change was made.
+The product owner explicitly approved browser fetch plus Blob/object-URL save as
+Recovery v1 while retaining the hard requirement that AnimeImages ordinary
+media bytes remain zero. No product code, deployment, runtime configuration,
+database, systemd, Nginx, or environment change was made during the blocker
+audit.
 
 ### Decision
 
-Status: `STOP_AND_REPORT_CORE_CONTRACT_DECISION_REQUIRED`
+Historical status: `STOP_AND_REPORT_CORE_CONTRACT_DECISION_REQUIRED`
 
-Production remains on the known-good V1 baseline. M1 is blocked pending a
-product decision about which browser capability may replace the unavailable
-upstream attachment response. Batch unification and production canary/deploy
-remain deferred because their prerequisite did not pass.
+This status is superseded by the approved Browser Blob recovery contract.
+
+## Historical Download Transport Archaeology
+
+The detailed evidence and classification table are recorded in
+`docs/research/v1-download-transport-archaeology.md`.
+
+Five detached historical worktrees were audited at `9699a94`, `8a4dffa`,
+`42304a9`, `faf71f6`, and `485951b`. Their focused route/strategy tests passed
+and confirmed the following boundaries:
+
+- `9699a94`: TianTian first-click CDN anchor/hidden-iframe handoff
+- `8a4dffa`: the same handoff followed by automatic server fallback
+- `42304a9`: merged TianTian Blob-first strategy with server fallback
+- `faf71f6`: Single Blob/fallback plus Batch Blob
+- `485951b`: Single server attachment plus Batch Blob
+
+The last identifiable TianTian native-CDN code interval is `9699a94` through
+immediately before `8a4dffa`. It was an intermediate PR #10 interval, not a
+proven deployed `main` version. Its exact no-Referer anchor/iframe primitive no
+longer creates a download task against the current playable CDN response.
+
+Status:
+
+`HISTORICAL_NATIVE_PATH_IDENTIFIED_BUT_EXTERNAL_BEHAVIOR_CHANGED`
+
+## TianTian Browser Blob Hard Proof
+
+A fresh TianTian ordinary MP4 was reused without exposing its source or signed
+URL:
+
+- CDN host: `v9-default.365yg.com`
+- expected bytes: `110,691,390`
+- safe descriptor SHA-256:
+  `b7accd0d84c5057c7217d52ff9b82604ea9b4bf9dcac3198ac52ace9810c4799`
+
+The historical fetch options received HTTP 403. Header isolation proved the CDN
+rejects the page Referer; it does not reject CORS in general. Adding
+`referrerPolicy: "no-referrer"` produced this real Chrome macOS result:
+
+- HTTP 200 and a CORS-readable response body
+- response acquisition in 483 ms
+- first chunk in 485 ms
+- complete browser fetch in 5,279 ms
+- object-URL handoff in 5,342 ms total
+- received, Blob, and saved bytes all exactly `110,691,390`
+- no playback navigation
+- zero browser console errors
+- zero AnimeImages media requests and bytes
+
+Chrome automation could not inspect the internal Downloads UI, but the complete
+file appeared in the browser download directory and exactly matched both the
+CDN Content-Length and browser byte accumulator.
+
+Status:
+
+`TIANTIAN_BROWSER_BLOB_RECOVERY_PASS`
+
+Decision: proceed with a shared Single/Batch Browser Blob Recovery v1 primitive.
+Do not automatically use Server Relay for ordinary media. Preserve
+server-required paths for generated output only. Track
+`BROWSER_BLOB_LARGE_FILE_LIMITATION` for 300 MiB and 500 MiB+ memory behavior;
+the 100 MiB class is the current recovery gate.
