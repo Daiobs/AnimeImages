@@ -56,7 +56,7 @@ checkpoint remains useful for genuinely server-required outputs.
 | Milestone | Status | Commit | Production | Evidence |
 | --- | --- | --- | --- | --- |
 | M0 autonomy checkpoint | complete | `bbbf87b` | unchanged at `485951b` | checkpoint branch pushed; production readiness 200 |
-| M1 TianTian native download | in progress | pending | not deployed | requires >=100 MiB real browser download and zero AnimeImages media bytes |
+| M1 TianTian native download | blocked | pending | not deployed | CDN lacks attachment semantics; all allowed standard primitives opened a video document instead of a download task |
 | M2 Single/Batch unified direct download | pending | pending | not deployed | shared ordinary download primitive |
 | M3 YouTube verification | pending | pending | not deployed | server-required merge remains separate |
 | M4 Batch/Admin clarity | pending | pending | not deployed | begins only after ordinary download stability |
@@ -78,3 +78,81 @@ checkpoint remains useful for genuinely server-required outputs.
 Audit TianTianJieXi provider payload selection and historical native-download
 implementations. Prove which provider field represents a download-capable URL
 before changing the browser handoff.
+
+## P0 Provider And Browser-Native Feasibility Audit
+
+Date: 2026-08-12
+
+### Provider payload
+
+A fresh TianTianJieXi parse of the established Douyin test item completed in
+about 2.7 seconds and returned six URL fields:
+
+- one parent `videos[0].url`
+- five nested `videos[0].streams[].url` entries
+- no `download_url`, `play_url`, `video_url`, `source`, or `original` field
+
+The selected original-quality stream was `110,691,390` bytes on
+`v11-default.365yg.com`. The normalizer is not choosing a generic playback field
+over a distinct download field for this response; no distinct download field
+exists.
+
+### CDN response
+
+Both a safe header probe and the real Chrome response showed:
+
+- status `200`
+- `Content-Type: video/mp4`
+- `Content-Length: 110691390`
+- `Access-Control-Allow-Origin: *`
+- byte ranges supported
+- no `Content-Disposition` header
+
+The URL is fetch-capable and playable, but the response does not instruct the
+browser to treat cross-origin navigation as an attachment.
+
+### Official provider behavior
+
+The public TianTianJieXi Batch page uses a direct cross-origin anchor with
+`target="_blank"` and a `download` attribute. Its own FAQ documents that a click
+can open the video page and suggests Alt-click, Save Link As, or Save Video As.
+No separate download endpoint or stronger browser handoff was present in the
+observed API payload or public page implementation.
+
+### Real Chrome matrix
+
+| Primitive | Browser result | Download task | Final file |
+| --- | --- | --- | --- |
+| Cross-origin anchor with `download`, no target | navigated to CDN video document | no | no |
+| Historical hidden-iframe target | loaded CDN `video/mp4` as an iframe document | no | no |
+| Same-origin zero-byte `302` with attachment header, then CDN | followed redirect to CDN video document | no | no |
+
+All three probes kept AnimeImages media bytes at zero, but none satisfied the
+required browser Download Manager gate.
+
+### Contract blocker
+
+With the currently returned CDN response, a normal web page cannot force a
+cross-origin playable MP4 into a standard browser download task. Meeting that
+goal requires at least one capability currently excluded by the recovery
+contract:
+
+- an upstream URL/endpoint that returns `Content-Disposition: attachment`
+- Browser fetch followed by Blob/object-URL save
+- Browser fetch streamed through File System Access
+- a Service Worker/custom downloader
+- a browser extension or manual browser save action
+- an AnimeImages media relay that supplies attachment semantics
+
+Implementing any of these without an explicit contract decision would redefine
+the P0 requirement rather than satisfy it. No product code, deployment, runtime
+configuration, database, systemd, Nginx, or environment change was made.
+
+### Decision
+
+Status: `STOP_AND_REPORT_CORE_CONTRACT_DECISION_REQUIRED`
+
+Production remains on the known-good V1 baseline. M1 is blocked pending a
+product decision about which browser capability may replace the unavailable
+upstream attachment response. Batch unification and production canary/deploy
+remain deferred because their prerequisite did not pass.
