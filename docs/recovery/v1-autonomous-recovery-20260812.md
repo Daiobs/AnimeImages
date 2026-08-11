@@ -130,6 +130,28 @@ observed API payload or public page implementation.
 All three probes kept AnimeImages media bytes at zero, but none satisfied the
 required browser Download Manager gate.
 
+### Historical implementation audit
+
+The repository history does contain the remembered direct-plus-compatible
+download period, but it does not contain a previously proven implementation of
+the current ordinary-download contract:
+
+| Commit | Historical behavior | Contract result |
+| --- | --- | --- |
+| `7922c6a` | browser `fetch`, then File System Access or Blob/object URL | excluded; custom browser-side transfer |
+| `a60105f` / `03f3c8a` | cross-origin anchor with `download` and `_blank` | same primitive that currently opens playback; no real download-task proof |
+| `8a4dffa` | hidden-iframe direct handoff, then automatic server-single fallback | direct handoff is unproven and fallback transfers media through AnimeImages |
+| `a7adce5` | Provider browser Blob path, then server-single fallback | excluded Blob and relay paths |
+| `2cce720` / `485951b` | hidden-iframe server attachment plus direct retry behavior | ordinary path can depend on AnimeImages media transfer |
+| `e485fa9` | capability flag marks TianTian as native-handoff safe | tests prove routing metadata, not a real browser Download Manager task |
+| `23bcd9e` | pre-opened tab navigates to the Provider resource | explicitly reports `downloadStarted=false`; playback/manual save behavior |
+| `d93977e` | fetch body streamed to File System Access | zero server media bytes, but explicitly excluded from the final contract |
+
+The historical test suites checked route classification, DOM invocation, and
+zero server reads. They did not assert a real Chrome download task and complete
+file. The remembered compatibility came from combining several transport
+paths, not from a lost standard-browser primitive that can be restored as-is.
+
 ### Contract blocker
 
 With the currently returned CDN response, a normal web page cannot force a
