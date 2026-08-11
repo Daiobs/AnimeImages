@@ -221,8 +221,8 @@ class TianTianJieXiProviderIsolationTests(TestCase):
     def test_slot_wait_is_charged_to_the_assigned_provider_deadline(self):
         client = Mock()
         client.parse_url.return_value = {
-            "title": "fresh",
-            "video_url": "https://v16.tiktokcdn.com/fresh.mp4",
+            "title": "uncached upstream",
+            "video_url": "https://v16.tiktokcdn.com/uncached-upstream.mp4",
         }
         single_flight_lease = Mock()
         parse_lease = Mock()
@@ -258,7 +258,7 @@ class TianTianJieXiProviderIsolationTests(TestCase):
                 timeout_seconds=1,
             )
 
-        self.assertEqual(payload["title"], "fresh")
+        self.assertEqual(payload["title"], "uncached upstream")
         self.assertEqual(acquire_lease.call_args_list[1].kwargs["wait_seconds"], 0.25)
         self.assertAlmostEqual(
             client.parse_url.call_args.kwargs["timeout_seconds"],

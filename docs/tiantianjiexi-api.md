@@ -198,6 +198,12 @@ For user-facing Douyin ultra-HD parsing, keep a strict frontend budget and race
 TianTianJieXi against the fallback provider so a slow upstream call does not
 block the page.
 
+`TIANTIANJIEXI_PAYLOAD_CACHE_TTL_SECONDS` controls a cache of the successful
+Provider payload, including its media URLs. A cache hit returns without another
+TianTianJieXi API request. The 120-second default is independent of the
+AnimeImages Provider manifest maximum age and the unknown lifetime of the
+upstream CDN URL. See [Provider Resource Lifecycle](provider-resource-lifecycle.md).
+
 ## Project Integration Notes
 
 Current AnimeImages integration uses TianTianJieXi as the primary Douyin

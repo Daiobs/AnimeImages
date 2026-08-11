@@ -143,6 +143,25 @@ Do not treat `.env *_ENABLED=True` as public launch approval. Routine rollout is
 /admin/provider-settings/
 ```
 
+### Provider Resource Lifecycle
+
+- Keep the Provider payload cache, AnimeImages Provider manifest, and upstream
+  CDN URL as three independent lifecycles.
+- TianTianJieXi payload cache hits can return a previously cached media URL
+  without calling the upstream API. A user-visible parse or retry action does
+  not imply an uncached upstream parse.
+- Manifest validity proves the signed AnimeImages asset/URL identity and token
+  age, not upstream CDN reachability or URL lifetime.
+- The current code does not know TianTianJieXi CDN URL lifetime. Record it as
+  `CDN_URL_LIFETIME_UNKNOWN`; do not infer it from the 120-second payload cache
+  or the 3600-second manifest maximum age.
+- In tests, use `uncached_upstream_parse` only when an upstream call is proved,
+  and `newly_issued_provider_result` only when the Provider has actually
+  returned the result in that test.
+
+Read [Provider Resource Lifecycle](provider-resource-lifecycle.md) before
+changing cache, manifest, recovery, or download behavior.
+
 ## Important Admin Pages
 
 ```text
