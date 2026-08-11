@@ -62,8 +62,8 @@ checkpoint remains useful for genuinely server-required outputs.
 | Milestone | Status | Commit | Production | Evidence |
 | --- | --- | --- | --- | --- |
 | M0 autonomy checkpoint | complete | `bbbf87b` | unchanged at `485951b` | checkpoint branch pushed; production readiness 200 |
-| M1 TianTian browser recovery | candidate implemented | `530d0cc` | not deployed | 110,691,390-byte Chrome Blob save passed with zero AnimeImages media bytes; product-flow Chrome gate pending |
-| M2 Single/Batch unified direct download | candidate implemented | `530d0cc` | not deployed | shared bounded ordinary download primitive; Django 967/967 and focused Node 14/14 passed |
+| M1 TianTian browser recovery | candidate implemented | `530d0cc`, `4fb735b` | not deployed | 110,691,390-byte Chrome Blob save passed with zero AnimeImages media bytes; post-fix product-flow Chrome gate pending |
+| M2 Single/Batch unified direct download | candidate implemented | `530d0cc`, `4fb735b` | not deployed | shared bounded ordinary download primitive; Django 967/967 and Node 53/53 passed |
 | M3 YouTube verification | pending | pending | not deployed | server-required merge remains separate |
 | M4 Batch/Admin clarity | pending | pending | not deployed | begins only after ordinary download stability |
 
@@ -251,8 +251,9 @@ the 100 MiB class is the current recovery gate.
 
 ## Shared Ordinary Download Candidate
 
-Commit `530d0cc` implements the recovery primitive and is pushed to
-`origin/stabilize/v1-autonomous-recovery-20260812`.
+Commit `530d0cc` implements the recovery primitive. Commit `4fb735b` adds the
+bounded no-progress correction discovered during the first product-flow test.
+Both are pushed to `origin/stabilize/v1-autonomous-recovery-20260812`.
 
 - `static/js/ordinary_media_download.js` is the only ordinary TianTianJieXi /
   KuKuTool browser-media implementation used by Single and Batch.
@@ -270,9 +271,10 @@ Commit `530d0cc` implements the recovery primitive and is pushed to
 - The Batch-only chunk progress UI was removed from this path and documented in
   `docs/research/v1-batch-blob-progress-archive.md` for possible reuse by work
   AnimeImages actually owns, such as ZIP or YouTube merge jobs.
-- Automated candidate evidence: `xhs_download` 967/967, Provider Strategy
-  118/118, and the shared primitive 16/16. A final full gate follows the
-  documentation commit and real product-flow browser acceptance.
+- Automated candidate evidence after the correction: `xhs_download` 967/967,
+  Provider Strategy 118/118, the shared primitive 16/16, and all selected Node
+  suites 53/53. Real post-fix product-flow browser acceptance remains the next
+  hard gate.
 
 The completed 110,691,390-byte proof satisfies the 100 MiB memory gate. No 300
 MiB or 500 MiB+ claim has been made; those sizes remain explicitly unverified
