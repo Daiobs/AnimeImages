@@ -1856,7 +1856,7 @@ class TianTianJieXiProviderTests(TestCase):
         TIANTIANJIEXI_PHONE="13800000000",
         TIANTIANJIEXI_PASSWORD="secret",
     )
-    def test_tiantianjiexi_payload_cache_hit_skips_api(self):
+    def test_successful_parse_can_return_cached_media_url_without_api_call(self):
         class CountingClient:
             calls = 0
 
@@ -1865,9 +1865,10 @@ class TianTianJieXiProviderTests(TestCase):
                 return {}
 
         source_key = source_key_for_url(self.source_url)
+        cached_media_url = "https://v16.tiktokcdn.com/cached.mp4"
         cache.set(
             build_tiantianjiexi_payload_cache_key(source_key),
-            {"title": "cached", "videos": [{"url": "https://v16.tiktokcdn.com/cached.mp4"}]},
+            {"title": "cached", "videos": [{"url": cached_media_url}]},
             timeout=60,
         )
         client = CountingClient()
@@ -1875,6 +1876,7 @@ class TianTianJieXiProviderTests(TestCase):
         payload = TianTianJieXiGenericProvider(client=client).parse(self.source_url, timeout_seconds=0.1)
 
         self.assertEqual(payload["title"], "cached")
+        self.assertEqual(payload["videos"][0]["url"], cached_media_url)
         self.assertEqual(client.calls, 0)
 
     @override_settings(

@@ -897,7 +897,7 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
 
         self.assertEqual([row["source_text"] for row in rows], links)
 
-    def test_each_item_receives_fresh_execution_deadline_when_it_starts(self):
+    def test_each_item_receives_new_execution_deadline_when_it_starts(self):
         observed_budgets = []
 
         def capture_deadline(_request, source_text, **kwargs):

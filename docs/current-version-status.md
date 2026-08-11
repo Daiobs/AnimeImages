@@ -21,6 +21,31 @@ Production site:
 https://download.cosflow.icu/
 ```
 
+## Provider Resource Lifecycle
+
+AnimeImages parses and authorizes media resources. Temporary Provider/CDN
+resources may expire, but there is no separate product mode for a newly
+obtained TianTianJieXi result.
+
+Three independent clocks apply:
+
+- TianTianJieXi successful payloads are cached for 120 seconds by default.
+  The payload includes media URLs, and a cache hit returns before an upstream
+  API call or Provider lease acquisition.
+- Provider manifests are signed by AnimeImages and expire after 3600 seconds
+  by default. A valid manifest proves the signed asset/URL identity and token
+  age; it does not prove that the upstream CDN URL still works.
+- TianTianJieXi CDN URL lifetime is not exposed or parsed by the current code.
+  It must remain `CDN_URL_LIFETIME_UNKNOWN` until Provider-specific evidence
+  establishes otherwise.
+
+The normal parse and retry paths may reuse the successful payload cache. A
+successful parse request therefore does not prove that AnimeImages called the
+upstream Provider or that the Provider issued a different media URL. Historical
+acceptance descriptions of an uncached or newly issued sample are experimental
+controls only, not download architecture or product state. See
+[Provider Resource Lifecycle](provider-resource-lifecycle.md).
+
 ## Browser Direct State And Unreleased Launch Hotfix
 
 The current Browser Direct baseline and the unreleased
@@ -116,7 +141,7 @@ Admin control surface for `BatchParseRuntimeSetting`:
 - Public-expansion transitions require explicit UI confirmation and the same
   confirmation marker is enforced by the server. Access contractions and
   ordinary limit changes do not add confirmation friction.
-- An `updated_at` version token plus a locked fresh read rejects stale Admin
+- An `updated_at` version token plus a locked database reread rejects stale Admin
   forms instead of silently overwriting a newer save.
 - Successful changes emit a structured application log containing only the
   actor, request ID, changed field names, old/new access and rollout values,
@@ -156,7 +181,7 @@ not been deployed.
 The `codex/batch-parse-stability-v1` development branch is not deployed. Its candidate behavior includes:
 
 - Bounded Batch scheduling with no executor backlog beyond the configured worker count.
-- A scheduling deadline for starting new rows and a fresh per-item deadline created only when a row actually starts.
+- A scheduling deadline for starting new rows and a new per-item deadline created only when a row actually starts.
 - One response deadline calculated from the same `BatchParseBudget` value displayed as the response upper bound; the scheduler never performs an unbounded wait after it expires.
 - Cooperative Provider deadlines remain the normal path. Because Python threads cannot be safely force-killed, an extreme non-cooperative worker may continue briefly after the request returns; the row is marked `timeout` and a non-sensitive `batch_parse_worker_deadline_overrun` warning identifies the missing deadline path.
 - Separate `success`, `failed`, `timeout`, and `skipped` states.
