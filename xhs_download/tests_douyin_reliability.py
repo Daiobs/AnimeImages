@@ -10,6 +10,7 @@ from django.core.cache import cache
 from django.http import HttpResponse
 from django.test import Client, SimpleTestCase, TestCase, override_settings
 
+from .models import DownloadRequestLog, ObservabilityStatus
 from .services.assets import MediaAsset, ParseResult
 from .services.common import XhsDownloadError, XhsProviderTimeoutError
 from .services.download_handoff import (
@@ -1625,6 +1626,11 @@ class DownloadSingleConnectionStreamTests(TestCase):
             self.assertEqual(response.status_code, 200)
             mock_fetch.assert_called_once()
             mock_release.assert_not_called()
+            self.assertFalse(
+                DownloadRequestLog.objects.filter(
+                    download_type="single_stream"
+                ).exists()
+            )
             status_before_body = load_download_status(
                 tokens.status_token,
                 client_identity=self.client_identity,
@@ -1659,6 +1665,11 @@ class DownloadSingleConnectionStreamTests(TestCase):
         self.assertTrue(completed.stream_started)
         self.assertFalse(completed.recovered)
         self.assertEqual(completed.upstream_attempt_count, 1)
+        request_log = DownloadRequestLog.objects.get(
+            download_type="single_stream"
+        )
+        self.assertEqual(request_log.status, ObservabilityStatus.SUCCESS)
+        self.assertEqual(request_log.actual_bytes, len(b"first-last"))
 
     def test_close_before_iteration_fails_without_marking_stream_started(self):
         tokens = self.issue()
@@ -1684,6 +1695,11 @@ class DownloadSingleConnectionStreamTests(TestCase):
         )
         self.assertEqual(failed.status, "failed")
         self.assertFalse(failed.stream_started)
+        request_log = DownloadRequestLog.objects.get(
+            download_type="single_stream"
+        )
+        self.assertEqual(request_log.status, ObservabilityStatus.FAILED)
+        self.assertEqual(request_log.actual_bytes, 0)
         upstream.close.assert_called_once_with()
         mock_release.assert_called_once_with(
             "download-concurrent",
@@ -1739,7 +1755,63 @@ class DownloadSingleConnectionStreamTests(TestCase):
             [event[0] for event in events],
             ["connecting", "streaming", "completed"],
         )
+        completed_snapshot = events[-1][1]
+        self.assertEqual(completed_snapshot["actual_yielded_bytes"], 18)
+        self.assertEqual(completed_snapshot["chunk_index"], 3)
+        self.assertEqual(
+            completed_snapshot["generator_close_reason"],
+            "completed",
+        )
+        self.assertTrue(completed_snapshot["upstream_response_closed"])
         upstream.close.assert_called_once_with()
+
+    def test_downstream_close_records_only_yielded_bytes(self):
+        tokens = self.issue()
+        upstream = self.build_upstream([b"first-", b"second", b"-third"])
+        fetch_patch, acquire_patch, bytes_patch, release_patch = (
+            self.stream_request_patches(upstream)
+        )
+
+        with (
+            fetch_patch,
+            acquire_patch,
+            bytes_patch,
+            release_patch as mock_release,
+            self.assertLogs("xhs_download.views", level="WARNING") as logs,
+        ):
+            response = self.client.get(
+                f"/media/download-stream/{tokens.stream_token}/"
+            )
+            stream = response._animeimages_attachment_stream
+            iterator = iter(stream)
+            self.assertEqual(next(iterator), b"first-")
+            iterator.close()
+
+        failed = load_download_status(
+            tokens.status_token,
+            client_identity=self.client_identity,
+        )
+        self.assertEqual(failed.status, "failed")
+        self.assertTrue(failed.stream_started)
+        request_log = DownloadRequestLog.objects.get(
+            download_type="single_stream"
+        )
+        self.assertEqual(request_log.status, ObservabilityStatus.FAILED)
+        self.assertEqual(request_log.actual_bytes, len(b"first-"))
+        failed_record = next(
+            record
+            for record in logs.records
+            if record.getMessage() == "download_stream_failed"
+        )
+        self.assertEqual(failed_record.actual_yielded_bytes, len(b"first-"))
+        self.assertEqual(failed_record.chunk_index, 1)
+        self.assertEqual(failed_record.exception_type, "GeneratorExit")
+        self.assertEqual(
+            failed_record.generator_close_reason,
+            "downstream_consumer_closed",
+        )
+        self.assertTrue(failed_record.upstream_response_closed)
+        mock_release.assert_called_once()
 
     def test_streaming_status_waits_for_download_bytes_guard(self):
         tokens = self.issue()
@@ -2072,6 +2144,24 @@ class DownloadSingleConnectionStreamTests(TestCase):
         self.assertEqual(failed.status, "failed")
         self.assertEqual(failed.error_code, "UPSTREAM_CONNECTION_ERROR")
         self.assertTrue(failed.stream_started)
+        request_log = DownloadRequestLog.objects.get(
+            download_type="single_stream"
+        )
+        self.assertEqual(request_log.status, ObservabilityStatus.FAILED)
+        self.assertEqual(request_log.actual_bytes, len(b"first-"))
+        failed_record = next(
+            record
+            for record in logs.records
+            if record.getMessage() == "download_stream_failed"
+        )
+        self.assertEqual(failed_record.actual_yielded_bytes, len(b"first-"))
+        self.assertEqual(failed_record.chunk_index, 1)
+        self.assertEqual(failed_record.exception_type, "ConnectionError")
+        self.assertEqual(
+            failed_record.generator_close_reason,
+            "stream_exception",
+        )
+        self.assertTrue(failed_record.upstream_response_closed)
         mock_release.assert_called_once()
         self.assertNotIn("secret.example", "\n".join(logs.output))
         self.assertNotIn("token=secret", "\n".join(logs.output))

@@ -3104,6 +3104,30 @@ class SingleAttachmentStream:
         self.failed = False
         self.closed = False
         self.streaming_notified = False
+        self.stream_started_at = None
+        self.telemetry.setdefault("actual_yielded_bytes", 0)
+        self.telemetry.setdefault("chunk_index", 0)
+        self.telemetry.setdefault("exception_type", "")
+        self.telemetry.setdefault("generator_close_reason", "")
+        self.telemetry.setdefault("stream_elapsed_ms", 0)
+        self.telemetry.setdefault("upstream_response_closed", False)
+
+    def update_elapsed(self):
+        if self.stream_started_at is None:
+            return
+        self.telemetry["stream_elapsed_ms"] = max(
+            0,
+            int((time.monotonic() - self.stream_started_at) * 1000),
+        )
+
+    def record_chunk(self, chunk):
+        self.telemetry["chunk_index"] = int(
+            self.telemetry.get("chunk_index") or 0
+        ) + 1
+        self.telemetry["actual_yielded_bytes"] = int(
+            self.telemetry.get("actual_yielded_bytes") or 0
+        ) + len(chunk)
+        self.update_elapsed()
 
     def notify(self, status, error=None):
         try:
@@ -3120,25 +3144,41 @@ class SingleAttachmentStream:
         if self.completed or self.failed:
             return
         self.completed = True
+        self.telemetry["generator_close_reason"] = "completed"
+        self.update_elapsed()
         self.notify("completed")
 
     def start(self):
         if self.streaming_notified:
             return
         self.streaming_notified = True
+        self.stream_started_at = time.monotonic()
+        self.telemetry["stream_started"] = True
         self.notify("streaming")
 
     def fail(self, error):
         if self.completed or self.failed:
             return
         self.failed = True
+        self.telemetry["exception_type"] = str(
+            self.telemetry.get("exception_type")
+            or type(error).__name__
+        )[:120]
+        self.telemetry["generator_close_reason"] = str(
+            self.telemetry.get("generator_close_reason")
+            or "stream_exception"
+        )[:80]
+        self.update_elapsed()
         self.notify("failed", error)
 
     def __iter__(self):
         total = 0
+        terminal_error = None
+        completed = False
         try:
             self.start()
             total += len(self.first_chunk)
+            self.record_chunk(self.first_chunk)
             yield self.first_chunk
             for chunk in self.upstream_chunks:
                 if not chunk:
@@ -3146,37 +3186,55 @@ class SingleAttachmentStream:
                 total += len(chunk)
                 if total > self.max_bytes:
                     raise XhsDownloadError("资源超过允许的大小限制")
+                self.record_chunk(chunk)
                 yield chunk
         except GeneratorExit:
-            self.fail(
-                DownloadStreamStatusError(
-                    "下载连接提前关闭。",
-                    error_code="UPSTREAM_CONNECTION_ERROR",
-                )
+            self.telemetry["exception_type"] = "GeneratorExit"
+            self.telemetry["generator_close_reason"] = (
+                "downstream_consumer_closed"
+            )
+            terminal_error = DownloadStreamStatusError(
+                "下载连接提前关闭。",
+                error_code="UPSTREAM_CONNECTION_ERROR",
             )
             raise
         except BaseException as error:
-            self.fail(error)
+            self.telemetry["exception_type"] = type(error).__name__
+            self.telemetry["generator_close_reason"] = "stream_exception"
+            terminal_error = error
             raise
         else:
-            self.complete()
+            completed = True
         finally:
-            self.close()
+            self.close(error=terminal_error, completed=completed)
 
-    def close(self):
+    def close(self, *, error=None, completed=False):
         if self.closed:
             return
         self.closed = True
-        if not self.completed and not self.failed:
-            self.fail(
-                DownloadStreamStatusError(
-                    "下载连接提前关闭。",
-                    error_code="UPSTREAM_CONNECTION_ERROR",
-                )
-            )
         try:
             self.upstream.close()
         finally:
+            raw = getattr(self.upstream, "raw", None)
+            raw_closed = getattr(raw, "closed", None)
+            self.telemetry["upstream_response_closed"] = (
+                True if raw_closed is None else bool(raw_closed)
+            )
+            if completed:
+                self.complete()
+            elif error is not None:
+                self.fail(error)
+            elif not self.completed and not self.failed:
+                self.telemetry["exception_type"] = "GeneratorExit"
+                self.telemetry["generator_close_reason"] = (
+                    "response_closed_before_completion"
+                )
+                self.fail(
+                    DownloadStreamStatusError(
+                        "下载连接提前关闭。",
+                        error_code="UPSTREAM_CONNECTION_ERROR",
+                    )
+                )
             if callable(self.close_callback):
                 try:
                     self.close_callback()
@@ -3556,6 +3614,8 @@ def build_single_attachment_response(
         )
 
         telemetry["recovered"] = bool(recovered)
+        expected_bytes = content_length or estimated_media_items_bytes([item])
+        telemetry["expected_bytes"] = expected_bytes
         stream = SingleAttachmentStream(
             upstream=upstream,
             upstream_chunks=upstream_chunks,
@@ -3587,7 +3647,7 @@ def build_single_attachment_response(
             response["Content-Length"] = str(content_length)
         response["X-Saved-Count"] = "1"
         response["X-Failed-Count"] = "0"
-        return response, content_length or estimated_media_items_bytes([item])
+        return response, expected_bytes
     except Exception:
         upstream.close()
         raise
@@ -5194,16 +5254,24 @@ def download_stream_view(request, token):
         "recovered": bool(handoff.recovered),
     }
     logged_statuses = set()
+    terminal_request_logged = False
+    stream_log_route_info = {
+        "route_type": ROUTE_PROXY,
+        "download_strategy": "server_single_attachment",
+    }
 
     def stream_status_callback(status, snapshot, error=None):
+        nonlocal terminal_request_logged
         error_code = ""
+        error_contract = {}
         if status == "failed":
             error_code = str(getattr(error, "error_code", "") or "")
+            error_contract = observable_download_error(
+                error,
+                provider=str(item.get("provider") or ""),
+            )
             if not error_code:
-                error_code = observable_download_error(
-                    error,
-                    provider=str(item.get("provider") or ""),
-                )["error_code"]
+                error_code = error_contract["error_code"]
         try:
             update_download_status(
                 handoff.ticket_id,
@@ -5255,6 +5323,23 @@ def download_stream_view(request, token):
                 snapshot.get("upstream_attempt_count") or 0
             ),
             "recovery_used": bool(snapshot.get("recovery_used")),
+            "expected_bytes": int(snapshot.get("expected_bytes") or 0),
+            "actual_yielded_bytes": int(
+                snapshot.get("actual_yielded_bytes") or 0
+            ),
+            "chunk_index": int(snapshot.get("chunk_index") or 0),
+            "stream_elapsed_ms": int(
+                snapshot.get("stream_elapsed_ms") or 0
+            ),
+            "exception_type": str(
+                snapshot.get("exception_type") or ""
+            )[:120],
+            "generator_close_reason": str(
+                snapshot.get("generator_close_reason") or ""
+            )[:80],
+            "upstream_response_closed": bool(
+                snapshot.get("upstream_response_closed")
+            ),
             "final_status": status,
             "request_id": str(
                 getattr(request, "request_id", "") or ""
@@ -5272,6 +5357,31 @@ def download_stream_view(request, token):
             "completed",
         }:
             logger.info(event_name, extra=log_fields)
+
+        if status in {"completed", "failed"} and not terminal_request_logged:
+            terminal_request_logged = True
+            log_download_request_event(
+                request,
+                download_type="single_stream",
+                media_items=media_items,
+                status=(
+                    ObservabilityStatus.SUCCESS
+                    if status == "completed"
+                    else ObservabilityStatus.FAILED
+                ),
+                started_at=started_at,
+                actual_bytes=int(
+                    snapshot.get("actual_yielded_bytes") or 0
+                ),
+                error_code=error_code,
+                error=error,
+                error_message_short=(
+                    error_contract.get("message", "")
+                    if status == "failed"
+                    else ""
+                ),
+                route_info=stream_log_route_info,
+            )
 
     if download_items_have_invalid_provider_manifest(media_items):
         stream_status_callback(
@@ -5343,7 +5453,7 @@ def download_stream_view(request, token):
         concurrency_acquired = True
         stream_status_callback("connecting", telemetry)
 
-        stream_response, actual_bytes = build_single_attachment_response(
+        stream_response, expected_bytes = build_single_attachment_response(
             item,
             handoff.base_filename,
             allow_recovery=not handoff.recovery_used,
@@ -5359,7 +5469,7 @@ def download_stream_view(request, token):
         within_limit, bytes_error_code = record_download_archive_bytes(
             identity,
             None,
-            actual_bytes,
+            expected_bytes,
         )
         if not within_limit:
             stream = getattr(
@@ -5380,18 +5490,6 @@ def download_stream_view(request, token):
                 error_code=bytes_error_code or "RATE_LIMITED",
             )
         stream_response["Cache-Control"] = "private, no-store"
-        log_download_request_event(
-            request,
-            download_type="single_stream",
-            media_items=media_items,
-            status=ObservabilityStatus.SUCCESS,
-            started_at=started_at,
-            actual_bytes=actual_bytes,
-            route_info={
-                "route_type": ROUTE_PROXY,
-                "download_strategy": "server_single_attachment",
-            },
-        )
         return stream_response
     except Exception as error:
         if stream_response is not None:
@@ -5408,20 +5506,6 @@ def download_stream_view(request, token):
         contract = observable_download_error(
             error,
             provider=str(item.get("provider") or ""),
-        )
-        log_download_request_event(
-            request,
-            download_type="single_stream",
-            media_items=media_items,
-            status=ObservabilityStatus.FAILED,
-            started_at=started_at,
-            error_code=contract["error_code"],
-            error=error,
-            error_message_short=contract["message"],
-            route_info={
-                "route_type": ROUTE_PROXY,
-                "download_strategy": "server_single_attachment",
-            },
         )
         response = JsonResponse(
             {
