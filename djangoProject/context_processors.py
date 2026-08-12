@@ -8,6 +8,10 @@ STATIC_VERSION_FILES = (
     "static/css/app.css",
     "static/js/app.js",
     "static/js/xhs_download.js",
+    "static/js/ordinary_media_download.js",
+    "static/js/ordinary_media_streaming.js",
+    "static/js/ordinary_media_streaming_protocol.js",
+    "static/js/ordinary_media_download_sw.js",
 )
 
 

@@ -264,6 +264,7 @@ def public_route_item(item):
         "provider_resource_id",
         "provider_cache_key",
         "size_bytes",
+        "size_is_estimate",
         "source_platform",
         "filename",
         "browser_direct_fetch_safe",

@@ -9,6 +9,10 @@
          data-batch-item-url="{% url 'batch_parse_item' %}"
          data-batch-retry-url="{% url 'batch_parse_retry' %}">
     <div class="container-fluid px-4 px-md-5">
+        <section class="ordinary-active-downloads"
+                 data-ordinary-active-downloads
+                 aria-live="polite"
+                 hidden></section>
         <div class="alert alert-warning ordinary-download-interruption"
              data-ordinary-download-interruption
              role="status"
@@ -246,6 +250,8 @@
 
 {% block extra_js %}
 <script src="{% static 'js/parse_preferences.js' %}?v={{ static_asset_version }}"></script>
+<script src="{% static 'js/ordinary_media_streaming_protocol.js' %}?v={{ static_asset_version }}"></script>
+<script src="{% static 'js/ordinary_media_streaming.js' %}?v={{ static_asset_version }}"></script>
 <script src="{% static 'js/ordinary_media_download.js' %}?v={{ static_asset_version }}"></script>
 <script src="{% static 'js/batch_parse.js' %}?v={{ static_asset_version }}"></script>
 {% endblock %}

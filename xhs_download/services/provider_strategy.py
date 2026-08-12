@@ -1,4 +1,5 @@
 DOWNLOAD_STRATEGY_BROWSER_BLOB = "browser_blob"
+DOWNLOAD_STRATEGY_BROWSER_STREAMING = "browser_streaming"
 DOWNLOAD_STRATEGY_BROWSER_DIRECT = "browser_direct"
 DOWNLOAD_STRATEGY_SERVER_ATTACHMENT = "server_attachment"
 DOWNLOAD_STRATEGY_SERVER_MERGE = "server_merge"
@@ -6,6 +7,7 @@ DOWNLOAD_STRATEGY_SERVER_ZIP = "server_zip"
 
 FALLBACK_SERVER_ATTACHMENT = "server_attachment"
 FALLBACK_SERVER_ZIP = "server_zip"
+FALLBACK_BROWSER_BLOB = "browser_blob"
 FALLBACK_NONE = "none"
 
 BROWSER_BLOB_VIDEO_PROVIDERS = {
@@ -62,12 +64,12 @@ def build_download_strategy(asset, *, result_platform="", result_metadata=None):
         )
         return {
             "download_strategy": (
-                DOWNLOAD_STRATEGY_BROWSER_BLOB
+                DOWNLOAD_STRATEGY_BROWSER_STREAMING
                 if browser_direct_fetch_safe
                 else DOWNLOAD_STRATEGY_SERVER_ATTACHMENT
             ),
             "fallback_strategy": (
-                FALLBACK_NONE
+                FALLBACK_BROWSER_BLOB
                 if browser_direct_fetch_safe
                 else FALLBACK_SERVER_ATTACHMENT
             ),
@@ -119,15 +121,15 @@ def build_download_strategy_matrix():
     return (
         {
             "source": "抖音天天解析",
-            "strategy": DOWNLOAD_STRATEGY_BROWSER_BLOB,
-            "fallback": FALLBACK_NONE,
-            "note": "浏览器获取并保存源文件；失败时重试或重新解析，不转服务器中转。",
+            "strategy": DOWNLOAD_STRATEGY_BROWSER_STREAMING,
+            "fallback": FALLBACK_BROWSER_BLOB,
+            "note": "浏览器流式保存源文件；仅在任务启动前能力不可用时回退浏览器内存保存，不转服务器中转。",
         },
         {
             "source": "抖音 KuKuTool",
-            "strategy": DOWNLOAD_STRATEGY_BROWSER_BLOB,
-            "fallback": FALLBACK_NONE,
-            "note": "普通视频由浏览器获取并保存；服务端不传输媒体正文。",
+            "strategy": DOWNLOAD_STRATEGY_BROWSER_STREAMING,
+            "fallback": FALLBACK_BROWSER_BLOB,
+            "note": "普通视频默认由浏览器流式保存；服务端不传输媒体正文。",
         },
         {
             "source": "小红书图片",

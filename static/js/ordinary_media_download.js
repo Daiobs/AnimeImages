@@ -1,12 +1,22 @@
 (function (root, factory) {
-    const api = factory();
+    const streamingApi = root && root.AnimeImagesOrdinaryMediaStreaming
+        ? root.AnimeImagesOrdinaryMediaStreaming
+        : (typeof module === "object" && module.exports
+            ? require("./ordinary_media_streaming.js")
+            : null);
+    const streamingProtocol = root && root.AnimeImagesOrdinaryMediaStreamingProtocol
+        ? root.AnimeImagesOrdinaryMediaStreamingProtocol
+        : (typeof module === "object" && module.exports
+            ? require("./ordinary_media_streaming_protocol.js")
+            : null);
+    const api = factory(streamingApi, streamingProtocol);
     if (typeof module === "object" && module.exports) {
         module.exports = api;
     }
     if (root) {
         root.AnimeImagesOrdinaryMediaDownload = api;
     }
-}(typeof window !== "undefined" ? window : globalThis, function () {
+}(typeof window !== "undefined" ? window : globalThis, function (streamingApi, streamingProtocol) {
     "use strict";
 
     const MAX_BROWSER_BLOB_BYTES = 1024 * 1024 * 1024;
@@ -22,11 +32,24 @@
         "video/quicktime",
         "video/webm",
     ]);
+    const STREAMING_BLOB_FALLBACK_ERROR_CODES = Object.freeze([
+        "STREAMING_CAPABILITY_UNAVAILABLE",
+        "STREAMING_REGISTRATION_FAILED",
+        "STREAMING_WORKER_NOT_AVAILABLE",
+        "STREAMING_WORKER_ACTIVATION_FAILED",
+        "STREAMING_WORKER_ACTIVATION_TIMEOUT",
+        "STREAMING_PAGE_NOT_CONTROLLED",
+        "STREAMING_PAGE_CONTROL_TIMEOUT",
+        "STREAMING_WORKER_NOT_ACTIVE",
+        "STREAMING_MESSAGE_TIMEOUT",
+        "STREAMING_NAVIGATION_UNAVAILABLE",
+        "STREAMING_START_TIMEOUT",
+    ]);
     const STAGE_MESSAGES = Object.freeze({
         preparing: "正在准备下载...",
         fetching: "正在下载源文件...",
         saving: "文件已获取完成，正在交给浏览器保存...",
-        completed: "已交给浏览器保存。",
+        completed: "下载已完成。",
     });
 
     function booleanValue(value) {
@@ -113,6 +136,8 @@
         )
             || MIN_ETA_SAMPLE_MS;
         const startedAt = nonNegativeNumber(now());
+        const downloadId = String(settings.downloadId || "");
+        const transport = String(settings.transport || "browser_blob");
         let totalBytes = positiveInteger(settings.totalBytes);
         let lastReceivedBytes = 0;
         let lastPercent = 0;
@@ -171,6 +196,9 @@
             }
             lastEmitAt = currentAt;
             return Object.freeze({
+                downloadId,
+                transport,
+                state: completedStage ? "completed" : "fetching",
                 stage: String(stage || "fetching"),
                 receivedBytes,
                 totalBytes,
@@ -466,6 +494,15 @@
 
     function safeErrorMessage(error) {
         const errorCode = String(error && error.errorCode || "");
+        if (errorCode === "DOWNLOAD_MANAGER_CANCELLED" || errorCode === "USER_CANCELLED") {
+            return "下载已取消。";
+        }
+        if (errorCode === "DESCRIPTOR_EXPIRED") {
+            return "下载链接已失效，请重新解析后再试。";
+        }
+        if (error && error.streamingStarted) {
+            return "浏览器下载未能完成，请重新点击下载；若仍失败，请重新解析。";
+        }
         if (errorCode === "BROWSER_DOWNLOAD_SIZE_MISMATCH") {
             return "文件接收不完整，请重试下载。";
         }
@@ -479,6 +516,15 @@
             return "资源连接长时间没有进展，请重试下载；若仍失败，请重新解析。";
         }
         return "资源获取失败，请重试下载；若仍失败，请重新解析。";
+    }
+
+    function canFallbackToBlob(error) {
+        if (error && error.streamingStarted) {
+            return false;
+        }
+        return STREAMING_BLOB_FALLBACK_ERROR_CODES.includes(
+            String(error && error.errorCode || ""),
+        );
     }
 
     function defaultBlobHandoff(blob, filename, options) {
@@ -568,7 +614,157 @@
         return new Blob(chunks, {type: contentType || "application/octet-stream"});
     }
 
-    async function download(item, options) {
+    function createDownloadId(options) {
+        const settings = options && typeof options === "object" ? options : {};
+        if (settings.downloadId) {
+            return String(settings.downloadId);
+        }
+        if (streamingProtocol && typeof streamingProtocol.randomDownloadId === "function") {
+            try {
+                return streamingProtocol.randomDownloadId(settings.cryptoObject);
+            } catch (error) {
+                // Blob fallback can proceed without a worker-visible identifier.
+            }
+        }
+        return "";
+    }
+
+    function activeDownloadViewModel(status) {
+        const value = status && typeof status === "object" ? status : {};
+        const receivedBytes = positiveInteger(value.receivedBytes);
+        const totalBytes = positiveInteger(value.totalBytes || value.expectedBytes);
+        const percent = totalBytes > 0
+            ? Math.max(0, Math.min(100, Number(value.percent || 0)))
+            : null;
+        return Object.freeze({
+            downloadId: String(value.downloadId || ""),
+            filename: sanitizeFilename(value.filename),
+            provider: sanitizeProvider(value.provider),
+            state: String(value.state || "failed"),
+            receivedBytes,
+            totalBytes,
+            percent,
+            bytesPerSecond: nonNegativeNumber(value.bytesPerSecond),
+            etaSeconds: value.etaSeconds === null || value.etaSeconds === undefined
+                ? null
+                : nonNegativeNumber(value.etaSeconds),
+        });
+    }
+
+    async function mountActiveDownloadPanel(container, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        const client = settings.streamingClient || (
+            streamingApi && typeof streamingApi.getSharedClient === "function"
+                ? streamingApi.getSharedClient()
+                : null
+        );
+        if (!container || !client || !client.capabilityAvailable()) {
+            return Object.freeze({close() {}});
+        }
+        const documentObject = settings.documentObject || container.ownerDocument || document;
+        const active = new Map();
+
+        function render() {
+            container.replaceChildren();
+            const statuses = Array.from(active.values())
+                .filter((status) => status.state === "prepared" || status.state === "fetching")
+                .sort((left, right) => left.downloadId.localeCompare(right.downloadId));
+            container.hidden = statuses.length === 0;
+            if (!statuses.length) {
+                return;
+            }
+            const heading = documentObject.createElement("div");
+            heading.className = "ordinary-active-downloads-heading";
+            heading.textContent = "正在下载";
+            container.appendChild(heading);
+            statuses.forEach((status) => {
+                const row = documentObject.createElement("div");
+                row.className = "ordinary-active-download-row";
+                row.dataset.downloadId = status.downloadId;
+
+                const identity = documentObject.createElement("div");
+                identity.className = "ordinary-active-download-identity";
+                const filename = documentObject.createElement("strong");
+                filename.textContent = status.filename;
+                const detail = documentObject.createElement("span");
+                detail.textContent = status.totalBytes
+                    ? `${formatBytes(status.receivedBytes)} / ${formatBytes(status.totalBytes)}`
+                    : `已下载 ${formatBytes(status.receivedBytes)} · 总大小未知`;
+                identity.append(filename, detail);
+
+                const progress = documentObject.createElement("div");
+                progress.className = "ordinary-active-download-progress";
+                const bar = documentObject.createElement("div");
+                bar.className = "ordinary-active-download-progress-bar";
+                if (status.percent === null) {
+                    progress.classList.add("is-pending");
+                    bar.style.width = "100%";
+                } else {
+                    bar.style.width = `${status.percent}%`;
+                }
+                progress.appendChild(bar);
+
+                const metrics = documentObject.createElement("div");
+                metrics.className = "ordinary-active-download-metrics";
+                const percentText = status.percent === null
+                    ? "下载中"
+                    : `${Math.round(status.percent)}%`;
+                const etaText = status.etaSeconds ? ` · ${formatEta(status.etaSeconds)}` : "";
+                metrics.textContent = `${percentText} · ${formatRate(status.bytesPerSecond)}${etaText}`;
+
+                const cancel = documentObject.createElement("button");
+                cancel.type = "button";
+                cancel.className = "btn btn-outline-secondary btn-sm";
+                cancel.dataset.cancelDownloadId = status.downloadId;
+                cancel.textContent = "取消";
+
+                row.append(identity, progress, metrics, cancel);
+                container.appendChild(row);
+            });
+        }
+
+        function applyStatus(rawStatus) {
+            const status = activeDownloadViewModel(rawStatus);
+            if (!status.downloadId) {
+                return;
+            }
+            if (status.state === "prepared" || status.state === "fetching") {
+                active.set(status.downloadId, status);
+            } else {
+                active.delete(status.downloadId);
+            }
+            render();
+            if (typeof settings.onStatus === "function") {
+                settings.onStatus(status);
+            }
+        }
+
+        const unsubscribe = client.subscribeAll(applyStatus);
+        const handleClick = async (event) => {
+            const button = event.target.closest("[data-cancel-download-id]");
+            if (!button || !container.contains(button)) {
+                return;
+            }
+            button.disabled = true;
+            try {
+                await client.cancel(button.dataset.cancelDownloadId);
+            } catch (error) {
+                button.disabled = false;
+            }
+        };
+        container.addEventListener("click", handleClick);
+        (await client.listActiveDownloads()).forEach(applyStatus);
+        return Object.freeze({
+            close() {
+                unsubscribe();
+                container.removeEventListener("click", handleClick);
+                active.clear();
+                render();
+            },
+        });
+    }
+
+    async function downloadViaBlob(item, options) {
         const settings = options && typeof options === "object" ? options : {};
         if (!isOrdinaryMediaItem(item)) {
             throw downloadError(
@@ -580,6 +776,7 @@
         const declaredSize = positiveInteger(item.size_bytes || item.sizeBytes);
         const maxBytes = positiveInteger(settings.maxBytes) || MAX_BROWSER_BLOB_BYTES;
         const filename = sanitizeFilename(settings.filename || item.filename);
+        const downloadId = createDownloadId(settings);
         if (declaredSize > maxBytes) {
             throw downloadError(
                 "BROWSER_BLOB_TOO_LARGE",
@@ -603,7 +800,11 @@
         const onProgress = typeof settings.onProgress === "function"
             ? settings.onProgress
             : (() => {});
-        const progressTracker = createTransferProgressTracker(settings);
+        const progressTracker = createTransferProgressTracker({
+            ...settings,
+            downloadId,
+            transport: "browser_blob",
+        });
         const activeProtection = createActiveDownloadProtection(
             item,
             filename,
@@ -752,11 +953,84 @@
         onStage("completed", STAGE_MESSAGES.completed);
         emitProgress("completed", receivedBytes, true);
         return {
+            downloadId,
+            transport: "browser_blob",
             filename,
             receivedBytes,
             expectedBytes,
             contentType,
         };
+    }
+
+    async function downloadViaStreaming(item, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        const client = settings.streamingClient || (
+            streamingApi && typeof streamingApi.getSharedClient === "function"
+                ? streamingApi.getSharedClient()
+                : null
+        );
+        if (!client || typeof client.capabilityAvailable !== "function" || !client.capabilityAvailable()) {
+            throw downloadError(
+                "STREAMING_CAPABILITY_UNAVAILABLE",
+                "当前浏览器不支持流式下载。",
+            );
+        }
+        const onStage = typeof settings.onStage === "function"
+            ? settings.onStage
+            : (() => {});
+        const onProgress = typeof settings.onProgress === "function"
+            ? settings.onProgress
+            : (() => {});
+        onStage("preparing", STAGE_MESSAGES.preparing);
+        const active = await client.start(item, {
+            filename: sanitizeFilename(settings.filename || item.filename),
+            onProgress(status) {
+                if (status.state === "fetching") {
+                    onStage("fetching", STAGE_MESSAGES.fetching);
+                }
+                onProgress(status);
+            },
+        });
+        onStage("fetching", STAGE_MESSAGES.fetching);
+        const completed = await active.completion;
+        onStage("completed", STAGE_MESSAGES.completed);
+        onProgress(completed);
+        return {
+            downloadId: active.downloadId,
+            transport: "browser_streaming",
+            filename: completed.filename,
+            receivedBytes: completed.receivedBytes,
+            expectedBytes: completed.totalBytes || completed.expectedBytes,
+            contentType: "",
+        };
+    }
+
+    async function download(item, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        if (!isOrdinaryMediaItem(item)) {
+            throw downloadError(
+                "BROWSER_DOWNLOAD_NOT_ORDINARY_MEDIA",
+                "当前资源不支持浏览器直接保存。",
+            );
+        }
+        if (settings.forceBlob === true) {
+            return downloadViaBlob(item, settings);
+        }
+        try {
+            return await downloadViaStreaming(item, settings);
+        } catch (error) {
+            if (!canFallbackToBlob(error)) {
+                throw error;
+            }
+            if (typeof settings.onTransportFallback === "function") {
+                settings.onTransportFallback({
+                    from: "browser_streaming",
+                    to: "browser_blob",
+                    errorCode: String(error && error.errorCode || "STREAMING_UNAVAILABLE"),
+                });
+            }
+            return downloadViaBlob(item, settings);
+        }
     }
 
     return Object.freeze({
@@ -766,17 +1040,23 @@
         DEFAULT_SPEED_WINDOW_MS,
         MIN_ETA_SAMPLE_MS,
         ACTIVE_DOWNLOAD_STORAGE_KEY,
+        STREAMING_BLOB_FALLBACK_ERROR_CODES,
         STAGE_MESSAGES,
+        activeDownloadViewModel,
         consumeInterruptedDownloadMarker,
         createActiveDownloadMarker,
         createActiveDownloadProtection,
         createTransferProgressTracker,
         browserFetchOptions,
+        canFallbackToBlob,
         contentTypeAllowsOrdinaryVideo,
         createBrowserFetchGuard,
         defaultBlobHandoff,
         download,
+        downloadViaBlob,
+        downloadViaStreaming,
         isOrdinaryMediaItem,
+        mountActiveDownloadPanel,
         formatBytes,
         formatEta,
         formatRate,

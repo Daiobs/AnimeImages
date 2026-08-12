@@ -59,6 +59,7 @@ from .services.provider_manifest import build_provider_manifest_token
 from .services.provider_strategy import (
     DOWNLOAD_STRATEGY_BROWSER_BLOB,
     DOWNLOAD_STRATEGY_BROWSER_DIRECT,
+    DOWNLOAD_STRATEGY_BROWSER_STREAMING,
     DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
     DOWNLOAD_STRATEGY_SERVER_MERGE,
     build_download_strategy,
@@ -110,7 +111,16 @@ class TrackingThreadPoolExecutor:
 
 
 class ProviderDownloadStrategyTests(SimpleTestCase):
-    def test_tiantianjiexi_video_uses_browser_blob_without_server_fallback(self):
+    def test_service_worker_script_uses_root_scope_security_headers(self):
+        response = self.client.get(reverse("ordinary_media_service_worker"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "text/javascript; charset=utf-8")
+        self.assertEqual(response["Service-Worker-Allowed"], "/")
+        self.assertEqual(response["Cache-Control"], "no-cache, no-store, must-revalidate")
+        self.assertEqual(response["X-Content-Type-Options"], "nosniff")
+
+    def test_tiantianjiexi_video_uses_browser_streaming_with_blob_capability_fallback(self):
         strategy = build_download_strategy(
             MediaAsset(
                 media_type="video",
@@ -122,13 +132,13 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
 
         self.assertEqual(
             strategy["download_strategy"],
-            DOWNLOAD_STRATEGY_BROWSER_BLOB,
+            DOWNLOAD_STRATEGY_BROWSER_STREAMING,
         )
-        self.assertEqual(strategy["fallback_strategy"], "none")
+        self.assertEqual(strategy["fallback_strategy"], DOWNLOAD_STRATEGY_BROWSER_BLOB)
         self.assertTrue(strategy["cors_expected"])
         self.assertTrue(strategy["browser_direct_fetch_safe"])
 
-    def test_kukutool_video_uses_proven_browser_blob_capability(self):
+    def test_kukutool_video_uses_browser_streaming_with_blob_capability_fallback(self):
         strategy = build_download_strategy(
             MediaAsset(
                 media_type="video",
@@ -140,9 +150,9 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
 
         self.assertEqual(
             strategy["download_strategy"],
-            DOWNLOAD_STRATEGY_BROWSER_BLOB,
+            DOWNLOAD_STRATEGY_BROWSER_STREAMING,
         )
-        self.assertEqual(strategy["fallback_strategy"], "none")
+        self.assertEqual(strategy["fallback_strategy"], DOWNLOAD_STRATEGY_BROWSER_BLOB)
         self.assertTrue(strategy["cors_expected"])
         self.assertTrue(strategy["browser_direct_fetch_safe"])
 
@@ -2035,7 +2045,9 @@ class BatchParseViewTests(TestCase):
         self.assertContains(response, "data-batch-direct-url")
         self.assertContains(response, "data-batch-direct-download")
         self.assertContains(response, "data-batch-download-progress")
+        self.assertContains(response, "data-blob-download-warning")
         self.assertContains(response, "下载完成前请勿刷新或关闭本页")
+        self.assertContains(response, "data-ordinary-active-downloads")
         self.assertContains(response, 'onerror="retryImage(this)"')
         self.assertNotContains(response, "v5-default.365yg.com</span>")
         self.assertNotContains(response, "质量未知")

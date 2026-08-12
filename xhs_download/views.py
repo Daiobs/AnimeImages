@@ -4018,6 +4018,18 @@ def log_parse_request_event(
     logger.info(event, extra=extra)
 
 
+@require_GET
+def ordinary_media_service_worker_view(request):
+    worker_path = settings.BASE_DIR / "static" / "js" / "ordinary_media_download_sw.js"
+    if not worker_path.is_file():
+        raise Http404("Service Worker is unavailable.")
+    response = FileResponse(worker_path.open("rb"), content_type="text/javascript; charset=utf-8")
+    response["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response["Service-Worker-Allowed"] = "/"
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
 def search_view(request, platform_key="home"):
     return render(
         request,

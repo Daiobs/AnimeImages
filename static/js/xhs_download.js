@@ -87,6 +87,7 @@
             fallback_strategy: card.dataset.fallbackStrategy || "",
             cors_expected: card.dataset.corsExpected === "true",
             browser_direct_fetch_safe: card.dataset.browserDirectFetchSafe === "true",
+            size_is_estimate: card.dataset.sizeIsEstimate === "true",
             requires_merge: card.dataset.requiresMerge === "true",
             requires_cookie: card.dataset.requiresCookie === "true",
         };
@@ -342,6 +343,7 @@
                 progressBytes: resultsRegion ? resultsRegion.querySelector("#download-progress-bytes") : null,
                 progressSpeed: resultsRegion ? resultsRegion.querySelector("#download-progress-speed") : null,
                 progressEta: resultsRegion ? resultsRegion.querySelector("#download-progress-eta") : null,
+                blobWarning: progressWrap ? progressWrap.querySelector("[data-blob-download-warning]") : null,
             };
         }
 
@@ -564,7 +566,7 @@
         }
 
         function hideDownloadProgress() {
-            const {progressWrap, progressBytes, progressSpeed, progressEta} = getProgressElements();
+            const {progressWrap, progressBytes, progressSpeed, progressEta, blobWarning} = getProgressElements();
             if (progressWrap) {
                 progressWrap.hidden = true;
                 progressWrap.classList.remove("is-pending");
@@ -577,6 +579,9 @@
             }
             if (progressEta) {
                 progressEta.innerText = "";
+            }
+            if (blobWarning) {
+                blobWarning.hidden = true;
             }
             lastDownloadProgress = 0;
         }
@@ -633,6 +638,7 @@
                 progressBytes,
                 progressSpeed,
                 progressEta,
+                blobWarning,
             } = getProgressElements();
             const knownTotal = Number(event.totalBytes || 0) > 0;
             const completed = event.stage === "saving" || event.stage === "completed";
@@ -669,6 +675,9 @@
                 progressEta.innerText = event.etaSeconds
                     ? ordinaryMediaDownloadApi.formatEta(event.etaSeconds)
                     : (event.stage === "fetching" ? "正在测速..." : "");
+            }
+            if (blobWarning) {
+                blobWarning.hidden = event.transport !== "browser_blob";
             }
         }
 
@@ -1732,6 +1741,12 @@
         updateDownloadLocationButtons();
         updateModeVisibility();
         updateSelectAllButton();
+        const activeDownloadsPanel = page.querySelector("[data-ordinary-active-downloads]");
+        if (ordinaryMediaDownloadApi && activeDownloadsPanel) {
+            ordinaryMediaDownloadApi.mountActiveDownloadPanel(activeDownloadsPanel).catch(() => {
+                activeDownloadsPanel.hidden = true;
+            });
+        }
         if (ordinaryMediaDownloadApi) {
             const interrupted = ordinaryMediaDownloadApi.consumeInterruptedDownloadMarker();
             const interruptionNotice = page.querySelector("[data-ordinary-download-interruption]");

@@ -96,6 +96,7 @@
                              data-url="{{ item.video_url }}"
                              data-cover-url="{{ item.cover_url|default:'' }}"
                              data-size-bytes="{{ item.size_bytes|default:0 }}"
+                             data-size-is-estimate="{{ item.size_is_estimate|yesno:'true,false' }}"
                              data-asset-id="{{ item.asset_id|default:'' }}"
                              data-provider="{{ item.provider|default:'' }}"
                              data-provider-resource-id="{{ item.provider_resource_id|default:'' }}"
@@ -158,6 +159,7 @@
                              data-type="image"
                              data-url="{{ item.url }}"
                              data-size-bytes="{{ item.size_bytes|default:0 }}"
+                             data-size-is-estimate="{{ item.size_is_estimate|yesno:'true,false' }}"
                              data-asset-id="{{ item.asset_id|default:'' }}"
                              data-provider="{{ item.provider|default:'' }}"
                              data-provider-resource-id="{{ item.provider_resource_id|default:'' }}"
@@ -197,7 +199,7 @@
                         <span id="download-progress-speed">正在测速...</span>
                         <span id="download-progress-eta"></span>
                     </div>
-                    <div class="download-progress-warning">
+                    <div class="download-progress-warning" data-blob-download-warning hidden>
                         下载完成前请勿刷新或关闭本页。
                     </div>
                 </div>

@@ -126,6 +126,7 @@
             bytes: wrap ? wrap.querySelector("[data-download-progress-bytes]") : null,
             speed: wrap ? wrap.querySelector("[data-download-progress-speed]") : null,
             eta: wrap ? wrap.querySelector("[data-download-progress-eta]") : null,
+            blobWarning: wrap ? wrap.querySelector("[data-blob-download-warning]") : null,
         };
     }
 
@@ -153,6 +154,9 @@
         }
         if (progress.eta) {
             progress.eta.textContent = "";
+        }
+        if (progress.blobWarning) {
+            progress.blobWarning.hidden = true;
         }
     }
 
@@ -200,6 +204,9 @@
             progress.eta.textContent = event.etaSeconds
                 ? ordinaryMediaDownloadApi.formatEta(event.etaSeconds)
                 : (event.stage === "fetching" ? "正在测速..." : "");
+        }
+        if (progress.blobWarning) {
+            progress.blobWarning.hidden = event.transport !== "browser_blob";
         }
     }
 
@@ -565,6 +572,12 @@
         prioritizeFirstBatchPreview(
             batchPage.querySelector(".batch-result-card:not(.is-hidden)")
         );
+        const activeDownloadsPanel = batchPage.querySelector("[data-ordinary-active-downloads]");
+        if (ordinaryMediaDownloadApi && activeDownloadsPanel) {
+            ordinaryMediaDownloadApi.mountActiveDownloadPanel(activeDownloadsPanel).catch(() => {
+                activeDownloadsPanel.hidden = true;
+            });
+        }
         if (ordinaryMediaDownloadApi) {
             const interrupted = ordinaryMediaDownloadApi.consumeInterruptedDownloadMarker();
             const interruptionNotice = batchPage.querySelector("[data-ordinary-download-interruption]");
@@ -826,6 +839,9 @@
                     filename,
                     provider: directDownloadButton.getAttribute("data-batch-direct-provider") || "",
                     size_bytes: directDownloadButton.getAttribute("data-batch-direct-size-bytes") || "0",
+                    size_is_estimate: (
+                        directDownloadButton.getAttribute("data-batch-direct-size-is-estimate") === "true"
+                    ),
                     browser_direct_fetch_safe: (
                         directDownloadButton.getAttribute("data-batch-browser-fetch-safe") === "true"
                     ),
