@@ -11,6 +11,10 @@
 
     const MAX_BROWSER_BLOB_BYTES = 1024 * 1024 * 1024;
     const DEFAULT_BROWSER_FETCH_IDLE_TIMEOUT_MS = 30000;
+    const DEFAULT_PROGRESS_UPDATE_INTERVAL_MS = 300;
+    const DEFAULT_SPEED_WINDOW_MS = 3000;
+    const MIN_ETA_SAMPLE_MS = 1500;
+    const ACTIVE_DOWNLOAD_STORAGE_KEY = "animeimages.ordinaryDownloadActive.v1";
     const SAFE_VIDEO_CONTENT_TYPES = Object.freeze([
         "application/octet-stream",
         "binary/octet-stream",
@@ -20,9 +24,9 @@
     ]);
     const STAGE_MESSAGES = Object.freeze({
         preparing: "正在准备下载...",
-        fetching: "正在获取文件...",
-        saving: "已开始保存",
-        completed: "已开始保存",
+        fetching: "正在下载源文件...",
+        saving: "文件已获取完成，正在交给浏览器保存...",
+        completed: "已交给浏览器保存。",
     });
 
     function booleanValue(value) {
@@ -34,12 +38,322 @@
         return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
     }
 
+    function nonNegativeNumber(value) {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+    }
+
     function sanitizeFilename(filename) {
         const value = String(filename || "video.mp4")
             .replace(/[\\/:*?"<>|]+/g, "_")
             .replace(/\s+/g, " ")
             .trim();
         return value || "video.mp4";
+    }
+
+    function sanitizeProvider(provider) {
+        return String(provider || "unknown")
+            .toLowerCase()
+            .replace(/[^a-z0-9_-]+/g, "_")
+            .replace(/^_+|_+$/g, "")
+            .slice(0, 64) || "unknown";
+    }
+
+    function formatBytes(value) {
+        const bytes = nonNegativeNumber(value);
+        if (bytes < 1024) {
+            return `${Math.round(bytes)} B`;
+        }
+        const units = ["KiB", "MiB", "GiB"];
+        let amount = bytes / 1024;
+        let unit = units[0];
+        for (let index = 1; index < units.length && amount >= 1024; index += 1) {
+            amount /= 1024;
+            unit = units[index];
+        }
+        const digits = amount >= 100 ? 0 : (amount >= 10 ? 1 : 2);
+        return `${amount.toFixed(digits)} ${unit}`;
+    }
+
+    function formatRate(value) {
+        const bytesPerSecond = nonNegativeNumber(value);
+        return bytesPerSecond > 0 ? `${formatBytes(bytesPerSecond)}/s` : "正在测速...";
+    }
+
+    function formatEta(value) {
+        const seconds = Math.max(0, Math.ceil(nonNegativeNumber(value)));
+        if (!seconds) {
+            return "";
+        }
+        if (seconds < 60) {
+            return `剩余约 ${seconds} 秒`;
+        }
+        const minutes = Math.floor(seconds / 60);
+        const remainingSeconds = seconds % 60;
+        return remainingSeconds
+            ? `剩余约 ${minutes} 分 ${remainingSeconds} 秒`
+            : `剩余约 ${minutes} 分钟`;
+    }
+
+    function createTransferProgressTracker(options) {
+        const settings = options && typeof options === "object" ? options : {};
+        const now = typeof settings.now === "function"
+            ? settings.now
+            : (() => (typeof performance !== "undefined" ? performance.now() : Date.now()));
+        const updateIntervalMs = positiveInteger(
+            settings.progressUpdateIntervalMs || settings.updateIntervalMs,
+        )
+            || DEFAULT_PROGRESS_UPDATE_INTERVAL_MS;
+        const speedWindowMs = positiveInteger(
+            settings.progressSpeedWindowMs || settings.speedWindowMs,
+        )
+            || DEFAULT_SPEED_WINDOW_MS;
+        const minEtaSampleMs = positiveInteger(
+            settings.progressMinEtaSampleMs || settings.minEtaSampleMs,
+        )
+            || MIN_ETA_SAMPLE_MS;
+        const startedAt = nonNegativeNumber(now());
+        let totalBytes = positiveInteger(settings.totalBytes);
+        let lastReceivedBytes = 0;
+        let lastPercent = 0;
+        let lastEmitAt = Number.NEGATIVE_INFINITY;
+        const samples = [{at: startedAt, bytes: 0}];
+
+        function setTotalBytes(value) {
+            totalBytes = positiveInteger(value);
+        }
+
+        function update(receivedValue, stage, force) {
+            const currentAt = nonNegativeNumber(now());
+            const receivedBytes = Math.max(lastReceivedBytes, positiveInteger(receivedValue));
+            lastReceivedBytes = receivedBytes;
+            const previousSample = samples[samples.length - 1];
+            if (previousSample && previousSample.at === currentAt) {
+                previousSample.bytes = receivedBytes;
+            } else {
+                samples.push({at: currentAt, bytes: receivedBytes});
+            }
+            const cutoff = currentAt - speedWindowMs;
+            while (samples.length > 2 && samples[1].at <= cutoff) {
+                samples.shift();
+            }
+
+            const firstSample = samples[0];
+            const sampleDurationMs = Math.max(0, currentAt - firstSample.at);
+            const sampleBytes = Math.max(0, receivedBytes - firstSample.bytes);
+            const bytesPerSecond = sampleDurationMs > 0
+                ? (sampleBytes * 1000) / sampleDurationMs
+                : 0;
+            const completedStage = stage === "saving" || stage === "completed";
+            let percent = totalBytes > 0
+                ? Math.min(100, (receivedBytes / totalBytes) * 100)
+                : null;
+            if (completedStage) {
+                percent = 100;
+            }
+            if (percent !== null) {
+                percent = Math.max(lastPercent, percent);
+                lastPercent = percent;
+            }
+            const elapsedMs = Math.max(0, currentAt - startedAt);
+            const etaSeconds = (
+                totalBytes > receivedBytes
+                && sampleDurationMs >= minEtaSampleMs
+                && bytesPerSecond > 0
+            )
+                ? (totalBytes - receivedBytes) / bytesPerSecond
+                : null;
+            const shouldEmit = Boolean(force)
+                || currentAt - lastEmitAt >= updateIntervalMs
+                || percent === 100;
+            if (!shouldEmit) {
+                return null;
+            }
+            lastEmitAt = currentAt;
+            return Object.freeze({
+                stage: String(stage || "fetching"),
+                receivedBytes,
+                totalBytes,
+                percent,
+                elapsedMs,
+                bytesPerSecond,
+                etaSeconds,
+            });
+        }
+
+        return Object.freeze({setTotalBytes, update});
+    }
+
+    function activeDownloadStorage(settings) {
+        if (settings && settings.sessionStorage) {
+            return settings.sessionStorage;
+        }
+        try {
+            return typeof window !== "undefined" ? window.sessionStorage : null;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function createActiveDownloadMarker(item, filename, expectedBytes, startedAt) {
+        return Object.freeze({
+            version: 1,
+            downloadActive: true,
+            startedAt: positiveInteger(startedAt) || Date.now(),
+            provider: sanitizeProvider(item && item.provider),
+            filename: sanitizeFilename(filename),
+            expectedBytes: positiveInteger(expectedBytes),
+        });
+    }
+
+    function writeActiveDownloadMarker(storage, marker) {
+        if (!storage || typeof storage.setItem !== "function") {
+            return false;
+        }
+        try {
+            storage.setItem(ACTIVE_DOWNLOAD_STORAGE_KEY, JSON.stringify(marker));
+            return true;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function removeActiveDownloadMarker(storage) {
+        if (!storage || typeof storage.removeItem !== "function") {
+            return false;
+        }
+        try {
+            storage.removeItem(ACTIVE_DOWNLOAD_STORAGE_KEY);
+            return true;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function consumeInterruptedDownloadMarker(options) {
+        const settings = options && typeof options === "object" ? options : {};
+        const storage = activeDownloadStorage(settings);
+        if (!storage || typeof storage.getItem !== "function") {
+            return null;
+        }
+        let rawValue = "";
+        try {
+            rawValue = storage.getItem(ACTIVE_DOWNLOAD_STORAGE_KEY) || "";
+        } catch (error) {
+            return null;
+        }
+        removeActiveDownloadMarker(storage);
+        if (!rawValue) {
+            return null;
+        }
+        try {
+            const parsed = JSON.parse(rawValue);
+            if (!parsed || parsed.downloadActive !== true) {
+                return null;
+            }
+            return Object.freeze({
+                version: 1,
+                downloadActive: true,
+                startedAt: positiveInteger(parsed.startedAt),
+                provider: sanitizeProvider(parsed.provider),
+                filename: sanitizeFilename(parsed.filename),
+                expectedBytes: positiveInteger(parsed.expectedBytes),
+            });
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function createActiveDownloadProtection(item, filename, expectedBytes, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        const storage = activeDownloadStorage(settings);
+        const eventTarget = settings.eventTarget || (
+            typeof window !== "undefined" ? window : null
+        );
+        const schedule = settings.defer || (
+            typeof setTimeout === "function" ? setTimeout : null
+        );
+        let pageUnloading = false;
+        let pageHidden = false;
+        let cleared = false;
+        let marker = createActiveDownloadMarker(
+            item,
+            filename,
+            expectedBytes,
+            settings.startedAtEpochMs,
+        );
+        writeActiveDownloadMarker(storage, marker);
+
+        function handleBeforeUnload(event) {
+            pageUnloading = true;
+            if (event && typeof event.preventDefault === "function") {
+                event.preventDefault();
+            }
+            if (event) {
+                event.returnValue = "";
+            }
+            return "";
+        }
+
+        function handlePageHide() {
+            pageHidden = true;
+            pageUnloading = true;
+            detachListeners();
+        }
+
+        function detachListeners() {
+            if (eventTarget && typeof eventTarget.removeEventListener === "function") {
+                eventTarget.removeEventListener("beforeunload", handleBeforeUnload);
+                eventTarget.removeEventListener("pagehide", handlePageHide);
+            }
+        }
+
+        if (eventTarget && typeof eventTarget.addEventListener === "function") {
+            eventTarget.addEventListener("beforeunload", handleBeforeUnload);
+            eventTarget.addEventListener("pagehide", handlePageHide);
+        }
+
+        return Object.freeze({
+            updateExpectedBytes(value) {
+                marker = createActiveDownloadMarker(
+                    item,
+                    filename,
+                    value,
+                    marker.startedAt,
+                );
+                writeActiveDownloadMarker(storage, marker);
+            },
+            clear(clearOptions) {
+                if (cleared) {
+                    return;
+                }
+                cleared = true;
+                const preserveDuringUnload = Boolean(
+                    clearOptions && clearOptions.preserveDuringUnload,
+                );
+                if (!preserveDuringUnload && !pageHidden) {
+                    removeActiveDownloadMarker(storage);
+                    detachListeners();
+                } else if (pageHidden) {
+                    detachListeners();
+                } else if (!pageUnloading) {
+                    removeActiveDownloadMarker(storage);
+                    detachListeners();
+                } else {
+                    if (eventTarget && typeof eventTarget.removeEventListener === "function") {
+                        eventTarget.removeEventListener("beforeunload", handleBeforeUnload);
+                    }
+                    if (schedule) {
+                        schedule(() => {
+                            if (!pageHidden) {
+                                removeActiveDownloadMarker(storage);
+                                detachListeners();
+                            }
+                        }, 0);
+                    }
+                }
+            },
+        });
     }
 
     function isHttpUrl(value) {
@@ -213,6 +527,7 @@
                     "当前资源超过浏览器保存上限。",
                 );
             }
+            onChunk(positiveInteger(blob && blob.size));
             return blob;
         }
 
@@ -264,6 +579,7 @@
 
         const declaredSize = positiveInteger(item.size_bytes || item.sizeBytes);
         const maxBytes = positiveInteger(settings.maxBytes) || MAX_BROWSER_BLOB_BYTES;
+        const filename = sanitizeFilename(settings.filename || item.filename);
         if (declaredSize > maxBytes) {
             throw downloadError(
                 "BROWSER_BLOB_TOO_LARGE",
@@ -284,8 +600,36 @@
         const onStage = typeof settings.onStage === "function"
             ? settings.onStage
             : (() => {});
+        const onProgress = typeof settings.onProgress === "function"
+            ? settings.onProgress
+            : (() => {});
+        const progressTracker = createTransferProgressTracker(settings);
+        const activeProtection = createActiveDownloadProtection(
+            item,
+            filename,
+            declaredSize,
+            settings,
+        );
+        let activeProtectionCleared = false;
+
+        function clearActiveProtection(preserveDuringUnload) {
+            if (!activeProtectionCleared) {
+                activeProtectionCleared = true;
+                activeProtection.clear({preserveDuringUnload});
+            }
+        }
+
+        function emitProgress(stage, receivedBytes, force) {
+            const progressEvent = progressTracker.update(receivedBytes, stage, force);
+            if (progressEvent) {
+                onProgress(progressEvent);
+            }
+        }
+
         onStage("preparing", STAGE_MESSAGES.preparing);
+        emitProgress("preparing", 0, true);
         onStage("fetching", STAGE_MESSAGES.fetching);
+        emitProgress("fetching", 0, true);
 
         const fetchGuard = createBrowserFetchGuard(settings);
         let response;
@@ -297,6 +641,7 @@
             );
         } catch (error) {
             fetchGuard.clear();
+            clearActiveProtection(true);
             if (fetchGuard.didTimeout()) {
                 throw downloadError(
                     "BROWSER_DOWNLOAD_STALLED",
@@ -313,6 +658,7 @@
         }
         if (!response || !response.ok) {
             fetchGuard.clear();
+            clearActiveProtection(true);
             throw downloadError(
                 "BROWSER_FETCH_HTTP_ERROR",
                 "上游资源请求失败。",
@@ -326,6 +672,7 @@
         );
         if (!contentTypeAllowsOrdinaryVideo(contentType)) {
             fetchGuard.clear();
+            clearActiveProtection(true);
             throw downloadError(
                 "BROWSER_DOWNLOAD_UNSUPPORTED_CONTENT",
                 "上游没有返回视频文件。",
@@ -337,8 +684,12 @@
                 ? response.headers.get("Content-Length")
                 : 0,
         );
+        progressTracker.setTotalBytes(expectedBytes);
+        activeProtection.updateExpectedBytes(expectedBytes || declaredSize);
+        emitProgress("fetching", 0, true);
         if (expectedBytes > maxBytes) {
             fetchGuard.clear();
+            clearActiveProtection(true);
             throw downloadError(
                 "BROWSER_BLOB_TOO_LARGE",
                 "当前资源超过浏览器保存上限。",
@@ -349,9 +700,13 @@
         try {
             fetchGuard.touch();
             blob = await readBlobWithinLimit(response, maxBytes, contentType, {
-                onChunk: () => fetchGuard.touch(),
+                onChunk: (receivedBytes) => {
+                    fetchGuard.touch();
+                    emitProgress("fetching", receivedBytes, false);
+                },
             });
         } catch (error) {
+            clearActiveProtection(true);
             if (fetchGuard.didTimeout()) {
                 throw downloadError(
                     "BROWSER_DOWNLOAD_STALLED",
@@ -367,29 +722,35 @@
         }
         const receivedBytes = positiveInteger(blob && blob.size);
         if (!receivedBytes) {
+            clearActiveProtection(true);
             throw downloadError(
                 "BROWSER_DOWNLOAD_EMPTY",
                 "上游返回了空文件。",
             );
         }
         if (receivedBytes > maxBytes) {
+            clearActiveProtection(true);
             throw downloadError(
                 "BROWSER_BLOB_TOO_LARGE",
                 "当前资源超过浏览器保存上限。",
             );
         }
         if (expectedBytes && receivedBytes !== expectedBytes) {
+            clearActiveProtection(true);
             throw downloadError(
                 "BROWSER_DOWNLOAD_SIZE_MISMATCH",
                 "浏览器接收的文件大小不完整。",
             );
         }
 
-        const filename = sanitizeFilename(settings.filename || item.filename);
+        emitProgress("fetching", receivedBytes, true);
+        clearActiveProtection();
         onStage("saving", STAGE_MESSAGES.saving);
+        emitProgress("saving", receivedBytes, true);
         const handoffBlob = settings.handoffBlob || defaultBlobHandoff;
         await handoffBlob(blob, filename, settings);
         onStage("completed", STAGE_MESSAGES.completed);
+        emitProgress("completed", receivedBytes, true);
         return {
             filename,
             receivedBytes,
@@ -401,13 +762,24 @@
     return Object.freeze({
         MAX_BROWSER_BLOB_BYTES,
         DEFAULT_BROWSER_FETCH_IDLE_TIMEOUT_MS,
+        DEFAULT_PROGRESS_UPDATE_INTERVAL_MS,
+        DEFAULT_SPEED_WINDOW_MS,
+        MIN_ETA_SAMPLE_MS,
+        ACTIVE_DOWNLOAD_STORAGE_KEY,
         STAGE_MESSAGES,
+        consumeInterruptedDownloadMarker,
+        createActiveDownloadMarker,
+        createActiveDownloadProtection,
+        createTransferProgressTracker,
         browserFetchOptions,
         contentTypeAllowsOrdinaryVideo,
         createBrowserFetchGuard,
         defaultBlobHandoff,
         download,
         isOrdinaryMediaItem,
+        formatBytes,
+        formatEta,
+        formatRate,
         readBlobWithinLimit,
         safeErrorMessage,
         sanitizeFilename,

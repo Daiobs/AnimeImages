@@ -122,6 +122,30 @@
                                             </button>
                                         {% endif %}
                                     </div>
+                                    {% if item.browser_direct_fetch_safe and not item.requires_merge and not item.requires_cookie %}
+                                        <div class="download-progress-wrap batch-download-progress"
+                                             data-batch-download-progress
+                                             hidden>
+                                            <div class="download-progress-main">
+                                                <div class="download-progress-track"
+                                                     role="progressbar"
+                                                     aria-valuemin="0"
+                                                     aria-valuemax="100"
+                                                     aria-valuenow="0">
+                                                    <div class="download-progress-bar" style="width: 0%;"></div>
+                                                </div>
+                                                <div class="download-progress-meta" aria-live="polite">
+                                                    <span data-download-progress-bytes>0 B</span>
+                                                    <span data-download-progress-speed>正在测速...</span>
+                                                    <span data-download-progress-eta></span>
+                                                </div>
+                                                <div class="download-progress-warning">
+                                                    下载完成前请勿刷新或关闭本页。
+                                                </div>
+                                            </div>
+                                            <div class="download-progress-percent" data-download-progress-percent>0%</div>
+                                        </div>
+                                    {% endif %}
                                 {% endif %}
                                 {% if batch_direct_links_allowed %}
                                     <details class="batch-direct-url">

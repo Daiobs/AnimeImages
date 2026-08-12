@@ -9,6 +9,12 @@
          data-batch-item-url="{% url 'batch_parse_item' %}"
          data-batch-retry-url="{% url 'batch_parse_retry' %}">
     <div class="container-fluid px-4 px-md-5">
+        <div class="alert alert-warning ordinary-download-interruption"
+             data-ordinary-download-interruption
+             role="status"
+             hidden>
+            上次下载可能因页面刷新或关闭而中断，请重新点击下载；若资源已经失效，请重新解析。
+        </div>
         <div class="batch-hero">
             <div class="row justify-content-center">
                 <div class="col-xl-9">
