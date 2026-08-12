@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AnimeImages Zero-Server Streaming POC</title>
+    <style>
+        body { max-width: 760px; margin: 32px auto; padding: 0 20px; font: 16px/1.5 system-ui; }
+        h1 { font-size: 1.55rem; }
+        label { display: block; margin-top: 14px; font-weight: 700; }
+        input { box-sizing: border-box; width: 100%; padding: 9px; font: inherit; }
+        button { margin: 12px 8px 0 0; padding: 9px 14px; font: inherit; }
+        #status[data-tone="error"] { color: #b42318; }
+        #status[data-tone="success"] { color: #067647; }
+        pre { overflow: auto; padding: 12px; background: #f5f7fa; }
+    </style>
+</head>
+<body>
+    <h1>Zero-Server Service Worker Streaming POC</h1>
+    <p>This isolated page is not loaded by the AnimeImages product.</p>
+    <button id="preset-100" type="button">Controlled 100 MiB</button>
+    <button id="preset-300" type="button">Controlled 300 MiB</button>
+    <button id="load-real-descriptor" type="button">One-time real descriptor</button>
+
+    <label for="media-url">Media URL (memory only)</label>
+    <input id="media-url" type="password" autocomplete="off" spellcheck="false"
+           value="http://127.0.0.1:8766/bytes/104857600?rate_mib=8">
+    <label for="filename">Filename</label>
+    <input id="filename" autocomplete="off" value="animeimages-sw-104857600.mp4">
+    <label for="expected-bytes">Expected bytes</label>
+    <input id="expected-bytes" inputmode="numeric" autocomplete="off" value="104857600">
+
+    <div>
+        <button id="reload-control" type="button" hidden>Reload for Service Worker control</button>
+        <button id="prepare" type="button" disabled>Prepare descriptor</button>
+        <button id="download-prepared" type="button" disabled>Download prepared descriptor</button>
+        <button id="route-on-click" type="button" disabled>Register and download on click</button>
+    </div>
+
+    <p id="status" role="status">Initializing...</p>
+    <pre id="stats">{}</pre>
+
+    <script src="./protocol.js"></script>
+    <script src="./app.js"></script>
+</body>
+</html>

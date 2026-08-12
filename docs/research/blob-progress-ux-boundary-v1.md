@@ -147,9 +147,18 @@ The following gates have browser evidence:
 - playback navigation: 0
 - Server Relay: 0
 
-Deployment status and final readiness are recorded only after the complete
-automated suite, Linux deployment, readiness checks, and production browser
-acceptance. A failure at any of those gates requires rollback to `a5e0254`.
+The candidate commit is `e9b5001a3054ffb060950825d253d234ebad775e`.
+The complete local automated suite passed, and an exact-SHA production deploy
+completed with Django, PostgreSQL, systemd, and local/public readiness checks
+passing. The browser-control session then became unavailable before a fresh
+post-deploy real-media acceptance could be completed. Because that acceptance
+was a hard gate, the deployment was conservatively rolled back through the
+existing deploy script. Production finished clean and healthy at
+`a5e0254e001d56429008178ce39364be071da24a`.
+
+This is therefore a production-ready candidate, not a completed production
+release. No migration or infrastructure change is required for a future
+controlled deployment.
 
 ## Streaming Research Boundary
 
@@ -157,3 +166,6 @@ Any Service Worker attachment-stream experiment belongs only on
 `research/zero-server-browser-streaming-v1`. It must not be imported, loaded,
 or deployed with this Blob UX candidate. A successful POC would be a future
 architecture recommendation, not a production change in this task.
+
+The isolated POC result is recorded in
+`docs/research/zero-server-browser-streaming-v1.md`.
