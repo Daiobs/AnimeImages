@@ -10,6 +10,8 @@ const protocol = require("../static/js/ordinary_media_streaming_protocol.js");
 const streaming = require("../static/js/ordinary_media_streaming.js");
 const ordinary = require("../static/js/ordinary_media_download.js");
 
+const streamingPath = path.join(__dirname, "../static/js/ordinary_media_streaming.js");
+const streamingSource = fs.readFileSync(streamingPath, "utf8");
 const workerPath = path.join(__dirname, "../static/js/ordinary_media_download_sw.js");
 const workerSource = fs.readFileSync(workerPath, "utf8");
 const singleSource = fs.readFileSync(
@@ -408,6 +410,7 @@ test("client registers the root-scoped worker and launches one opaque download p
         options: {scope: "/", updateViaCache: "none"},
     });
     assert.match(harness.clicked[0], /^\/__animeimages-stream-download\/[a-f0-9]{32}$/);
+    assert.doesNotMatch(streamingSource, /link\.download\s*=/);
 
     const current = harness.statuses.get(active.downloadId);
     harness.serviceWorker.emit({

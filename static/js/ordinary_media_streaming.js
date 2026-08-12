@@ -355,7 +355,6 @@
             }
             const link = documentObject.createElement("a");
             link.href = protocol.downloadPath(downloadId, workerScope);
-            link.download = "";
             link.rel = "noopener";
             link.style.display = "none";
             documentObject.body.appendChild(link);
