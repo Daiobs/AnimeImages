@@ -62,8 +62,8 @@ checkpoint remains useful for genuinely server-required outputs.
 | Milestone | Status | Commit | Production | Evidence |
 | --- | --- | --- | --- | --- |
 | M0 autonomy checkpoint | complete | `bbbf87b` | unchanged at `485951b` | checkpoint branch pushed; production readiness 200 |
-| M1 TianTian browser recovery | local browser gate passed | `530d0cc`, `4fb735b` | not deployed | real Single and Batch flows saved an exact 110,691,390-byte file with zero AnimeImages media-body requests |
-| M2 Single/Batch unified direct download | local browser gate passed | `530d0cc`, `4fb735b` | not deployed | both product surfaces loaded the shared bounded primitive; Django 967/967 and Node 53/53 passed |
+| M1 TianTian browser recovery | production browser gate passed | `a5e0254` | deployed | real Single and Batch flows saved an exact 110,691,390-byte file with zero AnimeImages media-body requests |
+| M2 Single/Batch unified direct download | production browser gate passed | `a5e0254` | deployed | both product surfaces used the shared bounded primitive; Django 967/967 and Node 53/53 passed |
 | M3 YouTube verification | pending | pending | not deployed | server-required merge remains separate |
 | M4 Batch/Admin clarity | pending | pending | not deployed | begins only after ordinary download stability |
 
@@ -331,3 +331,76 @@ making progress. The implementation therefore gained a 30-second inactivity
 guard that resets on every received chunk. It produces safe retry/reparse
 guidance and cannot enter Server Relay. The post-fix real Single and Batch
 Chrome gates remain required before Linux canary or production deployment.
+
+## Linux Candidate Acceptance
+
+Pushed candidate `a5e0254e001d56429008178ce39364be071da24a` was checked out in an
+isolated Linux clone and served through a temporary Nginx proxy. No production
+configuration was changed for this gate.
+
+Single and Batch each passed with the established TianTian ordinary MP4:
+
+- expected and saved bytes: `110,691,390`
+- browser-to-CDN media request: one HTTP 200 response per flow
+- AnimeImages prepare, stream, and status requests: zero
+- AnimeImages ordinary media bytes: zero
+- route decision: direct browser handoff
+- playback navigation: none
+
+The temporary Gunicorn processes, ports, and local tunnels were stopped after
+the acceptance run. The isolated clone and temporary proxy files were retained
+only until final production verification, then removed.
+
+## Controlled Production Rollout
+
+Candidate `a5e0254e001d56429008178ce39364be071da24a` was deployed through the
+existing `scripts/deploy.sh` flow. The first rollout was deliberately rolled
+back to `485951b1f962c4279ef9b78903f0170e05baae5c` because the operator Mac
+locked before browser acceptance could run. This was an acceptance-window
+safety rollback, not an observed application failure.
+
+After the browser session was restored, the same pushed SHA was deployed again.
+Deployment completed without a migration, the service returned to active state,
+and local and public readiness returned HTTP 200.
+
+### Production Single acceptance
+
+- parse: success through `tiantianjiexi`
+- parse duration: about 1.3 seconds
+- expected and saved bytes: `110,691,390`
+- observed browser completion: about 51 seconds
+- route log: `direct`, success, no fallback
+- AnimeImages actual and estimated server egress: zero
+- browser egress estimate: `110,691,390`
+- prepare, stream, and status requests: zero
+- playback navigation: none
+
+### Production Batch acceptance
+
+The first Batch click reached a successful direct route decision but did not
+produce a complete browser file within three minutes. It is recorded as a failed
+acceptance attempt; it did not use Server Relay. The allowed recovery action was
+then used: reparse to obtain a fresh descriptor and retry Browser Direct.
+
+The fresh attempt passed:
+
+- progressive parse: success through `tiantianjiexi`
+- parse duration: about 1.9 seconds
+- expected and saved bytes: `110,691,390`
+- observed browser completion after the fresh click: about 16 seconds
+- route log: `direct`, success, no fallback
+- AnimeImages actual and estimated server egress: zero
+- browser egress estimate: `110,691,390`
+- prepare, stream, and status requests: zero
+- playback navigation: none
+
+Both successful production flows used the same browser-side bounded Blob
+primitive. This is Recovery v1, not the final large-file architecture. File
+System Access was not used. Safari, Firefox, Edge, mobile browsers, KuKuTool
+real-media samples, and 300/500 MiB memory behavior remain unverified. YouTube
+merge remains a distinct server-required output and was not changed by this
+recovery.
+
+Status:
+
+`PRODUCTION_BROWSER_NATIVE_DOWNLOAD_RESTORED`
