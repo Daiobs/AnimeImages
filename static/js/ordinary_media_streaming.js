@@ -156,6 +156,9 @@
         const documentObject = settings.documentObject || (
             typeof document !== "undefined" ? document : null
         );
+        const locationObject = settings.locationObject || (
+            typeof location !== "undefined" ? location : null
+        );
         const cryptoObject = settings.cryptoObject || (
             typeof crypto !== "undefined" ? crypto : null
         );
@@ -488,6 +491,11 @@
                 expectedBytes: item && item.size_is_estimate
                     ? 0
                     : (item && (item.size_bytes || item.sizeBytes)),
+            }, {
+                allowLoopbackHttp: Boolean(
+                    locationObject
+                    && protocol.isLoopbackHostname(locationObject.hostname)
+                ),
             });
             let registered = false;
             let streamingStarted = false;

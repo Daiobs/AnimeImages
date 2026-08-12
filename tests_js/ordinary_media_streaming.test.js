@@ -194,6 +194,7 @@ function createClientHarness(options) {
         documentObject,
         cryptoObject: deterministicCrypto(),
         MessageChannelConstructor: FakeMessageChannel,
+        locationObject: settings.locationObject,
         startTimeoutMs: settings.startTimeoutMs || 100,
         messageTimeoutMs: 100,
         statusPollMs: 20,
@@ -234,7 +235,10 @@ function deferred() {
     return {promise, resolve};
 }
 
-function createWorkerRuntime(fetchImpl) {
+function createWorkerRuntime(fetchImpl, options) {
+    const settings = options || {};
+    const workerOrigin = settings.origin || "https://download.example.test";
+    const workerUrl = new URL(workerOrigin);
     const listeners = new Map();
     const clientMessages = [];
     const context = {
@@ -255,7 +259,7 @@ function createWorkerRuntime(fetchImpl) {
             context.self.AnimeImagesOrdinaryMediaStreamingProtocol = protocol;
         },
         self: {
-            location: {origin: "https://download.example.test"},
+            location: {origin: workerUrl.origin, hostname: workerUrl.hostname},
             clients: {
                 async matchAll() {
                     return [{postMessage(message) { clientMessages.push(message); }}];
@@ -283,7 +287,7 @@ function createWorkerRuntime(fetchImpl) {
         listeners.get("fetch")({
             request: {
                 method: "GET",
-                url: `https://download.example.test/__animeimages-stream-download/${downloadId}`,
+                url: `${workerUrl.origin}/__animeimages-stream-download/${downloadId}`,
             },
             respondWith(promise) { responsePromise = Promise.resolve(promise); },
             waitUntil(promise) { waitUntil.push(Promise.resolve(promise)); },
@@ -316,7 +320,7 @@ function chunkedUpstream(chunks, options) {
     });
     const response = {
         ok: true,
-        url: "https://v11-default.365yg.com/media/video.mp4?fixture=signed",
+        url: settings.url || "https://v11-default.365yg.com/media/video.mp4?fixture=signed",
         headers: new Headers({
             "Content-Type": "video/mp4",
             "Content-Length": String(chunks.reduce((total, chunk) => total + chunk.length, 0)),
@@ -340,6 +344,18 @@ test("protocol validates opaque IDs, bounded media hosts, and memory-safe snapsh
     assert.equal(protocol.isAllowedStreamingUrl("https://v11-default.365yg.com/a"), true);
     assert.equal(protocol.isAllowedStreamingUrl("https://evil365yg.com/a"), false);
     assert.equal(protocol.isAllowedStreamingUrl("http://v11-default.365yg.com/a"), false);
+    assert.equal(protocol.isAllowedStreamingUrl("http://127.0.0.1:8766/media"), false);
+    assert.equal(protocol.isAllowedStreamingUrl(
+        "http://127.0.0.1:8766/media",
+        {allowLoopbackHttp: true},
+    ), true);
+    assert.equal(protocol.isAllowedStreamingUrl(
+        "http://192.168.1.10:8766/media",
+        {allowLoopbackHttp: true},
+    ), false);
+    assert.equal(protocol.isLoopbackHostname("localhost"), true);
+    assert.equal(protocol.isLoopbackHostname("127.0.0.1"), true);
+    assert.equal(protocol.isLoopbackHostname("download.example.test"), false);
     assert.throws(() => protocol.createDescriptor({...descriptor, downloadId: "bad"}));
     assert.equal(
         protocol.descriptorIdFromPath(
@@ -364,6 +380,41 @@ test("protocol validates opaque IDs, bounded media hosts, and memory-safe snapsh
     const serialized = JSON.stringify(snapshot);
     assert.equal(snapshot.streamingStarted, true);
     assert.doesNotMatch(serialized, /365yg|fixture|signed|url/i);
+});
+
+test("loopback benchmark sources require a loopback page and worker", async () => {
+    const input = {
+        downloadId: "33333333333333333333333333333333",
+        url: "http://127.0.0.1:8766/media?fixture=benchmark",
+        filename: "benchmark.mp4",
+        provider: "tiantianjiexi",
+        expectedBytes: 4,
+    };
+    assert.throws(() => protocol.createDescriptor(input), /STREAMING_URL_UNSUPPORTED/);
+
+    const remoteWorker = createWorkerRuntime(async () => chunkedUpstream([[1, 2, 3, 4]], {
+        url: input.url,
+    }).response);
+    const remoteRegistration = await remoteWorker.send({
+        type: "REGISTER_DOWNLOAD",
+        descriptor: input,
+    });
+    assert.equal(remoteRegistration.ok, false);
+    assert.equal(remoteRegistration.code, "STREAMING_URL_UNSUPPORTED");
+
+    const localUpstream = chunkedUpstream([[1, 2], [3, 4]], {url: input.url});
+    const localWorker = createWorkerRuntime(
+        async () => localUpstream.response,
+        {origin: "http://127.0.0.1:8000"},
+    );
+    const localRegistration = await localWorker.send({
+        type: "REGISTER_DOWNLOAD",
+        descriptor: input,
+    });
+    assert.equal(localRegistration.ok, true);
+    const response = await localWorker.startFetch(input.downloadId).response;
+    assert.equal(response.status, 200);
+    assert.deepEqual([...new Uint8Array(await response.arrayBuffer())], [1, 2, 3, 4]);
 });
 
 test("first-install control waits for controllerchange before downloads are launched", async () => {

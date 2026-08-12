@@ -6,6 +6,7 @@ const protocol = self.AnimeImagesOrdinaryMediaStreamingProtocol;
 const downloads = new Map();
 const PROGRESS_INTERVAL_MS = 350;
 const TERMINAL_RETENTION_MS = 60000;
+const ALLOW_LOOPBACK_HTTP = protocol.isLoopbackHostname(self.location.hostname);
 
 function deferred() {
     let resolve;
@@ -177,7 +178,9 @@ self.addEventListener("message", (event) => {
     const port = event.ports && event.ports[0];
     if (message.type === "REGISTER_DOWNLOAD") {
         try {
-            const descriptor = protocol.createDescriptor(message.descriptor);
+            const descriptor = protocol.createDescriptor(message.descriptor, {
+                allowLoopbackHttp: ALLOW_LOOPBACK_HTTP,
+            });
             if (downloads.has(descriptor.downloadId)) {
                 throw new Error("DOWNLOAD_ID_ALREADY_EXISTS");
             }
@@ -283,7 +286,9 @@ async function streamDownload(state) {
         !upstream.ok
         || !upstream.body
         || !protocol.isAllowedMediaContentType(contentType)
-        || !protocol.isAllowedStreamingUrl(upstream.url)
+        || !protocol.isAllowedStreamingUrl(upstream.url, {
+            allowLoopbackHttp: ALLOW_LOOPBACK_HTTP,
+        })
     ) {
         if (upstream.body && typeof upstream.body.cancel === "function") {
             await upstream.body.cancel().catch(() => {});

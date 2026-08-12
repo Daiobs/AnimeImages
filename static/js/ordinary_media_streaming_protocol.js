@@ -80,13 +80,25 @@
             || normalizedHost.endsWith(`.${normalizedSuffix}`);
     }
 
-    function isAllowedStreamingUrl(value) {
+    function isLoopbackHostname(hostname) {
+        const normalizedHost = String(hostname || "").toLowerCase().replace(/\.$/, "");
+        return normalizedHost === "localhost"
+            || normalizedHost === "127.0.0.1"
+            || normalizedHost === "[::1]";
+    }
+
+    function isAllowedStreamingUrl(value, options) {
+        const settings = options && typeof options === "object" ? options : {};
         try {
             const url = new URL(String(value || ""));
-            return url.protocol === "https:"
+            const providerMediaUrl = url.protocol === "https:"
                 && ALLOWED_MEDIA_HOST_SUFFIXES.some((suffix) => (
                     hostnameMatchesSuffix(url.hostname, suffix)
                 ));
+            const localBenchmarkUrl = Boolean(settings.allowLoopbackHttp)
+                && (url.protocol === "http:" || url.protocol === "https:")
+                && isLoopbackHostname(url.hostname);
+            return providerMediaUrl || localBenchmarkUrl;
         } catch (error) {
             return false;
         }
@@ -119,7 +131,7 @@
         if (!id) {
             throw new Error("INVALID_DOWNLOAD_ID");
         }
-        if (!isAllowedStreamingUrl(value.url)) {
+        if (!isAllowedStreamingUrl(value.url, settings)) {
             throw new Error("STREAMING_URL_UNSUPPORTED");
         }
         if (expectedBytes > MAX_STREAM_BYTES) {
@@ -241,6 +253,7 @@
         downloadPath,
         isAllowedMediaContentType,
         isAllowedStreamingUrl,
+        isLoopbackHostname,
         normalizeContentType,
         normalizeDownloadId,
         positiveInteger,
