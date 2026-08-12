@@ -1,14 +1,16 @@
 # Current Version Status
 
-Date: 2026-07-23
+Date: 2026-08-13
 
-Last Audited Runtime Baseline:
+Production Streaming Baseline:
 
 ```text
-6b1787f Make release Git state read-only (#18)
+5af0892 Prevent provider reparse after result-page refresh
 ```
 
-This is the application runtime baseline used for this documentation audit. It is not a real-time pointer to `main`. Read the current remote baseline with:
+This is the exact production checkout validated on 2026-08-13. It is a
+stabilization-branch deployment and is not a real-time pointer to `main`. Read
+the current remote baseline with:
 
 ```bash
 git fetch origin
@@ -21,39 +23,48 @@ Production site:
 https://download.cosflow.icu/
 ```
 
-## V1 Autonomous Recovery Candidate - 2026-08-12
+## Service Worker Streaming Production - 2026-08-13
 
-The active recovery branch is `stabilize/v1-autonomous-recovery-20260812`, based
-on the confirmed V1 production line rather than post-incident `main`. Commit
-`530d0cc` restores one shared ordinary-video browser data path for Single and
-Batch:
+Production now runs `feat/service-worker-streaming-production-v1` at
+`5af0892`, fixed by `checkpoint/production-service-worker-streaming-v1`.
+Ordinary Single and Batch videos use:
 
 ```text
-TianTianJieXi / KuKuTool CDN -> user browser -> user disk
+TianTianJieXi / KuKuTool CDN
+  -> browser Service Worker
+  -> browser Download Manager
+  -> user disk
 ```
 
 - AnimeImages performs parsing, Provider selection, manifest validation, route
   control, and handoff only. Ordinary media requests and bytes remain zero.
-- The browser fetches with omitted credentials and Referer, receives a bounded
-  complete Blob, aborts after 30 seconds without response/chunk progress, and
-  uses an object URL download anchor. A real Chrome proof saved a
-  110,691,390-byte TianTianJieXi MP4 with exact byte equality and no playback
-  navigation.
-- Single and Batch call the same browser primitive. Ordinary failures stop with
-  retry/reparse guidance and never call prepare, stream, status, server proxy,
-  or single-video ZIP fallback.
+- `BROWSER_STREAMING` is the default. `BROWSER_BLOB` is allowed only for an
+  explicit capability failure before Streaming starts. A post-start failure
+  cannot create a second transfer. Server Relay is not an ordinary-video
+  fallback.
+- Single and Batch share one Streaming primitive and one real-byte progress,
+  speed, ETA, status, reconnect, and cancellation contract. Refresh reattaches
+  to the same Service Worker download ID without reparsing.
+- Signed media URLs remain only in page and Service Worker memory. Status
+  messages, browser storage, logs, and documentation contain no URL or token.
+- Chrome production acceptance saved exact 110,691,390-byte TianTianJieXi files
+  in Single and Batch. A refresh around 35 percent continued and reattached;
+  Download Manager cancellation stopped the upstream; playback, Blob, relay,
+  and AnimeImages ordinary media bytes remained zero.
+- Controlled Chrome stabilization passed independent concurrent cancellation,
+  three refreshes of one 128 MiB stream, tab close, a waiting-worker update,
+  and exact 300/500 MiB files without media-sized JavaScript buffering. Safari
+  completed an exact 16 MiB Streaming smoke; Firefox and Edge were not
+  installed.
 - YouTube audio/video merge, ZIP creation, and other genuinely generated files
   remain server-required outputs and retain their separate server paths.
-- The 100 MiB recovery gate passed. The 300 MiB and 500 MiB+ browser-memory
-  behavior remains `BROWSER_BLOB_LARGE_FILE_LIMITATION` and is not yet claimed.
-- Historical native CDN handoff code was identified, but current playable CDN
-  responses no longer create a native attachment task because they do not send
-  `Content-Disposition: attachment`. Browser Blob is the approved Recovery v1
-  mechanism after that archaeology.
+- Production health, homepage, checkout cleanliness, and local/public readiness
+  passed after deployment. No migration, Nginx, systemd, environment, Redis, or
+  database-schema change was made.
 
-This section describes the pushed stabilization candidate. Production remains
-on the SHA recorded in `docs/recovery/v1-autonomous-recovery-20260812.md` until
-the isolated Linux candidate and controlled deployment gates pass.
+Canonical evidence is in
+`docs/research/service-worker-streaming-productionization-v1.md`. The previous
+Blob recovery SHA `a5e0254` remains the exact rollback point.
 
 ## Unreleased Batch Parse Candidate
 

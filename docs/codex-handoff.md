@@ -1,6 +1,6 @@
 # Codex Handoff
 
-Last updated: 2026-07-14
+Last updated: 2026-08-13
 
 This document is the first stop when a new Codex project or thread takes over AnimeImages.
 
@@ -52,15 +52,17 @@ Current production site:
 https://download.cosflow.icu/
 ```
 
-## Last Audited Runtime Baseline
+## Production Streaming Baseline
 
-This handoff was audited against the following application runtime baseline:
+Production was deployed and accepted at this exact stabilization SHA:
 
 ```text
-6b1787f Make release Git state read-only (#18)
+5af0892 Prevent provider reparse after result-page refresh
 ```
 
-This SHA is not a real-time pointer to `main`. Fetch and read the current remote baseline before starting work:
+It is fixed by `checkpoint/production-service-worker-streaming-v1` and is not a
+real-time pointer to `main`. Fetch and read the current remote baseline before
+starting work:
 
 ```bash
 git fetch origin
@@ -220,12 +222,18 @@ server-generated output: upstream -> AnimeImages processing -> user browser
 ```
 
 - Manifest-validated ordinary TianTianJieXi and KuKuTool videos use the shared
-  `static/js/ordinary_media_download.js` primitive on both Single and Batch.
-- The browser performs a credential-free, no-cache, no-Referer fetch, validates
-  the media response and exact `Content-Length` when present, enforces a bounded
-  Blob size, and aborts a connection after 30 seconds with no response/chunk
-  progress. A continuously transferring file is not constrained by that idle
-  timer. The completed Blob is saved through an object URL and download anchor.
+  `static/js/ordinary_media_download.js` and
+  `static/js/ordinary_media_streaming.js` primitive on both Single and Batch.
+- `BROWSER_STREAMING` is the default: a root-scoped Service Worker fetches the
+  Provider/CDN response and exposes a synthetic attachment stream to Browser
+  Download Manager without a complete Blob or File System API.
+- `BROWSER_BLOB` is a capability fallback only before Streaming begins, for
+  cases such as missing Service Worker support or registration/activation
+  failure. Once upstream fetch or Download Manager startup occurs, Blob
+  fallback is forbidden to prevent duplicate media requests and files.
+- Refresh queries the active Worker and reattaches the page to the same opaque
+  `downloadId`; it does not reparse, restart the media request, or persist the
+  signed URL. Site and Download Manager cancellation abort the upstream.
 - The ordinary path does not call `/media/download-prepare/`,
   `/media/download-stream/`, or `/media/download-status/`. It does not fall back
   to server proxy, single-video ZIP, or another AnimeImages media relay.
@@ -239,18 +247,22 @@ server-generated output: upstream -> AnimeImages processing -> user browser
 - The removed Batch ordinary-media progress implementation is documented in
   `docs/research/v1-batch-blob-progress-archive.md`; do not restore it as a
   second downloader.
-- Real Chrome proof for a 110,691,390-byte TianTianJieXi MP4 completed with an
-  exact saved size, no playback navigation, and zero AnimeImages media requests
-  or bytes. KuKuTool shares the same declared CDN/browser contract but still
-  requires a fresh live smoke before claiming an equivalent provider-specific
-  production result.
-- Browser Blob is Recovery v1, not the permanent large-file architecture.
-  `BROWSER_BLOB_LARGE_FILE_LIMITATION` remains open for 300 MiB and 500 MiB+
-  memory behavior.
+- Chrome production proof for a 110,691,390-byte TianTianJieXi MP4 passed in
+  Single and Batch with exact size, Download Manager progress, refresh
+  reattachment, no playback, and zero AnimeImages media requests or bytes.
+- Controlled Streaming passed 300 and 500 MiB without media-sized JavaScript
+  buffering, concurrent cancel isolation, multiple refreshes, tab close, and a
+  waiting-worker update. Safari passed a controlled 16 MiB smoke. Firefox and
+  Edge remain untested because they were not installed.
+- The Worker intentionally does not call `skipWaiting()`; an active version
+  finishes existing downloads while a new version waits for normal activation.
+- Browser Blob remains a bounded pre-start compatibility path, not the default
+  ordinary-video architecture.
 
 The canonical evidence and deployment state are in
-`docs/recovery/v1-autonomous-recovery-20260812.md`. Verify real Chrome behavior,
-not only route metadata or unit tests, before changing the capability list.
+`docs/research/service-worker-streaming-productionization-v1.md`. The exact
+rollback SHA is `a5e0254e001d56429008178ce39364be071da24a`. Verify real browser
+behavior, not only route metadata or unit tests, before changing this contract.
 
 ## Production Deployment Notes
 
