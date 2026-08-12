@@ -4667,12 +4667,18 @@ class XhsDownloadViewTests(TestCase):
         )
         self.assertNotContains(response, "cdn.jsdelivr.net/npm/bootstrap-icons")
         self.assertContains(response, "js/parse_preferences.js?v=")
+        self.assertContains(response, "js/result_url_safety.js?v=")
         self.assertContains(response, "js/xhs_download.js?v=")
         content = response.content.decode()
         self.assertLess(
             content.index("js/parse_preferences.js?v="),
             content.index("js/xhs_download.js?v="),
         )
+        self.assertLess(
+            content.index("js/result_url_safety.js?v="),
+            content.index("js/xhs_download.js?v="),
+        )
+        self.assertContains(response, 'data-page-home-url="/"')
         self.assertContains(response, "抖音原画/超清")
         self.assertContains(response, "YouTube 最高画质合并")
         self.assertContains(response, "data-download-task-url")
@@ -6851,6 +6857,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "theme-tiktok")
         self.assertContains(response, 'action="/tiktok/results/"')
+        self.assertContains(response, 'data-page-home-url="/tiktok/"')
 
     def test_bilibili_route_uses_bilibili_results_action(self):
         response = Client().get("/bilibili/")

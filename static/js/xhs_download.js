@@ -4,6 +4,7 @@
     const ordinaryMediaDownloadApi = window.AnimeImagesOrdinaryMediaDownload || null;
     const downloadReliabilityApi = window.AnimeImagesDownloadReliability || null;
     const douyinReliabilityApi = window.AnimeImagesDouyinReliability || null;
+    const resultUrlSafetyApi = window.AnimeImagesResultUrlSafety || null;
 
     function getCookie(name) {
         let cookieValue = null;
@@ -290,6 +291,14 @@
         const douyinContinuationUrl = page.dataset.douyinContinuationUrl;
         const downloadTaskUrl = page.dataset.downloadTaskUrl;
         const downloadAsyncEnabled = page.dataset.downloadAsyncEnabled === "true";
+        if (resultUrlSafetyApi && searchForm) {
+            resultUrlSafetyApi.scrubServerRenderedResultUrl({
+                locationObject: window.location,
+                historyObject: window.history,
+                homeUrl: page.dataset.pageHomeUrl,
+                resultsUrl: searchForm.action,
+            });
+        }
         const savedSettings = loadSettings();
         const parsePreferencesApi = window.AnimeImagesParsePreferences || null;
         const renderedParseDefaults = {
