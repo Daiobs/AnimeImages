@@ -431,6 +431,12 @@ body {
     align-items: center;
 }
 
+.download-progress-main {
+    display: grid;
+    min-width: 0;
+    gap: 6px;
+}
+
 .download-progress-wrap[hidden] {
     display: none;
 }
@@ -498,6 +504,35 @@ body {
     font-size: .85rem;
     font-weight: 800;
     text-align: right;
+}
+
+.download-progress-meta {
+    display: flex;
+    min-height: 18px;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    color: var(--text-muted);
+    font-size: .78rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.download-progress-warning {
+    color: #9a6700;
+    font-size: .78rem;
+    font-weight: 700;
+}
+
+.batch-download-progress {
+    width: 100%;
+    margin-top: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--line-soft);
+    border-radius: 8px;
+    background: #fff;
+}
+
+.ordinary-download-interruption {
+    margin-top: 18px;
 }
 
 .tag-pill {

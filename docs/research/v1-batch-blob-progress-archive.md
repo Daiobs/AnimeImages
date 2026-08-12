@@ -33,17 +33,35 @@ The colored progress treatment was useful because it represented bytes the page
 itself was receiving. It was not a server job progress indicator and it did not
 mean that the browser download manager had already created a file task.
 
-## Why It Left The Ordinary Path
+## Why The Old Downloader Left The Ordinary Path
 
 Recovery v1 keeps the browser-side Blob data path for ordinary TianTianJieXi and
 KuKuTool videos, but Single and Batch now call one shared primitive. The ordinary
-product UI exposes only preparation, acquisition, and save-handoff states. It no
-longer presents a separate Batch-only transfer meter or asks users to understand
-transport modes.
+product UI does not ask users to understand transport modes.
 
 The old implementation also retained an array of every response chunk before
 creating the Blob. That duplicated logic, increased large-file memory pressure,
 and allowed Single and Batch behavior to drift.
+
+## Presentation Restored Through The Shared Contract
+
+The progress presentation was restored in `feat/blob-progress-ux-v1`, but the
+old Batch downloader was not restored. `static/js/ordinary_media_download.js`
+now emits one shared progress contract based on bytes actually read from the
+CDN response. Single and Batch render that same event stream as transferred
+bytes, smoothed speed, ETA, and either a determinate or indeterminate progress
+bar.
+
+This preserves the useful visual behavior while retaining one data path:
+
+```text
+Shared ordinary-media downloader
+        -> progress event
+        -> Single presentation / Batch presentation
+```
+
+The meter still describes page-owned CDN-to-browser Blob acquisition. It does
+not claim that the browser download manager owns the task before Blob handoff.
 
 ## Reuse Boundary
 
@@ -55,4 +73,5 @@ owns, such as:
 - other server-generated output jobs
 
 It should not be restored as a second ordinary-video downloader. Git history is
-the source of truth for the removed implementation.
+the source of truth for the removed implementation, while the current shared
+progress API is the source of truth for ordinary-media progress.

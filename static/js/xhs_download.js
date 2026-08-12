@@ -339,6 +339,9 @@
                 progressTrack: progressWrap ? progressWrap.querySelector("[role='progressbar']") : null,
                 progressBar: resultsRegion ? resultsRegion.querySelector("#download-progress-bar") : null,
                 progressPercent: resultsRegion ? resultsRegion.querySelector("#download-progress-percent") : null,
+                progressBytes: resultsRegion ? resultsRegion.querySelector("#download-progress-bytes") : null,
+                progressSpeed: resultsRegion ? resultsRegion.querySelector("#download-progress-speed") : null,
+                progressEta: resultsRegion ? resultsRegion.querySelector("#download-progress-eta") : null,
             };
         }
 
@@ -561,10 +564,19 @@
         }
 
         function hideDownloadProgress() {
-            const {progressWrap} = getProgressElements();
+            const {progressWrap, progressBytes, progressSpeed, progressEta} = getProgressElements();
             if (progressWrap) {
                 progressWrap.hidden = true;
                 progressWrap.classList.remove("is-pending");
+            }
+            if (progressBytes) {
+                progressBytes.innerText = "0 B";
+            }
+            if (progressSpeed) {
+                progressSpeed.innerText = "正在测速...";
+            }
+            if (progressEta) {
+                progressEta.innerText = "";
             }
             lastDownloadProgress = 0;
         }
@@ -606,6 +618,57 @@
             }
             if (progressPercent) {
                 progressPercent.innerText = label || "准备中";
+            }
+        }
+
+        function applyOrdinaryDownloadProgress(event) {
+            if (!ordinaryMediaDownloadApi || !event) {
+                return;
+            }
+            const {
+                progressWrap,
+                progressTrack,
+                progressBar,
+                progressPercent,
+                progressBytes,
+                progressSpeed,
+                progressEta,
+            } = getProgressElements();
+            const knownTotal = Number(event.totalBytes || 0) > 0;
+            const completed = event.stage === "saving" || event.stage === "completed";
+            if (completed) {
+                setProgress(100);
+            } else if (knownTotal && event.percent !== null) {
+                setProgress(event.percent);
+            } else if (event.stage === "fetching") {
+                setProgressPending("下载中");
+            }
+            if (progressWrap) {
+                progressWrap.hidden = false;
+            }
+            if (progressTrack && !knownTotal) {
+                progressTrack.removeAttribute("aria-valuenow");
+                progressTrack.setAttribute("aria-valuetext", "正在下载，文件大小未知");
+            }
+            if (progressBar && completed) {
+                progressBar.style.width = "100%";
+            }
+            if (progressPercent && !knownTotal) {
+                progressPercent.innerText = completed ? "100%" : "下载中";
+            }
+            if (progressBytes) {
+                const received = ordinaryMediaDownloadApi.formatBytes(event.receivedBytes);
+                progressBytes.innerText = knownTotal
+                    ? `${received} / ${ordinaryMediaDownloadApi.formatBytes(event.totalBytes)}`
+                    : `已接收 ${received}`;
+            }
+            if (progressSpeed) {
+                progressSpeed.innerText = ordinaryMediaDownloadApi.formatRate(event.bytesPerSecond);
+            }
+            if (progressEta) {
+                progressEta.innerText = event.etaSeconds
+                    ? ordinaryMediaDownloadApi.formatEta(event.etaSeconds)
+                    : (event.stage === "fetching" ? "正在测速..." : "");
             }
         }
 
@@ -1098,13 +1161,14 @@
             if (!ordinaryMediaDownloadApi || directItems.length !== 1) {
                 throw new Error("当前资源无法由浏览器直接保存。");
             }
-            hideDownloadProgress();
+            resetDownloadProgressBaseline();
             const item = directItems[0];
             const result = await ordinaryMediaDownloadApi.download(item, {
                 filename: item.filename || `${getBaseFilename()}.mp4`,
                 onStage(_stage, message) {
                     setStatus(getStatusElement(), message);
                 },
+                onProgress: applyOrdinaryDownloadProgress,
             });
             return [result.filename];
         }
@@ -1138,7 +1202,7 @@
                     const filenames = await downloadOrdinaryMediaRouteItems(directItems);
                     setStatus(
                         getStatusElement(),
-                        `已开始保存：${filenames.join("、")}${routeWarningText(routeData.warnings)}`,
+                        `已交给浏览器保存：${filenames.join("、")}${routeWarningText(routeData.warnings)}`,
                         "text-success",
                     );
                 } catch (error) {
@@ -1668,5 +1732,12 @@
         updateDownloadLocationButtons();
         updateModeVisibility();
         updateSelectAllButton();
+        if (ordinaryMediaDownloadApi) {
+            const interrupted = ordinaryMediaDownloadApi.consumeInterruptedDownloadMarker();
+            const interruptionNotice = page.querySelector("[data-ordinary-download-interruption]");
+            if (interrupted && interruptionNotice) {
+                interruptionNotice.hidden = false;
+            }
+        }
     });
 })();

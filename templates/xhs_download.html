@@ -23,6 +23,12 @@
             data-platform-key="{{ platform_key|default:'home' }}"
     >
         <div class="container-fluid px-4 px-md-5">
+            <div class="alert alert-warning ordinary-download-interruption"
+                 data-ordinary-download-interruption
+                 role="status"
+                 hidden>
+                上次下载可能因页面刷新或关闭而中断，请重新点击下载；若资源已经失效，请重新解析。
+            </div>
 
             <!-- 搜索区 -->
             <div class="hero-section">

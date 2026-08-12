@@ -115,6 +115,94 @@
         }, 1300);
     }
 
+    function getBatchDownloadProgress(button) {
+        const item = button ? button.closest(".batch-direct-item") : null;
+        const wrap = item ? item.querySelector("[data-batch-download-progress]") : null;
+        return {
+            wrap,
+            track: wrap ? wrap.querySelector("[role='progressbar']") : null,
+            bar: wrap ? wrap.querySelector(".download-progress-bar") : null,
+            percent: wrap ? wrap.querySelector("[data-download-progress-percent]") : null,
+            bytes: wrap ? wrap.querySelector("[data-download-progress-bytes]") : null,
+            speed: wrap ? wrap.querySelector("[data-download-progress-speed]") : null,
+            eta: wrap ? wrap.querySelector("[data-download-progress-eta]") : null,
+        };
+    }
+
+    function resetBatchDownloadProgress(button) {
+        const progress = getBatchDownloadProgress(button);
+        if (progress.wrap) {
+            progress.wrap.hidden = false;
+            progress.wrap.classList.remove("is-pending");
+        }
+        if (progress.track) {
+            progress.track.setAttribute("aria-valuenow", "0");
+            progress.track.setAttribute("aria-valuetext", "0%");
+        }
+        if (progress.bar) {
+            progress.bar.style.width = "0%";
+        }
+        if (progress.percent) {
+            progress.percent.textContent = "0%";
+        }
+        if (progress.bytes) {
+            progress.bytes.textContent = "0 B";
+        }
+        if (progress.speed) {
+            progress.speed.textContent = "正在测速...";
+        }
+        if (progress.eta) {
+            progress.eta.textContent = "";
+        }
+    }
+
+    function applyBatchDownloadProgress(button, event) {
+        if (!ordinaryMediaDownloadApi || !event) {
+            return;
+        }
+        const progress = getBatchDownloadProgress(button);
+        const knownTotal = Number(event.totalBytes || 0) > 0;
+        const completed = event.stage === "saving" || event.stage === "completed";
+        const percentValue = completed
+            ? 100
+            : (knownTotal && event.percent !== null ? Math.max(0, Math.min(100, event.percent)) : null);
+        if (progress.wrap) {
+            progress.wrap.hidden = false;
+            progress.wrap.classList.toggle("is-pending", percentValue === null);
+        }
+        if (progress.track) {
+            if (percentValue === null) {
+                progress.track.removeAttribute("aria-valuenow");
+                progress.track.setAttribute("aria-valuetext", "正在下载，文件大小未知");
+            } else {
+                progress.track.setAttribute("aria-valuenow", String(Math.round(percentValue)));
+                progress.track.setAttribute("aria-valuetext", `${Math.round(percentValue)}%`);
+            }
+        }
+        if (progress.bar) {
+            progress.bar.style.width = percentValue === null ? "100%" : `${percentValue}%`;
+        }
+        if (progress.percent) {
+            progress.percent.textContent = percentValue === null
+                ? "下载中"
+                : `${Math.round(percentValue)}%`;
+        }
+        if (progress.bytes) {
+            const received = ordinaryMediaDownloadApi.formatBytes(event.receivedBytes);
+            progress.bytes.textContent = knownTotal
+                ? `${received} / ${ordinaryMediaDownloadApi.formatBytes(event.totalBytes)}`
+                : `已接收 ${received}`;
+        }
+        if (progress.speed) {
+            progress.speed.textContent = ordinaryMediaDownloadApi.formatRate(event.bytesPerSecond);
+        }
+        if (progress.eta) {
+            progress.eta.textContent = event.etaSeconds
+                ? ordinaryMediaDownloadApi.formatEta(event.etaSeconds)
+                : (event.stage === "fetching" ? "正在测速..." : "");
+        }
+    }
+
     function collectBatchVideoLinks() {
         return Array.from(document.querySelectorAll("[data-batch-direct-url]"))
             .map((node) => ({
@@ -477,6 +565,13 @@
         prioritizeFirstBatchPreview(
             batchPage.querySelector(".batch-result-card:not(.is-hidden)")
         );
+        if (ordinaryMediaDownloadApi) {
+            const interrupted = ordinaryMediaDownloadApi.consumeInterruptedDownloadMarker();
+            const interruptionNotice = batchPage.querySelector("[data-ordinary-download-interruption]");
+            if (interrupted && interruptionNotice) {
+                interruptionNotice.hidden = false;
+            }
+        }
 
         function readDraft() {
             if (parsePreferencesApi) {
@@ -749,15 +844,19 @@
                     return;
                 }
                 setBatchDownloadButtonLoading(directDownloadButton, true, "正在准备下载...");
+                resetBatchDownloadProgress(directDownloadButton);
                 try {
                     await ordinaryMediaDownloadApi.download(item, {
                         filename,
                         onStage(_stage, message) {
                             setBatchDownloadButtonLoading(directDownloadButton, true, message);
                         },
+                        onProgress(progressEvent) {
+                            applyBatchDownloadProgress(directDownloadButton, progressEvent);
+                        },
                     });
                     setBatchDownloadButtonLoading(directDownloadButton, false);
-                    showBatchDownloadButtonMessage(directDownloadButton, "已开始保存");
+                    showBatchDownloadButtonMessage(directDownloadButton, "已交给浏览器保存");
                 } catch (error) {
                     console.warn(
                         "Batch ordinary browser download failed",

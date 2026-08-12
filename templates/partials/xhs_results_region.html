@@ -188,8 +188,18 @@
 
         <div class="card-footer bg-white">
             <div class="download-progress-wrap mb-2" id="download-progress-wrap" hidden>
-                <div class="download-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-                    <div class="download-progress-bar" id="download-progress-bar" style="width: 0%;"></div>
+                <div class="download-progress-main">
+                    <div class="download-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                        <div class="download-progress-bar" id="download-progress-bar" style="width: 0%;"></div>
+                    </div>
+                    <div class="download-progress-meta" aria-live="polite">
+                        <span id="download-progress-bytes">0 B</span>
+                        <span id="download-progress-speed">正在测速...</span>
+                        <span id="download-progress-eta"></span>
+                    </div>
+                    <div class="download-progress-warning">
+                        下载完成前请勿刷新或关闭本页。
+                    </div>
                 </div>
                 <div class="download-progress-percent" id="download-progress-percent">0%</div>
             </div>
