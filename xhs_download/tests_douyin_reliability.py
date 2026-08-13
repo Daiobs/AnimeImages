@@ -45,6 +45,8 @@ from .services.douyin_ultra_attempts import (
     DouyinUltraAttemptRateLimitedError,
     DouyinUltraAttemptSupersededError,
 )
+from .services import env_config
+from .services.env_config import runtime_default_float, runtime_default_int
 from .services.platforms.douyin import DouyinAdapter
 from .services.platforms.douyin_kukutool import (
     DouyinKukuToolProvider,
@@ -189,6 +191,37 @@ class SlowRaceProvider:
             raise self.error
         return self.result
 
+
+class DouyinRuntimeDefaultTests(SimpleTestCase):
+    def test_product_defaults_ignore_legacy_project_defaults(self):
+        with patch.object(env_config.os, "environ", {}):
+            self.assertEqual(
+                runtime_default_int("ULTRA_HD_RATE_LIMIT_PER_MINUTE", 10),
+                10,
+            )
+            self.assertEqual(
+                runtime_default_float("DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS", 6.0),
+                6.0,
+            )
+
+    def test_explicit_environment_value_has_priority(self):
+        with patch.object(
+            env_config.os,
+            "environ",
+            {"ULTRA_HD_RATE_LIMIT_PER_MINUTE": "4"},
+        ):
+            self.assertEqual(
+                runtime_default_int("ULTRA_HD_RATE_LIMIT_PER_MINUTE", 10),
+                4,
+            )
+
+    @override_settings(ULTRA_HD_RATE_LIMIT_PER_MINUTE=3)
+    def test_django_test_override_has_priority(self):
+        with patch.object(env_config.os, "environ", {}):
+            self.assertEqual(
+                runtime_default_int("ULTRA_HD_RATE_LIMIT_PER_MINUTE", 10),
+                3,
+            )
 
 class DouyinUltraAttemptAccountingTests(SimpleTestCase):
     def setUp(self):

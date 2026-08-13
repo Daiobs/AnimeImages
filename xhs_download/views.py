@@ -66,6 +66,7 @@ from .services.common import (
 )
 from .services.env_config import (
     runtime_bool as env_runtime_bool,
+    runtime_default_int,
     runtime_float as env_runtime_float,
     runtime_int as env_runtime_int,
 )
@@ -4296,7 +4297,7 @@ def build_search_results_context(request, platform_key="home"):
             limit = consume_fixed_window(
                 "third-party-provider-minute-ip",
                 get_client_identity(request),
-                settings.THIRD_PARTY_RATE_LIMIT_PER_MINUTE,
+                runtime_default_int("THIRD_PARTY_RATE_LIMIT_PER_MINUTE", 10),
                 60,
             )
         except Exception:
@@ -4412,7 +4413,10 @@ def build_search_results_context(request, platform_key="home"):
             parse_options["ultra_attempt_controller"] = (
                 DouyinUltraAttemptController(
                     client_identity=client_identity,
-                    limit=settings.ULTRA_HD_RATE_LIMIT_PER_MINUTE,
+                    limit=runtime_default_int(
+                        "ULTRA_HD_RATE_LIMIT_PER_MINUTE",
+                        10,
+                    ),
                     consume=consume_fixed_window,
                 )
             )

@@ -2454,8 +2454,11 @@ class DouyinAdapterTests(SimpleTestCase):
             ),
             providers=(TimeoutProvider(), SuccessProvider()),
         )
+        adapter = DouyinAdapter()
+        adapter.fetch_mobile_feed_result = Mock(return_value=None)
+        adapter.fetch_mobile_share_result = Mock(return_value=None)
 
-        result = provider.parse(DouyinAdapter(), context)
+        result = provider.parse(adapter, context)
 
         self.assertEqual(result.metadata["selected_provider"], "kukutool")
         self.assertEqual(result.metadata["ultra_race_winner"], "kukutool")
@@ -2524,8 +2527,11 @@ class DouyinAdapterTests(SimpleTestCase):
             ),
             providers=(WeakProvider(), StrongProvider()),
         )
+        adapter = DouyinAdapter()
+        adapter.fetch_mobile_feed_result = Mock(return_value=None)
+        adapter.fetch_mobile_share_result = Mock(return_value=None)
 
-        result = provider.parse(DouyinAdapter(), context)
+        result = provider.parse(adapter, context)
 
         self.assertEqual(result.metadata["selected_provider"], "kukutool")
         self.assertEqual(result.metadata["ultra_race_winner"], "kukutool")
