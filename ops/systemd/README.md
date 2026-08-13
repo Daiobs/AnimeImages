@@ -11,6 +11,6 @@ unit with `systemd-analyze verify`, and use the normal reviewed maintenance
 procedure. Repository changes do not imply that the production unit was
 updated.
 
-TianTianJieXi upstream parsing is independently limited to one real request by
-the shared Redis lease in the application. Increasing web request slots does
-not increase that Provider's upstream concurrency.
+TianTianJieXi upstream parsing has a separate Redis-backed concurrency counter
+with a production intent of two. Increasing web request slots does not alter
+that Provider limit; configuration changes must be reviewed independently.
