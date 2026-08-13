@@ -317,6 +317,9 @@
         let downloadInProgress = false;
         let pendingParsePreferences = null;
         let lastDownloadProgress = 0;
+        let ultraRetryDeadline = 0;
+        let ultraRetryTimer = null;
+        let ultraRetrySource = "";
 
         function getBaseFilename() {
             return page.dataset.baseFilename || "xhs_image";
@@ -393,18 +396,21 @@
                     youtubeMergeInput: youtubeMergeSettingInput,
                     youtubeMergeHiddenInput: youtubeMergeRequestInput,
                 });
-                return;
+            } else {
+                if (ultraHdSettingInput) {
+                    ultraHdSettingInput.checked = Boolean(preferences.ultra_hd)
+                        && !ultraHdSettingInput.disabled;
+                }
+                if (youtubeMergeSettingInput) {
+                    youtubeMergeSettingInput.checked = Boolean(preferences.youtube_merge)
+                        && !youtubeMergeSettingInput.disabled;
+                }
+                updateUltraHdRequestValue();
+                updateYoutubeMergeRequestValue();
             }
-            if (ultraHdSettingInput) {
-                ultraHdSettingInput.checked = Boolean(preferences.ultra_hd)
-                    && !ultraHdSettingInput.disabled;
+            if (!isUltraHdEnabled() && ultraRetryDeadline) {
+                startUltraRetryCountdown(0);
             }
-            if (youtubeMergeSettingInput) {
-                youtubeMergeSettingInput.checked = Boolean(preferences.youtube_merge)
-                    && !youtubeMergeSettingInput.disabled;
-            }
-            updateUltraHdRequestValue();
-            updateYoutubeMergeRequestValue();
         }
 
         function saveParsePreferences() {
@@ -696,8 +702,22 @@
             const spinner = submitBtn ? submitBtn.querySelector(".hero-submit-spinner") : null;
             const label = submitBtn ? submitBtn.querySelector(".hero-submit-label") : null;
 
+            const retrySeconds = douyinReliabilityApi
+                ? douyinReliabilityApi.scopedRetrySeconds({
+                    ultraEnabled: isUltraHdEnabled(),
+                    currentSource: linkInput ? linkInput.value : "",
+                    retrySource: ultraRetrySource,
+                    deadlineMs: ultraRetryDeadline,
+                })
+                : 0;
+            const retryApplies = Boolean(
+                ultraRetrySource
+                && String(linkInput && linkInput.value || "").trim()
+                    === ultraRetrySource
+                && isUltraHdEnabled()
+            );
             if (submitBtn) {
-                submitBtn.disabled = isLoading;
+                submitBtn.disabled = isLoading || retrySeconds > 0;
                 submitBtn.classList.toggle("is-loading", isLoading);
             }
             if (idleIcon) {
@@ -707,7 +727,64 @@
                 spinner.hidden = !isLoading;
             }
             if (label) {
-                label.innerText = isLoading ? "解析中" : "获取素材";
+                label.innerText = isLoading
+                    ? (isUltraHdEnabled() ? "正在获取超高清资源…" : "解析中")
+                    : (retrySeconds > 0 && douyinReliabilityApi
+                        ? douyinReliabilityApi.retryButtonLabel(retrySeconds)
+                        : (retryApplies ? "重新尝试超高清" : "获取素材"));
+            }
+        }
+
+        function startUltraRetryCountdown(value, source = "") {
+            const seconds = douyinReliabilityApi
+                ? douyinReliabilityApi.normalizeRetryAfterSeconds(value)
+                : Math.max(0, Number.parseInt(value || 0, 10));
+            if (ultraRetryTimer) {
+                window.clearInterval(ultraRetryTimer);
+                ultraRetryTimer = null;
+            }
+            if (!seconds) {
+                ultraRetryDeadline = 0;
+                ultraRetrySource = "";
+                setParseLoading(false);
+                return;
+            }
+            ultraRetryDeadline = Date.now() + (seconds * 1000);
+            ultraRetrySource = String(source || (linkInput && linkInput.value) || "").trim();
+            setParseLoading(false);
+            ultraRetryTimer = window.setInterval(() => {
+                if (Date.now() >= ultraRetryDeadline) {
+                    window.clearInterval(ultraRetryTimer);
+                    ultraRetryTimer = null;
+                }
+                setParseLoading(false);
+            }, 250);
+        }
+
+        function applyContinuationNotice(payload, retrySource = "") {
+            if (!resultsRegion || !payload) {
+                return;
+            }
+            let message = String(payload.continuation_message || "");
+            const retrySeconds = douyinReliabilityApi
+                ? douyinReliabilityApi.normalizeRetryAfterSeconds(
+                    payload.retry_after_seconds,
+                )
+                : 0;
+            if (message && retrySeconds) {
+                message = `${message} 约 ${retrySeconds} 秒后可重新尝试超高清。`;
+            }
+            const notice = resultsRegion.querySelector("[data-provider-notice-text]");
+            if (message && notice) {
+                notice.textContent = message;
+            }
+            if (retrySeconds) {
+                startUltraRetryCountdown(retrySeconds, retrySource);
+            } else if (
+                payload.status === "success"
+                && String(retrySource || "").trim() === ultraRetrySource
+            ) {
+                startUltraRetryCountdown(0);
             }
         }
 
@@ -721,7 +798,7 @@
                 <div class="parse-loading-card">
                     <div class="spinner-border" role="status" aria-hidden="true"></div>
                     <div>
-                        <div class="parse-loading-title">正在解析素材</div>
+                        <div class="parse-loading-title">${isUltraHdEnabled() ? "正在获取超高清资源…" : "正在解析素材"}</div>
                         <div class="parse-loading-subtitle">结果会直接显示在当前页面</div>
                     </div>
                 </div>
@@ -776,7 +853,7 @@
             });
         }
 
-        function applyParsePayload(payload) {
+        function applyParsePayload(payload, retrySource = "") {
             if (!resultsRegion) {
                 return;
             }
@@ -789,6 +866,7 @@
             if (payload.has_results) {
                 scrollResultsIntoView();
             }
+            applyContinuationNotice(payload, retrySource);
         }
 
         async function requestDouyinContinuation(token, signal) {
@@ -1522,12 +1600,29 @@
             }
 
             event.preventDefault();
+            const currentSource = String(linkInput && linkInput.value || "").trim();
+            if (
+                isUltraHdEnabled()
+                && currentSource === ultraRetrySource
+                && Date.now() < ultraRetryDeadline
+            ) {
+                setParseLoading(false);
+                return;
+            }
             updateUltraHdRequestValue();
             updateYoutubeMergeRequestValue();
 
             if (!linkInput || !linkInput.value.trim()) {
                 linkInput && linkInput.focus();
                 return;
+            }
+
+            if (ultraRetryDeadline && !isUltraHdEnabled()) {
+                startUltraRetryCountdown(0);
+            } else if (ultraRetryDeadline && currentSource !== ultraRetrySource) {
+                startUltraRetryCountdown(0);
+            } else if (ultraRetryDeadline && Date.now() >= ultraRetryDeadline) {
+                startUltraRetryCountdown(0);
             }
 
             if (activeParseController) {
@@ -1556,12 +1651,26 @@
                 });
                 let payload = await parseSearchResponse(response);
 
+                if (!response.ok) {
+                    const error = new Error(
+                        payload.message || "解析失败，请稍后再试。",
+                    );
+                    error.errorCode = payload.error_code || "PARSE_FAILED";
+                    error.retryAfter = Number.parseInt(
+                        response.headers.get("Retry-After")
+                        || payload.retry_after_seconds
+                        || 0,
+                        10,
+                    );
+                    throw error;
+                }
+
                 if (currentRequestId !== parseRequestId) {
                     return;
                 }
                 if (payload.status === "continuation_pending") {
                     if (payload.has_results && payload.html) {
-                        applyParsePayload(payload);
+                        applyParsePayload(payload, currentSource);
                     }
                     payload = await continueDouyinParse(
                         payload,
@@ -1583,7 +1692,7 @@
                     throw new Error(payload.message || "解析失败，请稍后再试。");
                 }
 
-                applyParsePayload(payload);
+                applyParsePayload(payload, currentSource);
             } catch (error) {
                 if (error && error.name === "AbortError") {
                     return;
@@ -1595,6 +1704,9 @@
                         : "PARSE_FAILED",
                 );
                 if (currentRequestId === parseRequestId) {
+                    if (error.retryAfter) {
+                        startUltraRetryCountdown(error.retryAfter, currentSource);
+                    }
                     showParseError(error.message || "解析失败，请稍后再试。");
                 }
             } finally {
@@ -1676,6 +1788,12 @@
             });
         }
 
+        if (linkInput) {
+            linkInput.addEventListener("input", () => {
+                setParseLoading(Boolean(activeParseController));
+            });
+        }
+
         if (pasteLinkIconBtn && linkInput) {
             pasteLinkIconBtn.addEventListener("click", async () => {
                 try {
@@ -1702,6 +1820,7 @@
                 input.addEventListener("change", () => {
                     updateUltraHdRequestValue();
                     updateYoutubeMergeRequestValue();
+                    setParseLoading(Boolean(activeParseController));
                 });
             }
         });

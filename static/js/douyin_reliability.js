@@ -7,7 +7,7 @@
         root.AnimeImagesDouyinReliability = api;
     }
 }(typeof window !== "undefined" ? window : globalThis, function () {
-    const MAX_POLLS = 5;
+    const MAX_POLLS = 7;
     const DEFAULT_POLL_AFTER_MS = 1500;
 
     function abortError() {
@@ -22,6 +22,35 @@
             return DEFAULT_POLL_AFTER_MS;
         }
         return Math.max(250, Math.min(3000, parsed));
+    }
+
+    function normalizeRetryAfterSeconds(value) {
+        const parsed = Number.parseInt(value || 0, 10);
+        return Number.isFinite(parsed) ? Math.max(0, Math.min(60, parsed)) : 0;
+    }
+
+    function retryButtonLabel(seconds) {
+        const remaining = normalizeRetryAfterSeconds(seconds);
+        return remaining
+            ? `重新尝试超高清（${remaining}s）`
+            : "重新尝试超高清";
+    }
+
+    function scopedRetrySeconds(options) {
+        const settings = options || {};
+        if (!settings.ultraEnabled) {
+            return 0;
+        }
+        const currentSource = String(settings.currentSource || "").trim();
+        const retrySource = String(settings.retrySource || "").trim();
+        if (!retrySource || currentSource !== retrySource) {
+            return 0;
+        }
+        const nowMs = Number(settings.nowMs || Date.now());
+        const deadlineMs = Number(settings.deadlineMs || 0);
+        return normalizeRetryAfterSeconds(
+            Math.ceil((deadlineMs - nowMs) / 1000),
+        );
     }
 
     function waitForPoll(ms, signal) {
@@ -73,6 +102,9 @@
                     outcome.error_code || "",
                 ),
                 continuation_message: String(outcome.message || ""),
+                retry_after_seconds: normalizeRetryAfterSeconds(
+                    outcome.retry_after_seconds,
+                ),
             };
         }
         return outcome;
@@ -133,7 +165,7 @@
         return {
             status: "timeout",
             error_code: "DOUYIN_CONTINUATION_CLIENT_LIMIT",
-            message: "超高清解析续查已结束，请重新尝试。",
+            message: "已返回普通清晰度，超高清解析本次未完成。",
         };
     }
 
@@ -141,6 +173,9 @@
         DEFAULT_POLL_AFTER_MS,
         MAX_POLLS,
         boundedPollDelay,
+        normalizeRetryAfterSeconds,
+        retryButtonLabel,
+        scopedRetrySeconds,
         normalizeContinuationPayload,
         resolveContinuationResult,
         runBoundedContinuation,

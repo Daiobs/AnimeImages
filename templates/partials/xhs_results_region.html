@@ -15,9 +15,9 @@
     {% endif %}
 
     {% if provider_notice %}
-        <div class="alert alert-info parse-inline-alert">
+        <div class="alert alert-info parse-inline-alert" data-provider-notice>
             <i class="bi bi-speedometer2 me-1"></i>
-            {{ provider_notice }}
+            <span data-provider-notice-text>{{ provider_notice }}</span>
         </div>
     {% endif %}
 

@@ -95,7 +95,7 @@ Staff users can smoke-test normal or sensitive platforms when the Provider runti
 Safety limits are still environment or deployment configuration. They protect server cost, bandwidth, queue pressure, and upstream risk:
 
 ```text
-THIRD_PARTY_RATE_LIMIT_PER_MINUTE=2
+THIRD_PARTY_RATE_LIMIT_PER_MINUTE=10
 THIRD_PARTY_GLOBAL_REQUEST_LIMIT_PER_MINUTE=30
 THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS=3.0
 YOUTUBE_FRONTEND_TIMEOUT_SECONDS=8.0
