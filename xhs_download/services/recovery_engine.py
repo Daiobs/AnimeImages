@@ -34,6 +34,7 @@ FAILURE_UNKNOWN = "unknown"
 RECOVERY_ACTION_NONE = "none"
 RECOVERY_ACTION_SAFE_ZIP_FALLBACK = "routing_safe_zip_fallback"
 RECOVERY_ACTION_ZIP_TO_PROXY = "zip_to_proxy"
+RECOVERY_ACTION_ZIP_TO_DIRECT = "zip_to_direct"
 RECOVERY_ACTION_PROXY_TO_DIRECT = "proxy_to_direct"
 RECOVERY_ACTION_BLOCKED = "blocked"
 
@@ -134,6 +135,43 @@ def recovery_log_fields(decision=None, **fields):
 def safe_zip_route(request, media_items, *, reason, error=None):
     normalized_items = [item for item in media_items or () if isinstance(item, dict)]
     failure_type = FAILURE_ROUTING_FAILED
+    if (
+        len(normalized_items) == 1
+        and single_video_can_browser_direct_attempt(normalized_items[0])
+    ):
+        route_info = route_payload(
+            route_type=ROUTE_DIRECT,
+            route_reason="普通视频路由异常，已保留浏览器数据面",
+            download_strategy="browser_direct_routing_recovery",
+            media_items=normalized_items,
+            estimated_bytes=estimate_media_items_bytes(normalized_items),
+            warnings=[],
+        )
+        recovery = RecoveryDecision(
+            action=RECOVERY_ACTION_ZIP_TO_DIRECT,
+            failure_type=failure_type,
+            fallback_from_route="routing",
+            fallback_to_route=ROUTE_DIRECT,
+            reason=sanitize_observability_text(reason, limit=200),
+        )
+        route_info.update(
+            strategy_version="safe_wrapper",
+            confidence=0,
+            routing_score=0,
+            recovery=recovery.log_fields(),
+        )
+        logger.warning(
+            "routing_safe_fallback",
+            extra={
+                "failure_type": failure_type,
+                "fallback_from_route": "routing",
+                "fallback_to_route": ROUTE_DIRECT,
+                "error_type": type(error).__name__ if error else "",
+                "error": sanitize_observability_text(error),
+            },
+        )
+        return route_info
+
     route_info = route_payload(
         route_type=ROUTE_ZIP,
         route_reason=reason,
@@ -182,6 +220,33 @@ def zip_failure_recovery(media_items, route_info, error):
     reason = sanitize_observability_text(error, limit=200)
     provider = normalized_items[0].get("provider", "") if normalized_items else ""
     failure_type = classify_failure(error, route_type=ROUTE_ZIP, provider=provider)
+    if (
+        len(normalized_items) == 1
+        and single_video_can_browser_direct_attempt(normalized_items[0])
+    ):
+        recovered_route = dict(route_info or {})
+        recovered_route.update(
+            route_type=ROUTE_DIRECT,
+            route_reason="ZIP 处理失败，普通视频改由浏览器获取并保存",
+            download_strategy="browser_direct_recovery",
+            server_egress_estimated_bytes=0,
+            browser_egress_estimated_bytes=estimate_media_items_bytes(normalized_items),
+            items=route_payload(
+                route_type=ROUTE_DIRECT,
+                route_reason="ZIP 处理失败，普通视频改由浏览器获取并保存",
+                download_strategy="browser_direct_recovery",
+                media_items=normalized_items,
+                estimated_bytes=estimate_media_items_bytes(normalized_items),
+            )["items"],
+        )
+        return RecoveryDecision(
+            action=RECOVERY_ACTION_ZIP_TO_DIRECT,
+            failure_type=failure_type,
+            fallback_from_route=ROUTE_ZIP,
+            fallback_to_route=ROUTE_DIRECT,
+            reason=reason,
+            route_info=recovered_route,
+        )
     if len(normalized_items) == 1 and (
         single_item_can_attachment_download(normalized_items[0])
         or single_video_can_server_proxy_download(normalized_items[0])

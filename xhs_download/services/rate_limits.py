@@ -19,6 +19,32 @@ class LimitResult:
     retry_after: int = 0
 
 
+class FixedWindowReservation:
+    """A fixed-window slot that is counted only after the caller commits it."""
+
+    def __init__(self, result, *, key="", amount=1, active=False):
+        self.result = result
+        self._key = str(key or "")
+        self._amount = max(1, int(amount or 1))
+        self._active = bool(active and self._key)
+
+    def commit(self):
+        self._active = False
+
+    def release(self):
+        if not self._active:
+            return
+        self._active = False
+        try:
+            remaining = cache.decr(self._key, self._amount)
+            if remaining < 0:
+                cache.set(self._key, 0, timeout=5)
+        except ValueError:
+            return
+        except Exception:
+            logger.exception("fixed_window_reservation_release_failed")
+
+
 def get_client_ip(request):
     remote_addr = (request.META.get("REMOTE_ADDR") or "unknown").strip()
     if getattr(settings, "DOWNLOAD_TRUST_X_FORWARDED_FOR", False):
@@ -59,6 +85,34 @@ def consume_fixed_window(scope, identity, limit, period_seconds, amount=1):
         limit=limit,
         retry_after=retry_after,
     )
+
+
+def reserve_fixed_window(scope, identity, limit, period_seconds, amount=1):
+    """Reserve a provider-call slot that can be released before network I/O."""
+    limit = int(limit or 0)
+    if limit <= 0:
+        return FixedWindowReservation(LimitResult(allowed=True))
+
+    now = int(time.time())
+    window = now // period_seconds
+    retry_after = period_seconds - (now % period_seconds)
+    key = f"limits:{scope}:{identity}:{window}"
+    current = _increment(key, timeout=retry_after + 5, amount=amount)
+    result = LimitResult(
+        allowed=current <= limit,
+        current=current,
+        limit=limit,
+        retry_after=retry_after,
+    )
+    reservation = FixedWindowReservation(
+        result,
+        key=key,
+        amount=amount,
+        active=True,
+    )
+    if not result.allowed:
+        reservation.release()
+    return reservation
 
 
 def get_daily_total(scope, identity):

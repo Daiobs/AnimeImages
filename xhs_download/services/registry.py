@@ -47,6 +47,8 @@ class PlatformRegistry:
         deadline_monotonic=None,
         stage_callback=None,
         allow_continuation=False,
+        continuation_identity="",
+        ultra_attempt_controller=None,
     ):
         url = extract_url_from_text(url)
         adapter = self.get_adapter_for_url(url)
@@ -60,6 +62,8 @@ class PlatformRegistry:
             deadline_monotonic=deadline_monotonic,
             stage_callback=stage_callback,
             allow_continuation=allow_continuation,
+            continuation_identity=continuation_identity,
+            ultra_attempt_controller=ultra_attempt_controller,
         )
 
 
@@ -88,6 +92,8 @@ def parse_media_page(
     deadline_monotonic=None,
     stage_callback=None,
     allow_continuation=False,
+    continuation_identity="",
+    ultra_attempt_controller=None,
 ):
     return default_registry.parse_url(
         url,
@@ -99,4 +105,6 @@ def parse_media_page(
         deadline_monotonic=deadline_monotonic,
         stage_callback=stage_callback,
         allow_continuation=allow_continuation,
+        continuation_identity=continuation_identity,
+        ultra_attempt_controller=ultra_attempt_controller,
     )

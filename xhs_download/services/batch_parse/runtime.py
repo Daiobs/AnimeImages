@@ -9,7 +9,6 @@ from ..env_config import (
     runtime_int as env_runtime_int,
 )
 from ..provider_access import request_is_in_public_rollout
-from ..provider_concurrency import TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY
 from ..rate_limits import consume_daily, consume_fixed_window, get_client_identity
 
 
@@ -260,13 +259,17 @@ def batch_parse_effective_parallel_workers(prefer_ultra_hd=False):
     if not prefer_ultra_hd:
         return worker_count
 
+    tiantian_concurrency_limit = max(
+        1,
+        env_runtime_int("TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY", 2),
+    )
     batch_tiantian_worker_limit = max(
         1,
         env_runtime_int("BATCH_PARSE_TIANTIAN_PARALLEL_WORKERS", 1),
     )
     return min(
         worker_count,
-        TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY,
+        tiantian_concurrency_limit,
         batch_tiantian_worker_limit,
     )
 

@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - "codex/**"
+      - "feat/**"
 
 jobs:
   test:
@@ -88,8 +89,17 @@ jobs:
           node --check static/js/batch_parse.js
           node --check static/js/douyin_reliability.js
           node --check static/js/download_reliability.js
+          node --check static/js/ordinary_media_download.js
+          node --check static/js/ordinary_media_download_sw.js
+          node --check static/js/ordinary_media_streaming.js
+          node --check static/js/ordinary_media_streaming_protocol.js
           node --check static/js/parse_preferences.js
+          node --check static/js/result_url_safety.js
           node --check static/js/xhs_download.js
+          node --test tests_js/batch_download_access.test.js
           node --test tests_js/douyin_reliability.test.js
           node --test tests_js/download_reliability.test.js
+          node --test tests_js/ordinary_media_download.test.js
+          node --test tests_js/ordinary_media_streaming.test.js
           node --test tests_js/parse_preferences.test.js
+          node --test tests_js/result_url_safety.test.js

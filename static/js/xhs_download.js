@@ -1,8 +1,10 @@
 (function () {
     const SETTINGS_KEY = "xhsDownloadSettings";
     const MAX_IMAGE_RETRIES = 3;
+    const ordinaryMediaDownloadApi = window.AnimeImagesOrdinaryMediaDownload || null;
     const downloadReliabilityApi = window.AnimeImagesDownloadReliability || null;
     const douyinReliabilityApi = window.AnimeImagesDouyinReliability || null;
+    const resultUrlSafetyApi = window.AnimeImagesResultUrlSafety || null;
 
     function getCookie(name) {
         let cookieValue = null;
@@ -86,7 +88,7 @@
             fallback_strategy: card.dataset.fallbackStrategy || "",
             cors_expected: card.dataset.corsExpected === "true",
             browser_direct_fetch_safe: card.dataset.browserDirectFetchSafe === "true",
-            browser_native_handoff_capable: card.dataset.browserNativeHandoffCapable === "true",
+            size_is_estimate: card.dataset.sizeIsEstimate === "true",
             requires_merge: card.dataset.requiresMerge === "true",
             requires_cookie: card.dataset.requiresCookie === "true",
         };
@@ -289,6 +291,14 @@
         const douyinContinuationUrl = page.dataset.douyinContinuationUrl;
         const downloadTaskUrl = page.dataset.downloadTaskUrl;
         const downloadAsyncEnabled = page.dataset.downloadAsyncEnabled === "true";
+        if (resultUrlSafetyApi && searchForm) {
+            resultUrlSafetyApi.scrubServerRenderedResultUrl({
+                locationObject: window.location,
+                historyObject: window.history,
+                homeUrl: page.dataset.pageHomeUrl,
+                resultsUrl: searchForm.action,
+            });
+        }
         const savedSettings = loadSettings();
         const parsePreferencesApi = window.AnimeImagesParsePreferences || null;
         const renderedParseDefaults = {
@@ -307,6 +317,9 @@
         let downloadInProgress = false;
         let pendingParsePreferences = null;
         let lastDownloadProgress = 0;
+        let ultraRetryDeadline = 0;
+        let ultraRetryTimer = null;
+        let ultraRetrySource = "";
 
         function getBaseFilename() {
             return page.dataset.baseFilename || "xhs_image";
@@ -324,12 +337,8 @@
             return resultsRegion ? resultsRegion.querySelector("#download-btn") : null;
         }
 
-        function getCompatibilityDownloadButton() {
-            return resultsRegion ? resultsRegion.querySelector("#compat-download-btn") : null;
-        }
-
         function getDownloadActionButtons() {
-            return [getDownloadButton(), getCompatibilityDownloadButton()].filter(Boolean);
+            return [getDownloadButton()].filter(Boolean);
         }
 
         function getSelectAllButton() {
@@ -343,6 +352,10 @@
                 progressTrack: progressWrap ? progressWrap.querySelector("[role='progressbar']") : null,
                 progressBar: resultsRegion ? resultsRegion.querySelector("#download-progress-bar") : null,
                 progressPercent: resultsRegion ? resultsRegion.querySelector("#download-progress-percent") : null,
+                progressBytes: resultsRegion ? resultsRegion.querySelector("#download-progress-bytes") : null,
+                progressSpeed: resultsRegion ? resultsRegion.querySelector("#download-progress-speed") : null,
+                progressEta: resultsRegion ? resultsRegion.querySelector("#download-progress-eta") : null,
+                blobWarning: progressWrap ? progressWrap.querySelector("[data-blob-download-warning]") : null,
             };
         }
 
@@ -383,18 +396,21 @@
                     youtubeMergeInput: youtubeMergeSettingInput,
                     youtubeMergeHiddenInput: youtubeMergeRequestInput,
                 });
-                return;
+            } else {
+                if (ultraHdSettingInput) {
+                    ultraHdSettingInput.checked = Boolean(preferences.ultra_hd)
+                        && !ultraHdSettingInput.disabled;
+                }
+                if (youtubeMergeSettingInput) {
+                    youtubeMergeSettingInput.checked = Boolean(preferences.youtube_merge)
+                        && !youtubeMergeSettingInput.disabled;
+                }
+                updateUltraHdRequestValue();
+                updateYoutubeMergeRequestValue();
             }
-            if (ultraHdSettingInput) {
-                ultraHdSettingInput.checked = Boolean(preferences.ultra_hd)
-                    && !ultraHdSettingInput.disabled;
+            if (!isUltraHdEnabled() && ultraRetryDeadline) {
+                startUltraRetryCountdown(0);
             }
-            if (youtubeMergeSettingInput) {
-                youtubeMergeSettingInput.checked = Boolean(preferences.youtube_merge)
-                    && !youtubeMergeSettingInput.disabled;
-            }
-            updateUltraHdRequestValue();
-            updateYoutubeMergeRequestValue();
         }
 
         function saveParsePreferences() {
@@ -479,37 +495,6 @@
 
         function updateSelectedStatus() {
             setStatus(getStatusElement(), `已选择 ${selected.length} 个资源`);
-            updateDownloadActionState();
-        }
-
-        function selectedUsesNativeOpen() {
-            return Boolean(
-                selectedSingleItem(selected)
-                && downloadReliabilityApi
-                && downloadReliabilityApi.browserNativeOpenCandidate(selected[0])
-            );
-        }
-
-        function updateDownloadActionState() {
-            const primaryButton = getDownloadButton();
-            const primaryLabel = primaryButton
-                ? primaryButton.querySelector("[data-download-label]")
-                : null;
-            const compatibilityButton = getCompatibilityDownloadButton();
-            const nativeOpen = selectedUsesNativeOpen();
-            if (primaryLabel) {
-                primaryLabel.textContent = nativeOpen
-                    ? "高速直连"
-                    : "下载选中资源";
-            }
-            if (primaryButton) {
-                primaryButton.title = nativeOpen
-                    ? "从 Provider/CDN 在可见新标签页打开原始资源"
-                    : "下载选中资源";
-            }
-            if (compatibilityButton) {
-                compatibilityButton.hidden = !nativeOpen;
-            }
         }
 
         function updateSelectAllButton() {
@@ -595,6 +580,27 @@
             lastDownloadProgress = 0;
         }
 
+        function hideDownloadProgress() {
+            const {progressWrap, progressBytes, progressSpeed, progressEta, blobWarning} = getProgressElements();
+            if (progressWrap) {
+                progressWrap.hidden = true;
+                progressWrap.classList.remove("is-pending");
+            }
+            if (progressBytes) {
+                progressBytes.innerText = "0 B";
+            }
+            if (progressSpeed) {
+                progressSpeed.innerText = "正在测速...";
+            }
+            if (progressEta) {
+                progressEta.innerText = "";
+            }
+            if (blobWarning) {
+                blobWarning.hidden = true;
+            }
+            lastDownloadProgress = 0;
+        }
+
         function setProgress(percent, options) {
             const rawValue = Math.max(0, Math.min(100, Math.round(percent || 0)));
             const allowDecrease = Boolean(options && options.allowDecrease);
@@ -635,14 +641,83 @@
             }
         }
 
+        function applyOrdinaryDownloadProgress(event) {
+            if (!ordinaryMediaDownloadApi || !event) {
+                return;
+            }
+            const {
+                progressWrap,
+                progressTrack,
+                progressBar,
+                progressPercent,
+                progressBytes,
+                progressSpeed,
+                progressEta,
+                blobWarning,
+            } = getProgressElements();
+            const knownTotal = Number(event.totalBytes || 0) > 0;
+            const completed = event.stage === "saving" || event.stage === "completed";
+            if (completed) {
+                setProgress(100);
+            } else if (knownTotal && event.percent !== null) {
+                setProgress(event.percent);
+            } else if (event.stage === "fetching") {
+                setProgressPending("下载中");
+            }
+            if (progressWrap) {
+                progressWrap.hidden = false;
+            }
+            if (progressTrack && !knownTotal) {
+                progressTrack.removeAttribute("aria-valuenow");
+                progressTrack.setAttribute("aria-valuetext", "正在下载，文件大小未知");
+            }
+            if (progressBar && completed) {
+                progressBar.style.width = "100%";
+            }
+            if (progressPercent && !knownTotal) {
+                progressPercent.innerText = completed ? "100%" : "下载中";
+            }
+            if (progressBytes) {
+                const received = ordinaryMediaDownloadApi.formatBytes(event.receivedBytes);
+                progressBytes.innerText = knownTotal
+                    ? `${received} / ${ordinaryMediaDownloadApi.formatBytes(event.totalBytes)}`
+                    : `已接收 ${received}`;
+            }
+            if (progressSpeed) {
+                progressSpeed.innerText = ordinaryMediaDownloadApi.formatRate(event.bytesPerSecond);
+            }
+            if (progressEta) {
+                progressEta.innerText = event.etaSeconds
+                    ? ordinaryMediaDownloadApi.formatEta(event.etaSeconds)
+                    : (event.stage === "fetching" ? "正在测速..." : "");
+            }
+            if (blobWarning) {
+                blobWarning.hidden = event.transport !== "browser_blob";
+            }
+        }
+
         function setParseLoading(isLoading) {
             const submitBtn = document.getElementById("parse-submit-btn");
             const idleIcon = submitBtn ? submitBtn.querySelector(".hero-submit-idle") : null;
             const spinner = submitBtn ? submitBtn.querySelector(".hero-submit-spinner") : null;
             const label = submitBtn ? submitBtn.querySelector(".hero-submit-label") : null;
 
+            const retrySeconds = douyinReliabilityApi
+                ? douyinReliabilityApi.scopedRetrySeconds({
+                    ultraEnabled: isUltraHdEnabled(),
+                    currentSource: linkInput ? linkInput.value : "",
+                    retrySource: ultraRetrySource,
+                    deadlineMs: ultraRetryDeadline,
+                })
+                : 0;
+            const retryApplies = Boolean(
+                ultraRetrySource
+                && String(linkInput && linkInput.value || "").trim()
+                    === ultraRetrySource
+                && isUltraHdEnabled()
+            );
             if (submitBtn) {
-                submitBtn.disabled = isLoading;
+                submitBtn.disabled = isLoading || retrySeconds > 0;
                 submitBtn.classList.toggle("is-loading", isLoading);
             }
             if (idleIcon) {
@@ -652,7 +727,64 @@
                 spinner.hidden = !isLoading;
             }
             if (label) {
-                label.innerText = isLoading ? "解析中" : "获取素材";
+                label.innerText = isLoading
+                    ? (isUltraHdEnabled() ? "正在获取超高清资源…" : "解析中")
+                    : (retrySeconds > 0 && douyinReliabilityApi
+                        ? douyinReliabilityApi.retryButtonLabel(retrySeconds)
+                        : (retryApplies ? "重新尝试超高清" : "获取素材"));
+            }
+        }
+
+        function startUltraRetryCountdown(value, source = "") {
+            const seconds = douyinReliabilityApi
+                ? douyinReliabilityApi.normalizeRetryAfterSeconds(value)
+                : Math.max(0, Number.parseInt(value || 0, 10));
+            if (ultraRetryTimer) {
+                window.clearInterval(ultraRetryTimer);
+                ultraRetryTimer = null;
+            }
+            if (!seconds) {
+                ultraRetryDeadline = 0;
+                ultraRetrySource = "";
+                setParseLoading(false);
+                return;
+            }
+            ultraRetryDeadline = Date.now() + (seconds * 1000);
+            ultraRetrySource = String(source || (linkInput && linkInput.value) || "").trim();
+            setParseLoading(false);
+            ultraRetryTimer = window.setInterval(() => {
+                if (Date.now() >= ultraRetryDeadline) {
+                    window.clearInterval(ultraRetryTimer);
+                    ultraRetryTimer = null;
+                }
+                setParseLoading(false);
+            }, 250);
+        }
+
+        function applyContinuationNotice(payload, retrySource = "") {
+            if (!resultsRegion || !payload) {
+                return;
+            }
+            let message = String(payload.continuation_message || "");
+            const retrySeconds = douyinReliabilityApi
+                ? douyinReliabilityApi.normalizeRetryAfterSeconds(
+                    payload.retry_after_seconds,
+                )
+                : 0;
+            if (message && retrySeconds) {
+                message = `${message} 约 ${retrySeconds} 秒后可重新尝试超高清。`;
+            }
+            const notice = resultsRegion.querySelector("[data-provider-notice-text]");
+            if (message && notice) {
+                notice.textContent = message;
+            }
+            if (retrySeconds) {
+                startUltraRetryCountdown(retrySeconds, retrySource);
+            } else if (
+                payload.status === "success"
+                && String(retrySource || "").trim() === ultraRetrySource
+            ) {
+                startUltraRetryCountdown(0);
             }
         }
 
@@ -666,7 +798,7 @@
                 <div class="parse-loading-card">
                     <div class="spinner-border" role="status" aria-hidden="true"></div>
                     <div>
-                        <div class="parse-loading-title">正在解析素材</div>
+                        <div class="parse-loading-title">${isUltraHdEnabled() ? "正在获取超高清资源…" : "正在解析素材"}</div>
                         <div class="parse-loading-subtitle">结果会直接显示在当前页面</div>
                     </div>
                 </div>
@@ -721,7 +853,7 @@
             });
         }
 
-        function applyParsePayload(payload) {
+        function applyParsePayload(payload, retrySource = "") {
             if (!resultsRegion) {
                 return;
             }
@@ -731,10 +863,10 @@
             page.dataset.baseFilename = payload.base_filename || "xhs_image";
             setPageHasResults(Boolean(payload.has_content || payload.has_results));
             updateSelectAllButton();
-            updateDownloadActionState();
             if (payload.has_results) {
                 scrollResultsIntoView();
             }
+            applyContinuationNotice(payload, retrySource);
         }
 
         async function requestDouyinContinuation(token, signal) {
@@ -871,90 +1003,23 @@
             return frame;
         }
 
-        function directRouteSingleVideo(items) {
+        function directRouteHasOrdinaryMedia(items) {
             const directItems = (items || []).filter((item) => item && item.url);
-            if (directItems.length !== 1) {
-                return null;
-            }
-            const item = directItems[0];
-            return String(item.type || "").toLowerCase() === "video"
-                ? item
-                : null;
-        }
-
-        function directRouteShouldUseNativeBrowserDownload(items) {
-            const item = directRouteSingleVideo(items);
             return Boolean(
-                item
-                && downloadReliabilityApi
-                && downloadReliabilityApi.browserNativeHandoffSafe(item)
+                directItems.length === 1
+                && ordinaryMediaDownloadApi
+                && ordinaryMediaDownloadApi.isOrdinaryMediaItem(directItems[0])
             );
         }
 
-        function directRouteCanUseProviderBlobDownload(items) {
-            const item = directRouteSingleVideo(items);
-            if (!item) {
-                return false;
-            }
-            const url = String(item.url || "");
-            return (
-                Boolean(downloadReliabilityApi)
-                && downloadReliabilityApi.browserDirectFetchBlobSafe(item)
-                && /^https?:\/\//i.test(url)
+        function ordinaryMediaFailure(error) {
+            const wrapped = new Error(
+                ordinaryMediaDownloadApi
+                    ? ordinaryMediaDownloadApi.safeErrorMessage(error)
+                    : "当前浏览器无法保存文件，请重试下载。",
             );
-        }
-
-        function preopenNativeDirectContext() {
-            if (!downloadReliabilityApi) {
-                return null;
-            }
-            const context = downloadReliabilityApi.preopenBrowserDirectContext(
-                window.open.bind(window),
-            );
-            if (!context.ok) {
-                const error = new Error(
-                    "浏览器阻止了新标签页，请允许弹出窗口后重试，或使用兼容下载。",
-                );
-                error.errorCode = "DIRECT_POPUP_BLOCKED";
-                throw error;
-            }
-            return context;
-        }
-
-        function closeNativeDirectContext(context) {
-            if (downloadReliabilityApi) {
-                downloadReliabilityApi.closeBrowserDirectContext(context);
-            }
-        }
-
-        function openNativeDirectRoute(items, context) {
-            const item = directRouteSingleVideo(items);
-            if (
-                !item
-                || !directRouteShouldUseNativeBrowserDownload(items)
-                || !downloadReliabilityApi
-            ) {
-                const error = new Error(
-                    "当前资源没有经过验证的浏览器高速直连能力。",
-                );
-                error.errorCode = "DIRECT_ROUTE_NOT_VALIDATED";
-                throw error;
-            }
-            return downloadReliabilityApi.issueBrowserDirectOpen(
-                context,
-                item,
-            );
-        }
-
-        function showNativeDirectOpen(route) {
-            setProgressPending("源站已打开");
-            setStatus(
-                getStatusElement(),
-                "已打开原始资源，文件由浏览器直接从源站加载。"
-                + "如浏览器直接播放视频，请使用浏览器的保存功能。"
-                + routeWarningText(route.warnings),
-                "text-success",
-            );
+            wrapped.errorCode = String(error && error.errorCode || "BROWSER_DOWNLOAD_FAILED");
+            return wrapped;
         }
 
         async function prepareServerSingleDownload(payload) {
@@ -1170,17 +1235,16 @@
             return filename;
         }
 
-        async function downloadDirectRouteItems(items, options) {
+        async function downloadDirectRouteItems(items) {
             const directItems = (items || []).filter((item) => item && item.url);
             if (directItems.length === 0) {
                 throw new Error("没有可下载的直链资源");
             }
 
-            const statusPrefix = options && options.providerBlob ? "Provider 源文件" : "源文件";
             const onStatus = (message) => {
-                setStatus(getStatusElement(), `${statusPrefix}${message}`);
+                setStatus(getStatusElement(), message);
             };
-            onStatus("正在连接资源...");
+            onStatus("正在获取文件...");
             const filenames = [];
             for (let index = 0; index < directItems.length; index += 1) {
                 filenames.push(await downloadDirectItem(directItems[index], index, directItems.length, onStatus));
@@ -1188,10 +1252,21 @@
             return filenames;
         }
 
-        async function downloadProviderBlobRouteItems(items) {
-            setProgressPending("浏览器下载");
-            setStatus(getStatusElement(), "Provider 源文件正在连接资源...");
-            return downloadDirectRouteItems(items, {providerBlob: true});
+        async function downloadOrdinaryMediaRouteItems(items) {
+            const directItems = (items || []).filter((item) => item && item.url);
+            if (!ordinaryMediaDownloadApi || directItems.length !== 1) {
+                throw new Error("当前资源无法由浏览器直接保存。");
+            }
+            resetDownloadProgressBaseline();
+            const item = directItems[0];
+            const result = await ordinaryMediaDownloadApi.download(item, {
+                filename: item.filename || `${getBaseFilename()}.mp4`,
+                onStage(_stage, message) {
+                    setStatus(getStatusElement(), message);
+                },
+                onProgress: applyOrdinaryDownloadProgress,
+            });
+            return [result.filename];
         }
 
         async function postDownloadPayload(payload) {
@@ -1214,6 +1289,38 @@
                 throw new Error(await parseErrorResponse(response));
             }
             return response.json();
+        }
+
+        async function handleDirectRoute(routeData) {
+            const directItems = routeData.items || [];
+            if (directRouteHasOrdinaryMedia(directItems)) {
+                try {
+                    const filenames = await downloadOrdinaryMediaRouteItems(directItems);
+                    setStatus(
+                        getStatusElement(),
+                        `已交给浏览器保存：${filenames.join("、")}${routeWarningText(routeData.warnings)}`,
+                        "text-success",
+                    );
+                } catch (error) {
+                    if (error && error.name === "AbortError") {
+                        throw error;
+                    }
+                    console.warn(
+                        "Ordinary browser download failed",
+                        String(error && error.errorCode || "BROWSER_DOWNLOAD_FAILED"),
+                    );
+                    throw ordinaryMediaFailure(error);
+                }
+                return;
+            }
+
+            const filenames = await downloadDirectRouteItems(directItems);
+            setProgress(100);
+            setStatus(
+                getStatusElement(),
+                `${routeData.route_reason || "已开始保存"}：${filenames.join("、")}${routeWarningText(routeData.warnings)}`,
+                "text-success",
+            );
         }
 
         async function saveDownloadResponse(response, fallbackName, startPercent, endPercent) {
@@ -1301,7 +1408,7 @@
             setStatus(getStatusElement(), `${savedMessage}：${filename}，成功 ${savedCount} 个，失败 ${failedCount} 个`, variant);
         }
 
-        async function handleDownloadClick(downloadBtn, actionMode) {
+        async function handleDownloadClick(downloadBtn, forceAutoMode) {
             if (selected.length === 0) {
                 window.alert("请先选择需要保存的资源");
                 return;
@@ -1313,43 +1420,24 @@
 
             downloadInProgress = true;
             resetDownloadProgressBaseline();
-            const compatibilityMode = actionMode === "compatibility";
-            const busyLabel = compatibilityMode ? "准备兼容下载" : "确认直连";
+            const busyLabel = forceAutoMode ? "智能处理中" : "保存中";
             setDownloadButtonsBusy(true, downloadBtn, busyLabel);
-            setStatus(
-                getStatusElement(),
-                compatibilityMode
-                    ? "正在准备服务器兼容下载，请稍候..."
-                    : "正在确认高速直连路径，请稍候...",
-            );
+            setStatus(getStatusElement(), "正在准备下载...");
 
-            let directLaunchContext = null;
             try {
                 const payload = {
                     media_items: selected,
                     base_filename: getBaseFilename(),
-                    download_mode: compatibilityMode
-                        ? "server_single"
-                        : "auto",
+                    download_mode: forceAutoMode
+                        ? "auto"
+                        : normalizeDownloadMode(downloadModeInput ? downloadModeInput.value : "browser"),
                     save_dir: saveDirInput ? saveDirInput.value.trim() : "xhs",
                     save_format: saveFormatInput ? saveFormatInput.value : "original",
                     quality: qualityInput ? qualityInput.value || 95 : 95,
                     video_save_mode: videoSaveModeInput ? videoSaveModeInput.value : "video",
                 };
 
-                if (compatibilityMode) {
-                    if (!selectedSingleItem(selected)) {
-                        throw new Error("兼容下载一次只支持一个视频资源。");
-                    }
-                    await prepareAndHandoffServerSingle(payload);
-                    return;
-                }
-
-                if (selectedUsesNativeOpen()) {
-                    directLaunchContext = preopenNativeDirectContext();
-                }
-
-                if (!useFilePicker && selectedSingleItem(selected)) {
+                if (selectedSingleItem(selected)) {
                     const routePreview = await fetchRouteOnly(payload);
                     if (
                         routePreview
@@ -1357,11 +1445,6 @@
                         && routePreview.route_type === "proxy"
                         && routePreview.download_strategy === "server_single_attachment"
                     ) {
-                        if (directLaunchContext) {
-                            throw new Error(
-                                "当前资源不能高速直连，请使用兼容下载。",
-                            );
-                        }
                         await prepareAndHandoffServerSingle(
                             payload,
                             routePreview.warnings,
@@ -1373,39 +1456,8 @@
                         && routePreview.status === "routed"
                         && routePreview.route_type === "direct"
                     ) {
-                        const previewItems = routePreview.items || [];
-                        if (directRouteCanUseProviderBlobDownload(previewItems)) {
-                            try {
-                                const filenames = await downloadProviderBlobRouteItems(previewItems);
-                                setProgress(100);
-                                setStatus(
-                                    getStatusElement(),
-                                    `${routePreview.route_reason || "已通过浏览器直连保存 Provider 源文件"}：${filenames.join("、")}${routeWarningText(routePreview.warnings)}`,
-                                    "text-success",
-                                );
-                            } catch (directError) {
-                                if (directError && directError.name === "AbortError") {
-                                    throw directError;
-                                }
-                                const error = new Error(
-                                    "高速直连未能读取资源，请使用兼容下载。",
-                                );
-                                error.errorCode = "BROWSER_DIRECT_FETCH_FAILED";
-                                throw error;
-                            }
-                            return;
-                        }
-                        if (directRouteShouldUseNativeBrowserDownload(previewItems)) {
-                            openNativeDirectRoute(
-                                previewItems,
-                                directLaunchContext,
-                            );
-                            showNativeDirectOpen(routePreview);
-                            return;
-                        }
-                        throw new Error(
-                            "当前资源没有可用的高速直连路径，请使用兼容下载。",
-                        );
+                        await handleDirectRoute(routePreview);
+                        return;
                     }
                 }
 
@@ -1443,70 +1495,10 @@
                     setProgress(0);
                     const data = await response.json();
                     if (data.status === "routed" && data.route_type === "direct") {
-                        const directItems = data.items || [];
-                        if (directRouteCanUseProviderBlobDownload(directItems)) {
-                            try {
-                                const filenames = await downloadProviderBlobRouteItems(directItems);
-                                setProgress(100);
-                                setStatus(
-                                    getStatusElement(),
-                                    `${data.route_reason || "已通过浏览器直连保存 Provider 源文件"}：${filenames.join("、")}${routeWarningText(data.warnings)}`,
-                                    "text-success",
-                                );
-                            } catch (directError) {
-                                if (directError && directError.name === "AbortError") {
-                                    throw directError;
-                                }
-                                const error = new Error(
-                                    "高速直连未能读取资源，请使用兼容下载。",
-                                );
-                                error.errorCode = "BROWSER_DIRECT_FETCH_FAILED";
-                                throw error;
-                            }
-                            return;
-                        }
-                        if (directRouteShouldUseNativeBrowserDownload(directItems)) {
-                            openNativeDirectRoute(
-                                directItems,
-                                directLaunchContext,
-                            );
-                            showNativeDirectOpen(data);
-                            return;
-                        }
-                        try {
-                            if (directItems.some((item) => (
-                                String(item.type || "").toLowerCase() === "video"
-                                && !directRouteCanUseProviderBlobDownload([item])
-                            ))) {
-                                throw new Error(
-                                    "大型视频不通过浏览器内存缓冲，请使用高速直连或兼容下载。",
-                                );
-                            }
-                            const filenames = await downloadDirectRouteItems(data.items || []);
-                            setProgress(100);
-                            setStatus(
-                                getStatusElement(),
-                                `${data.route_reason || "已使用浏览器直链下载"}：${filenames.join("、")}${routeWarningText(data.warnings)}`,
-                                "text-success",
-                            );
-                        } catch (directError) {
-                            if (directError && directError.name === "AbortError") {
-                                throw directError;
-                            }
-                            const error = new Error(
-                                "高速直连未能读取资源，请使用兼容下载。",
-                            );
-                            error.errorCode = "BROWSER_DIRECT_FETCH_FAILED";
-                            throw error;
-                        }
+                        await handleDirectRoute(data);
                         return;
                     }
                     if (data.status === "routed" && data.route_type === "proxy") {
-                        if (directLaunchContext) {
-                            throw new Error(
-                                "当前资源不能高速直连，请使用兼容下载。",
-                            );
-                        }
                         setProgress(100);
                         setStatus(
                             getStatusElement(),
@@ -1547,7 +1539,11 @@
                             : "DOWNLOAD_FAILED",
                     );
                     console.warn("Download request failed", errorCode);
-                    setProgress(0);
+                    if (errorCode.startsWith("BROWSER_")) {
+                        hideDownloadProgress();
+                    } else {
+                        setProgress(0);
+                    }
                     setStatus(
                         getStatusElement(),
                         error && error.message
@@ -1557,7 +1553,6 @@
                     );
                 }
             } finally {
-                closeNativeDirectContext(directLaunchContext);
                 downloadInProgress = false;
                 setDownloadButtonsBusy(false);
                 applyPendingParsePreferences();
@@ -1605,12 +1600,29 @@
             }
 
             event.preventDefault();
+            const currentSource = String(linkInput && linkInput.value || "").trim();
+            if (
+                isUltraHdEnabled()
+                && currentSource === ultraRetrySource
+                && Date.now() < ultraRetryDeadline
+            ) {
+                setParseLoading(false);
+                return;
+            }
             updateUltraHdRequestValue();
             updateYoutubeMergeRequestValue();
 
             if (!linkInput || !linkInput.value.trim()) {
                 linkInput && linkInput.focus();
                 return;
+            }
+
+            if (ultraRetryDeadline && !isUltraHdEnabled()) {
+                startUltraRetryCountdown(0);
+            } else if (ultraRetryDeadline && currentSource !== ultraRetrySource) {
+                startUltraRetryCountdown(0);
+            } else if (ultraRetryDeadline && Date.now() >= ultraRetryDeadline) {
+                startUltraRetryCountdown(0);
             }
 
             if (activeParseController) {
@@ -1639,12 +1651,26 @@
                 });
                 let payload = await parseSearchResponse(response);
 
+                if (!response.ok) {
+                    const error = new Error(
+                        payload.message || "解析失败，请稍后再试。",
+                    );
+                    error.errorCode = payload.error_code || "PARSE_FAILED";
+                    error.retryAfter = Number.parseInt(
+                        response.headers.get("Retry-After")
+                        || payload.retry_after_seconds
+                        || 0,
+                        10,
+                    );
+                    throw error;
+                }
+
                 if (currentRequestId !== parseRequestId) {
                     return;
                 }
                 if (payload.status === "continuation_pending") {
                     if (payload.has_results && payload.html) {
-                        applyParsePayload(payload);
+                        applyParsePayload(payload, currentSource);
                     }
                     payload = await continueDouyinParse(
                         payload,
@@ -1666,7 +1692,7 @@
                     throw new Error(payload.message || "解析失败，请稍后再试。");
                 }
 
-                applyParsePayload(payload);
+                applyParsePayload(payload, currentSource);
             } catch (error) {
                 if (error && error.name === "AbortError") {
                     return;
@@ -1678,6 +1704,9 @@
                         : "PARSE_FAILED",
                 );
                 if (currentRequestId === parseRequestId) {
+                    if (error.retryAfter) {
+                        startUltraRetryCountdown(error.retryAfter, currentSource);
+                    }
                     showParseError(error.message || "解析失败，请稍后再试。");
                 }
             } finally {
@@ -1738,15 +1767,9 @@
                     return;
                 }
 
-                const compatibilityBtn = event.target.closest("#compat-download-btn");
-                if (compatibilityBtn && resultsRegion.contains(compatibilityBtn)) {
-                    handleDownloadClick(compatibilityBtn, "compatibility");
-                    return;
-                }
-
                 const downloadBtn = event.target.closest("#download-btn");
                 if (downloadBtn && resultsRegion.contains(downloadBtn)) {
-                    handleDownloadClick(downloadBtn, "auto");
+                    handleDownloadClick(downloadBtn, true);
                     return;
                 }
 
@@ -1762,6 +1785,12 @@
                 linkInput.value = "";
                 linkInput.focus();
                 resetResults();
+            });
+        }
+
+        if (linkInput) {
+            linkInput.addEventListener("input", () => {
+                setParseLoading(Boolean(activeParseController));
             });
         }
 
@@ -1791,6 +1820,7 @@
                 input.addEventListener("change", () => {
                     updateUltraHdRequestValue();
                     updateYoutubeMergeRequestValue();
+                    setParseLoading(Boolean(activeParseController));
                 });
             }
         });
@@ -1839,6 +1869,18 @@
         updateDownloadLocationButtons();
         updateModeVisibility();
         updateSelectAllButton();
-        updateDownloadActionState();
+        const activeDownloadsPanel = page.querySelector("[data-ordinary-active-downloads]");
+        if (ordinaryMediaDownloadApi && activeDownloadsPanel) {
+            ordinaryMediaDownloadApi.mountActiveDownloadPanel(activeDownloadsPanel).catch(() => {
+                activeDownloadsPanel.hidden = true;
+            });
+        }
+        if (ordinaryMediaDownloadApi) {
+            const interrupted = ordinaryMediaDownloadApi.consumeInterruptedDownloadMarker();
+            const interruptionNotice = page.querySelector("[data-ordinary-download-interruption]");
+            if (interrupted && interruptionNotice) {
+                interruptionNotice.hidden = false;
+            }
+        }
     });
 })();

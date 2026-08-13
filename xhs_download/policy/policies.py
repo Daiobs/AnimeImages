@@ -76,15 +76,13 @@ class CostPolicy:
             )
 
         estimated_bytes = estimate_media_items_bytes(context.media_items)
-        shape_route = route_for_media_shape(context.media_items)
         if (
-            estimated_bytes >= HIGH_COST_BYTES
-            and len(context.media_items) == 1
-            and shape_route == ROUTE_DIRECT
+            len(context.media_items) == 1
+            and single_video_prefers_browser_direct(context.media_items[0])
         ):
             route = ROUTE_DIRECT
-            reason = "high-cost-direct-safe-resource-avoids-server-egress"
-            score = 0.94
+            reason = "ordinary-provider-video-requires-browser-data-plane"
+            score = 0.95
         elif estimated_bytes >= HIGH_COST_BYTES and len(context.media_items) == 1:
             route = ROUTE_PROXY
             reason = "high-cost-single-resource-prefers-non-zip"
@@ -94,7 +92,7 @@ class CostPolicy:
             reason = "high-cost-multi-resource-requires-archive"
             score = 0.72
         else:
-            route = shape_route
+            route = route_for_media_shape(context.media_items)
             reason = f"{cost_level}-cost-default-shape-route"
             score = 0.82 if cost_level == "low" else 0.76
 

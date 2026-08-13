@@ -61,7 +61,6 @@ from .services.download_routing import (
     ROUTE_ZIP,
     decide_download_route,
 )
-from .services.download_handoff import DOWNLOAD_STREAM_START_TIMEOUT_SECONDS
 from .services.routing_policy_adjuster import build_routing_policy_recommendations
 from .services.routing_v3 import compute_routing_score, decide_route_v3
 from .services.assets import MediaAsset, ParseResult
@@ -132,8 +131,10 @@ from .services.recovery_engine import (
     FAILURE_PROVIDER_TIMEOUT,
     FAILURE_PROXY_FAILED,
     FAILURE_ROUTING_FAILED,
+    RECOVERY_ACTION_ZIP_TO_DIRECT,
     provider_stability_score,
     provider_stability_status,
+    zip_failure_recovery,
 )
 from .services.self_healing_engine import SelfHealingEngine
 from .policy.adaptive import build_adaptive_weight_recommendation
@@ -1806,7 +1807,7 @@ class TianTianJieXiProviderTests(TestCase):
     )
     @patch(
         "xhs_download.services.platforms.tiantianjiexi_generic.time.monotonic",
-        side_effect=(100.0, 100.0, 101.0, 106.0),
+        side_effect=(100.0, 101.0, 106.0),
     )
     def test_tiantianjiexi_timeout_budget_is_total_not_per_attempt(self, _mock_monotonic):
         class TimeoutClient:
@@ -2455,8 +2456,11 @@ class DouyinAdapterTests(SimpleTestCase):
             ),
             providers=(TimeoutProvider(), SuccessProvider()),
         )
+        adapter = DouyinAdapter()
+        adapter.fetch_mobile_feed_result = Mock(return_value=None)
+        adapter.fetch_mobile_share_result = Mock(return_value=None)
 
-        result = provider.parse(DouyinAdapter(), context)
+        result = provider.parse(adapter, context)
 
         self.assertEqual(result.metadata["selected_provider"], "kukutool")
         self.assertEqual(result.metadata["ultra_race_winner"], "kukutool")
@@ -2525,8 +2529,11 @@ class DouyinAdapterTests(SimpleTestCase):
             ),
             providers=(WeakProvider(), StrongProvider()),
         )
+        adapter = DouyinAdapter()
+        adapter.fetch_mobile_feed_result = Mock(return_value=None)
+        adapter.fetch_mobile_share_result = Mock(return_value=None)
 
-        result = provider.parse(DouyinAdapter(), context)
+        result = provider.parse(adapter, context)
 
         self.assertEqual(result.metadata["selected_provider"], "kukutool")
         self.assertEqual(result.metadata["ultra_race_winner"], "kukutool")
@@ -4668,12 +4675,18 @@ class XhsDownloadViewTests(TestCase):
         )
         self.assertNotContains(response, "cdn.jsdelivr.net/npm/bootstrap-icons")
         self.assertContains(response, "js/parse_preferences.js?v=")
+        self.assertContains(response, "js/result_url_safety.js?v=")
         self.assertContains(response, "js/xhs_download.js?v=")
         content = response.content.decode()
         self.assertLess(
             content.index("js/parse_preferences.js?v="),
             content.index("js/xhs_download.js?v="),
         )
+        self.assertLess(
+            content.index("js/result_url_safety.js?v="),
+            content.index("js/xhs_download.js?v="),
+        )
+        self.assertContains(response, 'data-page-home-url="/"')
         self.assertContains(response, "抖音原画/超清")
         self.assertContains(response, "YouTube 最高画质合并")
         self.assertContains(response, "data-download-task-url")
@@ -6273,6 +6286,7 @@ class XhsDownloadViewTests(TestCase):
 
     @override_settings(
         ULTRA_HD_PROVIDER_ENABLED=True,
+        ULTRA_HD_RATE_LIMIT_PER_MINUTE=10,
         KUKUTOOL_PROVIDER_ENABLED=True,
         TIKHUB_API_KEY="secret",
     )
@@ -6295,11 +6309,14 @@ class XhsDownloadViewTests(TestCase):
         response = Client().get("/results/", {"q": "https://www.douyin.com/video/123", "ultra_hd": "1"})
 
         self.assertEqual(response.status_code, 200)
-        mock_parse.assert_called_once_with(
-            "https://www.douyin.com/video/123",
-            prefer_ultra_hd=True,
-            client_country_code="CN",
-        )
+        mock_parse.assert_called_once()
+        query, = mock_parse.call_args.args
+        parse_options = mock_parse.call_args.kwargs
+        self.assertEqual(query, "https://www.douyin.com/video/123")
+        self.assertTrue(parse_options["prefer_ultra_hd"])
+        self.assertEqual(parse_options["client_country_code"], "CN")
+        controller = parse_options["ultra_attempt_controller"]
+        self.assertEqual(controller.limit, 10)
         self.assertContains(response, "本次未命中超高清上游，已自动回退本地解析。")
         self.assertContains(response, 'id="ultra-hd-request-input"')
         self.assertContains(response, 'value="1"')
@@ -6852,6 +6869,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "theme-tiktok")
         self.assertContains(response, 'action="/tiktok/results/"')
+        self.assertContains(response, 'data-page-home-url="/tiktok/"')
 
     def test_bilibili_route_uses_bilibili_results_action(self):
         response = Client().get("/bilibili/")
@@ -7136,7 +7154,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(youtube_route["route_type"], ROUTE_ZIP)
         self.assertEqual(kukutool_route["route_type"], ROUTE_ZIP)
 
-    def test_download_route_signed_kukutool_cdn_video_uses_native_handoff_without_cors(self):
+    def test_download_route_signed_kukutool_cdn_video_uses_browser_data_plane(self):
         request = RequestFactory().post("/media/download-images/")
         item = make_kukutool_download_item("https://v6-default.365yg.com/a.mp4")
         item["size_bytes"] = 2000
@@ -7148,7 +7166,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(route["server_egress_estimated_bytes"], 0)
         self.assertEqual(route["browser_egress_estimated_bytes"], 2000)
 
-    def test_download_route_signed_tiantianjiexi_video_uses_native_handoff_without_cors(self):
+    def test_download_route_signed_tiantianjiexi_video_uses_browser_data_plane(self):
         request = RequestFactory().post("/media/download-images/")
         item = make_douyin_tiantianjiexi_download_item("https://v6-default.365yg.com/a.mp4")
         item["size_bytes"] = 2000
@@ -7160,7 +7178,31 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(route["server_egress_estimated_bytes"], 0)
         self.assertEqual(route["browser_egress_estimated_bytes"], 2000)
 
-    def test_download_route_browser_signed_kukutool_video_uses_native_handoff_without_cors(self):
+    def test_high_cost_tiantianjiexi_video_still_uses_browser_data_plane(self):
+        request = RequestFactory().post("/media/download-images/")
+        item = make_douyin_tiantianjiexi_download_item(
+            "https://v6-default.365yg.com/a.mp4"
+        )
+        item["size_bytes"] = 500 * 1024 * 1024
+
+        route = decide_download_route(request, [item], requested_mode="auto")
+        context = build_policy_context(
+            request,
+            [item],
+            requested_mode="auto",
+            route_hint=route,
+        )
+        policy_result = CostPolicy().evaluate(context)
+
+        self.assertEqual(route["route_type"], ROUTE_DIRECT)
+        self.assertEqual(route["server_egress_estimated_bytes"], 0)
+        self.assertEqual(policy_result.route, ROUTE_DIRECT)
+        self.assertEqual(
+            policy_result.reason,
+            "ordinary-provider-video-requires-browser-data-plane",
+        )
+
+    def test_download_route_browser_signed_kukutool_video_uses_browser_data_plane(self):
         request = RequestFactory().post("/media/download-images/")
         item = make_kukutool_download_item("https://v6-default.365yg.com/a.mp4")
         item["size_bytes"] = 2000
@@ -7172,7 +7214,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(route["server_egress_estimated_bytes"], 0)
         self.assertEqual(route["browser_egress_estimated_bytes"], 2000)
 
-    def test_download_route_kukutool_browser_first_uses_native_handoff_without_cors(self):
+    def test_download_route_kukutool_browser_first_uses_proven_browser_capability(self):
         setting = ProviderRuntimeSetting.load()
         setting.kukutool_download_delivery_mode = KukuToolDownloadDeliveryMode.BROWSER_FIRST
         setting.save(update_fields=["kukutool_download_delivery_mode", "updated_at"])
@@ -7187,7 +7229,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(route["server_egress_estimated_bytes"], 0)
         self.assertEqual(route["browser_egress_estimated_bytes"], 2000)
 
-    def test_download_route_tiantian_native_handoff_is_independent_of_kukutool_mode(self):
+    def test_download_route_signed_tiantianjiexi_ignores_legacy_server_stream_mode(self):
         setting = ProviderRuntimeSetting.load()
         setting.kukutool_download_delivery_mode = KukuToolDownloadDeliveryMode.SERVER_STREAM
         setting.save(update_fields=["kukutool_download_delivery_mode", "updated_at"])
@@ -7202,17 +7244,37 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(route["server_egress_estimated_bytes"], 0)
         self.assertEqual(route["browser_egress_estimated_bytes"], 2000)
 
-    def test_download_route_proxy_signed_kukutool_cdn_video_forces_server_attachment(self):
+    def test_download_route_proxy_signed_kukutool_cdn_video_is_blocked(self):
         request = RequestFactory().post("/media/download-images/")
         item = make_kukutool_download_item("https://v6-default.365yg.com/a.mp4")
         item["size_bytes"] = 2000
 
         route = decide_download_route(request, [item], requested_mode="proxy")
 
-        self.assertEqual(route["route_type"], ROUTE_PROXY)
-        self.assertEqual(route["download_strategy"], "server_single_attachment")
-        self.assertEqual(route["server_egress_estimated_bytes"], 2000)
+        self.assertEqual(route["route_type"], ROUTE_BLOCKED)
+        self.assertEqual(route["download_strategy"], "browser_download_required")
+        self.assertEqual(route["error_code"], "ORDINARY_BROWSER_DOWNLOAD_REQUIRED")
+        self.assertEqual(route["server_egress_estimated_bytes"], 0)
         self.assertEqual(route["browser_egress_estimated_bytes"], 0)
+
+    def test_client_flags_cannot_force_ordinary_provider_video_onto_server(self):
+        request = RequestFactory().post("/media/download-images/")
+        item = make_kukutool_download_item("https://v6-default.365yg.com/a.mp4")
+        item.update(
+            size_bytes=2000,
+            requires_merge=True,
+            requires_cookie=True,
+            browser_direct_fetch_safe=False,
+        )
+
+        route = decide_download_route(request, [item], requested_mode="auto")
+
+        self.assertEqual(route["route_type"], ROUTE_DIRECT)
+        self.assertEqual(route["server_egress_estimated_bytes"], 0)
+        self.assertEqual(route["browser_egress_estimated_bytes"], 2000)
+        self.assertTrue(route["items"][0]["browser_direct_fetch_safe"])
+        self.assertFalse(route["items"][0]["requires_merge"])
+        self.assertFalse(route["items"][0]["requires_cookie"])
 
     def test_download_route_mixed_items_use_zip(self):
         request = RequestFactory().post("/media/download-images/")
@@ -7489,14 +7551,9 @@ class XhsDownloadViewTests(TestCase):
         self.assertNotIn("token=secret", log.error_message_short)
 
     @patch("xhs_download.views.fetch_media_response")
-    def test_download_signed_kukutool_video_defaults_to_native_handoff(self, mock_fetch):
+    def test_download_signed_kukutool_video_defaults_to_browser_data_plane(self, mock_fetch):
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
-        mock_fetch.return_value = FakeStreamingResponse(
-            b"video-content",
-            url=item["url"],
-            content_type="video/mp4",
-        )
 
         response = Client().post(
             "/media/download-images/",
@@ -7508,20 +7565,24 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
-        self.assertEqual(response.json()["download_strategy"], "browser_direct_provider_video")
-        self.assertEqual(mock_fetch.call_count, 0)
+        payload = response.json()
+        self.assertEqual(payload["status"], "routed")
+        self.assertEqual(payload["route_type"], ROUTE_DIRECT)
+        self.assertEqual(payload["server_egress_estimated_bytes"], 0)
+        self.assertEqual(payload["browser_egress_estimated_bytes"], 2000)
+        self.assertTrue(payload["items"][0]["browser_direct_fetch_safe"])
+        mock_fetch.assert_not_called()
         log = DownloadRequestLog.objects.get()
-        self.assertEqual(log.download_type, "direct_route_selected")
+        self.assertEqual(log.download_type, ROUTE_DIRECT)
         self.assertEqual(log.route_type, ROUTE_DIRECT)
+        self.assertEqual(log.actual_bytes, 0)
         self.assertEqual(log.server_egress_estimated_bytes, 0)
         self.assertEqual(log.browser_egress_estimated_bytes, 2000)
-        self.assertEqual(log.actual_bytes, 0)
 
     @patch("xhs_download.views.invalidate_external_provider_caches")
     @patch("xhs_download.views.iter_kukutool_download_recovery_urls")
     @patch("xhs_download.views.fetch_media_response")
-    def test_download_signed_kukutool_video_server_single_file_recovers_with_refreshed_url(
+    def test_download_signed_kukutool_video_ignores_legacy_server_stream_setting(
         self,
         mock_fetch,
         mock_recovery_urls,
@@ -7532,16 +7593,6 @@ class XhsDownloadViewTests(TestCase):
         setting.save(update_fields=["kukutool_download_delivery_mode", "updated_at"])
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
-        refreshed_url = "https://v6-default.365yg.com/video/refreshed.mp4"
-        mock_fetch.side_effect = [
-            requests.exceptions.SSLError("EOF occurred in violation of protocol"),
-            FakeStreamingResponse(
-                b"video-content",
-                url=refreshed_url,
-                content_type="video/mp4",
-            ),
-        ]
-        mock_recovery_urls.return_value = [refreshed_url]
 
         response = Client().post(
             "/media/download-images/",
@@ -7553,19 +7604,15 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "video/mp4")
-        self.assertIn("attachment", response["Content-Disposition"])
-        self.assertEqual(b"".join(response.streaming_content), b"video-content")
-        self.assertEqual(mock_fetch.call_count, 2)
-        self.assertEqual(mock_fetch.call_args_list[1].kwargs["provider_signed"], item)
-        mock_recovery_urls.assert_called_once()
-        recovery_args, recovery_kwargs = mock_recovery_urls.call_args
-        self.assertEqual(recovery_args, (item,))
-        self.assertGreater(recovery_kwargs["deadline_monotonic"], 0)
-        mock_invalidate_caches.assert_called()
+        payload = response.json()
+        self.assertEqual(payload["route_type"], ROUTE_DIRECT)
+        self.assertEqual(payload["server_egress_estimated_bytes"], 0)
+        mock_fetch.assert_not_called()
+        mock_recovery_urls.assert_not_called()
+        mock_invalidate_caches.assert_not_called()
 
     @patch("xhs_download.views.fetch_media_response")
-    def test_download_signed_kukutool_video_browser_first_mode_uses_native_handoff(
+    def test_download_signed_kukutool_video_browser_first_mode_uses_browser_data_plane(
         self,
         mock_fetch,
     ):
@@ -7574,12 +7621,6 @@ class XhsDownloadViewTests(TestCase):
         setting.save(update_fields=["kukutool_download_delivery_mode", "updated_at"])
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
-        mock_fetch.return_value = FakeStreamingResponse(
-            b"video-content",
-            url=item["url"],
-            content_type="video/mp4",
-        )
-
         response = Client().post(
             "/media/download-images/",
             data=json.dumps({
@@ -7590,11 +7631,13 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
-        self.assertEqual(mock_fetch.call_count, 0)
+        payload = response.json()
+        self.assertEqual(payload["route_type"], ROUTE_DIRECT)
+        self.assertEqual(payload["server_egress_estimated_bytes"], 0)
+        mock_fetch.assert_not_called()
 
     @patch("xhs_download.views.fetch_media_response")
-    def test_download_signed_kukutool_video_route_only_returns_native_handoff_json(
+    def test_download_signed_kukutool_video_route_only_returns_browser_route_json(
         self,
         mock_fetch,
     ):
@@ -7615,13 +7658,12 @@ class XhsDownloadViewTests(TestCase):
         payload = response.json()
         self.assertEqual(payload["status"], "routed")
         self.assertEqual(payload["route_type"], ROUTE_DIRECT)
-        self.assertEqual(payload["download_strategy"], "browser_direct_provider_video")
-        self.assertTrue(payload["items"][0]["browser_native_handoff_safe"])
-        self.assertFalse(payload["items"][0]["browser_direct_fetch_safe"])
-        self.assertEqual(mock_fetch.call_count, 0)
+        self.assertEqual(payload["server_egress_estimated_bytes"], 0)
+        self.assertEqual(payload["browser_egress_estimated_bytes"], 2000)
+        mock_fetch.assert_not_called()
 
     @patch("xhs_download.views.fetch_media_response")
-    def test_download_signed_kukutool_video_runtime_timeout_is_capped_by_startup_budget(
+    def test_download_signed_kukutool_video_runtime_timeout_does_not_enable_server_fetch(
         self,
         mock_fetch,
     ):
@@ -7636,12 +7678,6 @@ class XhsDownloadViewTests(TestCase):
 
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
-        mock_fetch.return_value = FakeStreamingResponse(
-            b"video-content",
-            url=item["url"],
-            content_type="video/mp4",
-        )
-
         response = Client().post(
             "/media/download-images/",
             data=json.dumps({
@@ -7652,26 +7688,13 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertGreater(mock_fetch.call_args.kwargs["timeout"], 0)
-        self.assertLessEqual(
-            mock_fetch.call_args.kwargs["timeout"],
-            DOWNLOAD_STREAM_START_TIMEOUT_SECONDS,
-        )
-        self.assertGreater(
-            mock_fetch.call_args.kwargs["deadline_monotonic"],
-            time.monotonic(),
-        )
+        self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
+        mock_fetch.assert_not_called()
 
     @patch("xhs_download.views.fetch_media_response")
-    def test_download_form_payload_json_returns_single_file_response(self, mock_fetch):
+    def test_download_form_payload_server_single_rejects_ordinary_provider_video(self, mock_fetch):
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
-        mock_fetch.return_value = FakeStreamingResponse(
-            b"video-content",
-            url=item["url"],
-            content_type="video/mp4",
-        )
-
         response = Client(enforce_csrf_checks=False).post(
             "/media/download-images/",
             data={
@@ -7682,21 +7705,14 @@ class XhsDownloadViewTests(TestCase):
             },
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "video/mp4")
-        self.assertIn("attachment", response["Content-Disposition"])
-        self.assertEqual(b"".join(response.streaming_content), b"video-content")
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error_code"], "ORDINARY_BROWSER_DOWNLOAD_REQUIRED")
+        mock_fetch.assert_not_called()
 
     @patch("xhs_download.views.fetch_media_response")
-    def test_download_proxy_signed_kukutool_video_returns_single_file_response(self, mock_fetch):
+    def test_download_proxy_signed_kukutool_video_is_blocked(self, mock_fetch):
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
-        mock_fetch.return_value = FakeStreamingResponse(
-            b"video-content",
-            url=item["url"],
-            content_type="video/mp4",
-        )
-
         response = Client().post(
             "/media/download-images/",
             data=json.dumps({
@@ -7706,14 +7722,13 @@ class XhsDownloadViewTests(TestCase):
             content_type="application/json",
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "video/mp4")
-        self.assertIn("attachment", response["Content-Disposition"])
-        self.assertEqual(b"".join(response.streaming_content), b"video-content")
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error_code"], "ORDINARY_BROWSER_DOWNLOAD_REQUIRED")
+        mock_fetch.assert_not_called()
         log = DownloadRequestLog.objects.get()
-        self.assertEqual(log.download_type, "single_file")
-        self.assertEqual(log.route_type, ROUTE_PROXY)
-        self.assertEqual(log.server_egress_estimated_bytes, 2000)
+        self.assertEqual(log.route_type, ROUTE_BLOCKED)
+        self.assertEqual(log.actual_bytes, 0)
+        self.assertEqual(log.server_egress_estimated_bytes, 0)
 
     @patch("xhs_download.views.fetch_media_response")
     def test_download_proxy_single_video_returns_single_file_response(self, mock_fetch):
@@ -7906,16 +7921,13 @@ class XhsDownloadViewTests(TestCase):
 
     @patch("xhs_download.views.fetch_media_response")
     @patch("xhs_download.views.build_download_archive_file")
-    def test_provider_timeout_during_zip_falls_back_to_proxy(self, mock_archive, mock_fetch):
+    def test_explicit_zip_for_ordinary_provider_video_stays_on_browser_data_plane(
+        self,
+        mock_archive,
+        mock_fetch,
+    ):
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
-        mock_archive.side_effect = XhsProviderTimeoutError("provider timeout")
-        mock_fetch.return_value = FakeStreamingResponse(
-            b"video-content",
-            url=item["url"],
-            content_type="video/mp4",
-        )
-
         response = Client().post(
             "/media/download-images/",
             data=json.dumps({
@@ -7926,24 +7938,38 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "video/mp4")
-        self.assertIn("attachment", response["Content-Disposition"])
-        self.assertEqual(b"".join(response.streaming_content), b"video-content")
+        payload = response.json()
+        self.assertEqual(payload["route_type"], ROUTE_DIRECT)
+        self.assertEqual(payload["server_egress_estimated_bytes"], 0)
+        self.assertEqual(payload["browser_egress_estimated_bytes"], 2000)
+        mock_archive.assert_not_called()
+        mock_fetch.assert_not_called()
         log = DownloadRequestLog.objects.get()
-        self.assertEqual(log.download_type, "single_file")
-        self.assertEqual(log.route_type, ROUTE_PROXY)
-        self.assertEqual(log.recovery_count, 1)
-        self.assertEqual(log.fallback_count, 1)
-        self.assertEqual(log.fallback_from_route, ROUTE_ZIP)
-        self.assertEqual(log.fallback_to_route, ROUTE_PROXY)
-        self.assertEqual(log.failure_type, FAILURE_PROVIDER_TIMEOUT)
-        self.assertEqual(log.auto_recovery_count, 1)
-        self.assertEqual(log.provider_auto_switch_count, 1)
-        self.assertEqual(log.healing_action, HEAL_ACTION_SWITCH_PROVIDER)
-        event = SelfHealingEvent.objects.get()
-        self.assertEqual(event.failure_type, FAILURE_PROVIDER_TIMEOUT)
-        self.assertEqual(event.switched_from_provider, "kukutool")
-        self.assertEqual(event.switched_to_provider, "yt_dlp_generic")
+        self.assertEqual(log.route_type, ROUTE_DIRECT)
+        self.assertEqual(log.actual_bytes, 0)
+        self.assertEqual(log.server_egress_estimated_bytes, 0)
+
+    def test_zip_failure_recovery_never_relays_ordinary_provider_video(self):
+        item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
+        item["size_bytes"] = 2000
+
+        decision = zip_failure_recovery(
+            [item],
+            {
+                "route_type": ROUTE_ZIP,
+                "estimated_bytes": 2000,
+                "server_egress_estimated_bytes": 2000,
+                "browser_egress_estimated_bytes": 0,
+            },
+            XhsProviderTimeoutError("provider timeout"),
+        )
+
+        self.assertEqual(decision.action, RECOVERY_ACTION_ZIP_TO_DIRECT)
+        self.assertEqual(decision.fallback_from_route, ROUTE_ZIP)
+        self.assertEqual(decision.fallback_to_route, ROUTE_DIRECT)
+        self.assertEqual(decision.route_info["route_type"], ROUTE_DIRECT)
+        self.assertEqual(decision.route_info["server_egress_estimated_bytes"], 0)
+        self.assertEqual(decision.route_info["browser_egress_estimated_bytes"], 2000)
 
     @patch("xhs_download.views.fetch_media_response")
     @patch("xhs_download.views.build_download_archive_file")
@@ -7970,11 +7996,6 @@ class XhsDownloadViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "image/jpeg")
-        self.assertFalse(DownloadRequestLog.objects.exists())
-        self.assertEqual(
-            b"".join(response.streaming_content),
-            b"image-content",
-        )
         log = DownloadRequestLog.objects.get()
         self.assertEqual(log.route_type, ROUTE_PROXY)
         self.assertEqual(log.recovery_count, 1)
@@ -13178,11 +13199,29 @@ class AdminObservabilityMvpTests(TestCase):
     )
     @patch("xhs_download.views.get_kukutool_provider_health", return_value={"available": True})
     @patch("xhs_download.views.consume_fixed_window")
-    def test_parse_rate_limit_writes_rate_limited_log(self, mock_limit, _mock_health):
+    @patch("xhs_download.views.parse_media_page")
+    def test_parse_rate_limit_writes_rate_limited_log(
+        self,
+        mock_parse,
+        mock_limit,
+        _mock_health,
+    ):
         setting = ProviderRuntimeSetting.load()
         setting.douyin_ultra_mode = ProviderAccessMode.PUBLIC
         setting.save(update_fields=["douyin_ultra_mode", "updated_at"])
-        mock_limit.return_value = Mock(allowed=False, retry_after=30)
+        mock_limit.return_value = LimitResult(
+            allowed=False,
+            current=2,
+            limit=1,
+            retry_after=30,
+        )
+
+        def start_fresh_provider(_query, **options):
+            controller = options["ultra_attempt_controller"]
+            controller.configure_providers(("tiantianjiexi",))
+            controller.begin_provider("tiantianjiexi")
+
+        mock_parse.side_effect = start_fresh_provider
 
         response = Client().get(
             "/tiktok/results/",
