@@ -6,9 +6,6 @@ from django.core import signing
 
 logger = logging.getLogger(__name__)
 PROVIDER_MANIFEST_SALT = "xhs_download.provider_manifest.v1"
-PROVIDER_MANIFEST_VALID = "valid"
-PROVIDER_MANIFEST_EXPIRED = "expired"
-PROVIDER_MANIFEST_INVALID = "invalid"
 
 
 def build_provider_manifest_token(
@@ -32,10 +29,10 @@ def build_provider_manifest_token(
     return signing.dumps(payload, salt=PROVIDER_MANIFEST_SALT, compress=True)
 
 
-def provider_manifest_validation_status(item):
+def provider_manifest_is_valid(item):
     token = str(item.get("provider_manifest_token") or "")
     if not token:
-        return PROVIDER_MANIFEST_INVALID
+        return False
     try:
         payload = signing.loads(
             token,
@@ -52,12 +49,9 @@ def provider_manifest_validation_status(item):
                 ),
             ),
         )
-    except signing.SignatureExpired:
-        logger.info("provider_download_manifest_expired")
-        return PROVIDER_MANIFEST_EXPIRED
     except signing.BadSignature:
         logger.warning("provider_download_manifest_signature_rejected")
-        return PROVIDER_MANIFEST_INVALID
+        return False
 
     expected = {
         "asset_id": str(item.get("asset_id") or ""),
@@ -68,11 +62,4 @@ def provider_manifest_validation_status(item):
     }
     if "type" in payload:
         expected["type"] = str(item.get("type") or "")
-    if payload != expected:
-        logger.warning("provider_download_manifest_payload_rejected")
-        return PROVIDER_MANIFEST_INVALID
-    return PROVIDER_MANIFEST_VALID
-
-
-def provider_manifest_is_valid(item):
-    return provider_manifest_validation_status(item) == PROVIDER_MANIFEST_VALID
+    return payload == expected

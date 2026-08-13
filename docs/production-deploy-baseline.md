@@ -165,10 +165,10 @@ set +a
   --error-logfile -
 ```
 
-Keep the worker count conservative. The four threads are for synchronous I/O
-wait and do not permit more TianTianJieXi upstream calls; that Provider has a
-separate Redis-backed global lease fixed at one. Observe CPU, memory, Redis
-latency, fallback rate, and request latency during rollout.
+Keep the worker count conservative. Web request slots and Provider concurrency
+are separate controls. TianTianJieXi currently uses a Redis-backed counter with
+an effective production intent of two; observe CPU, memory, Redis latency,
+fallback rate, and request latency before changing either limit.
 
 ## systemd Example
 
@@ -198,9 +198,9 @@ NoNewPrivileges=true
 WantedBy=multi-user.target
 ```
 
-The repository-controlled candidate is
-`ops/systemd/animeimages.service`. Installing or restarting it is a separate
-production operation; merging the template does not change the live unit.
+The repository-controlled unit is `ops/systemd/animeimages.service`. Installing
+or restarting it is a separate production operation; merging the template does
+not alter the live service.
 
 Gunicorn runs as `www-data`. Keep the application checkout owned by `ubuntu:ubuntu`; the `ubuntu` account remains responsible for Git fetch/reset and deployment operations. The Web service only needs read access to application files and approved local Git refs.
 

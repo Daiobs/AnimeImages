@@ -26,6 +26,11 @@ from xhs_download import views as download_views
 urlpatterns = [
                   path("health/live/", health.liveness_view, name="health_live"),
                   path("health/ready/", health.readiness_view, name="health_ready"),
+                  path(
+                      "ordinary-media-download-sw.js",
+                      download_views.ordinary_media_service_worker_view,
+                      name="ordinary_media_service_worker",
+                  ),
                   path("admin/control-plane/", download_views.control_plane_view, name="control_plane"),
                   path("admin/provider-settings/", download_views.provider_settings_view, name="provider_settings"),
                   path("admin/policy-engine/", download_views.policy_engine_view, name="policy_engine"),

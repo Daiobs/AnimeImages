@@ -14,10 +14,10 @@ cached dictionary includes the media URL fields returned by the Provider.
 
 The normal parse path checks this cache first. A hit returns the cached payload
 without calling the TianTianJieXi API and without acquiring the single-flight
-or global parse lease. A concurrent caller can also receive the payload written
-by the request that currently owns the single-flight lease.
+key or global concurrency counter. A concurrent caller can also receive the
+payload written by the request that currently owns the single-flight key.
 
-The failure cache is separate. It defaults to 30 seconds and can reject a
+The failure cache is separate. It defaults to 8 seconds and can reject a
 repeat attempt without an upstream request after a recent Provider failure.
 
 Consequences:

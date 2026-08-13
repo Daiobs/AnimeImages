@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from django.conf import settings
 
 from .env_config import runtime_bool as env_runtime_bool
+from .env_config import runtime_default_float, runtime_default_int
 from .env_config import runtime_list as env_runtime_list
 from .env_config import runtime_str as env_runtime_str
 from .provider_runtime_config import load_provider_runtime_setting_readonly, runtime_float
@@ -25,7 +26,7 @@ class ProviderSettings:
     kukutool_max_pending_tasks: int = 4
     kukutool_global_max_concurrency: int = 4
     kukutool_single_flight_ttl_seconds: int = 30
-    kukutool_failure_cache_ttl_seconds: int = 15
+    kukutool_failure_cache_ttl_seconds: int = 8
     kukutool_cache_poll_interval_seconds: float = 0.1
     kukutool_global_request_limit_per_minute: int = 0
     kukutool_circuit_failure_threshold: int = 5
@@ -41,7 +42,7 @@ class ProviderSettings:
     tikhub_china_base_url: str = "https://api.tikhub.dev"
     tikhub_region: str = "CN"
     tikhub_daily_limit: int = 0
-    ultra_total_timeout_seconds: float = 5.0
+    ultra_total_timeout_seconds: float = 6.0
     ultra_native_timeout_seconds: float = 3.0
     ultra_kukutool_grace_seconds: float = 1.0
     tikhub_connect_timeout_seconds: float = 1.0
@@ -157,7 +158,7 @@ def get_platform_provider_settings(platform_id):
         ),
         kukutool_failure_cache_ttl_seconds=max(
             0,
-            int(getattr(settings, "KUKUTOOL_FAILURE_CACHE_TTL_SECONDS", 15) or 0),
+            runtime_default_int("KUKUTOOL_FAILURE_CACHE_TTL_SECONDS", 8),
         ),
         kukutool_cache_poll_interval_seconds=max(
             0.02,
@@ -230,7 +231,7 @@ def get_platform_provider_settings(platform_id):
         tikhub_daily_limit=int(getattr(settings, "TIKHUB_DAILY_LIMIT", 0) or 0),
         ultra_total_timeout_seconds=runtime_float(
             "douyin_ultra_total_timeout_seconds",
-            getattr(settings, "DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS", 5.0) or 5.0,
+            runtime_default_float("DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS", 6.0),
             minimum=1.0,
             maximum=30.0,
             setting=runtime_setting,

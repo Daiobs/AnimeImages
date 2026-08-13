@@ -1,5 +1,4 @@
 import importlib.util
-import os
 
 from django.conf import settings
 from django.core.checks import Error, Warning as CheckWarning, register
@@ -45,43 +44,6 @@ def check_redis_cache_dependency(app_configs, **kwargs):
             id="xhs_download.E008",
         )
     ]
-
-
-@register()
-def check_tiantianjiexi_shared_concurrency_backend(app_configs, **kwargs):
-    if not getattr(settings, "TIANTIANJIEXI_PROVIDER_ENABLED", False):
-        return []
-
-    issues = []
-    production = getattr(settings, "REQUIRE_PRODUCTION_CONFIG", not settings.DEBUG)
-    cache_backend = str(
-        settings.CACHES.get("default", {}).get("BACKEND", "")
-    )
-    if production and cache_backend != "django.core.cache.backends.redis.RedisCache":
-        issues.append(
-            Error(
-                "Production TianTianJieXi parsing requires the shared Redis cache backend.",
-                hint=(
-                    "Set DJANGO_CACHE_URL to Redis before enabling "
-                    "TIANTIANJIEXI_PROVIDER_ENABLED. The provider fails closed "
-                    "without a cross-process lease backend."
-                ),
-                id="xhs_download.E013",
-            )
-        )
-
-    configured_limit = str(
-        os.environ.get("TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY", "1") or "1"
-    ).strip()
-    if configured_limit != "1":
-        issues.append(
-            CheckWarning(
-                "TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY is fixed at 1 by the provider lease.",
-                hint="Set the legacy environment value to 1 to match effective behavior.",
-                id="xhs_download.W014",
-            )
-        )
-    return issues
 
 
 @register()

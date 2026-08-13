@@ -18,8 +18,17 @@ from ..common import (
     request_get_with_retry,
     validate_external_url,
 )
-from ..douyin_continuation import DouyinContinuationPendingError
+from ..douyin_continuation import (
+    DouyinContinuationPendingError,
+    DOUYIN_CONTINUATION_TTL_SECONDS,
+    find_active_douyin_continuation,
+)
+from ..douyin_ultra_attempts import (
+    DouyinUltraAttemptAccountingError,
+    DouyinUltraAttemptRateLimitedError,
+)
 from ..diagnostics import select_best_media_candidate
+from ..provider_settings import get_platform_provider_settings
 from .base import BasePlatformAdapter, PlatformCapabilities, ProviderPolicy
 from .douyin_providers import DouyinParseContext, build_douyin_result_providers
 
@@ -621,6 +630,8 @@ class DouyinAdapter(BasePlatformAdapter):
         "deadline_monotonic",
         "stage_callback",
         "allow_continuation",
+        "continuation_identity",
+        "ultra_attempt_controller",
     )
 
     def parse_html(
@@ -970,7 +981,10 @@ class DouyinAdapter(BasePlatformAdapter):
         deadline_monotonic=None,
         stage_callback=None,
         allow_continuation=False,
+        continuation_identity="",
+        ultra_attempt_controller=None,
     ):
+        parse_started_monotonic = monotonic()
         parse_started_at = time()
         self.require_supported_url(url)
         if callable(stage_callback):
@@ -979,9 +993,10 @@ class DouyinAdapter(BasePlatformAdapter):
         if not request_deadline and timeout_seconds is not None:
             request_deadline = monotonic() + max(0.1, float(timeout_seconds or 0))
         if prefer_ultra_hd and not request_deadline:
+            provider_settings = get_platform_provider_settings("douyin")
             request_deadline = monotonic() + max(
                 0.1,
-                float(getattr(settings, "DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS", 5.0) or 0),
+                float(provider_settings.ultra_total_timeout_seconds or 0),
             )
         context = self.build_parse_context(
             url,
@@ -995,6 +1010,21 @@ class DouyinAdapter(BasePlatformAdapter):
         context.allow_continuation = bool(
             allow_continuation and prefer_ultra_hd
         )
+        context.continuation_identity = str(continuation_identity or "")
+        context.ultra_attempt_controller = ultra_attempt_controller
+        if context.allow_continuation:
+            existing_task_id = find_active_douyin_continuation(
+                context.aweme_id,
+                context.continuation_identity,
+            )
+            if existing_task_id:
+                raise DouyinContinuationPendingError(
+                    existing_task_id,
+                    attached=True,
+                )
+            context.continuation_deadline_monotonic = (
+                parse_started_monotonic + DOUYIN_CONTINUATION_TTL_SECONDS
+            )
 
         last_timeout_error = None
         for provider in self.get_result_providers(
@@ -1046,6 +1076,11 @@ class DouyinAdapter(BasePlatformAdapter):
                         "prefer_ultra_hd": prefer_ultra_hd,
                     },
                 )
+                raise
+            except (
+                DouyinUltraAttemptAccountingError,
+                DouyinUltraAttemptRateLimitedError,
+            ):
                 raise
             except XhsProviderTimeoutError as error:
                 last_timeout_error = error

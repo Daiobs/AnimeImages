@@ -34,17 +34,38 @@ from .services.douyin_continuation import (
     DouyinContinuationError,
     DouyinContinuationPendingError,
     build_douyin_continuation_cache_key,
+    build_douyin_continuation_source_key,
+    find_active_douyin_continuation,
     issue_douyin_continuation_token,
     poll_douyin_continuation,
     serialize_douyin_continuation_result,
 )
+from .services.douyin_ultra_attempts import (
+    DouyinUltraAttemptController,
+    DouyinUltraAttemptRateLimitedError,
+    DouyinUltraAttemptSupersededError,
+)
+from .services import env_config
+from .services.env_config import runtime_default_float, runtime_default_int
 from .services.platforms.douyin import DouyinAdapter
-from .services.platforms.douyin_kukutool import DouyinKukuToolProvider
+from .services.platforms.douyin_kukutool import (
+    DouyinKukuToolProvider,
+    build_kukutool_failure_cache_key,
+)
 from .services.platforms.douyin_providers import (
     DouyinParseContext,
     DouyinTianTianJieXiProvider,
     DouyinUltraRaceProvider,
 )
+from .services.platforms.tiantianjiexi_generic import (
+    TianTianJieXiFailureCooldownError,
+    TianTianJieXiGenericProvider,
+    TianTianJieXiRateLimitError,
+    build_failure_cache_key as build_tiantian_failure_cache_key,
+    build_payload_cache_key as build_tiantian_payload_cache_key,
+    build_single_flight_key as build_tiantian_single_flight_key,
+)
+from .services.platforms.kukutool_generic import source_key_for_url
 from .services.provider_settings import ProviderSettings
 from .services.provider_manifest import build_provider_manifest_token
 from .services.provider_recovery import (
@@ -53,7 +74,7 @@ from .services.provider_recovery import (
     get_tiantianjiexi_manifest_identity,
     refresh_tiantianjiexi_download_item,
 )
-from .services.rate_limits import LimitResult
+from .services.rate_limits import LimitResult, consume_fixed_window
 from .views import (
     DownloadStreamStartTimeout,
     apply_upstream_startup_read_timeout,
@@ -169,6 +190,495 @@ class SlowRaceProvider:
         if self.error:
             raise self.error
         return self.result
+
+
+class DouyinRuntimeDefaultTests(SimpleTestCase):
+    def test_product_defaults_ignore_legacy_project_defaults(self):
+        with patch.object(env_config.os, "environ", {}):
+            self.assertEqual(
+                runtime_default_int("ULTRA_HD_RATE_LIMIT_PER_MINUTE", 10),
+                10,
+            )
+            self.assertEqual(
+                runtime_default_float("DOUYIN_ULTRA_TOTAL_TIMEOUT_SECONDS", 6.0),
+                6.0,
+            )
+
+    def test_explicit_environment_value_has_priority(self):
+        with patch.object(
+            env_config.os,
+            "environ",
+            {"ULTRA_HD_RATE_LIMIT_PER_MINUTE": "4"},
+        ):
+            self.assertEqual(
+                runtime_default_int("ULTRA_HD_RATE_LIMIT_PER_MINUTE", 10),
+                4,
+            )
+
+    @override_settings(ULTRA_HD_RATE_LIMIT_PER_MINUTE=3)
+    def test_django_test_override_has_priority(self):
+        with patch.object(env_config.os, "environ", {}):
+            self.assertEqual(
+                runtime_default_int("ULTRA_HD_RATE_LIMIT_PER_MINUTE", 10),
+                3,
+            )
+
+class DouyinUltraAttemptAccountingTests(SimpleTestCase):
+    def setUp(self):
+        cache.clear()
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_two_fresh_providers_in_one_race_consume_once(self):
+        consume = Mock(return_value=LimitResult(allowed=True, current=1, limit=10))
+        controller = DouyinUltraAttemptController(
+            client_identity="client-a",
+            limit=10,
+            consume=consume,
+        )
+        controller.configure_providers(("tiantianjiexi", "kukutool"))
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(
+                controller.begin_provider,
+                ("tiantianjiexi", "kukutool"),
+            ))
+
+        self.assertEqual(sorted(results), [False, True])
+        consume.assert_called_once()
+        self.assertEqual(
+            set(controller.providers),
+            {"tiantianjiexi", "kukutool"},
+        )
+
+    def test_cache_result_supersedes_fresh_provider_without_quota(self):
+        consume = Mock(return_value=LimitResult(allowed=True))
+        controller = DouyinUltraAttemptController(
+            client_identity="client-a",
+            limit=10,
+            consume=consume,
+        )
+        controller.configure_providers(("tiantianjiexi", "kukutool"))
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            fresh = executor.submit(
+                controller.begin_provider,
+                "tiantianjiexi",
+            )
+            time.sleep(0.01)
+            controller.reuse_cached_result("kukutool")
+            with self.assertRaises(DouyinUltraAttemptSupersededError):
+                fresh.result(timeout=1)
+
+        consume.assert_not_called()
+
+    def test_cooldown_bypass_does_not_consume_quota(self):
+        consume = Mock(return_value=LimitResult(allowed=True))
+        controller = DouyinUltraAttemptController(
+            client_identity="client-a",
+            limit=10,
+            consume=consume,
+        )
+
+        controller.skip_fresh_work(
+            "tiantianjiexi",
+            reason="failure_cooldown",
+            retry_after=8,
+        )
+
+        self.assertGreaterEqual(controller.cooldown_retry_after, 7)
+        consume.assert_not_called()
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="phone",
+        TIANTIANJIEXI_PASSWORD="password",
+    )
+    def test_tiantian_payload_cache_bypasses_user_quota(self):
+        source_url = f"https://www.douyin.com/video/{AWEME_ID}"
+        source_key = source_key_for_url(source_url)
+        payload = {
+            "videos": [
+                {
+                    "url": MEDIA_URL,
+                    "quality": "4K",
+                    "size": 80 * 1024 * 1024,
+                }
+            ]
+        }
+        cache.set(build_tiantian_payload_cache_key(source_key), payload, 30)
+        consume = Mock(return_value=LimitResult(allowed=True))
+        controller = DouyinUltraAttemptController(
+            client_identity="client-a",
+            limit=10,
+            consume=consume,
+        )
+        controller.configure_providers(("tiantianjiexi",))
+        client = Mock()
+
+        result = TianTianJieXiGenericProvider(client=client).parse(
+            source_url,
+            timeout_seconds=0.1,
+            attempt_controller=controller,
+        )
+
+        self.assertEqual(result, payload)
+        consume.assert_not_called()
+        client.parse_url.assert_not_called()
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="phone",
+        TIANTIANJIEXI_PASSWORD="password",
+        TIANTIANJIEXI_FAILURE_CACHE_TTL_SECONDS=8,
+    )
+    def test_tiantian_legacy_failure_cache_bypasses_user_quota(self):
+        source_url = f"https://www.douyin.com/video/{AWEME_ID}"
+        source_key = source_key_for_url(source_url)
+        failure_key = build_tiantian_failure_cache_key(source_key)
+        cache.set(failure_key, "legacy timeout", 30)
+        consume = Mock(return_value=LimitResult(allowed=True))
+        controller = DouyinUltraAttemptController(
+            client_identity="client-a",
+            limit=10,
+            consume=consume,
+        )
+        controller.configure_providers(("tiantianjiexi",))
+        client = Mock()
+
+        with self.assertRaises(TianTianJieXiFailureCooldownError) as raised:
+            TianTianJieXiGenericProvider(client=client).parse(
+                source_url,
+                timeout_seconds=0.1,
+                attempt_controller=controller,
+            )
+
+        self.assertGreaterEqual(raised.exception.retry_after_seconds, 7)
+        self.assertIsInstance(cache.get(failure_key), dict)
+        consume.assert_not_called()
+        client.parse_url.assert_not_called()
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="phone",
+        TIANTIANJIEXI_PASSWORD="password",
+    )
+    def test_tiantian_single_flight_waiter_bypasses_user_quota(self):
+        source_url = f"https://www.douyin.com/video/{AWEME_ID}"
+        source_key = source_key_for_url(source_url)
+        cache.set(build_tiantian_single_flight_key(source_key), "owner", 30)
+        payload = {"videos": [{"url": MEDIA_URL, "quality": "4K"}]}
+        consume = Mock(return_value=LimitResult(allowed=True))
+        controller = DouyinUltraAttemptController(
+            client_identity="client-a",
+            limit=10,
+            consume=consume,
+        )
+        controller.configure_providers(("tiantianjiexi",))
+        provider = TianTianJieXiGenericProvider(client=Mock())
+
+        with patch.object(
+            provider,
+            "wait_for_cached_payload",
+            return_value=payload,
+        ):
+            result = provider.parse(
+                source_url,
+                timeout_seconds=0.1,
+                attempt_controller=controller,
+            )
+
+        self.assertEqual(result, payload)
+        consume.assert_not_called()
+        provider.client.parse_url.assert_not_called()
+
+    def test_kukutool_legacy_failure_cache_bypasses_user_quota(self):
+        failure_key = build_kukutool_failure_cache_key(AWEME_ID)
+        cache.set(failure_key, "legacy timeout", 30)
+        consume = Mock(return_value=LimitResult(allowed=True))
+        controller = DouyinUltraAttemptController(
+            client_identity="client-a",
+            limit=10,
+            consume=consume,
+        )
+        controller.configure_providers(("kukutool",))
+        context = DouyinParseContext(
+            url=f"https://www.douyin.com/video/{AWEME_ID}",
+            aweme_id=AWEME_ID,
+            prefer_ultra_hd=True,
+            ultra_attempt_controller=controller,
+        )
+        provider = DouyinKukuToolProvider(
+            provider_settings=ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("kukutool",),
+                kukutool_failure_cache_ttl_seconds=8,
+            ),
+        )
+
+        future, state = provider.get_or_start_kukutool_future(
+            Mock(),
+            context,
+        )
+
+        self.assertIsNone(future)
+        self.assertEqual(state, "failure_cache_hit")
+        self.assertIsInstance(cache.get(failure_key), dict)
+        self.assertGreaterEqual(context.ultra_retry_after_seconds, 7)
+        consume.assert_not_called()
+
+    def test_tenth_fresh_attempt_allowed_and_eleventh_blocked(self):
+        call_count = 0
+
+        def consume(_scope, _identity, limit, _period):
+            nonlocal call_count
+            call_count += 1
+            return LimitResult(
+                allowed=call_count <= limit,
+                current=call_count,
+                limit=limit,
+                retry_after=25,
+            )
+
+        for _index in range(10):
+            controller = DouyinUltraAttemptController(
+                client_identity="client-a",
+                limit=10,
+                consume=consume,
+            )
+            controller.configure_providers(("tiantianjiexi",))
+            self.assertTrue(controller.begin_provider("tiantianjiexi"))
+
+        blocked = DouyinUltraAttemptController(
+            client_identity="client-a",
+            limit=10,
+            consume=consume,
+        )
+        blocked.configure_providers(("tiantianjiexi",))
+        with self.assertRaises(DouyinUltraAttemptRateLimitedError) as raised:
+            blocked.begin_provider("tiantianjiexi")
+
+        self.assertEqual(raised.exception.retry_after, 25)
+        self.assertEqual(call_count, 11)
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="phone",
+        TIANTIANJIEXI_PASSWORD="password",
+        TIANTIANJIEXI_REQUEST_LIMIT_PER_MINUTE=20,
+        TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY=2,
+        TIANTIANJIEXI_RETRIES=1,
+    )
+    def test_user_quota_rejection_releases_provider_global_reservation(self):
+        client = Mock()
+        controller = DouyinUltraAttemptController(
+            client_identity="client-a",
+            limit=10,
+            consume=Mock(
+                return_value=LimitResult(
+                    allowed=False,
+                    current=11,
+                    limit=10,
+                    retry_after=20,
+                )
+            ),
+        )
+        controller.configure_providers(("tiantianjiexi",))
+        provider = TianTianJieXiGenericProvider(client=client)
+
+        with self.assertRaises(DouyinUltraAttemptRateLimitedError):
+            provider.parse(
+                f"https://www.douyin.com/video/{AWEME_ID}",
+                timeout_seconds=0.1,
+                attempt_controller=controller,
+            )
+
+        client.parse_url.assert_not_called()
+        global_count = consume_fixed_window(
+            "third-party-tiantianjiexi",
+            "all",
+            20,
+            60,
+        )
+        self.assertEqual(global_count.current, 1)
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="phone",
+        TIANTIANJIEXI_PASSWORD="password",
+        TIANTIANJIEXI_REQUEST_LIMIT_PER_MINUTE=1,
+        TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY=2,
+        TIANTIANJIEXI_RETRIES=1,
+    )
+    def test_provider_global_rejection_does_not_consume_user_quota(self):
+        consume_fixed_window(
+            "third-party-tiantianjiexi",
+            "all",
+            1,
+            60,
+        )
+        user_consume = Mock(return_value=LimitResult(allowed=True))
+        controller = DouyinUltraAttemptController(
+            client_identity="client-a",
+            limit=10,
+            consume=user_consume,
+        )
+        controller.configure_providers(("tiantianjiexi",))
+        client = Mock()
+
+        with self.assertRaises(TianTianJieXiRateLimitError):
+            TianTianJieXiGenericProvider(client=client).parse(
+                f"https://www.douyin.com/video/{AWEME_ID}",
+                timeout_seconds=0.1,
+                attempt_controller=controller,
+            )
+
+        user_consume.assert_not_called()
+        client.parse_url.assert_not_called()
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="phone",
+        TIANTIANJIEXI_PASSWORD="password",
+        TIANTIANJIEXI_REQUEST_LIMIT_PER_MINUTE=0,
+        TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY=0,
+        TIANTIANJIEXI_RETRIES=1,
+        TIANTIANJIEXI_FAILURE_CACHE_TTL_SECONDS=8,
+    )
+    def test_failure_cooldown_then_real_retry_accounts_only_real_calls(self):
+        class FlakyClient:
+            def __init__(self):
+                self.calls = 0
+
+            def parse_url(self, _url, timeout_seconds=None):
+                self.calls += 1
+                if self.calls == 1:
+                    raise XhsProviderTimeoutError("controlled timeout")
+                return {
+                    "videos": [
+                        {
+                            "url": MEDIA_URL,
+                            "quality": "4K",
+                            "size": 80 * 1024 * 1024,
+                        }
+                    ]
+                }
+
+        source_url = f"https://www.douyin.com/video/{AWEME_ID}"
+        client = FlakyClient()
+        provider = TianTianJieXiGenericProvider(client=client)
+
+        first_consume = Mock(return_value=LimitResult(allowed=True))
+        first = DouyinUltraAttemptController(
+            client_identity="client-a",
+            limit=10,
+            consume=first_consume,
+        )
+        first.configure_providers(("tiantianjiexi",))
+        with self.assertRaises(XhsProviderTimeoutError):
+            provider.parse(
+                source_url,
+                timeout_seconds=0.1,
+                attempt_controller=first,
+            )
+        first_consume.assert_called_once()
+        self.assertEqual(client.calls, 1)
+
+        second_consume = Mock(return_value=LimitResult(allowed=True))
+        second = DouyinUltraAttemptController(
+            client_identity="client-a",
+            limit=10,
+            consume=second_consume,
+        )
+        second.configure_providers(("tiantianjiexi",))
+        with self.assertRaises(TianTianJieXiFailureCooldownError) as cooldown:
+            provider.parse(
+                source_url,
+                timeout_seconds=0.1,
+                attempt_controller=second,
+            )
+        self.assertGreaterEqual(cooldown.exception.retry_after_seconds, 7)
+        second_consume.assert_not_called()
+        self.assertEqual(client.calls, 1)
+
+        provider_config_source_url = (
+            "https://www.douyin.com/video/" + AWEME_ID
+        )
+        cache.set(
+            build_tiantian_failure_cache_key(
+                source_key_for_url(provider_config_source_url)
+            ),
+            {
+                "reason": "controlled timeout",
+                "failed_at": time.time() - 9,
+                "retry_at": time.time() - 1,
+            },
+            timeout=30,
+        )
+        third_consume = Mock(return_value=LimitResult(allowed=True))
+        third = DouyinUltraAttemptController(
+            client_identity="client-a",
+            limit=10,
+            consume=third_consume,
+        )
+        third.configure_providers(("tiantianjiexi",))
+
+        payload = provider.parse(
+            source_url,
+            timeout_seconds=0.1,
+            attempt_controller=third,
+        )
+
+        self.assertTrue(payload["videos"])
+        third_consume.assert_called_once()
+        self.assertEqual(client.calls, 2)
+
+    def test_strong_external_result_does_not_inherit_other_provider_cooldown(self):
+        controller = DouyinUltraAttemptController(
+            client_identity="client-a",
+            limit=10,
+            consume=Mock(return_value=LimitResult(allowed=True)),
+        )
+        controller.skip_fresh_work(
+            "tiantianjiexi",
+            reason="failure_cooldown",
+            retry_after=8,
+        )
+        context = DouyinParseContext(
+            url=f"https://www.douyin.com/video/{AWEME_ID}",
+            aweme_id=AWEME_ID,
+            ultra_attempt_controller=controller,
+        )
+        provider = DouyinUltraRaceProvider(
+            provider_settings=SimpleNamespace(
+                provider_is_enabled=lambda _name: True,
+            ),
+            providers=(),
+        )
+
+        result = provider.finalize_result(
+            build_provider_result(
+                provider="kukutool",
+                quality_label="4K",
+            ),
+            "kukutool",
+            2,
+            context,
+            time.time(),
+        )
+
+        self.assertEqual(result.metadata["ultra_retry_after_seconds"], 0)
 
 
 @override_settings(
@@ -301,6 +811,144 @@ class DouyinContinuationServiceTests(SimpleTestCase):
         return DouyinUltraRaceProvider(
             provider_settings=settings,
             providers=(fake_provider,),
+        )
+
+    def scaled_timing_race(self, external_delay):
+        native_result = build_native_fallback_result(quality_label="1080p")
+        strong_result = build_provider_result(
+            size_bytes=105 * 1024 * 1024,
+            quality_label="4K",
+        )
+        external = SlowRaceProvider(
+            result=strong_result,
+            delay_seconds=external_delay,
+        )
+        provider = DouyinUltraRaceProvider(
+            provider_settings=SimpleNamespace(
+                ultra_total_timeout_seconds=0.06,
+                ultra_native_timeout_seconds=0.03,
+                native_executor_workers=2,
+                native_max_pending_tasks=4,
+                provider_is_enabled=lambda _name: True,
+            ),
+            providers=(external,),
+        )
+        adapter = Mock()
+        adapter.fetch_mobile_feed_result.return_value = native_result
+        context = DouyinParseContext(
+            url=f"https://www.douyin.com/video/{AWEME_ID}",
+            aweme_id=AWEME_ID,
+            prefer_ultra_hd=True,
+            deadline_monotonic=time.monotonic() + 0.06,
+            allow_continuation=True,
+            continuation_identity=f"timing-{external_delay}",
+        )
+        return provider, adapter, context, external
+
+    def test_scaled_two_second_ultra_is_first_visible_result(self):
+        provider, adapter, context, external = self.scaled_timing_race(0.02)
+
+        result = provider.parse(adapter, context)
+
+        self.assertEqual(result.video_assets[0].provider, "tiantianjiexi")
+        self.assertEqual(result.video_assets[0].quality_label, "4K")
+        self.assertEqual(external.calls, 1)
+
+    def test_scaled_five_point_five_second_ultra_beats_native(self):
+        provider, adapter, context, external = self.scaled_timing_race(0.055)
+
+        result = provider.parse(adapter, context)
+
+        self.assertEqual(result.video_assets[0].provider, "tiantianjiexi")
+        self.assertEqual(result.video_assets[0].quality_label, "4K")
+        self.assertEqual(external.calls, 1)
+
+    def test_scaled_eight_second_ultra_uses_native_then_continuation(self):
+        provider, adapter, context, external = self.scaled_timing_race(0.08)
+        started_at = time.monotonic()
+
+        with self.assertRaises(DouyinContinuationPendingError) as raised:
+            provider.parse(adapter, context)
+
+        fallback = raised.exception.fallback_result
+        self.assertEqual(fallback.metadata["selected_provider"], "native")
+        self.assertLess(time.monotonic() - started_at, 0.075)
+        token = issue_douyin_continuation_token(
+            task_id=raised.exception.task_id,
+            client_identity="client-a",
+            platform_key="tiktok",
+        )
+        time.sleep(0.04)
+        outcome, _platform_key = poll_douyin_continuation(
+            token,
+            client_identity="client-a",
+        )
+        self.assertEqual(outcome.status, "success")
+        self.assertEqual(outcome.result.video_assets[0].provider, "tiantianjiexi")
+        self.assertEqual(external.calls, 1)
+
+    def test_second_coordinator_attaches_before_provider_submission(self):
+        first = DouyinContinuationCoordinator(
+            1,
+            source_identity=AWEME_ID,
+            client_identity="client-a",
+        )
+
+        with self.assertRaises(DouyinContinuationPendingError) as raised:
+            DouyinContinuationCoordinator(
+                1,
+                source_identity=AWEME_ID,
+                client_identity="client-a",
+            )
+
+        self.assertEqual(raised.exception.task_id, first.task_id)
+        self.assertTrue(raised.exception.attached)
+        first.abandon()
+
+    def test_initial_record_failure_releases_owned_source_index(self):
+        source_key = build_douyin_continuation_source_key(
+            AWEME_ID,
+            "client-a",
+        )
+
+        with patch(
+            "xhs_download.services.douyin_continuation.cache.set",
+            side_effect=RuntimeError("cache unavailable"),
+        ):
+            with self.assertRaises(DouyinContinuationError) as raised:
+                DouyinContinuationCoordinator(
+                    1,
+                    source_identity=AWEME_ID,
+                    client_identity="client-a",
+                )
+
+        self.assertEqual(
+            raised.exception.error_code,
+            "DOUYIN_CONTINUATION_CACHE_ERROR",
+        )
+        self.assertIsNone(cache.get(source_key))
+
+    def test_abandon_only_removes_source_index_owned_by_coordinator(self):
+        coordinator = DouyinContinuationCoordinator(
+            1,
+            source_identity=AWEME_ID,
+            client_identity="client-a",
+        )
+        source_key = build_douyin_continuation_source_key(
+            AWEME_ID,
+            "client-a",
+        )
+        cache.set(
+            source_key,
+            {"task_id": "replacement-task", "claimed_at": time.time()},
+            timeout=15,
+        )
+
+        coordinator.abandon()
+
+        self.assertEqual(
+            cache.get(source_key)["task_id"],
+            "replacement-task",
         )
 
     def test_running_provider_returns_pending_then_cache_only_success(self):
@@ -568,10 +1216,17 @@ class DouyinContinuationServiceTests(SimpleTestCase):
             "DOUYIN_CONTINUATION_CLIENT_MISMATCH",
         )
 
-        with patch(
-            "xhs_download.services.douyin_continuation."
-            "DOUYIN_CONTINUATION_TTL_SECONDS",
-            -1,
+        with (
+            patch(
+                "xhs_download.services.douyin_continuation."
+                "DOUYIN_CONTINUATION_TTL_SECONDS",
+                -1,
+            ),
+            patch(
+                "xhs_download.services.douyin_continuation."
+                "DOUYIN_CONTINUATION_RESULT_GRACE_SECONDS",
+                0,
+            ),
         ):
             with self.assertRaises(DouyinContinuationError) as expired:
                 poll_douyin_continuation(
@@ -676,6 +1331,47 @@ class DouyinContinuationServiceTests(SimpleTestCase):
         )
         self.assertEqual(outcome.status, "success")
         coordinator.abandon()
+
+    def test_same_client_and_source_can_attach_to_pending_continuation(self):
+        coordinator = DouyinContinuationCoordinator(
+            1,
+            source_identity=AWEME_ID,
+            client_identity="client-a",
+        )
+
+        self.assertEqual(
+            find_active_douyin_continuation(AWEME_ID, "client-a"),
+            coordinator.task_id,
+        )
+        self.assertEqual(
+            find_active_douyin_continuation(AWEME_ID, "client-b"),
+            "",
+        )
+        coordinator.abandon()
+
+    def test_continuation_ttl_does_not_extend_when_future_completes(self):
+        with (
+            patch(
+                "xhs_download.services.douyin_continuation.time.time",
+                side_effect=(100.0, 100.0, 100.0, 114.1, 114.1),
+            ),
+            patch(
+                "xhs_download.services.douyin_continuation.cache.set"
+            ) as mock_set,
+        ):
+            coordinator = DouyinContinuationCoordinator(1)
+            future = Future()
+            future.set_result(build_provider_result())
+            coordinator.capture_future(
+                future,
+                provider_name="tiantianjiexi",
+                score_result=lambda _result: (1000, 1000),
+                is_strong_result=lambda _result: True,
+                prepare_result=lambda value: value,
+            )
+
+        timeouts = [call.kwargs["timeout"] for call in mock_set.call_args_list]
+        self.assertEqual(timeouts, [17, 3])
 
     def test_pending_continuation_is_not_hidden_by_native_fallback(self):
         adapter = DouyinAdapter()
@@ -1162,6 +1858,32 @@ class DownloadPrepareViewTests(TestCase):
         )
         self.assertEqual(forbidden.status_code, 403)
 
+    @patch("xhs_download.views.issue_download_handoff_tokens")
+    @patch("xhs_download.views.fetch_media_response")
+    def test_prepare_rejects_ordinary_tiantian_video_without_media_io(
+        self,
+        mock_fetch,
+        mock_issue_tokens,
+    ):
+        payload = {
+            "media_items": [build_tiantianjiexi_item()],
+            "base_filename": "ordinary-video",
+        }
+
+        response = self.client.post(
+            "/media/download-prepare/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json()["error_code"],
+            "DOWNLOAD_PREPARE_ROUTE_REJECTED",
+        )
+        mock_fetch.assert_not_called()
+        mock_issue_tokens.assert_not_called()
+
     def test_prepare_guard_and_rate_limit_failures_are_observable_json(self):
         with patch(
             "xhs_download.views.check_download_cost_preflight",
@@ -1626,6 +2348,11 @@ class DownloadSingleConnectionStreamTests(TestCase):
             self.assertEqual(response.status_code, 200)
             mock_fetch.assert_called_once()
             mock_release.assert_not_called()
+            self.assertFalse(
+                DownloadRequestLog.objects.filter(
+                    download_type="single_stream"
+                ).exists()
+            )
             status_before_body = load_download_status(
                 tokens.status_token,
                 client_identity=self.client_identity,
@@ -1633,7 +2360,6 @@ class DownloadSingleConnectionStreamTests(TestCase):
             self.assertEqual(status_before_body.status, "connecting")
             self.assertFalse(status_before_body.stream_started)
             self.assertEqual(status_before_body.upstream_attempt_count, 1)
-            self.assertEqual(DownloadRequestLog.objects.count(), 0)
 
             iterator = iter(response.streaming_content)
             first_chunk = next(iterator)
@@ -1661,10 +2387,11 @@ class DownloadSingleConnectionStreamTests(TestCase):
         self.assertTrue(completed.stream_started)
         self.assertFalse(completed.recovered)
         self.assertEqual(completed.upstream_attempt_count, 1)
-        log = DownloadRequestLog.objects.get()
-        self.assertEqual(log.status, ObservabilityStatus.SUCCESS)
-        self.assertEqual(log.download_type, "single_stream")
-        self.assertEqual(log.actual_bytes, len(b"first-last"))
+        request_log = DownloadRequestLog.objects.get(
+            download_type="single_stream"
+        )
+        self.assertEqual(request_log.status, ObservabilityStatus.SUCCESS)
+        self.assertEqual(request_log.actual_bytes, len(b"first-last"))
 
     def test_close_before_iteration_fails_without_marking_stream_started(self):
         tokens = self.issue()
@@ -1690,6 +2417,11 @@ class DownloadSingleConnectionStreamTests(TestCase):
         )
         self.assertEqual(failed.status, "failed")
         self.assertFalse(failed.stream_started)
+        request_log = DownloadRequestLog.objects.get(
+            download_type="single_stream"
+        )
+        self.assertEqual(request_log.status, ObservabilityStatus.FAILED)
+        self.assertEqual(request_log.actual_bytes, 0)
         upstream.close.assert_called_once_with()
         mock_release.assert_called_once_with(
             "download-concurrent",
@@ -1745,7 +2477,63 @@ class DownloadSingleConnectionStreamTests(TestCase):
             [event[0] for event in events],
             ["connecting", "streaming", "completed"],
         )
+        completed_snapshot = events[-1][1]
+        self.assertEqual(completed_snapshot["actual_yielded_bytes"], 18)
+        self.assertEqual(completed_snapshot["chunk_index"], 3)
+        self.assertEqual(
+            completed_snapshot["generator_close_reason"],
+            "completed",
+        )
+        self.assertTrue(completed_snapshot["upstream_response_closed"])
         upstream.close.assert_called_once_with()
+
+    def test_downstream_close_records_only_yielded_bytes(self):
+        tokens = self.issue()
+        upstream = self.build_upstream([b"first-", b"second", b"-third"])
+        fetch_patch, acquire_patch, bytes_patch, release_patch = (
+            self.stream_request_patches(upstream)
+        )
+
+        with (
+            fetch_patch,
+            acquire_patch,
+            bytes_patch,
+            release_patch as mock_release,
+            self.assertLogs("xhs_download.views", level="WARNING") as logs,
+        ):
+            response = self.client.get(
+                f"/media/download-stream/{tokens.stream_token}/"
+            )
+            stream = response._animeimages_attachment_stream
+            iterator = iter(stream)
+            self.assertEqual(next(iterator), b"first-")
+            iterator.close()
+
+        failed = load_download_status(
+            tokens.status_token,
+            client_identity=self.client_identity,
+        )
+        self.assertEqual(failed.status, "failed")
+        self.assertTrue(failed.stream_started)
+        request_log = DownloadRequestLog.objects.get(
+            download_type="single_stream"
+        )
+        self.assertEqual(request_log.status, ObservabilityStatus.FAILED)
+        self.assertEqual(request_log.actual_bytes, len(b"first-"))
+        failed_record = next(
+            record
+            for record in logs.records
+            if record.getMessage() == "download_stream_failed"
+        )
+        self.assertEqual(failed_record.actual_yielded_bytes, len(b"first-"))
+        self.assertEqual(failed_record.chunk_index, 1)
+        self.assertEqual(failed_record.exception_type, "GeneratorExit")
+        self.assertEqual(
+            failed_record.generator_close_reason,
+            "downstream_consumer_closed",
+        )
+        self.assertTrue(failed_record.upstream_response_closed)
+        mock_release.assert_called_once()
 
     def test_streaming_status_waits_for_download_bytes_guard(self):
         tokens = self.issue()
@@ -2078,15 +2866,25 @@ class DownloadSingleConnectionStreamTests(TestCase):
         self.assertEqual(failed.status, "failed")
         self.assertEqual(failed.error_code, "UPSTREAM_CONNECTION_ERROR")
         self.assertTrue(failed.stream_started)
-        mock_release.assert_called_once()
-        log = DownloadRequestLog.objects.get()
-        self.assertEqual(log.status, ObservabilityStatus.FAILED)
-        self.assertEqual(log.actual_bytes, len(b"first-"))
-        self.assertFalse(
-            DownloadRequestLog.objects.filter(
-                status=ObservabilityStatus.SUCCESS
-            ).exists()
+        request_log = DownloadRequestLog.objects.get(
+            download_type="single_stream"
         )
+        self.assertEqual(request_log.status, ObservabilityStatus.FAILED)
+        self.assertEqual(request_log.actual_bytes, len(b"first-"))
+        failed_record = next(
+            record
+            for record in logs.records
+            if record.getMessage() == "download_stream_failed"
+        )
+        self.assertEqual(failed_record.actual_yielded_bytes, len(b"first-"))
+        self.assertEqual(failed_record.chunk_index, 1)
+        self.assertEqual(failed_record.exception_type, "ConnectionError")
+        self.assertEqual(
+            failed_record.generator_close_reason,
+            "stream_exception",
+        )
+        self.assertTrue(failed_record.upstream_response_closed)
+        mock_release.assert_called_once()
         self.assertNotIn("secret.example", "\n".join(logs.output))
         self.assertNotIn("token=secret", "\n".join(logs.output))
 
@@ -2576,7 +3374,7 @@ class DouyinContinuationViewTests(TestCase):
         self.assertTrue(body["has_results"])
         self.assertIn("asset-card", body["html"])
         self.assertTrue(body["continuation_token"])
-        self.assertIn("自动续查", body["message"])
+        self.assertIn("超高清资源仍在后台解析", body["message"])
 
     @patch("xhs_download.views.probe_media_size")
     @patch("xhs_download.views.parse_media_page")

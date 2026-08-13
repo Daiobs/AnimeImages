@@ -21,8 +21,19 @@
             data-download-async-enabled="{{ download_async_tasks_enabled|yesno:'true,false' }}"
             data-base-filename="{{ base_filename|default:'xhs_image' }}"
             data-platform-key="{{ platform_key|default:'home' }}"
+            data-page-home-url="{{ page_home_url }}"
     >
         <div class="container-fluid px-4 px-md-5">
+            <section class="ordinary-active-downloads"
+                     data-ordinary-active-downloads
+                     aria-live="polite"
+                     hidden></section>
+            <div class="alert alert-warning ordinary-download-interruption"
+                 data-ordinary-download-interruption
+                 role="status"
+                 hidden>
+                上次下载可能因页面刷新或关闭而中断，请重新点击下载；若资源已经失效，请重新解析。
+            </div>
 
             <!-- 搜索区 -->
             <div class="hero-section">
@@ -344,7 +355,11 @@
 
 {% block extra_js %}
     <script src="{% static 'js/parse_preferences.js' %}?v={{ static_asset_version }}"></script>
+    <script src="{% static 'js/ordinary_media_streaming_protocol.js' %}?v={{ static_asset_version }}"></script>
+    <script src="{% static 'js/ordinary_media_streaming.js' %}?v={{ static_asset_version }}"></script>
+    <script src="{% static 'js/ordinary_media_download.js' %}?v={{ static_asset_version }}"></script>
     <script src="{% static 'js/download_reliability.js' %}?v={{ static_asset_version }}"></script>
     <script src="{% static 'js/douyin_reliability.js' %}?v={{ static_asset_version }}"></script>
+    <script src="{% static 'js/result_url_safety.js' %}?v={{ static_asset_version }}"></script>
     <script src="{% static 'js/xhs_download.js' %}?v={{ static_asset_version }}"></script>
 {% endblock %}

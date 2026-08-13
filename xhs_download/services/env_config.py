@@ -1,6 +1,42 @@
 import os
 
-from django.conf import settings
+from django.conf import UserSettingsHolder, settings
+
+
+_MISSING = object()
+
+
+def _explicit_test_setting(name):
+    wrapped = settings._wrapped
+    if isinstance(wrapped, UserSettingsHolder) and name in vars(wrapped):
+        return getattr(settings, name)
+    return _MISSING
+
+
+def runtime_default_int(name, default=0):
+    """Read an explicit deployment value, with Django test overrides supported."""
+    value = _explicit_test_setting(name)
+    if value is _MISSING:
+        value = os.environ.get(name, default)
+    if value is None or value == "":
+        return int(default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def runtime_default_float(name, default=0.0):
+    """Read an explicit deployment value, with Django test overrides supported."""
+    value = _explicit_test_setting(name)
+    if value is _MISSING:
+        value = os.environ.get(name, default)
+    if value is None or value == "":
+        return float(default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def runtime_str(name, default=""):

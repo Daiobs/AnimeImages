@@ -1,17 +1,17 @@
 # Codex Handoff
 
-Last updated: 2026-08-10
+Last updated: 2026-08-14
 
 This document is the first stop when a new Codex project or thread takes over AnimeImages.
 
 ## Repository
 
-### Recent Local Codex Worktree
+### Long-Lived Product Worktree
 
-Recent local Codex work has used:
+Product development currently uses the retained worktree:
 
 ```text
-/Users/xingkong/Documents/Codex/2026-06-03/django-python-pycharm-codex-netlify/djangoProject
+/Users/xingkong/.codex/worktrees/2358/djangoProject
 ```
 
 This path is not a permanent fixed path. A new Codex thread must first confirm it is in the correct AnimeImages repository:
@@ -28,7 +28,11 @@ The remote must point to:
 ssh://git@ssh.github.com:443/Daiobs/AnimeImages.git
 ```
 
-Do not continue work in stale Codex worktrees or the old `douyin-source-resolver` experiment unless the user explicitly asks.
+The main project checkout is for synchronizing and auditing `main`, not routine
+development. Keep this product worktree, but never continue a new task on an
+old task branch. Fetch `origin`, detach at the latest `origin/main`, then create
+one new branch and one PR for the task. Do not create another worktree unless
+the user explicitly requests an isolated review or experiment.
 
 ### Production Server Checkout
 
@@ -52,20 +56,30 @@ Current production site:
 https://download.cosflow.icu/
 ```
 
-## Last Audited Runtime Baseline
+## Production Douyin Ultra Retry Baseline
 
-This handoff was audited against the following application runtime baseline:
+Production was deployed and accepted at this exact stabilization SHA:
 
 ```text
-6b1787f Make release Git state read-only (#18)
+87afba3 Honor Ultra runtime defaults outside settings
 ```
 
-This SHA is not a real-time pointer to `main`. Fetch and read the current remote baseline before starting work:
+It is fixed by `checkpoint/production-douyin-ultra-retry-v1` and is not a
+real-time pointer to `main`. The previous Service Worker checkpoint
+`checkpoint/production-service-worker-streaming-v1` remains the prior rollback
+baseline. Fetch and read the current remote baseline before starting work:
 
 ```bash
 git fetch origin
 git log -1 --oneline origin/main
 ```
+
+After the production/main reconciliation merges, `origin/main` is the sole
+canonical development baseline and
+`checkpoint/main-production-converged-v1` is its immutable transition point.
+Production nevertheless remains at `87afba3` until a separate deployment is
+approved. See `docs/repository-governance.md` and
+`docs/production-behavior-baseline-v1.md`.
 
 Recent merged milestones:
 
@@ -89,11 +103,12 @@ AnimeImages is no longer just a Xiaohongshu downloader. The current product shap
 - Dedicated pages for Xiaohongshu, Douyin, Bilibili.
 - Runtime-gated batch parsing page.
   - Staff can see raw/direct controls.
-  - Allowed public users can parse and download, but must not receive raw-link
-    copy/open/export tools.
+  - Allowed public users can download validated results, but must not receive
+    raw-link copy/open/export capability.
 - Provider runtime/admin console.
 - Observability and health-test admin tools.
-- Download strategy experiments to reduce server bandwidth while preserving stable downloads.
+- Browser Streaming for ordinary Provider video, with zero AnimeImages media
+  bytes; server paths remain for generated output such as YouTube merges/ZIPs.
 
 ## Platform Responsibilities
 
@@ -114,7 +129,21 @@ AnimeImages is no longer just a Xiaohongshu downloader. The current product shap
   - TianTianJieXi is the preferred official API upstream.
   - KuKuTool is fallback/race backup.
   - Native remains fallback.
-- `DouyinUltraRaceProvider` should not unfairly reduce TianTianJieXi's budget to reserve KuKuTool grace in race mode.
+- Fresh Ultra attempts start TianTianJieXi, KuKuTool, and Native at T=0. Native
+  remains hidden during the six-second foreground window; a strong Ultra result
+  inside that window is the first visible result.
+- If the foreground window expires, the prepared Native fallback may be shown
+  while a bounded continuation waits for an already-started Ultra Provider and
+  can upgrade the same result later.
+- One fresh external-Provider race consumes one user attempt. Cache/cooldown
+  hits, single-flight waiters, continuation attach/poll, Native fallback, and
+  automatic upgrades consume no new attempt.
+- Production user limits are 10 Ultra attempts/minute and 10 generic
+  third-party attempts/minute. TianTianJieXi/KuKuTool transient cooldowns are
+  eight seconds. Provider-global limits and concurrency remain separate and
+  unchanged.
+- `DouyinUltraRaceProvider` must not unfairly reduce TianTianJieXi's budget to
+  reserve KuKuTool grace in race mode.
 
 ### Bilibili
 
@@ -143,25 +172,6 @@ Do not treat `.env *_ENABLED=True` as public launch approval. Routine rollout is
 /admin/provider-settings/
 ```
 
-### Provider Resource Lifecycle
-
-- Keep the Provider payload cache, AnimeImages Provider manifest, and upstream
-  CDN URL as three independent lifecycles.
-- TianTianJieXi payload cache hits can return a previously cached media URL
-  without calling the upstream API. A user-visible parse or retry action does
-  not imply an uncached upstream parse.
-- Manifest validity proves the signed AnimeImages asset/URL identity and token
-  age, not upstream CDN reachability or URL lifetime.
-- The current code does not know TianTianJieXi CDN URL lifetime. Record it as
-  `CDN_URL_LIFETIME_UNKNOWN`; do not infer it from the 120-second payload cache
-  or the 3600-second manifest maximum age.
-- In tests, use `uncached_upstream_parse` only when an upstream call is proved,
-  and `newly_issued_provider_result` only when the Provider has actually
-  returned the result in that test.
-
-Read [Provider Resource Lifecycle](provider-resource-lifecycle.md) before
-changing cache, manifest, recovery, or download behavior.
-
 ## Important Admin Pages
 
 ```text
@@ -184,20 +194,11 @@ changing cache, manifest, recovery, or download behavior.
 Current behavior:
 
 - It supports multiple links.
-- `BatchParseRuntimeSetting.access_mode` is the single source for Batch
-  navigation visibility, page access, and start/item/retry API access.
-- `disabled` closes Batch for website visitors and staff, `staff` limits it to
-  staff, `public_gray` uses the existing deterministic request rollout, and
-  `public` allows everyone.
 - Douyin original/ultra is checked by default when runtime allows it.
 - Runtime settings are stored in `BatchParseRuntimeSetting`.
 - Env values are fallback/initial defaults, not the day-to-day operating console.
-- Allowed public users can download individual videos and images through the
-  existing validated route/prepare/stream/status contract.
-- Staff can additionally see raw copy/open/export tools and the strategy matrix.
-- Public cards may contain only the existing allowlisted client media fields
-  needed for validated routing; do not add Provider responses, headers,
-  credentials, cache objects, or raw-link tools.
+- Staff can see raw/direct controls.
+- Anonymous/public users must not see raw signed provider URLs.
 
 Browser state boundaries:
 
@@ -223,16 +224,6 @@ Daily changes should happen in:
 /admin/xhs_download/batchparseruntimesetting/
 ```
 
-The Batch runtime Admin is a singleton direct-edit surface. Its top panel is
-the saved/effective database state; the editable fields below it are only a
-draft until `保存并生效` succeeds. An existing database row is authoritative,
-while environment values are first-row defaults or database-failure fallback.
-Public-expansion changes require explicit client confirmation and server-side
-validation, stale forms are rejected using `updated_at`, and successful saves
-emit a non-sensitive structured mutation log. This Admin hardening does not
-change `batch_parse_access_allowed()`, gray rollout, Provider order, parsing,
-scheduling, rate limits, or downloads.
-
 `BATCH_PARSE_TIANTIAN_PARALLEL_WORKERS` and
 `BATCH_PARSE_MAX_RESPONSE_TIMEOUT_SECONDS` are environment safety ceilings, not
 daily admin controls. The interactive page reserves the existing whole-batch
@@ -251,114 +242,57 @@ fallback remain available.
 
 ## Download Strategy State
 
-Architecture north star for the unreleased Browser Direct restoration
-candidate:
+The V1 stabilization contract is:
 
-> Server is the download control plane, not the default media data plane.
+```text
+ordinary Provider video: Provider/CDN -> user browser -> user disk
+server-generated output: upstream -> AnimeImages processing -> user browser
+```
 
-AnimeImages owns parsing, authorization, Provider-manifest validation, route
-selection, and handoff. A validated direct resource should send its large media
-body from the Provider/CDN to the browser. The user has accepted that the final
-signed URL is visible in browser Network tools; that does not permit public
-raw-link buttons or exports.
+- Manifest-validated ordinary TianTianJieXi and KuKuTool videos use the shared
+  `static/js/ordinary_media_download.js` and
+  `static/js/ordinary_media_streaming.js` primitive on both Single and Batch.
+- `BROWSER_STREAMING` is the default: a root-scoped Service Worker fetches the
+  Provider/CDN response and exposes a synthetic attachment stream to Browser
+  Download Manager without a complete Blob or File System API.
+- `BROWSER_BLOB` is a capability fallback only before Streaming begins, for
+  cases such as missing Service Worker support or registration/activation
+  failure. Once upstream fetch or Download Manager startup occurs, Blob
+  fallback is forbidden to prevent duplicate media requests and files.
+- Refresh queries the active Worker and reattaches the page to the same opaque
+  `downloadId`; it does not reparse, restart the media request, or persist the
+  signed URL. Site and Download Manager cancellation abort the upstream.
+- The ordinary path does not call `/media/download-prepare/`,
+  `/media/download-stream/`, or `/media/download-status/`. It does not fall back
+  to server proxy, single-video ZIP, or another AnimeImages media relay.
+- Ordinary failures offer only retry or reparse. The user sees `下载` and generic
+  preparation/acquisition/save states, not transport architecture choices.
+- The final signed media URL is intentionally visible to the receiving browser;
+  it must not be written to logs, browser storage, documentation, or reports.
+- Existing server attachment code remains only for a distinct resource class:
+  generated YouTube merges, ZIPs, resources that genuinely require server-held
+  Cookie/header context, and other server-generated outputs.
+- The removed Batch ordinary-media progress implementation is documented in
+  `docs/research/v1-batch-blob-progress-archive.md`; do not restore it as a
+  second downloader.
+- Chrome production proof for a 110,691,390-byte TianTianJieXi MP4 passed in
+  Single and Batch with exact size, Download Manager progress, refresh
+  reattachment, no playback, and zero AnimeImages media requests or bytes.
+- Controlled Streaming passed 300 and 500 MiB without media-sized JavaScript
+  buffering, concurrent cancel isolation, multiple refreshes, tab close, and a
+  waiting-worker update. Safari passed a controlled 16 MiB smoke. Firefox and
+  Edge remain untested because they were not installed.
+- The Worker intentionally does not call `skipWaiting()`; an active version
+  finishes existing downloads while a new version waits for normal activation.
+- Browser Blob remains a bounded pre-start compatibility path, not the default
+  ordinary-video architecture.
 
-- Browser native handoff and browser fetch/Blob are separate capabilities.
-  Visible native navigation does not require fetch CORS. Fetch/Blob is allowed
-  only for explicitly CORS-safe resources with a known size of at most 32 MiB.
-- Manifest-validated TianTianJieXi videos prefer native browser handoff.
-  KuKuTool does the same only in its `browser_first` runtime mode; its explicit
-  server-stream/server-only modes continue to use relay.
-- Large or unknown-size videos must not use Blob-first. If the CDN serves media
-  inline, native handoff opens a visible source tab and must not claim that a
-  browser download item started or completed.
-- Direct remains subject to Provider identity, resource ID, cache key, signed
-  manifest, scheme, host allowlist, private-address rejection, media type, and
-  expected-resource checks. CORS failure alone is not a relay reason.
-- Explicit relay reasons include cookie-bound resources, merge requirements,
-  server-only Provider behavior, and a browser handoff that cannot be safely
-  authorized. For Direct-capable inline media, relay is available only through
-  the separately labeled compatibility action; Direct failure never silently
-  changes the next click into relay.
-- Single-result and Batch pages use the same route contract. Allowed public
-  users may invoke validated downloads, while raw-link copy/open/export UI
-  remains staff-only.
-- A Direct response records only a successful routing decision and emits a
-  `route_selected` structured event. It does not create a completed-download
-  record because the server cannot observe browser completion.
-- Expired Provider manifests use a distinct reparse message. Invalid, payload-
-  mismatched, and forged manifests remain security rejections.
-- A retained server stream writes `DownloadRequestLog.success` only when its
-  iterator exhausts normally. `actual_bytes` counts bytes actually yielded;
-  disconnects and generator/upstream errors are failures.
-
-The following server-relay details remain relevant only when a route has an
-explicit relay requirement or the user invokes the controlled fallback:
-
-- Prepare is local-only: it performs request/schema, manifest, route, limit,
-  and client-binding checks, then issues separate opaque stream and status
-  URLs without contacting the media CDN. The stream claim is one-use; status
-  polling is repeatable, cache-only, client-bound, and does not extend the
-  60-second TTL. The server-private handoff cache uses a typed field allowlist
-  and retains one manifest-validated minimal media URL for the initial GET;
-  it never places that URL in the token, status payload, logs, database, or
-  browser storage.
-- The normal server attachment path opens one upstream media response, checks
-  its first non-empty chunk, and continues the `StreamingHttpResponse` from
-  that same iterator. Active responses, sockets, and generators are never
-  stored in cache. The stream owns its concurrency slot until completion,
-  failure, or client disconnect.
-- The frontend polls only the download startup states and stops at
-  `streaming`, `failed`, `expired`, or its 15-second hard ceiling. It never
-  fetches the media body or creates a large JavaScript Blob for this path.
-- Response construction does not set `stream_started`. The stream iterator
-  sets it once, immediately before yielding the already-validated first chunk.
-  It then remains sticky across later failures; closing before iteration keeps
-  it false. Exhausting the polling window without confirmation is an
-  unconfirmed, retryable state rather than proof that the download failed.
-- For server single-file handoff, issuing the browser request keeps the page
-  progress bar in its connecting state. It reaches 100% only after status
-  confirms `stream_started`, representing confirmed browser handoff rather
-  than media bytes transferred through Django. Actual byte progress belongs
-  to the browser download UI. Safe stream logs record attempt, refresh, and
-  first-byte durations without source or signed media URLs.
-- TianTianJieXi recovery is server-only, bounded to one refresh and one
-  download retry (at most two media GETs), and must preserve the original
-  signed resource identity.
-- Server-stream startup has one absolute 50-second budget across the first
-  media GET, Provider refresh, recovery GET, and first non-empty chunk.
-  Operations receive only the remaining budget. Exhaustion uses
-  `DOWNLOAD_STREAM_START_TIMEOUT`, closes the upstream, releases concurrency,
-  and does not continue refreshing. The budget stops applying once normal
-  stream iteration begins.
-- Large provider CDN downloads can be slow on the VPS if all bytes pass through the server.
-
-Known tension:
-
-- Browser-managed downloads save server bandwidth but can be blocked by popup/download restrictions.
-- Server attachment is stable but consumes server egress and can be much slower than a third-party site that hands the CDN URL directly to the browser.
-
-This candidate is not production behavior until its PR is reviewed, merged,
-and deployed. When changing this area, verify local Chrome and, in a separately
-approved deployment task, the production site. Do not assume localhost
-download behavior matches HTTPS production behavior. Do not infer fetch CORS
-support from a successful native browser navigation.
-
-### Web Concurrency Candidate
-
-The stacked `codex/web-concurrency-provider-isolation-v1` candidate tracks a
-`2 workers x 4 gthread` Gunicorn unit with the existing 60-second timeout in
-`ops/systemd/animeimages.service`. Web concurrency and Provider concurrency are
-separate: Single, Batch, and Provider-race TianTianJieXi calls share one
-cross-process Redis lease, so at most one real parse request reaches that
-upstream. Cache hits bypass the lease; a busy caller waits at most 250 ms and
-falls through the existing provider chain with a URL-free `provider_busy`
-event. The token-owned lease has a TTL and compare-and-delete release.
-
-Production must use Redis when TianTianJieXi is enabled. LocMem is only a
-single-process development fallback and is rejected by the production system
-check. The tracked unit has not been installed, so treat the current server as
-`PRODUCTION_UNIT_DRIFT` until an explicitly approved rollout verifies the live
-unit. Do not mutate production from a feature PR.
+The canonical evidence and deployment state are in
+`docs/research/service-worker-streaming-productionization-v1.md` and
+`docs/research/douyin-ultra-config-deploy-v1.md`. The current production SHA is
+`87afba321a2dc459b7daebcd1cc9eea6735b60ba`; the previous production rollback
+SHA is `5af0892bc7f01ec73a5a3c1ba1b55814364e5e6a`. Verify real browser behavior,
+not only route metadata or unit tests, before changing this contract.
 
 ## Production Deployment Notes
 
@@ -419,7 +353,7 @@ GALLERYDL_BINARY="/srv/animeimages/.venv/bin/python -m gallery_dl"
 
 ## Admin Release Management v1
 
-PR #17 and PR #18 are merged and deployed. `/admin/release-management/` is available in production, but v1 is deliberately main-only and record-only by default. See `docs/release-management.md` for the complete operating model.
+PR #17 and PR #18 are merged and deployed. `/admin/release-management/` is available in production, but v1 is deliberately record-only by default. See `docs/release-management.md` for the complete operating model.
 
 - Every production Web request reads local Git refs only. The page has no remote-refresh action, and `www-data` must not run `git fetch`.
 - Local `origin/main` and Tag refs are refreshed by the `ubuntu` deployment workflow or a separately controlled operations task.
@@ -438,14 +372,17 @@ PR #17 and PR #18 are merged and deployed. `/admin/release-management/` is avail
 
 ## Smoke Checklist For A New Codex Thread
 
-Before starting a new feature:
+Before starting a new feature from the long-lived product worktree:
 
 ```bash
-cd /Users/xingkong/Documents/Codex/2026-06-03/django-python-pycharm-codex-netlify/djangoProject
+cd /Users/xingkong/.codex/worktrees/2358/djangoProject
+git fetch --prune origin
 git status --short --branch
+git switch --detach origin/main
+git rev-list --left-right --count HEAD...origin/main
 git log --oneline --decorate --max-count=8
-.venv/bin/python manage.py check
-.venv/bin/python manage.py makemigrations --check --dry-run
+/Users/xingkong/Documents/Codex/2026-06-03/django-python-pycharm-codex-netlify/djangoProject/.venv/bin/python manage.py check
+/Users/xingkong/Documents/Codex/2026-06-03/django-python-pycharm-codex-netlify/djangoProject/.venv/bin/python manage.py makemigrations --check --dry-run
 bash -n ops/release-executor/animeimages-release-submit
 ./scripts/validate_release_executor.sh
 ```
@@ -478,8 +415,15 @@ If the change touches admin:
 
 User preference:
 
-- Small updates can be done locally on a branch.
-- Bigger modules should be pushed to GitHub branch for review.
+- `origin/main` is the only development baseline; production checkpoints and
+  historical feature branches are not new-task bases.
+- Use the retained product worktree sequentially, with only one active
+  development branch at a time.
+- Every concrete task uses its own branch and its own PR.
+- After a PR merges, verify the tree is clean, fetch, and switch the worktree to
+  detached latest `origin/main` before creating the next task branch.
+- Do not continue development on a merged task branch or combine unrelated
+  tasks in one PR.
 - Pushing a branch for review is allowed.
 - Opening a Pull Request requires user confirmation unless explicitly requested.
 - Do not open a PR until the user confirms the task is ready.
@@ -664,24 +608,23 @@ Not needed: <reason>
 - Do not save full signed CDN URLs, account credentials, cookies, Authorization headers, or provider manifest tokens in logs.
 - Do not move routine runtime settings back into `.env` if there is already an admin runtime model.
 - TikHub is historical/diagnostic and should not be reintroduced as the active Douyin ultra path without explicit approval.
+- A production SHA outside main ancestry is `PRODUCTION_CODE_DRIFT`, not an
+  alternate development baseline. Reconcile it through an audited PR promptly.
+- Production settings and persisted runtime values are not represented merely
+  by checking out the same code. Never claim environment parity without an
+  explicit runtime audit.
 
 ## Suggested Next Work
 
-Good next tasks from the current baseline:
+Good next tasks from the reconciled baseline:
 
-1. Keep `docs/codex-handoff.md` and `docs/current-version-status.md` aligned after each major merge.
-2. Review the batch parse service boundary created by PR #13 and remove residual `views.py` wrappers.
-   - Continue from `xhs_download/services/batch_parse/`; do not restart the extraction.
-   - Keep behavior stable and add focused tests around each moved boundary.
-3. Then split batch page JavaScript.
-   - Keep `/batch/` behavior stable.
-   - Move batch page JavaScript out of `static/js/app.js`.
-   - Separate settings modal, parse request lifecycle, result rendering, and download handoff logic.
-4. Keep Release Management v1 record-only until the versioned root-owned helper, systemd unit, and sudoers boundary are separately installed and a controlled pending job is independently approved and tested on production.
-   - Keep Tag/commit switching disabled.
-   - Do not add automatic migration rollback in v1.
-   - Do not give `www-data` GitHub credentials or Git write access.
-5. Provider Strategy v1 remains stabilization and smoke work.
-   - Keep TianTianJieXi/KuKuTool smoke fixtures healthy.
-   - Continue measuring browser handoff vs server attachment.
-   - Treat provider expansion as secondary to batch parse boundary cleanup.
+1. Deploy converged `main` only through a separate exact-SHA production task;
+   re-audit the retained PR #26/#28 user-facing differences before rollout.
+2. Apply the recommended GitHub main-protection settings through a separate,
+   reversible governance task with verified check names.
+3. Review branch-cleanup candidates without deleting checkpoints or research
+   evidence implicitly.
+4. Keep Release Management record-only until its separately reviewed executor
+   boundary is installed and accepted.
+5. Continue Provider stabilization from `origin/main`; do not add a new
+   Provider or download architecture while resolving operational regressions.

@@ -62,7 +62,7 @@ test("terminal failure stops polling and preserves the safe error code", async (
     assert.equal(pollCount, 1);
 });
 
-test("permanent pending state ends after five polls", async () => {
+test("permanent pending state uses the bounded continuation poll window", async () => {
     let pollCount = 0;
     const result = await reliability.runBoundedContinuation({
         initialPayload: {
@@ -82,6 +82,41 @@ test("permanent pending state ends after five polls", async () => {
         result.error_code,
         "DOUYIN_CONTINUATION_CLIENT_LIMIT",
     );
+});
+
+test("retry countdown values and labels stay local and bounded", () => {
+    assert.equal(reliability.normalizeRetryAfterSeconds("8"), 8);
+    assert.equal(reliability.normalizeRetryAfterSeconds(-3), 0);
+    assert.equal(reliability.normalizeRetryAfterSeconds(120), 60);
+    assert.equal(
+        reliability.retryButtonLabel(8),
+        "重新尝试超高清（8s）",
+    );
+    assert.equal(
+        reliability.retryButtonLabel(0),
+        "重新尝试超高清",
+    );
+    assert.equal(reliability.scopedRetrySeconds({
+        ultraEnabled: true,
+        currentSource: "source-a",
+        retrySource: "source-a",
+        deadlineMs: 9000,
+        nowMs: 2000,
+    }), 7);
+    assert.equal(reliability.scopedRetrySeconds({
+        ultraEnabled: true,
+        currentSource: "source-b",
+        retrySource: "source-a",
+        deadlineMs: 9000,
+        nowMs: 2000,
+    }), 0);
+    assert.equal(reliability.scopedRetrySeconds({
+        ultraEnabled: false,
+        currentSource: "source-a",
+        retrySource: "source-a",
+        deadlineMs: 9000,
+        nowMs: 2000,
+    }), 0);
 });
 
 test("missing token fails without making a poll request", async () => {
@@ -141,6 +176,23 @@ test("a bounded continuation failure preserves an already rendered fallback", ()
         resolved.continuation_error_code,
         "DOUYIN_CONTINUATION_CLIENT_LIMIT",
     );
+});
+
+test("a bounded continuation failure preserves retry cooldown metadata", () => {
+    const initial = {
+        status: "continuation_pending",
+        has_results: true,
+        html: "<div>native fallback</div>",
+    };
+    const resolved = reliability.resolveContinuationResult(initial, {
+        status: "failed",
+        message: "ultra unavailable",
+        retry_after_seconds: 7,
+    });
+
+    assert.equal(resolved.status, "success");
+    assert.equal(resolved.retry_after_seconds, 7);
+    assert.equal(resolved.continuation_message, "ultra unavailable");
 });
 
 test("a completed continuation replaces the rendered fallback", () => {

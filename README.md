@@ -6,6 +6,8 @@ AnimeImages 是一个 Django 素材解析下载项目，当前主线目标是把
 
 - [Codex 接手指南](docs/codex-handoff.md)
 - [当前版本状态](docs/current-version-status.md)
+- [生产行为基线](docs/production-behavior-baseline-v1.md)
+- [仓库治理规范](docs/repository-governance.md)
 - [Release Management 运维指南](docs/release-management.md)
 - [生产部署检查清单](docs/production-deploy-checklist.md)
 - [Provider Runtime Gates](docs/provider-runtime-gates.md)
@@ -29,7 +31,7 @@ AnimeImages 是一个 Django 素材解析下载项目，当前主线目标是把
 - 哔哩哔哩：保留公开视频基础 mp4 / 封面解析，短期不做大会员、Cookie、DASH 音视频合流。
 - 批量解析：`/batch/` 支持多链接解析，运行参数由 `BatchParseRuntimeSetting` 和 `.env` fallback 控制。
 - 通用 Provider：yt-dlp、gallery-dl 作为长尾平台能力，必须经过 capability gate、runtime gate、platform gate。
-- 下载策略：优先减少服务器中转流量；Provider 视频可走 browser-first / browser blob / server attachment fallback 等策略。
+- 下载策略：普通 TianTianJieXi / KuKuTool 视频由用户浏览器获取并保存，AnimeImages 不传输媒体正文；YouTube 合并、ZIP 等服务器生成文件继续走独立服务端流程。
 - 后台运维：Provider 设置、Provider Health Tests、下载运行配置、批量解析运行配置、日志中心、策略中心和 Release Management 均已接入后台。
 
 ## 本地运行
@@ -176,3 +178,7 @@ GALLERYDL_BINARY="/srv/animeimages/.venv/bin/python -m gallery_dl"
 - [图库素材](docs/image-library.md)
 
 历史方案和实验路线，例如 Policy Intelligence、自愈系统、自治治理等，仍保留在 `docs/` 中作为设计记录。新任务接手时以本 README、`docs/codex-handoff.md` 和 `docs/current-version-status.md` 为准。
+
+`origin/main` 是唯一开发基线，生产则由精确部署 SHA 和 checkpoint
+记录。合并 main 不等于部署；生产 hotfix 若尚未进入 main，应标记为
+`PRODUCTION_CODE_DRIFT` 并尽快通过审查 PR 收敛。

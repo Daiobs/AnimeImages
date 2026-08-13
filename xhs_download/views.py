@@ -66,6 +66,7 @@ from .services.common import (
 )
 from .services.env_config import (
     runtime_bool as env_runtime_bool,
+    runtime_default_int,
     runtime_float as env_runtime_float,
     runtime_int as env_runtime_int,
 )
@@ -90,6 +91,11 @@ from .services.douyin_continuation import (
     DouyinContinuationPendingError,
     issue_douyin_continuation_token,
     poll_douyin_continuation,
+)
+from .services.douyin_ultra_attempts import (
+    DouyinUltraAttemptAccountingError,
+    DouyinUltraAttemptController,
+    DouyinUltraAttemptRateLimitedError,
 )
 from .services.feedback_loop import build_feedback_loop_context
 from .services.approval_gate import (
@@ -165,11 +171,7 @@ from .services.provider_recovery import (
     refresh_tiantianjiexi_download_item,
 )
 from .services.registry import get_adapter_for_url, parse_media_page
-from .services.provider_manifest import (
-    PROVIDER_MANIFEST_EXPIRED,
-    build_provider_manifest_token,
-    provider_manifest_validation_status,
-)
+from .services.provider_manifest import build_provider_manifest_token
 from .services.observability import (
     provider_runtime_snapshot,
     record_download_request_log,
@@ -2918,89 +2920,6 @@ def log_download_request_event(
     )
 
 
-def build_download_stream_terminal_logger(
-    request,
-    *,
-    download_type,
-    media_items,
-    started_at,
-    route_info,
-):
-    state = {"logged": False}
-
-    def callback(status, snapshot, error=None):
-        if status not in {"completed", "failed"} or state["logged"]:
-            return
-        state["logged"] = True
-        actual_bytes = max(0, int(snapshot.get("yielded_bytes") or 0))
-        error_code = ""
-        error_message = ""
-        if status == "failed":
-            provider = str(
-                (media_items[0] if media_items else {}).get("provider") or ""
-            )
-            contract = observable_download_error(
-                error or XhsDownloadError("下载流提前结束"),
-                provider=provider,
-            )
-            error_code = str(
-                getattr(error, "error_code", "")
-                or contract["error_code"]
-            )
-            error_message = contract["message"]
-        log_download_request_event(
-            request,
-            download_type=download_type,
-            media_items=media_items,
-            status=(
-                ObservabilityStatus.SUCCESS
-                if status == "completed"
-                else ObservabilityStatus.FAILED
-            ),
-            started_at=started_at,
-            actual_bytes=actual_bytes,
-            error_code=error_code,
-            error=error,
-            error_message_short=error_message,
-            route_info=route_info,
-        )
-
-    callback.suppress = lambda: state.update(logged=True)
-    return callback
-
-
-def log_direct_route_selected(request, *, media_items, started_at, route_info):
-    provider = str(route_info.get("provider") or "")[:80]
-    if not provider:
-        provider = next(
-            (
-                str(item.get("provider") or "")[:80]
-                for item in media_items or ()
-                if isinstance(item, dict) and item.get("provider")
-            ),
-            "",
-        )
-    logger.info(
-        "download_direct_route_selected",
-        extra={
-            "item_count": len(media_items or ()),
-            "provider": provider,
-            "route_type": ROUTE_DIRECT,
-            "handoff_state": "route_selected",
-            "request_id": str(getattr(request, "request_id", "") or ""),
-        },
-    )
-    log_download_request_event(
-        request,
-        download_type="direct_route_selected",
-        media_items=media_items,
-        status=ObservabilityStatus.SUCCESS,
-        started_at=started_at,
-        actual_bytes=0,
-        route_info=route_info,
-    )
-
-
 def blocked_download_route_info(media_items, reason, error_code=""):
     estimated_bytes = estimated_media_items_bytes(media_items)
     return {
@@ -3191,7 +3110,30 @@ class SingleAttachmentStream:
         self.failed = False
         self.closed = False
         self.streaming_notified = False
-        self.telemetry.setdefault("yielded_bytes", 0)
+        self.stream_started_at = None
+        self.telemetry.setdefault("actual_yielded_bytes", 0)
+        self.telemetry.setdefault("chunk_index", 0)
+        self.telemetry.setdefault("exception_type", "")
+        self.telemetry.setdefault("generator_close_reason", "")
+        self.telemetry.setdefault("stream_elapsed_ms", 0)
+        self.telemetry.setdefault("upstream_response_closed", False)
+
+    def update_elapsed(self):
+        if self.stream_started_at is None:
+            return
+        self.telemetry["stream_elapsed_ms"] = max(
+            0,
+            int((time.monotonic() - self.stream_started_at) * 1000),
+        )
+
+    def record_chunk(self, chunk):
+        self.telemetry["chunk_index"] = int(
+            self.telemetry.get("chunk_index") or 0
+        ) + 1
+        self.telemetry["actual_yielded_bytes"] = int(
+            self.telemetry.get("actual_yielded_bytes") or 0
+        ) + len(chunk)
+        self.update_elapsed()
 
     def notify(self, status, error=None):
         try:
@@ -3208,26 +3150,41 @@ class SingleAttachmentStream:
         if self.completed or self.failed:
             return
         self.completed = True
+        self.telemetry["generator_close_reason"] = "completed"
+        self.update_elapsed()
         self.notify("completed")
 
     def start(self):
         if self.streaming_notified:
             return
         self.streaming_notified = True
+        self.stream_started_at = time.monotonic()
+        self.telemetry["stream_started"] = True
         self.notify("streaming")
 
     def fail(self, error):
         if self.completed or self.failed:
             return
         self.failed = True
+        self.telemetry["exception_type"] = str(
+            self.telemetry.get("exception_type")
+            or type(error).__name__
+        )[:120]
+        self.telemetry["generator_close_reason"] = str(
+            self.telemetry.get("generator_close_reason")
+            or "stream_exception"
+        )[:80]
+        self.update_elapsed()
         self.notify("failed", error)
 
     def __iter__(self):
         total = 0
+        terminal_error = None
+        completed = False
         try:
             self.start()
             total += len(self.first_chunk)
-            self.telemetry["yielded_bytes"] = total
+            self.record_chunk(self.first_chunk)
             yield self.first_chunk
             for chunk in self.upstream_chunks:
                 if not chunk:
@@ -3235,38 +3192,55 @@ class SingleAttachmentStream:
                 total += len(chunk)
                 if total > self.max_bytes:
                     raise XhsDownloadError("资源超过允许的大小限制")
-                self.telemetry["yielded_bytes"] = total
+                self.record_chunk(chunk)
                 yield chunk
         except GeneratorExit:
-            self.fail(
-                DownloadStreamStatusError(
-                    "下载连接提前关闭。",
-                    error_code="UPSTREAM_CONNECTION_ERROR",
-                )
+            self.telemetry["exception_type"] = "GeneratorExit"
+            self.telemetry["generator_close_reason"] = (
+                "downstream_consumer_closed"
+            )
+            terminal_error = DownloadStreamStatusError(
+                "下载连接提前关闭。",
+                error_code="UPSTREAM_CONNECTION_ERROR",
             )
             raise
         except BaseException as error:
-            self.fail(error)
+            self.telemetry["exception_type"] = type(error).__name__
+            self.telemetry["generator_close_reason"] = "stream_exception"
+            terminal_error = error
             raise
         else:
-            self.complete()
+            completed = True
         finally:
-            self.close()
+            self.close(error=terminal_error, completed=completed)
 
-    def close(self):
+    def close(self, *, error=None, completed=False):
         if self.closed:
             return
         self.closed = True
-        if not self.completed and not self.failed:
-            self.fail(
-                DownloadStreamStatusError(
-                    "下载连接提前关闭。",
-                    error_code="UPSTREAM_CONNECTION_ERROR",
-                )
-            )
         try:
             self.upstream.close()
         finally:
+            raw = getattr(self.upstream, "raw", None)
+            raw_closed = getattr(raw, "closed", None)
+            self.telemetry["upstream_response_closed"] = (
+                True if raw_closed is None else bool(raw_closed)
+            )
+            if completed:
+                self.complete()
+            elif error is not None:
+                self.fail(error)
+            elif not self.completed and not self.failed:
+                self.telemetry["exception_type"] = "GeneratorExit"
+                self.telemetry["generator_close_reason"] = (
+                    "response_closed_before_completion"
+                )
+                self.fail(
+                    DownloadStreamStatusError(
+                        "下载连接提前关闭。",
+                        error_code="UPSTREAM_CONNECTION_ERROR",
+                    )
+                )
             if callable(self.close_callback):
                 try:
                     self.close_callback()
@@ -3646,6 +3620,8 @@ def build_single_attachment_response(
         )
 
         telemetry["recovered"] = bool(recovered)
+        expected_bytes = content_length or estimated_media_items_bytes([item])
+        telemetry["expected_bytes"] = expected_bytes
         stream = SingleAttachmentStream(
             upstream=upstream,
             upstream_chunks=upstream_chunks,
@@ -3677,7 +3653,7 @@ def build_single_attachment_response(
             response["Content-Length"] = str(content_length)
         response["X-Saved-Count"] = "1"
         response["X-Failed-Count"] = "0"
-        return response, content_length or estimated_media_items_bytes([item])
+        return response, expected_bytes
     except Exception:
         upstream.close()
         raise
@@ -3711,28 +3687,12 @@ def apply_route_v3_metadata(request, media_items, route_info, *, requested_mode=
     return updated
 
 
-def download_items_provider_manifest_error(media_items):
+def download_items_have_invalid_provider_manifest(media_items):
     for item in media_items or ():
         if isinstance(item, dict) and item.get("provider"):
-            if provider_manifest_allows_public_download(item):
-                continue
-            manifest_status = provider_manifest_validation_status(item)
-            if manifest_status == PROVIDER_MANIFEST_EXPIRED:
-                return {
-                    "error_code": "PROVIDER_MANIFEST_EXPIRED",
-                    "message": "解析结果已过期，请重新解析后下载。",
-                    "status": 410,
-                }
-            return {
-                "error_code": "PROVIDER_MANIFEST_REJECTED",
-                "message": "Provider 签名资源未通过校验。",
-                "status": 400,
-            }
-    return None
-
-
-def download_items_have_invalid_provider_manifest(media_items):
-    return download_items_provider_manifest_error(media_items) is not None
+            if not provider_manifest_allows_public_download(item):
+                return True
+    return False
 
 
 def check_preview_request_limits(request):
@@ -4064,6 +4024,18 @@ def log_parse_request_event(
     logger.info(event, extra=extra)
 
 
+@require_GET
+def ordinary_media_service_worker_view(request):
+    worker_path = settings.BASE_DIR / "static" / "js" / "ordinary_media_download_sw.js"
+    if not worker_path.is_file():
+        raise Http404("Service Worker is unavailable.")
+    response = FileResponse(worker_path.open("rb"), content_type="text/javascript; charset=utf-8")
+    response["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response["Service-Worker-Allowed"] = "/"
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
 def search_view(request, platform_key="home"):
     return render(
         request,
@@ -4169,6 +4141,10 @@ def apply_search_result_to_context(
                 "下载时将在服务端合并音频和视频。"
             )
     if prefer_ultra_hd and result.platform == "douyin":
+        context["ultra_retry_after_seconds"] = max(
+            0,
+            int(result_metadata.get("ultra_retry_after_seconds") or 0),
+        )
         ultra_provider = (
             result_metadata.get("ultra_race_winner")
             or result_metadata.get("selected_provider")
@@ -4195,6 +4171,11 @@ def apply_search_result_to_context(
             context["provider_notice"] = (
                 "本次未命中超高清上游，已自动回退本地解析。"
             )
+            if context["ultra_retry_after_seconds"]:
+                context["provider_notice"] = (
+                    "超高清上游刚刚超时，已返回普通清晰度；约 "
+                    f"{context['ultra_retry_after_seconds']} 秒后可重新尝试超高清。"
+                )
     if provider_notice_override is not None:
         context["provider_notice"] = provider_notice_override
     context["post_type"] = display_context["post_type"]
@@ -4244,8 +4225,14 @@ def build_search_results_context(request, platform_key="home"):
         return context, 200
 
     parse_started_at = time.monotonic()
+    try:
+        query_platform_id = str(
+            getattr(get_adapter_for_url(query), "platform_id", "") or ""
+        )
+    except XhsError:
+        query_platform_id = ""
 
-    if query_uses_third_party_provider(query):
+    if query_platform_id == "third_party":
         if not third_party_provider_is_available(request):
             access = provider_access_summary(PROVIDER_THIRD_PARTY, request)
             if access["hard_enabled"] and access["effective_mode"] in {
@@ -4310,7 +4297,7 @@ def build_search_results_context(request, platform_key="home"):
             limit = consume_fixed_window(
                 "third-party-provider-minute-ip",
                 get_client_identity(request),
-                settings.THIRD_PARTY_RATE_LIMIT_PER_MINUTE,
+                runtime_default_int("THIRD_PARTY_RATE_LIMIT_PER_MINUTE", 10),
                 60,
             )
         except Exception:
@@ -4397,40 +4384,7 @@ def build_search_results_context(request, platform_key="home"):
             )
             return context, 429
 
-    if prefer_ultra_hd:
-        try:
-            limit = consume_fixed_window(
-                "ultra-hd-minute-ip",
-                get_client_identity(request),
-                settings.ULTRA_HD_RATE_LIMIT_PER_MINUTE,
-                60,
-            )
-        except Exception:
-            logger.exception("Ultra-HD rate-limit cache failed")
-            prefer_ultra_hd = False
-            context["prefer_ultra_hd"] = False
-            context["provider_notice"] = "超高清成本控制暂时不可用，本次已回退本地解析。"
-            limit = None
-        if limit is not None and not limit.allowed:
-            context["error_message"] = "超高清解析请求过于频繁，请稍后再试。"
-            context["retry_after"] = limit.retry_after
-            log_parse_request_event(
-                request,
-                "media_parse_rate_limited",
-                query=query,
-                platform_key=platform_key,
-                requested_ultra_hd=requested_ultra_hd,
-                prefer_ultra_hd=prefer_ultra_hd,
-                requested_youtube_merge=requested_youtube_merge,
-                prefer_youtube_merge=prefer_youtube_merge,
-                duration_ms=(time.monotonic() - parse_started_at) * 1000,
-                context=context,
-                status=ObservabilityStatus.RATE_LIMITED,
-                error_code="RATE_LIMITED",
-                error_message_short=context["error_message"],
-            )
-            return context, 429
-    elif requested_ultra_hd:
+    if not prefer_ultra_hd and requested_ultra_hd:
         context["provider_notice"] = "当前环境未向访客开放超高清 Provider，本次使用本地解析。"
 
     if requested_youtube_merge and not prefer_youtube_merge:
@@ -4442,13 +4396,30 @@ def build_search_results_context(request, platform_key="home"):
             if prefer_ultra_hd
             else ""
         )
+        client_identity = get_client_identity(request)
         parse_options = {"prefer_ultra_hd": prefer_ultra_hd}
         if prefer_youtube_merge:
             parse_options["prefer_youtube_merge"] = True
         if client_country_code:
             parse_options["client_country_code"] = client_country_code
-        if prefer_ultra_hd and request_wants_results_partial(request):
+        if (
+            prefer_ultra_hd
+            and query_platform_id == "douyin"
+            and request_wants_results_partial(request)
+        ):
             parse_options["allow_continuation"] = True
+            parse_options["continuation_identity"] = client_identity
+        if prefer_ultra_hd and query_platform_id == "douyin":
+            parse_options["ultra_attempt_controller"] = (
+                DouyinUltraAttemptController(
+                    client_identity=client_identity,
+                    limit=runtime_default_int(
+                        "ULTRA_HD_RATE_LIMIT_PER_MINUTE",
+                        10,
+                    ),
+                    consume=consume_fixed_window,
+                )
+            )
         result = parse_media_page(query, **parse_options)
         apply_search_result_to_context(
             context,
@@ -4478,8 +4449,7 @@ def build_search_results_context(request, platform_key="home"):
                 platform_key=platform_key,
                 prefer_ultra_hd=prefer_ultra_hd,
                 provider_notice_override=(
-                    "已先返回当前可用资源；更高清版本仍在本次请求内"
-                    "自动续查。"
+                    "已暂时返回普通清晰度，超高清资源仍在后台解析…"
                 ),
             )
         context["continuation_pending"] = True
@@ -4510,6 +4480,43 @@ def build_search_results_context(request, platform_key="home"):
             context=context,
             status=ObservabilityStatus.SUCCESS,
         )
+    except DouyinUltraAttemptRateLimitedError as error:
+        context["error_message"] = str(error)
+        context["retry_after"] = error.retry_after
+        log_parse_request_event(
+            request,
+            "media_parse_rate_limited",
+            query=query,
+            platform_key=platform_key,
+            requested_ultra_hd=requested_ultra_hd,
+            prefer_ultra_hd=prefer_ultra_hd,
+            requested_youtube_merge=requested_youtube_merge,
+            prefer_youtube_merge=prefer_youtube_merge,
+            duration_ms=(time.monotonic() - parse_started_at) * 1000,
+            context=context,
+            status=ObservabilityStatus.RATE_LIMITED,
+            error_code="RATE_LIMITED",
+            error_message_short=context["error_message"],
+        )
+        return context, 429
+    except DouyinUltraAttemptAccountingError as error:
+        context["error_message"] = str(error)
+        log_parse_request_event(
+            request,
+            "media_parse_failed",
+            query=query,
+            platform_key=platform_key,
+            requested_ultra_hd=requested_ultra_hd,
+            prefer_ultra_hd=prefer_ultra_hd,
+            requested_youtube_merge=requested_youtube_merge,
+            prefer_youtube_merge=prefer_youtube_merge,
+            duration_ms=(time.monotonic() - parse_started_at) * 1000,
+            context=context,
+            status=ObservabilityStatus.FAILED,
+            error_code="RATE_LIMIT_CACHE_ERROR",
+            error_message_short=context["error_message"],
+        )
+        return context, 503
     except XhsProviderTimeoutError as error:
         context["error_message"] = str(error)
         log_parse_request_event(
@@ -4593,6 +4600,10 @@ def render_results_partial_response(request, context, status_code=200):
         "result_theme": context.get("result_theme") or "home",
         "target_page": context.get("target_page") or None,
         "message": context.get("error_message") or "",
+        "retry_after_seconds": context.get(
+            "ultra_retry_after_seconds",
+            0,
+        ),
     }
     if context.get("continuation_pending"):
         response_payload.update(
@@ -4681,6 +4692,7 @@ def douyin_continuation_view(request):
                 "status": outcome.status,
                 "error_code": outcome.error_code,
                 "message": outcome.message,
+                "retry_after_seconds": outcome.retry_after_seconds,
             }
         )
         response["X-Error-Code"] = outcome.error_code
@@ -4689,6 +4701,12 @@ def douyin_continuation_view(request):
 
     if platform_key not in PLATFORM_PAGE_CONFIG:
         platform_key = "home"
+    quality_label = str(
+        outcome.result.video_assets[0].quality_label
+        if outcome.result.video_assets
+        else ""
+    ).strip()
+    upgrade_label = quality_label or "超高清"
     context = {
         **get_download_settings_context(platform_key, request),
         **build_result_display_context(
@@ -4700,7 +4718,7 @@ def douyin_continuation_view(request):
         "error_message": None,
         "platform_notice": "",
         "provider_notice": (
-            "超高清资源已完成，结果已自动更新。"
+            f"超高清解析完成，已自动升级为{upgrade_label}。"
         ),
     }
     html = render_to_string(
@@ -4716,7 +4734,7 @@ def douyin_continuation_view(request):
             "has_content": True,
             "base_filename": context.get("base_filename") or "douyin",
             "result_theme": context.get("result_theme") or "tiktok",
-            "message": "",
+            "message": context["provider_notice"],
         }
     )
     response["Cache-Control"] = "no-store"
@@ -5067,12 +5085,11 @@ def download_prepare_api(request):
             status=400,
             error_code="DOWNLOAD_PREPARE_INVALID_ITEM",
         )
-    manifest_error = download_items_provider_manifest_error(media_items)
-    if manifest_error:
+    if download_items_have_invalid_provider_manifest(media_items):
         return download_guard_error_response(
-            manifest_error["message"],
-            status=manifest_error["status"],
-            error_code=manifest_error["error_code"],
+            "Provider 签名资源未通过校验。",
+            status=400,
+            error_code="PROVIDER_MANIFEST_REJECTED",
         )
 
     runtime_setting = get_download_runtime_setting()
@@ -5300,29 +5317,26 @@ def download_stream_view(request, token):
         "upstream_attempt_count": 0,
         "recovery_used": False,
         "recovered": bool(handoff.recovered),
-        "yielded_bytes": 0,
     }
     logged_statuses = set()
-    terminal_log_callback = build_download_stream_terminal_logger(
-        request,
-        download_type="single_stream",
-        media_items=media_items,
-        started_at=started_at,
-        route_info={
-            "route_type": ROUTE_PROXY,
-            "download_strategy": "server_single_attachment",
-        },
-    )
+    terminal_request_logged = False
+    stream_log_route_info = {
+        "route_type": ROUTE_PROXY,
+        "download_strategy": "server_single_attachment",
+    }
 
     def stream_status_callback(status, snapshot, error=None):
+        nonlocal terminal_request_logged
         error_code = ""
+        error_contract = {}
         if status == "failed":
             error_code = str(getattr(error, "error_code", "") or "")
+            error_contract = observable_download_error(
+                error,
+                provider=str(item.get("provider") or ""),
+            )
             if not error_code:
-                error_code = observable_download_error(
-                    error,
-                    provider=str(item.get("provider") or ""),
-                )["error_code"]
+                error_code = error_contract["error_code"]
         try:
             update_download_status(
                 handoff.ticket_id,
@@ -5374,6 +5388,23 @@ def download_stream_view(request, token):
                 snapshot.get("upstream_attempt_count") or 0
             ),
             "recovery_used": bool(snapshot.get("recovery_used")),
+            "expected_bytes": int(snapshot.get("expected_bytes") or 0),
+            "actual_yielded_bytes": int(
+                snapshot.get("actual_yielded_bytes") or 0
+            ),
+            "chunk_index": int(snapshot.get("chunk_index") or 0),
+            "stream_elapsed_ms": int(
+                snapshot.get("stream_elapsed_ms") or 0
+            ),
+            "exception_type": str(
+                snapshot.get("exception_type") or ""
+            )[:120],
+            "generator_close_reason": str(
+                snapshot.get("generator_close_reason") or ""
+            )[:80],
+            "upstream_response_closed": bool(
+                snapshot.get("upstream_response_closed")
+            ),
             "final_status": status,
             "request_id": str(
                 getattr(request, "request_id", "") or ""
@@ -5391,22 +5422,45 @@ def download_stream_view(request, token):
             "completed",
         }:
             logger.info(event_name, extra=log_fields)
-        terminal_log_callback(status, snapshot, error)
 
-    manifest_error = download_items_provider_manifest_error(media_items)
-    if manifest_error:
+        if status in {"completed", "failed"} and not terminal_request_logged:
+            terminal_request_logged = True
+            log_download_request_event(
+                request,
+                download_type="single_stream",
+                media_items=media_items,
+                status=(
+                    ObservabilityStatus.SUCCESS
+                    if status == "completed"
+                    else ObservabilityStatus.FAILED
+                ),
+                started_at=started_at,
+                actual_bytes=int(
+                    snapshot.get("actual_yielded_bytes") or 0
+                ),
+                error_code=error_code,
+                error=error,
+                error_message_short=(
+                    error_contract.get("message", "")
+                    if status == "failed"
+                    else ""
+                ),
+                route_info=stream_log_route_info,
+            )
+
+    if download_items_have_invalid_provider_manifest(media_items):
         stream_status_callback(
             "failed",
             telemetry,
             DownloadStreamStatusError(
-                manifest_error["message"],
-                error_code=manifest_error["error_code"],
+                "Provider 签名资源未通过校验。",
+                error_code="PROVIDER_MANIFEST_REJECTED",
             ),
         )
         return download_guard_error_response(
-            manifest_error["message"],
-            status=manifest_error["status"],
-            error_code=manifest_error["error_code"],
+            "Provider 签名资源未通过校验。",
+            status=400,
+            error_code="PROVIDER_MANIFEST_REJECTED",
         )
 
     runtime_setting = get_download_runtime_setting()
@@ -5464,7 +5518,7 @@ def download_stream_view(request, token):
         concurrency_acquired = True
         stream_status_callback("connecting", telemetry)
 
-        stream_response, estimated_bytes = build_single_attachment_response(
+        stream_response, expected_bytes = build_single_attachment_response(
             item,
             handoff.base_filename,
             allow_recovery=not handoff.recovery_used,
@@ -5480,7 +5534,7 @@ def download_stream_view(request, token):
         within_limit, bytes_error_code = record_download_archive_bytes(
             identity,
             None,
-            estimated_bytes,
+            expected_bytes,
         )
         if not within_limit:
             stream = getattr(
@@ -5572,12 +5626,11 @@ def download_images_api(request):
         reason="默认兼容旧 ZIP 下载流程",
         record_healing=download_mode not in routed_download_modes,
     )
-    manifest_error = download_items_provider_manifest_error(media_items)
-    if manifest_error:
+    if download_items_have_invalid_provider_manifest(media_items):
         route_info = blocked_download_route_info(
             media_items,
-            manifest_error["message"],
-            manifest_error["error_code"],
+            "Provider 签名资源未通过校验",
+            "PROVIDER_MANIFEST_REJECTED",
         )
         log_download_request_event(
             request,
@@ -5585,17 +5638,13 @@ def download_images_api(request):
             media_items=media_items,
             status=ObservabilityStatus.FAILED,
             started_at=started_at,
-            error_code=manifest_error["error_code"],
-            error=ValueError(manifest_error["message"]),
+            error_code="PROVIDER_MANIFEST_REJECTED",
+            error=ValueError("Provider 签名资源未通过校验"),
             route_info=route_info,
         )
         return JsonResponse(
-            {
-                "status": "error",
-                "error_code": manifest_error["error_code"],
-                "message": manifest_error["message"],
-            },
-            status=manifest_error["status"],
+            {"status": "error", "message": "Provider 签名资源未通过校验"},
+            status=400,
         )
 
     runtime_setting = get_download_runtime_setting()
@@ -5686,10 +5735,13 @@ def download_images_api(request):
         )
 
     if download_mode in routed_download_modes and route_info.get("route_type") == ROUTE_DIRECT:
-        log_direct_route_selected(
+        log_download_request_event(
             request,
+            download_type=route_info.get("route_type", "auto"),
             media_items=media_items,
+            status=ObservabilityStatus.SUCCESS,
             started_at=started_at,
+            actual_bytes=0,
             route_info=route_info,
         )
         return JsonResponse(
@@ -5823,18 +5875,10 @@ def download_images_api(request):
 
     try:
         if route_info.get("download_strategy") == "server_single_attachment":
-            stream_terminal_logger = build_download_stream_terminal_logger(
-                request,
-                download_type="single_file",
-                media_items=media_items,
-                started_at=started_at,
-                route_info=route_info,
-            )
             try:
-                single_response, estimated_bytes = build_single_attachment_response(
+                single_response, actual_bytes = build_single_attachment_response(
                     media_items[0],
                     data.get("base_filename", "xhs"),
-                    status_callback=stream_terminal_logger,
                 )
             except Exception as error:
                 recovery_decision = proxy_failure_recovery(media_items, route_info, error)
@@ -5848,10 +5892,13 @@ def download_images_api(request):
                         trigger="proxy_failure",
                         error=error,
                     )
-                    log_direct_route_selected(
+                    log_download_request_event(
                         request,
+                        download_type=ROUTE_DIRECT,
                         media_items=media_items,
+                        status=ObservabilityStatus.SUCCESS,
                         started_at=started_at,
+                        actual_bytes=0,
                         route_info=recovered_route,
                     )
                     return JsonResponse(
@@ -5906,10 +5953,9 @@ def download_images_api(request):
             within_limit, bytes_error_code = record_download_archive_bytes(
                 identity,
                 None,
-                estimated_bytes,
+                actual_bytes,
             )
             if not within_limit:
-                stream_terminal_logger.suppress()
                 single_response.close()
                 log_download_request_event(
                     request,
@@ -5917,7 +5963,7 @@ def download_images_api(request):
                     media_items=media_items,
                     status=ObservabilityStatus.RATE_LIMITED,
                     started_at=started_at,
-                    actual_bytes=0,
+                    actual_bytes=actual_bytes,
                     error_code=bytes_error_code or "RATE_LIMITED",
                     route_info=blocked_download_route_info(
                         media_items,
@@ -5929,6 +5975,15 @@ def download_images_api(request):
                     "今日下载流量已达到限制，请稍后再试。",
                     error_code=bytes_error_code or "RATE_LIMITED",
                 )
+            log_download_request_event(
+                request,
+                download_type="single_file",
+                media_items=media_items,
+                status=ObservabilityStatus.SUCCESS,
+                started_at=started_at,
+                actual_bytes=actual_bytes,
+                route_info=route_info,
+            )
             return single_response
 
         if download_mode == "server":
@@ -5984,6 +6039,40 @@ def download_images_api(request):
         except Exception as error:
             recovery_decision = zip_failure_recovery(media_items, route_info, error)
             recovered_route = recovery_decision.route_info
+            if recovered_route and recovered_route.get("route_type") == ROUTE_DIRECT:
+                recovered_route["recovery"] = recovery_decision.log_fields()
+                recovered_route = attach_self_healing_event(
+                    request,
+                    recovered_route,
+                    media_items,
+                    trigger="zip_failure",
+                    error=error,
+                )
+                log_download_request_event(
+                    request,
+                    download_type=ROUTE_DIRECT,
+                    media_items=media_items,
+                    status=ObservabilityStatus.SUCCESS,
+                    started_at=started_at,
+                    actual_bytes=0,
+                    route_info=recovered_route,
+                )
+                return JsonResponse(
+                    {
+                        "status": "routed",
+                        "route_type": recovered_route.get("route_type"),
+                        "route_reason": recovered_route.get("route_reason"),
+                        "download_strategy": recovered_route.get("download_strategy"),
+                        "items": recovered_route.get("items", []),
+                        "warnings": recovered_route.get("warnings", []),
+                        "estimated_bytes": recovered_route.get("estimated_bytes", 0),
+                        "server_egress_estimated_bytes": recovered_route.get("server_egress_estimated_bytes", 0),
+                        "browser_egress_estimated_bytes": recovered_route.get("browser_egress_estimated_bytes", 0),
+                        "strategy_version": recovered_route.get("strategy_version", "recovery"),
+                        "confidence": recovered_route.get("confidence", 0),
+                        "routing_score": recovered_route.get("routing_score", 0),
+                    }
+                )
             if recovered_route and recovered_route.get("route_type") == ROUTE_PROXY:
                 recovered_route["recovery"] = recovery_decision.log_fields()
                 recovered_route = attach_self_healing_event(
@@ -5993,20 +6082,10 @@ def download_images_api(request):
                     trigger="zip_failure",
                     error=error,
                 )
-                recovery_stream_terminal_logger = (
-                    build_download_stream_terminal_logger(
-                        request,
-                        download_type="single_file",
-                        media_items=media_items,
-                        started_at=started_at,
-                        route_info=recovered_route,
-                    )
-                )
                 try:
-                    single_response, estimated_bytes = build_single_attachment_response(
+                    single_response, actual_bytes = build_single_attachment_response(
                         media_items[0],
                         data.get("base_filename", "xhs"),
-                        status_callback=recovery_stream_terminal_logger,
                     )
                 except Exception as proxy_error:
                     proxy_recovery = proxy_failure_recovery(media_items, recovered_route, proxy_error)
@@ -6046,10 +6125,9 @@ def download_images_api(request):
                 within_limit, bytes_error_code = record_download_archive_bytes(
                     identity,
                     None,
-                    estimated_bytes,
+                    actual_bytes,
                 )
                 if not within_limit:
-                    recovery_stream_terminal_logger.suppress()
                     single_response.close()
                     blocked_route = blocked_download_route_info(
                         media_items,
@@ -6072,7 +6150,7 @@ def download_images_api(request):
                         media_items=media_items,
                         status=ObservabilityStatus.RATE_LIMITED,
                         started_at=started_at,
-                        actual_bytes=0,
+                        actual_bytes=actual_bytes,
                         error_code=bytes_error_code or "RATE_LIMITED",
                         route_info=blocked_route,
                     )
@@ -6080,6 +6158,17 @@ def download_images_api(request):
                         "今日下载流量已达到限制，请稍后再试。",
                         error_code=bytes_error_code or "RATE_LIMITED",
                     )
+
+                recovered_route["recovery"] = recovery_decision.log_fields()
+                log_download_request_event(
+                    request,
+                    download_type="single_file",
+                    media_items=media_items,
+                    status=ObservabilityStatus.SUCCESS,
+                    started_at=started_at,
+                    actual_bytes=actual_bytes,
+                    route_info=recovered_route,
+                )
                 return single_response
 
             blocked_route = blocked_download_route_info(
@@ -6303,24 +6392,19 @@ def create_download_task_api(request):
             error_code="NO_MEDIA_SELECTED",
         )
         return JsonResponse({"status": "error", "message": "没有选择资源"}, status=400)
-    manifest_error = download_items_provider_manifest_error(media_items)
-    if manifest_error:
+    if download_items_have_invalid_provider_manifest(media_items):
         log_download_request_event(
             request,
             download_type="task_create",
             media_items=media_items,
             status=ObservabilityStatus.FAILED,
             started_at=started_at,
-            error_code=manifest_error["error_code"],
-            error=ValueError(manifest_error["message"]),
+            error_code="PROVIDER_MANIFEST_REJECTED",
+            error=ValueError("Provider 签名资源未通过校验"),
         )
         return JsonResponse(
-            {
-                "status": "error",
-                "error_code": manifest_error["error_code"],
-                "message": manifest_error["message"],
-            },
-            status=manifest_error["status"],
+            {"status": "error", "message": "Provider 签名资源未通过校验"},
+            status=400,
         )
 
     runtime_setting = get_download_runtime_setting()

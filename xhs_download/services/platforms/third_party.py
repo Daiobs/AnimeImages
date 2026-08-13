@@ -20,7 +20,6 @@ from .gallerydl_generic import GalleryDlGenericProvider, GalleryDlResultNormaliz
 from .kukutool_generic import KukutoolGenericProvider, KukutoolResultNormalizer
 from .tiantianjiexi_generic import (
     TianTianJieXiGenericProvider,
-    TianTianJieXiProviderBusyError,
     TianTianJieXiResultNormalizer,
 )
 from .ytdlp_generic import YtDlpGenericProvider, YtDlpResultNormalizer
@@ -774,27 +773,6 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
                     attempts,
                     total_duration_ms=elapsed_ms(parse_started_at),
                 )
-            except TianTianJieXiProviderBusyError as error:
-                duration_ms = elapsed_ms(started_at)
-                attempts.append(
-                    provider_attempt_record(
-                        provider_id,
-                        "provider_busy",
-                        duration_ms,
-                        error,
-                    )
-                )
-                failures.append((provider_id, error))
-                logger.info(
-                    "third_party_provider_busy",
-                    extra={
-                        "provider": provider_id,
-                        "platform": getattr(rule, "platform_id", ""),
-                        "duration_ms": duration_ms,
-                        "error_type": type(error).__name__,
-                    },
-                )
-                continue
             except XhsProviderTimeoutError as error:
                 duration_ms = elapsed_ms(started_at)
                 attempts.append(

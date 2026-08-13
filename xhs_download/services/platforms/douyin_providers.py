@@ -10,7 +10,7 @@ import inspect
 import json
 import logging
 import re
-from time import monotonic, time
+from time import monotonic, sleep, time
 from urllib.parse import urljoin, urlsplit
 
 import requests
@@ -29,8 +29,9 @@ from ..douyin_continuation import (
 from ..env_config import runtime_bool
 from ..provider_settings import get_platform_provider_settings, normalize_provider_order
 from ..provider_manifest import build_provider_manifest_token
-from .douyin_kukutool import DouyinKukuToolProvider
+from .douyin_kukutool import DouyinKukuToolProvider, submit_provider_task
 from .tiantianjiexi_generic import (
+    TianTianJieXiFailureCooldownError,
     TianTianJieXiGenericProvider,
     quality_rank as tiantianjiexi_quality_rank,
     size_value as tiantianjiexi_size_value,
@@ -200,6 +201,17 @@ class DouyinParseContext:
     deadline_monotonic: float = 0
     client_country_code: str = ""
     allow_continuation: bool = False
+    continuation_identity: str = ""
+    ultra_attempt_controller: object | None = None
+    native_fallback_future: object | None = None
+    ultra_retry_after_seconds: int = 0
+    continuation_deadline_monotonic: float = 0
+
+    def record_ultra_retry_after(self, retry_after):
+        self.ultra_retry_after_seconds = max(
+            self.ultra_retry_after_seconds,
+            max(0, int(retry_after or 0)),
+        )
 
 
 @dataclass(frozen=True)
@@ -831,7 +843,32 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             cache_hit=False,
         )
         try:
-            payload = self.provider.parse(source_url, timeout_seconds=timeout_seconds)
+            parse_options = {"timeout_seconds": timeout_seconds}
+            if context.ultra_attempt_controller is not None:
+                parse_options["attempt_controller"] = (
+                    context.ultra_attempt_controller
+                )
+            provider_parse_parameters = inspect.signature(
+                self.provider.parse
+            ).parameters
+            if (
+                context.allow_continuation
+                and context.continuation_deadline_monotonic
+                and (
+                    "deadline_monotonic" in provider_parse_parameters
+                    or any(
+                        parameter.kind == inspect.Parameter.VAR_KEYWORD
+                        for parameter in provider_parse_parameters.values()
+                    )
+                )
+            ):
+                parse_options["deadline_monotonic"] = (
+                    context.continuation_deadline_monotonic
+                )
+            payload = self.provider.parse(source_url, **parse_options)
+        except TianTianJieXiFailureCooldownError as error:
+            context.record_ultra_retry_after(error.retry_after_seconds)
+            raise
         except Exception as error:
             log_provider_failure(
                 self.name,
@@ -1047,10 +1084,23 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
             race_loser_count=max(0, enabled_count - 1),
             **result_fields,
         )
-        return self.decorate_result(
-            result,
-            effective_provider_name,
-            enabled_count,
+        retry_after = 0
+        if not self.result_is_strong_candidate(result):
+            retry_after = max(
+                context.ultra_retry_after_seconds,
+                getattr(
+                    context.ultra_attempt_controller,
+                    "cooldown_retry_after",
+                    0,
+                ),
+            )
+        return with_parse_metadata(
+            self.decorate_result(
+                result,
+                effective_provider_name,
+                enabled_count,
+            ),
+            ultra_retry_after_seconds=retry_after,
         )
 
     def decorate_result(self, result, provider_name, enabled_count):
@@ -1082,16 +1132,93 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
             raise XhsProviderTimeoutError("抖音超清 Provider 超时")
 
         race_started_at = time()
-        future_to_provider = {
-            DOUYIN_ULTRA_EXECUTOR.submit(provider.parse, adapter, context): provider
-            for provider in enabled_providers
-        }
+        controller = context.ultra_attempt_controller
+        if controller is not None:
+            controller.configure_providers(
+                getattr(provider, "name", "unknown")
+                for provider in enabled_providers
+            )
+
         continuation = None
         if context.allow_continuation:
             continuation = DouyinContinuationCoordinator(
                 len(enabled_providers),
                 settle_seconds=self.weak_candidate_settle_seconds,
+                source_identity=context.aweme_id,
+                client_identity=context.continuation_identity,
+                retry_after_getter=lambda: max(
+                    context.ultra_retry_after_seconds,
+                    getattr(
+                        context.ultra_attempt_controller,
+                        "cooldown_retry_after",
+                        0,
+                    ),
+                ),
             )
+
+        native_budget = min(
+            max(
+                0.1,
+                float(
+                    getattr(
+                        self.provider_settings,
+                        "ultra_native_timeout_seconds",
+                        3.0,
+                    )
+                    or 0
+                ),
+            ),
+            max(0.1, deadline - monotonic()),
+        )
+        native_future = submit_provider_task(
+            "douyin-native",
+            max(
+                1,
+                int(
+                    getattr(
+                        self.provider_settings,
+                        "native_executor_workers",
+                        4,
+                    )
+                    or 1
+                ),
+            ),
+            max(
+                1,
+                int(
+                    getattr(
+                        self.provider_settings,
+                        "native_max_pending_tasks",
+                        8,
+                    )
+                    or 1
+                ),
+            ),
+            get_fast_native_result,
+            adapter,
+            context,
+            native_budget,
+        )
+        if native_future is None:
+            native_future = DOUYIN_ULTRA_EXECUTOR.submit(
+                get_fast_native_result,
+                adapter,
+                context,
+                native_budget,
+            )
+            log_provider_event(
+                "douyin_native_local_capacity_full",
+                "native_fast",
+                context,
+                race_started_at,
+            )
+        context.native_fallback_future = native_future
+
+        future_to_provider = {
+            DOUYIN_ULTRA_EXECUTOR.submit(provider.parse, adapter, context): provider
+            for provider in enabled_providers
+        }
+        if continuation:
             for future, provider in future_to_provider.items():
                 provider_name = getattr(
                     provider,
@@ -1119,18 +1246,11 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
         best_result = None
         best_provider_name = ""
         best_score = (0, 0)
-        weak_settle_deadline = 0
+        native_fallback_result = None
         try:
             while future_to_provider:
                 now = monotonic()
-                if best_result and weak_settle_deadline and now >= weak_settle_deadline:
-                    break
-                active_deadline = (
-                    min(deadline, weak_settle_deadline)
-                    if best_result and weak_settle_deadline
-                    else deadline
-                )
-                remaining_budget = active_deadline - now
+                remaining_budget = deadline - now
                 if remaining_budget <= 0:
                     break
                 done, _pending = wait(
@@ -1146,6 +1266,13 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
                     try:
                         result = future.result()
                         if result and result.assets:
+                            effective_provider = self.result_provider_name(
+                                result,
+                                provider_name,
+                            )
+                            if effective_provider not in self.external_provider_names:
+                                native_fallback_result = result
+                                continue
                             score = self.result_score(result)
                             if not best_result or score > best_score:
                                 best_result = result
@@ -1182,11 +1309,6 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
                                     context,
                                     race_started_at,
                                 )
-                            if not weak_settle_deadline:
-                                weak_settle_deadline = min(
-                                    deadline,
-                                    monotonic() + self.weak_candidate_settle_seconds,
-                                )
                     except XhsProviderTimeoutError as error:
                         last_timeout_error = error
                         log_provider_failure(
@@ -1209,10 +1331,12 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
         finally:
             for future, provider in tuple(future_to_provider.items()):
                 provider_name = getattr(provider, "name", type(provider).__name__)
-                cancelled = future.cancel()
+                cancelled = False if continuation else future.cancel()
                 log_provider_event(
                     (
-                        "douyin_ultra_race_loser_cancelled"
+                        "douyin_ultra_race_continuation_active"
+                        if continuation
+                        else "douyin_ultra_race_loser_cancelled"
                         if cancelled
                         else "douyin_ultra_race_loser_completed"
                     ),
@@ -1221,6 +1345,52 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
                     race_started_at,
                     race_winner=best_provider_name,
                     race_loser_count=max(0, len(enabled_providers) - 1),
+                )
+
+        if controller is not None:
+            context.record_ultra_retry_after(
+                controller.cooldown_retry_after
+            )
+            controller.raise_if_blocked()
+
+        if (
+            controller is not None
+            and controller.started
+            and not self.result_is_strong_candidate(best_result)
+            and monotonic() < deadline
+        ):
+            sleep(max(0.0, deadline - monotonic()))
+
+        if (
+            controller is not None
+            and not controller.started
+            and native_fallback_result is None
+            and not native_future.done()
+        ):
+            try:
+                native_fallback_result = native_future.result(
+                    timeout=max(
+                        0.0,
+                        min(native_budget, deadline - monotonic()),
+                    )
+                )
+            except Exception as error:
+                log_provider_failure(
+                    "native_fast",
+                    context,
+                    error,
+                    race_started_at,
+                )
+
+        if native_fallback_result is None and native_future.done():
+            try:
+                native_fallback_result = native_future.result(timeout=0)
+            except Exception as error:
+                log_provider_failure(
+                    "native_fast",
+                    context,
+                    error,
+                    race_started_at,
                 )
 
         if best_result:
@@ -1243,10 +1413,34 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
                         race_started_at,
                     )
                 if continuation_pending:
+                    log_provider_event(
+                        "douyin_ultra_foreground_timeout_native_fallback",
+                        "native",
+                        context,
+                        race_started_at,
+                        retry_after=context.ultra_retry_after_seconds,
+                    )
                     raise DouyinContinuationPendingError(
                         continuation.task_id,
                         fallback_result=(
-                            continued_result
+                            with_parse_metadata(
+                                self.decorate_result(
+                                    native_fallback_result,
+                                    "native",
+                                    len(enabled_providers),
+                                ),
+                                ultra_retry_after_seconds=max(
+                                    context.ultra_retry_after_seconds,
+                                    getattr(
+                                        controller,
+                                        "cooldown_retry_after",
+                                        0,
+                                    ),
+                                ),
+                            )
+                            if native_fallback_result is not None
+                            else None
+                            or continued_result
                             or self.decorate_result(
                                 best_result,
                                 best_provider_name,
@@ -1255,6 +1449,17 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
                         ),
                     )
                 continuation.abandon()
+            if (
+                not self.result_is_strong_candidate(best_result)
+                and native_fallback_result is not None
+            ):
+                return self.finalize_result(
+                    native_fallback_result,
+                    "native",
+                    len(enabled_providers),
+                    context,
+                    race_started_at,
+                )
             return self.finalize_result(
                 best_result,
                 best_provider_name,
@@ -1288,11 +1493,45 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
                     race_started_at,
                 )
             if continuation_pending:
+                log_provider_event(
+                    "douyin_ultra_foreground_timeout_native_fallback",
+                    "native",
+                    context,
+                    race_started_at,
+                    retry_after=context.ultra_retry_after_seconds,
+                )
                 raise DouyinContinuationPendingError(
                     continuation.task_id,
-                    fallback_result=continued_result,
+                    fallback_result=(
+                        with_parse_metadata(
+                            self.decorate_result(
+                                native_fallback_result,
+                                "native",
+                                len(enabled_providers),
+                            ),
+                            ultra_retry_after_seconds=max(
+                                context.ultra_retry_after_seconds,
+                                getattr(
+                                    controller,
+                                    "cooldown_retry_after",
+                                    0,
+                                ),
+                            ),
+                        )
+                        if native_fallback_result is not None
+                        else continued_result
+                    ),
                 )
             continuation.abandon()
+
+        if native_fallback_result:
+            return self.finalize_result(
+                native_fallback_result,
+                "native",
+                len(enabled_providers),
+                context,
+                race_started_at,
+            )
 
         log_provider_event(
             "douyin_ultra_race_exhausted",
