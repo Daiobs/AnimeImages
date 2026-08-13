@@ -154,4 +154,3 @@ is unexplained and blocks reconciliation.
 - GitHub branch-protection changes are recommendation-only in this task.
 - PR #27 and PR #32 may be closed as superseded only after the reconciliation
   PR is merged and main CI succeeds.
-

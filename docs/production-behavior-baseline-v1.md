@@ -115,4 +115,3 @@ evidence that production at `87afba3` already exposes it.
 - Merging main does not imply production deployment.
 - A production hotfix that is not in main is `PRODUCTION_CODE_DRIFT` and is a P0
   governance item until reconciled.
-
