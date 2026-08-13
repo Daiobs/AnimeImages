@@ -1,4 +1,7 @@
 import json
+import hashlib
+import logging
+import math
 import secrets
 import threading
 import time
@@ -19,8 +22,9 @@ from .provider_manifest import provider_manifest_is_valid
 
 DOUYIN_CONTINUATION_SALT = "xhs_download.douyin_continuation.v1"
 DOUYIN_CONTINUATION_TTL_SECONDS = 15
+DOUYIN_CONTINUATION_RESULT_GRACE_SECONDS = 2
 DOUYIN_CONTINUATION_POLL_AFTER_MS = 1500
-DOUYIN_CONTINUATION_MAX_POLLS = 5
+DOUYIN_CONTINUATION_MAX_POLLS = 14
 DOUYIN_CONTINUATION_MAX_CACHE_BYTES = 32 * 1024
 DOUYIN_CONTINUATION_ALLOWED_PROVIDERS = frozenset(
     {"kukutool", "tiantianjiexi"}
@@ -35,8 +39,12 @@ DOUYIN_CONTINUATION_METADATA_KEYS = frozenset(
         "ultra_race_provider_count",
         "kukutool_candidate_count",
         "tiantianjiexi_candidate_count",
+        "ultra_retry_after_seconds",
     }
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def douyin_media_host_suffixes():
@@ -46,10 +54,11 @@ def douyin_media_host_suffixes():
 
 
 class DouyinContinuationPendingError(XhsProviderTimeoutError):
-    def __init__(self, task_id, *, fallback_result=None):
+    def __init__(self, task_id, *, fallback_result=None, attached=False):
         super().__init__("超高清资源仍在处理中，正在自动续查。")
         self.task_id = str(task_id or "")
         self.fallback_result = fallback_result
+        self.attached = bool(attached)
 
 
 class DouyinContinuationError(ValueError):
@@ -66,6 +75,7 @@ class DouyinContinuationOutcome:
     message: str = ""
     error_code: str = ""
     poll_after_ms: int = DOUYIN_CONTINUATION_POLL_AFTER_MS
+    retry_after_seconds: int = 0
 
 
 def build_douyin_continuation_cache_key(task_id):
@@ -74,6 +84,56 @@ def build_douyin_continuation_cache_key(task_id):
 
 def build_douyin_continuation_poll_key(task_id):
     return f"douyin-continuation:polls:{task_id}"
+
+
+def build_douyin_continuation_source_key(source_identity, client_identity):
+    digest = hashlib.sha256(
+        f"{source_identity}:{client_identity}".encode("utf-8")
+    ).hexdigest()[:32]
+    return f"douyin-continuation:source:{digest}"
+
+
+def find_active_douyin_continuation(source_identity, client_identity):
+    if not source_identity or not client_identity:
+        return ""
+    source_key = build_douyin_continuation_source_key(
+        source_identity,
+        client_identity,
+    )
+    try:
+        index = cache.get(source_key)
+        task_id = str(
+            index.get("task_id") if isinstance(index, dict) else ""
+        )
+        record = (
+            cache.get(build_douyin_continuation_cache_key(task_id))
+            if task_id
+            else None
+        )
+    except Exception:
+        logger.exception("douyin_ultra_continuation_index_read_failed")
+        return ""
+    if isinstance(record, dict) and record.get("status") in {
+        "pending",
+        "success",
+    }:
+        logger.info(
+            "douyin_ultra_continuation_attached",
+            extra={"status": str(record.get("status") or "pending")},
+        )
+        return task_id
+    claimed_at = float(index.get("claimed_at") or 0) if isinstance(index, dict) else 0
+    if task_id and not isinstance(record, dict) and claimed_at >= time.time() - 2:
+        logger.info(
+            "douyin_ultra_continuation_attached",
+            extra={"status": "starting"},
+        )
+        return task_id
+    try:
+        cache.delete(source_key)
+    except Exception:
+        pass
+    return ""
 
 
 def safe_continuation_metadata(metadata):
@@ -226,7 +286,15 @@ def deserialize_douyin_continuation_result(payload):
 
 
 class DouyinContinuationCoordinator:
-    def __init__(self, provider_count, *, settle_seconds=1.0):
+    def __init__(
+        self,
+        provider_count,
+        *,
+        settle_seconds=1.0,
+        source_identity="",
+        client_identity="",
+        retry_after_getter=None,
+    ):
         self.task_id = uuid4().hex
         self.provider_count = max(1, int(provider_count or 1))
         self.settle_seconds = max(0.0, float(settle_seconds or 0))
@@ -243,7 +311,74 @@ class DouyinContinuationCoordinator:
         self._best_provider = ""
         self._best_is_strong = False
         self._candidate_ready_at = 0.0
-        self._write_record()
+        self._retry_at = 0.0
+        self._retry_after_getter = retry_after_getter
+        self._source_index_key = (
+            build_douyin_continuation_source_key(
+                source_identity,
+                client_identity,
+            )
+            if source_identity and client_identity
+            else ""
+        )
+        if self._source_index_key:
+            try:
+                claimed = cache.add(
+                    self._source_index_key,
+                    {
+                        "task_id": self.task_id,
+                        "claimed_at": self.created_at,
+                    },
+                    timeout=(
+                        DOUYIN_CONTINUATION_TTL_SECONDS
+                        + DOUYIN_CONTINUATION_RESULT_GRACE_SECONDS
+                    ),
+                )
+            except Exception:
+                claimed = False
+            if not claimed:
+                existing_task_id = find_active_douyin_continuation(
+                    source_identity,
+                    client_identity,
+                )
+                if existing_task_id:
+                    self._active = False
+                    self._available = False
+                    raise DouyinContinuationPendingError(
+                        existing_task_id,
+                        attached=True,
+                    )
+                try:
+                    cache.delete(self._source_index_key)
+                    claimed = cache.add(
+                        self._source_index_key,
+                        {
+                            "task_id": self.task_id,
+                            "claimed_at": self.created_at,
+                        },
+                        timeout=(
+                            DOUYIN_CONTINUATION_TTL_SECONDS
+                            + DOUYIN_CONTINUATION_RESULT_GRACE_SECONDS
+                        ),
+                    )
+                except Exception:
+                    claimed = False
+                if not claimed:
+                    self._active = False
+                    self._available = False
+                    raise DouyinContinuationError(
+                        "解析续查协调服务暂时不可用，请稍后重试。",
+                        error_code="DOUYIN_CONTINUATION_CACHE_ERROR",
+                        status_code=503,
+                    )
+        if not self._write_record():
+            self._active = False
+            self._delete_cache_state()
+            raise DouyinContinuationError(
+                "解析续查协调服务暂时不可用，请稍后重试。",
+                error_code="DOUYIN_CONTINUATION_CACHE_ERROR",
+                status_code=503,
+            )
 
     @property
     def available(self):
@@ -251,6 +386,19 @@ class DouyinContinuationCoordinator:
             return self._available
 
     def _record(self):
+        if callable(self._retry_after_getter):
+            try:
+                retry_after = max(
+                    0,
+                    int(self._retry_after_getter() or 0),
+                )
+            except Exception:
+                retry_after = 0
+            if retry_after:
+                self._retry_at = max(
+                    self._retry_at,
+                    time.time() + retry_after,
+                )
         status = "pending"
         if self._best_payload and (
             self._best_is_strong
@@ -268,6 +416,7 @@ class DouyinContinuationCoordinator:
             "provider": self._best_provider,
             "best_is_strong": self._best_is_strong,
             "candidate_ready_at": self._candidate_ready_at,
+            "retry_at": self._retry_at,
         }
         if self._best_payload:
             record["result"] = self._best_payload
@@ -286,16 +435,54 @@ class DouyinContinuationCoordinator:
         if len(encoded) > DOUYIN_CONTINUATION_MAX_CACHE_BYTES:
             self._available = False
             return False
+        remaining_ttl = math.ceil(
+            self.created_at
+            + DOUYIN_CONTINUATION_TTL_SECONDS
+            + DOUYIN_CONTINUATION_RESULT_GRACE_SECONDS
+            - time.time()
+        )
+        if remaining_ttl <= 0:
+            self._available = False
+            return False
         try:
             cache.set(
                 build_douyin_continuation_cache_key(self.task_id),
                 record,
-                timeout=DOUYIN_CONTINUATION_TTL_SECONDS,
+                timeout=remaining_ttl,
             )
+            if self._source_index_key:
+                if record["status"] in {"pending", "success"}:
+                    cache.set(
+                        self._source_index_key,
+                        {
+                            "task_id": self.task_id,
+                            "claimed_at": self.created_at,
+                        },
+                        timeout=remaining_ttl,
+                    )
+                else:
+                    self._delete_source_index_if_owned()
         except Exception:
             self._available = False
             return False
         return True
+
+    def _delete_source_index_if_owned(self):
+        if not self._source_index_key:
+            return
+        index = cache.get(self._source_index_key)
+        if (
+            isinstance(index, dict)
+            and str(index.get("task_id") or "") == self.task_id
+        ):
+            cache.delete(self._source_index_key)
+
+    def _delete_cache_state(self):
+        try:
+            cache.delete(build_douyin_continuation_cache_key(self.task_id))
+            self._delete_source_index_if_owned()
+        except Exception:
+            pass
 
     def capture_future(
         self,
@@ -377,12 +564,7 @@ class DouyinContinuationCoordinator:
     def abandon(self):
         with self._lock:
             self._active = False
-            try:
-                cache.delete(
-                    build_douyin_continuation_cache_key(self.task_id)
-                )
-            except Exception:
-                pass
+            self._delete_cache_state()
 
 
 def issue_douyin_continuation_token(
@@ -407,7 +589,10 @@ def load_douyin_continuation_token(token, *, client_identity):
         payload = signing.loads(
             str(token or ""),
             salt=DOUYIN_CONTINUATION_SALT,
-            max_age=DOUYIN_CONTINUATION_TTL_SECONDS,
+            max_age=(
+                DOUYIN_CONTINUATION_TTL_SECONDS
+                + DOUYIN_CONTINUATION_RESULT_GRACE_SECONDS
+            ),
         )
     except signing.SignatureExpired as error:
         raise DouyinContinuationError(
@@ -441,10 +626,24 @@ def load_douyin_continuation_token(token, *, client_identity):
 def consume_douyin_continuation_poll(task_id):
     key = build_douyin_continuation_poll_key(task_id)
     try:
-        cache.add(key, 0, timeout=DOUYIN_CONTINUATION_TTL_SECONDS)
+        cache.add(
+            key,
+            0,
+            timeout=(
+                DOUYIN_CONTINUATION_TTL_SECONDS
+                + DOUYIN_CONTINUATION_RESULT_GRACE_SECONDS
+            ),
+        )
         poll_count = cache.incr(key)
     except ValueError:
-        cache.set(key, 1, timeout=DOUYIN_CONTINUATION_TTL_SECONDS)
+        cache.set(
+            key,
+            1,
+            timeout=(
+                DOUYIN_CONTINUATION_TTL_SECONDS
+                + DOUYIN_CONTINUATION_RESULT_GRACE_SECONDS
+            ),
+        )
         poll_count = 1
     except Exception as error:
         raise DouyinContinuationError(
@@ -465,7 +664,7 @@ def poll_douyin_continuation(token, *, client_identity):
         return (
             DouyinContinuationOutcome(
                 status="timeout",
-                message="超高清解析续查已结束，请重新尝试。",
+                message="已返回普通清晰度，超高清解析本次未完成。",
                 error_code="DOUYIN_CONTINUATION_POLL_LIMIT",
             ),
             platform_key,
@@ -483,13 +682,15 @@ def poll_douyin_continuation(token, *, client_identity):
         return (
             DouyinContinuationOutcome(
                 status="timeout",
-                message="解析续查已结束，请重新尝试。",
+                message="已返回普通清晰度，超高清解析本次未完成。",
                 error_code="DOUYIN_CONTINUATION_NOT_FOUND",
             ),
             platform_key,
         )
 
     status = str(record.get("status") or "pending")
+    retry_at = float(record.get("retry_at") or 0)
+    retry_after = max(0, math.ceil(retry_at - time.time()))
     result_payload = record.get("result")
     if status == "success":
         try:
@@ -503,25 +704,56 @@ def poll_douyin_continuation(token, *, client_identity):
                 ),
                 platform_key,
             )
+        logger.info(
+            "douyin_ultra_continuation_upgraded",
+            extra={
+                "provider": str(record.get("provider") or "unknown")[:40],
+                "quality": str(
+                    result.video_assets[0].quality_label
+                    if result.video_assets
+                    else ""
+                )[:80],
+            },
+        )
         return (
-            DouyinContinuationOutcome(status="success", result=result),
+            DouyinContinuationOutcome(
+                status="success",
+                result=result,
+                message="超高清解析完成，结果已自动升级。",
+            ),
             platform_key,
         )
     if status == "failed":
+        logger.info(
+            "douyin_ultra_continuation_exhausted",
+            extra={
+                "status": "failed",
+                "retry_after": retry_after,
+            },
+        )
         return (
             DouyinContinuationOutcome(
                 status="failed",
-                message="超高清解析未能完成，请重新尝试。",
+                message="已返回普通清晰度，超高清解析本次未完成。",
                 error_code="DOUYIN_CONTINUATION_FAILED",
+                retry_after_seconds=retry_after,
             ),
             platform_key,
         )
     if status == "timeout":
+        logger.info(
+            "douyin_ultra_continuation_exhausted",
+            extra={
+                "status": "timeout",
+                "retry_after": retry_after,
+            },
+        )
         return (
             DouyinContinuationOutcome(
                 status="timeout",
-                message="超高清解析超过续查时间限制，请重新尝试。",
+                message="已返回普通清晰度，超高清解析本次未完成。",
                 error_code="DOUYIN_CONTINUATION_TIMEOUT",
+                retry_after_seconds=retry_after,
             ),
             platform_key,
         )

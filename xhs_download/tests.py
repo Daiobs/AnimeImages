@@ -6278,6 +6278,7 @@ class XhsDownloadViewTests(TestCase):
 
     @override_settings(
         ULTRA_HD_PROVIDER_ENABLED=True,
+        ULTRA_HD_RATE_LIMIT_PER_MINUTE=10,
         KUKUTOOL_PROVIDER_ENABLED=True,
         TIKHUB_API_KEY="secret",
     )
@@ -6300,11 +6301,14 @@ class XhsDownloadViewTests(TestCase):
         response = Client().get("/results/", {"q": "https://www.douyin.com/video/123", "ultra_hd": "1"})
 
         self.assertEqual(response.status_code, 200)
-        mock_parse.assert_called_once_with(
-            "https://www.douyin.com/video/123",
-            prefer_ultra_hd=True,
-            client_country_code="CN",
-        )
+        mock_parse.assert_called_once()
+        query, = mock_parse.call_args.args
+        parse_options = mock_parse.call_args.kwargs
+        self.assertEqual(query, "https://www.douyin.com/video/123")
+        self.assertTrue(parse_options["prefer_ultra_hd"])
+        self.assertEqual(parse_options["client_country_code"], "CN")
+        controller = parse_options["ultra_attempt_controller"]
+        self.assertEqual(controller.limit, 10)
         self.assertContains(response, "本次未命中超高清上游，已自动回退本地解析。")
         self.assertContains(response, 'id="ultra-hd-request-input"')
         self.assertContains(response, 'value="1"')
@@ -13187,11 +13191,29 @@ class AdminObservabilityMvpTests(TestCase):
     )
     @patch("xhs_download.views.get_kukutool_provider_health", return_value={"available": True})
     @patch("xhs_download.views.consume_fixed_window")
-    def test_parse_rate_limit_writes_rate_limited_log(self, mock_limit, _mock_health):
+    @patch("xhs_download.views.parse_media_page")
+    def test_parse_rate_limit_writes_rate_limited_log(
+        self,
+        mock_parse,
+        mock_limit,
+        _mock_health,
+    ):
         setting = ProviderRuntimeSetting.load()
         setting.douyin_ultra_mode = ProviderAccessMode.PUBLIC
         setting.save(update_fields=["douyin_ultra_mode", "updated_at"])
-        mock_limit.return_value = Mock(allowed=False, retry_after=30)
+        mock_limit.return_value = LimitResult(
+            allowed=False,
+            current=2,
+            limit=1,
+            retry_after=30,
+        )
+
+        def start_fresh_provider(_query, **options):
+            controller = options["ultra_attempt_controller"]
+            controller.configure_providers(("tiantianjiexi",))
+            controller.begin_provider("tiantianjiexi")
+
+        mock_parse.side_effect = start_fresh_provider
 
         response = Client().get(
             "/tiktok/results/",

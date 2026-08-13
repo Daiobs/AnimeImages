@@ -91,6 +91,11 @@ from .services.douyin_continuation import (
     issue_douyin_continuation_token,
     poll_douyin_continuation,
 )
+from .services.douyin_ultra_attempts import (
+    DouyinUltraAttemptAccountingError,
+    DouyinUltraAttemptController,
+    DouyinUltraAttemptRateLimitedError,
+)
 from .services.feedback_loop import build_feedback_loop_context
 from .services.approval_gate import (
     approve_policy_change,
@@ -4135,6 +4140,10 @@ def apply_search_result_to_context(
                 "下载时将在服务端合并音频和视频。"
             )
     if prefer_ultra_hd and result.platform == "douyin":
+        context["ultra_retry_after_seconds"] = max(
+            0,
+            int(result_metadata.get("ultra_retry_after_seconds") or 0),
+        )
         ultra_provider = (
             result_metadata.get("ultra_race_winner")
             or result_metadata.get("selected_provider")
@@ -4161,6 +4170,11 @@ def apply_search_result_to_context(
             context["provider_notice"] = (
                 "本次未命中超高清上游，已自动回退本地解析。"
             )
+            if context["ultra_retry_after_seconds"]:
+                context["provider_notice"] = (
+                    "超高清上游刚刚超时，已返回普通清晰度；约 "
+                    f"{context['ultra_retry_after_seconds']} 秒后可重新尝试超高清。"
+                )
     if provider_notice_override is not None:
         context["provider_notice"] = provider_notice_override
     context["post_type"] = display_context["post_type"]
@@ -4210,8 +4224,14 @@ def build_search_results_context(request, platform_key="home"):
         return context, 200
 
     parse_started_at = time.monotonic()
+    try:
+        query_platform_id = str(
+            getattr(get_adapter_for_url(query), "platform_id", "") or ""
+        )
+    except XhsError:
+        query_platform_id = ""
 
-    if query_uses_third_party_provider(query):
+    if query_platform_id == "third_party":
         if not third_party_provider_is_available(request):
             access = provider_access_summary(PROVIDER_THIRD_PARTY, request)
             if access["hard_enabled"] and access["effective_mode"] in {
@@ -4363,40 +4383,7 @@ def build_search_results_context(request, platform_key="home"):
             )
             return context, 429
 
-    if prefer_ultra_hd:
-        try:
-            limit = consume_fixed_window(
-                "ultra-hd-minute-ip",
-                get_client_identity(request),
-                settings.ULTRA_HD_RATE_LIMIT_PER_MINUTE,
-                60,
-            )
-        except Exception:
-            logger.exception("Ultra-HD rate-limit cache failed")
-            prefer_ultra_hd = False
-            context["prefer_ultra_hd"] = False
-            context["provider_notice"] = "超高清成本控制暂时不可用，本次已回退本地解析。"
-            limit = None
-        if limit is not None and not limit.allowed:
-            context["error_message"] = "超高清解析请求过于频繁，请稍后再试。"
-            context["retry_after"] = limit.retry_after
-            log_parse_request_event(
-                request,
-                "media_parse_rate_limited",
-                query=query,
-                platform_key=platform_key,
-                requested_ultra_hd=requested_ultra_hd,
-                prefer_ultra_hd=prefer_ultra_hd,
-                requested_youtube_merge=requested_youtube_merge,
-                prefer_youtube_merge=prefer_youtube_merge,
-                duration_ms=(time.monotonic() - parse_started_at) * 1000,
-                context=context,
-                status=ObservabilityStatus.RATE_LIMITED,
-                error_code="RATE_LIMITED",
-                error_message_short=context["error_message"],
-            )
-            return context, 429
-    elif requested_ultra_hd:
+    if not prefer_ultra_hd and requested_ultra_hd:
         context["provider_notice"] = "当前环境未向访客开放超高清 Provider，本次使用本地解析。"
 
     if requested_youtube_merge and not prefer_youtube_merge:
@@ -4408,13 +4395,27 @@ def build_search_results_context(request, platform_key="home"):
             if prefer_ultra_hd
             else ""
         )
+        client_identity = get_client_identity(request)
         parse_options = {"prefer_ultra_hd": prefer_ultra_hd}
         if prefer_youtube_merge:
             parse_options["prefer_youtube_merge"] = True
         if client_country_code:
             parse_options["client_country_code"] = client_country_code
-        if prefer_ultra_hd and request_wants_results_partial(request):
+        if (
+            prefer_ultra_hd
+            and query_platform_id == "douyin"
+            and request_wants_results_partial(request)
+        ):
             parse_options["allow_continuation"] = True
+            parse_options["continuation_identity"] = client_identity
+        if prefer_ultra_hd and query_platform_id == "douyin":
+            parse_options["ultra_attempt_controller"] = (
+                DouyinUltraAttemptController(
+                    client_identity=client_identity,
+                    limit=settings.ULTRA_HD_RATE_LIMIT_PER_MINUTE,
+                    consume=consume_fixed_window,
+                )
+            )
         result = parse_media_page(query, **parse_options)
         apply_search_result_to_context(
             context,
@@ -4444,8 +4445,7 @@ def build_search_results_context(request, platform_key="home"):
                 platform_key=platform_key,
                 prefer_ultra_hd=prefer_ultra_hd,
                 provider_notice_override=(
-                    "已先返回当前可用资源；更高清版本仍在本次请求内"
-                    "自动续查。"
+                    "已暂时返回普通清晰度，超高清资源仍在后台解析…"
                 ),
             )
         context["continuation_pending"] = True
@@ -4476,6 +4476,43 @@ def build_search_results_context(request, platform_key="home"):
             context=context,
             status=ObservabilityStatus.SUCCESS,
         )
+    except DouyinUltraAttemptRateLimitedError as error:
+        context["error_message"] = str(error)
+        context["retry_after"] = error.retry_after
+        log_parse_request_event(
+            request,
+            "media_parse_rate_limited",
+            query=query,
+            platform_key=platform_key,
+            requested_ultra_hd=requested_ultra_hd,
+            prefer_ultra_hd=prefer_ultra_hd,
+            requested_youtube_merge=requested_youtube_merge,
+            prefer_youtube_merge=prefer_youtube_merge,
+            duration_ms=(time.monotonic() - parse_started_at) * 1000,
+            context=context,
+            status=ObservabilityStatus.RATE_LIMITED,
+            error_code="RATE_LIMITED",
+            error_message_short=context["error_message"],
+        )
+        return context, 429
+    except DouyinUltraAttemptAccountingError as error:
+        context["error_message"] = str(error)
+        log_parse_request_event(
+            request,
+            "media_parse_failed",
+            query=query,
+            platform_key=platform_key,
+            requested_ultra_hd=requested_ultra_hd,
+            prefer_ultra_hd=prefer_ultra_hd,
+            requested_youtube_merge=requested_youtube_merge,
+            prefer_youtube_merge=prefer_youtube_merge,
+            duration_ms=(time.monotonic() - parse_started_at) * 1000,
+            context=context,
+            status=ObservabilityStatus.FAILED,
+            error_code="RATE_LIMIT_CACHE_ERROR",
+            error_message_short=context["error_message"],
+        )
+        return context, 503
     except XhsProviderTimeoutError as error:
         context["error_message"] = str(error)
         log_parse_request_event(
@@ -4559,6 +4596,10 @@ def render_results_partial_response(request, context, status_code=200):
         "result_theme": context.get("result_theme") or "home",
         "target_page": context.get("target_page") or None,
         "message": context.get("error_message") or "",
+        "retry_after_seconds": context.get(
+            "ultra_retry_after_seconds",
+            0,
+        ),
     }
     if context.get("continuation_pending"):
         response_payload.update(
@@ -4647,6 +4688,7 @@ def douyin_continuation_view(request):
                 "status": outcome.status,
                 "error_code": outcome.error_code,
                 "message": outcome.message,
+                "retry_after_seconds": outcome.retry_after_seconds,
             }
         )
         response["X-Error-Code"] = outcome.error_code
@@ -4655,6 +4697,12 @@ def douyin_continuation_view(request):
 
     if platform_key not in PLATFORM_PAGE_CONFIG:
         platform_key = "home"
+    quality_label = str(
+        outcome.result.video_assets[0].quality_label
+        if outcome.result.video_assets
+        else ""
+    ).strip()
+    upgrade_label = quality_label or "超高清"
     context = {
         **get_download_settings_context(platform_key, request),
         **build_result_display_context(
@@ -4666,7 +4714,7 @@ def douyin_continuation_view(request):
         "error_message": None,
         "platform_notice": "",
         "provider_notice": (
-            "超高清资源已完成，结果已自动更新。"
+            f"超高清解析完成，已自动升级为{upgrade_label}。"
         ),
     }
     html = render_to_string(
@@ -4682,7 +4730,7 @@ def douyin_continuation_view(request):
             "has_content": True,
             "base_filename": context.get("base_filename") or "douyin",
             "result_theme": context.get("result_theme") or "tiktok",
-            "message": "",
+            "message": context["provider_notice"],
         }
     )
     response["Cache-Control"] = "no-store"

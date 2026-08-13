@@ -1,4 +1,5 @@
 import logging
+import math
 import time
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
@@ -8,6 +9,11 @@ from django.core.cache import cache
 
 from ..assets import MediaAsset, ParseResult
 from ..common import XhsProviderTimeoutError, clean_filename
+from ..douyin_ultra_attempts import (
+    DouyinUltraAttemptAccountingError,
+    DouyinUltraAttemptRateLimitedError,
+    DouyinUltraAttemptSupersededError,
+)
 from ..env_config import (
     runtime_bool,
     runtime_float,
@@ -15,7 +21,7 @@ from ..env_config import (
     runtime_str,
 )
 from ..provider_manifest import build_provider_manifest_token
-from ..rate_limits import acquire_concurrency, consume_fixed_window, release_concurrency
+from ..rate_limits import acquire_concurrency, release_concurrency, reserve_fixed_window
 from .kukutool_generic import (
     canonicalize_source_url,
     integer_value,
@@ -42,6 +48,12 @@ class TianTianJieXiAuthError(TianTianJieXiApiError):
 
 class TianTianJieXiRateLimitError(TianTianJieXiApiError):
     pass
+
+
+class TianTianJieXiFailureCooldownError(XhsProviderTimeoutError):
+    def __init__(self, retry_after_seconds=0):
+        super().__init__("天天解析刚刚失败，请稍后再试")
+        self.retry_after_seconds = max(0, int(retry_after_seconds or 0))
 
 
 def build_payload_cache_key(source_key):
@@ -376,26 +388,111 @@ class TianTianJieXiGenericProvider:
         except Exception:
             logger.exception("tiantianjiexi_payload_cache_write_failed", extra={"provider": PROVIDER_ID})
 
-    def failure_cache_hit(self, source_key):
+    def failure_cache_status(self, source_key):
         try:
-            reason = cache.get(build_failure_cache_key(source_key))
+            value = cache.get(build_failure_cache_key(source_key))
         except Exception:
             logger.exception("tiantianjiexi_failure_cache_read_failed", extra={"provider": PROVIDER_ID})
-            return True
-        if reason:
+            ttl_seconds = max(
+                1,
+                runtime_int("TIANTIANJIEXI_FAILURE_CACHE_TTL_SECONDS", 8),
+            )
+            return {
+                "hit": True,
+                "reason": "cache_unavailable",
+                "retry_after_seconds": ttl_seconds,
+            }
+        if value:
             try:
                 cache.add(FAILURE_HIT_COUNT_KEY, 0, timeout=24 * 60 * 60)
                 cache.incr(FAILURE_HIT_COUNT_KEY)
             except Exception:
                 logger.exception("tiantianjiexi_failure_hit_count_failed", extra={"provider": PROVIDER_ID})
-        return bool(reason)
+        if not value:
+            return {"hit": False, "reason": "", "retry_after_seconds": 0}
+
+        ttl_seconds = max(
+            1,
+            runtime_int("TIANTIANJIEXI_FAILURE_CACHE_TTL_SECONDS", 8),
+        )
+        if isinstance(value, dict):
+            retry_at = float(value.get("retry_at") or 0)
+            if not retry_at and value.get("failed_at"):
+                retry_at = float(value["failed_at"]) + ttl_seconds
+            retry_after = (
+                max(0, math.ceil(retry_at - time.time()))
+                if retry_at
+                else ttl_seconds
+            )
+            reason = str(value.get("reason") or "failed")[:120]
+            if retry_after <= 0:
+                try:
+                    cache.delete(build_failure_cache_key(source_key))
+                except Exception:
+                    logger.exception(
+                        "tiantianjiexi_failure_cache_expired_delete_failed",
+                        extra={"provider": PROVIDER_ID},
+                    )
+            elif not value.get("retry_at"):
+                failed_at = time.time()
+                try:
+                    cache.set(
+                        build_failure_cache_key(source_key),
+                        {
+                            "reason": reason,
+                            "failed_at": failed_at,
+                            "retry_at": failed_at + retry_after,
+                        },
+                        timeout=retry_after,
+                    )
+                except Exception:
+                    logger.exception(
+                        "tiantianjiexi_failure_cache_legacy_refresh_failed",
+                        extra={"provider": PROVIDER_ID},
+                    )
+        else:
+            retry_after = ttl_seconds
+            reason = str(value or "failed")[:120]
+            failed_at = time.time()
+            try:
+                cache.set(
+                    build_failure_cache_key(source_key),
+                    {
+                        "reason": reason,
+                        "failed_at": failed_at,
+                        "retry_at": failed_at + ttl_seconds,
+                    },
+                    timeout=ttl_seconds,
+                )
+            except Exception:
+                logger.exception(
+                    "tiantianjiexi_failure_cache_legacy_refresh_failed",
+                    extra={"provider": PROVIDER_ID},
+                )
+        return {
+            "hit": retry_after > 0,
+            "reason": reason,
+            "retry_after_seconds": retry_after,
+        }
+
+    def failure_cache_hit(self, source_key):
+        return self.failure_cache_status(source_key)["hit"]
 
     def cache_failure(self, source_key, reason):
-        ttl_seconds = runtime_int("TIANTIANJIEXI_FAILURE_CACHE_TTL_SECONDS", 30)
+        ttl_seconds = runtime_int("TIANTIANJIEXI_FAILURE_CACHE_TTL_SECONDS", 8)
         if ttl_seconds <= 0:
             return
         try:
-            cache.set(build_failure_cache_key(source_key), str(reason or "failed")[:120], timeout=ttl_seconds)
+            failed_at = time.time()
+            cache.set(
+                build_failure_cache_key(source_key),
+                {
+                    "reason": str(reason or "failed")[:120],
+                    "failed_at": failed_at,
+                    "retry_at": failed_at + ttl_seconds,
+                },
+                timeout=ttl_seconds,
+            )
         except Exception:
             logger.exception("tiantianjiexi_failure_cache_write_failed", extra={"provider": PROVIDER_ID})
 
@@ -457,23 +554,55 @@ class TianTianJieXiGenericProvider:
         except Exception:
             logger.exception("tiantianjiexi_single_flight_release_failed", extra={"provider": PROVIDER_ID})
 
-    def parse(self, url, timeout_seconds=None):
+    def parse(
+        self,
+        url,
+        timeout_seconds=None,
+        attempt_controller=None,
+        deadline_monotonic=None,
+    ):
         if not provider_configured():
             raise TianTianJieXiAuthError("天天解析 Provider 未启用或账号未配置")
         source_key = source_key_for_url(url)
         cached = self.get_cached_payload(source_key)
         if cached:
+            if attempt_controller is not None:
+                attempt_controller.reuse_cached_result(
+                    "tiantianjiexi",
+                    reason="payload_cache",
+                )
             return cached
         if self.circuit_is_open():
+            if attempt_controller is not None:
+                attempt_controller.skip_fresh_work(
+                    "tiantianjiexi",
+                    reason="circuit_open",
+                )
             raise XhsProviderTimeoutError("天天解析暂时不可用，请稍后再试")
-        if self.failure_cache_hit(source_key):
-            raise XhsProviderTimeoutError("天天解析刚刚失败，请稍后再试")
+        failure_status = self.failure_cache_status(source_key)
+        if failure_status["hit"]:
+            retry_after = failure_status["retry_after_seconds"]
+            if attempt_controller is not None:
+                attempt_controller.skip_fresh_work(
+                    "tiantianjiexi",
+                    reason="failure_cooldown",
+                    retry_after=retry_after,
+                )
+            raise TianTianJieXiFailureCooldownError(retry_after)
 
         timeout_seconds = float(timeout_seconds if timeout_seconds is not None else runtime_float("THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS", 3.0) or 3.0)
+        execution_deadline = float(deadline_monotonic or 0)
+        if execution_deadline:
+            execution_timeout_seconds = max(
+                0.1,
+                execution_deadline - time.monotonic(),
+            )
+        else:
+            execution_timeout_seconds = max(0.1, timeout_seconds)
         lock_key = build_single_flight_key(source_key)
         lock_token = uuid4().hex
         lock_ttl = max(
-            int(timeout_seconds) + 5,
+            int(execution_timeout_seconds) + 5,
             runtime_int("TIANTIANJIEXI_TIMEOUT_SECONDS", 15) + 5,
         )
         try:
@@ -482,32 +611,59 @@ class TianTianJieXiGenericProvider:
             logger.exception("tiantianjiexi_single_flight_acquire_failed", extra={"provider": PROVIDER_ID})
             lock_acquired = True
         if not lock_acquired:
-            cached = self.wait_for_cached_payload(source_key, timeout_seconds)
+            if attempt_controller is not None:
+                attempt_controller.skip_fresh_work(
+                    "tiantianjiexi",
+                    reason="single_flight",
+                )
+            cached = self.wait_for_cached_payload(
+                source_key,
+                execution_timeout_seconds,
+            )
             if cached:
                 return cached
             raise XhsProviderTimeoutError("天天解析正在处理中，请稍后重试同一链接。")
 
+        if attempt_controller is not None:
+            attempt_controller.prepare_fresh_work("tiantianjiexi")
+
         concurrency_acquired = False
+        request_reservation = None
         try:
-            request_limit = consume_fixed_window(
-                "third-party-tiantianjiexi",
-                "all",
-                runtime_int("TIANTIANJIEXI_REQUEST_LIMIT_PER_MINUTE", 20),
-                60,
-            )
-            if not request_limit.allowed:
-                raise TianTianJieXiRateLimitError("天天解析请求频率受限")
             concurrency = acquire_concurrency(
                 "third-party-tiantianjiexi-global",
                 "all",
                 runtime_int("TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY", 2),
             )
             if not concurrency.allowed:
+                if attempt_controller is not None:
+                    attempt_controller.skip_fresh_work(
+                        "tiantianjiexi",
+                        reason="provider_busy",
+                    )
                 raise TianTianJieXiRateLimitError("天天解析并发受限")
             concurrency_acquired = True
+            request_reservation = reserve_fixed_window(
+                "third-party-tiantianjiexi",
+                "all",
+                runtime_int("TIANTIANJIEXI_REQUEST_LIMIT_PER_MINUTE", 20),
+                60,
+            )
+            if not request_reservation.result.allowed:
+                if attempt_controller is not None:
+                    attempt_controller.skip_fresh_work(
+                        "tiantianjiexi",
+                        reason="provider_rate_limit",
+                    )
+                raise TianTianJieXiRateLimitError("天天解析请求频率受限")
+            if attempt_controller is not None:
+                attempt_controller.begin_provider("tiantianjiexi")
+            request_reservation.commit()
 
             attempts = max(1, runtime_int("TIANTIANJIEXI_RETRIES", 2))
-            deadline = time.monotonic() + max(0.1, timeout_seconds)
+            deadline = execution_deadline or (
+                time.monotonic() + max(0.1, timeout_seconds)
+            )
             last_error = None
             for attempt in range(attempts):
                 try:
@@ -534,11 +690,24 @@ class TianTianJieXiGenericProvider:
                     if attempt >= attempts - 1:
                         raise
             raise last_error or TianTianJieXiApiError("天天解析失败")
+        except (
+            DouyinUltraAttemptAccountingError,
+            DouyinUltraAttemptRateLimitedError,
+            DouyinUltraAttemptSupersededError,
+        ):
+            raise
         except Exception as error:
             self.cache_failure(source_key, type(error).__name__)
+            if attempt_controller is not None:
+                attempt_controller.record_cooldown(
+                    "tiantianjiexi",
+                    runtime_int("TIANTIANJIEXI_FAILURE_CACHE_TTL_SECONDS", 8),
+                )
             self.record_failure()
             raise
         finally:
+            if request_reservation is not None:
+                request_reservation.release()
             if concurrency_acquired:
                 release_concurrency("third-party-tiantianjiexi-global", "all")
             self.release_single_flight(lock_key, lock_token)
@@ -564,7 +733,13 @@ class TianTianJieXiGenericProvider:
             failure_hit_count = int(cache.get(FAILURE_HIT_COUNT_KEY, 0) or 0)
             account_status_cached = bool(cache.get(ACCOUNT_STATUS_CACHE_KEY))
             if source_key:
-                failure_cache_reason = str(cache.get(build_failure_cache_key(source_key)) or "")
+                failure_value = cache.get(build_failure_cache_key(source_key))
+                failure_cache_reason = str(
+                    failure_value.get("reason")
+                    if isinstance(failure_value, dict)
+                    else failure_value
+                    or ""
+                )
                 single_flight_active = bool(cache.get(build_single_flight_key(source_key)))
         except Exception as error:
             cache_error = type(error).__name__
