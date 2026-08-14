@@ -89,6 +89,147 @@ test("browser fetch options omit credentials, cache, and page referrer", () => {
     assert.equal(options.referrerPolicy, "no-referrer");
 });
 
+test("bounded diagnostic probe reads only the first non-empty chunk and returns no URL", async () => {
+    const signedUrl = "https://v11-default.365yg.com/path/video.mp4?token=super-secret";
+    let reads = 0;
+    let cancelled = false;
+    let requestedUrl = "";
+    let requestedOptions = null;
+    const result = await ordinary.probeOrdinaryMediaFetch(ordinaryItem({url: signedUrl}), {
+        fetchImpl: async (url, options) => {
+            requestedUrl = url;
+            requestedOptions = options;
+            return {
+                ok: true,
+                status: 200,
+                url: signedUrl,
+                headers: headers({"Content-Type": "video/mp4", "Content-Length": 104857600}),
+                body: {
+                    getReader() {
+                        return {
+                            async read() {
+                                reads += 1;
+                                if (reads === 1) {
+                                    return {done: false, value: new Uint8Array(0)};
+                                }
+                                if (reads === 2) {
+                                    return {done: false, value: new Uint8Array(1024)};
+                                }
+                                assert.fail("probe must not read the complete media body");
+                            },
+                            cancel() {
+                                cancelled = true;
+                                return Promise.resolve();
+                            },
+                            releaseLock() {},
+                        };
+                    },
+                },
+            };
+        },
+    });
+
+    assert.equal(requestedUrl, signedUrl);
+    assert.equal(requestedOptions.credentials, "omit");
+    assert.equal(requestedOptions.cache, "no-store");
+    assert.equal(requestedOptions.referrerPolicy, "no-referrer");
+    assert.equal(result.ok, true);
+    assert.equal(result.mediaHost, "v11-default.365yg.com");
+    assert.equal(result.contentLength, 104857600);
+    assert.equal(reads, 2);
+    assert.equal(cancelled, true);
+    assert.doesNotMatch(JSON.stringify(result), /path\/video\.mp4|token|super-secret|https:\/\//i);
+});
+
+test("diagnostic probe safely distinguishes before-response and after-response failures", async () => {
+    const signedUrl = "https://v11-default.365yg.com/path/video.mp4?token=super-secret";
+    const beforeResponse = await ordinary.probeOrdinaryMediaFetch(
+        ordinaryItem({url: signedUrl}),
+        {
+            fetchImpl: async () => {
+                throw new TypeError(`failed ${signedUrl}`);
+            },
+        },
+    );
+    assert.equal(beforeResponse.ok, false);
+    assert.equal(beforeResponse.failureClass, "FETCH_REJECTED_TYPE_ERROR");
+    assert.equal(beforeResponse.failureStage, "FETCH_REJECTED_BEFORE_RESPONSE");
+
+    const afterResponse = await ordinary.probeOrdinaryMediaFetch(
+        ordinaryItem({url: signedUrl}),
+        {
+            fetchImpl: async () => ({
+                ok: true,
+                status: 200,
+                url: signedUrl,
+                headers: headers({"Content-Type": "video/mp4", "Content-Length": 10}),
+                body: {
+                    getReader() {
+                        return {
+                            async read() {
+                                throw new TypeError(`stream failed ${signedUrl}`);
+                            },
+                            cancel() { return Promise.resolve(); },
+                            releaseLock() {},
+                        };
+                    },
+                },
+            }),
+        },
+    );
+    assert.equal(afterResponse.ok, false);
+    assert.equal(afterResponse.failureClass, "FETCH_REJECTED_TYPE_ERROR");
+    assert.equal(afterResponse.failureStage, "STREAM_BODY_FAILURE");
+    assert.doesNotMatch(JSON.stringify({beforeResponse, afterResponse}), /token|super-secret|https:\/\//i);
+});
+
+test("diagnostic probe rejects a final response outside the Worker media allowlist", async () => {
+    const result = await ordinary.probeOrdinaryMediaFetch(ordinaryItem({
+        url: "https://v11-default.365yg.com/media/source.mp4?fixture=fake",
+    }), {
+        fetchImpl: async () => ({
+            ok: true,
+            status: 200,
+            url: "https://attacker.example/redirected.mp4",
+            headers: headers({"Content-Type": "video/mp4", "Content-Length": 10}),
+            body: {
+                getReader() {
+                    return {
+                        async read() { assert.fail("rejected response body must not be read"); },
+                        cancel() { return Promise.resolve(); },
+                        releaseLock() {},
+                    };
+                },
+            },
+        }),
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.failureStage, "HTTP_RESPONSE_REJECTED");
+    assert.equal(result.mediaHost, "v11-default.365yg.com");
+    assert.doesNotMatch(JSON.stringify(result), /attacker|redirected/i);
+});
+
+test("diagnostic probe has a deterministic timeout and never invokes server relay", async () => {
+    let relayCalls = 0;
+    const result = await ordinary.probeOrdinaryMediaFetch(ordinaryItem({
+        url: "https://v11-default.365yg.com/media/stalled.mp4?fixture=fake",
+    }), {
+        timeoutMs: 5,
+        fetchImpl: async (_url, options) => new Promise((_resolve, reject) => {
+            options.signal.addEventListener("abort", () => {
+                const error = new Error("aborted");
+                error.name = "AbortError";
+                reject(error);
+            }, {once: true});
+        }),
+        serverRelay() { relayCalls += 1; },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.failureClass, "FETCH_TIMEOUT_ERROR");
+    assert.equal(result.failureStage, "FETCH_REJECTED_BEFORE_RESPONSE");
+    assert.equal(relayCalls, 0);
+});
+
 test("complete browser response is handed off once with exact bytes", async () => {
     const stages = [];
     const handoffs = [];
