@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "managed_files": [
+    {
+      "logical_name": "animeimages_site_vhost",
+      "repo_path": "ops/nginx/sites/download.cosflow.icu.conf.template",
+      "production_path": "/etc/nginx/sites-available/animeimages",
+      "enabled_path": "/etc/nginx/sites-enabled/animeimages",
+      "ownership": "root:root",
+      "mode": "0644",
+      "comparison_mode": "rendered_exact",
+      "variables": [
+        "ANIMEIMAGES_SERVER_IP"
+      ],
+      "required": true
+    },
+    {
+      "logical_name": "animeimages_media_snippet",
+      "repo_path": "ops/nginx/snippets/animeimages-v1-media.conf",
+      "production_path": "/etc/nginx/snippets/animeimages-v1-media.conf",
+      "ownership": "root:root",
+      "mode": "0644",
+      "comparison_mode": "exact",
+      "variables": [],
+      "required": true
+    }
+  ]
+}

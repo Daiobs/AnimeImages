@@ -1,0 +1,75 @@
+server {
+    server_name {{ANIMEIMAGES_SERVER_IP}} download.cosflow.icu;
+
+    location /static/ {
+        alias /srv/animeimages/staticfiles/;
+        access_log off;
+        expires 7d;
+    }
+
+    location /media/proxy-image/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_read_timeout 120s;
+    }
+
+    location /media/download-images/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_read_timeout 300s;
+    }
+
+    location /media/download-tasks/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_read_timeout 300s;
+    }
+
+    include /etc/nginx/snippets/animeimages-v1-media.conf;
+
+    location /media/ {
+        return 404;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_read_timeout 120s;
+        client_max_body_size 20m;
+    }
+
+    listen 443 ssl; # managed by Certbot
+    ssl_certificate /etc/letsencrypt/live/download.cosflow.icu/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/download.cosflow.icu/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+
+}
+server {
+    if ($host = download.cosflow.icu) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+
+    listen 80;
+    server_name {{ANIMEIMAGES_SERVER_IP}} download.cosflow.icu;
+    return 404; # managed by Certbot
+
+
+}
