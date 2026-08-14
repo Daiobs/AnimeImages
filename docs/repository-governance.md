@@ -84,6 +84,30 @@ Every production deployment record must identify:
 Runtime configuration changes are operational changes even when code does not
 change. Record them separately from code defaults and Admin runtime state.
 
+## Infrastructure Configuration
+
+Repository-owned production infrastructure must have a canonical source under
+`ops/` plus read-only validation and recovery documentation. Active host files
+remain runtime truth, but an accepted production-only infrastructure hotfix is
+temporary until an infrastructure reconciliation PR reconstructs it in the
+repository. An unexplained mismatch is `INFRASTRUCTURE_DRIFT` even when
+application code is aligned.
+
+Use this normal flow:
+
+1. Repository change and focused infrastructure tests.
+2. Reviewed PR and CI.
+3. Production target verification and root-only backup.
+4. Exact candidate installation, native syntax validation, and service reload.
+5. Health, security-boundary, and read-only drift checks.
+
+Emergency production changes reverse the first two steps: accept the smallest
+safe host fix, then create an immediate reconciliation PR using production as
+the audited fact source. Do not copy secrets, unrelated vhosts, certificate
+material, or global distro configuration into Git. An infrastructure PR must
+not imply application deployment, and an application checkpoint must not be
+moved for a configuration-only repository merge.
+
 When application hard gates remain healthy, classify an external dependency
 failure before deciding rollback. A single Provider CDN fetch rejection is not
 by itself proof of an application regression. Exact-SHA identity, served static
