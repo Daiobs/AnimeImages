@@ -2,7 +2,9 @@
 
 Date: 2026-08-14
 
-Status: inventory only. No local or remote branch was deleted.
+Status: `SUPERSEDED_BY_EXECUTION_AUDIT`. No deletion was authorized by this
+inventory. The execution evidence and exact-ref allowlist are maintained in
+`docs/research/repository-branch-archive-cleanup-v1.md`.
 
 This inventory was built from fetched `origin/*` refs and GitHub PR metadata.
 Squash-merged branches are not necessarily ancestors of main, so a future
