@@ -240,6 +240,13 @@ from .services.batch_parse import (
     load_batch_parse_runtime_setting,
     split_batch_links,
 )
+from .services.browser_streaming_telemetry import (
+    BrowserStreamingTelemetryValidationError,
+    DEFAULT_MAX_PAYLOAD_BYTES,
+    DEFAULT_RATE_LIMIT_PER_MINUTE,
+    log_browser_streaming_telemetry,
+    validate_browser_streaming_telemetry,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -4034,6 +4041,76 @@ def ordinary_media_service_worker_view(request):
     response["Service-Worker-Allowed"] = "/"
     response["X-Content-Type-Options"] = "nosniff"
     return response
+
+
+def _browser_telemetry_response(status, error_code=""):
+    if status == 204:
+        response = HttpResponse(status=204)
+    else:
+        response = JsonResponse({"ok": False, "error_code": error_code}, status=status)
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+@require_POST
+@csrf_protect
+def browser_download_telemetry_view(request):
+    if request.content_type != "application/json":
+        return _browser_telemetry_response(415, "JSON_REQUIRED")
+
+    max_payload_bytes = max(
+        1024,
+        int(
+            getattr(
+                settings,
+                "BROWSER_DOWNLOAD_TELEMETRY_MAX_PAYLOAD_BYTES",
+                DEFAULT_MAX_PAYLOAD_BYTES,
+            )
+        ),
+    )
+    try:
+        declared_length = int(request.META.get("CONTENT_LENGTH") or 0)
+    except (TypeError, ValueError):
+        return _browser_telemetry_response(400, "INVALID_TELEMETRY_PAYLOAD")
+    if declared_length < 0 or declared_length > max_payload_bytes:
+        return _browser_telemetry_response(413, "TELEMETRY_PAYLOAD_TOO_LARGE")
+
+    raw_payload = request.read(max_payload_bytes + 1)
+    if len(raw_payload) > max_payload_bytes:
+        return _browser_telemetry_response(413, "TELEMETRY_PAYLOAD_TOO_LARGE")
+
+    try:
+        limit = consume_fixed_window(
+            "browser-download-telemetry",
+            get_client_identity(request),
+            int(
+                getattr(
+                    settings,
+                    "BROWSER_DOWNLOAD_TELEMETRY_RATE_LIMIT_PER_MINUTE",
+                    DEFAULT_RATE_LIMIT_PER_MINUTE,
+                )
+            ),
+            60,
+        )
+    except Exception:
+        logger.warning(
+            "browser_streaming_telemetry_rate_limit_unavailable",
+            extra={"event": "browser_streaming_telemetry_rate_limit_unavailable"},
+        )
+        return _browser_telemetry_response(204)
+    if not limit.allowed:
+        response = _browser_telemetry_response(429, "TELEMETRY_RATE_LIMITED")
+        response["Retry-After"] = str(max(1, int(limit.retry_after or 1)))
+        return response
+
+    try:
+        decoded = json.loads(raw_payload.decode("utf-8"))
+        telemetry = validate_browser_streaming_telemetry(decoded)
+    except (UnicodeDecodeError, json.JSONDecodeError, BrowserStreamingTelemetryValidationError):
+        return _browser_telemetry_response(400, "INVALID_TELEMETRY_PAYLOAD")
+
+    log_browser_streaming_telemetry(telemetry)
+    return _browser_telemetry_response(204)
 
 
 def search_view(request, platform_key="home"):

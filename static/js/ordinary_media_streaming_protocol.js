@@ -33,6 +33,26 @@
         "cancelled",
     ]);
     const TERMINAL_STATES = Object.freeze(["completed", "failed", "cancelled"]);
+    const FAILURE_CLASSES = Object.freeze([
+        "NOT_APPLICABLE",
+        "FETCH_REJECTED_TYPE_ERROR",
+        "FETCH_ABORTED",
+        "FETCH_NETWORK_ERROR",
+        "FETCH_SECURITY_ERROR",
+        "FETCH_TIMEOUT_ERROR",
+        "FETCH_REJECTED_OTHER",
+    ]);
+    const FAILURE_STAGES = Object.freeze([
+        "PRE_START_FAILURE",
+        "FETCH_REJECTED_BEFORE_RESPONSE",
+        "HTTP_RESPONSE_REJECTED",
+        "STREAM_BODY_FAILURE",
+        "SIZE_VALIDATION_FAILURE",
+        "USER_CANCELLED",
+        "DOWNLOAD_MANAGER_CANCELLED",
+        "DESCRIPTOR_FAILURE",
+    ]);
+    const MAX_SAFE_TIMING_MS = 24 * 60 * 60 * 1000;
 
     function positiveInteger(value) {
         const parsed = Number.parseInt(value || "0", 10);
@@ -104,6 +124,84 @@
         }
     }
 
+    function sanitizeMediaHost(value, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        let hostname = "";
+        try {
+            const rawValue = String(value || "").trim();
+            hostname = rawValue.includes("://")
+                ? new URL(rawValue).hostname
+                : rawValue;
+        } catch (error) {
+            return "unknown";
+        }
+        hostname = hostname.toLowerCase().replace(/\.$/, "");
+        const allowedProviderHost = ALLOWED_MEDIA_HOST_SUFFIXES.some((suffix) => (
+            hostnameMatchesSuffix(hostname, suffix)
+        ));
+        const allowedLoopback = Boolean(settings.allowLoopback)
+            && isLoopbackHostname(hostname);
+        if (!allowedProviderHost && !allowedLoopback) {
+            return "unknown";
+        }
+        if (
+            hostname.length > 255
+            || (!isLoopbackHostname(hostname) && !/^[a-z0-9.-]+$/.test(hostname))
+        ) {
+            return "unknown";
+        }
+        if (!isLoopbackHostname(hostname) && hostname.split(".").some((label) => (
+            !label
+            || label.length > 63
+            || label.startsWith("-")
+            || label.endsWith("-")
+        ))) {
+            return "unknown";
+        }
+        return hostname;
+    }
+
+    function classifyFetchFailure(error) {
+        let name = "";
+        try {
+            name = String(error && error.name || "");
+        } catch (classificationError) {
+            return "FETCH_REJECTED_OTHER";
+        }
+        const classifications = Object.freeze({
+            TypeError: "FETCH_REJECTED_TYPE_ERROR",
+            AbortError: "FETCH_ABORTED",
+            NetworkError: "FETCH_NETWORK_ERROR",
+            SecurityError: "FETCH_SECURITY_ERROR",
+            TimeoutError: "FETCH_TIMEOUT_ERROR",
+        });
+        return classifications[name] || "FETCH_REJECTED_OTHER";
+    }
+
+    function normalizeFailureClass(value) {
+        const failureClass = String(value || "").toUpperCase();
+        return FAILURE_CLASSES.includes(failureClass) ? failureClass : "NOT_APPLICABLE";
+    }
+
+    function normalizeFailureStage(value) {
+        const failureStage = String(value || "").toUpperCase();
+        return FAILURE_STAGES.includes(failureStage) ? failureStage : "";
+    }
+
+    function safeTiming(value) {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed) || parsed < 0) {
+            return 0;
+        }
+        return Math.min(MAX_SAFE_TIMING_MS, Math.floor(parsed));
+    }
+
+    function elapsedTiming(startValue, endValue) {
+        const start = positiveInteger(startValue);
+        const end = positiveInteger(endValue);
+        return start && end && end >= start ? safeTiming(end - start) : 0;
+    }
+
     function normalizeDownloadId(value) {
         const id = String(value || "").toLowerCase();
         return DOWNLOAD_ID_PATTERN.test(id) ? id : "";
@@ -140,6 +238,9 @@
         return Object.freeze({
             downloadId: id,
             url: String(value.url),
+            mediaHost: sanitizeMediaHost(value.url, {
+                allowLoopback: Boolean(settings.allowLoopbackHttp),
+            }),
             filename: sanitizeFilename(value.filename),
             provider: sanitizeProvider(value.provider),
             expectedBytes,
@@ -202,6 +303,25 @@
             startedAt: positiveInteger(status.startedAt),
             updatedAt: positiveInteger(status.updatedAt),
             errorCode: String(status.errorCode || "").replace(/[^A-Z0-9_]+/g, "").slice(0, 80),
+            failureClass: normalizeFailureClass(status.failureClass),
+            failureStage: normalizeFailureStage(status.failureStage),
+            mediaHost: sanitizeMediaHost(status.mediaHost, {allowLoopback: true}),
+            registrationToFetchMs: safeTiming(
+                status.registrationToFetchMs
+                || elapsedTiming(status.registeredAt, status.fetchStartedAt),
+            ),
+            fetchRejectMs: safeTiming(
+                status.fetchRejectMs
+                || elapsedTiming(status.fetchStartedAt, status.fetchFailedAt),
+            ),
+            timeToFirstChunkMs: safeTiming(
+                status.timeToFirstChunkMs
+                || elapsedTiming(status.fetchStartedAt, status.firstChunkAt),
+            ),
+            streamDurationMs: safeTiming(
+                status.streamDurationMs
+                || elapsedTiming(status.fetchStartedAt, status.terminalAt),
+            ),
         });
     }
 
@@ -244,9 +364,12 @@
         ALLOWED_MEDIA_HOST_SUFFIXES,
         DEFAULT_STREAM_DESCRIPTOR_TTL_MS,
         DOWNLOAD_PATH_SEGMENT,
+        FAILURE_CLASSES,
+        FAILURE_STAGES,
         MAX_STREAM_BYTES,
         PROTOCOL_VERSION,
         TERMINAL_STATES,
+        classifyFetchFailure,
         createDescriptor,
         createProgressEstimator,
         descriptorIdFromPath,
@@ -254,11 +377,14 @@
         isAllowedMediaContentType,
         isAllowedStreamingUrl,
         isLoopbackHostname,
+        normalizeFailureClass,
+        normalizeFailureStage,
         normalizeContentType,
         normalizeDownloadId,
         positiveInteger,
         randomDownloadId,
         safeSnapshot,
+        sanitizeMediaHost,
         sanitizeFilename,
         sanitizeProvider,
     });

@@ -67,6 +67,11 @@ urlpatterns = [
                   path("batch/item/", download_views.batch_parse_item_view, name="batch_parse_item"),
                   path("batch/retry/", download_views.batch_parse_retry_view, name="batch_parse_retry"),
                   path("media/douyin-continuation/", download_views.douyin_continuation_view, name="media_douyin_continuation"),
+                  path(
+                      "media/browser-download-telemetry/",
+                      download_views.browser_download_telemetry_view,
+                      name="media_browser_download_telemetry",
+                  ),
                   path("media/proxy-image/", download_views.proxy_image_view, name="media_proxy_image"),
                   path("media/download-prepare/", download_views.download_prepare_api, name="media_download_prepare"),
                   path("media/download-stream/<str:token>/", download_views.download_stream_view, name="media_download_stream"),

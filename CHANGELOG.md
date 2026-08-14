@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Added URL-free, token-free Service Worker failure diagnostics with fixed
+  fetch classes/stages, hostname-only metadata, bounded timings, one
+  best-effort terminal event per download, and a CSRF-protected, rate-limited
+  structured-log endpoint. Ordinary media remains browser-only with zero
+  AnimeImages media bytes.
+- Added a non-UI bounded Page fetch probe and a production Streaming acceptance
+  gate that distinguishes candidate regressions from suspected upstream or
+  browser transients while preserving all service, static, controlled-stream,
+  integrity, security, and no-Relay rollback gates.
 - Reconstructed the production-stable Service Worker Streaming and Douyin
   Ultra retry/continuation behavior on top of main, while retaining the audited
   Batch access and Runtime Admin changes from PR #26/#28. Ordinary Provider

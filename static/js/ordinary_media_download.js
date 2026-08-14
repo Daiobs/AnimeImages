@@ -21,6 +21,7 @@
 
     const MAX_BROWSER_BLOB_BYTES = 1024 * 1024 * 1024;
     const DEFAULT_BROWSER_FETCH_IDLE_TIMEOUT_MS = 30000;
+    const DEFAULT_MEDIA_FETCH_PROBE_TIMEOUT_MS = 8000;
     const DEFAULT_PROGRESS_UPDATE_INTERVAL_MS = 300;
     const DEFAULT_SPEED_WINDOW_MS = 3000;
     const MIN_ETA_SAMPLE_MS = 1500;
@@ -429,6 +430,146 @@
         const error = new Error(message);
         error.errorCode = errorCode;
         return error;
+    }
+
+    async function probeOrdinaryMediaFetch(item, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        const now = typeof settings.now === "function" ? settings.now : Date.now;
+        const startedAt = nonNegativeNumber(now());
+        const mediaHost = streamingProtocol && typeof streamingProtocol.sanitizeMediaHost === "function"
+            ? streamingProtocol.sanitizeMediaHost(item && (item.url || item.video_url), {
+                allowLoopback: Boolean(settings.allowLoopback),
+            })
+            : "unknown";
+        const baseResult = {
+            ok: false,
+            mediaHost,
+            httpStatus: 0,
+            contentType: "",
+            contentLength: 0,
+            failureClass: "NOT_APPLICABLE",
+            failureStage: "PRE_START_FAILURE",
+            durationMs: 0,
+        };
+        const finish = (overrides) => Object.freeze({
+            ...baseResult,
+            ...(overrides || {}),
+            durationMs: Math.max(0, Math.floor(nonNegativeNumber(now()) - startedAt)),
+        });
+        const sourceUrl = String(item && (item.url || item.video_url) || "");
+        if (
+            !isOrdinaryMediaItem(item)
+            || !streamingProtocol
+            || !streamingProtocol.isAllowedStreamingUrl(sourceUrl, {
+                allowLoopbackHttp: Boolean(settings.allowLoopback),
+            })
+        ) {
+            return finish({failureStage: "PRE_START_FAILURE"});
+        }
+
+        const fetchImpl = settings.fetchImpl || (
+            typeof fetch === "function" ? fetch.bind(globalThis) : null
+        );
+        const Controller = settings.AbortControllerConstructor || (
+            typeof AbortController === "function" ? AbortController : null
+        );
+        const schedule = settings.schedule || setTimeout;
+        const clearSchedule = settings.clearSchedule || clearTimeout;
+        if (!fetchImpl || !Controller || !schedule || !clearSchedule) {
+            return finish({failureClass: "FETCH_REJECTED_OTHER"});
+        }
+
+        const controller = new Controller();
+        const timeoutMs = positiveInteger(settings.timeoutMs)
+            || DEFAULT_MEDIA_FETCH_PROBE_TIMEOUT_MS;
+        let timedOut = false;
+        let responseAcquired = false;
+        let reader = null;
+        const timer = schedule(() => {
+            timedOut = true;
+            controller.abort();
+        }, timeoutMs);
+        try {
+            const response = await fetchImpl(
+                sourceUrl,
+                browserFetchOptions(controller.signal),
+            );
+            responseAcquired = true;
+            const contentType = normalizedContentType(
+                response && response.headers && response.headers.get
+                    ? response.headers.get("Content-Type")
+                    : "",
+            );
+            const contentLength = positiveInteger(
+                response && response.headers && response.headers.get
+                    ? response.headers.get("Content-Length")
+                    : 0,
+            );
+            const responseMetadata = {
+                httpStatus: positiveInteger(response && response.status),
+                contentType,
+                contentLength,
+            };
+            if (
+                !response
+                || !response.ok
+                || !response.body
+                || typeof response.body.getReader !== "function"
+                || !contentTypeAllowsOrdinaryVideo(contentType)
+                || !streamingProtocol.isAllowedStreamingUrl(response.url, {
+                    allowLoopbackHttp: Boolean(settings.allowLoopback),
+                })
+            ) {
+                return finish({...responseMetadata, failureStage: "HTTP_RESPONSE_REJECTED"});
+            }
+
+            reader = response.body.getReader();
+            while (true) {
+                const {done, value} = await reader.read();
+                if (done) {
+                    return finish({...responseMetadata, failureStage: "STREAM_BODY_FAILURE"});
+                }
+                if (value && value.byteLength) {
+                    return finish({
+                        ...responseMetadata,
+                        ok: true,
+                        failureStage: "",
+                    });
+                }
+            }
+        } catch (error) {
+            const failureClass = timedOut
+                ? "FETCH_TIMEOUT_ERROR"
+                : (streamingProtocol && typeof streamingProtocol.classifyFetchFailure === "function"
+                    ? streamingProtocol.classifyFetchFailure(error)
+                    : "FETCH_REJECTED_OTHER");
+            return finish({
+                failureClass,
+                failureStage: responseAcquired
+                    ? "STREAM_BODY_FAILURE"
+                    : "FETCH_REJECTED_BEFORE_RESPONSE",
+            });
+        } finally {
+            clearSchedule(timer);
+            if (reader && typeof reader.cancel === "function") {
+                try {
+                    const cancellation = reader.cancel("DIAGNOSTIC_PROBE_COMPLETE");
+                    if (cancellation && typeof cancellation.catch === "function") {
+                        cancellation.catch(() => {});
+                    }
+                } catch (error) {
+                    // The bounded probe has already captured its safe result.
+                }
+            }
+            if (reader && typeof reader.releaseLock === "function") {
+                try {
+                    reader.releaseLock();
+                } catch (error) {
+                    // Some streams release their lock during cancellation.
+                }
+            }
+            controller.abort();
+        }
     }
 
     function createBrowserFetchGuard(options) {
@@ -1036,6 +1177,7 @@
     return Object.freeze({
         MAX_BROWSER_BLOB_BYTES,
         DEFAULT_BROWSER_FETCH_IDLE_TIMEOUT_MS,
+        DEFAULT_MEDIA_FETCH_PROBE_TIMEOUT_MS,
         DEFAULT_PROGRESS_UPDATE_INTERVAL_MS,
         DEFAULT_SPEED_WINDOW_MS,
         MIN_ETA_SAMPLE_MS,
@@ -1057,6 +1199,7 @@
         downloadViaStreaming,
         isOrdinaryMediaItem,
         mountActiveDownloadPanel,
+        probeOrdinaryMediaFetch,
         formatBytes,
         formatEta,
         formatRate,

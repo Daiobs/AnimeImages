@@ -61,6 +61,13 @@ Provider/CDN -> Browser Service Worker -> Browser Download Manager -> Disk
 - Signed media URLs are not written to logs, browser storage, documentation or
   reports. They are necessarily visible to the receiving browser at handoff.
 - Ordinary AnimeImages media request count and media bytes remain zero.
+- A terminal Streaming failure may send one best-effort, CSRF-protected,
+  URL-free metadata event to `/media/browser-download-telemetry/`. This is
+  control-plane diagnostics only: it is not awaited, completion events are off
+  in v1, and a closed page may lose the event without affecting the download.
+- The optional bounded Page fetch probe is an operator/research helper, never an
+  automatic download fallback. It reads only headers and the first non-empty
+  chunk before cancelling and does not transfer media through AnimeImages.
 
 ## Server-Required Output
 

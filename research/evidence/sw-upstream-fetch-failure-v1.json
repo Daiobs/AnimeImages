@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "date": "2026-08-14",
+  "status": "SW_UPSTREAM_FAILURE_ROOT_CAUSE_NARROWED_NOT_PROVEN",
+  "baseline": {
+    "production_sha": "87afba321a2dc459b7daebcd1cc9eea6735b60ba",
+    "main_sha": "11642b0194b052f9368bf0024900e845fc6609c7",
+    "production_service_active": true,
+    "production_readiness_http": 200,
+    "production_homepage_http": 200,
+    "production_worktree_clean": true,
+    "production_modified": false
+  },
+  "service_worker": {
+    "git_blob": "6db0ae804523acdda62c34a68c51f6072a39651e",
+    "sha256": "627bf83213616d5898dcc028b43feb751a4ac839801bec21a8254803af551e67",
+    "bytes": 14519,
+    "source_identical_between_refs": true,
+    "served_source_identity": "PASS",
+    "served_cache_control": "no-cache, no-store, must-revalidate",
+    "served_scope_header": "/",
+    "served_nosniff": true,
+    "runtime_lifecycle_captured": false,
+    "runtime_lifecycle_blocker": "supported Chrome CDP commands timed out after tab claim"
+  },
+  "static_reconstruction": {
+    "old_file_count": 148,
+    "main_file_count": 150,
+    "old_manifest_sha256": "7289b6affd0cf6a2310f2f11842b2196eb2f4099f35e2c85712eaeea1d31ca5c",
+    "main_manifest_sha256": "367853a5b865ca1070c5a16a74cf71d5afd197cfbe3868dabdc9840f73276144",
+    "changed_paths": [
+      "static/js/batch_parse.js"
+    ],
+    "added_paths": [
+      "static/css/batch_runtime_admin.css",
+      "static/js/batch_runtime_admin.js"
+    ],
+    "streaming_dependency_changed": false
+  },
+  "provider_budget": {
+    "fresh_calls_used": 2,
+    "fresh_calls_limit": 3
+  },
+  "samples": [
+    {
+      "provider": "tiantianjiexi",
+      "provider_cache_hit": false,
+      "real_upstream_call": true,
+      "hostname": "v26-default.365yg.com",
+      "expected_bytes": 93733891,
+      "initial_bounded_probe": "READ_TIMEOUT_12_SECONDS",
+      "same_resource_range_retry": "HTTP_206_PASS",
+      "redirect_count": 0,
+      "acao": "*",
+      "content_type": "video/mp4",
+      "dns": "PASS",
+      "tls": "TLS_1_3_PASS"
+    },
+    {
+      "provider": "tiantianjiexi",
+      "provider_cache_hit": false,
+      "real_upstream_call": true,
+      "hostname": "v6-default.365yg.com",
+      "expected_bytes": 110691390,
+      "bounded_get": "HTTP_200_PASS",
+      "range": "HTTP_206_PASS",
+      "redirect_count": 0,
+      "acao": "*",
+      "content_type": "video/mp4",
+      "dns": "PASS",
+      "tls": "PASS"
+    }
+  ],
+  "browser_forensics": {
+    "existing_profile_completed_streaming_evidence": true,
+    "fresh_clean_profile_streaming_result": "NOT_CAPTURED",
+    "page_fetch_result": "NOT_CAPTURED",
+    "service_worker_fetch_error_code": "UPSTREAM_FETCH_FAILED",
+    "service_worker_network_error_text": "NOT_CAPTURED",
+    "blob_bounded_fetch_result": "NOT_CAPTURED",
+    "cache_storage_sensitive_url": false
+  },
+  "root_cause": {
+    "primary_classification": "UPSTREAM_RESOURCE_SPECIFIC",
+    "confidence": "MEDIUM",
+    "positive_reproduction": "bounded read timeout followed by success for the identical cached resource",
+    "negative_control": "two hosts returned valid CORS-enabled MP4 responses and the served runtime bytes match prior proven Streaming bytes",
+    "not_main_code_or_static_regression": true,
+    "remaining_candidates": [
+      "transient CDN-to-browser network rejection",
+      "browser profile or Service Worker request-context state",
+      "Service Worker lifecycle state not represented by source bytes"
+    ]
+  },
+  "security": {
+    "signed_url_persisted": false,
+    "credential_leak": false,
+    "server_media_full_transfer": false,
+    "server_relay_enabled": false
+  },
+  "offline_verification": {
+    "django_check": "PASS",
+    "migration_dry_run": "PASS_NO_CHANGES",
+    "provider_strategy_tests": 119,
+    "xhs_download_tests": 1047,
+    "ordinary_media_node_tests": 45,
+    "javascript_syntax": "PASS",
+    "real_provider_calls_from_automated_tests": 0
+  },
+  "next_task": "Service Worker Fetch Failure Telemetry and Acceptance Gate v1"
+}

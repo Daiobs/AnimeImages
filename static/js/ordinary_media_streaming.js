@@ -19,7 +19,19 @@
     const DEFAULT_START_TIMEOUT_MS = 8000;
     const DEFAULT_MESSAGE_TIMEOUT_MS = 4000;
     const DEFAULT_STATUS_POLL_MS = 1000;
+    const DEFAULT_TELEMETRY_ENDPOINT = "/media/browser-download-telemetry/";
+    const TELEMETRY_SCHEMA_VERSION = 1;
     const TERMINAL_STATES = new Set(["completed", "failed", "cancelled"]);
+    const FAILURE_TELEMETRY_STATES = new Set(["failed", "cancelled"]);
+    const SAFE_WORKER_STATES = new Set([
+        "activated",
+        "activating",
+        "installed",
+        "installing",
+        "redundant",
+        "none",
+        "unknown",
+    ]);
     const STATE_ORDER = Object.freeze({
         prepared: 0,
         fetching: 1,
@@ -35,6 +47,148 @@
         error.streamingStarted = Boolean(settings.streamingStarted);
         error.status = settings.status || null;
         return error;
+    }
+
+    function normalizeWorkerState(value) {
+        const state = String(value || "").toLowerCase();
+        return SAFE_WORKER_STATES.has(state) ? state : (state ? "unknown" : "none");
+    }
+
+    function normalizePageVisibility(value) {
+        const visibility = String(value || "").toLowerCase();
+        return ["visible", "hidden", "prerender"].includes(visibility)
+            ? visibility
+            : "unknown";
+    }
+
+    function detectBrowserFamily(navigatorObject) {
+        const userAgent = String(navigatorObject && navigatorObject.userAgent || "");
+        if (/Firefox\//i.test(userAgent)) {
+            return "firefox";
+        }
+        if (/Safari\//i.test(userAgent) && !/(?:Chrome|Chromium|CriOS|Edg|OPR)\//i.test(userAgent)) {
+            return "safari";
+        }
+        if (/(?:Chrome|Chromium|CriOS|Edg|OPR)\//i.test(userAgent)) {
+            return "chromium";
+        }
+        return "unknown";
+    }
+
+    function readCookie(documentObject, name) {
+        const prefix = `${String(name || "")}=`;
+        const cookies = String(documentObject && documentObject.cookie || "").split(";");
+        for (const rawCookie of cookies) {
+            const cookie = rawCookie.trim();
+            if (cookie.startsWith(prefix)) {
+                try {
+                    return decodeURIComponent(cookie.slice(prefix.length));
+                } catch (error) {
+                    return "";
+                }
+            }
+        }
+        return "";
+    }
+
+    function createTerminalTelemetryPayload(status, environment, options) {
+        const safe = protocol.safeSnapshot(status);
+        const env = environment && typeof environment === "object" ? environment : {};
+        const settings = options && typeof options === "object" ? options : {};
+        const telemetryId = protocol.normalizeDownloadId(settings.telemetryId)
+            || safe.downloadId;
+        return Object.freeze({
+            schema_version: TELEMETRY_SCHEMA_VERSION,
+            telemetry_id: telemetryId,
+            download_id: safe.downloadId,
+            provider: safe.provider,
+            media_host: safe.mediaHost,
+            transport: "browser_streaming",
+            state: safe.state,
+            error_code: safe.errorCode,
+            failure_class: safe.failureClass,
+            failure_stage: safe.failureStage || "PRE_START_FAILURE",
+            streaming_started: Boolean(safe.streamingStarted),
+            expected_bytes: safe.expectedBytes,
+            received_bytes: safe.receivedBytes,
+            total_bytes: safe.totalBytes,
+            registration_to_fetch_ms: safe.registrationToFetchMs,
+            fetch_reject_ms: safe.fetchRejectMs,
+            time_to_first_chunk_ms: safe.timeToFirstChunkMs,
+            stream_duration_ms: safe.streamDurationMs,
+            navigator_online: Boolean(env.navigatorOnline),
+            page_visibility: normalizePageVisibility(env.pageVisibility),
+            worker_controller_state: normalizeWorkerState(env.workerControllerState),
+            worker_active_state: normalizeWorkerState(env.workerActiveState),
+            worker_waiting: Boolean(env.workerWaiting),
+            worker_installing: Boolean(env.workerInstalling),
+            protocol_version: safe.protocolVersion,
+            browser_family: ["chromium", "firefox", "safari"].includes(env.browserFamily)
+                ? env.browserFamily
+                : "unknown",
+        });
+    }
+
+    function createTerminalTelemetryReporter(options) {
+        const settings = options && typeof options === "object" ? options : {};
+        const fetchImpl = settings.fetchImpl || (
+            typeof fetch === "function" ? fetch.bind(globalThis) : null
+        );
+        const documentObject = settings.documentObject || (
+            typeof document !== "undefined" ? document : null
+        );
+        const cryptoObject = settings.cryptoObject || (
+            typeof crypto !== "undefined" ? crypto : null
+        );
+        const endpoint = String(settings.endpoint || DEFAULT_TELEMETRY_ENDPOINT);
+        const reportedDownloadIds = new Set();
+
+        function report(status, environment) {
+            const safe = protocol.safeSnapshot(status);
+            if (
+                !safe.downloadId
+                || !FAILURE_TELEMETRY_STATES.has(safe.state)
+                || reportedDownloadIds.has(safe.downloadId)
+            ) {
+                return false;
+            }
+            reportedDownloadIds.add(safe.downloadId);
+
+            const csrfToken = String(
+                settings.csrfToken || readCookie(documentObject, "csrftoken") || "",
+            );
+            if (!fetchImpl || !csrfToken) {
+                return false;
+            }
+            let telemetryId = safe.downloadId;
+            try {
+                telemetryId = protocol.randomDownloadId(cryptoObject);
+            } catch (error) {
+                // The opaque download ID is already a valid non-sensitive fallback.
+            }
+            const payload = createTerminalTelemetryPayload(status, environment, {telemetryId});
+            try {
+                const pending = fetchImpl(endpoint, {
+                    method: "POST",
+                    credentials: "same-origin",
+                    cache: "no-store",
+                    keepalive: true,
+                    headers: {
+                        "Content-Type": "application/json",
+                        "X-CSRFToken": csrfToken,
+                    },
+                    body: JSON.stringify(payload),
+                });
+                if (pending && typeof pending.catch === "function") {
+                    pending.catch(() => {});
+                }
+            } catch (error) {
+                // Telemetry is best-effort and never participates in download control flow.
+            }
+            return true;
+        }
+
+        return Object.freeze({report});
     }
 
     function supportsStreamingEnvironment(environment) {
@@ -172,10 +326,18 @@
         const startTimeoutMs = Number(settings.startTimeoutMs || DEFAULT_START_TIMEOUT_MS);
         const messageTimeoutMs = Number(settings.messageTimeoutMs || DEFAULT_MESSAGE_TIMEOUT_MS);
         const statusPollMs = Number(settings.statusPollMs || DEFAULT_STATUS_POLL_MS);
+        const telemetryReporter = settings.telemetryReporter || createTerminalTelemetryReporter({
+            csrfToken: settings.csrfToken,
+            cryptoObject,
+            documentObject,
+            endpoint: settings.telemetryEndpoint,
+            fetchImpl: settings.telemetryFetchImpl,
+        });
         const listeners = new Map();
         const allListeners = new Set();
         const latestStatuses = new Map();
         let registrationPromise = null;
+        let currentRegistration = null;
         let messageListenerAttached = false;
 
         function capabilityAvailable() {
@@ -214,6 +376,27 @@
                 }
             }
             latestStatuses.set(safe.downloadId, safe);
+            if (FAILURE_TELEMETRY_STATES.has(safe.state)) {
+                const serviceWorker = navigatorObject && navigatorObject.serviceWorker;
+                const controller = serviceWorker && serviceWorker.controller;
+                try {
+                    telemetryReporter.report(safe, {
+                        navigatorOnline: Boolean(navigatorObject && navigatorObject.onLine),
+                        pageVisibility: documentObject && documentObject.visibilityState,
+                        workerControllerState: controller && controller.state,
+                        workerActiveState: currentRegistration
+                            && currentRegistration.active
+                            && currentRegistration.active.state,
+                        workerWaiting: Boolean(currentRegistration && currentRegistration.waiting),
+                        workerInstalling: Boolean(
+                            currentRegistration && currentRegistration.installing
+                        ),
+                        browserFamily: detectBrowserFamily(navigatorObject),
+                    });
+                } catch (error) {
+                    // A diagnostic path must not affect status delivery or fallback decisions.
+                }
+            }
             allListeners.forEach((callback) => callback(safe));
             const callbacks = listeners.get(safe.downloadId);
             if (callbacks) {
@@ -265,6 +448,7 @@
                             "浏览器流式下载服务注册失败。",
                         );
                     }
+                    currentRegistration = registered;
                     const active = await waitForWorkerActivation(registered, {
                         timeoutMs: startTimeoutMs,
                         schedule,
@@ -686,11 +870,19 @@
         DEFAULT_MESSAGE_TIMEOUT_MS,
         DEFAULT_START_TIMEOUT_MS,
         DEFAULT_STATUS_POLL_MS,
+        DEFAULT_TELEMETRY_ENDPOINT,
         DEFAULT_WORKER_SCOPE,
         DEFAULT_WORKER_URL,
+        TELEMETRY_SCHEMA_VERSION,
         TERMINAL_STATES,
+        createTerminalTelemetryPayload,
+        createTerminalTelemetryReporter,
         createStreamingClient,
+        detectBrowserFamily,
         getSharedClient,
+        normalizePageVisibility,
+        normalizeWorkerState,
+        readCookie,
         streamingError,
         supportsStreamingEnvironment,
         waitForWorkerActivation,
