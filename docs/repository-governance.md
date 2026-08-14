@@ -84,6 +84,16 @@ Every production deployment record must identify:
 Runtime configuration changes are operational changes even when code does not
 change. Record them separately from code defaults and Admin runtime state.
 
+When application hard gates remain healthy, classify an external dependency
+failure before deciding rollback. A single Provider CDN fetch rejection is not
+by itself proof of an application regression. Exact-SHA identity, served static
+bytes, Service Worker lifecycle, deterministic controlled Streaming, bounded
+Page probe evidence, and ordinary server media bytes must inform the decision.
+This does not weaken rollback for failed service/readiness, static mismatch,
+controlled Streaming failure, ordinary Relay, media corruption, persistent
+application exceptions, permission errors, or security failures. Follow
+`docs/production-streaming-acceptance-gate-v1.md`.
+
 ## Main Protection
 
 Recommended main protection:
