@@ -9,6 +9,28 @@ on:
       - "feat/**"
 
 jobs:
+  nginx-baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+
+      - name: Validate Nginx baseline invariants
+        run: |
+          python ops/nginx/tools/check_nginx_drift.py
+          python -m unittest discover -s ops/nginx/tests -p 'test_*.py' -v
+
+      - name: Install isolated Nginx test dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes nginx
+
+      - name: Run isolated Nginx acceptance
+        run: python ops/nginx/tests/run_nginx_acceptance.py
+
   test:
     runs-on: ubuntu-latest
     env:
