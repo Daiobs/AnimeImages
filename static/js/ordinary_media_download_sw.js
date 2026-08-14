@@ -66,6 +66,12 @@ function markTerminal(state, nextState, errorCode, options) {
     }
     state.state = nextState;
     state.errorCode = String(errorCode || "");
+    state.failureClass = protocol.normalizeFailureClass(
+        settings.failureClass || state.failureClass,
+    );
+    state.failureStage = protocol.normalizeFailureStage(
+        settings.failureStage || state.failureStage,
+    );
     state.updatedAt = Date.now();
     state.terminalAt = state.updatedAt;
     const notification = postToClients(`DOWNLOAD_${nextState.toUpperCase()}`, state)
@@ -88,7 +94,9 @@ function pruneDownloads() {
         ) {
             downloads.delete(downloadId);
         } else if (state.state === "prepared" && now > state.expiresAt) {
-            markTerminal(state, "failed", "DESCRIPTOR_EXPIRED");
+            markTerminal(state, "failed", "DESCRIPTOR_EXPIRED", {
+                failureStage: "DESCRIPTOR_FAILURE",
+            });
         }
     }
 }
@@ -104,7 +112,14 @@ async function cancelDownload(state, code) {
         state,
         "cancelled",
         code || "DOWNLOAD_CANCELLED",
-        {deferCleanup: true},
+        {
+            deferCleanup: true,
+            failureStage: code === "USER_CANCELLED"
+                ? "USER_CANCELLED"
+                : (code === "DOWNLOAD_MANAGER_CANCELLED"
+                    ? "DOWNLOAD_MANAGER_CANCELLED"
+                    : "DESCRIPTOR_FAILURE"),
+        },
     );
     try {
         if (abortController) {
@@ -140,8 +155,15 @@ function createDownloadState(descriptor) {
         startedAt: 0,
         updatedAt: Date.now(),
         errorCode: "",
+        failureClass: "NOT_APPLICABLE",
+        failureStage: "",
         streamingStarted: false,
         terminalAt: 0,
+        registeredAt: Date.now(),
+        fetchStartedAt: 0,
+        fetchFailedAt: 0,
+        firstResponseAt: 0,
+        firstChunkAt: 0,
         abortController: null,
         upstreamReader: null,
         downstreamController: null,
@@ -152,7 +174,9 @@ function createDownloadState(descriptor) {
     };
     state.expiryTimer = setTimeout(() => {
         if (state.state === "prepared") {
-            markTerminal(state, "failed", "DESCRIPTOR_EXPIRED");
+            markTerminal(state, "failed", "DESCRIPTOR_EXPIRED", {
+                failureStage: "DESCRIPTOR_FAILURE",
+            });
         }
     }, Math.max(0, descriptor.expiresAt - Date.now()));
     return state;
@@ -246,12 +270,15 @@ self.addEventListener("message", (event) => {
 
 async function streamDownload(state) {
     if (Date.now() > state.expiresAt) {
-        markTerminal(state, "failed", "DESCRIPTOR_EXPIRED");
+        markTerminal(state, "failed", "DESCRIPTOR_EXPIRED", {
+            failureStage: "DESCRIPTOR_FAILURE",
+        });
         return errorResponse(410, "DESCRIPTOR_EXPIRED");
     }
     state.state = "fetching";
     state.streamingStarted = true;
     state.startedAt = Date.now();
+    state.fetchStartedAt = state.startedAt;
     state.updatedAt = state.startedAt;
     state.abortController = new AbortController();
     await postToClients("DOWNLOAD_FETCH_STARTED", state);
@@ -269,7 +296,11 @@ async function streamDownload(state) {
         if (state.state === "cancelled") {
             return errorResponse(499, "DOWNLOAD_CANCELLED");
         }
-        markTerminal(state, "failed", "UPSTREAM_FETCH_FAILED");
+        state.fetchFailedAt = Date.now();
+        markTerminal(state, "failed", "UPSTREAM_FETCH_FAILED", {
+            failureClass: protocol.classifyFetchFailure(error),
+            failureStage: "FETCH_REJECTED_BEFORE_RESPONSE",
+        });
         return errorResponse(502, "UPSTREAM_FETCH_FAILED");
     }
     if (state.state === "cancelled") {
@@ -278,6 +309,7 @@ async function streamDownload(state) {
         }
         return errorResponse(499, "DOWNLOAD_CANCELLED");
     }
+    state.firstResponseAt = Date.now();
     state.url = "";
 
     const contentType = protocol.normalizeContentType(upstream.headers.get("Content-Type"));
@@ -293,17 +325,23 @@ async function streamDownload(state) {
         if (upstream.body && typeof upstream.body.cancel === "function") {
             await upstream.body.cancel().catch(() => {});
         }
-        markTerminal(state, "failed", "UPSTREAM_MEDIA_INVALID");
+        markTerminal(state, "failed", "UPSTREAM_MEDIA_INVALID", {
+            failureStage: "HTTP_RESPONSE_REJECTED",
+        });
         return errorResponse(502, "UPSTREAM_MEDIA_INVALID");
     }
     if (contentLength > protocol.MAX_STREAM_BYTES) {
         await upstream.body.cancel().catch(() => {});
-        markTerminal(state, "failed", "UPSTREAM_SIZE_LIMIT_EXCEEDED");
+        markTerminal(state, "failed", "UPSTREAM_SIZE_LIMIT_EXCEEDED", {
+            failureStage: "SIZE_VALIDATION_FAILURE",
+        });
         return errorResponse(502, "UPSTREAM_SIZE_LIMIT_EXCEEDED");
     }
     if (state.expectedBytes && contentLength && state.expectedBytes !== contentLength) {
         await upstream.body.cancel().catch(() => {});
-        markTerminal(state, "failed", "UPSTREAM_SIZE_MISMATCH");
+        markTerminal(state, "failed", "UPSTREAM_SIZE_MISMATCH", {
+            failureStage: "SIZE_VALIDATION_FAILURE",
+        });
         return errorResponse(502, "UPSTREAM_SIZE_MISMATCH");
     }
 
@@ -337,6 +375,9 @@ async function streamDownload(state) {
                     return;
                 }
                 const chunkBytes = value && value.byteLength ? value.byteLength : 0;
+                if (chunkBytes && !state.firstChunkAt) {
+                    state.firstChunkAt = Date.now();
+                }
                 state.receivedBytes += chunkBytes;
                 if (state.receivedBytes > byteLimit) {
                     throw new Error("UPSTREAM_SIZE_LIMIT_EXCEEDED");
@@ -363,10 +404,15 @@ async function streamDownload(state) {
                 if (state.abortController) {
                     state.abortController.abort();
                 }
-                markTerminal(state, "failed", (
+                const terminalCode = (
                     code === "UPSTREAM_SIZE_MISMATCH"
                     || code === "UPSTREAM_SIZE_LIMIT_EXCEEDED"
-                ) ? code : "UPSTREAM_STREAM_FAILED");
+                ) ? code : "UPSTREAM_STREAM_FAILED";
+                markTerminal(state, "failed", terminalCode, {
+                    failureStage: terminalCode === "UPSTREAM_STREAM_FAILED"
+                        ? "STREAM_BODY_FAILURE"
+                        : "SIZE_VALIDATION_FAILURE",
+                });
                 controller.error(new Error(state.errorCode));
             }
         },

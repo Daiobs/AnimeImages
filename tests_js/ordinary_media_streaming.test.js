@@ -198,6 +198,7 @@ function createClientHarness(options) {
         startTimeoutMs: settings.startTimeoutMs || 100,
         messageTimeoutMs: 100,
         statusPollMs: 20,
+        telemetryReporter: settings.telemetryReporter,
     });
     return {calls, clicked, client, serviceWorker, statuses};
 }
@@ -379,7 +380,27 @@ test("protocol validates opaque IDs, bounded media hosts, and memory-safe snapsh
     const snapshot = protocol.safeSnapshot({...descriptor, state: "fetching", streamingStarted: true});
     const serialized = JSON.stringify(snapshot);
     assert.equal(snapshot.streamingStarted, true);
-    assert.doesNotMatch(serialized, /365yg|fixture|signed|url/i);
+    assert.equal(snapshot.mediaHost, "v11-default.365yg.com");
+    assert.doesNotMatch(serialized, /media\/video\.mp4|fixture|signed|token|url/i);
+});
+
+test("fetch failures use fixed factual classes without inspecting raw messages", () => {
+    const signedUrl = "https://v11-default.365yg.com/path/video.mp4?token=super-secret";
+    const typeError = new TypeError(`failed to fetch ${signedUrl}`);
+    const abortError = new Error(`aborted ${signedUrl}`);
+    abortError.name = "AbortError";
+    const unknownError = new Error(`unknown ${signedUrl}`);
+
+    assert.equal(protocol.classifyFetchFailure(typeError), "FETCH_REJECTED_TYPE_ERROR");
+    assert.equal(protocol.classifyFetchFailure(abortError), "FETCH_ABORTED");
+    assert.equal(protocol.classifyFetchFailure(unknownError), "FETCH_REJECTED_OTHER");
+    assert.equal(protocol.classifyFetchFailure({
+        get name() { throw new Error("unsafe getter"); },
+    }), "FETCH_REJECTED_OTHER");
+    assert.equal(protocol.sanitizeMediaHost(signedUrl), "v11-default.365yg.com");
+    assert.equal(protocol.sanitizeMediaHost("https://attacker.example/path"), "unknown");
+    assert.equal(protocol.sanitizeMediaHost("https://bad..365yg.com/path"), "unknown");
+    assert.equal(protocol.sanitizeMediaHost("https://-bad.365yg.com/path"), "unknown");
 });
 
 test("loopback benchmark sources require a loopback page and worker", async () => {
@@ -693,6 +714,197 @@ test("worker streams exact bytes without Blob, persistence, or AnimeImages relay
     assert.doesNotMatch(workerSource, /localStorage|sessionStorage/i);
     assert.doesNotMatch(workerSource, /skipWaiting\s*\(/);
     assert.doesNotMatch(productSource, /ordinary_media.*\/media\/download-(prepare|stream|status)/i);
+});
+
+test("worker reports a URL-free before-response TypeError classification", async () => {
+    const signedUrl = "https://v11-default.365yg.com/path/video.mp4?token=super-secret";
+    const runtime = createWorkerRuntime(async () => {
+        throw new TypeError(`Failed to fetch ${signedUrl}`);
+    });
+    const downloadId = "abababababababababababababababab";
+    await runtime.send({type: "REGISTER_DOWNLOAD", descriptor: {
+        downloadId,
+        url: signedUrl,
+        filename: "failed.mp4",
+        provider: "tiantianjiexi",
+        expectedBytes: 100,
+    }});
+
+    const response = await runtime.startFetch(downloadId).response;
+    assert.equal(response.status, 502);
+    const current = await runtime.send({type: "GET_DOWNLOAD_STATUS", downloadId});
+    assert.equal(current.status.errorCode, "UPSTREAM_FETCH_FAILED");
+    assert.equal(current.status.failureClass, "FETCH_REJECTED_TYPE_ERROR");
+    assert.equal(current.status.failureStage, "FETCH_REJECTED_BEFORE_RESPONSE");
+    assert.equal(current.status.mediaHost, "v11-default.365yg.com");
+    assert.ok(current.status.fetchRejectMs >= 0);
+
+    const serialized = JSON.stringify({status: current.status, messages: runtime.clientMessages});
+    assert.doesNotMatch(serialized, /path\/video\.mp4|token|super-secret|https:\/\//i);
+});
+
+test("worker keeps AbortError factual and does not label it as CORS", async () => {
+    const runtime = createWorkerRuntime(async () => {
+        const error = new Error("sensitive text must not be copied");
+        error.name = "AbortError";
+        throw error;
+    });
+    const downloadId = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
+    await runtime.send({type: "REGISTER_DOWNLOAD", descriptor: {
+        downloadId,
+        url: "https://v11-default.365yg.com/media/abort.mp4?fixture=signed",
+        filename: "abort.mp4",
+        provider: "tiantianjiexi",
+        expectedBytes: 10,
+    }});
+    await runtime.startFetch(downloadId).response;
+    const current = await runtime.send({type: "GET_DOWNLOAD_STATUS", downloadId});
+    assert.equal(current.status.failureClass, "FETCH_ABORTED");
+    assert.doesNotMatch(JSON.stringify(current), /CORS|sensitive text|fixture|signed/i);
+});
+
+test("worker distinguishes invalid responses from stream failures after bytes", async () => {
+    const invalidRuntime = createWorkerRuntime(async () => ({
+        ok: false,
+        status: 403,
+        url: "https://v11-default.365yg.com/media/rejected.mp4?fixture=signed",
+        headers: new Headers({"Content-Type": "text/html"}),
+        body: new ReadableStream({start(controller) { controller.close(); }}),
+    }));
+    const invalidId = "dededededededededededededededede";
+    await invalidRuntime.send({type: "REGISTER_DOWNLOAD", descriptor: {
+        downloadId: invalidId,
+        url: "https://v11-default.365yg.com/media/rejected.mp4?fixture=signed",
+        filename: "rejected.mp4",
+        provider: "tiantianjiexi",
+        expectedBytes: 0,
+    }});
+    await invalidRuntime.startFetch(invalidId).response;
+    const invalid = await invalidRuntime.send({type: "GET_DOWNLOAD_STATUS", downloadId: invalidId});
+    assert.equal(invalid.status.errorCode, "UPSTREAM_MEDIA_INVALID");
+    assert.equal(invalid.status.failureStage, "HTTP_RESPONSE_REJECTED");
+
+    let pullCount = 0;
+    const failingBody = new ReadableStream({
+        pull(controller) {
+            pullCount += 1;
+            if (pullCount === 1) {
+                controller.enqueue(Uint8Array.from([1, 2, 3]));
+                return;
+            }
+            controller.error(new TypeError("stream failed at a signed URL"));
+        },
+    });
+    const streamRuntime = createWorkerRuntime(async () => ({
+        ok: true,
+        status: 200,
+        url: "https://v11-default.365yg.com/media/stream.mp4?fixture=signed",
+        headers: new Headers({"Content-Type": "video/mp4", "Content-Length": "6"}),
+        body: failingBody,
+    }));
+    const streamId = "efefefefefefefefefefefefefefefef";
+    await streamRuntime.send({type: "REGISTER_DOWNLOAD", descriptor: {
+        downloadId: streamId,
+        url: "https://v11-default.365yg.com/media/stream.mp4?fixture=signed",
+        filename: "stream.mp4",
+        provider: "tiantianjiexi",
+        expectedBytes: 6,
+    }});
+    const streamResponse = await streamRuntime.startFetch(streamId).response;
+    await assert.rejects(streamResponse.arrayBuffer());
+    const failed = await streamRuntime.send({type: "GET_DOWNLOAD_STATUS", downloadId: streamId});
+    assert.equal(failed.status.errorCode, "UPSTREAM_STREAM_FAILED");
+    assert.equal(failed.status.failureStage, "STREAM_BODY_FAILURE");
+    assert.equal(failed.status.receivedBytes, 3);
+    assert.ok(failed.status.timeToFirstChunkMs >= 0);
+});
+
+test("terminal failure telemetry is sent once and remains best-effort", async () => {
+    const calls = [];
+    const reporter = streaming.createTerminalTelemetryReporter({
+        csrfToken: "fake-csrf-token",
+        cryptoObject: deterministicCrypto(),
+        fetchImpl(endpoint, options) {
+            calls.push({endpoint, options});
+            return Promise.reject(new Error("telemetry unavailable"));
+        },
+    });
+    const status = safeStatus({
+        state: "failed",
+        errorCode: "UPSTREAM_FETCH_FAILED",
+        failureClass: "FETCH_REJECTED_TYPE_ERROR",
+        failureStage: "FETCH_REJECTED_BEFORE_RESPONSE",
+        mediaHost: "v11-default.365yg.com",
+        streamingStarted: true,
+    });
+    const environment = {
+        navigatorOnline: true,
+        pageVisibility: "visible",
+        workerControllerState: "activated",
+        workerActiveState: "activated",
+        browserFamily: "chromium",
+    };
+    assert.equal(reporter.report(status, environment), true);
+    assert.equal(reporter.report(status, environment), false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].endpoint, "/media/browser-download-telemetry/");
+    assert.equal(calls[0].options.keepalive, true);
+    const payload = JSON.parse(calls[0].options.body);
+    assert.equal(payload.failure_class, "FETCH_REJECTED_TYPE_ERROR");
+    assert.equal(payload.media_host, "v11-default.365yg.com");
+    assert.deepEqual(Object.keys(payload).sort(), [
+        "browser_family",
+        "download_id",
+        "error_code",
+        "expected_bytes",
+        "failure_class",
+        "failure_stage",
+        "fetch_reject_ms",
+        "media_host",
+        "navigator_online",
+        "page_visibility",
+        "protocol_version",
+        "provider",
+        "received_bytes",
+        "registration_to_fetch_ms",
+        "schema_version",
+        "state",
+        "stream_duration_ms",
+        "streaming_started",
+        "telemetry_id",
+        "time_to_first_chunk_ms",
+        "total_bytes",
+        "transport",
+        "worker_active_state",
+        "worker_controller_state",
+        "worker_installing",
+        "worker_waiting",
+    ]);
+    assert.doesNotMatch(JSON.stringify(payload), /media\/video\.mp4|token|signed|https:\/\//i);
+});
+
+test("a throwing telemetry reporter cannot change post-start failure semantics", async () => {
+    const harness = createClientHarness({
+        telemetryReporter: {report() { throw new Error("telemetry failed"); }},
+        onNavigate({serviceWorker, statuses}) {
+            const current = [...statuses.values()][0];
+            serviceWorker.emit({...current, state: "fetching", streamingStarted: true});
+            queueMicrotask(() => serviceWorker.emit({
+                ...current,
+                state: "failed",
+                streamingStarted: true,
+                errorCode: "UPSTREAM_FETCH_FAILED",
+                failureClass: "FETCH_REJECTED_TYPE_ERROR",
+                failureStage: "FETCH_REJECTED_BEFORE_RESPONSE",
+            }));
+        },
+    });
+    const active = await harness.client.start(ordinaryItem());
+    await assert.rejects(active.completion, (error) => (
+        error.errorCode === "UPSTREAM_FETCH_FAILED" && error.streamingStarted === true
+    ));
 });
 
 test("downstream Download Manager cancel aborts the upstream stream and cleans state", async () => {
