@@ -69,6 +69,23 @@ accepted behavior on top of main. Do not reset or force-push main to production.
 - Branch deletion is a separate audited cleanup task. Never delete a branch as
   an incidental part of reconciliation or deployment.
 
+## Branch Lifecycle
+
+- `main` is the canonical development line and is never a cleanup target.
+- `checkpoint/*` refs are immutable recovery evidence. Branch cleanup must not
+  move or delete them.
+- A feature branch is temporary. After merge, verify the PR head, merge tree,
+  current branch tip, open-PR state, and worktree use before deleting its ref.
+- A squash merge requires tree or patch equivalence evidence; commit ancestry
+  alone is not sufficient.
+- A research branch may be deleted only after its conclusions and necessary
+  evidence are in main or an explicitly protected checkpoint.
+- A branch with unexplained unique commits, automation dependencies, or a dirty
+  or unknown worktree remains protected until a later audit resolves it.
+- Runtime and automation must not depend on an arbitrary task or Codex
+  worktree branch. Use reviewed main commits and explicit production
+  checkpoints instead.
+
 ## Runtime And Deployment Records
 
 Every production deployment record must identify:
