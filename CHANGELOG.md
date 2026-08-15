@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Hardened TianTianJieXi success-cache admission with platform-aware structural
+  validation, added URL-free Provider outcome and cache-age diagnostics across
+  TianTianJieXi/KuKuTool/Native, and split browser invalid-response telemetry
+  into fixed status/body/content-type/final-host reasons while preserving old
+  telemetry clients, keeping failed download navigation inside an isolated
+  same-origin frame, and preserving the zero-server-media Streaming contract.
 - Added URL-free, token-free Service Worker failure diagnostics with fixed
   fetch classes/stages, hostname-only metadata, bounded timings, one
   best-effort terminal event per download, and a CSRF-protected, rate-limited
