@@ -41,6 +41,29 @@ The accepted Douyin Ultra behavior remains unchanged:
 - KuKuTool remains limited to 30 requests/minute and four global concurrent
   calls in the accepted production runtime configuration.
 
+## Production Acceptance
+
+This contract is production accepted at:
+
+```text
+application SHA: d746ec9ff66532071b8079592f8b4831cae0fe51
+checkpoint:      checkpoint/production-provider-stabilization-v1
+```
+
+Acceptance v1 found that the application created structured Provider terminal
+fields but the production console formatter omitted them, so it rolled back to
+`fc1f136...`. Acceptance v2 verified the repaired explicit allowlist in final
+systemd journal text, a fresh TianTianJieXi success with one consumed user
+attempt, payload-cache reuse with no new TianTianJieXi external call or user
+attempt, and an exact 110,691,390-byte Chrome Streaming download with zero
+AnimeImages ordinary-media bytes. Environment, runtime settings, systemd, and
+Nginx remained unchanged and the post-deploy observation was healthy.
+
+The Native metadata Future remains separate from Ultra attempt accounting and
+has no Provider success cache. Its execution can remain observable on a cached
+TianTianJieXi request without consuming another user attempt; this does not
+change the cache or quota contract above.
+
 ## Provider Outcomes
 
 `provider_attempt_completed` uses fixed internal outcomes:

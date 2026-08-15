@@ -18,11 +18,12 @@ related but separate facts.
 
 ## Canonical Repository
 
-The repository baseline before the Provider terminal logging fix is:
+The runtime baseline accepted by Provider Stabilization Production Acceptance
+v2 is:
 
 ```text
-origin/main: 4d91b749be68dc7612bbe4c48dc762ab36c59841
-source:      Provider Stabilization & Reliability v1 (#39)
+runtime SHA: d746ec9ff66532071b8079592f8b4831cae0fe51
+source:      Provider terminal logging fix (#40), including Provider Stabilization (#39)
 ```
 
 Always resolve the current canonical SHA rather than treating the value above
@@ -33,56 +34,52 @@ git fetch --prune origin
 git rev-parse origin/main
 ```
 
-The production application SHA is an ancestor of canonical main. Before the
-Provider stabilization candidate documented below, changes after that
-production SHA were infrastructure-as-code, repository governance, evidence,
-and documentation only.
+The production application SHA is the accepted runtime tree on canonical
+main. After this status reconciliation merges, canonical main may be ahead by
+documentation only; that does not create runtime code drift and is not a
+reason to redeploy production.
 
 ```text
-PRE_PROVIDER_STABILIZATION_RUNTIME_CODE_DRIFT = 0
-REPO_HEAD_AHEAD_INFRA_GOVERNANCE_ONLY = YES
+PRODUCTION_RUNTIME_CODE_DRIFT = 0
+REPO_HEAD_AHEAD_DOCS_ONLY = YES
 ```
 
-That earlier SHA difference was not a reason to redeploy production. The
-runtime release documented below changes that status on canonical main.
+## Provider Stabilization Acceptance
 
-## Provider Stabilization Candidate
-
-This Provider stabilization release is the first post-convergence runtime
-change on canonical main and contains behavior not yet accepted on production:
+Provider Stabilization & Reliability v1 and its explicit allowlisted terminal
+formatter repair are production accepted:
 
 ```text
-MAIN_RUNTIME_AHEAD_PRODUCTION = YES
-PRODUCTION_RUNTIME_CODE_DRIFT = PROVIDER_STABILIZATION_PENDING_ACCEPTANCE
+PROVIDER_STABILIZATION = PRODUCTION_ACCEPTED
+PROVIDER_TERMINAL_FORMATTER = PRODUCTION_ACCEPTED
 ```
 
-The candidate adds structural TianTianJieXi cache admission, fixed Provider
-outcome diagnostics, cache-age evidence, and finer browser response rejection
-metadata. The first production acceptance attempt exact-deployed `4d91b749...`.
-Health, configuration integrity, static identity, synthetic telemetry, and a
-fresh TianTianJieXi Ultra parse passed, but the production console formatter
-did not render the new Provider terminal diagnostic fields. The attempt was
-classified as:
+Acceptance v1 exact-deployed `4d91b749...`. Health, configuration integrity,
+static identity, synthetic telemetry, and a fresh TianTianJieXi Ultra parse
+passed, but the production console formatter did not render the new Provider
+terminal diagnostic fields. Production was therefore rolled back to
+`fc1f136...`:
 
 ```text
 OBSERVABILITY_OUTPUT_CONTRACT_REGRESSION
 PROVIDER_TERMINAL_LOG_OUTPUT_INCOMPLETE
 ```
 
-Production was rolled back successfully to `fc1f136...`. This result does not
-prove a Provider business-logic regression, and Provider stabilization remains
-not production accepted. Canonical main includes the stabilization candidate
-and, after the formatter fix merges, the explicit allowlisted output repair.
-Resolve the exact merged main SHA and use a separate Production Acceptance v2
-task; never infer deployment or acceptance from merge state.
+The immediately following acceptance v2 reused the recovered `fc1f136...`
+baseline, exact-deployed `d746ec9...`, and verified the final journal text,
+fresh/cache attempt accounting, exact browser Streaming, zero ordinary-media
+server bytes, Batch boundaries, and a ten-minute healthy observation window.
+No signed media URL, query, token, Cookie, credential, raw response, or stack
+was recorded in the acceptance evidence.
 
 ## Current Production
 
 Production application code has been deployed and accepted at:
 
 ```text
-application SHA:  fc1f1368431fb2ff063231dfaa4f35a9c8154430
-checkpoint:       checkpoint/production-main-converged-v2
+application SHA:  d746ec9ff66532071b8079592f8b4831cae0fe51
+checkpoint:       checkpoint/production-provider-stabilization-v1
+rollback:         checkpoint/production-main-converged-v2 -> fc1f1368431fb2ff063231dfaa4f35a9c8154430
 site:             https://download.cosflow.icu/
 ```
 
@@ -237,11 +234,9 @@ for exact branch tips, evidence, decisions, and checkpoint integrity records.
 1. Firefox and Edge Streaming production acceptance is not complete. Chrome is
    production-accepted and controlled Safari evidence exists.
 2. External/browser/CDN transients remain possible. The Provider stabilization
-   candidate refines `UPSTREAM_MEDIA_INVALID` with fixed safe rejection reasons
-   for HTTP status, missing body, content type, and final host. Production
-   retains the prior coarse diagnostic until the candidate's eventual main SHA
-   is separately deployed and accepted; no single CDN root cause is currently
-   proven.
+   release refines `UPSTREAM_MEDIA_INVALID` with fixed safe rejection reasons
+   for HTTP status, missing body, content type, and final host. No single CDN
+   root cause is currently proven.
 3. YouTube high-quality audio/video merge remains server-required and
    runtime-gated.
 4. Bilibili high-quality Cookie/member/DASH support remains deferred.
@@ -259,13 +254,11 @@ are complete and are not active blockers.
 
 1. Start every new task from a freshly fetched `origin/main`, using one branch
    and one PR for one concrete task.
-2. After merge, run a separate Provider Stabilization Production Acceptance v1
-   exact-SHA rollout; do not add a new Provider or download architecture first.
-3. Keep request-scoped fresh-resource retry deferred until cache,
+2. Keep request-scoped fresh-resource retry deferred until cache,
    single-flight, and continuation can share a safe freshness generation.
-4. Do not reopen the Streaming architecture without new evidence of an
+3. Do not reopen the Streaming architecture without new evidence of an
    application regression.
-5. Keep production changes as separate, approved exact-SHA deployment tasks.
+4. Keep production changes as separate, approved exact-SHA deployment tasks.
 
 Historical reconciliation, failure forensics, infrastructure, and branch audit
 documents remain immutable evidence and should not be rewritten as current
