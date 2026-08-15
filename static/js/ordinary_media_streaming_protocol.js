@@ -52,6 +52,19 @@
         "DOWNLOAD_MANAGER_CANCELLED",
         "DESCRIPTOR_FAILURE",
     ]);
+    const RESPONSE_REJECT_REASONS = Object.freeze([
+        "HTTP_STATUS_REJECTED",
+        "BODY_UNAVAILABLE",
+        "CONTENT_TYPE_REJECTED",
+        "FINAL_HOST_REJECTED",
+        "UNKNOWN_RESPONSE_REJECTED",
+    ]);
+    const CONTENT_TYPE_CLASSES = Object.freeze([
+        "VIDEO",
+        "OCTET_STREAM",
+        "MISSING",
+        "OTHER",
+    ]);
     const MAX_SAFE_TIMING_MS = 24 * 60 * 60 * 1000;
 
     function positiveInteger(value) {
@@ -91,6 +104,20 @@
     function isAllowedMediaContentType(value) {
         const contentType = normalizeContentType(value);
         return SAFE_CONTENT_TYPES.includes(contentType) || contentType.startsWith("video/");
+    }
+
+    function classifyContentType(value) {
+        const contentType = normalizeContentType(value);
+        if (!contentType) {
+            return "MISSING";
+        }
+        if (contentType.startsWith("video/")) {
+            return "VIDEO";
+        }
+        if (["application/octet-stream", "binary/octet-stream"].includes(contentType)) {
+            return "OCTET_STREAM";
+        }
+        return "OTHER";
     }
 
     function hostnameMatchesSuffix(hostname, suffix) {
@@ -186,6 +213,60 @@
     function normalizeFailureStage(value) {
         const failureStage = String(value || "").toUpperCase();
         return FAILURE_STAGES.includes(failureStage) ? failureStage : "";
+    }
+
+    function normalizeResponseRejectReason(value) {
+        const reason = String(value || "").toUpperCase();
+        return RESPONSE_REJECT_REASONS.includes(reason) ? reason : "";
+    }
+
+    function normalizeContentTypeClass(value) {
+        const contentTypeClass = String(value || "").toUpperCase();
+        return CONTENT_TYPE_CLASSES.includes(contentTypeClass)
+            ? contentTypeClass
+            : "MISSING";
+    }
+
+    function normalizeHttpStatus(value) {
+        const status = Number(value);
+        return Number.isInteger(status) && status >= 100 && status <= 599
+            ? status
+            : 0;
+    }
+
+    function classifyResponseRejection(response, options) {
+        const value = response && typeof response === "object" ? response : {};
+        const settings = options && typeof options === "object" ? options : {};
+        const httpStatus = normalizeHttpStatus(value.status);
+        const rawContentType = value.headers && typeof value.headers.get === "function"
+            ? value.headers.get("Content-Type")
+            : "";
+        const contentTypeClass = classifyContentType(rawContentType);
+        const finalUrlAllowed = isAllowedStreamingUrl(value.url, {
+            allowLoopbackHttp: Boolean(settings.allowLoopbackHttp),
+        });
+        const finalMediaHost = finalUrlAllowed
+            ? sanitizeMediaHost(value.url, {
+                allowLoopback: Boolean(settings.allowLoopbackHttp),
+            })
+            : "unknown";
+        let responseRejectReason = "";
+        if (!value.ok) {
+            responseRejectReason = "HTTP_STATUS_REJECTED";
+        } else if (!value.body) {
+            responseRejectReason = "BODY_UNAVAILABLE";
+        } else if (!isAllowedMediaContentType(rawContentType)) {
+            responseRejectReason = "CONTENT_TYPE_REJECTED";
+        } else if (!finalUrlAllowed) {
+            responseRejectReason = "FINAL_HOST_REJECTED";
+        }
+        return Object.freeze({
+            rejected: Boolean(responseRejectReason),
+            responseRejectReason,
+            httpStatus,
+            contentTypeClass,
+            finalMediaHost,
+        });
     }
 
     function safeTiming(value) {
@@ -305,6 +386,15 @@
             errorCode: String(status.errorCode || "").replace(/[^A-Z0-9_]+/g, "").slice(0, 80),
             failureClass: normalizeFailureClass(status.failureClass),
             failureStage: normalizeFailureStage(status.failureStage),
+            responseRejectReason: normalizeResponseRejectReason(
+                status.responseRejectReason,
+            ),
+            httpStatus: normalizeHttpStatus(status.httpStatus),
+            contentTypeClass: normalizeContentTypeClass(status.contentTypeClass),
+            finalMediaHost: sanitizeMediaHost(
+                status.finalMediaHost,
+                {allowLoopback: true},
+            ),
             mediaHost: sanitizeMediaHost(status.mediaHost, {allowLoopback: true}),
             registrationToFetchMs: safeTiming(
                 status.registrationToFetchMs
@@ -362,14 +452,18 @@
 
     return Object.freeze({
         ALLOWED_MEDIA_HOST_SUFFIXES,
+        CONTENT_TYPE_CLASSES,
         DEFAULT_STREAM_DESCRIPTOR_TTL_MS,
         DOWNLOAD_PATH_SEGMENT,
         FAILURE_CLASSES,
         FAILURE_STAGES,
         MAX_STREAM_BYTES,
         PROTOCOL_VERSION,
+        RESPONSE_REJECT_REASONS,
         TERMINAL_STATES,
         classifyFetchFailure,
+        classifyContentType,
+        classifyResponseRejection,
         createDescriptor,
         createProgressEstimator,
         descriptorIdFromPath,
@@ -379,8 +473,11 @@
         isLoopbackHostname,
         normalizeFailureClass,
         normalizeFailureStage,
+        normalizeContentTypeClass,
         normalizeContentType,
         normalizeDownloadId,
+        normalizeHttpStatus,
+        normalizeResponseRejectReason,
         positiveInteger,
         randomDownloadId,
         safeSnapshot,

@@ -88,11 +88,15 @@ function createClientHarness(options) {
             }
             return {active: worker};
         },
-        emit(status) {
+        emit(status, messageOptions) {
             statuses.set(status.downloadId, status);
             const callback = listeners.get("message");
             if (callback) {
-                callback({data: {type: `DOWNLOAD_${status.state.toUpperCase()}`, status}});
+                callback({data: {
+                    type: `DOWNLOAD_${status.state.toUpperCase()}`,
+                    status,
+                    ...(messageOptions || {}),
+                }});
             }
         },
     };
@@ -114,9 +118,13 @@ function createClientHarness(options) {
             }
             if (message.type === "GET_DOWNLOAD_STATUS") {
                 const status = statuses.get(message.downloadId);
-                reply.postMessage(status
+                const response = status
                     ? {ok: true, status}
-                    : {ok: false, code: "DOWNLOAD_NOT_FOUND"});
+                    : {ok: false, code: "DOWNLOAD_NOT_FOUND"};
+                if (Object.hasOwn(settings, "statusTelemetryOwner")) {
+                    response.telemetryOwner = settings.statusTelemetryOwner;
+                }
+                reply.postMessage(response);
                 return;
             }
             if (message.type === "LIST_ACTIVE_DOWNLOADS") {
@@ -171,18 +179,38 @@ function createClientHarness(options) {
     };
     serviceWorker.controller = worker;
     const clicked = [];
+    const frames = [];
     const documentObject = {
         body: {
             appendChild() {},
         },
-        createElement() {
+        createElement(tagName) {
+            if (tagName === "iframe") {
+                const frame = {
+                    hidden: false,
+                    name: "",
+                    removed: false,
+                    style: {},
+                    remove() {
+                        this.removed = true;
+                    },
+                };
+                frames.push(frame);
+                return frame;
+            }
             return {
                 href: "",
+                target: "",
                 style: {},
                 click() {
                     clicked.push(this.href);
                     if (typeof settings.onNavigate === "function") {
-                        settings.onNavigate({serviceWorker, statuses, href: this.href});
+                        settings.onNavigate({
+                            serviceWorker,
+                            statuses,
+                            href: this.href,
+                            target: this.target,
+                        });
                     }
                 },
                 remove() {},
@@ -200,7 +228,7 @@ function createClientHarness(options) {
         statusPollMs: 20,
         telemetryReporter: settings.telemetryReporter,
     });
-    return {calls, clicked, client, serviceWorker, statuses};
+    return {calls, clicked, client, frames, serviceWorker, statuses};
 }
 
 function ordinaryItem(overrides) {
@@ -242,6 +270,8 @@ function createWorkerRuntime(fetchImpl, options) {
     const workerUrl = new URL(workerOrigin);
     const listeners = new Map();
     const clientMessages = [];
+    const clientDeliveries = [];
+    const clientIds = settings.clientIds || ["client-a"];
     const context = {
         AbortController,
         DOMException,
@@ -263,7 +293,13 @@ function createWorkerRuntime(fetchImpl, options) {
             location: {origin: workerUrl.origin, hostname: workerUrl.hostname},
             clients: {
                 async matchAll() {
-                    return [{postMessage(message) { clientMessages.push(message); }}];
+                    return clientIds.map((id) => ({
+                        id,
+                        postMessage(message) {
+                            clientMessages.push(message);
+                            clientDeliveries.push({id, message});
+                        },
+                    }));
                 },
             },
             addEventListener(name, callback) { listeners.set(name, callback); },
@@ -271,11 +307,12 @@ function createWorkerRuntime(fetchImpl, options) {
     };
     vm.runInNewContext(workerSource, context, {filename: workerPath});
 
-    async function send(message) {
+    async function send(message, sourceId) {
         return new Promise((resolve) => {
             const waitUntil = [];
             listeners.get("message")({
                 data: message,
+                source: {id: sourceId || clientIds[0]},
                 ports: [{postMessage: resolve}],
                 waitUntil(promise) { waitUntil.push(promise); },
             });
@@ -296,7 +333,7 @@ function createWorkerRuntime(fetchImpl, options) {
         return {response: responsePromise, waitUntil};
     }
 
-    return {clientMessages, send, startFetch};
+    return {clientDeliveries, clientMessages, send, startFetch};
 }
 
 function chunkedUpstream(chunks, options) {
@@ -482,6 +519,10 @@ test("client registers the root-scoped worker and launches one opaque download p
         options: {scope: "/", updateViaCache: "none"},
     });
     assert.match(harness.clicked[0], /^\/__animeimages-stream-download\/[a-f0-9]{32}$/);
+    assert.equal(harness.frames.length, 1);
+    assert.equal(harness.frames[0].hidden, true);
+    assert.match(harness.frames[0].name, /^animeimages-download-[a-f0-9]{32}$/);
+    assert.equal(harness.frames[0].removed, false);
     assert.doesNotMatch(streamingSource, /link\.download\s*=/);
 
     const current = harness.statuses.get(active.downloadId);
@@ -494,6 +535,7 @@ test("client registers the root-scoped worker and launches one opaque download p
     });
     const completed = await active.completion;
     assert.equal(completed.receivedBytes, 10);
+    assert.equal(harness.frames[0].removed, true);
 });
 
 test("estimated display size is not sent as an exact stream length", async () => {
@@ -763,6 +805,135 @@ test("worker keeps AbortError factual and does not label it as CORS", async () =
     assert.doesNotMatch(JSON.stringify(current), /CORS|sensitive text|fixture|signed/i);
 });
 
+test("response rejection predicates have stable status-body-type-host order", () => {
+    const body = {cancel() { return Promise.resolve(); }};
+    const allInvalid = protocol.classifyResponseRejection({
+        ok: false,
+        status: 403,
+        url: "https://attacker.example/redirected.mp4?token=secret",
+        headers: new Headers({"Content-Type": "text/html"}),
+        body: null,
+    });
+    assert.deepEqual(allInvalid, {
+        rejected: true,
+        responseRejectReason: "HTTP_STATUS_REJECTED",
+        httpStatus: 403,
+        contentTypeClass: "OTHER",
+        finalMediaHost: "unknown",
+    });
+
+    const missingBody = protocol.classifyResponseRejection({
+        ok: true,
+        status: 200,
+        url: "https://v11-default.365yg.com/media/video.mp4",
+        headers: new Headers({"Content-Type": "text/html"}),
+        body: null,
+    });
+    assert.equal(missingBody.responseRejectReason, "BODY_UNAVAILABLE");
+
+    const badType = protocol.classifyResponseRejection({
+        ok: true,
+        status: 200,
+        url: "https://attacker.example/redirected.mp4",
+        headers: new Headers({"Content-Type": "text/html"}),
+        body,
+    });
+    assert.equal(badType.responseRejectReason, "CONTENT_TYPE_REJECTED");
+
+    const badHost = protocol.classifyResponseRejection({
+        ok: true,
+        status: 200,
+        url: "https://attacker.example/redirected.mp4",
+        headers: new Headers({"Content-Type": "video/mp4"}),
+        body,
+    });
+    assert.equal(badHost.responseRejectReason, "FINAL_HOST_REJECTED");
+    assert.equal(badHost.finalMediaHost, "unknown");
+    assert.doesNotMatch(JSON.stringify(badHost), /redirected|token|secret|https:\/\//i);
+});
+
+test("worker reports each response rejection reason without response URLs", async () => {
+    const cases = [
+        {
+            id: "11111111111111111111111111111111",
+            expected: "BODY_UNAVAILABLE",
+            response: {
+                ok: true,
+                status: 200,
+                url: "https://v11-default.365yg.com/media/body.mp4?token=secret",
+                headers: new Headers({"Content-Type": "video/mp4"}),
+                body: null,
+            },
+        },
+        {
+            id: "22222222222222222222222222222222",
+            expected: "CONTENT_TYPE_REJECTED",
+            response: {
+                ok: true,
+                status: 200,
+                url: "https://v11-default.365yg.com/media/html.mp4?token=secret",
+                headers: new Headers({"Content-Type": "text/html"}),
+                body: new ReadableStream({start(controller) { controller.close(); }}),
+            },
+        },
+        {
+            id: "33333333333333333333333333333333",
+            expected: "FINAL_HOST_REJECTED",
+            response: {
+                ok: true,
+                status: 200,
+                url: "https://attacker.example/redirected.mp4?token=secret",
+                headers: new Headers({"Content-Type": "video/mp4"}),
+                body: new ReadableStream({start(controller) { controller.close(); }}),
+            },
+        },
+    ];
+
+    for (const current of cases) {
+        const runtime = createWorkerRuntime(async () => current.response);
+        await runtime.send({type: "REGISTER_DOWNLOAD", descriptor: {
+            downloadId: current.id,
+            url: "https://v11-default.365yg.com/media/source.mp4?token=secret",
+            filename: "source.mp4",
+            provider: "tiantianjiexi",
+            expectedBytes: 0,
+        }});
+        await runtime.startFetch(current.id).response;
+        const status = await runtime.send({
+            type: "GET_DOWNLOAD_STATUS",
+            downloadId: current.id,
+        });
+        assert.equal(status.status.responseRejectReason, current.expected);
+        assert.equal(status.status.errorCode, "UPSTREAM_MEDIA_INVALID");
+        assert.doesNotMatch(
+            JSON.stringify(status),
+            /media\/(?:body|html|source)\.mp4|redirected|token|secret|https:\/\//i,
+        );
+    }
+});
+
+test("worker keeps size mismatch in the existing size-validation class", async () => {
+    const runtime = createWorkerRuntime(async () => ({
+        ok: true,
+        status: 200,
+        url: "https://v11-default.365yg.com/media/size.mp4",
+        headers: new Headers({"Content-Type": "video/mp4", "Content-Length": "5"}),
+        body: new ReadableStream({start(controller) { controller.close(); }}),
+    }));
+    const downloadId = "44444444444444444444444444444444";
+    await runtime.send({type: "REGISTER_DOWNLOAD", descriptor: {
+        downloadId,
+        url: "https://v11-default.365yg.com/media/size.mp4",
+        filename: "size.mp4",
+        provider: "tiantianjiexi",
+        expectedBytes: 6,
+    }});
+    await runtime.startFetch(downloadId).response;
+    const current = await runtime.send({type: "GET_DOWNLOAD_STATUS", downloadId});
+    assert.equal(current.status.errorCode, "UPSTREAM_SIZE_MISMATCH");
+    assert.equal(current.status.failureStage, "SIZE_VALIDATION_FAILURE");
+});
+
 test("worker distinguishes invalid responses from stream failures after bytes", async () => {
     const invalidRuntime = createWorkerRuntime(async () => ({
         ok: false,
@@ -783,6 +954,10 @@ test("worker distinguishes invalid responses from stream failures after bytes", 
     const invalid = await invalidRuntime.send({type: "GET_DOWNLOAD_STATUS", downloadId: invalidId});
     assert.equal(invalid.status.errorCode, "UPSTREAM_MEDIA_INVALID");
     assert.equal(invalid.status.failureStage, "HTTP_RESPONSE_REJECTED");
+    assert.equal(invalid.status.responseRejectReason, "HTTP_STATUS_REJECTED");
+    assert.equal(invalid.status.httpStatus, 403);
+    assert.equal(invalid.status.contentTypeClass, "OTHER");
+    assert.equal(invalid.status.finalMediaHost, "v11-default.365yg.com");
 
     let pullCount = 0;
     const failingBody = new ReadableStream({
@@ -883,6 +1058,108 @@ test("terminal failure telemetry is sent once and remains best-effort", async ()
         "worker_waiting",
     ]);
     assert.doesNotMatch(JSON.stringify(payload), /media\/video\.mp4|token|signed|https:\/\//i);
+});
+
+test("non-owner tabs observe terminal state without duplicating telemetry", async () => {
+    let telemetryCalls = 0;
+    const harness = createClientHarness({
+        telemetryReporter: {report() { telemetryCalls += 1; }},
+    });
+    await harness.client.registration();
+    harness.serviceWorker.emit(safeStatus({
+        state: "failed",
+        errorCode: "UPSTREAM_FETCH_FAILED",
+        failureClass: "FETCH_REJECTED_TYPE_ERROR",
+        failureStage: "FETCH_REJECTED_BEFORE_RESPONSE",
+        streamingStarted: true,
+    }), {telemetryOwner: false});
+
+    assert.equal(telemetryCalls, 0);
+});
+
+test("worker assigns terminal telemetry ownership to exactly one client", async () => {
+    const runtime = createWorkerRuntime(async () => {
+        throw new TypeError("controlled fetch failure");
+    }, {clientIds: ["client-a", "client-b"]});
+    const downloadId = "99999999999999999999999999999999";
+    await runtime.send({type: "REGISTER_DOWNLOAD", descriptor: {
+        downloadId,
+        url: "https://v11-default.365yg.com/media/video.mp4",
+        filename: "failed.mp4",
+        provider: "tiantianjiexi",
+        expectedBytes: 10,
+    }}, "client-b");
+    await runtime.startFetch(downloadId).response;
+
+    const failed = runtime.clientDeliveries.filter(({message}) => (
+        message.type === "DOWNLOAD_FAILED"
+    ));
+    assert.equal(failed.length, 2);
+    assert.equal(
+        failed.filter(({message}) => message.telemetryOwner).length,
+        1,
+    );
+    assert.equal(
+        failed.find(({message}) => message.telemetryOwner).id,
+        "client-b",
+    );
+
+    const nonOwnerPoll = await runtime.send({
+        type: "GET_DOWNLOAD_STATUS",
+        downloadId,
+    }, "client-a");
+    const ownerPoll = await runtime.send({
+        type: "GET_DOWNLOAD_STATUS",
+        downloadId,
+    }, "client-b");
+    assert.equal(nonOwnerPoll.telemetryOwner, false);
+    assert.equal(ownerPoll.telemetryOwner, true);
+});
+
+test("non-owner status polling cannot bypass terminal telemetry ownership", async () => {
+    let telemetryCalls = 0;
+    const harness = createClientHarness({
+        statusTelemetryOwner: false,
+        telemetryReporter: {report() { telemetryCalls += 1; }},
+    });
+    await harness.client.registration();
+    const status = safeStatus({
+        state: "failed",
+        errorCode: "UPSTREAM_FETCH_FAILED",
+        failureClass: "FETCH_REJECTED_TYPE_ERROR",
+        failureStage: "FETCH_REJECTED_BEFORE_RESPONSE",
+        streamingStarted: true,
+    });
+    harness.statuses.set(status.downloadId, status);
+
+    const observed = await harness.client.getStatus(status.downloadId);
+    assert.equal(observed.state, "failed");
+    assert.equal(telemetryCalls, 0);
+});
+
+test("response-gate telemetry adds the fixed rejection field group", () => {
+    const payload = streaming.createTerminalTelemetryPayload(safeStatus({
+        state: "failed",
+        errorCode: "UPSTREAM_MEDIA_INVALID",
+        failureClass: "NOT_APPLICABLE",
+        failureStage: "HTTP_RESPONSE_REJECTED",
+        responseRejectReason: "HTTP_STATUS_REJECTED",
+        httpStatus: 403,
+        contentTypeClass: "OTHER",
+        finalMediaHost: "v11-default.365yg.com",
+    }), {}, {telemetryId: "11111111111111111111111111111111"});
+
+    assert.deepEqual({
+        response_reject_reason: payload.response_reject_reason,
+        http_status: payload.http_status,
+        content_type_class: payload.content_type_class,
+        final_media_host: payload.final_media_host,
+    }, {
+        response_reject_reason: "HTTP_STATUS_REJECTED",
+        http_status: 403,
+        content_type_class: "OTHER",
+        final_media_host: "v11-default.365yg.com",
+    });
 });
 
 test("a throwing telemetry reporter cannot change post-start failure semantics", async () => {
