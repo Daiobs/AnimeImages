@@ -825,8 +825,8 @@ class DouyinContinuationServiceTests(SimpleTestCase):
         )
         provider = DouyinUltraRaceProvider(
             provider_settings=SimpleNamespace(
-                ultra_total_timeout_seconds=0.06,
-                ultra_native_timeout_seconds=0.03,
+                ultra_total_timeout_seconds=0.6,
+                ultra_native_timeout_seconds=0.3,
                 native_executor_workers=2,
                 native_max_pending_tasks=4,
                 provider_is_enabled=lambda _name: True,
@@ -839,14 +839,14 @@ class DouyinContinuationServiceTests(SimpleTestCase):
             url=f"https://www.douyin.com/video/{AWEME_ID}",
             aweme_id=AWEME_ID,
             prefer_ultra_hd=True,
-            deadline_monotonic=time.monotonic() + 0.06,
+            deadline_monotonic=time.monotonic() + 0.6,
             allow_continuation=True,
             continuation_identity=f"timing-{external_delay}",
         )
         return provider, adapter, context, external
 
     def test_scaled_two_second_ultra_is_first_visible_result(self):
-        provider, adapter, context, external = self.scaled_timing_race(0.02)
+        provider, adapter, context, external = self.scaled_timing_race(0.2)
 
         result = provider.parse(adapter, context)
 
@@ -855,7 +855,7 @@ class DouyinContinuationServiceTests(SimpleTestCase):
         self.assertEqual(external.calls, 1)
 
     def test_scaled_five_point_five_second_ultra_beats_native(self):
-        provider, adapter, context, external = self.scaled_timing_race(0.055)
+        provider, adapter, context, external = self.scaled_timing_race(0.55)
 
         result = provider.parse(adapter, context)
 
@@ -864,7 +864,7 @@ class DouyinContinuationServiceTests(SimpleTestCase):
         self.assertEqual(external.calls, 1)
 
     def test_scaled_eight_second_ultra_uses_native_then_continuation(self):
-        provider, adapter, context, external = self.scaled_timing_race(0.08)
+        provider, adapter, context, external = self.scaled_timing_race(0.8)
         started_at = time.monotonic()
 
         with self.assertRaises(DouyinContinuationPendingError) as raised:
@@ -872,13 +872,13 @@ class DouyinContinuationServiceTests(SimpleTestCase):
 
         fallback = raised.exception.fallback_result
         self.assertEqual(fallback.metadata["selected_provider"], "native")
-        self.assertLess(time.monotonic() - started_at, 0.075)
+        self.assertLess(time.monotonic() - started_at, 0.75)
         token = issue_douyin_continuation_token(
             task_id=raised.exception.task_id,
             client_identity="client-a",
             platform_key="tiktok",
         )
-        time.sleep(0.04)
+        time.sleep(0.4)
         outcome, _platform_key = poll_douyin_continuation(
             token,
             client_identity="client-a",
