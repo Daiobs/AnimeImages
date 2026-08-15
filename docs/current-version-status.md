@@ -18,11 +18,11 @@ related but separate facts.
 
 ## Canonical Repository
 
-The repository baseline before this status reconciliation PR is:
+The repository baseline before the Provider terminal logging fix is:
 
 ```text
-origin/main: 3f73f37fe10da0d9ec6a00bccff0b9ef1f10f0aa
-source:      Repository Branch Archive & Cleanup v1 (#37)
+origin/main: 4d91b749be68dc7612bbe4c48dc762ab36c59841
+source:      Provider Stabilization & Reliability v1 (#39)
 ```
 
 Always resolve the current canonical SHA rather than treating the value above
@@ -58,11 +58,23 @@ PRODUCTION_RUNTIME_CODE_DRIFT = PROVIDER_STABILIZATION_PENDING_ACCEPTANCE
 
 The candidate adds structural TianTianJieXi cache admission, fixed Provider
 outcome diagnostics, cache-age evidence, and finer browser response rejection
-metadata. It does not change Provider order, timeouts, attempt limits,
-cooldowns, Batch behavior, or ordinary-media transport. Resolve the exact
-merged main SHA from Git; do not substitute the feature head SHA or infer a
-deployment from merge state. Production remains at `fc1f136...` until a
-separate exact-SHA acceptance task succeeds.
+metadata. The first production acceptance attempt exact-deployed `4d91b749...`.
+Health, configuration integrity, static identity, synthetic telemetry, and a
+fresh TianTianJieXi Ultra parse passed, but the production console formatter
+did not render the new Provider terminal diagnostic fields. The attempt was
+classified as:
+
+```text
+OBSERVABILITY_OUTPUT_CONTRACT_REGRESSION
+PROVIDER_TERMINAL_LOG_OUTPUT_INCOMPLETE
+```
+
+Production was rolled back successfully to `fc1f136...`. This result does not
+prove a Provider business-logic regression, and Provider stabilization remains
+not production accepted. Canonical main includes the stabilization candidate
+and, after the formatter fix merges, the explicit allowlisted output repair.
+Resolve the exact merged main SHA and use a separate Production Acceptance v2
+task; never infer deployment or acceptance from merge state.
 
 ## Current Production
 

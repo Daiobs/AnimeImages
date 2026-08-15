@@ -18,8 +18,39 @@ fc1f1368431fb2ff063231dfaa4f35a9c8154430
 checkpoint/production-main-converged-v2
 ```
 
-No production SSH, Provider smoke, deployment, runtime setting, Redis,
-database, systemd, Nginx, or environment change was performed.
+During the original implementation task, no production SSH, Provider smoke,
+deployment, runtime setting, Redis, database, systemd, Nginx, or environment
+change was performed. The later independent acceptance is recorded below.
+
+## Production Acceptance v1 Result
+
+The separate production acceptance on 2026-08-15 exact-deployed merged main
+candidate `4d91b749be68dc7612bbe4c48dc762ab36c59841`. The pre-deploy Provider and
+browser Streaming baseline passed. Candidate startup, local and public health,
+configuration integrity, static identity, new and legacy telemetry schema, and
+a fresh TianTianJieXi Ultra parse also passed. The fresh parse returned the
+Ultra result in approximately 2.5 seconds without showing Native first.
+
+The acceptance stopped at the Provider terminal output gate. The application
+created `provider_attempt_completed` records with the new reliability fields,
+but the production `request_context` console formatter emitted only its legacy
+base fields. Consequently `outcome`, external-call/cache state, attempt
+accounting, elapsed time, and payload age were not observable in journal text,
+so the required fresh/cache production evidence could not be completed.
+
+```text
+acceptance classification: OBSERVABILITY_OUTPUT_CONTRACT_REGRESSION
+rollback:                  PASS
+production application:   fc1f1368431fb2ff063231dfaa4f35a9c8154430
+production checkpoint:    checkpoint/production-main-converged-v2
+provider stabilization:   NOT YET PRODUCTION ACCEPTED
+```
+
+This was an output-plumbing failure, not evidence of a deterministic Provider
+runtime failure. No signed media URL, query, credential, or raw Provider
+response is part of this record. Production Acceptance v2 must verify the
+fresh and payload-cache terminal fields directly in final journal text before
+creating a new checkpoint.
 
 ## Provider Runtime Map
 
@@ -127,5 +158,7 @@ cache flush, database state, or telemetry-driven invalidation was added.
 Provider order, timeout, six-second foreground behavior, continuation bounds,
 attempt limits, cooldown durations, Batch protocol, and ordinary-media
 Streaming are unchanged. The changes reject structurally invalid Tian payloads
-earlier and improve diagnostics. This candidate is not deployed; production
-acceptance must be a separate exact-SHA task.
+earlier and improve diagnostics. Candidate `4d91b749...` was temporarily
+deployed only for the failed acceptance attempt and then rolled back. Current
+production remains `fc1f136...`; a new exact-main Production Acceptance v2 is
+required after the formatter output repair merges.
