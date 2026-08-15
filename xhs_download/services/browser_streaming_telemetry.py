@@ -18,7 +18,7 @@ HOSTNAME_PATTERN = re.compile(r"^[a-z0-9.-]{1,255}$")
 ALLOWED_MEDIA_HOST_SUFFIXES = ("365yg.com", "douyinvod.com")
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
 
-ALLOWED_FIELDS = frozenset(
+REQUIRED_FIELDS = frozenset(
     {
         "schema_version",
         "telemetry_id",
@@ -48,7 +48,15 @@ ALLOWED_FIELDS = frozenset(
         "browser_family",
     }
 )
-REQUIRED_FIELDS = ALLOWED_FIELDS
+OPTIONAL_FIELDS = frozenset(
+    {
+        "response_reject_reason",
+        "http_status",
+        "content_type_class",
+        "final_media_host",
+    }
+)
+ALLOWED_FIELDS = REQUIRED_FIELDS | OPTIONAL_FIELDS
 ALLOWED_STATES = frozenset({"failed", "cancelled"})
 ALLOWED_ERROR_CODES = frozenset(
     {
@@ -87,6 +95,18 @@ ALLOWED_FAILURE_STAGES = frozenset(
         "DESCRIPTOR_FAILURE",
     }
 )
+ALLOWED_RESPONSE_REJECT_REASONS = frozenset(
+    {
+        "HTTP_STATUS_REJECTED",
+        "BODY_UNAVAILABLE",
+        "CONTENT_TYPE_REJECTED",
+        "FINAL_HOST_REJECTED",
+        "UNKNOWN_RESPONSE_REJECTED",
+    }
+)
+ALLOWED_CONTENT_TYPE_CLASSES = frozenset(
+    {"VIDEO", "OCTET_STREAM", "MISSING", "OTHER"}
+)
 ALLOWED_VISIBILITY_STATES = frozenset({"visible", "hidden", "prerender", "unknown"})
 ALLOWED_WORKER_STATES = frozenset(
     {"activated", "activating", "installed", "installing", "redundant", "none", "unknown"}
@@ -104,6 +124,12 @@ def _invalid():
 
 def _bounded_integer(value, maximum):
     if type(value) is not int or value < 0 or value > maximum:
+        _invalid()
+    return value
+
+
+def _http_status(value):
+    if type(value) is not int or (value != 0 and not 100 <= value <= 599):
         _invalid()
     return value
 
@@ -153,7 +179,11 @@ def _media_host(value):
 def validate_browser_streaming_telemetry(payload):
     if not isinstance(payload, dict):
         _invalid()
-    if set(payload) != REQUIRED_FIELDS:
+    payload_fields = set(payload)
+    if not REQUIRED_FIELDS.issubset(payload_fields) or not payload_fields.issubset(ALLOWED_FIELDS):
+        _invalid()
+    optional_fields = OPTIONAL_FIELDS.intersection(payload_fields)
+    if optional_fields and optional_fields != OPTIONAL_FIELDS:
         _invalid()
 
     telemetry_id = payload["telemetry_id"]
@@ -209,6 +239,25 @@ def validate_browser_streaming_telemetry(payload):
         "protocol_version": _bounded_integer(payload["protocol_version"], 100),
         "browser_family": _fixed_string(payload["browser_family"], ALLOWED_BROWSER_FAMILIES),
     }
+    if optional_fields:
+        normalized.update(
+            response_reject_reason=_fixed_string(
+                payload["response_reject_reason"],
+                ALLOWED_RESPONSE_REJECT_REASONS,
+            ),
+            http_status=_http_status(payload["http_status"]),
+            content_type_class=_fixed_string(
+                payload["content_type_class"],
+                ALLOWED_CONTENT_TYPE_CLASSES,
+            ),
+            final_media_host=_media_host(payload["final_media_host"]),
+        )
+        if (
+            normalized["state"] != "failed"
+            or normalized["error_code"] != "UPSTREAM_MEDIA_INVALID"
+            or normalized["failure_stage"] != "HTTP_RESPONSE_REJECTED"
+        ):
+            _invalid()
     if normalized["schema_version"] != SCHEMA_VERSION or normalized["protocol_version"] < 1:
         _invalid()
     if normalized["received_bytes"] > MAX_MEDIA_BYTES:

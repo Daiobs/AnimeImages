@@ -1,0 +1,131 @@
+# Provider Stabilization And Reliability v1
+
+Date: 2026-08-15
+Status: main candidate, not production accepted
+
+## Scope And Baseline
+
+The audit started from canonical `origin/main`:
+
+```text
+ec1c2f7dbe1debda84ac3ffa5a0358f0f897ccdd
+```
+
+Accepted production application code remains:
+
+```text
+fc1f1368431fb2ff063231dfaa4f35a9c8154430
+checkpoint/production-main-converged-v2
+```
+
+No production SSH, Provider smoke, deployment, runtime setting, Redis,
+database, systemd, Nginx, or environment change was performed.
+
+## Provider Runtime Map
+
+| Boundary | TianTianJieXi | KuKuTool | Native |
+| --- | --- | --- | --- |
+| Entry | `TianTianJieXiGenericProvider.parse` via Douyin adapter | `DouyinKukuToolProvider.parse` / background resolver | `get_fast_native_result` or `DouyinNativeProvider.parse` |
+| External call | official API `parse_url` POST | bounded Node/sidecar runner, optional bounded candidate probe | mobile feed/share fetchers |
+| Timeout | remaining request/continuation deadline, Provider cap | remaining request/continuation deadline, Provider/probe caps | request/native deadline propagated to fetchers |
+| Success cache | source-key payload, fallback TTL 120s | aweme-key validated candidate, fallback TTL 300s and signed-expiry cap | no Provider success cache; shared Douyin display metadata may be reused |
+| Failure cache | source-key, fallback 8s | aweme-key, fallback 8s | none |
+| Single-flight | distributed cache lock | process-local Future plus distributed lock | race Future only; no Provider cache lock |
+| Global rate | 20/min accepted runtime | 30/min accepted runtime | none beyond request path controls |
+| Global concurrency | 2 | 4 | bounded executors |
+| User attempt | immediately before first real external call, after Provider permits | immediately before runner call, after Provider permits | never consumes Ultra attempt |
+| Continuation | observes T=0 Future | observes T=0 Future/cache | prepared fallback, not a new external Ultra attempt |
+| Result validation | platform candidate/host/schema before cache write | allowed host, size, object key and signed-expiry/probe validation | adapter `ParseResult.assets` |
+| Single/Batch | shared primitive; Batch order Tian -> Native | shared where enabled; Batch order unchanged | shared primitive |
+
+## Confirmed Bugs
+
+### TianTianJieXi success-cache poisoning
+
+The generic Provider previously cached any dictionary before the Douyin adapter
+checked media candidates. An illegal host, empty URL, malformed media object,
+or invalid declared size could therefore occupy the 120-second success cache.
+The next parse reused the bad payload instead of reaching the Provider.
+
+The fix passes the platform validator into both cache admission and cache read.
+Invalid legacy cache entries are removed. An invalid fresh payload is classified
+as `FAILURE_RESULT_INVALID`, is not success-cached, and does not create an
+immediate failure cooldown that would prevent the next fresh attempt.
+
+### Browser rejection ambiguity
+
+The Worker previously folded HTTP status, missing body, rejected content type,
+and final-host rejection into one `HTTP_RESPONSE_REJECTED` stage. The fix keeps
+the old error/stage compatible while adding fixed, URL-free reason metadata.
+
+## Reliability Findings
+
+- TianTianJieXi and KuKuTool cooldown keys are independent.
+- Success clears the matching Provider failure state.
+- Legacy failure strings and old dictionary shapes remain readable.
+- New TianTianJieXi and KuKuTool failure entries preserve fixed failure
+  classes; legacy entries without a class safely report `UNKNOWN`.
+- TianTianJieXi lock release and KuKuTool local/distributed future cleanup are
+  present in exception/finally paths.
+- Continuation polls read cache records only; they do not invoke Provider parse.
+- One attempt controller is shared by the fresh Tian/KuKu race. Cache,
+  cooldown, waiter, continuation and Native paths remain zero-attempt.
+- User, Provider-global rate, and Provider concurrency are separate controls.
+- Controlled concurrency tests observed maxima of Tian 2 and KuKu 4 without
+  deadlock or extra upstream calls.
+- KuKuTool already applied stricter structural validation before its validated
+  cache. This task added payload-age metadata and bounded outcome events rather
+  than replacing its resolver.
+- Native race results become observable before their structured terminal log
+  callback runs, so slow logging cannot change the six-second winner timing.
+- Same-origin tabs still receive Worker status updates, while the registering
+  tab alone reports terminal browser telemetry; one remaining client takes
+  ownership if the registering tab has closed.
+- Controlled browser acceptance found that a rejected Worker navigation could
+  replace the registering page before it sent diagnostics. The download path
+  now uses an isolated same-origin frame, preserving the page listener without
+  changing the CDN-to-Worker-to-Download-Manager media path.
+
+## Controlled Browser Acceptance
+
+A local controlled media server exercised the real Chrome Service Worker path
+without contacting a Provider or production:
+
+- An 8 MiB `video/mp4` completed with exact expected and saved byte counts.
+- HTTP 403 produced `HTTP_STATUS_REJECTED` with safe status metadata.
+- HTTP 200 `text/html` produced `CONTENT_TYPE_REJECTED`.
+- A body interrupted after initial bytes produced `STREAM_BODY_FAILURE`.
+- Two same-origin tabs both observed terminal status while each failed transfer
+  emitted exactly one telemetry POST in total.
+- No download prepare, stream, or status relay endpoint was called, so ordinary
+  AnimeImages media requests and media bytes remained zero.
+
+## Theoretical Risks Not Reported As Incidents
+
+- A Provider payload inside cache TTL can still point to a CDN resource that
+  becomes unavailable. Cache freshness and CDN reachability are distinct.
+- Browser media failures are client-observed and can be forged; they are not an
+  authority for server cache invalidation or Provider routing.
+- Raw exception classification cannot always distinguish every upstream schema
+  failure from a general Provider failure. Fixed safe outcomes intentionally
+  avoid copying raw messages.
+
+## Deferred Design
+
+`FRESH_RESOURCE_RETRY_DESIGN_DEFERRED`
+
+Safe fresh retry needs a freshness generation shared across payload cache,
+local/distributed single-flight and continuation. The current contracts cannot
+guarantee that a bypass request will not attach to old work, and an isolated
+ad-hoc key could amplify concurrent Provider calls. No second retry UI, global
+cache flush, database state, or telemetry-driven invalidation was added.
+
+## Behavior And Deployment
+
+`NO_INTENDED_BEHAVIOR_CHANGE`
+
+Provider order, timeout, six-second foreground behavior, continuation bounds,
+attempt limits, cooldown durations, Batch protocol, and ordinary-media
+Streaming are unchanged. The changes reject structurally invalid Tian payloads
+earlier and improve diagnostics. This candidate is not deployed; production
+acceptance must be a separate exact-SHA task.

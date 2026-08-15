@@ -36,9 +36,31 @@ function safeStatus(state) {
 }
 
 async function postToClients(type, state) {
-    const message = {type, status: safeStatus(state)};
     const clients = await self.clients.matchAll({type: "window", includeUncontrolled: true});
-    clients.forEach((client) => client.postMessage(message));
+    const telemetryOwner = selectTelemetryOwner(clients, state);
+    clients.forEach((client) => client.postMessage({
+        type,
+        status: safeStatus(state),
+        telemetryOwner: client === telemetryOwner,
+    }));
+}
+
+function selectTelemetryOwner(clients, state) {
+    const owner = clients.find((client) => client.id === state.ownerClientId);
+    return owner || clients[0] || null;
+}
+
+async function replyWithTelemetryOwner(port, payload, state, sourceClientId) {
+    if (!state || !payload.status) {
+        reply(port, payload);
+        return;
+    }
+    const clients = await self.clients.matchAll({type: "window", includeUncontrolled: true});
+    const owner = selectTelemetryOwner(clients, state);
+    reply(port, {
+        ...payload,
+        telemetryOwner: Boolean(owner && owner.id === sourceClientId),
+    });
 }
 
 function settle(state) {
@@ -71,6 +93,19 @@ function markTerminal(state, nextState, errorCode, options) {
     );
     state.failureStage = protocol.normalizeFailureStage(
         settings.failureStage || state.failureStage,
+    );
+    state.responseRejectReason = protocol.normalizeResponseRejectReason(
+        settings.responseRejectReason || state.responseRejectReason,
+    );
+    state.httpStatus = protocol.normalizeHttpStatus(
+        settings.httpStatus || state.httpStatus,
+    );
+    state.contentTypeClass = protocol.normalizeContentTypeClass(
+        settings.contentTypeClass || state.contentTypeClass,
+    );
+    state.finalMediaHost = protocol.sanitizeMediaHost(
+        settings.finalMediaHost || state.finalMediaHost,
+        {allowLoopback: true},
     );
     state.updatedAt = Date.now();
     state.terminalAt = state.updatedAt;
@@ -144,9 +179,10 @@ async function cancelDownload(state, code) {
     }
 }
 
-function createDownloadState(descriptor) {
+function createDownloadState(descriptor, ownerClientId) {
     const state = {
         ...descriptor,
+        ownerClientId: String(ownerClientId || ""),
         totalBytes: descriptor.expectedBytes,
         receivedBytes: 0,
         bytesPerSecond: 0,
@@ -208,7 +244,10 @@ self.addEventListener("message", (event) => {
             if (downloads.has(descriptor.downloadId)) {
                 throw new Error("DOWNLOAD_ID_ALREADY_EXISTS");
             }
-            const state = createDownloadState(descriptor);
+            const state = createDownloadState(
+                descriptor,
+                event.source && event.source.id,
+            );
             downloads.set(descriptor.downloadId, state);
             reply(port, {ok: true, status: safeStatus(state)});
         } catch (error) {
@@ -221,23 +260,28 @@ self.addEventListener("message", (event) => {
         const state = downloads.get(downloadId);
         if (state && state.state === "prepared") {
             event.waitUntil(markTerminal(state, "cancelled", "DESCRIPTOR_DELETED").then(() => {
-                reply(port, {ok: true, deleted: true, status: safeStatus(state)});
+                return replyWithTelemetryOwner(
+                    port,
+                    {ok: true, deleted: true, status: safeStatus(state)},
+                    state,
+                    event.source && event.source.id,
+                );
             }));
             return;
         }
         if (state && state.streamingStarted) {
-            reply(port, {
+            event.waitUntil(replyWithTelemetryOwner(port, {
                 ok: false,
                 code: "DOWNLOAD_ALREADY_STARTED",
                 status: safeStatus(state),
-            });
+            }, state, event.source && event.source.id));
             return;
         }
-        reply(port, {
+        event.waitUntil(replyWithTelemetryOwner(port, {
             ok: true,
             deleted: false,
             status: state ? safeStatus(state) : null,
-        });
+        }, state, event.source && event.source.id));
         return;
     }
     if (message.type === "LIST_ACTIVE_DOWNLOADS") {
@@ -249,9 +293,10 @@ self.addEventListener("message", (event) => {
     }
     if (message.type === "GET_DOWNLOAD_STATUS") {
         const state = downloads.get(protocol.normalizeDownloadId(message.downloadId));
-        reply(port, state
+        event.waitUntil(replyWithTelemetryOwner(port, state
             ? {ok: true, status: safeStatus(state)}
-            : {ok: false, code: "DOWNLOAD_NOT_FOUND"});
+            : {ok: false, code: "DOWNLOAD_NOT_FOUND"},
+        state, event.source && event.source.id));
         return;
     }
     if (message.type === "CANCEL_DOWNLOAD") {
@@ -261,7 +306,12 @@ self.addEventListener("message", (event) => {
             return;
         }
         event.waitUntil(cancelDownload(state, "USER_CANCELLED").then(() => {
-            reply(port, {ok: true, status: safeStatus(state)});
+            return replyWithTelemetryOwner(
+                port,
+                {ok: true, status: safeStatus(state)},
+                state,
+                event.source && event.source.id,
+            );
         }));
         return;
     }
@@ -297,7 +347,7 @@ async function streamDownload(state) {
             return errorResponse(499, "DOWNLOAD_CANCELLED");
         }
         state.fetchFailedAt = Date.now();
-        markTerminal(state, "failed", "UPSTREAM_FETCH_FAILED", {
+        await markTerminal(state, "failed", "UPSTREAM_FETCH_FAILED", {
             failureClass: protocol.classifyFetchFailure(error),
             failureStage: "FETCH_REJECTED_BEFORE_RESPONSE",
         });
@@ -314,32 +364,32 @@ async function streamDownload(state) {
 
     const contentType = protocol.normalizeContentType(upstream.headers.get("Content-Type"));
     const contentLength = protocol.positiveInteger(upstream.headers.get("Content-Length"));
-    if (
-        !upstream.ok
-        || !upstream.body
-        || !protocol.isAllowedMediaContentType(contentType)
-        || !protocol.isAllowedStreamingUrl(upstream.url, {
-            allowLoopbackHttp: ALLOW_LOOPBACK_HTTP,
-        })
-    ) {
+    const responseGate = protocol.classifyResponseRejection(upstream, {
+        allowLoopbackHttp: ALLOW_LOOPBACK_HTTP,
+    });
+    if (responseGate.rejected) {
         if (upstream.body && typeof upstream.body.cancel === "function") {
             await upstream.body.cancel().catch(() => {});
         }
-        markTerminal(state, "failed", "UPSTREAM_MEDIA_INVALID", {
+        await markTerminal(state, "failed", "UPSTREAM_MEDIA_INVALID", {
             failureStage: "HTTP_RESPONSE_REJECTED",
+            responseRejectReason: responseGate.responseRejectReason,
+            httpStatus: responseGate.httpStatus,
+            contentTypeClass: responseGate.contentTypeClass,
+            finalMediaHost: responseGate.finalMediaHost,
         });
         return errorResponse(502, "UPSTREAM_MEDIA_INVALID");
     }
     if (contentLength > protocol.MAX_STREAM_BYTES) {
         await upstream.body.cancel().catch(() => {});
-        markTerminal(state, "failed", "UPSTREAM_SIZE_LIMIT_EXCEEDED", {
+        await markTerminal(state, "failed", "UPSTREAM_SIZE_LIMIT_EXCEEDED", {
             failureStage: "SIZE_VALIDATION_FAILURE",
         });
         return errorResponse(502, "UPSTREAM_SIZE_LIMIT_EXCEEDED");
     }
     if (state.expectedBytes && contentLength && state.expectedBytes !== contentLength) {
         await upstream.body.cancel().catch(() => {});
-        markTerminal(state, "failed", "UPSTREAM_SIZE_MISMATCH", {
+        await markTerminal(state, "failed", "UPSTREAM_SIZE_MISMATCH", {
             failureStage: "SIZE_VALIDATION_FAILURE",
         });
         return errorResponse(502, "UPSTREAM_SIZE_MISMATCH");
@@ -408,7 +458,7 @@ async function streamDownload(state) {
                     code === "UPSTREAM_SIZE_MISMATCH"
                     || code === "UPSTREAM_SIZE_LIMIT_EXCEEDED"
                 ) ? code : "UPSTREAM_STREAM_FAILED";
-                markTerminal(state, "failed", terminalCode, {
+                await markTerminal(state, "failed", terminalCode, {
                     failureStage: terminalCode === "UPSTREAM_STREAM_FAILED"
                         ? "STREAM_BODY_FAILURE"
                         : "SIZE_VALIDATION_FAILURE",

@@ -33,17 +33,36 @@ git fetch --prune origin
 git rev-parse origin/main
 ```
 
-The production application SHA is an ancestor of canonical main. Changes after
-that production SHA are infrastructure-as-code, repository governance,
-evidence, and documentation; they do not add an undeployed Django, Service
-Worker, Provider, or download-runtime behavior.
+The production application SHA is an ancestor of canonical main. Before the
+Provider stabilization candidate documented below, changes after that
+production SHA were infrastructure-as-code, repository governance, evidence,
+and documentation only.
 
 ```text
-PRODUCTION_RUNTIME_CODE_DRIFT = 0
+PRE_PROVIDER_STABILIZATION_RUNTIME_CODE_DRIFT = 0
 REPO_HEAD_AHEAD_INFRA_GOVERNANCE_ONLY = YES
 ```
 
-The SHA difference is not a reason to redeploy production.
+That earlier SHA difference was not a reason to redeploy production. The
+runtime release documented below changes that status on canonical main.
+
+## Provider Stabilization Candidate
+
+This Provider stabilization release is the first post-convergence runtime
+change on canonical main and contains behavior not yet accepted on production:
+
+```text
+MAIN_RUNTIME_AHEAD_PRODUCTION = YES
+PRODUCTION_RUNTIME_CODE_DRIFT = PROVIDER_STABILIZATION_PENDING_ACCEPTANCE
+```
+
+The candidate adds structural TianTianJieXi cache admission, fixed Provider
+outcome diagnostics, cache-age evidence, and finer browser response rejection
+metadata. It does not change Provider order, timeouts, attempt limits,
+cooldowns, Batch behavior, or ordinary-media transport. Resolve the exact
+merged main SHA from Git; do not substitute the feature head SHA or infer a
+deployment from merge state. Production remains at `fc1f136...` until a
+separate exact-SHA acceptance task succeeds.
 
 ## Current Production
 
@@ -205,10 +224,12 @@ for exact branch tips, evidence, decisions, and checkpoint integrity records.
 
 1. Firefox and Edge Streaming production acceptance is not complete. Chrome is
    production-accepted and controlled Safari evidence exists.
-2. External/browser/CDN transients remain possible. A P1 observability backlog
-   may refine `UPSTREAM_MEDIA_INVALID` into fixed safe stages such as
-   `HTTP_STATUS_REJECTED`, `BODY_UNAVAILABLE`, `CONTENT_TYPE_REJECTED`, and
-   `FINAL_HOST_REJECTED`; no single CDN root cause is currently proven.
+2. External/browser/CDN transients remain possible. The Provider stabilization
+   candidate refines `UPSTREAM_MEDIA_INVALID` with fixed safe rejection reasons
+   for HTTP status, missing body, content type, and final host. Production
+   retains the prior coarse diagnostic until the candidate's eventual main SHA
+   is separately deployed and accepted; no single CDN root cause is currently
+   proven.
 3. YouTube high-quality audio/video merge remains server-required and
    runtime-gated.
 4. Bilibili high-quality Cookie/member/DASH support remains deferred.
@@ -226,11 +247,10 @@ are complete and are not active blockers.
 
 1. Start every new task from a freshly fetched `origin/main`, using one branch
    and one PR for one concrete task.
-2. Continue Provider stabilization and reliability as the next product area;
-   do not add a new Provider or download architecture while resolving observed
-   reliability issues.
-3. Treat finer `UPSTREAM_MEDIA_INVALID` staging as a P1 observability backlog,
-   not a current production blocker.
+2. After merge, run a separate Provider Stabilization Production Acceptance v1
+   exact-SHA rollout; do not add a new Provider or download architecture first.
+3. Keep request-scoped fresh-resource retry deferred until cache,
+   single-flight, and continuation can share a safe freshness generation.
 4. Do not reopen the Streaming architecture without new evidence of an
    application regression.
 5. Keep production changes as separate, approved exact-SHA deployment tasks.

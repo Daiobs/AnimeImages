@@ -29,6 +29,14 @@ from ..douyin_continuation import (
 from ..env_config import runtime_bool
 from ..provider_settings import get_platform_provider_settings, normalize_provider_order
 from ..provider_manifest import build_provider_manifest_token
+from ..provider_reliability import (
+    ProviderFailureClass,
+    ProviderOutcome,
+    classify_provider_failure,
+    provider_continuation_active,
+    record_provider_attempt,
+    safe_media_host,
+)
 from .douyin_kukutool import DouyinKukuToolProvider, submit_provider_task
 from .tiantianjiexi_generic import (
     TianTianJieXiFailureCooldownError,
@@ -575,8 +583,42 @@ def call_native_fetcher(fetcher, aweme_id, timeout_seconds, deadline_monotonic=0
     return fetcher(aweme_id, **request_options)
 
 
-def get_fast_native_result(adapter, context, timeout_seconds=5.0):
+def complete_native_attempt_observation(observation, **fields):
+    if observation is None:
+        record_provider_attempt(**fields)
+        return
+    observation["fields"] = fields
+
+
+def record_native_attempt_observation(fields):
+    record_provider_attempt(**fields)
+
+
+def attach_native_attempt_observation(future, observation):
+    def record_after_completion(_future):
+        fields = observation.pop("fields", None)
+        if fields:
+            submit_provider_task(
+                "provider-observation",
+                1,
+                256,
+                record_native_attempt_observation,
+                fields,
+            )
+
+    future.add_done_callback(record_after_completion)
+    return future
+
+
+def get_fast_native_result(
+    adapter,
+    context,
+    timeout_seconds=5.0,
+    attempt_observation=None,
+):
     started_at = time()
+    external_call = False
+    last_error = None
     try:
         if context.direct_result and context.direct_result.assets:
             result = context.direct_result
@@ -601,6 +643,7 @@ def get_fast_native_result(adapter, context, timeout_seconds=5.0):
                 )
                 fetch_started_at = time()
                 try:
+                    external_call = True
                     result = call_native_fetcher(
                         fetcher,
                         context.aweme_id,
@@ -608,6 +651,7 @@ def get_fast_native_result(adapter, context, timeout_seconds=5.0):
                         native_deadline,
                     )
                 except Exception as error:
+                    last_error = error
                     log_provider_failure(
                         provider_name,
                         context,
@@ -626,10 +670,46 @@ def get_fast_native_result(adapter, context, timeout_seconds=5.0):
                 fallback_reason="fast_native",
             )
             cache_douyin_metadata(context.aweme_id, result)
+            asset = get_reference_video_asset(result)
+            complete_native_attempt_observation(
+                attempt_observation,
+                provider="native",
+                outcome=(
+                    ProviderOutcome.SUCCESS_FRESH
+                    if external_call
+                    else ProviderOutcome.SUCCESS_EXISTING_RESULT
+                ),
+                external_call=external_call,
+                elapsed_ms=duration_ms(started_at),
+                candidate_count=len(result.video_assets),
+                media_host=safe_media_host(getattr(asset, "url", "")),
+                expected_bytes=getattr(asset, "size_bytes", 0),
+            )
             return result
     except Exception as error:
         log_provider_failure("native_fast", context, error, started_at)
+        outcome, failure_class = classify_provider_failure(error)
+        complete_native_attempt_observation(
+            attempt_observation,
+            provider="native",
+            outcome=outcome,
+            external_call=external_call,
+            elapsed_ms=duration_ms(started_at),
+            failure_class=failure_class,
+        )
         return None
+    outcome = ProviderOutcome.FAILURE_NO_MEDIA
+    failure_class = ProviderFailureClass.NO_MEDIA
+    if last_error is not None:
+        outcome, failure_class = classify_provider_failure(last_error)
+    complete_native_attempt_observation(
+        attempt_observation,
+        provider="native",
+        outcome=outcome,
+        external_call=external_call,
+        elapsed_ms=duration_ms(started_at),
+        failure_class=failure_class,
+    )
     return None
 
 
@@ -737,6 +817,12 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
                 continue
             url = str(resource.get("url") or "").strip()
             if not url:
+                continue
+            declared_size = resource.get("size")
+            if (
+                isinstance(declared_size, (int, float))
+                and declared_size < 0
+            ):
                 continue
             try:
                 validate_external_url(
@@ -852,6 +938,16 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
                 self.provider.parse
             ).parameters
             if (
+                "payload_validator" in provider_parse_parameters
+                or any(
+                    parameter.kind == inspect.Parameter.VAR_KEYWORD
+                    for parameter in provider_parse_parameters.values()
+                )
+            ):
+                parse_options["payload_validator"] = lambda payload: bool(
+                    self.build_candidates(payload, adapter)
+                )
+            if (
                 context.allow_continuation
                 and context.continuation_deadline_monotonic
                 and (
@@ -864,6 +960,19 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             ):
                 parse_options["deadline_monotonic"] = (
                     context.continuation_deadline_monotonic
+                )
+            if (
+                context.allow_continuation
+                and (
+                    "continuation_checker" in provider_parse_parameters
+                    or any(
+                        parameter.kind == inspect.Parameter.VAR_KEYWORD
+                        for parameter in provider_parse_parameters.values()
+                    )
+                )
+            ):
+                parse_options["continuation_checker"] = (
+                    lambda: provider_continuation_active(context)
                 )
             payload = self.provider.parse(source_url, **parse_options)
         except TianTianJieXiFailureCooldownError as error:
@@ -1170,6 +1279,7 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
             ),
             max(0.1, deadline - monotonic()),
         )
+        native_attempt_observation = {}
         native_future = submit_provider_task(
             "douyin-native",
             max(
@@ -1198,6 +1308,7 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
             adapter,
             context,
             native_budget,
+            native_attempt_observation,
         )
         if native_future is None:
             native_future = DOUYIN_ULTRA_EXECUTOR.submit(
@@ -1205,6 +1316,7 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
                 adapter,
                 context,
                 native_budget,
+                native_attempt_observation,
             )
             log_provider_event(
                 "douyin_native_local_capacity_full",
@@ -1213,6 +1325,18 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
                 race_started_at,
             )
         context.native_fallback_future = native_future
+
+        native_observation_attached = False
+
+        def observe_native_attempt():
+            nonlocal native_observation_attached
+            if native_observation_attached:
+                return
+            native_observation_attached = True
+            attach_native_attempt_observation(
+                native_future,
+                native_attempt_observation,
+            )
 
         future_to_provider = {
             DOUYIN_ULTRA_EXECUTOR.submit(provider.parse, adapter, context): provider
@@ -1302,6 +1426,7 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
                                         race_loser_count=max(0, len(enabled_providers) - 1),
                                     )
                                 future_to_provider.clear()
+                                observe_native_attempt()
                                 return self.finalize_result(
                                     result,
                                     provider_name,
@@ -1346,6 +1471,8 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
                     race_winner=best_provider_name,
                     race_loser_count=max(0, len(enabled_providers) - 1),
                 )
+
+        observe_native_attempt()
 
         if controller is not None:
             context.record_ultra_retry_after(
@@ -1893,6 +2020,7 @@ class DouyinTikHubProvider(DouyinResultProvider):
             )
             return cached, None
 
+        native_attempt_observation = {}
         native_future = DOUYIN_ULTRA_EXECUTOR.submit(
             get_fast_native_result,
             adapter,
@@ -1901,11 +2029,16 @@ class DouyinTikHubProvider(DouyinResultProvider):
                 self.provider_settings.ultra_native_timeout_seconds,
                 remaining_budget,
             ),
+            native_attempt_observation,
         )
         tikhub_future = DOUYIN_ULTRA_EXECUTOR.submit(
             self.resolve_validated_candidate,
             adapter,
             context,
+        )
+        attach_native_attempt_observation(
+            native_future,
+            native_attempt_observation,
         )
 
         validated = None
@@ -2055,22 +2188,76 @@ class DouyinNativeProvider(DouyinResultProvider):
         ))
 
     def parse(self, adapter, context):
+        parse_started_at = time()
+        external_call = False
+        last_error = None
         for provider in self.fallback_providers:
             started_at = time()
             try:
+                external_call = external_call or bool(context.aweme_id)
                 result = provider.parse(adapter, context)
                 if result and result.assets:
-                    return with_parse_metadata(result, selected_provider=getattr(provider, "name", "native"))
+                    result = with_parse_metadata(
+                        result,
+                        selected_provider=getattr(provider, "name", "native"),
+                    )
+                    asset = get_reference_video_asset(result)
+                    record_provider_attempt(
+                        provider="native",
+                        outcome=ProviderOutcome.SUCCESS_FRESH,
+                        external_call=external_call,
+                        elapsed_ms=duration_ms(parse_started_at),
+                        candidate_count=len(result.video_assets),
+                        media_host=getattr(asset, "url", ""),
+                        expected_bytes=getattr(asset, "size_bytes", 0),
+                    )
+                    return result
             except Exception as error:
+                last_error = error
                 log_provider_failure(getattr(provider, "name", "native"), context, error, started_at)
                 continue
 
         if context.direct_result is not None and context.direct_result.assets:
+            asset = get_reference_video_asset(context.direct_result)
+            record_provider_attempt(
+                provider="native",
+                outcome=ProviderOutcome.SUCCESS_EXISTING_RESULT,
+                elapsed_ms=duration_ms(parse_started_at),
+                candidate_count=len(context.direct_result.video_assets),
+                media_host=getattr(asset, "url", ""),
+                expected_bytes=getattr(asset, "size_bytes", 0),
+            )
             return context.direct_result
         if context.direct_result is not None:
+            record_provider_attempt(
+                provider="native",
+                outcome=ProviderOutcome.FAILURE_NO_MEDIA,
+                external_call=external_call,
+                elapsed_ms=duration_ms(parse_started_at),
+                failure_class=ProviderFailureClass.NO_MEDIA,
+            )
             return context.direct_result
         if context.direct_error:
+            outcome, failure_class = classify_provider_failure(context.direct_error)
+            record_provider_attempt(
+                provider="native",
+                outcome=outcome,
+                external_call=external_call,
+                elapsed_ms=duration_ms(parse_started_at),
+                failure_class=failure_class,
+            )
             raise context.direct_error
+        outcome = ProviderOutcome.FAILURE_NO_MEDIA
+        failure_class = ProviderFailureClass.NO_MEDIA
+        if last_error is not None:
+            outcome, failure_class = classify_provider_failure(last_error)
+        record_provider_attempt(
+            provider="native",
+            outcome=outcome,
+            external_call=external_call,
+            elapsed_ms=duration_ms(parse_started_at),
+            failure_class=failure_class,
+        )
         return None
 
 

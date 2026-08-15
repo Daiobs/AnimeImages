@@ -65,6 +65,78 @@ class BrowserStreamingTelemetryEndpointTests(TestCase):
         self.assertNotIn("path/video.mp4", serialized)
         self.assertNotIn("super-secret", serialized)
 
+    def test_new_response_rejection_fields_are_accepted_and_sanitized(self):
+        payload = self.payload(
+            error_code="UPSTREAM_MEDIA_INVALID",
+            failure_class="NOT_APPLICABLE",
+            failure_stage="HTTP_RESPONSE_REJECTED",
+            response_reject_reason="HTTP_STATUS_REJECTED",
+            http_status=403,
+            content_type_class="OTHER",
+            final_media_host="v11-default.365yg.com",
+        )
+        with self.assertLogs("xhs_download.browser_streaming_telemetry", level="INFO") as logs:
+            response = self.post(payload)
+
+        self.assertEqual(response.status_code, 204)
+        serialized = "\n".join(logs.output)
+        self.assertIn('"response_reject_reason":"HTTP_STATUS_REJECTED"', serialized)
+        self.assertIn('"http_status":403', serialized)
+
+    def test_invalid_response_rejection_fields_are_rejected(self):
+        cases = (
+            {"response_reject_reason": "RAW_HTTP_ERROR"},
+            {"http_status": 99},
+            {"http_status": 600},
+            {"http_status": "403"},
+            {"content_type_class": "TEXT_HTML"},
+            {"final_media_host": "attacker.example"},
+        )
+        base = {
+            "response_reject_reason": "HTTP_STATUS_REJECTED",
+            "http_status": 403,
+            "content_type_class": "OTHER",
+            "final_media_host": "unknown",
+        }
+        for invalid in cases:
+            with self.subTest(invalid=invalid):
+                cache.clear()
+                response = self.post(self.payload(**{**base, **invalid}))
+                self.assertEqual(response.status_code, 400)
+
+    def test_response_rejection_fields_must_be_sent_as_one_group(self):
+        for field, value in (
+            ("response_reject_reason", "HTTP_STATUS_REJECTED"),
+            ("http_status", 403),
+            ("content_type_class", "OTHER"),
+            ("final_media_host", "unknown"),
+        ):
+            with self.subTest(field=field):
+                cache.clear()
+                response = self.post(self.payload(**{field: value}))
+                self.assertEqual(response.status_code, 400)
+
+    def test_response_rejection_fields_require_matching_terminal_contract(self):
+        response_fields = {
+            "response_reject_reason": "HTTP_STATUS_REJECTED",
+            "http_status": 403,
+            "content_type_class": "VIDEO",
+            "final_media_host": "v11-default.365yg.com",
+        }
+        cases = (
+            {"state": "cancelled"},
+            {"error_code": "UPSTREAM_FETCH_FAILED"},
+            {"failure_stage": "STREAM_BODY_FAILURE"},
+        )
+
+        for mismatch in cases:
+            with self.subTest(mismatch=mismatch):
+                cache.clear()
+                response = self.post(
+                    self.payload(**response_fields, **mismatch)
+                )
+                self.assertEqual(response.status_code, 400)
+
     def test_unknown_fields_are_rejected_without_logging_their_values(self):
         payload = self.payload(
             url="https://v11-default.365yg.com/path/video.mp4?token=super-secret"
@@ -94,6 +166,7 @@ class BrowserStreamingTelemetryEndpointTests(TestCase):
     def test_invalid_download_id_is_rejected(self):
         response = self.post(self.payload(download_id="not-an-opaque-id"))
         self.assertEqual(response.status_code, 400)
+
     def test_invalid_media_hostname_is_rejected(self):
         response = self.post(self.payload(media_host="attacker.example"))
         self.assertEqual(response.status_code, 400)
@@ -137,7 +210,8 @@ class BrowserStreamingTelemetryEndpointTests(TestCase):
     @patch("xhs_download.views.requests.get")
     @patch("xhs_download.views.parse_media_page")
     def test_endpoint_never_calls_provider_or_fetches_media(self, parse_media_page, requests_get):
-        response = self.post(self.payload())
+        with self.assertNumQueries(0):
+            response = self.post(self.payload())
         self.assertEqual(response.status_code, 204)
         parse_media_page.assert_not_called()
         requests_get.assert_not_called()

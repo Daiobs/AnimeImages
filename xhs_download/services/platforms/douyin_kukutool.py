@@ -27,6 +27,14 @@ from ..douyin_ultra_attempts import (
     DouyinUltraAttemptSupersededError,
 )
 from ..provider_settings import get_platform_provider_settings
+from ..provider_reliability import (
+    ProviderFailureClass,
+    ProviderOutcome,
+    classify_provider_failure,
+    normalize_provider_failure_class,
+    provider_continuation_active,
+    record_provider_attempt,
+)
 from ..quality import QualityProbe
 from ..rate_limits import (
     acquire_concurrency,
@@ -170,6 +178,7 @@ class ValidatedKukuToolCandidate:
     cache_hit: bool = False
     candidate_count: int = 0
     probe_duration_ms: int = 0
+    payload_age_ms: int = 0
 
 
 def integer_value(value):
@@ -550,6 +559,7 @@ def serialize_validated_candidate(validated):
         "object_key": validated.object_key,
         "signed_url_expires_at": validated.signed_url_expires_at,
         "candidate_count": validated.candidate_count,
+        "cached_at": time(),
     }
 
 
@@ -560,13 +570,21 @@ def get_cached_validated_candidate(cache_key, allowed_host_suffixes):
 
     try:
         url = str(data["url"])
+        final_url = str(data.get("final_url") or url)
         size_bytes = int(data["size_bytes"])
         signed_url_expires_at = int(data.get("signed_url_expires_at") or 0)
         object_key = str(data.get("object_key") or "")
+        candidate_count = max(1, int(data.get("candidate_count") or 1))
+        cached_at = float(data.get("cached_at") or time())
         validate_external_url(
             url,
             allowed_host_suffixes,
             "缓存的 KuKuTool URL 不在允许的媒体域名内",
+        )
+        validate_external_url(
+            final_url,
+            allowed_host_suffixes,
+            "缓存的 KuKuTool 最终 URL 不在允许的媒体域名内",
         )
         if size_bytes <= 0:
             raise ValueError("cached resource size is missing")
@@ -587,12 +605,16 @@ def get_cached_validated_candidate(cache_key, allowed_host_suffixes):
             quality_type=int(data.get("quality_type") or 0),
             source=str(data.get("source") or "kukutool.validated_cache"),
         ),
-        final_url=str(data.get("final_url") or url),
+        final_url=final_url,
         content_type=str(data.get("content_type") or ""),
         object_key=object_key,
         signed_url_expires_at=signed_url_expires_at,
         cache_hit=True,
-        candidate_count=int(data.get("candidate_count") or 1),
+        candidate_count=candidate_count,
+        payload_age_ms=max(
+            0,
+            int((time() - cached_at) * 1000),
+        ),
     )
 
 
@@ -1056,6 +1078,28 @@ class DouyinKukuToolProvider:
             return max(0.1, fallback)
         return max(0.0, context.deadline_monotonic - monotonic())
 
+    def record_candidate_outcome(
+        self,
+        outcome,
+        validated,
+        started_at,
+        *,
+        context=None,
+        single_flight_wait=False,
+    ):
+        record_provider_attempt(
+            provider=self.name,
+            outcome=outcome,
+            cache_hit=bool(validated.cache_hit),
+            single_flight_wait=single_flight_wait,
+            continuation=provider_continuation_active(context),
+            elapsed_ms=(time() - started_at) * 1000,
+            payload_age_ms=validated.payload_age_ms,
+            candidate_count=validated.candidate_count,
+            media_host=validated.final_url or validated.candidate.url,
+            expected_bytes=validated.candidate.size_bytes,
+        )
+
     def get_cached_candidate(self, adapter, context):
         try:
             return get_cached_validated_candidate(
@@ -1071,10 +1115,25 @@ class DouyinKukuToolProvider:
             )
             return None
 
-    def resolve_validated_candidate(self, adapter, context):
+    def resolve_validated_candidate(self, adapter, context, attempt_trace=None):
+        trace = attempt_trace if isinstance(attempt_trace, dict) else {}
+        trace.update(
+            external_call=False,
+            attempt_consumed=False,
+            candidate_count=0,
+            media_host="",
+            expected_bytes=0,
+        )
         cache_key = build_kukutool_cache_key(context.aweme_id)
         cached = self.get_cached_candidate(adapter, context)
         if cached:
+            trace.update(
+                cache_hit=True,
+                candidate_count=cached.candidate_count,
+                media_host=cached.final_url or cached.candidate.url,
+                expected_bytes=cached.candidate.size_bytes,
+                payload_age_ms=cached.payload_age_ms,
+            )
             if context.ultra_attempt_controller is not None:
                 context.ultra_attempt_controller.reuse_cached_result(
                     self.name,
@@ -1090,6 +1149,10 @@ class DouyinKukuToolProvider:
             return cached
 
         if is_kukutool_admin_disabled():
+            trace.update(
+                outcome=ProviderOutcome.FAILURE_UNKNOWN,
+                failure_class=ProviderFailureClass.UNKNOWN,
+            )
             if context.ultra_attempt_controller is not None:
                 context.ultra_attempt_controller.skip_fresh_work(
                     self.name,
@@ -1098,6 +1161,10 @@ class DouyinKukuToolProvider:
             raise RuntimeError("KuKuTool Provider is disabled by an administrator")
         circuit = get_kukutool_circuit_status()
         if circuit["open"]:
+            trace.update(
+                outcome=ProviderOutcome.FAILURE_CIRCUIT_OPEN,
+                failure_class=ProviderFailureClass.CIRCUIT_OPEN,
+            )
             if context.ultra_attempt_controller is not None:
                 context.ultra_attempt_controller.skip_fresh_work(
                     self.name,
@@ -1118,6 +1185,10 @@ class DouyinKukuToolProvider:
         queue_timeout = min(1.0, timeout_seconds)
         queue_started_at = monotonic()
         if not semaphore.acquire(timeout=queue_timeout):
+            trace.update(
+                outcome=ProviderOutcome.FAILURE_CONCURRENCY,
+                failure_class=ProviderFailureClass.CONCURRENCY,
+            )
             if context.ultra_attempt_controller is not None:
                 context.ultra_attempt_controller.skip_fresh_work(
                     self.name,
@@ -1133,6 +1204,10 @@ class DouyinKukuToolProvider:
                 60,
             )
             if not request_reservation.result.allowed:
+                trace.update(
+                    outcome=ProviderOutcome.FAILURE_RATE_LIMIT,
+                    failure_class=ProviderFailureClass.RATE_LIMIT,
+                )
                 if context.ultra_attempt_controller is not None:
                     context.ultra_attempt_controller.skip_fresh_work(
                         self.name,
@@ -1142,12 +1217,15 @@ class DouyinKukuToolProvider:
                     "KuKuTool Provider global request limit reached"
                 )
             if context.ultra_attempt_controller is not None:
-                context.ultra_attempt_controller.begin_provider(self.name)
+                trace["attempt_consumed"] = bool(
+                    context.ultra_attempt_controller.begin_provider(self.name)
+                )
             request_reservation.commit()
             runner_timeout = max(
                 0.1,
                 timeout_seconds - (monotonic() - queue_started_at),
             )
+            trace["external_call"] = True
             payload = call_kukutool_runner(
                 self.runner,
                 context.aweme_id,
@@ -1177,6 +1255,7 @@ class DouyinKukuToolProvider:
                 sidecar_total_ms=(sidecar_metadata.get("timing") or {}).get("total_ms"),
             )
         resources = normalize_kukutool_payload(payload)
+        trace["candidate_count"] = len(resources)
         log_kukutool_event(
             "douyin_provider_response",
             context,
@@ -1185,6 +1264,10 @@ class DouyinKukuToolProvider:
             candidate_count=len(resources),
         )
         if not resources:
+            trace.update(
+                outcome=ProviderOutcome.FAILURE_SCHEMA,
+                failure_class=ProviderFailureClass.SCHEMA,
+            )
             log_kukutool_event(
                 "douyin_provider_schema_unrecognized",
                 context,
@@ -1239,6 +1322,10 @@ class DouyinKukuToolProvider:
                 object_key=preferred.object_key,
             )
             record_kukutool_success(self.provider_settings)
+            trace.update(
+                media_host=validated.final_url,
+                expected_bytes=validated.candidate.size_bytes,
+            )
             return validated
 
         probe = self.quality_probe or QualityProbe(
@@ -1323,6 +1410,10 @@ class DouyinKukuToolProvider:
                 object_key=validated.object_key,
             )
             record_kukutool_success(self.provider_settings)
+            trace.update(
+                media_host=validated.final_url,
+                expected_bytes=validated.candidate.size_bytes,
+            )
             return validated
         log_kukutool_event(
             "douyin_provider_no_validated_candidate",
@@ -1331,6 +1422,10 @@ class DouyinKukuToolProvider:
             probe_duration_ms=int((time() - probe_started_at) * 1000),
         )
         record_kukutool_failure(self.provider_settings)
+        trace.update(
+            outcome=ProviderOutcome.FAILURE_RESULT_INVALID,
+            failure_class=ProviderFailureClass.RESULT_INVALID,
+        )
         return None
 
     def release_single_flight(self, lock_key, token, context):
@@ -1345,7 +1440,12 @@ class DouyinKukuToolProvider:
                 error=str(error),
             )
 
-    def cache_failure(self, context, reason):
+    def cache_failure(
+        self,
+        context,
+        reason,
+        failure_class=ProviderFailureClass.UNKNOWN,
+    ):
         ttl_seconds = self.provider_settings.kukutool_failure_cache_ttl_seconds
         if ttl_seconds <= 0:
             return
@@ -1361,6 +1461,9 @@ class DouyinKukuToolProvider:
                 build_kukutool_failure_cache_key(context.aweme_id),
                 {
                     "reason": str(reason or "unavailable")[:120],
+                    "failure_class": normalize_provider_failure_class(
+                        failure_class
+                    ).value,
                     "failed_at": failed_at,
                     "retry_at": failed_at + ttl_seconds,
                 },
@@ -1378,6 +1481,8 @@ class DouyinKukuToolProvider:
         from .douyin_providers import log_provider_failure
 
         global_slot_acquired = False
+        started_at = time()
+        attempt_trace = {}
         try:
             global_limit = self.provider_settings.kukutool_global_max_concurrency
             if global_limit > 0:
@@ -1392,26 +1497,52 @@ class DouyinKukuToolProvider:
                         ),
                     )
                 except Exception as error:
-                    self.cache_failure(context, "global_concurrency_cache_failed")
+                    self.cache_failure(
+                        context,
+                        "global_concurrency_cache_failed",
+                        ProviderFailureClass.CONCURRENCY,
+                    )
                     log_provider_failure(
                         self.name,
                         context,
                         error,
                         coordination="global_concurrency",
                     )
+                    record_provider_attempt(
+                        provider=self.name,
+                        outcome=ProviderOutcome.FAILURE_CONCURRENCY,
+                        continuation=provider_continuation_active(context),
+                        elapsed_ms=(time() - started_at) * 1000,
+                        failure_class=ProviderFailureClass.CONCURRENCY,
+                    )
                     return None
                 if not capacity.allowed:
-                    self.cache_failure(context, "global_concurrency_limit")
+                    self.cache_failure(
+                        context,
+                        "global_concurrency_limit",
+                        ProviderFailureClass.CONCURRENCY,
+                    )
                     log_kukutool_event(
                         "douyin_provider_global_capacity_full",
                         context,
                         current=capacity.current,
                         limit=capacity.limit,
                     )
+                    record_provider_attempt(
+                        provider=self.name,
+                        outcome=ProviderOutcome.FAILURE_CONCURRENCY,
+                        continuation=provider_continuation_active(context),
+                        elapsed_ms=(time() - started_at) * 1000,
+                        failure_class=ProviderFailureClass.CONCURRENCY,
+                    )
                     return None
                 global_slot_acquired = True
 
-            validated = self.resolve_validated_candidate(adapter, context)
+            validated = self.resolve_validated_candidate(
+                adapter,
+                context,
+                attempt_trace,
+            )
             if validated:
                 try:
                     cache.delete(build_kukutool_failure_cache_key(context.aweme_id))
@@ -1422,19 +1553,94 @@ class DouyinKukuToolProvider:
                         error_type=type(error).__name__,
                         error=str(error),
                     )
+                continued = bool(
+                    not attempt_trace.get("cache_hit")
+                    and provider_continuation_active(context)
+                )
+                record_provider_attempt(
+                    provider=self.name,
+                    outcome=(
+                        ProviderOutcome.SUCCESS_PAYLOAD_CACHE
+                        if attempt_trace.get("cache_hit")
+                        else ProviderOutcome.SUCCESS_CONTINUATION
+                        if continued
+                        else ProviderOutcome.SUCCESS_FRESH
+                    ),
+                    external_call=attempt_trace.get("external_call", False),
+                    cache_hit=attempt_trace.get("cache_hit", False),
+                    attempt_consumed=attempt_trace.get("attempt_consumed", False),
+                    continuation=continued,
+                    elapsed_ms=(time() - started_at) * 1000,
+                    payload_age_ms=attempt_trace.get("payload_age_ms", 0),
+                    candidate_count=attempt_trace.get("candidate_count", 0),
+                    media_host=attempt_trace.get("media_host", ""),
+                    expected_bytes=attempt_trace.get("expected_bytes", 0),
+                )
                 return validated
-            self.cache_failure(context, "no_validated_candidate")
+            result_failure_class = attempt_trace.get(
+                "failure_class",
+                ProviderFailureClass.NO_MEDIA,
+            )
+            self.cache_failure(
+                context,
+                "no_validated_candidate",
+                result_failure_class,
+            )
+            record_provider_attempt(
+                provider=self.name,
+                outcome=attempt_trace.get(
+                    "outcome",
+                    ProviderOutcome.FAILURE_NO_MEDIA,
+                ),
+                external_call=attempt_trace.get("external_call", False),
+                attempt_consumed=attempt_trace.get("attempt_consumed", False),
+                continuation=provider_continuation_active(context),
+                elapsed_ms=(time() - started_at) * 1000,
+                candidate_count=attempt_trace.get("candidate_count", 0),
+                failure_class=attempt_trace.get(
+                    "failure_class",
+                    ProviderFailureClass.NO_MEDIA,
+                ),
+            )
             return None
         except (
             DouyinUltraAttemptAccountingError,
             DouyinUltraAttemptRateLimitedError,
             DouyinUltraAttemptSupersededError,
-        ):
+        ) as error:
+            outcome, failure_class = classify_provider_failure(error)
+            record_provider_attempt(
+                provider=self.name,
+                outcome=outcome,
+                external_call=attempt_trace.get("external_call", False),
+                attempt_consumed=attempt_trace.get("attempt_consumed", False),
+                continuation=provider_continuation_active(context),
+                elapsed_ms=(time() - started_at) * 1000,
+                failure_class=failure_class,
+            )
             raise
         except Exception as error:
             record_kukutool_failure(self.provider_settings)
-            self.cache_failure(context, type(error).__name__)
             log_provider_failure(self.name, context, error)
+            outcome = attempt_trace.get("outcome")
+            failure_class = attempt_trace.get("failure_class")
+            if not outcome or not failure_class:
+                outcome, failure_class = classify_provider_failure(error)
+            self.cache_failure(
+                context,
+                type(error).__name__,
+                failure_class,
+            )
+            record_provider_attempt(
+                provider=self.name,
+                outcome=outcome,
+                external_call=attempt_trace.get("external_call", False),
+                attempt_consumed=attempt_trace.get("attempt_consumed", False),
+                continuation=provider_continuation_active(context),
+                elapsed_ms=(time() - started_at) * 1000,
+                candidate_count=attempt_trace.get("candidate_count", 0),
+                failure_class=failure_class,
+            )
             return None
         finally:
             if global_slot_acquired:
@@ -1473,12 +1679,24 @@ class DouyinKukuToolProvider:
                         failure_key,
                         {
                             "reason": str(reason or "failed")[:120],
+                            "failure_class": normalize_provider_failure_class(
+                                failure_value.get("failure_class")
+                                if isinstance(failure_value, dict)
+                                else None
+                            ).value,
                             "failed_at": failed_at,
                             "retry_at": failed_at + retry_after,
                         },
                         timeout=retry_after,
                     )
             if failure_value:
+                failure_class = (
+                    normalize_provider_failure_class(
+                        failure_value.get("failure_class")
+                    )
+                    if isinstance(failure_value, dict)
+                    else ProviderFailureClass.UNKNOWN
+                )
                 context.record_ultra_retry_after(retry_after)
                 if context.ultra_attempt_controller is not None:
                     context.ultra_attempt_controller.skip_fresh_work(
@@ -1490,6 +1708,13 @@ class DouyinKukuToolProvider:
                     "douyin_provider_failure_cache_hit",
                     context,
                     retry_after=retry_after,
+                )
+                record_provider_attempt(
+                    provider=self.name,
+                    outcome=ProviderOutcome.FAILURE_COOLDOWN,
+                    retry_after_seconds=retry_after,
+                    continuation=provider_continuation_active(context),
+                    failure_class=failure_class,
                 )
                 return None, "failure_cache_hit"
         except Exception as error:
@@ -1652,7 +1877,15 @@ class DouyinKukuToolProvider:
             sleep(min(poll_interval, max(0.0, deadline - monotonic())))
         return self.get_cached_candidate(adapter, context)
 
-    def build_result(self, adapter, context, validated, native_future, parse_started_at):
+    def build_result(
+        self,
+        adapter,
+        context,
+        validated,
+        native_future,
+        parse_started_at,
+        reused_outcome=None,
+    ):
         from .douyin_providers import (
             build_external_parse_result,
             log_provider_event,
@@ -1692,6 +1925,16 @@ class DouyinKukuToolProvider:
             kukutool_object_key=validated.object_key,
             kukutool_signed_url_expires_at=validated.signed_url_expires_at,
         )
+        if reused_outcome is not None:
+            self.record_candidate_outcome(
+                reused_outcome,
+                validated,
+                parse_started_at,
+                context=context,
+                single_flight_wait=(
+                    reused_outcome == ProviderOutcome.SUCCESS_SINGLE_FLIGHT
+                ),
+            )
         if not self.suppress_selected_log:
             log_provider_event(
                 "douyin_provider_selected",
@@ -1840,6 +2083,7 @@ class DouyinKukuToolProvider:
                     cached,
                     metadata_future,
                     parse_started_at,
+                    ProviderOutcome.SUCCESS_PAYLOAD_CACHE,
                 )
 
         native_budget = min(
@@ -1848,6 +2092,9 @@ class DouyinKukuToolProvider:
         )
         native_future = context.native_fallback_future
         if native_future is None:
+            from .douyin_providers import attach_native_attempt_observation
+
+            native_attempt_observation = {}
             native_future = submit_provider_task(
                 "douyin-native",
                 self.provider_settings.native_executor_workers,
@@ -1856,7 +2103,13 @@ class DouyinKukuToolProvider:
                 adapter,
                 context,
                 native_budget,
+                native_attempt_observation,
             )
+            if native_future is not None:
+                attach_native_attempt_observation(
+                    native_future,
+                    native_attempt_observation,
+                )
         if native_future is None:
             native_future = Future()
             native_future.set_result(None)
@@ -1873,6 +2126,7 @@ class DouyinKukuToolProvider:
                 cached,
                 native_future,
                 parse_started_at,
+                ProviderOutcome.SUCCESS_PAYLOAD_CACHE,
             )
 
         kukutool_future, flight_state = self.get_or_start_kukutool_future(
@@ -1924,6 +2178,11 @@ class DouyinKukuToolProvider:
                     validated,
                     native_future,
                     parse_started_at,
+                    (
+                        ProviderOutcome.SUCCESS_SINGLE_FLIGHT
+                        if flight_state in {"local_single_flight", "remote_single_flight"}
+                        else None
+                    ),
                 )
 
             native_result = self.get_finished_native_result(native_future, context)
@@ -1960,6 +2219,11 @@ class DouyinKukuToolProvider:
                 validated,
                 native_future,
                 parse_started_at,
+                (
+                    ProviderOutcome.SUCCESS_SINGLE_FLIGHT
+                    if flight_state in {"local_single_flight", "remote_single_flight"}
+                    else None
+                ),
             )
 
         if context.allow_continuation:
@@ -1983,6 +2247,11 @@ class DouyinKukuToolProvider:
                 validated,
                 native_future,
                 parse_started_at,
+                (
+                    ProviderOutcome.SUCCESS_SINGLE_FLIGHT
+                    if flight_state in {"local_single_flight", "remote_single_flight"}
+                    else None
+                ),
             )
         if native_result and not context.allow_continuation:
             handoff_validated = self.wait_for_handoff_candidate(
@@ -1998,6 +2267,11 @@ class DouyinKukuToolProvider:
                     handoff_validated,
                     native_future,
                     parse_started_at,
+                    (
+                        ProviderOutcome.SUCCESS_SINGLE_FLIGHT
+                        if flight_state in {"local_single_flight", "remote_single_flight"}
+                        else None
+                    ),
                 )
             log_provider_event(
                 "douyin_provider_deadline_native_fallback",

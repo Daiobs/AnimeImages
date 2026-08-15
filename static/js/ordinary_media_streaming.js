@@ -97,7 +97,7 @@
         const settings = options && typeof options === "object" ? options : {};
         const telemetryId = protocol.normalizeDownloadId(settings.telemetryId)
             || safe.downloadId;
-        return Object.freeze({
+        const payload = {
             schema_version: TELEMETRY_SCHEMA_VERSION,
             telemetry_id: telemetryId,
             download_id: safe.downloadId,
@@ -126,7 +126,16 @@
             browser_family: ["chromium", "firefox", "safari"].includes(env.browserFamily)
                 ? env.browserFamily
                 : "unknown",
-        });
+        };
+        if (safe.responseRejectReason) {
+            Object.assign(payload, {
+                response_reject_reason: safe.responseRejectReason,
+                http_status: safe.httpStatus,
+                content_type_class: safe.contentTypeClass,
+                final_media_host: safe.finalMediaHost,
+            });
+        }
+        return Object.freeze(payload);
     }
 
     function createTerminalTelemetryReporter(options) {
@@ -336,9 +345,21 @@
         const listeners = new Map();
         const allListeners = new Set();
         const latestStatuses = new Map();
+        const navigationFrames = new Map();
         let registrationPromise = null;
         let currentRegistration = null;
         let messageListenerAttached = false;
+
+        function cleanupNavigationFrame(downloadId) {
+            const frame = navigationFrames.get(downloadId);
+            if (!frame) {
+                return;
+            }
+            navigationFrames.delete(downloadId);
+            if (typeof frame.remove === "function") {
+                frame.remove();
+            }
+        }
 
         function capabilityAvailable() {
             return supportsStreamingEnvironment({
@@ -348,10 +369,12 @@
             });
         }
 
-        function emit(status) {
+        function emit(status, emitOptions) {
             if (!status || !status.downloadId) {
                 return null;
             }
+            const shouldReportTelemetry = !emitOptions
+                || emitOptions.reportTelemetry !== false;
             const safe = protocol.safeSnapshot(status);
             const previous = latestStatuses.get(safe.downloadId);
             if (previous) {
@@ -376,7 +399,13 @@
                 }
             }
             latestStatuses.set(safe.downloadId, safe);
-            if (FAILURE_TELEMETRY_STATES.has(safe.state)) {
+            if (TERMINAL_STATES.has(safe.state)) {
+                cleanupNavigationFrame(safe.downloadId);
+            }
+            if (
+                shouldReportTelemetry
+                && FAILURE_TELEMETRY_STATES.has(safe.state)
+            ) {
                 const serviceWorker = navigatorObject && navigatorObject.serviceWorker;
                 const controller = serviceWorker && serviceWorker.controller;
                 try {
@@ -410,7 +439,9 @@
                 ? event.data
                 : {};
             if (message.status) {
-                emit(message.status);
+                emit(message.status, {
+                    reportTelemetry: message.telemetryOwner !== false,
+                });
             }
         }
 
@@ -493,7 +524,9 @@
                         ? event.data
                         : {};
                     if (response.status) {
-                        emit(response.status);
+                        emit(response.status, {
+                            reportTelemetry: response.telemetryOwner !== false,
+                        });
                     }
                     resolve(response);
                 };
@@ -540,13 +573,25 @@
                     "浏览器无法建立下载任务。",
                 );
             }
+            const frame = documentObject.createElement("iframe");
+            frame.name = `animeimages-download-${downloadId}`;
+            frame.hidden = true;
+            frame.style.display = "none";
+            documentObject.body.appendChild(frame);
+            navigationFrames.set(downloadId, frame);
             const link = documentObject.createElement("a");
             link.href = protocol.downloadPath(downloadId, workerScope);
-            link.rel = "noopener";
+            link.target = frame.name;
             link.style.display = "none";
             documentObject.body.appendChild(link);
-            link.click();
-            link.remove();
+            try {
+                link.click();
+            } catch (error) {
+                cleanupNavigationFrame(downloadId);
+                throw error;
+            } finally {
+                link.remove();
+            }
         }
 
         async function getStatus(downloadId) {
@@ -560,7 +605,8 @@
                     "无法读取浏览器下载状态。",
                 );
             }
-            return emit(response.status);
+            return latestStatuses.get(protocol.normalizeDownloadId(downloadId))
+                || protocol.safeSnapshot(response.status);
         }
 
         async function listActiveDownloads() {
@@ -825,6 +871,7 @@
                 } else if (error && typeof error.streamingStarted !== "boolean") {
                     error.streamingStarted = streamingStarted;
                 }
+                cleanupNavigationFrame(downloadId);
                 throw error;
             }
         }
@@ -842,6 +889,7 @@
             listeners.clear();
             allListeners.clear();
             latestStatuses.clear();
+            [...navigationFrames.keys()].forEach(cleanupNavigationFrame);
         }
 
         return Object.freeze({

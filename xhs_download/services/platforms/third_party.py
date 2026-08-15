@@ -1,3 +1,4 @@
+import inspect
 import logging
 import time
 from dataclasses import dataclass
@@ -715,10 +716,32 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
             provider_timeout_seconds = remaining_budget_seconds(deadline)
             started_at = time.monotonic()
             try:
-                payload = provider.parse(
-                    source_url,
-                    timeout_seconds=provider_timeout_seconds,
-                )
+                parse_options = {
+                    "timeout_seconds": provider_timeout_seconds,
+                }
+                if provider_id == "tiantianjiexi_generic":
+                    try:
+                        provider_parse_parameters = inspect.signature(
+                            provider.parse
+                        ).parameters
+                    except (TypeError, ValueError):
+                        provider_parse_parameters = {}
+                    if (
+                        "payload_validator" in provider_parse_parameters
+                        or any(
+                            parameter.kind == inspect.Parameter.VAR_KEYWORD
+                            for parameter in provider_parse_parameters.values()
+                        )
+                    ):
+                        parse_options["payload_validator"] = lambda value: bool(
+                            normalizer.normalize(
+                                rule=rule,
+                                platform_name=platform_name,
+                                source_url=source_url,
+                                payload=value,
+                            ).assets
+                        )
+                payload = provider.parse(source_url, **parse_options)
                 selected_provider_id = provider_id
                 if (
                     provider_id == "yt_dlp_generic"
