@@ -1,86 +1,125 @@
 # Current Version Status
 
-Date: 2026-08-14
+Date: 2026-08-15
 
 ## Source Of Truth
 
 | Concern | Source of truth |
 | --- | --- |
-| Development code | Latest fetched `origin/main` |
-| Deployed code | Exact production SHA and immutable production checkpoint |
+| Development and repository | Latest fetched `origin/main` |
+| Production application | Exact deployed SHA plus immutable production checkpoint |
+| Production infrastructure | Active host configuration verified against `ops/nginx/` and the systemd baseline |
 | Runtime configuration | Production environment and persisted Admin runtime settings |
-| Human-readable status | This file, backed by deployment/reconciliation evidence |
+| Human-readable current status | This file, backed by deployment, acceptance, infrastructure, and repository evidence |
 
-Never infer a production deployment from a merge to `main`.
+Never infer a production deployment from a merge to `main`. Repository state,
+deployed application code, active infrastructure, and runtime settings are
+related but separate facts.
 
-The pre-reconciliation main was:
+## Canonical Repository
+
+The repository baseline before this status reconciliation PR is:
 
 ```text
-d98b3098bd55031c859c125e44c5d84b1f458f17
-checkpoint/main-pre-production-reconciliation-v1
+origin/main: 3f73f37fe10da0d9ec6a00bccff0b9ef1f10f0aa
+source:      Repository Branch Archive & Cleanup v1 (#37)
 ```
 
-The reconciliation PR reconstructs the accepted production behavior on top of
-that main. After it merges, use the exact commit resolved by:
+Always resolve the current canonical SHA rather than treating the value above
+as a permanent pointer:
 
 ```bash
 git fetch --prune origin
 git rev-parse origin/main
 ```
 
-The immutable converged reference is
-`checkpoint/main-production-converged-v1`, created after the squash merge.
+The production application SHA is an ancestor of canonical main. Changes after
+that production SHA are infrastructure-as-code, repository governance,
+evidence, and documentation; they do not add an undeployed Django, Service
+Worker, Provider, or download-runtime behavior.
+
+```text
+PRODUCTION_RUNTIME_CODE_DRIFT = 0
+REPO_HEAD_AHEAD_INFRA_GOVERNANCE_ONLY = YES
+```
+
+The SHA difference is not a reason to redeploy production.
 
 ## Current Production
 
-Production remains intentionally unchanged at:
+Production application code has been deployed and accepted at:
 
 ```text
-code SHA:          87afba321a2dc459b7daebcd1cc9eea6735b60ba
-checkpoint:        checkpoint/production-douyin-ultra-retry-v1
-documentation:     8b81041059839691b08c472b0a4ad9586431ec4c
-site:              https://download.cosflow.icu/
+application SHA:  fc1f1368431fb2ff063231dfaa4f35a9c8154430
+checkpoint:       checkpoint/production-main-converged-v2
+site:             https://download.cosflow.icu/
 ```
 
-The documentation SHA was not deployed. It records the deployment evidence for
-the code SHA. This reconciliation does not deploy, restart, migrate, or change
-production runtime settings.
+The checkpoint resolves exactly to the application SHA and must remain
+immutable. This application includes the accepted PR #26 Batch visibility and
+public-download behavior and PR #28 Batch Runtime Admin clarity.
 
-Production topology at the last audit:
+Production topology at the accepted infrastructure audit:
 
 ```text
 Gunicorn:          2 workers x 4 gthreads, timeout 60
 service user:      www-data:www-data
+working directory: /srv/animeimages
 bind:              127.0.0.1:8000
-Nginx upstream:    http://127.0.0.1:8000
+Nginx upstream:    127.0.0.1:8000
 checkout owner:    ubuntu:ubuntu
 database:          PostgreSQL
 cache/limits:      Redis-backed
 ```
 
+## Production Infrastructure
+
+The accepted production Nginx files match the canonical repository baseline:
+
+```text
+NGINX_CONFIG_DRIFT = 0
+SYSTEMD_BASELINE_MATCH
+```
+
+- `ops/nginx/` contains the canonical site template, byte-exact media snippet,
+  manifest, read-only drift checker, tests, and recovery instructions.
+- `ops/systemd/` is the canonical AnimeImages service baseline.
+- `/media/browser-download-telemetry/` is an exact Nginx control-plane route to
+  Django. The generic `/media/` catch-all remains protected.
+- The accepted route checks returned GET 405, no-CSRF POST 403, valid-CSRF
+  invalid-schema POST 400, and valid synthetic telemetry POST 204.
+- There is no Provider/CDN media `proxy_pass` in the AnimeImages Nginx chain.
+- Certbot, Redis/PostgreSQL host configuration, Cloud-init, DNS, and other
+  shared host services remain externally managed.
+
+Merging repository infrastructure files does not install or reload production
+configuration. The accepted zero-drift result is backed by the production
+infrastructure audit.
+
 ## Stable Behavior Manifest
 
-The normative behavior contract is
-[`production-behavior-baseline-v1.md`](production-behavior-baseline-v1.md).
-Changing one of those behaviors requires an explicit `BEHAVIOR_CHANGE` section
-in the PR description.
+The current accepted behavior is summarized below. The dated reconciliation
+manifest in
+[`production-behavior-baseline-v1.md`](production-behavior-baseline-v1.md)
+remains useful behavior history, but this file supersedes its pre-convergence
+deployment-status statements. Changing a behavior still requires an explicit
+`BEHAVIOR_CHANGE` section in the PR.
 
 ### Douyin Ultra
 
 - A fresh request starts TianTianJieXi, KuKuTool, and Native at T=0.
 - Native remains hidden during the six-second foreground window.
 - Strong Ultra completed within that window is the first visible result.
-- After six seconds, prepared Native may be shown while bounded continuation
-  observes work that was already started and can upgrade the same result.
+- Bounded continuation may upgrade a prepared Native result after six seconds.
 - One fresh external race consumes one user attempt. Cache/cooldown hits,
   single-flight waiters, continuation polls, Native fallback, and automatic
   upgrades do not consume another attempt.
-- Production allows 10 fresh Ultra attempts per minute; the tenth is allowed
-  and the eleventh is rejected.
+- Production permits 10 fresh Ultra attempts per minute; the eleventh is
+  rejected.
 - TianTianJieXi and KuKuTool transient failure cooldowns are eight seconds.
 - Provider order remains TianTianJieXi, KuKuTool, Native.
 
-### Ordinary Media Download
+### Ordinary Media
 
 Ordinary TianTianJieXi and KuKuTool video uses:
 
@@ -90,99 +129,112 @@ Provider/CDN -> Browser Service Worker -> Browser Download Manager -> Disk
 
 - `BROWSER_STREAMING` is the default.
 - `BROWSER_BLOB` is permitted only for a capability failure before Streaming
-  starts. A post-start failure must not create a second transfer.
+  starts. It is not allowed after upstream fetch or Download Manager startup.
 - Single and Batch use the same ordinary-media primitive.
-- Refresh reattaches to the opaque download ID without reparsing or restarting
-  the CDN request. Site and Download Manager cancellation reach the upstream.
+- Refresh reattaches to the active opaque download ID without reparsing or
+  restarting the CDN request.
 - Ordinary media does not call `/media/download-prepare/`,
   `/media/download-stream/`, or `/media/download-status/`.
 - Ordinary Server Relay and playback/native-open are not fallback paths.
-- AnimeImages ordinary media request count and media bytes remain zero.
-- Signed media URLs may exist in page and Service Worker memory for handoff,
-  but not in logs, browser storage, documentation, or status messages.
+- AnimeImages ordinary-media request count and media bytes remain zero.
+- YouTube merge, ZIP generation, and other server-generated outputs remain
+  separate server-required resource classes.
 
-YouTube audio/video merge, ZIP creation, and other generated outputs remain
-separate server-required resource classes.
+### Browser Failure Telemetry
 
-### Provider Lifecycle And Limits
-
-- Successful TianTianJieXi payload cache default: 120 seconds.
-- Provider manifest maximum age default: 3600 seconds.
-- CDN URL lifetime: `CDN_URL_LIFETIME_UNKNOWN`.
-- A payload-cache hit can return the existing media URL without another API
-  call; manifest validity does not prove CDN reachability.
-- TianTianJieXi global request limit remains 20 per minute.
-- Effective TianTianJieXi concurrency intent is two. The fixed-at-one lease
-  introduced by PR #30 is superseded and is not part of the canonical runtime.
-- Environment values provide capability and safe defaults. Persisted Admin
-  runtime settings control availability/rollout where a runtime model exists.
+- Terminal Streaming failure may emit one best-effort, CSRF-protected POST to
+  `/media/browser-download-telemetry/`.
+- Telemetry is small, sanitized control-plane metadata only. It excludes source
+  URL, path/query, signed value, token, Cookie, raw error, stack, and media body.
+- Completion telemetry remains disabled in v1 and failure telemetry is not
+  awaited by the download path.
+- A real Provider/CDN `UPSTREAM_FETCH_FAILED` or `UPSTREAM_MEDIA_INVALID` event
+  does not by itself prove an application regression. Application identity,
+  controlled Streaming, browser context, and upstream evidence determine the
+  classification.
 
 ### Batch
 
-- Batch scheduling, per-item deadlines, response boundary, progressive tokens,
-  retry preservation, and Provider order remain unchanged.
-- `BatchParseRuntimeSetting.access_mode` aligns navigation, page access, and
-  start/item/retry API access.
-- Staff retains raw-link copy/open/export and strategy diagnostics.
-- An allowed public user may use validated video/image download actions but is
-  not given raw-link UI or export capability.
-- Public ordinary video uses the same Service Worker Streaming primitive as
-  Single. The card necessarily carries validated handoff fields in browser
-  memory; this is not a public raw-link feature.
+- `BatchParseRuntimeSetting.access_mode` controls navigation visibility, page
+  access, and start/item/retry API access.
+- The accepted production runtime value was `public`; this observed value is
+  not a permanent product contract and may be changed through the runtime gate.
+- An allowed anonymous user can access Batch and use validated video/image
+  download actions.
+- Raw-link copy/open/export and strategy diagnostics remain staff-only.
+- Batch Provider order, per-link deadlines, response boundary, progressive
+  tokens, and retry preservation remain unchanged.
+- Public ordinary video uses the same zero-server-media Streaming path as
+  Single.
 
-The access/download behavior above and Batch Runtime Admin clarity were
-retained from PR #26/#28. They are
-`MAIN_ONLY_NOT_YET_PRODUCTION_DEPLOYED` until a separate deployment is approved.
+### Admin And Release
 
-### Admin And Release Management
-
-- Batch Runtime Admin remains a singleton direct-edit surface with stale-write
+- Batch Runtime Admin is a singleton direct-edit surface with stale-write
   protection, explicit public-expansion confirmation, and non-sensitive audit
-  logging. It does not change request-time semantics by itself.
+  logging.
 - Release Management reads local Git refs only. The Web process must not fetch,
   own the checkout, or receive a deploy key.
 - Production remains record-only while
-  `RELEASE_MANAGEMENT_EXECUTOR_COMMAND` is empty and executor helper/unit files
-  are not installed.
+  `RELEASE_MANAGEMENT_EXECUTOR_COMMAND` is empty and the separately reviewed
+  executor helper/unit/sudoers boundary is not installed.
 
-## Reconciliation Decisions
+## Repository Governance State
 
-The complete commit inventory and decision matrix are in
-[`research/production-main-reconciliation-v1.md`](research/production-main-reconciliation-v1.md).
+Repository Branch Archive & Cleanup v1 is complete:
 
-Summary:
+```text
+remote branches:               26
+main:                           1
+checkpoint/*:                  11
+KEEP_UNIQUE_HISTORICAL refs:   14
+authorized historical deletes: 35
+open PRs at cleanup close:       0
+```
 
-| Main-only PR | Decision |
-| --- | --- |
-| #26 Batch visibility/public download | Keep, adapted to shared Streaming; not yet deployed |
-| #28 Batch Runtime Admin clarity | Keep; not yet deployed |
-| #29 Browser Direct + Relay | Superseded by Service Worker Streaming |
-| #30 gthread + fixed-one Provider lease | Keep 2x4 topology; reject fixed-one lease |
-| #31 native-open + compatibility Relay | Superseded by Service Worker Streaming |
-| #33 Provider lifecycle docs/tests | Keep after factual reconciliation |
+The 14 historical refs are intentionally retained because they contain unique
+policy, governance, control-plane, migration, or mixed Provider history. They
+are not accidental cleanup debt. Five local-only UNKNOWN refs also remain
+outside the remote cleanup authorization. The dirty
+`codex/platform-lab-auto-test-system` worktree is protected and was not changed.
+
+See
+[`research/repository-branch-archive-cleanup-v1.md`](research/repository-branch-archive-cleanup-v1.md)
+for exact branch tips, evidence, decisions, and checkpoint integrity records.
 
 ## Known Boundaries
 
-1. Production still runs the exact stabilization SHA above. Its behavior is
-   represented in canonical main after reconciliation, but deployment lineage
-   does not converge until a separately approved main deployment.
-2. PR #26/#28 behavior has not been production accepted.
-3. Firefox and Edge Streaming acceptance remain untested on the development
-   machine; Chrome production and controlled Safari evidence exist.
-4. YouTube merge is server-required and should remain runtime-gated.
-5. Bilibili high-quality Cookie/member/DASH work remains deferred.
-6. Executor installation, Tag rollback, and automatic production deployment
-   remain outside the enabled Release Management boundary.
+1. Firefox and Edge Streaming production acceptance is not complete. Chrome is
+   production-accepted and controlled Safari evidence exists.
+2. External/browser/CDN transients remain possible. A P1 observability backlog
+   may refine `UPSTREAM_MEDIA_INVALID` into fixed safe stages such as
+   `HTTP_STATUS_REJECTED`, `BODY_UNAVAILABLE`, `CONTENT_TYPE_REJECTED`, and
+   `FINAL_HOST_REJECTED`; no single CDN root cause is currently proven.
+3. YouTube high-quality audio/video merge remains server-required and
+   runtime-gated.
+4. Bilibili high-quality Cookie/member/DASH support remains deferred.
+5. Release Management automatic production deployment remains disabled.
+6. GitHub private-repository main protection remains subject to available
+   plan/ruleset capabilities.
+7. Certbot, Redis/PostgreSQL host configuration, Cloud-init, DNS, and broader
+   host recovery are outside the repository-owned infrastructure baseline.
 
-## Next Work
+These are current boundaries. Production convergence, Streaming telemetry,
+the Nginx telemetry route, Nginx config-as-code, and historical branch cleanup
+are complete and are not active blockers.
 
-1. Start every product task from freshly fetched `origin/main` in the retained
-   long-lived development worktree, one task branch and one PR at a time.
-2. Treat a production-only hotfix as P0 `PRODUCTION_CODE_DRIFT` until an audited
-   reconciliation records it in main.
-3. Perform any production rollout of the converged main as a separate task with
-   exact-SHA checks, runtime-value capture, health gates, and rollback.
-4. Apply repository branch-protection recommendations in a separate,
-   reversible governance task.
-5. Delete historical remote branches only in a separate cleanup task using the
-   inventory in `docs/research/branch-cleanup-candidates-v1.md`.
+## Next Product Work
+
+1. Start every new task from a freshly fetched `origin/main`, using one branch
+   and one PR for one concrete task.
+2. Continue Provider stabilization and reliability as the next product area;
+   do not add a new Provider or download architecture while resolving observed
+   reliability issues.
+3. Treat finer `UPSTREAM_MEDIA_INVALID` staging as a P1 observability backlog,
+   not a current production blocker.
+4. Do not reopen the Streaming architecture without new evidence of an
+   application regression.
+5. Keep production changes as separate, approved exact-SHA deployment tasks.
+
+Historical reconciliation, failure forensics, infrastructure, and branch audit
+documents remain immutable evidence and should not be rewritten as current
+status.

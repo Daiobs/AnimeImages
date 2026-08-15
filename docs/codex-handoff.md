@@ -1,6 +1,6 @@
 # Codex Handoff
 
-Last updated: 2026-08-14
+Last updated: 2026-08-15
 
 This document is the first stop when a new Codex project or thread takes over AnimeImages.
 
@@ -56,30 +56,40 @@ Current production site:
 https://download.cosflow.icu/
 ```
 
-## Production Douyin Ultra Retry Baseline
+## Canonical And Production Baseline
 
-Production was deployed and accepted at this exact stabilization SHA:
+Canonical development always starts from the latest fetched `origin/main`.
+At the start of the current-status reconciliation, it was:
 
 ```text
-87afba3 Honor Ultra runtime defaults outside settings
+3f73f37fe10da0d9ec6a00bccff0b9ef1f10f0aa
+Repository Branch Archive & Cleanup v1 (#37)
 ```
 
-It is fixed by `checkpoint/production-douyin-ultra-retry-v1` and is not a
-real-time pointer to `main`. The previous Service Worker checkpoint
-`checkpoint/production-service-worker-streaming-v1` remains the prior rollback
-baseline. Fetch and read the current remote baseline before starting work:
+Production application code was deployed and accepted at:
+
+```text
+fc1f1368431fb2ff063231dfaa4f35a9c8154430
+checkpoint/production-main-converged-v2
+```
+
+The checkpoint resolves exactly to the production application SHA, which is an
+ancestor of canonical main. Changes after it are infrastructure-as-code,
+repository governance, evidence, and documentation. The audited Django,
+Service Worker, Provider, and download-runtime drift is zero, so the SHA
+difference alone is not a deployment request.
+
+Fetch and resolve the live repository baseline before starting work:
 
 ```bash
 git fetch origin
 git log -1 --oneline origin/main
 ```
 
-After the production/main reconciliation merges, `origin/main` is the sole
-canonical development baseline and
-`checkpoint/main-production-converged-v1` is its immutable transition point.
-Production nevertheless remains at `87afba3` until a separate deployment is
-approved. See `docs/repository-governance.md` and
-`docs/production-behavior-baseline-v1.md`.
+Do not substitute a checkpoint or production checkout for `origin/main` when
+creating product branches. `docs/current-version-status.md` is the current
+deployment-status source; dated reconciliation manifests retain historical
+behavior context. See that file and `docs/repository-governance.md` first.
 
 Recent merged milestones:
 
@@ -288,11 +298,12 @@ server-generated output: upstream -> AnimeImages processing -> user browser
   ordinary-video architecture.
 
 The canonical evidence and deployment state are in
-`docs/research/service-worker-streaming-productionization-v1.md` and
-`docs/research/douyin-ultra-config-deploy-v1.md`. The current production SHA is
-`87afba321a2dc459b7daebcd1cc9eea6735b60ba`; the previous production rollback
-SHA is `5af0892bc7f01ec73a5a3c1ba1b55814364e5e6a`. Verify real browser behavior,
-not only route metadata or unit tests, before changing this contract.
+`docs/current-version-status.md`,
+`docs/research/service-worker-streaming-productionization-v1.md`, and the
+production infrastructure audit. The current production application SHA is
+`fc1f1368431fb2ff063231dfaa4f35a9c8154430`, fixed by
+`checkpoint/production-main-converged-v2`. Verify real browser behavior, not
+only route metadata or unit tests, before changing this contract.
 
 ## Production Deployment Notes
 
@@ -618,13 +629,14 @@ Not needed: <reason>
 
 Good next tasks from the reconciled baseline:
 
-1. Deploy converged `main` only through a separate exact-SHA production task;
-   re-audit the retained PR #26/#28 user-facing differences before rollout.
-2. Apply the recommended GitHub main-protection settings through a separate,
-   reversible governance task with verified check names.
-3. Review branch-cleanup candidates without deleting checkpoints or research
-   evidence implicitly.
-4. Keep Release Management record-only until its separately reviewed executor
+1. Start from a freshly fetched `origin/main`, with one branch and one PR for
+   one concrete task.
+2. Continue Provider stabilization and reliability; do not add a new Provider
+   or download architecture while resolving observed reliability issues.
+3. Treat finer browser failure-stage telemetry as a P1 observability backlog,
+   not a current production blocker.
+4. Do not reopen the Streaming architecture without new evidence of an
+   application regression.
+5. Keep production changes in separately approved exact-SHA deployment tasks.
+6. Keep Release Management record-only until its separately reviewed executor
    boundary is installed and accepted.
-5. Continue Provider stabilization from `origin/main`; do not add a new
-   Provider or download architecture while resolving operational regressions.
