@@ -1,7 +1,7 @@
 # Provider Stabilization And Reliability v1
 
 Date: 2026-08-15
-Status: main candidate, not production accepted
+Status: production accepted
 
 ## Scope And Baseline
 
@@ -11,7 +11,7 @@ The audit started from canonical `origin/main`:
 ec1c2f7dbe1debda84ac3ffa5a0358f0f897ccdd
 ```
 
-Accepted production application code remains:
+The implementation started from the then-accepted production application:
 
 ```text
 fc1f1368431fb2ff063231dfaa4f35a9c8154430
@@ -38,19 +38,75 @@ base fields. Consequently `outcome`, external-call/cache state, attempt
 accounting, elapsed time, and payload age were not observable in journal text,
 so the required fresh/cache production evidence could not be completed.
 
+The status at acceptance v1 close was:
+
 ```text
-acceptance classification: OBSERVABILITY_OUTPUT_CONTRACT_REGRESSION
-rollback:                  PASS
-production application:   fc1f1368431fb2ff063231dfaa4f35a9c8154430
-production checkpoint:    checkpoint/production-main-converged-v2
-provider stabilization:   NOT YET PRODUCTION ACCEPTED
+acceptance classification:             OBSERVABILITY_OUTPUT_CONTRACT_REGRESSION
+rollback:                              PASS
+production application:               fc1f1368431fb2ff063231dfaa4f35a9c8154430
+production checkpoint:                checkpoint/production-main-converged-v2
+provider stabilization at v1 close:   NOT YET PRODUCTION ACCEPTED
 ```
 
 This was an output-plumbing failure, not evidence of a deterministic Provider
 runtime failure. No signed media URL, query, credential, or raw Provider
-response is part of this record. Production Acceptance v2 must verify the
-fresh and payload-cache terminal fields directly in final journal text before
-creating a new checkpoint.
+response is part of this record. At v1 close, Production Acceptance v2 still
+needed to verify the fresh and payload-cache terminal fields directly in final
+journal text before creating a new checkpoint.
+
+## Production Acceptance v2 Result
+
+Production Acceptance v2 reused the immediately preceding recovered baseline
+at `fc1f136...`: a fresh TianTianJieXi result and an exact 110,691,390-byte
+Chrome Streaming download from the sanitized media hostname
+`v5-se-gddgtc-default.365yg.com`, with zero AnimeImages ordinary-media bytes.
+It did not repeat the PRE Provider race or PRE download.
+
+The task then exact-deployed:
+
+```text
+application SHA: d746ec9ff66532071b8079592f8b4831cae0fe51
+checkpoint:      checkpoint/production-provider-stabilization-v1
+```
+
+Deployment applied no migration, copied 3 static files with 147 unchanged,
+and restarted only `animeimages.service`. Environment, persisted Provider and
+Batch runtime settings, systemd, and Nginx hashes remained unchanged;
+`NGINX_CONFIG_DRIFT=0`. The served Service Worker matched the candidate source.
+
+The production fresh race selected TianTianJieXi in approximately 2.7 seconds
+without displaying Native first. The selected original/Ultra asset reported
+110,691,390 bytes on the sanitized media hostname
+`v5-se-jltc-default.365yg.com`. Final journal text exposed the fixed allowlisted
+terminal fields, including `SUCCESS_FRESH`, `external_call=True`,
+`attempt_consumed=True`, and positive elapsed time. Each TianTianJieXi, KuKuTool,
+and Native execution emitted at most one terminal event, and the fresh race
+consumed one user attempt.
+
+Within the 120-second payload-cache lifetime, the same source produced
+`SUCCESS_PAYLOAD_CACHE`, `external_call=False`, `cache_hit=True`,
+`attempt_consumed=False`, and a positive payload age. KuKuTool reused the
+existing winning result without external work. The independently scheduled
+Native metadata Future remained its documented zero-attempt path; it did not
+consume another Ultra attempt.
+
+Candidate Chrome Streaming saved the same 110,691,390-byte ordinary MP4 in six
+seconds with visible Download Manager progress, speed, and completion. Calls
+to `/media/download-prepare/`, `/media/download-stream/`, and
+`/media/download-status/` were all zero, AnimeImages ordinary-media bytes were
+zero, and neither Server Relay nor a playback page was used. Batch remained
+public with public download and staff-only raw-link boundaries intact.
+
+The following ten-minute observation retained `active/running`, zero service
+restarts, local/public readiness 200, and zero 5xx, Traceback, unexpected 429,
+or severe Redis, continuation, telemetry, and Worker errors. Terminal logs
+contained only the explicit diagnostic allowlist and no URL or token. The
+acceptance classification is:
+
+```text
+PROVIDER_STABILIZATION_V2_PRODUCTION_ACCEPTED
+PRODUCTION_RUNTIME_CODE_DRIFT = 0
+```
 
 ## Provider Runtime Map
 
@@ -159,6 +215,7 @@ Provider order, timeout, six-second foreground behavior, continuation bounds,
 attempt limits, cooldown durations, Batch protocol, and ordinary-media
 Streaming are unchanged. The changes reject structurally invalid Tian payloads
 earlier and improve diagnostics. Candidate `4d91b749...` was temporarily
-deployed only for the failed acceptance attempt and then rolled back. Current
-production remains `fc1f136...`; a new exact-main Production Acceptance v2 is
-required after the formatter output repair merges.
+deployed only for the failed acceptance v1 attempt and then rolled back.
+Production Acceptance v2 subsequently exact-deployed and accepted
+`d746ec9...`; the immutable production checkpoint is
+`checkpoint/production-provider-stabilization-v1`.
