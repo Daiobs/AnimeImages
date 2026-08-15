@@ -582,7 +582,6 @@
             const link = documentObject.createElement("a");
             link.href = protocol.downloadPath(downloadId, workerScope);
             link.target = frame.name;
-            link.rel = "noopener";
             link.style.display = "none";
             documentObject.body.appendChild(link);
             try {

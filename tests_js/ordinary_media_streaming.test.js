@@ -180,6 +180,7 @@ function createClientHarness(options) {
     serviceWorker.controller = worker;
     const clicked = [];
     const frames = [];
+    const targets = [];
     const documentObject = {
         body: {
             appendChild() {},
@@ -204,6 +205,7 @@ function createClientHarness(options) {
                 style: {},
                 click() {
                     clicked.push(this.href);
+                    targets.push(this.target);
                     if (typeof settings.onNavigate === "function") {
                         settings.onNavigate({
                             serviceWorker,
@@ -228,7 +230,7 @@ function createClientHarness(options) {
         statusPollMs: 20,
         telemetryReporter: settings.telemetryReporter,
     });
-    return {calls, clicked, client, frames, serviceWorker, statuses};
+    return {calls, clicked, client, frames, serviceWorker, statuses, targets};
 }
 
 function ordinaryItem(overrides) {
@@ -522,8 +524,10 @@ test("client registers the root-scoped worker and launches one opaque download p
     assert.equal(harness.frames.length, 1);
     assert.equal(harness.frames[0].hidden, true);
     assert.match(harness.frames[0].name, /^animeimages-download-[a-f0-9]{32}$/);
+    assert.equal(harness.targets[0], harness.frames[0].name);
     assert.equal(harness.frames[0].removed, false);
     assert.doesNotMatch(streamingSource, /link\.download\s*=/);
+    assert.doesNotMatch(streamingSource, /link\.rel\s*=\s*["']noopener["']/);
 
     const current = harness.statuses.get(active.downloadId);
     harness.serviceWorker.emit({
