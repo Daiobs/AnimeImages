@@ -77,10 +77,41 @@
                 <div class="alert alert-danger mb-3 d-none"
                      data-batch-retry-request-error></div>
 
-                {% if row.video_items %}
-                    <div class="batch-direct-tools">
-                        {% for item in row.video_items %}
-                            <div class="batch-direct-item"
+                <div class="batch-media-tools{% if row.image_items %} batch-media-tools-images{% else %} batch-media-tools-video{% endif %}"
+                     data-batch-media-tools>
+                    <div class="batch-result-cover">
+                        {% if row.video_items and row.video_items.0.cover_url %}
+                            <img
+                                    src="{{ proxy_image_url }}?u={{ row.video_items.0.encoded_preview_cover_url|default:row.video_items.0.encoded_cover_url }}{% if row.video_items.0.cover_preview_provider_query %}&{{ row.video_items.0.cover_preview_provider_query }}{% endif %}"
+                                    alt="视频封面"
+                                    loading="lazy"
+                                    decoding="async"
+                                    onerror="retryImage(this)"
+                            >
+                        {% elif row.image_items %}
+                            <div class="batch-image-grid">
+                                {% for item in row.image_items|slice:":4" %}
+                                    <img
+                                            src="{{ proxy_image_url }}?u={{ item.encoded_preview_url|default:item.encoded_url }}{% if item.preview_provider_query %}&{{ item.preview_provider_query }}{% endif %}"
+                                            alt="图片预览"
+                                            loading="lazy"
+                                            decoding="async"
+                                            onerror="retryImage(this)"
+                                    >
+                                {% endfor %}
+                            </div>
+                        {% else %}
+                            <div class="batch-cover-placeholder">
+                                <i class="bi bi-card-image"></i>
+                            </div>
+                        {% endif %}
+                    </div>
+
+                    <div class="batch-media-actions">
+                    {% if row.video_items %}
+                        <div class="batch-direct-tools">
+                            {% for item in row.video_items %}
+                                <div class="batch-direct-item"
                                  data-batch-download-item
                                  data-type="video"
                                  data-url="{{ item.direct_url }}"
@@ -167,15 +198,15 @@
                                         <code>{{ item.direct_url }}</code>
                                     </details>
                                 {% endif %}
-                            </div>
-                        {% endfor %}
-                    </div>
-                {% endif %}
+                                </div>
+                            {% endfor %}
+                        </div>
+                    {% endif %}
 
-                {% if row.image_items %}
-                    <div class="batch-assets">
-                        {% for item in row.image_items %}
-                            <div class="batch-asset-download"
+                    {% if row.image_items %}
+                        <div class="batch-assets">
+                            {% for item in row.image_items %}
+                                <div class="batch-asset-download"
                                  data-batch-download-item
                                  data-type="image"
                                  data-url="{{ item.url }}"
@@ -210,10 +241,12 @@
                                         {% endif %}
                                     </div>
                                 {% endif %}
-                            </div>
-                        {% endfor %}
+                                </div>
+                            {% endfor %}
+                        </div>
+                    {% endif %}
                     </div>
-                {% endif %}
+                </div>
 
                 <div class="batch-result-actions mt-3">
                     <button type="button"
@@ -223,34 +256,6 @@
                         <span data-batch-retry-label>重新解析此链接</span>
                     </button>
                 </div>
-            </div>
-
-            <div class="batch-result-cover">
-                {% if row.video_items and row.video_items.0.cover_url %}
-                    <img
-                            src="{{ proxy_image_url }}?u={{ row.video_items.0.encoded_preview_cover_url|default:row.video_items.0.encoded_cover_url }}{% if row.video_items.0.cover_preview_provider_query %}&{{ row.video_items.0.cover_preview_provider_query }}{% endif %}"
-                            alt="视频封面"
-                            loading="lazy"
-                            decoding="async"
-                            onerror="retryImage(this)"
-                    >
-                {% elif row.image_items %}
-                    <div class="batch-image-grid">
-                        {% for item in row.image_items|slice:":4" %}
-                            <img
-                                    src="{{ proxy_image_url }}?u={{ item.encoded_preview_url|default:item.encoded_url }}{% if item.preview_provider_query %}&{{ item.preview_provider_query }}{% endif %}"
-                                    alt="图片预览"
-                                    loading="lazy"
-                                    decoding="async"
-                                    onerror="retryImage(this)"
-                            >
-                        {% endfor %}
-                    </div>
-                {% else %}
-                    <div class="batch-cover-placeholder">
-                        <i class="bi bi-card-image"></i>
-                    </div>
-                {% endif %}
             </div>
         </div>
     {% endif %}

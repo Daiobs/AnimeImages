@@ -1,6 +1,6 @@
 # Current Version Status
 
-Date: 2026-08-15
+Date: 2026-08-16
 
 ## Source Of Truth
 
@@ -34,15 +34,47 @@ git fetch --prune origin
 git rev-parse origin/main
 ```
 
-The production application SHA is the accepted runtime tree on canonical
-main. After this status reconciliation merges, canonical main may be ahead by
-documentation only; that does not create runtime code drift and is not a
-reason to redeploy production.
+The production application SHA remains the accepted runtime baseline. Canonical
+main now also carries the Download UI and Batch Actions candidate described
+below; that user-visible candidate has not been deployed or production
+accepted.
 
 ```text
-PRODUCTION_RUNTIME_CODE_DRIFT = 0
-REPO_HEAD_AHEAD_DOCS_ONLY = YES
+PRODUCTION_RUNTIME_CODE_DRIFT = YES
+REPO_HEAD_AHEAD_DOCS_ONLY = NO
+MAIN_RUNTIME_AHEAD_PRODUCTION = YES
 ```
+
+## Main Candidate: Download UI And Batch Actions
+
+The repository candidate removes the visible global active-download panel from
+Single and Batch pages without removing Service Worker state, refresh
+continuation, Download Manager cancellation, failure telemetry, or Batch card
+progress. The ordinary-media data plane remains:
+
+```text
+Provider/CDN -> Browser Service Worker -> Browser Download Manager -> Disk
+```
+
+For users allowed to download from Batch, the result toolbar exposes one
+`复制全部成功资源链接` action over the current successful video and image DOM.
+Stable DOM order and first-occurrence URL deduplication are preserved. The
+following capabilities remain staff-only:
+
+- per-item copy/open/expanded raw links;
+- `links.txt` and `aria2.txt` exports;
+- the strategy matrix.
+
+Staff exports now cover the same successful video and image sequence as bulk
+copy. Batch previews are integrated with their corresponding media actions and
+retain the four-image cap plus first-preview loading priority.
+
+```text
+MAIN_CANDIDATE_NOT_YET_PRODUCTION_ACCEPTED
+```
+
+Production remains at `d746ec9ff66532071b8079592f8b4831cae0fe51`; merging this
+candidate does not authorize deployment.
 
 ## Provider Stabilization Acceptance
 

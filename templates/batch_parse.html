@@ -9,10 +9,6 @@
          data-batch-item-url="{% url 'batch_parse_item' %}"
          data-batch-retry-url="{% url 'batch_parse_retry' %}">
     <div class="container-fluid px-4 px-md-5">
-        <section class="ordinary-active-downloads"
-                 data-ordinary-active-downloads
-                 aria-live="polite"
-                 hidden></section>
         <div class="alert alert-warning ordinary-download-interruption"
              data-ordinary-download-interruption
              role="status"
@@ -179,17 +175,21 @@
                             </span>
                         </div>
                     </div>
-                    {% if batch_raw_links_allowed %}
+                    {% if batch_download_allowed or batch_raw_links_allowed %}
                         <div class="batch-bulk-actions">
-                            <button type="button" class="btn btn-outline-secondary btn-sm batch-export-btn" data-batch-export="copy-links">
-                                <i class="bi bi-clipboard me-1"></i>复制全部成功视频直链
-                            </button>
-                            <button type="button" class="btn btn-outline-secondary btn-sm batch-export-btn" data-batch-export="links">
-                                <i class="bi bi-file-earmark-arrow-down me-1"></i>导出 links.txt
-                            </button>
-                            <button type="button" class="btn btn-outline-secondary btn-sm batch-export-btn" data-batch-export="aria2">
-                                <i class="bi bi-file-earmark-code me-1"></i>导出 aria2.txt
-                            </button>
+                            {% if batch_download_allowed %}
+                                <button type="button" class="btn btn-outline-secondary btn-sm batch-export-btn" data-batch-export="copy-links">
+                                    <i class="bi bi-clipboard me-1"></i>复制全部成功资源链接
+                                </button>
+                            {% endif %}
+                            {% if batch_raw_links_allowed %}
+                                <button type="button" class="btn btn-outline-secondary btn-sm batch-export-btn" data-batch-export="links">
+                                    <i class="bi bi-file-earmark-arrow-down me-1"></i>导出 links.txt
+                                </button>
+                                <button type="button" class="btn btn-outline-secondary btn-sm batch-export-btn" data-batch-export="aria2">
+                                    <i class="bi bi-file-earmark-code me-1"></i>导出 aria2.txt
+                                </button>
+                            {% endif %}
                         </div>
                     {% endif %}
                 </div>
