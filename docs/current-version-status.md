@@ -18,12 +18,12 @@ related but separate facts.
 
 ## Canonical Repository
 
-The runtime baseline accepted by Provider Stabilization Production Acceptance
-v2 is:
+The runtime baseline accepted by Download UI & Batch Actions Production
+Acceptance v1 is:
 
 ```text
-runtime SHA: d746ec9ff66532071b8079592f8b4831cae0fe51
-source:      Provider terminal logging fix (#40), including Provider Stabilization (#39)
+runtime SHA: 9ba5702e9a90b9179e21d53393d8e27c39c51833
+source:      Download UI & Batch Actions v1 (#42), including Provider Stabilization (#39/#40)
 ```
 
 Always resolve the current canonical SHA rather than treating the value above
@@ -34,23 +34,22 @@ git fetch --prune origin
 git rev-parse origin/main
 ```
 
-The production application SHA remains the accepted runtime baseline. Canonical
-main now also carries the Download UI and Batch Actions candidate described
-below; that user-visible candidate has not been deployed or production
-accepted.
+The production application SHA is the accepted runtime baseline above. After
+this docs-only reconciliation is merged, canonical `main` will be ahead only by
+documentation; it does not require another production deploy.
 
 ```text
-PRODUCTION_RUNTIME_CODE_DRIFT = YES
-REPO_HEAD_AHEAD_DOCS_ONLY = NO
-MAIN_RUNTIME_AHEAD_PRODUCTION = YES
+PRODUCTION_RUNTIME_CODE_DRIFT = 0
+REPO_HEAD_AHEAD_DOCS_ONLY = YES
+MAIN_RUNTIME_AHEAD_PRODUCTION = NO
 ```
 
-## Main Candidate: Download UI And Batch Actions
+## Download UI And Batch Actions Acceptance
 
-The repository candidate removes the visible global active-download panel from
-Single and Batch pages without removing Service Worker state, refresh
-continuation, Download Manager cancellation, failure telemetry, or Batch card
-progress. The ordinary-media data plane remains:
+PR #42 is production accepted. It removes the visible global active-download
+panel from Single and Batch pages without removing Service Worker state,
+refresh continuation, Download Manager cancellation, failure telemetry, or
+Batch card progress. The ordinary-media data plane remains:
 
 ```text
 Provider/CDN -> Browser Service Worker -> Browser Download Manager -> Disk
@@ -70,11 +69,13 @@ copy. Batch previews are integrated with their corresponding media actions and
 retain the four-image cap plus first-preview loading priority.
 
 ```text
-MAIN_CANDIDATE_NOT_YET_PRODUCTION_ACCEPTED
+DOWNLOAD_UI_BATCH_ACTIONS = PRODUCTION_ACCEPTED
+ordinary media server bytes = 0
+Server Relay = NO
 ```
 
-Production remains at `d746ec9ff66532071b8079592f8b4831cae0fe51`; merging this
-candidate does not authorize deployment.
+The exact production evidence is recorded in
+[`research/download-ui-batch-actions-production-acceptance-v1.md`](research/download-ui-batch-actions-production-acceptance-v1.md).
 
 ## Provider Stabilization Acceptance
 
@@ -109,15 +110,16 @@ was recorded in the acceptance evidence.
 Production application code has been deployed and accepted at:
 
 ```text
-application SHA:  d746ec9ff66532071b8079592f8b4831cae0fe51
-checkpoint:       checkpoint/production-provider-stabilization-v1
-rollback:         checkpoint/production-main-converged-v2 -> fc1f1368431fb2ff063231dfaa4f35a9c8154430
+application SHA:  9ba5702e9a90b9179e21d53393d8e27c39c51833
+checkpoint:       checkpoint/production-download-ui-batch-actions-v1
+rollback:         checkpoint/production-provider-stabilization-v1 -> d746ec9ff66532071b8079592f8b4831cae0fe51
 site:             https://download.cosflow.icu/
 ```
 
 The checkpoint resolves exactly to the application SHA and must remain
 immutable. This application includes the accepted PR #26 Batch visibility and
-public-download behavior and PR #28 Batch Runtime Admin clarity.
+public-download behavior, PR #28 Batch Runtime Admin clarity, and PR #42
+Download UI and mixed-media Batch actions.
 
 Production topology at the accepted infrastructure audit:
 
@@ -219,9 +221,12 @@ Provider/CDN -> Browser Service Worker -> Browser Download Manager -> Disk
   access, and start/item/retry API access.
 - The accepted production runtime value was `public`; this observed value is
   not a permanent product contract and may be changed through the runtime gate.
-- An allowed anonymous user can access Batch and use validated video/image
-  download actions.
-- Raw-link copy/open/export and strategy diagnostics remain staff-only.
+- An allowed anonymous user can access Batch, use validated video/image
+  download actions, and copy all successful video and image resource links in
+  stable current-DOM order.
+- Per-item raw-link copy/open/details, `links.txt`, `aria2.txt`, and strategy
+  diagnostics remain staff-only. Staff exports cover the same video and image
+  sequence as copy-all.
 - Batch Provider order, per-link deadlines, response boundary, progressive
   tokens, and retry preservation remain unchanged.
 - Public ordinary video uses the same zero-server-media Streaming path as
@@ -243,9 +248,9 @@ Provider/CDN -> Browser Service Worker -> Browser Download Manager -> Disk
 Repository Branch Archive & Cleanup v1 is complete:
 
 ```text
-remote branches:               26
+remote branches:               28
 main:                           1
-checkpoint/*:                  11
+checkpoint/*:                  13
 KEEP_UNIQUE_HISTORICAL refs:   14
 authorized historical deletes: 35
 open PRs at cleanup close:       0
