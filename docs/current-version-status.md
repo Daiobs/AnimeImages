@@ -35,8 +35,8 @@ git rev-parse origin/main
 ```
 
 The production application SHA is the accepted runtime baseline above. The
-Batch Photo Gallery candidate advances application behavior on `main`; it has
-not been deployed or production accepted.
+Browser Photo Archive and Format Reliability candidate advances application
+behavior on `main`; it has not been deployed or production accepted.
 
 ```text
 PRODUCTION_RUNTIME_CODE_DRIFT = 1
@@ -44,28 +44,34 @@ REPO_HEAD_AHEAD_DOCS_ONLY = NO
 MAIN_RUNTIME_AHEAD_PRODUCTION = YES
 ```
 
-## Batch Photo Gallery Candidate
+## Browser Photo Archive Candidate
 
-The Batch Photo Gallery and Download UX v1 candidate removes the four-image
-summary cap and renders every parsed image in parser order without fixed-ratio
-cropping. Card previews use a deterministic 960px XHS derivative; the one
-global, row-scoped lightbox requests a 1600px derivative only after the user
-opens an image. Other platforms retain their existing safe preview candidate.
+The first Batch Photo Gallery production acceptance was rolled back. It
+validated the uncropped full Gallery, 960px card previews, on-demand 1600px
+row-scoped Lightbox, responsive layout, and permission boundaries, but exposed
+an incomplete photo-download contract: suffixless binary images could be
+misnamed `.jpg`, a cross-origin anchor could save without an extension, and
+pure image archives moved CDN bytes through AnimeImages.
 
-Each photo has its own browser download action. Multi-image rows also expose a
-current-row Download All Images action that reuses the existing validated
-download task or synchronous ZIP endpoint. The transport boundaries are:
+The replacement main candidate preserves the Gallery and changes the default
+photo data paths to:
 
 ```text
-single image:    Image CDN -> Browser -> Disk
-ordinary video: Provider/CDN -> Browser Service Worker -> Download Manager -> Disk
-multi-image ZIP: Image CDN -> AnimeImages ZIP generator -> Browser -> Disk
+single image:     Image CDN -> Browser fetch -> Blob -> Download Manager -> Disk
+pure image ZIP:   Image CDN -> Browser fetch -> STORE ZIP -> Download Manager -> Disk
+ordinary video:  Provider/CDN -> Browser Service Worker -> Download Manager -> Disk
+server photo ZIP: explicit compatibility fallback only
 ```
 
-The synchronous ZIP receiver enforces a 128 MiB browser-memory boundary and
-cancels larger or unknown-length non-streaming responses. Mixed-resource text
-exports retain their established video-first order while images remain in
-parser order.
+Real Chrome capability evidence found readable CORS responses and exposed
+`Content-Length` on `ci.xiaohongshu.com`. Single and Batch now share one local
+Browser Photo module with concurrency 3, a 50 MiB item cap, a 128 MiB archive
+cap, incremental CRC32, STORE-only ZIP32, real byte/speed progress, conditional
+ETA, cancellation, and no URL persistence. Successful browser photo paths call
+no AnimeImages media endpoint. Server ZIP remains available only after an
+explicit user action and now shares bounded JPEG/PNG/GIF/WebP/AVIF magic-based
+format resolution with async archives and server saves. Unknown binary content
+never becomes `.jpg`.
 
 Public Batch users retain download and copy-all capabilities without raw-link
 UI or staff exports. Staff raw actions, `links.txt`, and `aria2.txt` remain
@@ -73,14 +79,19 @@ available. Provider order, Batch deadlines, ordinary Streaming, runtime
 settings, and migrations are unchanged.
 
 ```text
-BATCH_PHOTO_GALLERY = MAIN_CANDIDATE_NOT_YET_PRODUCTION_ACCEPTED
+BROWSER_PHOTO_ARCHIVE = MAIN_CANDIDATE_NOT_YET_PRODUCTION_ACCEPTED
+XHS_BROWSER_FETCH_CORS = PASS
+ZIP_IMPLEMENTATION = STORE_ONLY_INTERNAL
 PHOTO_ORIGINAL_VARIANT_SELECTION_NOT_PROVEN
 PHOTO_DOWNLOAD_VARIANT_FIDELITY_BACKLOG
 ```
 
 See
-[`research/batch-photo-gallery-download-ux-v1.md`](research/batch-photo-gallery-download-ux-v1.md)
-for the implementation, test, browser, and remaining-fidelity evidence.
+[`research/browser-photo-archive-format-reliability-v1.md`](research/browser-photo-archive-format-reliability-v1.md)
+for the CORS, filesystem filename, ZIP integrity, progress, fallback, memory,
+and remaining-fidelity evidence. The earlier Gallery implementation record is
+retained as rolled-back design history in
+[`research/batch-photo-gallery-download-ux-v1.md`](research/batch-photo-gallery-download-ux-v1.md).
 
 ## Download UI And Batch Actions Acceptance
 

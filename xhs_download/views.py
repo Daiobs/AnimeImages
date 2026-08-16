@@ -132,6 +132,7 @@ from .services.downloads import (
     validate_download_media_items,
     validate_response_content_type,
 )
+from .services.image_formats import resolve_image_format
 from .services.platforms.douyin_kukutool import (
     get_kukutool_provider_health,
     is_byte_cdn_url,
@@ -3028,7 +3029,7 @@ def single_attachment_download_filename(item, base_filename, final_url="", conte
         stem = base_filename or str(item.get("type") or "media")
     media_type = str(item.get("type") or "").lower()
     if media_type == "image":
-        ext = guess_image_extension(final_url or item.get("url", ""), content_type)
+        ext = guess_image_extension(final_url or item.get("url", ""), content_type) or "bin"
     else:
         ext = guess_video_extension_from_response(final_url or item.get("url", ""), content_type)
     return clean_filename(f"{stem}.{ext}")
@@ -3819,7 +3820,7 @@ def image_download_extension(asset):
         return supported[declared]
     path_suffix = Path(urlparse(str(getattr(asset, "url", "") or "")).path).suffix
     inferred = path_suffix.lower().lstrip(".")
-    return supported.get(inferred, "jpg")
+    return supported.get(inferred, "")
 
 
 def build_image_item(asset, result):
@@ -5112,28 +5113,8 @@ def placeholder_image_response(status=200, retry_after=0):
 def detect_raster_image_content_type(content):
     if not isinstance(content, (bytes, bytearray, memoryview)):
         return ""
-    content = bytes(content)
-    if content.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if content.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if content.startswith((b"GIF87a", b"GIF89a")):
-        return "image/gif"
-    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
-        return "image/webp"
-    if len(content) >= 16 and content[4:8] == b"ftyp":
-        box_size = int.from_bytes(content[:4], "big")
-        if box_size >= 16:
-            box_end = min(len(content), box_size)
-            brands = [content[8:12]]
-            brands.extend(
-                content[index:index + 4]
-                for index in range(16, box_end, 4)
-                if len(content[index:index + 4]) == 4
-            )
-            if any(brand in {b"avif", b"avis"} for brand in brands):
-                return "image/avif"
-    return ""
+    resolution = resolve_image_format(bytes(content))
+    return resolution.mime_type if resolution.confidence == "magic" else ""
 
 
 @require_GET

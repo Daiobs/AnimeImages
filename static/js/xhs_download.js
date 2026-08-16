@@ -2,6 +2,7 @@
     const SETTINGS_KEY = "xhsDownloadSettings";
     const MAX_IMAGE_RETRIES = 3;
     const ordinaryMediaDownloadApi = window.AnimeImagesOrdinaryMediaDownload || null;
+    const browserPhotoApi = window.AnimeImagesBrowserPhoto || null;
     const downloadReliabilityApi = window.AnimeImagesDownloadReliability || null;
     const douyinReliabilityApi = window.AnimeImagesDouyinReliability || null;
     const resultUrlSafetyApi = window.AnimeImagesResultUrlSafety || null;
@@ -107,6 +108,8 @@
             type: "image",
             url: card.dataset.url,
             size_bytes: sizeBytes,
+            filenameStem: card.dataset.downloadFilenameStem || "",
+            extensionHint: card.dataset.downloadExtensionHint || "",
             ...providerFields,
         };
     }
@@ -315,6 +318,8 @@
         let activeParseController = null;
         let parseRequestId = 0;
         let downloadInProgress = false;
+        let activePhotoController = null;
+        let pendingPhotoServerFallback = false;
         let pendingParsePreferences = null;
         let lastDownloadProgress = 0;
         let ultraRetryDeadline = 0;
@@ -352,11 +357,30 @@
                 progressTrack: progressWrap ? progressWrap.querySelector("[role='progressbar']") : null,
                 progressBar: resultsRegion ? resultsRegion.querySelector("#download-progress-bar") : null,
                 progressPercent: resultsRegion ? resultsRegion.querySelector("#download-progress-percent") : null,
+                progressItems: resultsRegion ? resultsRegion.querySelector("#download-progress-items") : null,
                 progressBytes: resultsRegion ? resultsRegion.querySelector("#download-progress-bytes") : null,
                 progressSpeed: resultsRegion ? resultsRegion.querySelector("#download-progress-speed") : null,
                 progressEta: resultsRegion ? resultsRegion.querySelector("#download-progress-eta") : null,
                 blobWarning: progressWrap ? progressWrap.querySelector("[data-blob-download-warning]") : null,
+                photoCancel: resultsRegion ? resultsRegion.querySelector("[data-photo-download-cancel]") : null,
+                photoServerFallback: resultsRegion ? resultsRegion.querySelector("[data-photo-server-fallback]") : null,
             };
+        }
+
+        function setPhotoActionVisibility(options) {
+            const settings = options || {};
+            const {photoCancel, photoServerFallback} = getProgressElements();
+            if (photoCancel) {
+                photoCancel.hidden = !settings.cancel;
+            }
+            if (photoServerFallback) {
+                photoServerFallback.hidden = !settings.serverFallback;
+            }
+        }
+
+        function clearPhotoServerFallback() {
+            pendingPhotoServerFallback = false;
+            setPhotoActionVisibility({cancel: Boolean(activePhotoController)});
         }
 
         function isUltraHdEnabled() {
@@ -581,13 +605,23 @@
         }
 
         function hideDownloadProgress() {
-            const {progressWrap, progressBytes, progressSpeed, progressEta, blobWarning} = getProgressElements();
+            const {
+                progressWrap,
+                progressItems,
+                progressBytes,
+                progressSpeed,
+                progressEta,
+                blobWarning,
+            } = getProgressElements();
             if (progressWrap) {
                 progressWrap.hidden = true;
                 progressWrap.classList.remove("is-pending");
             }
             if (progressBytes) {
                 progressBytes.innerText = "0 B";
+            }
+            if (progressItems) {
+                progressItems.innerText = "";
             }
             if (progressSpeed) {
                 progressSpeed.innerText = "正在测速...";
@@ -599,6 +633,7 @@
                 blobWarning.hidden = true;
             }
             lastDownloadProgress = 0;
+            setPhotoActionVisibility({});
         }
 
         function setProgress(percent, options) {
@@ -693,6 +728,155 @@
             }
             if (blobWarning) {
                 blobWarning.hidden = event.transport !== "browser_blob";
+            }
+        }
+
+        function selectedSupportsBrowserPhoto(items, saveFormat) {
+            const sourceItems = Array.isArray(items) ? items : [];
+            if (browserPhotoApi && typeof browserPhotoApi.supportsSelection === "function") {
+                return browserPhotoApi.supportsSelection(sourceItems, saveFormat);
+            }
+            return Boolean(
+                sourceItems.length
+                && String(saveFormat || "original") === "original"
+                && sourceItems.every((item) => (
+                    item
+                    && item.type === "image"
+                    && item.url
+                    && !item.requires_cookie
+                    && !item.requires_merge
+                ))
+            );
+        }
+
+        function applyPhotoDownloadProgress(event) {
+            if (!browserPhotoApi || !event) {
+                return;
+            }
+            const {
+                progressWrap,
+                progressTrack,
+                progressBar,
+                progressPercent,
+                progressItems,
+                progressBytes,
+                progressSpeed,
+                progressEta,
+                blobWarning,
+            } = getProgressElements();
+            const completed = event.stage === "saving" || event.stage === "completed";
+            const percent = completed
+                ? 100
+                : (event.totalKnown && event.percent !== null ? event.percent : null);
+            if (progressWrap) {
+                progressWrap.hidden = false;
+                progressWrap.classList.toggle("is-pending", percent === null);
+            }
+            if (progressTrack) {
+                if (percent === null) {
+                    progressTrack.removeAttribute("aria-valuenow");
+                    progressTrack.setAttribute("aria-valuetext", "正在下载图片，文件总量未知");
+                } else {
+                    progressTrack.setAttribute("aria-valuenow", String(Math.round(percent)));
+                    progressTrack.setAttribute("aria-valuetext", `${Math.round(percent)}%`);
+                }
+            }
+            if (progressBar) {
+                progressBar.style.width = percent === null ? "100%" : `${percent}%`;
+            }
+            if (progressPercent) {
+                progressPercent.innerText = percent === null ? "下载中" : `${Math.round(percent)}%`;
+            }
+            if (progressItems) {
+                progressItems.innerText = `${event.completedItems} / ${event.totalItems}`;
+            }
+            if (progressBytes) {
+                progressBytes.innerText = event.totalKnown
+                    ? `${browserPhotoApi.formatBytes(event.receivedBytes)} / ${browserPhotoApi.formatBytes(event.totalBytes)}`
+                    : `已下载 ${browserPhotoApi.formatBytes(event.receivedBytes)}`;
+            }
+            if (progressSpeed) {
+                progressSpeed.innerText = browserPhotoApi.formatRate(event.bytesPerSecond);
+            }
+            if (progressEta) {
+                progressEta.innerText = event.etaSeconds
+                    ? browserPhotoApi.formatEta(event.etaSeconds)
+                    : "";
+            }
+            if (blobWarning) {
+                blobWarning.hidden = false;
+                blobWarning.innerText = "浏览器正在下载并打包图片，完成前请勿刷新或关闭本页。";
+            }
+            const stageMessages = {
+                connecting: "正在连接图片资源...",
+                fetching: event.totalItems > 1
+                    ? `浏览器正在下载并打包图片 ${event.completedItems} / ${event.totalItems}`
+                    : "浏览器正在下载图片...",
+                assembling: "图片已下载完成，正在生成 ZIP...",
+                saving: "正在交给浏览器保存...",
+                completed: "已开始保存。",
+            };
+            if (stageMessages[event.stage]) {
+                setStatus(getStatusElement(), stageMessages[event.stage]);
+            }
+        }
+
+        async function downloadSelectedPhotos(payload) {
+            const items = selected.map((item, index) => ({
+                ...item,
+                filenameStem: item.filenameStem || `${getBaseFilename()}_${String(index + 1).padStart(2, "0")}`,
+            }));
+            activePhotoController = new AbortController();
+            clearPhotoServerFallback();
+            setPhotoActionVisibility({cancel: true});
+            try {
+                if (items.length === 1) {
+                    const result = await browserPhotoApi.downloadImage(items[0], {
+                        filenameStem: items[0].filenameStem,
+                        signal: activePhotoController.signal,
+                        onProgress: applyPhotoDownloadProgress,
+                    });
+                    setStatus(
+                        getStatusElement(),
+                        `已交给浏览器保存：${result.filename}`,
+                        "text-success",
+                    );
+                    return;
+                }
+                const result = await browserPhotoApi.createArchive(items, {
+                    baseFilename: payload.base_filename,
+                    signal: activePhotoController.signal,
+                    onProgress: applyPhotoDownloadProgress,
+                });
+                const failureNote = result.failureCount
+                    ? `，${result.failureCount} 张未能加入，详情见 failed.txt`
+                    : "";
+                setStatus(
+                    getStatusElement(),
+                    `已交给浏览器保存：${result.filename}${failureNote}`,
+                    result.failureCount ? "text-muted" : "text-success",
+                );
+            } catch (error) {
+                const errorCode = browserPhotoApi.safeErrorCode(error);
+                const cancelled = errorCode === "BROWSER_PHOTO_CANCELLED";
+                if (!cancelled && items.length > 1) {
+                    pendingPhotoServerFallback = true;
+                    setPhotoActionVisibility({serverFallback: true});
+                    setStatus(
+                        getStatusElement(),
+                        `${browserPhotoApi.safeErrorMessage(error)} 可明确选择“使用服务器打包”。`,
+                        "text-danger",
+                    );
+                    return;
+                }
+                setStatus(
+                    getStatusElement(),
+                    browserPhotoApi.safeErrorMessage(error),
+                    cancelled ? "text-muted" : "text-danger",
+                );
+            } finally {
+                activePhotoController = null;
+                setPhotoActionVisibility({serverFallback: pendingPhotoServerFallback});
             }
         }
 
@@ -793,6 +977,7 @@
                 return;
             }
             selected = [];
+            pendingPhotoServerFallback = false;
             setPageHasResults(true);
             resultsRegion.innerHTML = `
                 <div class="parse-loading-card">
@@ -828,6 +1013,7 @@
                 return;
             }
             selected = [];
+            pendingPhotoServerFallback = false;
             setPageHasResults(true);
             page.dataset.baseFilename = "xhs_image";
             resultsRegion.innerHTML = `
@@ -859,6 +1045,7 @@
             }
             applyTargetPage(payload.target_page);
             selected = [];
+            pendingPhotoServerFallback = false;
             resultsRegion.innerHTML = payload.html || "";
             page.dataset.baseFilename = payload.base_filename || "xhs_image";
             setPageHasResults(Boolean(payload.has_content || payload.has_results));
@@ -940,6 +1127,7 @@
                 activeParseController = null;
             }
             selected = [];
+            pendingPhotoServerFallback = false;
             parseRequestId += 1;
             setParseLoading(false);
             page.dataset.baseFilename = "xhs_image";
@@ -1408,7 +1596,7 @@
             setStatus(getStatusElement(), `${savedMessage}：${filename}，成功 ${savedCount} 个，失败 ${failedCount} 个`, variant);
         }
 
-        async function handleDownloadClick(downloadBtn, forceAutoMode) {
+        async function handleDownloadClick(downloadBtn, forceAutoMode, options) {
             if (selected.length === 0) {
                 window.alert("请先选择需要保存的资源");
                 return;
@@ -1425,6 +1613,9 @@
             setStatus(getStatusElement(), "正在准备下载...");
 
             try {
+                const forceServerPhotoArchive = Boolean(
+                    options && options.forceServerPhotoArchive
+                );
                 const payload = {
                     media_items: selected,
                     base_filename: getBaseFilename(),
@@ -1436,6 +1627,32 @@
                     quality: qualityInput ? qualityInput.value || 95 : 95,
                     video_save_mode: videoSaveModeInput ? videoSaveModeInput.value : "video",
                 };
+                if (forceServerPhotoArchive) {
+                    payload.download_mode = "zip";
+                    payload.archive_profile = "batch_images";
+                    clearPhotoServerFallback();
+                    setStatus(getStatusElement(), "服务器正在准备图片 ZIP...");
+                }
+
+                if (
+                    !forceServerPhotoArchive
+                    && selectedSupportsBrowserPhoto(selected, payload.save_format)
+                ) {
+                    if (!browserPhotoApi) {
+                        pendingPhotoServerFallback = selected.length > 1;
+                        setPhotoActionVisibility({serverFallback: pendingPhotoServerFallback});
+                        setStatus(
+                            getStatusElement(),
+                            pendingPhotoServerFallback
+                                ? "浏览器图片下载组件不可用，可明确选择“使用服务器打包”。"
+                                : "浏览器图片下载组件不可用，请刷新页面后重试。",
+                            "text-danger",
+                        );
+                        return;
+                    }
+                    await downloadSelectedPhotos(payload);
+                    return;
+                }
 
                 if (selectedSingleItem(selected)) {
                     const routePreview = await fetchRouteOnly(payload);
@@ -1482,7 +1699,12 @@
                 if (requiresProviderProcessing) {
                     setStatus(getStatusElement(), "Provider 资源正在服务端校验、恢复或合并，完成后会开始传输...");
                 } else if (!selectedSingleItem(selected)) {
-                    setStatus(getStatusElement(), "服务器正在打包 ZIP，文件开始传输后会显示接收进度...");
+                    setStatus(
+                        getStatusElement(),
+                        forceServerPhotoArchive
+                            ? "服务器正在打包 ZIP，文件开始传输后会显示接收进度..."
+                            : "服务器正在生成所需文件，完成后会显示接收进度...",
+                    );
                 }
                 const response = await postDownloadPayload(payload);
 
@@ -1560,6 +1782,7 @@
         }
 
         function toggleAssetCard(card) {
+            clearPhotoServerFallback();
             const item = getCardItem(card);
             const key = getItemKey(item);
             const exists = selected.some((selectedItem) => getItemKey(selectedItem) === key);
@@ -1577,6 +1800,7 @@
         }
 
         function toggleSelectAll() {
+            clearPhotoServerFallback();
             const cards = getCards();
             const allSelected = selected.length === cards.length;
             selected = [];
@@ -1761,6 +1985,28 @@
 
         if (resultsRegion) {
             resultsRegion.addEventListener("click", (event) => {
+                const photoCancelButton = event.target.closest("[data-photo-download-cancel]");
+                if (photoCancelButton && resultsRegion.contains(photoCancelButton)) {
+                    event.preventDefault();
+                    if (activePhotoController) {
+                        activePhotoController.abort();
+                    }
+                    return;
+                }
+
+                const photoServerFallbackButton = event.target.closest("[data-photo-server-fallback]");
+                if (photoServerFallbackButton && resultsRegion.contains(photoServerFallbackButton)) {
+                    event.preventDefault();
+                    if (pendingPhotoServerFallback) {
+                        handleDownloadClick(
+                            getDownloadButton(),
+                            true,
+                            {forceServerPhotoArchive: true},
+                        );
+                    }
+                    return;
+                }
+
                 const selectAllBtn = event.target.closest("#select-all-btn");
                 if (selectAllBtn && resultsRegion.contains(selectAllBtn)) {
                     toggleSelectAll();

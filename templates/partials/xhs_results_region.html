@@ -70,7 +70,7 @@
                 </div>
 
                 <div class="download-action-help small text-muted">
-                    普通单视频由浏览器获取并保存；多图、多资源或需合并的文件由服务器生成。
+                    普通图片由浏览器获取；纯多图由浏览器打包 ZIP。需合并或生成的新文件仍由服务器处理。
                 </div>
             </div>
         </div>
@@ -107,7 +107,9 @@
                              data-cors-expected="{{ item.cors_expected|yesno:'true,false' }}"
                              data-browser-direct-fetch-safe="{{ item.browser_direct_fetch_safe|yesno:'true,false' }}"
                              data-requires-merge="{{ item.requires_merge|yesno:'true,false' }}"
-                             data-requires-cookie="{{ item.requires_cookie|yesno:'true,false' }}">
+                             data-requires-cookie="{{ item.requires_cookie|yesno:'true,false' }}"
+                             data-download-filename-stem="{{ base_filename|default:'image' }}_{{ forloop.counter|stringformat:'02d' }}"
+                             data-download-extension-hint="{{ item.download_extension|default:'' }}">
                             <span class="asset-check">
                                 <i class="bi bi-check-lg"></i>
                             </span>
@@ -195,6 +197,7 @@
                         <div class="download-progress-bar" id="download-progress-bar" style="width: 0%;"></div>
                     </div>
                     <div class="download-progress-meta" aria-live="polite">
+                        <span id="download-progress-items"></span>
                         <span id="download-progress-bytes">0 B</span>
                         <span id="download-progress-speed">正在测速...</span>
                         <span id="download-progress-eta"></span>
@@ -204,6 +207,20 @@
                     </div>
                 </div>
                 <div class="download-progress-percent" id="download-progress-percent">0%</div>
+            </div>
+            <div class="download-progress-actions mt-2 d-flex flex-wrap gap-2">
+                <button type="button"
+                        class="btn btn-outline-secondary btn-sm"
+                        data-photo-download-cancel
+                        hidden>
+                    取消
+                </button>
+                <button type="button"
+                        class="btn btn-outline-secondary btn-sm"
+                        data-photo-server-fallback
+                        hidden>
+                    使用服务器打包
+                </button>
             </div>
             <div id="status" class="small text-muted">
                 点击资源卡片可选择，支持批量保存。

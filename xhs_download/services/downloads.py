@@ -65,6 +65,11 @@ from .quality import (
     content_type_matches_expected,
     parse_content_length,
 )
+from .image_formats import (
+    GENERIC_BINARY_CONTENT_TYPES,
+    normalize_image_content_type,
+    resolve_image_format,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -277,11 +282,35 @@ def get_extension_from_content_type(content_type, mapping):
 
 
 def guess_image_extension(url, content_type=None):
-    return (
-        get_extension_from_content_type(content_type, IMAGE_CONTENT_TYPE_EXTENSIONS)
-        or get_extension_from_url(url, set(IMAGE_CONTENT_TYPE_EXTENSIONS.values()))
-        or "jpg"
+    resolution = resolve_image_format(content_type=content_type, url=url)
+    return resolution.extension
+
+
+def resolve_temp_image_format(temp_result):
+    path = Path(temp_result["path"])
+    with path.open("rb") as source:
+        prefix = source.read(4096)
+    resolution = resolve_image_format(
+        prefix,
+        content_type=temp_result.get("content_type", ""),
+        url=temp_result.get("final_url", ""),
     )
+    if not resolution.valid:
+        raise XhsDownloadError(
+            resolution.error_code or "IMAGE_FORMAT_UNDETERMINED"
+        )
+    if resolution.metadata_mismatch:
+        logger.warning(
+            "image_type_metadata_mismatch",
+            extra={
+                "event": "image_type_metadata_mismatch",
+                "declared_content_type": str(
+                    temp_result.get("content_type", "")
+                ).split(";", 1)[0].strip().lower(),
+                "detected_content_type": resolution.mime_type,
+            },
+        )
+    return resolution
 
 
 def guess_video_extension_from_response(url, content_type=None):
@@ -374,6 +403,12 @@ def read_limited_response(response, max_bytes, expected_type=""):
 
 def validate_response_content_type(content_type, expected_type):
     if not expected_type:
+        return
+    if (
+        expected_type == "image"
+        and normalize_image_content_type(content_type)
+        in GENERIC_BINARY_CONTENT_TYPES
+    ):
         return
     if not content_type or not content_type_matches_expected(
         content_type,
@@ -1046,7 +1081,7 @@ def iter_download_files(media_items, base_filename, save_format=ORIGINAL_FORMAT,
                         expected_type="image",
                     )
                     try:
-                        ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
+                        ext = resolve_temp_image_format(temp_result).extension
                         filename = clean_filename(f"{base_filename}_{index}.{ext}")
                         yield filename, Path(temp_result["path"]).read_bytes()
                     finally:
@@ -1085,7 +1120,7 @@ def iter_download_files(media_items, base_filename, save_format=ORIGINAL_FORMAT,
                             max_bytes=MAX_IMAGE_BYTES,
                         )
                         try:
-                            ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
+                            ext = resolve_temp_image_format(temp_result).extension
                             filename = clean_filename(f"{base_filename}_{index}_cover.{ext}")
                             yield filename, Path(temp_result["path"]).read_bytes()
                         finally:
@@ -1246,7 +1281,7 @@ def build_download_archive_file(
                                 ),
                             )
                             try:
-                                ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
+                                ext = resolve_temp_image_format(temp_result).extension
                                 filename = archive_item_filename(
                                     base_filename,
                                     index,
@@ -1337,7 +1372,7 @@ def build_download_archive_file(
                                     ),
                                 )
                                 try:
-                                    ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
+                                    ext = resolve_temp_image_format(temp_result).extension
                                     filename = clean_filename(f"{base_filename}_{index}_cover.{ext}")
                                     total_size += write_archive_entry_from_temp(
                                         archive,
@@ -1474,7 +1509,7 @@ def save_media_items_to_server(
                         expected_type="image",
                     )
                     try:
-                        ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
+                        ext = resolve_temp_image_format(temp_result).extension
                         filename = clean_filename(f"{base_filename}_{index}.{ext}")
                         target = save_folder / filename
                         shutil.move(temp_result["path"], target)
@@ -1528,7 +1563,7 @@ def save_media_items_to_server(
                             max_bytes=MAX_IMAGE_BYTES,
                         )
                         try:
-                            ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
+                            ext = resolve_temp_image_format(temp_result).extension
                             filename = clean_filename(f"{base_filename}_{index}_cover.{ext}")
                             target = save_folder / filename
                             shutil.move(temp_result["path"], target)
