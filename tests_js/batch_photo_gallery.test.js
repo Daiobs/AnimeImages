@@ -232,3 +232,20 @@ test("Unknown-length synchronous ZIP streams cancel before exceeding the memory 
     assert.equal(reads, 2);
     assert.equal(cancelled, true);
 });
+
+
+test("Unknown-length ZIP responses without a stream reader fail before Blob buffering", async () => {
+    let blobCalled = false;
+    await assert.rejects(
+        () => batch.readBatchPhotoArchiveResponse({
+            headers: {get() { return ""; }},
+            body: null,
+            async blob() {
+                blobCalled = true;
+                return new Blob([]);
+            },
+        }, null),
+        /大小未知/,
+    );
+    assert.equal(blobCalled, false);
+});
