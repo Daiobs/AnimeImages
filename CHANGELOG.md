@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Removed the redundant global active-download panel from Single and Batch
+  product pages while retaining Service Worker state, Browser Download Manager
+  cancellation, refresh continuation, and card-local progress. Allowed public
+  Batch users can now copy all successful video and image resource links;
+  staff-only `links.txt` and `aria2.txt` exports use the same stable, deduplicated
+  mixed-media sequence, while per-item raw tools remain staff-only. Batch
+  previews now sit beside their media actions without changing the ordinary
+  zero-server-media download path. This is a main candidate and is not yet
+  production accepted.
 - Hardened TianTianJieXi success-cache admission with platform-aware structural
   validation, added URL-free Provider outcome and cache-age diagnostics across
   TianTianJieXi/KuKuTool/Native, and split browser invalid-response telemetry

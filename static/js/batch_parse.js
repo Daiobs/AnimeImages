@@ -55,8 +55,12 @@
     async function copyText(text) {
         const value = text || "";
         if (navigator.clipboard && navigator.clipboard.writeText) {
-            await navigator.clipboard.writeText(value);
-            return;
+            try {
+                await navigator.clipboard.writeText(value);
+                return;
+            } catch (error) {
+                // Browser permission failures can still use the local selection fallback.
+            }
         }
         fallbackCopy(value);
     }
@@ -210,13 +214,55 @@
         }
     }
 
-    function collectBatchVideoLinks() {
-        return Array.from(document.querySelectorAll("[data-batch-direct-url]"))
-            .map((node) => ({
-                url: node.getAttribute("data-batch-direct-url") || "",
-                filename: node.getAttribute("data-batch-direct-filename") || "video.mp4",
-            }))
-            .filter((item) => item.url);
+    function collectBatchResourceLinks(root) {
+        const scope = root || document;
+        const resources = [];
+        const seenUrls = new Set();
+        Array.from(scope.querySelectorAll(".batch-result-card")).forEach((card) => {
+            if (normalizeBatchValue(card.dataset.status) !== "success") {
+                return;
+            }
+            Array.from(card.querySelectorAll("[data-batch-download-item]")).forEach((node) => {
+                const type = normalizeBatchValue(node.dataset.type);
+                const url = String(node.dataset.url || "").trim();
+                if (!url || seenUrls.has(url) || (type !== "video" && type !== "image")) {
+                    return;
+                }
+                seenUrls.add(url);
+                resources.push({
+                    type,
+                    url,
+                    filename: String(
+                        node.dataset.downloadFilename || (type === "video" ? "video.mp4" : "image.jpg")
+                    ),
+                });
+            });
+        });
+        return resources;
+    }
+
+    function buildBatchLinksText(resources) {
+        return (resources || []).map((item) => item.url).join("\n");
+    }
+
+    function sanitizeBatchResourceFilename(filename) {
+        if (ordinaryMediaDownloadApi && ordinaryMediaDownloadApi.sanitizeFilename) {
+            return ordinaryMediaDownloadApi.sanitizeFilename(filename);
+        }
+        const value = String(filename || "download")
+            .replace(/[\\/:*?"<>|]+/g, "_")
+            .replace(/\s+/g, " ")
+            .trim();
+        return value || "download";
+    }
+
+    function buildBatchAria2Text(resources, sanitizeFilename) {
+        const sanitizer = typeof sanitizeFilename === "function"
+            ? sanitizeFilename
+            : sanitizeBatchResourceFilename;
+        return (resources || [])
+            .map((item) => `${item.url}\n  out=${sanitizer(item.filename)}`)
+            .join("\n");
     }
 
     function handoffBatchImage(button) {
@@ -590,12 +636,6 @@
         prioritizeFirstBatchPreview(
             batchPage.querySelector(".batch-result-card:not(.is-hidden)")
         );
-        const activeDownloadsPanel = batchPage.querySelector("[data-ordinary-active-downloads]");
-        if (ordinaryMediaDownloadApi && activeDownloadsPanel) {
-            ordinaryMediaDownloadApi.mountActiveDownloadPanel(activeDownloadsPanel).catch(() => {
-                activeDownloadsPanel.hidden = true;
-            });
-        }
         if (ordinaryMediaDownloadApi) {
             const interrupted = ordinaryMediaDownloadApi.consumeInterruptedDownloadMarker();
             const interruptionNotice = batchPage.querySelector("[data-ordinary-download-interruption]");
@@ -817,25 +857,29 @@
 
             const exportButton = event.target.closest("[data-batch-export]");
             if (exportButton) {
-                const links = collectBatchVideoLinks();
+                const resources = collectBatchResourceLinks(batchPage);
                 const mode = exportButton.getAttribute("data-batch-export");
-                if (!links.length) {
-                    flashButton(exportButton, "无直链");
+                if (!resources.length) {
+                    flashButton(exportButton, "无可复制资源");
                     return;
                 }
                 if (mode === "copy-links") {
-                    await copyText(links.map((item) => item.url).join("\n"));
-                    flashButton(exportButton, "已复制");
+                    try {
+                        await copyText(buildBatchLinksText(resources));
+                        flashButton(exportButton, "已复制");
+                    } catch (error) {
+                        flashButton(exportButton, "复制失败");
+                    }
                     return;
                 }
                 if (mode === "aria2") {
                     downloadTextFile(
                         "aria2.txt",
-                        links.map((item) => `${item.url}\n  out=${item.filename}`).join("\n")
+                        buildBatchAria2Text(resources)
                     );
                     return;
                 }
-                downloadTextFile("links.txt", links.map((item) => item.url).join("\n"));
+                downloadTextFile("links.txt", buildBatchLinksText(resources));
                 return;
             }
 
@@ -929,6 +973,9 @@
     const testApi = Object.freeze({
         buildEnabledPreferencePatch,
         commitEnabledParsePreferences,
+        collectBatchResourceLinks,
+        buildBatchLinksText,
+        buildBatchAria2Text,
     });
     if (typeof module === "object" && module.exports) {
         module.exports = testApi;

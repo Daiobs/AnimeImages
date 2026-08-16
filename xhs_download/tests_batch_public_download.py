@@ -212,9 +212,14 @@ class BatchPublicDownloadTemplateTests(TestCase):
         self.assertNotContains(response, "打开直链")
         self.assertNotContains(response, "展开链接")
         self.assertNotContains(response, "复制全部成功视频直链")
+        self.assertContains(response, "复制全部成功资源链接")
+        self.assertContains(response, 'data-batch-export="copy-links"')
+        self.assertNotContains(response, 'data-batch-export="links"')
+        self.assertNotContains(response, 'data-batch-export="aria2"')
         self.assertNotContains(response, "links.txt")
         self.assertNotContains(response, "aria2.txt")
         self.assertNotContains(response, "高级说明：下载策略矩阵")
+        self.assertNotContains(response, "data-ordinary-active-downloads")
 
     @patch("xhs_download.views.parse_media_page")
     def test_staff_keeps_download_and_raw_link_tools(self, mock_parse):
@@ -232,11 +237,37 @@ class BatchPublicDownloadTemplateTests(TestCase):
         self.assertContains(response, "复制直链")
         self.assertContains(response, "打开直链")
         self.assertContains(response, "展开链接")
-        self.assertContains(response, "复制全部成功视频直链")
+        self.assertContains(response, "复制全部成功资源链接")
+        self.assertContains(response, 'data-batch-export="copy-links"')
+        self.assertContains(response, 'data-batch-export="links"')
+        self.assertContains(response, 'data-batch-export="aria2"')
         self.assertContains(response, "links.txt")
         self.assertContains(response, "aria2.txt")
         self.assertContains(response, "data-batch-direct-url")
         self.assertContains(response, "高级说明：下载策略矩阵")
+
+    def test_single_and_batch_pages_do_not_render_global_active_download_panel(self):
+        single_response = self.client.get(reverse("home"))
+        batch_response = self.client.get(reverse("batch_parse"))
+
+        self.assertEqual(single_response.status_code, 200)
+        self.assertEqual(batch_response.status_code, 200)
+        self.assertNotContains(single_response, "data-ordinary-active-downloads")
+        self.assertNotContains(batch_response, "data-ordinary-active-downloads")
+
+    @patch("xhs_download.views.parse_media_page")
+    def test_success_card_integrates_preview_with_media_actions(self, mock_parse):
+        mock_parse.return_value = self.parse_result()
+
+        response = self.client.post(
+            reverse("batch_parse"),
+            {"links": "https://example.com/source"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "data-batch-media-tools")
+        self.assertContains(response, "batch-result-cover")
+        self.assertContains(response, "batch-media-actions")
 
     @patch("xhs_download.views.build_batch_result_row")
     def test_public_retry_card_keeps_download_but_not_raw_tools(self, mock_row):

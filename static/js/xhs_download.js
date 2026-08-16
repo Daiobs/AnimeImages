@@ -1869,12 +1869,6 @@
         updateDownloadLocationButtons();
         updateModeVisibility();
         updateSelectAllButton();
-        const activeDownloadsPanel = page.querySelector("[data-ordinary-active-downloads]");
-        if (ordinaryMediaDownloadApi && activeDownloadsPanel) {
-            ordinaryMediaDownloadApi.mountActiveDownloadPanel(activeDownloadsPanel).catch(() => {
-                activeDownloadsPanel.hidden = true;
-            });
-        }
         if (ordinaryMediaDownloadApi) {
             const interrupted = ordinaryMediaDownloadApi.consumeInterruptedDownloadMarker();
             const interruptionNotice = page.querySelector("[data-ordinary-download-interruption]");
