@@ -191,12 +191,14 @@ test("Batch staff text exports share the mixed resource sequence and safe filena
 });
 
 
-test("Batch preview is integrated into the media tools instead of a right-side sibling", () => {
+test("Batch image results use the full gallery while video keeps its existing cover", () => {
     const template = readProjectFile("templates/partials/batch_result_card.html");
 
     assert.match(template, /class="batch-media-tools[^"]*"[\s\S]*class="batch-result-cover"/);
-    assert.doesNotMatch(template, /<\/div>\s*<div class="batch-result-cover">\s*\{% if row\.video_items/);
-    assert.match(template, /row\.image_items\|slice:":4"/);
+    assert.match(template, /data-batch-photo-gallery/);
+    assert.match(template, /\{% for item in row\.image_items %\}/);
+    assert.doesNotMatch(template, /row\.image_items\|slice:":4"/);
+    assert.doesNotMatch(template, /class="batch-image-grid"/);
 });
 
 
