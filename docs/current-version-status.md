@@ -34,15 +34,48 @@ git fetch --prune origin
 git rev-parse origin/main
 ```
 
-The production application SHA is the accepted runtime baseline above. After
-this docs-only reconciliation is merged, canonical `main` will be ahead only by
-documentation; it does not require another production deploy.
+The production application SHA is the accepted runtime baseline above. The
+Batch Photo Gallery candidate advances application behavior on `main`; it has
+not been deployed or production accepted.
 
 ```text
-PRODUCTION_RUNTIME_CODE_DRIFT = 0
-REPO_HEAD_AHEAD_DOCS_ONLY = YES
-MAIN_RUNTIME_AHEAD_PRODUCTION = NO
+PRODUCTION_RUNTIME_CODE_DRIFT = 1
+REPO_HEAD_AHEAD_DOCS_ONLY = NO
+MAIN_RUNTIME_AHEAD_PRODUCTION = YES
 ```
+
+## Batch Photo Gallery Candidate
+
+The Batch Photo Gallery and Download UX v1 candidate removes the four-image
+summary cap and renders every parsed image in parser order without fixed-ratio
+cropping. Card previews use a deterministic 960px XHS derivative; the one
+global, row-scoped lightbox requests a 1600px derivative only after the user
+opens an image. Other platforms retain their existing safe preview candidate.
+
+Each photo has its own browser download action. Multi-image rows also expose a
+current-row Download All Images action that reuses the existing validated
+download task or synchronous ZIP endpoint. The transport boundaries are:
+
+```text
+single image:    Image CDN -> Browser -> Disk
+ordinary video: Provider/CDN -> Browser Service Worker -> Download Manager -> Disk
+multi-image ZIP: Image CDN -> AnimeImages ZIP generator -> Browser -> Disk
+```
+
+Public Batch users retain download and copy-all capabilities without raw-link
+UI or staff exports. Staff raw actions, `links.txt`, and `aria2.txt` remain
+available. Provider order, Batch deadlines, ordinary Streaming, runtime
+settings, and migrations are unchanged.
+
+```text
+BATCH_PHOTO_GALLERY = MAIN_CANDIDATE_NOT_YET_PRODUCTION_ACCEPTED
+PHOTO_ORIGINAL_VARIANT_SELECTION_NOT_PROVEN
+PHOTO_DOWNLOAD_VARIANT_FIDELITY_BACKLOG
+```
+
+See
+[`research/batch-photo-gallery-download-ux-v1.md`](research/batch-photo-gallery-download-ux-v1.md)
+for the implementation, test, browser, and remaining-fidelity evidence.
 
 ## Download UI And Batch Actions Acceptance
 
@@ -65,8 +98,9 @@ following capabilities remain staff-only:
 - the strategy matrix.
 
 Staff exports now cover the same successful video and image sequence as bulk
-copy. Batch previews are integrated with their corresponding media actions and
-retain the four-image cap plus first-preview loading priority.
+copy. The production application still retains the four-image preview cap;
+the undeployed main candidate described above replaces it with the full photo
+gallery.
 
 ```text
 DOWNLOAD_UI_BATCH_ACTIONS = PRODUCTION_ACCEPTED
@@ -278,9 +312,12 @@ for exact branch tips, evidence, decisions, and checkpoint integrity records.
    runtime-gated.
 4. Bilibili high-quality Cookie/member/DASH support remains deferred.
 5. Release Management automatic production deployment remains disabled.
-6. GitHub private-repository main protection remains subject to available
+6. The Batch gallery download candidate is not production accepted, and the
+   current XHS download candidate has not been proven to be the highest-quality
+   original variant.
+7. GitHub private-repository main protection remains subject to available
    plan/ruleset capabilities.
-7. Certbot, Redis/PostgreSQL host configuration, Cloud-init, DNS, and broader
+8. Certbot, Redis/PostgreSQL host configuration, Cloud-init, DNS, and broader
    host recovery are outside the repository-owned infrastructure baseline.
 
 These are current boundaries. Production convergence, Streaming telemetry,

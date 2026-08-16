@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Replaced the Batch four-image cropped summary with a full, intrinsic-ratio
+  photo gallery. Every parsed image now has an adjacent browser download
+  action, 960px card previews, an on-demand 1600px row-scoped lightbox, and a
+  per-row Download All Images action that reuses the existing validated
+  async/sync ZIP backend. Single images remain CDN-to-browser downloads;
+  multi-image ZIP is an explicit server-generated artifact. This candidate has
+  not been deployed, adds no migration, and does not change Provider or
+  ordinary-video Streaming behavior.
 - Removed the redundant global active-download panel from Single and Batch
   product pages while retaining Service Worker state, Browser Download Manager
   cancellation, refresh continuation, and card-local progress. Allowed public
