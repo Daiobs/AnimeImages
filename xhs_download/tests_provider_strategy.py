@@ -248,18 +248,19 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
         template = (PROJECT_ROOT / "templates/partials/batch_result_card.html").read_text()
 
         self.assertIn("function prioritizeFirstBatchPreview(card)", content)
-        self.assertIn('card.querySelector(".batch-result-cover img")', content)
+        self.assertIn('card.querySelectorAll(".batch-photo-preview img")', content)
         self.assertIn('setAttribute("loading", "eager")', content)
         self.assertIn('setAttribute("fetchpriority", "high")', content)
+        self.assertIn('setAttribute("loading", index === 0 ? "eager" : "lazy")', content)
+        self.assertIn('image.removeAttribute("fetchpriority")', content)
         self.assertIn("prioritizeFirstBatchPreview(replacement)", content)
         self.assertIn(
             'batchPage.querySelector(".batch-result-card:not(.is-hidden)")',
             content,
         )
-        self.assertNotIn('querySelectorAll(".batch-result-cover img")', content)
         self.assertIn('loading="lazy"', template)
+        self.assertIn('loading="eager" fetchpriority="high"', template)
         self.assertIn('decoding="async"', template)
-        self.assertNotIn('loading="eager"', template)
 
     def test_batch_local_storage_only_contains_links(self):
         content = (PROJECT_ROOT / "static/js/batch_parse.js").read_text()

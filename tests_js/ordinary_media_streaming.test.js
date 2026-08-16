@@ -1274,7 +1274,12 @@ test("two worker downloads keep IDs, filenames, bytes, and cancellation isolated
 });
 
 test("Single and Batch use one shared ordinary download primitive", () => {
+    const ordinaryVideoHandler = batchSource.slice(
+        batchSource.indexOf('const directDownloadButton = event.target.closest("[data-batch-direct-download]")'),
+        batchSource.indexOf('const imageDownloadButton = event.target.closest("[data-batch-image-download]")'),
+    );
     assert.match(singleSource, /ordinaryMediaDownloadApi\.download\(item/);
-    assert.match(batchSource, /ordinaryMediaDownloadApi\.download\(item/);
-    assert.doesNotMatch(batchSource, /response\.blob\s*\(|new Blob\(chunks/);
+    assert.match(ordinaryVideoHandler, /ordinaryMediaDownloadApi\.download\(item/);
+    assert.doesNotMatch(ordinaryVideoHandler, /response\.blob\s*\(|new Blob\(chunks/);
+    assert.match(batchSource, /async function readBatchPhotoArchiveResponse\(/);
 });

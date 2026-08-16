@@ -28,6 +28,9 @@ def build_batch_parse_context(
     rows_builder=None,
     strategy_matrix,
     proxy_image_url,
+    download_url="",
+    download_task_url="",
+    download_async_tasks_enabled=False,
 ):
     raw_links = request.POST.get("links", "") if request.method == "POST" else ""
     ultra_hd_available = (
@@ -146,4 +149,7 @@ def build_batch_parse_context(
         "youtube_merge_mode_available": youtube_merge_mode_available,
         "strategy_matrix": strategy_matrix,
         "proxy_image_url": proxy_image_url,
+        "download_url": download_url,
+        "download_task_url": download_task_url,
+        "download_async_tasks_enabled": bool(download_async_tasks_enabled),
     }

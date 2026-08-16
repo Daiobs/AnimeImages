@@ -116,14 +116,16 @@ function fakeBatchRoot(cards) {
 }
 
 
-test("Batch bulk collection includes successful video and images in stable DOM order", () => {
+test("Batch bulk collection preserves legacy video-first order and image DOM order", () => {
     const root = fakeBatchRoot([
         fakeResultCard("success", [
             fakeDownloadItem("image", "https://media.example/row1-1.jpg", "row1_1.jpg"),
             fakeDownloadItem("image", "https://media.example/row1-2.jpg", "row1_2.jpg"),
         ]),
         fakeResultCard("success", [
+            fakeDownloadItem("image", "https://media.example/row2-1.jpg", "row2_1.jpg"),
             fakeDownloadItem("video", "https://media.example/row2.mp4", "row2.mp4"),
+            fakeDownloadItem("image", "https://media.example/row2-2.jpg", "row2_2.jpg"),
         ]),
         fakeResultCard("success", [
             fakeDownloadItem("image", "https://media.example/row3-1.jpg", "row3_1.jpg"),
@@ -139,6 +141,8 @@ test("Batch bulk collection includes successful video and images in stable DOM o
         {type: "image", url: "https://media.example/row1-1.jpg", filename: "row1_1.jpg"},
         {type: "image", url: "https://media.example/row1-2.jpg", filename: "row1_2.jpg"},
         {type: "video", url: "https://media.example/row2.mp4", filename: "row2.mp4"},
+        {type: "image", url: "https://media.example/row2-1.jpg", filename: "row2_1.jpg"},
+        {type: "image", url: "https://media.example/row2-2.jpg", filename: "row2_2.jpg"},
         {type: "image", url: "https://media.example/row3-1.jpg", filename: "row3_1.jpg"},
         {type: "image", url: "https://media.example/row3-2.png", filename: "row3_2.png"},
         {type: "image", url: "https://media.example/row3-3.jpg", filename: "row3_3.jpg"},
@@ -191,12 +195,14 @@ test("Batch staff text exports share the mixed resource sequence and safe filena
 });
 
 
-test("Batch preview is integrated into the media tools instead of a right-side sibling", () => {
+test("Batch image results use the full gallery while video keeps its existing cover", () => {
     const template = readProjectFile("templates/partials/batch_result_card.html");
 
     assert.match(template, /class="batch-media-tools[^"]*"[\s\S]*class="batch-result-cover"/);
-    assert.doesNotMatch(template, /<\/div>\s*<div class="batch-result-cover">\s*\{% if row\.video_items/);
-    assert.match(template, /row\.image_items\|slice:":4"/);
+    assert.match(template, /data-batch-photo-gallery/);
+    assert.match(template, /\{% for item in row\.image_items %\}/);
+    assert.doesNotMatch(template, /row\.image_items\|slice:":4"/);
+    assert.doesNotMatch(template, /class="batch-image-grid"/);
 });
 
 

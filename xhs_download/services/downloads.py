@@ -74,6 +74,7 @@ MAX_VIDEO_BYTES = 1024 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
 CHUNK_SIZE = 1024 * 256
 ORIGINAL_FORMAT = "original"
+ARCHIVE_PROFILE_BATCH_IMAGES = "batch_images"
 EXTERNAL_PAYLOAD_CACHE_PROVIDERS = {
     "gallery_dl_generic",
     "yt_dlp_generic",
@@ -1117,6 +1118,53 @@ def assert_download_request(media_items):
         raise XhsDownloadError(f"一次最多下载 {MAX_DOWNLOAD_ITEMS} 个资源")
 
 
+def normalize_archive_profile(value):
+    profile = str(value or "").strip().lower()
+    return profile if profile == ARCHIVE_PROFILE_BATCH_IMAGES else ""
+
+
+def validate_download_media_items(media_items, *, archive_profile=""):
+    assert_download_request(media_items)
+    profile = normalize_archive_profile(archive_profile)
+    if profile != ARCHIVE_PROFILE_BATCH_IMAGES:
+        return
+    for item in media_items:
+        if not isinstance(item, dict):
+            raise XhsDownloadError("资源格式无效")
+        media_type = str(item.get("type") or "").strip().lower()
+        if media_type not in {"image", "video"}:
+            raise XhsDownloadError("资源类型无效")
+        if media_type != "image":
+            raise XhsDownloadError("批量图片归档只能包含图片资源")
+        url = str(item.get("url") or "").strip()
+        if not url:
+            raise XhsDownloadError("资源 URL 为空")
+        if item.get("provider"):
+            if not provider_manifest_allows_public_download(item):
+                raise XhsDownloadError("Provider 签名资源未通过校验")
+            validate_provider_signed_download_url(
+                item,
+                url,
+                "Provider URL 不允许请求",
+            )
+        else:
+            validate_media_url(url)
+
+
+def archive_base_filename(value):
+    filename = clean_filename(value or "xhs").strip(" .")
+    return (filename or "xhs")[:160]
+
+
+def archive_item_filename(base_filename, index, total_items, extension, profile):
+    if profile == ARCHIVE_PROFILE_BATCH_IMAGES:
+        ordinal_width = max(2, len(str(max(1, int(total_items or 1)))))
+        ordinal = str(index).zfill(ordinal_width)
+    else:
+        ordinal = str(index)
+    return clean_filename(f"{base_filename}_{ordinal}.{extension}")
+
+
 def assert_archive_total(current_total, next_size):
     if current_total + next_size > MAX_ARCHIVE_BYTES:
         raise XhsDownloadError("本次下载资源总大小超过允许限制")
@@ -1141,10 +1189,19 @@ def build_download_archive_file(
     quality=95,
     video_save_mode="video",
     progress_callback=None,
+    archive_profile="",
 ):
-    assert_download_request(media_items)
+    archive_profile = normalize_archive_profile(archive_profile)
+    validate_download_media_items(
+        media_items,
+        archive_profile=archive_profile,
+    )
 
-    base_filename = clean_filename(base_filename or "xhs")
+    base_filename = (
+        archive_base_filename(base_filename)
+        if archive_profile == ARCHIVE_PROFILE_BATCH_IMAGES
+        else clean_filename(base_filename or "xhs")
+    )
     save_format = normalize_save_format(save_format)
     quality = normalize_quality(quality)
     video_save_mode = normalize_video_save_mode(video_save_mode)
@@ -1190,7 +1247,13 @@ def build_download_archive_file(
                             )
                             try:
                                 ext = guess_image_extension(temp_result["final_url"], temp_result["content_type"])
-                                filename = clean_filename(f"{base_filename}_{index}.{ext}")
+                                filename = archive_item_filename(
+                                    base_filename,
+                                    index,
+                                    total_items,
+                                    ext,
+                                    archive_profile,
+                                )
                                 total_size += write_archive_entry_from_temp(
                                     archive,
                                     temp_result,
@@ -1208,7 +1271,13 @@ def build_download_archive_file(
                                 expected_type="image",
                             )
                             with Image.open(BytesIO(content)) as image:
-                                filename = clean_filename(f"{base_filename}_{index}.{save_format}")
+                                filename = archive_item_filename(
+                                    base_filename,
+                                    index,
+                                    total_items,
+                                    save_format,
+                                    archive_profile,
+                                )
                                 converted = save_image_to_buffer(image, save_format, quality)
                             total_size += write_archive_entry_from_bytes(archive, filename, converted, total_size)
                             saved_count += 1
@@ -1232,7 +1301,13 @@ def build_download_archive_file(
                                     temp_result["final_url"],
                                     temp_result["content_type"],
                                 )
-                                filename = clean_filename(f"{base_filename}_{index}.{ext}")
+                                filename = archive_item_filename(
+                                    base_filename,
+                                    index,
+                                    total_items,
+                                    ext,
+                                    archive_profile,
+                                )
                                 total_size += write_archive_entry_from_temp(
                                     archive,
                                     temp_result,
@@ -1310,7 +1385,11 @@ def build_download_archive_file(
 
         archive_file.seek(0)
         return {
-            "filename": clean_filename(f"{base_filename}.zip"),
+            "filename": clean_filename(
+                f"{base_filename}_images.zip"
+                if archive_profile == ARCHIVE_PROFILE_BATCH_IMAGES
+                else f"{base_filename}.zip"
+            ),
             "file": archive_file,
             "saved_count": saved_count,
             "failed_count": len(failures),

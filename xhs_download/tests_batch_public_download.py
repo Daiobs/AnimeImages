@@ -266,6 +266,8 @@ class BatchPublicDownloadTemplateTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "data-batch-media-tools")
+        self.assertContains(response, "data-batch-photo-section")
+        self.assertContains(response, "data-batch-photo-item", count=1)
         self.assertContains(response, "batch-result-cover")
         self.assertContains(response, "batch-media-actions")
 
