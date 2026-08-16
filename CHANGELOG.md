@@ -9,8 +9,9 @@
   staff-only `links.txt` and `aria2.txt` exports use the same stable, deduplicated
   mixed-media sequence, while per-item raw tools remain staff-only. Batch
   previews now sit beside their media actions without changing the ordinary
-  zero-server-media download path. This is a main candidate and is not yet
-  production accepted.
+  zero-server-media download path. PR #42 was production accepted at exact SHA
+  `9ba5702e9a90b9179e21d53393d8e27c39c51833` with immutable checkpoint
+  `checkpoint/production-download-ui-batch-actions-v1`.
 - Hardened TianTianJieXi success-cache admission with platform-aware structural
   validation, added URL-free Provider outcome and cache-age diagnostics across
   TianTianJieXi/KuKuTool/Native, and split browser invalid-response telemetry
