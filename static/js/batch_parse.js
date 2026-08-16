@@ -283,6 +283,298 @@
         link.remove();
     }
 
+    function batchPhotoMediaItem(node) {
+        if (!node || !node.dataset) {
+            return null;
+        }
+        const url = String(node.dataset.url || "").trim();
+        if (!url || normalizeBatchValue(node.dataset.type) !== "image") {
+            return null;
+        }
+        const item = {
+            type: "image",
+            url,
+        };
+        const fields = [
+            ["sizeBytes", "size_bytes"],
+            ["assetId", "asset_id"],
+            ["provider", "provider"],
+            ["providerResourceId", "provider_resource_id"],
+            ["providerCacheKey", "provider_cache_key"],
+            ["providerManifestToken", "provider_manifest_token"],
+        ];
+        fields.forEach(([datasetKey, payloadKey]) => {
+            const value = String(node.dataset[datasetKey] || "").trim();
+            if (value) {
+                item[payloadKey] = value;
+            }
+        });
+        return item;
+    }
+
+    function buildBatchPhotoArchivePayload(section) {
+        const mediaItems = section
+            ? Array.from(section.querySelectorAll("[data-batch-photo-item]"))
+                .map(batchPhotoMediaItem)
+                .filter(Boolean)
+            : [];
+        return {
+            media_items: mediaItems,
+            base_filename: String(
+                section && section.dataset ? section.dataset.baseFilename || "images" : "images"
+            ),
+            download_mode: "zip",
+            save_format: "original",
+            quality: 95,
+            video_save_mode: "video",
+            archive_profile: "batch_images",
+        };
+    }
+
+    function safeSameOriginDownloadUrl(value, origin) {
+        const parsed = new URL(String(value || ""), origin);
+        if (parsed.origin !== origin) {
+            throw new Error("下载文件地址无效，请重新打包。");
+        }
+        return parsed.href;
+    }
+
+    function parseBatchArchiveFilename(response, fallback) {
+        const disposition = String(response.headers.get("Content-Disposition") || "");
+        const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+        if (encoded) {
+            try {
+                return decodeURIComponent(encoded[1]);
+            } catch (error) {
+                // Fall through to the safe local filename.
+            }
+        }
+        const basic = disposition.match(/filename="?([^";]+)"?/i);
+        return basic ? basic[1] : fallback;
+    }
+
+    async function parseBatchArchiveError(response) {
+        try {
+            const payload = await response.json();
+            return String(payload.message || "图片 ZIP 下载失败，请稍后重试。");
+        } catch (error) {
+            return `图片 ZIP 下载失败（HTTP ${response.status}）。`;
+        }
+    }
+
+    function setBatchPhotoArchiveState(section, state, options) {
+        const config = options || {};
+        const button = section ? section.querySelector("[data-batch-photo-download-all]") : null;
+        const label = button ? button.querySelector("[data-batch-photo-archive-label]") : null;
+        const status = section ? section.querySelector("[data-batch-photo-archive-status]") : null;
+        const progressWrap = section ? section.querySelector("[data-batch-photo-archive-progress]") : null;
+        const progressTrack = progressWrap ? progressWrap.querySelector("[role='progressbar']") : null;
+        const progressBar = progressWrap ? progressWrap.querySelector(".download-progress-bar") : null;
+        const progressLabel = progressWrap
+            ? progressWrap.querySelector("[data-batch-photo-archive-progress-label]")
+            : null;
+        const busy = state === "loading";
+        const progress = Math.max(0, Math.min(100, Number(config.progress || 0)));
+        if (button) {
+            button.disabled = busy;
+            button.classList.toggle("is-loading", busy);
+        }
+        if (label) {
+            label.textContent = busy ? "正在打包..." : "下载全部图片";
+        }
+        if (status) {
+            status.hidden = !config.message;
+            status.textContent = String(config.message || "");
+            status.classList.toggle("is-error", state === "error");
+            status.classList.toggle("is-success", state === "success");
+        }
+        if (progressWrap) {
+            progressWrap.hidden = !busy;
+        }
+        if (progressTrack) {
+            progressTrack.setAttribute("aria-valuenow", String(Math.round(progress)));
+        }
+        if (progressBar) {
+            progressBar.style.width = `${progress}%`;
+        }
+        if (progressLabel) {
+            progressLabel.textContent = String(config.progressLabel || "正在准备图片 ZIP...");
+        }
+    }
+
+    function triggerBatchArchiveDownload(url, filename) {
+        const link = document.createElement("a");
+        link.href = url;
+        if (filename) {
+            link.download = filename;
+        }
+        link.rel = "noopener noreferrer";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+    }
+
+    async function waitForBatchPhotoArchiveTask(statusUrl, section) {
+        const safeStatusUrl = safeSameOriginDownloadUrl(statusUrl, window.location.origin);
+        for (let attempt = 0; attempt < 2400; attempt += 1) {
+            const response = await fetch(safeStatusUrl, {
+                cache: "no-store",
+                credentials: "same-origin",
+            });
+            if (!response.ok) {
+                throw new Error(await parseBatchArchiveError(response));
+            }
+            const task = await response.json();
+            if (task.status === "failed") {
+                throw new Error(task.message || "图片 ZIP 打包失败，请稍后重试。");
+            }
+            const progress = Math.max(0, Math.min(100, Number(task.progress || 0)));
+            setBatchPhotoArchiveState(section, "loading", {
+                progress,
+                progressLabel: task.message || "正在打包图片 ZIP...",
+            });
+            if (task.status === "completed") {
+                return task;
+            }
+            await new Promise((resolve) => window.setTimeout(resolve, 250));
+        }
+        throw new Error("图片 ZIP 打包等待超时，请稍后重试。");
+    }
+
+    async function downloadBatchPhotoArchiveWithTask(batchPage, section, payload, csrfToken) {
+        const taskUrl = String(batchPage.dataset.batchDownloadTaskUrl || "");
+        const response = await fetch(taskUrl, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: {
+                "Content-Type": "application/json",
+                "X-CSRFToken": csrfToken,
+            },
+            body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+            throw new Error(await parseBatchArchiveError(response));
+        }
+        const created = await response.json();
+        const completed = await waitForBatchPhotoArchiveTask(created.status_url, section);
+        const fileUrl = safeSameOriginDownloadUrl(
+            completed.file_url || created.file_url,
+            window.location.origin
+        );
+        triggerBatchArchiveDownload(fileUrl, completed.filename || "");
+        const savedCount = Number(completed.saved_count || 0);
+        const failedCount = Number(completed.failed_count || 0);
+        return {
+            savedCount,
+            failedCount,
+            message: failedCount
+                ? `浏览器已开始下载 ZIP：成功 ${savedCount} 张，失败 ${failedCount} 张。`
+                : `浏览器已开始下载 ZIP，共 ${savedCount} 张图片。`,
+        };
+    }
+
+    async function readBatchPhotoArchiveResponse(response, section) {
+        const contentLength = Number.parseInt(response.headers.get("Content-Length") || "0", 10);
+        if (!response.body || !response.body.getReader) {
+            return response.blob();
+        }
+        const reader = response.body.getReader();
+        const chunks = [];
+        let received = 0;
+        while (true) {
+            const {done, value} = await reader.read();
+            if (done) {
+                break;
+            }
+            chunks.push(value);
+            received += value.byteLength;
+            const progress = contentLength
+                ? 10 + Math.min(85, (received / contentLength) * 85)
+                : 40;
+            setBatchPhotoArchiveState(section, "loading", {
+                progress,
+                progressLabel: contentLength
+                    ? `正在接收图片 ZIP ${Math.round((received / contentLength) * 100)}%`
+                    : "正在接收图片 ZIP...",
+            });
+        }
+        return new Blob(chunks, {type: "application/zip"});
+    }
+
+    async function downloadBatchPhotoArchiveSync(batchPage, section, payload, csrfToken) {
+        const response = await fetch(String(batchPage.dataset.batchDownloadUrl || ""), {
+            method: "POST",
+            credentials: "same-origin",
+            headers: {
+                "Content-Type": "application/json",
+                "X-CSRFToken": csrfToken,
+            },
+            body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+            throw new Error(await parseBatchArchiveError(response));
+        }
+        const contentType = String(response.headers.get("Content-Type") || "");
+        if (!contentType.includes("application/zip")) {
+            throw new Error("图片 ZIP 响应格式异常，请稍后重试。");
+        }
+        const fallbackName = `${sanitizeBatchResourceFilename(payload.base_filename)}_images.zip`;
+        const filename = parseBatchArchiveFilename(response, fallbackName);
+        const blob = await readBatchPhotoArchiveResponse(response, section);
+        const objectUrl = URL.createObjectURL(blob);
+        triggerBatchArchiveDownload(objectUrl, filename);
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+        const savedCount = Number(response.headers.get("X-Saved-Count") || 0);
+        const failedCount = Number(response.headers.get("X-Failed-Count") || 0);
+        return {
+            savedCount,
+            failedCount,
+            message: failedCount
+                ? `浏览器已开始下载 ZIP：成功 ${savedCount} 张，失败 ${failedCount} 张。`
+                : `浏览器已开始下载 ZIP，共 ${savedCount} 张图片。`,
+        };
+    }
+
+    async function downloadBatchPhotoArchive(batchPage, batchForm, button) {
+        const section = button ? button.closest("[data-batch-photo-section]") : null;
+        const payload = buildBatchPhotoArchivePayload(section);
+        const csrfInput = batchForm
+            ? batchForm.querySelector('input[name="csrfmiddlewaretoken"]')
+            : null;
+        const csrfToken = csrfInput ? String(csrfInput.value || "") : "";
+        if (!section || payload.media_items.length < 2 || !csrfToken) {
+            throw new Error("当前图片列表无法打包，请重新解析。");
+        }
+        setBatchPhotoArchiveState(section, "loading", {
+            progress: 2,
+            progressLabel: "正在准备图片 ZIP...",
+        });
+        try {
+            const useAsync = (
+                batchPage.dataset.batchDownloadAsyncEnabled === "true"
+                && Boolean(batchPage.dataset.batchDownloadTaskUrl)
+            );
+            const result = useAsync
+                ? await downloadBatchPhotoArchiveWithTask(
+                    batchPage,
+                    section,
+                    payload,
+                    csrfToken
+                )
+                : await downloadBatchPhotoArchiveSync(
+                    batchPage,
+                    section,
+                    payload,
+                    csrfToken
+                );
+            setBatchPhotoArchiveState(section, "success", {message: result.message});
+        } catch (error) {
+            setBatchPhotoArchiveState(section, "error", {
+                message: String(error && error.message || "图片 ZIP 下载失败，请稍后重试。"),
+            });
+        }
+    }
+
     function normalizeBatchValue(value) {
         return String(value || "").toLowerCase();
     }
@@ -407,12 +699,41 @@
         if (!card) {
             return;
         }
-        const image = card.querySelector(".batch-result-cover img");
+        const galleryImages = Array.from(card.querySelectorAll(".batch-photo-preview img"));
+        galleryImages.forEach((image, index) => {
+            image.setAttribute("loading", index === 0 ? "eager" : "lazy");
+            if (index === 0) {
+                image.setAttribute("fetchpriority", "high");
+            } else {
+                image.removeAttribute("fetchpriority");
+            }
+        });
+        const image = galleryImages[0] || card.querySelector(".batch-result-cover img");
         if (!image) {
             return;
         }
         image.setAttribute("loading", "eager");
         image.setAttribute("fetchpriority", "high");
+    }
+
+    function getBatchPhotoItems(item) {
+        const section = item && item.closest
+            ? item.closest("[data-batch-photo-section]")
+            : null;
+        return section
+            ? Array.from(section.querySelectorAll("[data-batch-photo-item]"))
+            : [];
+    }
+
+    function getBatchLightboxNavigation(item) {
+        const items = getBatchPhotoItems(item);
+        const index = items.indexOf(item);
+        return {
+            index,
+            total: items.length,
+            previousItem: index > 0 ? items[index - 1] : null,
+            nextItem: index >= 0 && index < items.length - 1 ? items[index + 1] : null,
+        };
     }
 
     function parseBatchResultCard(cardHtml) {
@@ -621,6 +942,35 @@
         const youtubeHiddenInput = batchPage.querySelector("#batch-youtube-merge-request-input");
         const settingsModal = batchPage.querySelector("#batchSettingsModal");
         const saveSettingsButton = batchPage.querySelector("#batch-save-settings-btn");
+        const lightbox = batchPage.querySelector("[data-batch-photo-lightbox]");
+        const lightboxImage = lightbox
+            ? lightbox.querySelector("[data-batch-lightbox-image]")
+            : null;
+        const lightboxLoading = lightbox
+            ? lightbox.querySelector("[data-batch-lightbox-loading]")
+            : null;
+        const lightboxStatus = lightbox
+            ? lightbox.querySelector("[data-batch-lightbox-status]")
+            : null;
+        const lightboxIndex = lightbox
+            ? lightbox.querySelector("[data-batch-lightbox-index]")
+            : null;
+        const lightboxPrevious = lightbox
+            ? lightbox.querySelector("[data-batch-lightbox-prev]")
+            : null;
+        const lightboxNext = lightbox
+            ? lightbox.querySelector("[data-batch-lightbox-next]")
+            : null;
+        const lightboxDownload = lightbox
+            ? lightbox.querySelector("[data-batch-lightbox-download]")
+            : null;
+        const lightboxModal = (
+            lightbox
+            && window.bootstrap
+            && window.bootstrap.Modal
+        )
+            ? window.bootstrap.Modal.getOrCreateInstance(lightbox)
+            : null;
         const parsePreferencesApi = window.AnimeImagesParsePreferences || null;
         const renderedParseDefaults = {
             ultra_hd: effectiveCheckboxValue(ultraInput),
@@ -632,6 +982,98 @@
         let pendingParsePreferences = null;
         let settingsModalOpen = false;
         let settingsSaveCommitted = false;
+        let activeLightboxItem = null;
+
+        function setLightboxStatus(message) {
+            if (!lightboxStatus) {
+                return;
+            }
+            lightboxStatus.hidden = !message;
+            lightboxStatus.textContent = message || "";
+        }
+
+        function renderLightboxItem(item) {
+            if (!item || !lightboxImage) {
+                return;
+            }
+            const navigation = getBatchLightboxNavigation(item);
+            if (navigation.index < 0) {
+                return;
+            }
+            const preview = item.querySelector("[data-batch-lightbox-open]");
+            const cardPreview = preview
+                ? String(preview.dataset.cardPreviewSrc || "")
+                : "";
+            const lightboxPreview = preview
+                ? String(preview.dataset.lightboxPreviewSrc || cardPreview)
+                : cardPreview;
+            activeLightboxItem = item;
+            if (lightboxIndex) {
+                lightboxIndex.textContent = `${navigation.index + 1} / ${navigation.total}`;
+            }
+            if (lightboxPrevious) {
+                lightboxPrevious.disabled = !navigation.previousItem;
+            }
+            if (lightboxNext) {
+                lightboxNext.disabled = !navigation.nextItem;
+            }
+            if (lightboxDownload) {
+                lightboxDownload.hidden = !item.querySelector("[data-batch-image-download]");
+            }
+            if (lightboxLoading) {
+                lightboxLoading.hidden = false;
+            }
+            setLightboxStatus("");
+            lightboxImage.hidden = true;
+            lightboxImage.alt = `图片 ${navigation.index + 1}`;
+            lightboxImage.dataset.cardPreviewSrc = cardPreview;
+            lightboxImage.dataset.fallbackAttempted = "false";
+            lightboxImage.onload = () => {
+                if (lightboxLoading) {
+                    lightboxLoading.hidden = true;
+                }
+                lightboxImage.hidden = false;
+            };
+            lightboxImage.onerror = () => {
+                const fallback = String(lightboxImage.dataset.cardPreviewSrc || "");
+                if (
+                    fallback
+                    && lightboxImage.dataset.fallbackAttempted !== "true"
+                    && lightboxImage.src !== fallback
+                ) {
+                    lightboxImage.dataset.fallbackAttempted = "true";
+                    setLightboxStatus("高清预览加载失败，仍可下载原资源。");
+                    lightboxImage.src = fallback;
+                    return;
+                }
+                if (lightboxLoading) {
+                    lightboxLoading.hidden = true;
+                }
+                lightboxImage.hidden = true;
+                setLightboxStatus("图片预览加载失败，仍可使用下载按钮保存资源。");
+            };
+            lightboxImage.src = lightboxPreview;
+        }
+
+        function openLightboxItem(item) {
+            renderLightboxItem(item);
+            if (lightboxModal) {
+                lightboxModal.show();
+            }
+        }
+
+        function moveLightbox(direction) {
+            if (!activeLightboxItem) {
+                return;
+            }
+            const navigation = getBatchLightboxNavigation(activeLightboxItem);
+            const target = direction < 0
+                ? navigation.previousItem
+                : navigation.nextItem;
+            if (target) {
+                renderLightboxItem(target);
+            }
+        }
 
         prioritizeFirstBatchPreview(
             batchPage.querySelector(".batch-result-card:not(.is-hidden)")
@@ -777,6 +1219,26 @@
             saveSettingsButton.addEventListener("click", saveBatchParsePreferences);
         }
 
+        if (lightbox) {
+            lightbox.addEventListener("hidden.bs.modal", () => {
+                activeLightboxItem = null;
+                setLightboxStatus("");
+            });
+        }
+
+        document.addEventListener("keydown", (event) => {
+            if (!activeLightboxItem || event.defaultPrevented) {
+                return;
+            }
+            if (event.key === "ArrowLeft") {
+                event.preventDefault();
+                moveLightbox(-1);
+            } else if (event.key === "ArrowRight") {
+                event.preventDefault();
+                moveLightbox(1);
+            }
+        });
+
         if (batchForm && submitButton) {
             batchForm.addEventListener("submit", async (event) => {
                 if (!batchForm.checkValidity()) {
@@ -832,6 +1294,60 @@
         }
 
         batchPage.addEventListener("click", async (event) => {
+            const lightboxOpen = event.target.closest("[data-batch-lightbox-open]");
+            if (lightboxOpen) {
+                event.preventDefault();
+                const item = lightboxOpen.closest("[data-batch-photo-item]");
+                if (item) {
+                    openLightboxItem(item);
+                }
+                return;
+            }
+
+            const photoDownloadAllButton = event.target.closest("[data-batch-photo-download-all]");
+            if (photoDownloadAllButton) {
+                event.preventDefault();
+                if (!photoDownloadAllButton.disabled) {
+                    await downloadBatchPhotoArchive(
+                        batchPage,
+                        batchForm,
+                        photoDownloadAllButton
+                    );
+                }
+                return;
+            }
+
+            const lightboxPreviousButton = event.target.closest("[data-batch-lightbox-prev]");
+            if (lightboxPreviousButton) {
+                event.preventDefault();
+                moveLightbox(-1);
+                return;
+            }
+
+            const lightboxNextButton = event.target.closest("[data-batch-lightbox-next]");
+            if (lightboxNextButton) {
+                event.preventDefault();
+                moveLightbox(1);
+                return;
+            }
+
+            const lightboxDownloadButton = event.target.closest("[data-batch-lightbox-download]");
+            if (lightboxDownloadButton) {
+                event.preventDefault();
+                const imageButton = activeLightboxItem
+                    ? activeLightboxItem.querySelector("[data-batch-image-download]")
+                    : null;
+                if (imageButton) {
+                    try {
+                        handoffBatchImage(imageButton);
+                        setLightboxStatus("已交给浏览器保存当前图片。");
+                    } catch (error) {
+                        setLightboxStatus("图片下载未能启动，请关闭预览后重试。");
+                    }
+                }
+                return;
+            }
+
             const copyButton = event.target.closest("[data-copy-text]");
             if (copyButton) {
                 await copyText(copyButton.getAttribute("data-copy-text") || "");
@@ -976,6 +1492,11 @@
         collectBatchResourceLinks,
         buildBatchLinksText,
         buildBatchAria2Text,
+        batchPhotoMediaItem,
+        buildBatchPhotoArchivePayload,
+        safeSameOriginDownloadUrl,
+        getBatchPhotoItems,
+        getBatchLightboxNavigation,
     });
     if (typeof module === "object" && module.exports) {
         module.exports = testApi;

@@ -116,6 +116,7 @@ def run_download_task(task_id, payload, owner_identity):
             quality=payload.get("quality", 95),
             video_save_mode=payload.get("video_save_mode", "video"),
             progress_callback=progress_callback,
+            archive_profile=payload.get("archive_profile", ""),
         )
         archive_size = Path(archive["file"].name).stat().st_size
         runtime_setting = None

@@ -129,6 +129,7 @@ from .services.downloads import (
     read_limited_response,
     response_chunk_looks_like_html,
     save_media_items_to_server,
+    validate_download_media_items,
     validate_response_content_type,
 )
 from .services.platforms.douyin_kukutool import (
@@ -140,6 +141,7 @@ from .services.platforms.gallerydl_generic import GalleryDlGenericProvider
 from .services.platforms.kukutool_generic import KukutoolGenericProvider
 from .services.platforms.douyin import DouyinAdapter
 from .services.platforms.douyin_providers import DouyinTianTianJieXiProvider
+from .services.platforms.xiaohongshu import normalize_xhs_preview_image_url
 from .services.platforms.tiantianjiexi_generic import (
     TianTianJieXiGenericProvider,
     TianTianJieXiResultNormalizer,
@@ -276,6 +278,8 @@ def paginate_admin_queryset(request, queryset, page_size=ADMIN_LOG_PAGE_SIZE):
     query_params.pop("page", None)
     return page_obj, query_params.urlencode()
 PREVIEW_MAX_IMAGE_BYTES = 8 * 1024 * 1024
+BATCH_CARD_PREVIEW_WIDTH = 960
+BATCH_LIGHTBOX_PREVIEW_WIDTH = 1600
 SIGNED_THIRD_PARTY_VIDEO_PROVIDERS = {
     "kukutool_generic",
     "tiantianjiexi_generic",
@@ -3801,17 +3805,67 @@ def build_asset_strategy_fields(asset, result):
     )
 
 
+def image_download_extension(asset):
+    supported = {
+        "avif": "avif",
+        "gif": "gif",
+        "jpeg": "jpg",
+        "jpg": "jpg",
+        "png": "png",
+        "webp": "webp",
+    }
+    declared = str(getattr(asset, "ext", "") or "").lower().lstrip(".")
+    if declared in supported:
+        return supported[declared]
+    path_suffix = Path(urlparse(str(getattr(asset, "url", "") or "")).path).suffix
+    inferred = path_suffix.lower().lstrip(".")
+    return supported.get(inferred, "jpg")
+
+
 def build_image_item(asset, result):
+    default_preview_url = asset.preview_url or asset.url
+    if getattr(result, "platform", "") == "xiaohongshu":
+        card_preview_url = (
+            normalize_xhs_preview_image_url(
+                asset.url,
+                width=BATCH_CARD_PREVIEW_WIDTH,
+            )
+            or default_preview_url
+        )
+        lightbox_preview_url = (
+            normalize_xhs_preview_image_url(
+                asset.url,
+                width=BATCH_LIGHTBOX_PREVIEW_WIDTH,
+            )
+            or card_preview_url
+        )
+    else:
+        card_preview_url = default_preview_url
+        lightbox_preview_url = default_preview_url
+
     return {
         **asset.to_download_item(),
         **build_asset_strategy_fields(asset, result),
         "type": "image",
         "url": asset.url,
+        "download_extension": image_download_extension(asset),
         "encoded_url": encode_url(asset.url),
-        "encoded_preview_url": encode_url(asset.preview_url or asset.url),
+        "encoded_preview_url": encode_url(default_preview_url),
         "preview_provider_query": build_provider_preview_query(
             asset,
-            asset.preview_url or asset.url,
+            default_preview_url,
+        ),
+        "card_preview_url": card_preview_url,
+        "encoded_card_preview_url": encode_url(card_preview_url),
+        "card_preview_provider_query": build_provider_preview_query(
+            asset,
+            card_preview_url,
+        ),
+        "lightbox_preview_url": lightbox_preview_url,
+        "encoded_lightbox_preview_url": encode_url(lightbox_preview_url),
+        "lightbox_preview_provider_query": build_provider_preview_query(
+            asset,
+            lightbox_preview_url,
         ),
     }
 
@@ -4896,6 +4950,13 @@ def batch_parse_view(request):
             rows_builder=build_batch_result_rows,
             strategy_matrix=build_download_strategy_matrix(),
             proxy_image_url=reverse("media_proxy_image"),
+            download_url=reverse("media_download_images_api"),
+            download_task_url=(
+                reverse("media_download_task_create")
+                if settings.DOWNLOAD_ASYNC_TASKS_ENABLED
+                else ""
+            ),
+            download_async_tasks_enabled=settings.DOWNLOAD_ASYNC_TASKS_ENABLED,
         ),
     )
 
@@ -5724,6 +5785,27 @@ def download_images_api(request):
             status=400,
         )
 
+    archive_profile = str(data.get("archive_profile") or "")
+    try:
+        validate_download_media_items(
+            media_items,
+            archive_profile=archive_profile,
+        )
+    except XhsError as error:
+        log_download_request_event(
+            request,
+            download_type="zip",
+            media_items=media_items,
+            status=ObservabilityStatus.BLOCKED,
+            started_at=started_at,
+            error_code="INVALID_MEDIA_ITEM",
+            error=error,
+        )
+        return JsonResponse(
+            {"status": "error", "message": public_download_error_message(error)},
+            status=400,
+        )
+
     runtime_setting = get_download_runtime_setting()
     if download_mode in routed_download_modes:
         def route_decision():
@@ -6112,6 +6194,7 @@ def download_images_api(request):
                 save_format=data.get("save_format", "original"),
                 quality=data.get("quality", 95),
                 video_save_mode=data.get("video_save_mode", "video"),
+                archive_profile=archive_profile,
             )
         except Exception as error:
             recovery_decision = zip_failure_recovery(media_items, route_info, error)
@@ -6484,6 +6567,27 @@ def create_download_task_api(request):
             status=400,
         )
 
+    archive_profile = str(data.get("archive_profile") or "")
+    try:
+        validate_download_media_items(
+            media_items,
+            archive_profile=archive_profile,
+        )
+    except XhsError as error:
+        log_download_request_event(
+            request,
+            download_type="task_create",
+            media_items=media_items,
+            status=ObservabilityStatus.BLOCKED,
+            started_at=started_at,
+            error_code="INVALID_MEDIA_ITEM",
+            error=error,
+        )
+        return JsonResponse(
+            {"status": "error", "message": public_download_error_message(error)},
+            status=400,
+        )
+
     runtime_setting = get_download_runtime_setting()
     guard_result = check_download_cost_preflight(request, media_items, runtime_setting)
     if guard_result:
@@ -6572,6 +6676,7 @@ def create_download_task_api(request):
             "save_format": data.get("save_format", "original"),
             "quality": data.get("quality", 95),
             "video_save_mode": data.get("video_save_mode", "video"),
+            "archive_profile": archive_profile,
             "download_runtime_limits": {
                 "daily_bytes_limit_per_ip": runtime_setting.daily_bytes_limit_per_ip,
                 "global_daily_bytes_limit": runtime_setting.global_daily_bytes_limit,

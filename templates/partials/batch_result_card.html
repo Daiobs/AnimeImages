@@ -77,7 +77,117 @@
                 <div class="alert alert-danger mb-3 d-none"
                      data-batch-retry-request-error></div>
 
-                <div class="batch-media-tools{% if row.image_items %} batch-media-tools-images{% else %} batch-media-tools-video{% endif %}"
+                {% if row.image_items %}
+                    <section class="batch-photo-section"
+                             data-batch-photo-section
+                             data-base-filename="{{ row.base_filename|default:'images' }}">
+                        <div class="batch-photo-header">
+                            <h3>图片 {{ row.image_items|length }}</h3>
+                            {% if batch_download_allowed and row.image_items|length > 1 %}
+                                <button type="button"
+                                        class="btn btn-brand btn-sm batch-photo-download-all"
+                                        data-batch-photo-download-all>
+                                    <span class="spinner-border spinner-border-sm me-1 batch-photo-archive-spinner"
+                                          aria-hidden="true"></span>
+                                    <i class="bi bi-file-earmark-zip me-1 batch-photo-archive-icon"></i>
+                                    <span data-batch-photo-archive-label>下载全部图片</span>
+                                </button>
+                            {% endif %}
+                        </div>
+                        <div class="batch-photo-gallery" data-batch-photo-gallery>
+                            {% for item in row.image_items %}
+                                {% firstof item.encoded_card_preview_url item.encoded_preview_url item.encoded_url as card_preview_src %}
+                                {% firstof item.encoded_lightbox_preview_url item.encoded_card_preview_url item.encoded_preview_url item.encoded_url as lightbox_preview_src %}
+                                <article class="batch-photo-item"
+                                         data-batch-photo-item
+                                         data-batch-photo-index="{{ forloop.counter0 }}"
+                                         data-batch-download-item
+                                         data-type="image"
+                                         data-url="{{ item.url }}"
+                                         data-size-bytes="{{ item.size_bytes|default:0 }}"
+                                         data-asset-id="{{ item.asset_id|default:'' }}"
+                                         data-provider="{{ item.provider|default:'' }}"
+                                         data-provider-resource-id="{{ item.provider_resource_id|default:'' }}"
+                                         data-provider-cache-key="{{ item.provider_cache_key|default:'' }}"
+                                         data-provider-manifest-token="{{ item.provider_manifest_token|default:'' }}"
+                                         data-download-strategy="{{ item.download_strategy|default:'' }}"
+                                         data-fallback-strategy="{{ item.fallback_strategy|default:'' }}"
+                                         data-download-filename="{{ row.base_filename|default:'image' }}_{{ forloop.counter }}.{{ item.download_extension|default:'jpg' }}">
+                                    <button type="button"
+                                            class="batch-photo-preview"
+                                            data-batch-lightbox-open
+                                            data-card-preview-src="{{ proxy_image_url }}?u={{ card_preview_src }}{% if item.card_preview_provider_query %}&{{ item.card_preview_provider_query }}{% elif item.preview_provider_query %}&{{ item.preview_provider_query }}{% endif %}"
+                                            data-lightbox-preview-src="{{ proxy_image_url }}?u={{ lightbox_preview_src }}{% if item.lightbox_preview_provider_query %}&{{ item.lightbox_preview_provider_query }}{% elif item.card_preview_provider_query %}&{{ item.card_preview_provider_query }}{% elif item.preview_provider_query %}&{{ item.preview_provider_query }}{% endif %}"
+                                            aria-label="放大查看图片 {{ forloop.counter }}">
+                                        <img
+                                                src="{{ proxy_image_url }}?u={{ card_preview_src }}{% if item.card_preview_provider_query %}&{{ item.card_preview_provider_query }}{% elif item.preview_provider_query %}&{{ item.preview_provider_query }}{% endif %}"
+                                                alt="图片 {{ forloop.counter }}"
+                                                {% if forloop.first %}loading="eager" fetchpriority="high"{% else %}loading="lazy"{% endif %}
+                                                decoding="async"
+                                                onerror="retryImage(this)"
+                                        >
+                                        <span class="batch-photo-preview-hint" aria-hidden="true">
+                                            <i class="bi bi-arrows-fullscreen"></i>
+                                        </span>
+                                    </button>
+                                    <div class="batch-photo-meta">
+                                        <div>
+                                            <strong>图片 {{ forloop.counter }}</strong>
+                                            {% if item.strategy_label or item.download_strategy %}
+                                                <small>{{ item.strategy_label|default:item.download_strategy }}</small>
+                                            {% endif %}
+                                        </div>
+                                        {% if batch_download_allowed or batch_raw_links_allowed %}
+                                            <div class="batch-photo-actions">
+                                                {% if batch_download_allowed %}
+                                                    <button type="button"
+                                                            class="btn btn-brand btn-sm batch-browser-download-btn"
+                                                            data-batch-image-download>
+                                                        <i class="bi bi-download me-1"></i>
+                                                        <span class="batch-download-label">下载</span>
+                                                    </button>
+                                                {% endif %}
+                                                {% if batch_raw_links_allowed %}
+                                                    <button type="button"
+                                                            class="btn btn-outline-secondary btn-sm batch-copy-btn"
+                                                            data-copy-text="{{ item.url }}">
+                                                        复制直链
+                                                    </button>
+                                                    <a class="btn btn-outline-secondary btn-sm"
+                                                       href="{{ item.url }}"
+                                                       target="_blank"
+                                                       rel="noopener noreferrer">
+                                                        打开直链
+                                                    </a>
+                                                {% endif %}
+                                            </div>
+                                        {% endif %}
+                                    </div>
+                                </article>
+                            {% endfor %}
+                        </div>
+                        <div class="batch-photo-archive-status"
+                             data-batch-photo-archive-status
+                             role="status"
+                             aria-live="polite"
+                             hidden></div>
+                        <div class="batch-photo-archive-progress"
+                             data-batch-photo-archive-progress
+                             hidden>
+                            <div class="download-progress-track"
+                                 role="progressbar"
+                                 aria-valuemin="0"
+                                 aria-valuemax="100"
+                                 aria-valuenow="0">
+                                <div class="download-progress-bar" style="width: 0%;"></div>
+                            </div>
+                            <span data-batch-photo-archive-progress-label>正在准备图片 ZIP...</span>
+                        </div>
+                    </section>
+                {% endif %}
+
+                {% if row.video_items %}
+                <div class="batch-media-tools batch-media-tools-video"
                      data-batch-media-tools>
                     <div class="batch-result-cover">
                         {% if row.video_items and row.video_items.0.cover_url %}
@@ -88,18 +198,6 @@
                                     decoding="async"
                                     onerror="retryImage(this)"
                             >
-                        {% elif row.image_items %}
-                            <div class="batch-image-grid">
-                                {% for item in row.image_items|slice:":4" %}
-                                    <img
-                                            src="{{ proxy_image_url }}?u={{ item.encoded_preview_url|default:item.encoded_url }}{% if item.preview_provider_query %}&{{ item.preview_provider_query }}{% endif %}"
-                                            alt="图片预览"
-                                            loading="lazy"
-                                            decoding="async"
-                                            onerror="retryImage(this)"
-                                    >
-                                {% endfor %}
-                            </div>
                         {% else %}
                             <div class="batch-cover-placeholder">
                                 <i class="bi bi-card-image"></i>
@@ -203,50 +301,9 @@
                         </div>
                     {% endif %}
 
-                    {% if row.image_items %}
-                        <div class="batch-assets">
-                            {% for item in row.image_items %}
-                                <div class="batch-asset-download"
-                                 data-batch-download-item
-                                 data-type="image"
-                                 data-url="{{ item.url }}"
-                                 data-download-filename="{{ row.base_filename|default:'image' }}_{{ forloop.counter }}.jpg">
-                                <div class="batch-asset-link">
-                                    <i class="bi bi-image"></i>
-                                    <span>图片 {{ forloop.counter }}</span>
-                                    <small>{{ item.strategy_label|default:item.download_strategy }}</small>
-                                </div>
-                                {% if batch_download_allowed or batch_raw_links_allowed %}
-                                    <div class="batch-result-actions">
-                                        {% if batch_download_allowed %}
-                                            <button type="button"
-                                                    class="btn btn-brand btn-sm batch-browser-download-btn"
-                                                    data-batch-image-download>
-                                                <i class="bi bi-download me-1"></i>
-                                                <span class="batch-download-label">下载</span>
-                                            </button>
-                                        {% endif %}
-                                        {% if batch_raw_links_allowed %}
-                                            <button type="button"
-                                                    class="btn btn-outline-secondary btn-sm batch-copy-btn"
-                                                    data-copy-text="{{ item.url }}">
-                                                复制直链
-                                            </button>
-                                            <a class="btn btn-outline-secondary btn-sm"
-                                               href="{{ item.url }}"
-                                               target="_blank"
-                                               rel="noopener noreferrer">
-                                                打开直链
-                                            </a>
-                                        {% endif %}
-                                    </div>
-                                {% endif %}
-                                </div>
-                            {% endfor %}
-                        </div>
-                    {% endif %}
                     </div>
                 </div>
+                {% endif %}
 
                 <div class="batch-result-actions mt-3">
                     <button type="button"

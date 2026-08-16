@@ -69,7 +69,8 @@ class XhsDownloadError(XhsError):
 
 
 def clean_filename(filename):
-    filename = re.sub(r'[\\/*?:"<>|]', "", filename or "")
+    filename = re.sub(r"[\x00-\x1f\x7f]", "", str(filename or ""))
+    filename = re.sub(r'[\\/*?:"<>|]', "", filename)
     filename = filename.strip()
     return filename or "xhs_image"
 
