@@ -6,7 +6,11 @@
     const ordinaryMediaDownloadApi = typeof window !== "undefined"
         ? window.AnimeImagesOrdinaryMediaDownload || null
         : null;
+    const browserPhotoApi = typeof window !== "undefined"
+        ? window.AnimeImagesBrowserPhoto || null
+        : null;
     const BATCH_SYNC_ARCHIVE_MAX_BYTES = 128 * 1024 * 1024;
+    const batchPhotoControllers = new WeakMap();
 
     function buildEnabledPreferencePatch(ultraInput, youtubeInput) {
         const patch = {};
@@ -235,11 +239,17 @@
                     return;
                 }
                 seenUrls.add(url);
+                const filenameStem = String(
+                    node.dataset.downloadFilenameStem
+                    || (type === "video" ? "video" : "image")
+                );
+                const extensionHint = String(node.dataset.downloadExtensionHint || "");
                 resources.push({
                     type,
                     url,
                     filename: String(
-                        node.dataset.downloadFilename || (type === "video" ? "video.mp4" : "image.jpg")
+                        node.dataset.downloadFilename
+                        || (extensionHint ? `${filenameStem}.${extensionHint}` : filenameStem)
                     ),
                 });
             });
@@ -271,22 +281,31 @@
             .join("\n");
     }
 
-    function handoffBatchImage(button) {
+    function batchBrowserPhotoItem(node) {
+        if (!node || !node.dataset) {
+            return null;
+        }
+        const url = String(node.dataset.url || "").trim();
+        if (!url || normalizeBatchValue(node.dataset.type) !== "image") {
+            return null;
+        }
+        return {
+            type: "image",
+            url,
+            filenameStem: String(node.dataset.downloadFilenameStem || "image"),
+            extensionHint: String(node.dataset.downloadExtensionHint || ""),
+            requires_cookie: node.dataset.requiresCookie === "true",
+            requires_merge: node.dataset.requiresMerge === "true",
+        };
+    }
+
+    async function downloadBatchImage(button, options) {
         const item = button ? button.closest("[data-batch-download-item]") : null;
-        const url = item && item.dataset ? String(item.dataset.url || "") : "";
-        if (!url) {
+        const photoItem = batchBrowserPhotoItem(item);
+        if (!browserPhotoApi || !photoItem) {
             throw new Error("图片下载地址不可用，请重新解析。");
         }
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = ordinaryMediaDownloadApi
-            ? ordinaryMediaDownloadApi.sanitizeFilename(item.dataset.downloadFilename || "image.jpg")
-            : (item.dataset.downloadFilename || "image.jpg");
-        link.rel = "noopener noreferrer";
-        link.referrerPolicy = "no-referrer";
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
+        return browserPhotoApi.downloadImage(photoItem, options || {});
     }
 
     function batchPhotoMediaItem(node) {
@@ -335,6 +354,14 @@
             video_save_mode: "video",
             archive_profile: "batch_images",
         };
+    }
+
+    function buildBatchBrowserPhotoItems(section) {
+        return section
+            ? Array.from(section.querySelectorAll("[data-batch-photo-item]"))
+                .map(batchBrowserPhotoItem)
+                .filter(Boolean)
+            : [];
     }
 
     function safeSameOriginDownloadUrl(value, origin) {
@@ -386,14 +413,37 @@
         const progressLabel = progressWrap
             ? progressWrap.querySelector("[data-batch-photo-archive-progress-label]")
             : null;
+        const progressItems = progressWrap
+            ? progressWrap.querySelector("[data-batch-photo-archive-items]")
+            : null;
+        const progressBytes = progressWrap
+            ? progressWrap.querySelector("[data-batch-photo-archive-bytes]")
+            : null;
+        const progressSpeed = progressWrap
+            ? progressWrap.querySelector("[data-batch-photo-archive-speed]")
+            : null;
+        const progressEta = progressWrap
+            ? progressWrap.querySelector("[data-batch-photo-archive-eta]")
+            : null;
+        const cancelButton = section
+            ? section.querySelector("[data-batch-photo-archive-cancel]")
+            : null;
+        const fallbackButton = section
+            ? section.querySelector("[data-batch-photo-server-fallback]")
+            : null;
         const busy = state === "loading";
-        const progress = Math.max(0, Math.min(100, Number(config.progress || 0)));
+        const progressKnown = config.progress !== null && config.progress !== undefined;
+        const progress = progressKnown
+            ? Math.max(0, Math.min(100, Number(config.progress || 0)))
+            : null;
         if (button) {
             button.disabled = busy;
             button.classList.toggle("is-loading", busy);
         }
         if (label) {
-            label.textContent = busy ? "正在打包..." : "下载全部图片";
+            label.textContent = busy
+                ? String(config.buttonLabel || "正在下载并打包...")
+                : "下载全部图片";
         }
         if (status) {
             status.hidden = !config.message;
@@ -403,16 +453,67 @@
         }
         if (progressWrap) {
             progressWrap.hidden = !busy;
+            progressWrap.classList.toggle("is-pending", !progressKnown);
         }
         if (progressTrack) {
-            progressTrack.setAttribute("aria-valuenow", String(Math.round(progress)));
+            if (progressKnown) {
+                progressTrack.setAttribute("aria-valuenow", String(Math.round(progress)));
+                progressTrack.setAttribute("aria-valuetext", `${Math.round(progress)}%`);
+            } else {
+                progressTrack.removeAttribute("aria-valuenow");
+                progressTrack.setAttribute("aria-valuetext", "正在下载图片，总量未知");
+            }
         }
         if (progressBar) {
-            progressBar.style.width = `${progress}%`;
+            progressBar.style.width = progressKnown ? `${progress}%` : "100%";
         }
         if (progressLabel) {
             progressLabel.textContent = String(config.progressLabel || "正在准备图片 ZIP...");
         }
+        if (progressItems) {
+            progressItems.textContent = String(config.itemsLabel || progressItems.textContent || "");
+        }
+        if (progressBytes) {
+            progressBytes.textContent = String(config.bytesLabel || "0 B");
+        }
+        if (progressSpeed) {
+            progressSpeed.textContent = String(config.speedLabel || "正在测速...");
+        }
+        if (progressEta) {
+            progressEta.textContent = String(config.etaLabel || "");
+        }
+        if (cancelButton) {
+            cancelButton.hidden = !(busy && config.allowCancel !== false);
+        }
+        if (fallbackButton) {
+            fallbackButton.hidden = !config.showFallback;
+        }
+    }
+
+    function applyBatchPhotoArchiveProgress(section, event) {
+        if (!browserPhotoApi || !event) {
+            return;
+        }
+        const labels = {
+            connecting: "正在连接图片资源...",
+            fetching: `正在下载图片 ${event.completedItems} / ${event.totalItems}`,
+            assembling: "正在生成 ZIP...",
+            saving: "正在交给浏览器保存...",
+            completed: "已开始下载 ZIP。",
+        };
+        setBatchPhotoArchiveState(section, "loading", {
+            progress: event.stage === "saving" || event.stage === "completed"
+                ? 100
+                : (event.totalKnown ? event.percent : null),
+            progressLabel: labels[event.stage] || "正在下载并打包图片...",
+            itemsLabel: `${event.completedItems} / ${event.totalItems}`,
+            bytesLabel: event.totalKnown
+                ? `${browserPhotoApi.formatBytes(event.receivedBytes)} / ${browserPhotoApi.formatBytes(event.totalBytes)}`
+                : `已下载 ${browserPhotoApi.formatBytes(event.receivedBytes)}`,
+            speedLabel: browserPhotoApi.formatRate(event.bytesPerSecond),
+            etaLabel: event.etaSeconds ? browserPhotoApi.formatEta(event.etaSeconds) : "",
+            allowCancel: event.stage !== "saving" && event.stage !== "completed",
+        });
     }
 
     function triggerBatchArchiveDownload(url, filename) {
@@ -474,7 +575,22 @@
             completed.file_url || created.file_url,
             window.location.origin
         );
-        triggerBatchArchiveDownload(fileUrl, completed.filename || "");
+        const knownSize = Number(completed.size_bytes || 0);
+        if (knownSize > BATCH_SYNC_ARCHIVE_MAX_BYTES) {
+            triggerBatchArchiveDownload(fileUrl, completed.filename || "");
+        } else {
+            const fileResponse = await fetch(fileUrl, {
+                cache: "no-store",
+                credentials: "same-origin",
+            });
+            if (!fileResponse.ok) {
+                throw new Error(await parseBatchArchiveError(fileResponse));
+            }
+            const blob = await readBatchPhotoArchiveResponse(fileResponse, section);
+            const objectUrl = URL.createObjectURL(blob);
+            triggerBatchArchiveDownload(objectUrl, completed.filename || "images.zip");
+            window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
+        }
         const savedCount = Number(completed.saved_count || 0);
         const failedCount = Number(completed.failed_count || 0);
         return {
@@ -482,12 +598,28 @@
             failedCount,
             message: failedCount
                 ? `浏览器已开始下载 ZIP：成功 ${savedCount} 张，失败 ${failedCount} 张。`
-                : `浏览器已开始下载 ZIP，共 ${savedCount} 张图片。`,
+                : (
+                    knownSize > BATCH_SYNC_ARCHIVE_MAX_BYTES
+                        ? `ZIP 文件较大，已交给浏览器下载，共 ${savedCount} 张图片；页面不再显示传输速度。`
+                        : `浏览器已开始下载 ZIP，共 ${savedCount} 张图片。`
+                ),
         };
+    }
+
+    function formatBatchArchiveBytes(value) {
+        if (browserPhotoApi) {
+            return browserPhotoApi.formatBytes(value);
+        }
+        const bytes = Math.max(0, Number(value || 0));
+        return bytes < 1024 * 1024
+            ? `${(bytes / 1024).toFixed(1)} KiB`
+            : `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
     }
 
     async function readBatchPhotoArchiveResponse(response, section) {
         const contentLength = Number.parseInt(response.headers.get("Content-Length") || "0", 10);
+        const startedAt = Date.now();
+        const samples = [{at: startedAt, bytes: 0}];
         try {
             assertBatchSyncArchiveSize(contentLength);
         } catch (error) {
@@ -528,14 +660,38 @@
                 throw error;
             }
             chunks.push(value);
-            const progress = contentLength
-                ? 10 + Math.min(85, (received / contentLength) * 85)
-                : 40;
+            const now = Date.now();
+            samples.push({at: now, bytes: received});
+            while (samples.length > 2 && samples[1].at <= now - 2500) {
+                samples.shift();
+            }
+            const first = samples[0];
+            const sampleDuration = Math.max(0, now - first.at);
+            const bytesPerSecond = sampleDuration > 0
+                ? ((received - first.bytes) * 1000) / sampleDuration
+                : 0;
+            const progress = contentLength ? (received / contentLength) * 100 : null;
+            const etaSeconds = (
+                contentLength > received
+                && now - startedAt >= 1500
+                && bytesPerSecond > 0
+            ) ? (contentLength - received) / bytesPerSecond : null;
             setBatchPhotoArchiveState(section, "loading", {
                 progress,
                 progressLabel: contentLength
-                    ? `正在接收图片 ZIP ${Math.round((received / contentLength) * 100)}%`
-                    : "正在接收图片 ZIP...",
+                    ? `正在接收服务器 ZIP ${Math.round(progress)}%`
+                    : "正在接收服务器 ZIP...",
+                bytesLabel: contentLength
+                    ? `${formatBatchArchiveBytes(received)} / ${formatBatchArchiveBytes(contentLength)}`
+                    : `已接收 ${formatBatchArchiveBytes(received)}`,
+                speedLabel: bytesPerSecond > 0
+                    ? `${formatBatchArchiveBytes(bytesPerSecond)}/s`
+                    : "正在测速...",
+                etaLabel: etaSeconds && browserPhotoApi
+                    ? browserPhotoApi.formatEta(etaSeconds)
+                    : "",
+                buttonLabel: "服务器 ZIP 下载中...",
+                allowCancel: false,
             });
         }
         return new Blob(chunks, {type: "application/zip"});
@@ -575,7 +731,7 @@
         };
     }
 
-    async function downloadBatchPhotoArchive(batchPage, batchForm, button) {
+    async function downloadBatchPhotoArchiveServer(batchPage, batchForm, button) {
         const section = button ? button.closest("[data-batch-photo-section]") : null;
         const payload = buildBatchPhotoArchivePayload(section);
         const csrfInput = batchForm
@@ -587,7 +743,9 @@
         }
         setBatchPhotoArchiveState(section, "loading", {
             progress: 2,
-            progressLabel: "正在准备图片 ZIP...",
+            progressLabel: "服务器正在准备图片 ZIP...",
+            buttonLabel: "服务器正在打包...",
+            allowCancel: false,
         });
         try {
             const useAsync = (
@@ -611,7 +769,97 @@
         } catch (error) {
             setBatchPhotoArchiveState(section, "error", {
                 message: String(error && error.message || "图片 ZIP 下载失败，请稍后重试。"),
+                showFallback: true,
             });
+        }
+    }
+
+    async function downloadBatchPhotoArchive(batchPage, button) {
+        const section = button ? button.closest("[data-batch-photo-section]") : null;
+        const items = buildBatchBrowserPhotoItems(section);
+        if (!section || items.length < 2) {
+            throw new Error("当前图片列表无法由浏览器打包，请重新解析。");
+        }
+        if (!browserPhotoApi) {
+            setBatchPhotoArchiveState(section, "error", {
+                message: "浏览器图片下载组件不可用，可明确选择“使用服务器打包”。",
+                showFallback: true,
+            });
+            return;
+        }
+        const controller = new AbortController();
+        batchPhotoControllers.set(section, controller);
+        setBatchPhotoArchiveState(section, "loading", {
+            progress: null,
+            progressLabel: "正在连接图片资源...",
+            itemsLabel: `0 / ${items.length}`,
+            bytesLabel: "已下载 0 B",
+            allowCancel: true,
+        });
+        try {
+            const result = await browserPhotoApi.createArchive(items, {
+                baseFilename: String(section.dataset.baseFilename || "images"),
+                signal: controller.signal,
+                onProgress(event) {
+                    applyBatchPhotoArchiveProgress(section, event);
+                },
+            });
+            const failureNote = result.failureCount
+                ? `，${result.failureCount} 张未能加入，详情见 failed.txt`
+                : "";
+            setBatchPhotoArchiveState(section, "success", {
+                message: `浏览器已开始下载 ${result.filename}${failureNote}`,
+            });
+        } catch (error) {
+            const errorCode = browserPhotoApi.safeErrorCode(error);
+            if (errorCode === "BROWSER_PHOTO_CANCELLED") {
+                setBatchPhotoArchiveState(section, "idle", {
+                    message: "图片下载已取消。",
+                });
+                return;
+            }
+            setBatchPhotoArchiveState(section, "error", {
+                message: `${browserPhotoApi.safeErrorMessage(error)} 可明确选择“使用服务器打包”。`,
+                showFallback: true,
+            });
+        } finally {
+            batchPhotoControllers.delete(section);
+        }
+    }
+
+    async function downloadBatchImageWithUi(button) {
+        const itemNode = button ? button.closest("[data-batch-photo-item]") : null;
+        const section = itemNode ? itemNode.closest("[data-batch-photo-section]") : null;
+        if (!itemNode || !section || !browserPhotoApi) {
+            throw new Error("图片下载地址不可用，请重新解析。");
+        }
+        const controller = new AbortController();
+        batchPhotoControllers.set(section, controller);
+        setBatchDownloadButtonLoading(button, true, "正在下载...");
+        let completionLabel = "";
+        try {
+            const result = await downloadBatchImage(button, {
+                signal: controller.signal,
+                onProgress(event) {
+                    applyBatchPhotoArchiveProgress(section, event);
+                },
+            });
+            setBatchPhotoArchiveState(section, "success", {
+                message: `已交给浏览器保存：${result.filename}`,
+            });
+            completionLabel = "已开始保存";
+            return result;
+        } catch (error) {
+            const message = browserPhotoApi.safeErrorMessage(error);
+            setBatchPhotoArchiveState(section, "error", {message});
+            completionLabel = "重试下载";
+            throw error;
+        } finally {
+            batchPhotoControllers.delete(section);
+            setBatchDownloadButtonLoading(button, false);
+            if (completionLabel) {
+                showBatchDownloadButtonMessage(button, completionLabel);
+            }
         }
     }
 
@@ -1350,8 +1598,31 @@
                 if (!photoDownloadAllButton.disabled) {
                     await downloadBatchPhotoArchive(
                         batchPage,
-                        batchForm,
                         photoDownloadAllButton
+                    );
+                }
+                return;
+            }
+
+            const photoArchiveCancelButton = event.target.closest("[data-batch-photo-archive-cancel]");
+            if (photoArchiveCancelButton) {
+                event.preventDefault();
+                const section = photoArchiveCancelButton.closest("[data-batch-photo-section]");
+                const controller = section ? batchPhotoControllers.get(section) : null;
+                if (controller) {
+                    controller.abort();
+                }
+                return;
+            }
+
+            const photoServerFallbackButton = event.target.closest("[data-batch-photo-server-fallback]");
+            if (photoServerFallbackButton) {
+                event.preventDefault();
+                if (!photoServerFallbackButton.disabled) {
+                    await downloadBatchPhotoArchiveServer(
+                        batchPage,
+                        batchForm,
+                        photoServerFallbackButton
                     );
                 }
                 return;
@@ -1379,8 +1650,8 @@
                     : null;
                 if (imageButton) {
                     try {
-                        handoffBatchImage(imageButton);
-                        setLightboxStatus("已交给浏览器保存当前图片。");
+                        const result = await downloadBatchImageWithUi(imageButton);
+                        setLightboxStatus(`已交给浏览器保存：${result.filename}`);
                     } catch (error) {
                         setLightboxStatus("图片下载未能启动，请关闭预览后重试。");
                     }
@@ -1507,10 +1778,8 @@
             if (imageDownloadButton) {
                 event.preventDefault();
                 try {
-                    handoffBatchImage(imageDownloadButton);
-                    showBatchDownloadButtonMessage(imageDownloadButton, "已交给浏览器保存");
+                    await downloadBatchImageWithUi(imageDownloadButton);
                 } catch (error) {
-                    showBatchDownloadButtonMessage(imageDownloadButton, "重试下载");
                     imageDownloadButton.title = String(error && error.message || "图片下载失败");
                 }
                 return;

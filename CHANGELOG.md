@@ -2,16 +2,22 @@
 
 ## Unreleased
 
-- Replaced the Batch four-image cropped summary with a full, intrinsic-ratio
-  photo gallery. Every parsed image now has an adjacent browser download
-  action, 960px card previews, an on-demand 1600px row-scoped lightbox, and a
-  per-row Download All Images action that reuses the existing validated
-  async/sync ZIP backend. Synchronous ZIP reception is capped at 128 MiB of
-  browser memory, and mixed exports retain their legacy video-first order.
-  Single images remain CDN-to-browser downloads;
-  multi-image ZIP is an explicit server-generated artifact. This candidate has
-  not been deployed, adds no migration, and does not change Provider or
-  ordinary-video Streaming behavior.
+- Added one shared browser-first photo path for Single, Batch Download All,
+  per-image actions, and Lightbox download. It reads CDN bytes in the browser,
+  detects JPEG/PNG/GIF/WebP/AVIF from bounded magic, saves single images with
+  reliable extensions, and builds ordered STORE-only ZIP32 archives with
+  incremental CRC32, real byte/speed progress, conditional ETA, cancellation,
+  concurrency 3, a 50 MiB item cap, and a 128 MiB archive cap. Successful pure
+  image downloads make zero AnimeImages media requests; server ZIP is an
+  explicit compatibility action rather than a silent fallback.
+- Fixed server image archives and saves so suffixless generic binary responses
+  use bounded magic before MIME or path suffix, metadata conflicts prefer the
+  bytes, unknown content never becomes `.jpg`, partial failures use
+  `failed.txt`, and sync/async artifact sizes and formats remain consistent.
+  The full PR #44 Gallery and Lightbox UX is retained, but its first production
+  acceptance was rolled back because the download contract was blocked. This
+  replacement candidate has not been deployed, adds no migration, and leaves
+  Provider and ordinary-video Service Worker Streaming behavior unchanged.
 - Removed the redundant global active-download panel from Single and Batch
   product pages while retaining Service Worker state, Browser Download Manager
   cancellation, refresh continuation, and card-local progress. Allowed public

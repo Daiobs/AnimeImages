@@ -46,6 +46,7 @@ def serialize_task(task):
         "filename": task.get("filename", ""),
         "saved_count": task.get("saved_count", 0),
         "failed_count": task.get("failed_count", 0),
+        "size_bytes": task.get("size_bytes", 0),
     }
 
 
@@ -180,6 +181,7 @@ def run_download_task(task_id, payload, owner_identity):
             file=archive["file"],
             saved_count=archive["saved_count"],
             failed_count=archive["failed_count"],
+            size_bytes=archive_size,
         )
         archive = None
     except Exception as error:
@@ -206,6 +208,7 @@ def create_download_task(payload, owner_identity):
         "filename": "",
         "saved_count": 0,
         "failed_count": 0,
+        "size_bytes": 0,
         "created_at": _now(),
         "updated_at": _now(),
     }

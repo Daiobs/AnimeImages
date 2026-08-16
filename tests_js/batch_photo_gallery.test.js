@@ -173,13 +173,26 @@ test("Batch archive handoff URLs must remain same-origin", () => {
 });
 
 
-test("Gallery contracts keep single-image direct and multi-image ZIP paths separate", () => {
+test("Gallery contracts share browser-owned single-image and multi-image paths", () => {
     const source = readProjectFile("static/js/batch_parse.js");
+    const browserPhotoSource = readProjectFile("static/js/browser_photo_archive.js");
+    const cardTemplate = readProjectFile("templates/partials/batch_result_card.html");
 
-    assert.match(source, /function handoffBatchImage\(button\)/);
+    assert.match(source, /function downloadBatchImage\(button, options\)/);
+    assert.match(source, /browserPhotoApi\.downloadImage/);
+    assert.match(source, /browserPhotoApi\.createArchive/);
+    assert.match(source, /requires_cookie:\s*node\.dataset\.requiresCookie === "true"/);
+    assert.match(source, /requires_merge:\s*node\.dataset\.requiresMerge === "true"/);
     assert.match(source, /function downloadBatchPhotoArchive\(/);
     assert.match(source, /archive_profile:\s*"batch_images"/);
     assert.match(source, /dataBatchDownloadTaskUrl|batchDownloadTaskUrl/);
+    assert.match(source, /data-batch-photo-server-fallback/);
+    assert.match(source, /浏览器图片下载组件不可用，可明确选择/);
+    assert.doesNotMatch(source, /catch[\s\S]{0,240}downloadBatchPhotoArchiveServer/);
+    assert.doesNotMatch(browserPhotoSource, /media\/download-(?:images|tasks|prepare|stream|status)/);
+    assert.doesNotMatch(browserPhotoSource, /(?:localStorage|sessionStorage|indexedDB)/);
+    assert.match(cardTemplate, /data-requires-cookie=/);
+    assert.match(cardTemplate, /data-requires-merge=/);
     assert.doesNotMatch(source, /localStorage\.setItem\([^\n]*(?:cardPreview|lightboxPreview|media_items)/);
 });
 

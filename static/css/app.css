@@ -1415,6 +1415,22 @@ body {
     display: none;
 }
 
+.batch-photo-archive-progress .download-progress-meta {
+    font-weight: 500;
+}
+
+.batch-photo-archive-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.batch-photo-archive-actions [hidden],
+.download-progress-actions [hidden] {
+    display: none;
+}
+
 .batch-photo-lightbox .modal-content {
     max-height: calc(100vh - 32px);
     overflow: hidden;
@@ -1639,12 +1655,16 @@ body {
     }
 
     .batch-photo-header .btn,
-    .batch-photo-actions {
+    .batch-photo-actions,
+    .batch-photo-archive-actions,
+    .download-progress-actions {
         width: 100%;
     }
 
     .batch-photo-actions .btn,
-    .batch-photo-actions a {
+    .batch-photo-actions a,
+    .batch-photo-archive-actions .btn,
+    .download-progress-actions .btn {
         flex: 1 1 120px;
     }
 
