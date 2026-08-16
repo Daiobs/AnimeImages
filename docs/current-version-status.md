@@ -62,6 +62,11 @@ ordinary video: Provider/CDN -> Browser Service Worker -> Download Manager -> Di
 multi-image ZIP: Image CDN -> AnimeImages ZIP generator -> Browser -> Disk
 ```
 
+The synchronous ZIP receiver enforces a 128 MiB browser-memory boundary and
+cancels larger or unknown-length non-streaming responses. Mixed-resource text
+exports retain their established video-first order while images remain in
+parser order.
+
 Public Batch users retain download and copy-all capabilities without raw-link
 UI or staff exports. Staff raw actions, `links.txt`, and `aria2.txt` remain
 available. Provider order, Batch deadlines, ordinary Streaming, runtime

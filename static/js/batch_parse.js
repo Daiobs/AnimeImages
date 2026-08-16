@@ -6,6 +6,7 @@
     const ordinaryMediaDownloadApi = typeof window !== "undefined"
         ? window.AnimeImagesOrdinaryMediaDownload || null
         : null;
+    const BATCH_SYNC_ARCHIVE_MAX_BYTES = 128 * 1024 * 1024;
 
     function buildEnabledPreferencePatch(ultraInput, youtubeInput) {
         const patch = {};
@@ -222,7 +223,12 @@
             if (normalizeBatchValue(card.dataset.status) !== "success") {
                 return;
             }
-            Array.from(card.querySelectorAll("[data-batch-download-item]")).forEach((node) => {
+            const nodes = Array.from(card.querySelectorAll("[data-batch-download-item]"));
+            nodes.sort((left, right) => {
+                const rank = (node) => normalizeBatchValue(node.dataset.type) === "video" ? 0 : 1;
+                return rank(left) - rank(right);
+            });
+            nodes.forEach((node) => {
                 const type = normalizeBatchValue(node.dataset.type);
                 const url = String(node.dataset.url || "").trim();
                 if (!url || seenUrls.has(url) || (type !== "video" && type !== "image")) {
@@ -362,6 +368,13 @@
         }
     }
 
+    function assertBatchSyncArchiveSize(sizeBytes) {
+        const size = Number(sizeBytes || 0);
+        if (Number.isFinite(size) && size > BATCH_SYNC_ARCHIVE_MAX_BYTES) {
+            throw new Error("图片 ZIP 过大，无法在当前浏览器安全接收。请分批下载图片。");
+        }
+    }
+
     function setBatchPhotoArchiveState(section, state, options) {
         const config = options || {};
         const button = section ? section.querySelector("[data-batch-photo-download-all]") : null;
@@ -475,8 +488,25 @@
 
     async function readBatchPhotoArchiveResponse(response, section) {
         const contentLength = Number.parseInt(response.headers.get("Content-Length") || "0", 10);
+        try {
+            assertBatchSyncArchiveSize(contentLength);
+        } catch (error) {
+            if (response.body && typeof response.body.cancel === "function") {
+                try {
+                    await response.body.cancel();
+                } catch (cancelError) {
+                    // The response is already rejected; cancellation remains best-effort.
+                }
+            }
+            throw error;
+        }
         if (!response.body || !response.body.getReader) {
-            return response.blob();
+            if (!contentLength) {
+                throw new Error("当前浏览器无法安全接收大小未知的图片 ZIP，请分批下载图片。");
+            }
+            const blob = await response.blob();
+            assertBatchSyncArchiveSize(blob.size);
+            return blob;
         }
         const reader = response.body.getReader();
         const chunks = [];
@@ -486,8 +516,18 @@
             if (done) {
                 break;
             }
-            chunks.push(value);
             received += value.byteLength;
+            try {
+                assertBatchSyncArchiveSize(received);
+            } catch (error) {
+                try {
+                    await reader.cancel();
+                } catch (cancelError) {
+                    // The bounded-memory error is authoritative.
+                }
+                throw error;
+            }
+            chunks.push(value);
             const progress = contentLength
                 ? 10 + Math.min(85, (received / contentLength) * 85)
                 : 40;
@@ -1497,6 +1537,8 @@
         safeSameOriginDownloadUrl,
         getBatchPhotoItems,
         getBatchLightboxNavigation,
+        assertBatchSyncArchiveSize,
+        readBatchPhotoArchiveResponse,
     });
     if (typeof module === "object" && module.exports) {
         module.exports = testApi;

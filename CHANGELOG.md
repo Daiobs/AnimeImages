@@ -6,7 +6,9 @@
   photo gallery. Every parsed image now has an adjacent browser download
   action, 960px card previews, an on-demand 1600px row-scoped lightbox, and a
   per-row Download All Images action that reuses the existing validated
-  async/sync ZIP backend. Single images remain CDN-to-browser downloads;
+  async/sync ZIP backend. Synchronous ZIP reception is capped at 128 MiB of
+  browser memory, and mixed exports retain their legacy video-first order.
+  Single images remain CDN-to-browser downloads;
   multi-image ZIP is an explicit server-generated artifact. This candidate has
   not been deployed, adds no migration, and does not change Provider or
   ordinary-video Streaming behavior.

@@ -182,3 +182,53 @@ test("Gallery contracts keep single-image direct and multi-image ZIP paths separ
     assert.match(source, /dataBatchDownloadTaskUrl|batchDownloadTaskUrl/);
     assert.doesNotMatch(source, /localStorage\.setItem\([^\n]*(?:cardPreview|lightboxPreview|media_items)/);
 });
+
+
+test("Synchronous Batch ZIP reception has a 128 MiB browser-memory boundary", async () => {
+    const limit = 128 * 1024 * 1024;
+    assert.doesNotThrow(() => batch.assertBatchSyncArchiveSize(limit));
+    assert.throws(
+        () => batch.assertBatchSyncArchiveSize(limit + 1),
+        /无法在当前浏览器安全接收/,
+    );
+
+    let cancelled = false;
+    await assert.rejects(
+        () => batch.readBatchPhotoArchiveResponse({
+            headers: {get() { return String(limit + 1); }},
+            body: {
+                async cancel() {
+                    cancelled = true;
+                },
+            },
+        }, null),
+        /无法在当前浏览器安全接收/,
+    );
+    assert.equal(cancelled, true);
+});
+
+
+test("Unknown-length synchronous ZIP streams cancel before exceeding the memory boundary", async () => {
+    const chunkSize = 70 * 1024 * 1024;
+    let reads = 0;
+    let cancelled = false;
+    const reader = {
+        async read() {
+            reads += 1;
+            return {done: false, value: {byteLength: chunkSize}};
+        },
+        async cancel() {
+            cancelled = true;
+        },
+    };
+
+    await assert.rejects(
+        () => batch.readBatchPhotoArchiveResponse({
+            headers: {get() { return ""; }},
+            body: {getReader() { return reader; }},
+        }, null),
+        /无法在当前浏览器安全接收/,
+    );
+    assert.equal(reads, 2);
+    assert.equal(cancelled, true);
+});

@@ -64,7 +64,10 @@ The server revalidates item type, scheme, media host, Provider manifest, SSRF
 boundary, count, and byte limits. Batch image archives preserve row order,
 use zero-padded ordinals and response-derived extensions, sanitize archive
 names, retain existing partial-success behavior, and never report an empty ZIP
-as success.
+as success. When async tasks are disabled, the synchronous browser receiver
+enforces a 128 MiB memory boundary and cancels larger or unbounded responses;
+users can still download the photos individually. Async task downloads remain
+the preferred path for larger generated archives.
 
 ## Permissions
 
@@ -74,7 +77,8 @@ as success.
   `aria2.txt`, or the strategy matrix.
 - Staff retain all existing raw and export tools.
 - Bulk collectors continue to read the current successful DOM, preserving
-  order, stable deduplication, progressive append, and retry replacement.
+  the legacy video-first order plus image parser order, stable deduplication,
+  progressive append, and retry replacement.
 
 ## Verification
 
@@ -83,7 +87,7 @@ production request:
 
 ```text
 Django full suite: 1109 passed
-Node full suite:   126 passed
+Node full suite:   128 passed
 Django check:      passed
 Migration check:   no changes detected
 JavaScript syntax: passed
