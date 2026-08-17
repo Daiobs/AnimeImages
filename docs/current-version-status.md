@@ -1,6 +1,6 @@
 # Current Version Status
 
-Date: 2026-08-16
+Date: 2026-08-17
 
 ## Source Of Truth
 
@@ -18,12 +18,13 @@ related but separate facts.
 
 ## Canonical Repository
 
-The runtime baseline accepted by Download UI & Batch Actions Production
-Acceptance v1 is:
+The runtime baseline accepted by Browser Photo Archive Production Acceptance
+v2 is:
 
 ```text
-runtime SHA: 9ba5702e9a90b9179e21d53393d8e27c39c51833
-source:      Download UI & Batch Actions v1 (#42), including Provider Stabilization (#39/#40)
+runtime SHA: e70848c8b89225beba0838e9b681aaf5b7fdf789
+source:      Browser Photo Archive and Format Reliability v1 (#45)
+checkpoint:  checkpoint/production-browser-photo-archive-v1
 ```
 
 Always resolve the current canonical SHA rather than treating the value above
@@ -34,17 +35,17 @@ git fetch --prune origin
 git rev-parse origin/main
 ```
 
-The production application SHA is the accepted runtime baseline above. The
-Browser Photo Archive and Format Reliability candidate advances application
-behavior on `main`; it has not been deployed or production accepted.
+The production application SHA is the accepted runtime baseline above. At the
+close of acceptance, canonical `origin/main`, the production checkout, and the
+immutable checkpoint all resolved to the same application commit.
 
 ```text
-PRODUCTION_RUNTIME_CODE_DRIFT = 1
+PRODUCTION_RUNTIME_CODE_DRIFT = 0
 REPO_HEAD_AHEAD_DOCS_ONLY = NO
-MAIN_RUNTIME_AHEAD_PRODUCTION = YES
+MAIN_RUNTIME_AHEAD_PRODUCTION = NO
 ```
 
-## Browser Photo Archive Candidate
+## Browser Photo Archive Acceptance
 
 The first Batch Photo Gallery production acceptance was rolled back. It
 validated the uncropped full Gallery, 960px card previews, on-demand 1600px
@@ -53,8 +54,8 @@ an incomplete photo-download contract: suffixless binary images could be
 misnamed `.jpg`, a cross-origin anchor could save without an extension, and
 pure image archives moved CDN bytes through AnimeImages.
 
-The replacement main candidate preserves the Gallery and changes the default
-photo data paths to:
+The replacement was exact-deployed and production-accepted at `e70848c8...`.
+It preserves the Gallery and changes the default photo data paths to:
 
 ```text
 single image:     Image CDN -> Browser fetch -> Blob -> Download Manager -> Disk
@@ -63,15 +64,15 @@ ordinary video:  Provider/CDN -> Browser Service Worker -> Download Manager -> D
 server photo ZIP: explicit compatibility fallback only
 ```
 
-Real Chrome capability evidence found readable CORS responses and exposed
-`Content-Length` on `ci.xiaohongshu.com`. Single and Batch now share one local
-Browser Photo module with concurrency 3, a 50 MiB item cap, a 128 MiB archive
-cap, incremental CRC32, STORE-only ZIP32, real byte/speed progress, conditional
-ETA, cancellation, and no URL persistence. Successful browser photo paths call
-no AnimeImages media endpoint. Server ZIP remains available only after an
-explicit user action and now shares bounded JPEG/PNG/GIF/WebP/AVIF magic-based
-format resolution with async archives and server saves. Unknown binary content
-never becomes `.jpg`.
+Production-origin Playwright/Chromium acceptance found readable CORS responses
+and exposed `Content-Length` on `ci.xiaohongshu.com`. Single and Batch share
+one local Browser Photo module with concurrency 3, a 50 MiB item cap, a 128 MiB
+archive cap, incremental CRC32, STORE-only ZIP32, real byte/speed progress,
+conditional ETA, cancellation, and no URL persistence. Successful browser
+photo paths call no AnimeImages media endpoint. Server ZIP remains available
+only after an explicit user action and shares bounded
+JPEG/PNG/GIF/WebP/AVIF magic-based format resolution with async archives and
+server saves. Unknown binary content never becomes `.jpg`.
 
 Public Batch users retain download and copy-all capabilities without raw-link
 UI or staff exports. Staff raw actions, `links.txt`, and `aria2.txt` remain
@@ -79,12 +80,32 @@ available. Provider order, Batch deadlines, ordinary Streaming, runtime
 settings, and migrations are unchanged.
 
 ```text
-BROWSER_PHOTO_ARCHIVE = MAIN_CANDIDATE_NOT_YET_PRODUCTION_ACCEPTED
-XHS_BROWSER_FETCH_CORS = PASS
+BROWSER_PHOTO_ARCHIVE = PRODUCTION_ACCEPTED
+XHS_BROWSER_FETCH_CORS = PRODUCTION_ORIGIN_PASS
 ZIP_IMPLEMENTATION = STORE_ONLY_INTERNAL
+SAMPLE_A_B_C_IMAGE_COUNTS = 4 / 5 / 2
+SAME_CONTENT_DEFECT = NOT_REPRODUCED
+CODEX_CHROME_CONTROL = TOOLING ISSUE
+CODEX_IN_APP_BROWSER = TOOLING ISSUE
 PHOTO_ORIGINAL_VARIANT_SELECTION_NOT_PROVEN
 PHOTO_DOWNLOAD_VARIANT_FIDELITY_BACKLOG
 ```
+
+The production-origin acceptance used isolated Playwright `1.62.1` with
+Chromium `149.0.7827.55`. Sample B returned five ordered resources from
+`ci.xiaohongshu.com`; single-photo and Lightbox downloads had correct `.jpg`
+filesystem names, JPEG magic, exact source/download hashes, and zero
+AnimeImages media endpoint requests. The default five-image archive produced
+one valid UTF-8 STORE ZIP in `_01` through `_05` order, passed CRC validation,
+matched source bytes 5/5, and showed real intermediate byte, speed, percent,
+and ETA updates. Public download/copy boundaries passed in Production; staff,
+explicit server fallback, dynamic replacement, format reliability, and
+ordinary-video zero-relay boundaries were retained through controlled gates.
+
+The Codex `@chrome` remote-HTTPS bridge remained unstable and the Codex in-app
+browser remained automation-blocked. Those were tooling failures, not
+AnimeImages regressions; the independent Playwright harness completed the
+application acceptance.
 
 See
 [`research/browser-photo-archive-format-reliability-v1.md`](research/browser-photo-archive-format-reliability-v1.md)
@@ -114,9 +135,8 @@ following capabilities remain staff-only:
 - the strategy matrix.
 
 Staff exports now cover the same successful video and image sequence as bulk
-copy. The production application still retains the four-image preview cap;
-the undeployed main candidate described above replaces it with the full photo
-gallery.
+copy. The accepted production application also includes the later full photo
+Gallery and no longer retains the historical four-image preview cap.
 
 ```text
 DOWNLOAD_UI_BATCH_ACTIONS = PRODUCTION_ACCEPTED
@@ -160,16 +180,17 @@ was recorded in the acceptance evidence.
 Production application code has been deployed and accepted at:
 
 ```text
-application SHA:  9ba5702e9a90b9179e21d53393d8e27c39c51833
-checkpoint:       checkpoint/production-download-ui-batch-actions-v1
-rollback:         checkpoint/production-provider-stabilization-v1 -> d746ec9ff66532071b8079592f8b4831cae0fe51
+application SHA:  e70848c8b89225beba0838e9b681aaf5b7fdf789
+checkpoint:       checkpoint/production-browser-photo-archive-v1
+rollback:         checkpoint/production-download-ui-batch-actions-v1 -> 9ba5702e9a90b9179e21d53393d8e27c39c51833
 site:             https://download.cosflow.icu/
 ```
 
 The checkpoint resolves exactly to the application SHA and must remain
 immutable. This application includes the accepted PR #26 Batch visibility and
 public-download behavior, PR #28 Batch Runtime Admin clarity, and PR #42
-Download UI and mixed-media Batch actions.
+Download UI and mixed-media Batch actions, plus PR #44 Gallery/Lightbox and
+PR #45 browser-first photo archive and format reliability behavior.
 
 Production topology at the accepted infrastructure audit:
 
@@ -328,9 +349,9 @@ for exact branch tips, evidence, decisions, and checkpoint integrity records.
    runtime-gated.
 4. Bilibili high-quality Cookie/member/DASH support remains deferred.
 5. Release Management automatic production deployment remains disabled.
-6. The Batch gallery download candidate is not production accepted, and the
-   current XHS download candidate has not been proven to be the highest-quality
-   original variant.
+6. Browser Photo Archive is production accepted, but the current XHS download
+   candidate has not been proven to be the highest-quality original variant.
+   `PHOTO_DOWNLOAD_VARIANT_FIDELITY_BACKLOG` remains open.
 7. GitHub private-repository main protection remains subject to available
    plan/ruleset capabilities.
 8. Certbot, Redis/PostgreSQL host configuration, Cloud-init, DNS, and broader

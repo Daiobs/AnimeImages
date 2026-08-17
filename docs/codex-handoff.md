@@ -1,6 +1,6 @@
 # Codex Handoff
 
-Last updated: 2026-08-15
+Last updated: 2026-08-17
 
 This document is the first stop when a new Codex project or thread takes over AnimeImages.
 
@@ -59,25 +59,27 @@ https://download.cosflow.icu/
 ## Canonical And Production Baseline
 
 Canonical development always starts from the latest fetched `origin/main`.
-At the start of the current-status reconciliation, it was:
+At the close of Browser Photo Archive Production Acceptance v2, it was:
 
 ```text
-3f73f37fe10da0d9ec6a00bccff0b9ef1f10f0aa
-Repository Branch Archive & Cleanup v1 (#37)
+e70848c8b89225beba0838e9b681aaf5b7fdf789
+Browser Photo Archive and Format Reliability v1 (#45)
 ```
 
 Production application code was deployed and accepted at:
 
 ```text
-fc1f1368431fb2ff063231dfaa4f35a9c8154430
-checkpoint/production-main-converged-v2
+e70848c8b89225beba0838e9b681aaf5b7fdf789
+checkpoint/production-browser-photo-archive-v1
 ```
 
-The checkpoint resolves exactly to the production application SHA, which is an
-ancestor of canonical main. Changes after it are infrastructure-as-code,
-repository governance, evidence, and documentation. The audited Django,
-Service Worker, Provider, and download-runtime drift is zero, so the SHA
-difference alone is not a deployment request.
+The checkpoint resolves exactly to the production application SHA. Isolated
+Playwright/Chromium production-origin acceptance verified XHS CORS, exact
+single-photo bytes, a five-entry STORE ZIP with valid CRC and 5/5 source-byte
+matches, real Browser archive progress, Gallery/Lightbox behavior, public
+permissions, and zero AnimeImages photo-media endpoint requests. The `@chrome`
+remote-HTTPS bridge and Codex in-app browser remained unreliable acceptance
+tools; that tooling state is not an application regression.
 
 Fetch and resolve the live repository baseline before starting work:
 
@@ -93,6 +95,10 @@ behavior context. See that file and `docs/repository-governance.md` first.
 
 Recent merged milestones:
 
+- PR #45: Browser-first single-photo and pure-photo STORE archives with reliable image format resolution.
+- PR #44: Full Batch photo Gallery, responsive Lightbox, and download-all UX.
+- PR #43: Download UI and Batch Actions production acceptance reconciliation.
+- PR #42: Download UI cleanup and mixed-resource Batch actions.
 - PR #19: Synchronized Release Management, deployment, handoff, changelog, README, and PR template documentation with the last audited production state.
 - PR #18: Read-only local Git state for Release Management Web requests and an exact-path `safe.directory` production fix.
 - PR #17: Admin Release Management v1 with audited main jobs, pinned target SHA, external non-blocking execution, and local Bootstrap Icons.
@@ -301,8 +307,8 @@ The canonical evidence and deployment state are in
 `docs/current-version-status.md`,
 `docs/research/service-worker-streaming-productionization-v1.md`, and the
 production infrastructure audit. The current production application SHA is
-`fc1f1368431fb2ff063231dfaa4f35a9c8154430`, fixed by
-`checkpoint/production-main-converged-v2`. Verify real browser behavior, not
+`e70848c8b89225beba0838e9b681aaf5b7fdf789`, fixed by
+`checkpoint/production-browser-photo-archive-v1`. Verify real browser behavior, not
 only route metadata or unit tests, before changing this contract.
 
 ## Production Deployment Notes
