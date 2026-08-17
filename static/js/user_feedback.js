@@ -140,6 +140,81 @@
         const spinner = form.querySelector("[data-feedback-spinner]");
         const dismissLabel = form.querySelector("[data-feedback-dismiss-label]");
         const imageInput = form.querySelector('input[name="image"]');
+        const imageDropzone = form.querySelector("[data-feedback-image-dropzone]");
+        const imageEmpty = form.querySelector("[data-feedback-image-empty]");
+        const imagePreview = form.querySelector("[data-feedback-image-preview]");
+        const imagePreviewElement = form.querySelector("[data-feedback-image-preview-img]");
+        const imageReplaceButton = form.querySelector("[data-feedback-image-replace]");
+        const imageRemoveButton = form.querySelector("[data-feedback-image-remove]");
+        let imagePreviewUrl = "";
+
+        function setStatus(message, error) {
+            if (!status) {
+                return;
+            }
+            status.textContent = message || "";
+            status.classList.toggle("text-danger", Boolean(message && error));
+            status.classList.toggle("text-muted", Boolean(message && !error));
+        }
+
+        function releaseImagePreviewUrl() {
+            if (imagePreviewUrl && root.URL && typeof root.URL.revokeObjectURL === "function") {
+                root.URL.revokeObjectURL(imagePreviewUrl);
+            }
+            imagePreviewUrl = "";
+        }
+
+        function renderImagePreview(file) {
+            releaseImagePreviewUrl();
+            if (!file) {
+                if (imagePreviewElement) {
+                    imagePreviewElement.removeAttribute("src");
+                }
+                if (imageEmpty) {
+                    imageEmpty.hidden = false;
+                }
+                if (imagePreview) {
+                    imagePreview.hidden = true;
+                }
+                return;
+            }
+
+            if (root.URL && typeof root.URL.createObjectURL === "function" && imagePreviewElement) {
+                imagePreviewUrl = root.URL.createObjectURL(file);
+                imagePreviewElement.src = imagePreviewUrl;
+            }
+            if (imageEmpty) {
+                imageEmpty.hidden = true;
+            }
+            if (imagePreview) {
+                imagePreview.hidden = false;
+            }
+        }
+
+        function clearImageSelection() {
+            if (imageInput) {
+                imageInput.value = "";
+            }
+            renderImagePreview(null);
+        }
+
+        function acceptImageSelection(file) {
+            const imageError = imageValidationMessage(file);
+            if (imageError) {
+                clearImageSelection();
+                setStatus(imageError, true);
+                return false;
+            }
+            renderImagePreview(file);
+            setStatus("", false);
+            return true;
+        }
+
+        function chooseImage() {
+            if (imageInput && typeof imageInput.click === "function") {
+                imageInput.click();
+            }
+        }
 
         function resetPresentation() {
             if (fields) {
@@ -148,10 +223,7 @@
             if (success) {
                 success.hidden = true;
             }
-            if (status) {
-                status.textContent = "";
-                status.classList.remove("text-danger", "text-muted");
-            }
+            setStatus("", false);
             if (submitButton) {
                 submitButton.disabled = false;
                 submitButton.hidden = false;
@@ -174,9 +246,82 @@
 
         modal.addEventListener("hidden.bs.modal", function () {
             form.reset();
+            clearImageSelection();
             resetPresentation();
             applyMetadata(form, root.location, root);
         });
+
+        if (imageInput) {
+            imageInput.addEventListener("change", function () {
+                const selectedFile = imageInput.files && imageInput.files[0];
+                if (!selectedFile) {
+                    clearImageSelection();
+                    return;
+                }
+                acceptImageSelection(selectedFile);
+            });
+        }
+
+        if (imageDropzone) {
+            imageDropzone.addEventListener("click", function (event) {
+                if (event.target && event.target.closest("button")) {
+                    return;
+                }
+                chooseImage();
+            });
+            imageDropzone.addEventListener("keydown", function (event) {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    chooseImage();
+                }
+            });
+            ["dragenter", "dragover"].forEach(function (eventName) {
+                imageDropzone.addEventListener(eventName, function (event) {
+                    event.preventDefault();
+                    imageDropzone.classList.add("is-dragging");
+                });
+            });
+            ["dragleave", "dragend"].forEach(function (eventName) {
+                imageDropzone.addEventListener(eventName, function () {
+                    imageDropzone.classList.remove("is-dragging");
+                });
+            });
+            imageDropzone.addEventListener("drop", function (event) {
+                event.preventDefault();
+                imageDropzone.classList.remove("is-dragging");
+                const files = event.dataTransfer && event.dataTransfer.files;
+                if (!files || files.length !== 1) {
+                    setStatus("每次只能上传 1 张问题截图。", true);
+                    return;
+                }
+                if (!acceptImageSelection(files[0])) {
+                    return;
+                }
+                if (imageInput && root.DataTransfer) {
+                    const transfer = new root.DataTransfer();
+                    transfer.items.add(files[0]);
+                    imageInput.files = transfer.files;
+                } else {
+                    clearImageSelection();
+                    setStatus("当前浏览器无法接收拖入的图片，请点击选择图片。", true);
+                }
+            });
+        }
+
+        if (imageReplaceButton) {
+            imageReplaceButton.addEventListener("click", function (event) {
+                event.stopPropagation();
+                chooseImage();
+            });
+        }
+
+        if (imageRemoveButton) {
+            imageRemoveButton.addEventListener("click", function (event) {
+                event.stopPropagation();
+                clearImageSelection();
+                setStatus("", false);
+            });
+        }
 
         form.addEventListener("submit", async function (event) {
             event.preventDefault();
@@ -185,11 +330,7 @@
                 imageInput && imageInput.files ? imageInput.files[0] : null
             );
             if (imageError) {
-                if (status) {
-                    status.textContent = imageError;
-                    status.classList.remove("text-muted");
-                    status.classList.add("text-danger");
-                }
+                setStatus(imageError, true);
                 return;
             }
             if (submitButton) {
@@ -201,11 +342,7 @@
             if (spinner) {
                 spinner.hidden = false;
             }
-            if (status) {
-                status.textContent = "正在安全提交反馈...";
-                status.classList.remove("text-danger");
-                status.classList.add("text-muted");
-            }
+            setStatus("正在安全提交反馈...", false);
 
             try {
                 await submit(form);
@@ -215,9 +352,8 @@
                 if (success) {
                     success.hidden = false;
                 }
-                if (status) {
-                    status.textContent = "";
-                }
+                clearImageSelection();
+                setStatus("", false);
                 if (submitButton) {
                     submitButton.hidden = true;
                 }
@@ -225,13 +361,12 @@
                     dismissLabel.textContent = "关闭";
                 }
             } catch (error) {
-                if (status) {
-                    status.textContent = error && error.message
+                setStatus(
+                    error && error.message
                         ? error.message
-                        : "反馈提交失败，请稍后重试。";
-                    status.classList.remove("text-muted");
-                    status.classList.add("text-danger");
-                }
+                        : "反馈提交失败，请稍后重试。",
+                    true
+                );
                 if (submitButton) {
                     submitButton.disabled = false;
                 }

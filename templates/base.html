@@ -92,7 +92,7 @@
      tabindex="-1"
      aria-labelledby="userFeedbackModalLabel"
      aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content">
             <form id="user-feedback-form"
                   method="post"
@@ -122,12 +122,40 @@
                         </div>
                         <div class="mb-3">
                             <label class="form-label fw-bold" for="user-feedback-image">问题截图（可选）</label>
-                            <input class="form-control"
+                            <input class="visually-hidden"
                                    id="user-feedback-image"
                                    name="image"
                                    type="file"
-                                   accept="image/jpeg,image/png,image/webp">
-                            <div class="form-text">支持 JPG、PNG、WebP，单张不超过 5 MB。</div>
+                                   accept="image/jpeg,image/png,image/webp"
+                                   aria-describedby="user-feedback-image-help">
+                            <div class="feedback-image-dropzone"
+                                 data-feedback-image-dropzone
+                                 role="button"
+                                 tabindex="0"
+                                 aria-controls="user-feedback-image">
+                                <div class="feedback-image-empty" data-feedback-image-empty>
+                                    <i class="bi bi-image" aria-hidden="true"></i>
+                                    <strong>选择图片或拖到这里</strong>
+                                    <span>提交前可以在这里预览</span>
+                                </div>
+                                <div class="feedback-image-preview" data-feedback-image-preview hidden>
+                                    <img data-feedback-image-preview-img alt="问题截图预览">
+                                    <div class="feedback-image-preview-actions">
+                                        <span>已选择 1 张图片</span>
+                                        <div>
+                                            <button type="button"
+                                                    class="btn btn-sm btn-outline-secondary"
+                                                    data-feedback-image-replace>重新选择</button>
+                                            <button type="button"
+                                                    class="btn btn-sm btn-outline-danger"
+                                                    data-feedback-image-remove>移除</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="form-text" id="user-feedback-image-help">
+                                支持 JPG、PNG、WebP，单张不超过 5 MB。
+                            </div>
                         </div>
                         <div>
                             <label class="form-label fw-bold" for="user-feedback-contact">联系方式（可选）</label>

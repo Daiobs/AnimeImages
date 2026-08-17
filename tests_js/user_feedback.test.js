@@ -85,3 +85,38 @@ test("feedback form has no category or editable request id", () => {
     assert.equal(template.includes('name="request_id"'), false);
     assert.equal(template.includes('enctype="multipart/form-data"'), true);
 });
+
+test("feedback image picker supports selection, drop, preview, replace, and removal", () => {
+    const template = fs.readFileSync(
+        path.join(__dirname, "../templates/base.html"),
+        "utf8"
+    );
+    const source = fs.readFileSync(
+        path.join(__dirname, "../static/js/user_feedback.js"),
+        "utf8"
+    );
+
+    assert.equal(template.includes("data-feedback-image-dropzone"), true);
+    assert.equal(template.includes("data-feedback-image-preview-img"), true);
+    assert.equal(template.includes("data-feedback-image-replace"), true);
+    assert.equal(template.includes("data-feedback-image-remove"), true);
+    assert.equal(template.includes("选择图片或拖到这里"), true);
+    assert.equal(source.includes('addEventListener("drop"'), true);
+    assert.equal(source.includes("URL.createObjectURL"), true);
+    assert.equal(source.includes("URL.revokeObjectURL"), true);
+});
+
+test("feedback image preview does not render the original local filename", () => {
+    const template = fs.readFileSync(
+        path.join(__dirname, "../templates/base.html"),
+        "utf8"
+    );
+    const source = fs.readFileSync(
+        path.join(__dirname, "../static/js/user_feedback.js"),
+        "utf8"
+    );
+
+    assert.equal(template.includes('id="user-feedback-image"\n                                   name="image"'), true);
+    assert.equal(template.includes('class="visually-hidden"'), true);
+    assert.equal(source.includes("file.name"), false);
+});
