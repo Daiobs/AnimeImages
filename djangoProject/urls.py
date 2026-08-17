@@ -22,10 +22,16 @@ from django.views.generic import RedirectView
 
 from djangoProject import health
 from xhs_download import views as download_views
+from xhs_download import user_feedback_views
 
 urlpatterns = [
                   path("health/live/", health.liveness_view, name="health_live"),
                   path("health/ready/", health.readiness_view, name="health_ready"),
+                  path(
+                      "feedback/",
+                      user_feedback_views.user_feedback_submit_view,
+                      name="user_feedback_submit",
+                  ),
                   path(
                       "ordinary-media-download-sw.js",
                       download_views.ordinary_media_service_worker_view,

@@ -143,6 +143,63 @@ body {
     font-weight: 700;
 }
 
+.nav-feedback-btn {
+    display: inline-flex;
+    width: 40px;
+    height: 40px;
+    flex: 0 0 40px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    font-size: 1.1rem;
+}
+
+.feedback-modal .modal-content {
+    overflow: hidden;
+    border: 0;
+    border-radius: 8px;
+    box-shadow: 0 18px 60px rgba(23, 29, 48, .16);
+}
+
+.feedback-modal .modal-dialog {
+    max-width: 560px;
+}
+
+.feedback-modal .modal-header,
+.feedback-modal .modal-body,
+.feedback-modal .modal-footer {
+    padding-right: 24px;
+    padding-left: 24px;
+}
+
+.feedback-modal-subtitle {
+    margin-top: 4px;
+    color: var(--text-muted);
+    font-size: .9rem;
+}
+
+.feedback-message-input {
+    min-height: 132px;
+    resize: vertical;
+}
+
+.feedback-modal input[type="file"]::file-selector-button {
+    border: 0;
+    border-right: 1px solid var(--line-soft);
+    background: #f8fafc;
+    color: var(--text-main);
+    font-weight: 700;
+}
+
+.feedback-submit-status {
+    min-height: 1.25rem;
+    font-size: .9rem;
+}
+
+.feedback-success-state {
+    padding: 18px;
+}
+
 .hero-section {
     padding: 58px 0 58px;
     transition: padding .2s ease;
@@ -1608,6 +1665,11 @@ body {
 
     .nav-settings-btn {
         min-width: 76px;
+    }
+
+    .nav-feedback-btn {
+        width: 40px;
+        min-width: 40px;
     }
 
     .hero-section {

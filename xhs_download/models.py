@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+from uuid import uuid4
 
 from django.conf import settings
 from django.db import models
@@ -808,6 +810,82 @@ class ProviderHealthTestSetting(models.Model):
 
     def __str__(self):
         return "Provider 健康测试配置"
+
+
+class UserFeedbackStatus(models.TextChoices):
+    NEW = "new", "新反馈"
+    REVIEWED = "reviewed", "已查看"
+    RESOLVED = "resolved", "已解决"
+
+
+def user_feedback_image_upload_to(_instance, filename):
+    suffix = Path(str(filename or "")).suffix.lower()
+    if suffix == ".jpeg":
+        suffix = ".jpg"
+    if suffix not in {".jpg", ".png", ".webp"}:
+        suffix = ".img"
+    return f"user-feedback/{timezone.now():%Y/%m}/{uuid4().hex}{suffix}"
+
+
+class UserFeedback(models.Model):
+    message = models.TextField(max_length=1200, verbose_name="反馈内容")
+    contact = models.CharField(
+        max_length=256,
+        blank=True,
+        default="",
+        verbose_name="联系方式",
+    )
+    image = models.ImageField(
+        upload_to=user_feedback_image_upload_to,
+        blank=True,
+        max_length=255,
+        verbose_name="问题截图",
+    )
+    page_path = models.CharField(max_length=255, verbose_name="页面路径")
+    request_id = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        db_index=True,
+        verbose_name="关联请求 ID",
+    )
+    source_platform = models.CharField(
+        max_length=24,
+        blank=True,
+        default="",
+        db_index=True,
+        verbose_name="来源平台",
+    )
+    viewport_width = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name="视口宽度",
+    )
+    viewport_height = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name="视口高度",
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=UserFeedbackStatus.choices,
+        default=UserFeedbackStatus.NEW,
+        db_index=True,
+        verbose_name="处理状态",
+    )
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        db_index=True,
+        verbose_name="提交时间",
+    )
+
+    class Meta:
+        ordering = ("-created_at",)
+        verbose_name = "用户反馈"
+        verbose_name_plural = "用户反馈"
+
+    def __str__(self):
+        return f"{local_datetime_label(self.created_at)} 用户反馈"
 
 
 class ReleaseDeployJobStatus(models.TextChoices):

@@ -207,6 +207,19 @@ but no complete historical global-header implementation. The restoration moves
 only the trigger: preference storage, form fields, request payloads, runtime
 limits, and Provider behavior remain unchanged. It is not deployed.
 
+A further stacked development-only draft adds a lightweight public feedback
+workflow. Anonymous users provide a required problem description and may add one
+validated JPG, PNG, or WebP screenshot plus optional contact text. There is no
+category selector or user-editable request ID. URLs and explicit
+credential-like values are redacted before the message is stored, page queries
+are discarded, and the request ID is derived server-side. Screenshot names are
+randomized and the files are available only through a permission-checked Admin
+view; the broad production `/media/` boundary remains closed. The additive
+feedback table stores no IP address or full User-Agent. Django Admin exposes
+search, filters, and the `new` -> `reviewed` -> `resolved` status flow. This
+draft does not change parsing, Provider, download, or production runtime
+behavior and has not been deployed.
+
 Production topology at the accepted infrastructure audit:
 
 ```text
