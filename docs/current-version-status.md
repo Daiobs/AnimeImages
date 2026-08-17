@@ -200,6 +200,13 @@ The validated media capability fields required by the existing download
 contract remain unchanged. This presentation change has not been deployed to
 production.
 
+A stacked development-only draft places the existing Batch settings trigger in
+the same site-header action area used by Single pages. Git archaeology found
+the Batch modal lineage in PR #11 and the shared preference contract in PR #22,
+but no complete historical global-header implementation. The restoration moves
+only the trigger: preference storage, form fields, request payloads, runtime
+limits, and Provider behavior remain unchanged. It is not deployed.
+
 Production topology at the accepted infrastructure audit:
 
 ```text

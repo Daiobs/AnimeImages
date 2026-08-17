@@ -57,7 +57,8 @@
             </div>
         </div>
 
-        <div class="ms-auto">
+        <div class="ms-auto d-flex align-items-center gap-2 site-nav-actions">
+            {% block nav_leading_actions %}{% endblock %}
             {% block nav_actions %}{% endblock %}
         </div>
     </div>

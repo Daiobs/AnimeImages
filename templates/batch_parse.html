@@ -3,6 +3,14 @@
 
 {% block title %}批量解析 - 星空的高清下载小站{% endblock %}
 
+{% block nav_actions %}
+    <button type="button" class="btn btn-outline-secondary btn-sm nav-settings-btn"
+            data-bs-toggle="modal" data-bs-target="#batchSettingsModal">
+        <i class="bi bi-gear"></i>
+        设置
+    </button>
+{% endblock %}
+
 {% block content %}
 <section class="xhs-download-page theme-home batch-parse-page"
          data-batch-start-url="{% url 'batch_parse_start' %}"
@@ -52,13 +60,6 @@
                                 <span class="spinner-border spinner-border-sm me-1 batch-submit-spinner" aria-hidden="true"></span>
                                 <i class="bi bi-magic me-1 batch-submit-icon"></i>
                                 <span class="batch-submit-label">开始批量解析</span>
-                            </button>
-                            <button type="button"
-                                    class="btn btn-outline-secondary batch-settings-toggle"
-                                    data-bs-toggle="modal"
-                                    data-bs-target="#batchSettingsModal">
-                                <i class="bi bi-gear me-1"></i>
-                                设置
                             </button>
                             <span class="text-muted small">解析结果会逐条展示，失败链接不会影响其他链接。</span>
 
