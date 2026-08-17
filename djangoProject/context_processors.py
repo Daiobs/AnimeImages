@@ -5,6 +5,9 @@ from django.conf import settings
 
 
 STATIC_VERSION_FILES = (
+    "static/brand/favicon.svg",
+    "static/brand/favicon-32.png",
+    "static/brand/apple-touch-icon.png",
     "static/css/app.css",
     "static/js/app.js",
     "static/js/user_feedback.js",

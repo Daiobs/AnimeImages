@@ -25,6 +25,14 @@ from xhs_download import views as download_views
 from xhs_download import user_feedback_views
 
 urlpatterns = [
+                  path(
+                      "favicon.ico",
+                      RedirectView.as_view(
+                          url=f"/{settings.STATIC_URL.lstrip('/')}brand/favicon-32.png",
+                          permanent=True,
+                      ),
+                      name="favicon",
+                  ),
                   path("health/live/", health.liveness_view, name="health_live"),
                   path("health/ready/", health.readiness_view, name="health_ready"),
                   path(
