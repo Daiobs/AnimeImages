@@ -17,7 +17,22 @@
 {% block dark-mode-vars %}{% endblock %}
 
 {% block header %}
-    {% include "admin/sidebar_layout.html" %}
+    {% if user.is_authenticated and user.is_active and user.is_staff %}
+        {% include "admin/sidebar_layout.html" %}
+    {% else %}
+        <header id="header" class="admin-login-header">
+            <a href="{% url 'admin:index' %}" class="admin-login-brand" aria-label="Admin Console">
+                <span class="admin-sidebar-logo" aria-hidden="true">星</span>
+                <span class="admin-login-copy">
+                    <strong>星空的高清下载小站</strong>
+                    <small>Admin Console</small>
+                </span>
+            </a>
+            {% if site_url %}
+                <a href="{{ site_url }}" class="admin-login-front-link">返回前台</a>
+            {% endif %}
+        </header>
+    {% endif %}
 {% endblock %}
 
 {% block nav-sidebar %}

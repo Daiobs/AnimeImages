@@ -590,6 +590,18 @@ def provider_settings_admin_required(request):
     )
 
 
+def provider_settings_change_allowed(request):
+    user = getattr(request, "user", None)
+    return bool(
+        getattr(user, "is_active", False)
+        and getattr(user, "is_staff", False)
+        and (
+            getattr(user, "is_superuser", False)
+            or user.has_perm("xhs_download.change_providerruntimesetting")
+        )
+    )
+
+
 def policy_engine_view_allowed(request):
     return observability_access_allowed(
         request,
@@ -897,6 +909,8 @@ def provider_settings_view(request):
     valid_modes = {choice[0] for choice in ProviderAccessMode.choices}
     valid_kukutool_delivery_modes = {choice[0] for choice in KukuToolDownloadDeliveryMode.choices}
     if request.method == "POST":
+        if not provider_settings_change_allowed(request):
+            return JsonResponse({"detail": "Not found."}, status=404)
         before_snapshot = provider_runtime_snapshot(runtime_setting)
         for field_name in (
             "douyin_ultra_mode",
@@ -1004,6 +1018,7 @@ def provider_settings_view(request):
             "access_modes": ProviderAccessMode.choices,
             "provider_rows": rows,
             "provider_health": health,
+            "can_change_provider_settings": provider_settings_change_allowed(request),
             "third_party_platform_rules": [
                 rule.to_dict() for rule in THIRD_PARTY_PLATFORM_RULES
             ],
@@ -1061,7 +1076,7 @@ def provider_health_view(request):
 @require_POST
 @csrf_protect
 def provider_control_view(request):
-    if not request.user.is_active or not request.user.is_staff:
+    if not provider_settings_change_allowed(request):
         return JsonResponse({"detail": "Not found."}, status=404)
     try:
         payload = json.loads(request.body or "{}")
@@ -1074,8 +1089,19 @@ def provider_control_view(request):
             {"detail": "action must be enable or disable."},
             status=400,
         )
+    before_health = get_kukutool_provider_health()
     set_kukutool_admin_disabled(action == "disable")
     health = get_kukutool_provider_health()
+    record_provider_admin_audit_log(
+        request,
+        action="kukutool_runtime_control",
+        before_snapshot={
+            "kukutool_admin_disabled": bool(before_health.get("admin_disabled")),
+        },
+        after_snapshot={
+            "kukutool_admin_disabled": bool(health.get("admin_disabled")),
+        },
+    )
     third_party_health = KukutoolGenericProvider().health()
     tiantianjiexi_health = TianTianJieXiGenericProvider().health()
     gallerydl_health = GalleryDlGenericProvider().health()

@@ -305,6 +305,12 @@ Provider/CDN -> Browser Service Worker -> Browser Download Manager -> Disk
 
 ### Admin And Release
 
+- The repository state retires the public `/submissions/*` URL surface while
+  preserving the app, model, table, and migration history. This cleanup has
+  not been deployed by the current task.
+- Anonymous Django Admin login uses a minimal login shell. Authenticated active
+  staff retain the existing Admin shell, while Provider runtime mutations
+  require a superuser or the explicit Provider runtime change permission.
 - Batch Runtime Admin is a singleton direct-edit surface with stale-write
   protection, explicit public-expansion confirmation, and non-sensitive audit
   logging.

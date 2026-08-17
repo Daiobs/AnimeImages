@@ -306,6 +306,189 @@ body {
     white-space: nowrap;
 }
 
+body.login #header.admin-login-header {
+    position: static;
+    display: flex;
+    min-height: var(--admin-topbar-height);
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 18px 22px;
+    border-bottom: 1px solid var(--admin-shell-border);
+    background: #fff;
+    box-shadow: none;
+}
+
+.admin-login-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: var(--admin-shell-text) !important;
+    text-decoration: none;
+}
+
+.admin-login-copy {
+    display: block;
+    min-width: 0;
+}
+
+.admin-login-brand strong,
+.admin-login-brand small {
+    display: block;
+}
+
+.admin-login-brand strong {
+    font-size: 15px;
+    line-height: 1.3;
+}
+
+.admin-login-brand small {
+    margin-top: 2px;
+    color: var(--admin-shell-muted);
+    font-size: 11px;
+    font-weight: 800;
+}
+
+.admin-login-front-link {
+    color: #0f766e !important;
+    font-size: 12px;
+    font-weight: 900;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+body.login .main {
+    display: block;
+    flex: none;
+    margin-left: 0;
+    padding-top: 0;
+}
+
+body.login #content-start,
+body.login #content {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    box-sizing: border-box;
+    margin: 0;
+}
+
+body.login #content {
+    padding: 28px;
+}
+
+body.login #container {
+    width: min(calc(100vw - 32px), 440px);
+    min-width: 0;
+    min-height: 0;
+    height: auto;
+    margin: clamp(32px, 9vh, 88px) auto;
+    overflow: hidden;
+    border: 1px solid var(--admin-shell-border);
+    border-radius: 8px;
+    background: #fff;
+    box-shadow: 0 18px 48px rgba(15, 23, 42, .1);
+}
+
+body.login #content-main,
+body.login #login-form {
+    width: 100%;
+    min-width: 0;
+    margin: 0;
+    box-sizing: border-box;
+}
+
+body.login #content-main {
+    float: none;
+}
+
+.admin-login-intro {
+    margin-bottom: 24px;
+}
+
+body.login .admin-login-intro h1 {
+    margin: 0;
+    color: var(--admin-shell-text);
+    font-size: 22px;
+    font-weight: 900;
+    letter-spacing: 0;
+    line-height: 1.3;
+}
+
+body.login #content .admin-login-intro h1::after {
+    display: none;
+}
+
+.admin-login-intro p {
+    margin: 6px 0 0;
+    color: var(--admin-shell-muted);
+    font-size: 13px;
+    font-weight: 700;
+}
+
+body.login .form-row {
+    margin: 0 0 18px;
+    padding: 0;
+}
+
+body.login .form-row label {
+    display: block;
+    float: none;
+    width: auto;
+    margin: 0 0 7px;
+    color: var(--admin-shell-text);
+    font-size: 13px;
+    font-weight: 850;
+    line-height: 1.4;
+}
+
+body.login .form-row input[type="text"],
+body.login .form-row input[type="password"] {
+    width: 100%;
+    min-height: 44px;
+    padding: 9px 11px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    box-sizing: border-box;
+    background: #fff;
+    color: var(--admin-shell-text);
+}
+
+body.login .form-row input:focus {
+    border-color: #0f766e;
+    outline: 3px solid rgba(20, 184, 166, .16);
+}
+
+body.login .errornote {
+    margin: 0 0 18px;
+    border-radius: 6px;
+}
+
+body.login .password-reset-link {
+    margin-top: -4px;
+    text-align: right;
+}
+
+body.login br.clear {
+    display: none;
+}
+
+body.login .submit-row {
+    margin: 22px 0 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
+body.login .submit-row input {
+    width: 100%;
+    min-height: 44px;
+    border-radius: 6px;
+    font-weight: 900;
+}
+
 #header.admin-topbar #user-tools.admin-account-tools {
     width: auto;
     justify-content: flex-end;
@@ -537,6 +720,23 @@ body.dashboard .main {
     #content {
         padding-right: 14px;
         padding-left: 14px;
+    }
+
+    body.login #container {
+        margin-top: 24px;
+        margin-bottom: 24px;
+    }
+
+    body.login #header.admin-login-header {
+        padding: 16px;
+    }
+
+    body.login #content {
+        padding: 24px 20px;
+    }
+
+    .admin-login-front-link {
+        font-size: 11px;
     }
 }
 

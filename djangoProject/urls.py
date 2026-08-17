@@ -84,7 +84,6 @@ urlpatterns = [
                   path("admin/", admin.site.urls),
                   path("xhs_download/", RedirectView.as_view(url="/xhs/", permanent=False), name="legacy_xhs_redirect"),
                   path('xhs_download/', include('xhs_download.urls')),
-                  path('submissions/', include('submissions.urls')),
               ]
 
 if settings.DEBUG:

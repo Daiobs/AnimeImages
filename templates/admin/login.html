@@ -1,0 +1,64 @@
+{% extends "admin/base_site.html" %}
+{% load i18n static %}
+
+{% block title %}{% if form.errors %}登录失败 | {% endif %}管理后台登录 | 星空的高清下载小站{% endblock %}
+
+{% block extrastyle %}
+    {{ block.super }}
+    <link rel="stylesheet" href="{% static 'admin/css/login.css' %}">
+    {{ form.media }}
+{% endblock %}
+
+{% block bodyclass %}{{ block.super }} login{% endblock %}
+{% block usertools %}{% endblock %}
+{% block nav-global %}{% endblock %}
+{% block nav-sidebar %}{% endblock %}
+{% block content_title %}{% endblock %}
+{% block nav-breadcrumbs %}{% endblock %}
+
+{% block content %}
+<div id="content-main" class="admin-login-content">
+    <div class="admin-login-intro">
+        <h1>登录管理后台</h1>
+        <p>使用管理员账号继续。</p>
+    </div>
+
+    {% if form.errors and not form.non_field_errors %}
+        <p class="errornote">用户名或密码有误，请重新输入。</p>
+    {% endif %}
+
+    {% for error in form.non_field_errors %}
+        <p class="errornote">{{ error }}</p>
+    {% endfor %}
+
+    {% if user.is_authenticated %}
+        <p class="errornote">
+            当前账号 {{ username }} 没有访问权限，请使用其他管理员账号登录。
+        </p>
+    {% endif %}
+
+    <form action="{{ app_path }}" method="post" id="login-form">
+        {% csrf_token %}
+        <div class="form-row">
+            {{ form.username.errors }}
+            <label for="{{ form.username.id_for_label }}">用户名</label>
+            {{ form.username }}
+        </div>
+        <div class="form-row">
+            {{ form.password.errors }}
+            <label for="{{ form.password.id_for_label }}">密码</label>
+            {{ form.password }}
+            <input type="hidden" name="next" value="{{ next }}">
+        </div>
+        {% url 'admin_password_reset' as password_reset_url %}
+        {% if password_reset_url %}
+            <div class="password-reset-link">
+                <a href="{{ password_reset_url }}">忘记登录凭据？</a>
+            </div>
+        {% endif %}
+        <div class="submit-row">
+            <input type="submit" value="登录">
+        </div>
+    </form>
+</div>
+{% endblock %}
