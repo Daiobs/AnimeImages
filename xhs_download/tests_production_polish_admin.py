@@ -25,6 +25,7 @@ class ProductionPolishAdminShellTests(TestCase):
 
     def test_anonymous_admin_login_uses_minimal_shell(self):
         response = self.client.get("/admin/login/")
+        html = response.content.decode()
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "星空的高清下载小站")
@@ -34,6 +35,11 @@ class ProductionPolishAdminShellTests(TestCase):
         self.assertContains(response, '<label for="id_password">密码</label>')
         self.assertContains(response, 'value="登录"')
         self.assertContains(response, 'id="login-form"')
+        self.assertContains(response, '/static/css/admin_login.css')
+        self.assertLess(
+            html.index('/static/admin/css/login.css'),
+            html.index('/static/css/admin_login.css'),
+        )
         self.assertContains(response, "返回前台")
         self.assertNotContains(response, 'class="admin-sidebar"')
         self.assertNotContains(response, 'id="user-tools"')
