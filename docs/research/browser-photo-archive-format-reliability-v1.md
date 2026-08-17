@@ -1,20 +1,80 @@
 # Browser Photo Archive And Format Reliability v1
 
-Date: 2026-08-16
+Date: 2026-08-17
 
 ## Status
 
 ```text
-MAIN_CANDIDATE_NOT_YET_PRODUCTION_ACCEPTED
-Production SHA: 9ba5702e9a90b9179e21d53393d8e27c39c51833
-Production checkpoint: checkpoint/production-download-ui-batch-actions-v1
+PRODUCTION_ACCEPTED
+Production SHA: e70848c8b89225beba0838e9b681aaf5b7fdf789
+Production checkpoint: checkpoint/production-browser-photo-archive-v1
+Rollback checkpoint: checkpoint/production-download-ui-batch-actions-v1
 Migration: none
 ```
 
-Production remained frozen throughout this work. The candidate was developed
-from canonical `origin/main` at
+Production remained frozen throughout candidate development. The candidate was
+developed from canonical `origin/main` at
 `2d1a11a38787d787caa72ad3651756919ebf21e3`; no production host, runtime
 setting, infrastructure, database, or cache was accessed or changed.
+
+The merged candidate at `e70848c8...` was later exact-deployed and passed the
+production-origin Browser Acceptance described below. No redeploy, restart,
+collectstatic, Nginx reload, database change, runtime-setting change, or
+environment change was performed during the resumed Browser Acceptance.
+
+## Production Browser Acceptance
+
+The final Browser gate used isolated Playwright `1.62.1` with Chromium
+`149.0.7827.55` against the real `https://download.cosflow.icu/` origin. The
+Codex `@chrome` remote-HTTPS bridge remained unstable and the Codex in-app
+browser remained automation-blocked. Those were acceptance-tool failures, not
+AnimeImages application failures; the independent Playwright harness completed
+page control, DOM, network, CDP-assisted throttling, and filesystem artifact
+capture.
+
+Sample B (`6a0f05c9000000000803155e`, author `苍蓝ya`) returned five ordered
+resources from `ci.xiaohongshu.com`. Production-origin fetches were HTTP 200,
+`cors`, non-opaque, body-readable streams with exposed `Content-Length`.
+Upstream content types included `application/octet-stream` and `image/jpeg`;
+admission and saved extensions were determined from the supported raster file
+headers.
+
+The first Gallery image and the third-image Lightbox action each produced a
+real `.jpg` filesystem artifact with JPEG magic and a SHA-256 exactly matching
+the browser-fetched source bytes. Their download windows contained no
+`/media/download-images/`, `/media/download-tasks/`,
+`/media/download-prepare/`, `/media/download-stream/`, or
+`/media/download-status/` request and no proxy-image request.
+
+The default five-image action created one `3,491,103`-byte ZIP. Independent
+Python `zipfile` validation confirmed five unique UTF-8 entries in `_01`
+through `_05` order, method 0 (STORE), valid CRCs, correct JPEG extensions and
+magic, and exact source-byte SHA matches for all five entries. Its media
+requests came from `ci.xiaohongshu.com`; Provider calls, proxy-image calls, and
+AnimeImages media endpoint calls were all zero.
+
+With temporary client-only network throttling, 14 non-terminal UI snapshots
+showed real transfer growth from `16.1 KiB` through `2.80 MiB`, nonzero rolling
+speeds up to approximately `1 MiB/s`, item progress from `0 / 5` through
+`4 / 5`, known-total percentages from 54 through 99, and bounded ETA text from
+two seconds to one second. This was progress over actual CDN bytes, not a
+synthetic timer.
+
+The production Gallery rendered all five items on desktop and a 390px mobile
+viewport with contained intrinsic ratios. Card previews used the 960 variant;
+the 1600 Lightbox variant loaded only after opening. Index `3 / 5`, Next, Prev,
+Escape, and current-image download passed without losing Gallery state. The
+anonymous public surface exposed Gallery, per-image download, download-all,
+and copy-all for all five resources while omitting `links.txt`, `aria2.txt`,
+raw-link actions, and strategy diagnostics.
+
+Production Single parsed the same five-image work, selected two images, and
+created one valid two-entry STORE ZIP with zero AnimeImages media endpoint
+requests. Staff permissions, explicit server fallback, dynamic replacement,
+server format reliability, and ordinary-video zero-relay behavior were reused
+from focused controlled gates; they are not mislabeled as new Production
+browser executions. The ordinary-video Service Worker/static identity had
+already passed the candidate deployment integrity gate.
 
 ## Rollback Finding
 

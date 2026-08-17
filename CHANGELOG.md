@@ -10,14 +10,23 @@
   concurrency 3, a 50 MiB item cap, and a 128 MiB archive cap. Successful pure
   image downloads make zero AnimeImages media requests; server ZIP is an
   explicit compatibility action rather than a silent fallback.
+- Production-accepted the Browser Photo Archive at exact SHA
+  `e70848c8b89225beba0838e9b681aaf5b7fdf789` with immutable checkpoint
+  `checkpoint/production-browser-photo-archive-v1`. Production-origin
+  Playwright verified XHS CORS, real filesystem filenames, exact single-photo
+  bytes, a valid five-entry STORE ZIP with 5/5 source hashes, real transfer
+  progress, Gallery/Lightbox behavior, public boundaries, and zero AnimeImages
+  photo-media endpoint requests. The XHS original-variant fidelity backlog
+  remains open.
 - Fixed server image archives and saves so suffixless generic binary responses
   use bounded magic before MIME or path suffix, metadata conflicts prefer the
   bytes, unknown content never becomes `.jpg`, partial failures use
   `failed.txt`, and sync/async artifact sizes and formats remain consistent.
   The full PR #44 Gallery and Lightbox UX is retained, but its first production
-  acceptance was rolled back because the download contract was blocked. This
-  replacement candidate has not been deployed, adds no migration, and leaves
-  Provider and ordinary-video Service Worker Streaming behavior unchanged.
+  acceptance was rolled back because the download contract was blocked. The
+  replacement was subsequently deployed and accepted, adds no migration, and
+  leaves Provider and ordinary-video Service Worker Streaming behavior
+  unchanged.
 - Removed the redundant global active-download panel from Single and Batch
   product pages while retaining Service Worker state, Browser Download Manager
   cancellation, refresh continuation, and card-local progress. Allowed public
