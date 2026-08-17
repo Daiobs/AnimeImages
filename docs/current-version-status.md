@@ -192,6 +192,14 @@ public-download behavior, PR #28 Batch Runtime Admin clarity, and PR #42
 Download UI and mixed-media Batch actions, plus PR #44 Gallery/Lightbox and
 PR #45 browser-first photo archive and format reliability behavior.
 
+A development-only Production Polish draft now separates public presentation
+from staff diagnostics across Single and Batch result surfaces. Public users
+see user-level Chinese status, retry, and download messages; active staff keep
+Provider names, internal status, latency, strategy, and routing diagnostics.
+The validated media capability fields required by the existing download
+contract remain unchanged. This presentation change has not been deployed to
+production.
+
 Production topology at the accepted infrastructure audit:
 
 ```text

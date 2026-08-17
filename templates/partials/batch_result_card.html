@@ -3,10 +3,10 @@
          data-platform="{{ row.platform|default:'' }}"
          data-platform-name="{{ row.platform_name|default:'' }}"
          data-post-type="{{ row.post_type|default:'' }}"
-         data-duration-ms="{{ row.duration_ms|default:0 }}"
+         data-duration-ms="{% if show_internal_diagnostics %}{{ row.duration_ms|default:0 }}{% else %}0{% endif %}"
          data-video-count="{{ row.video_items|length }}"
          data-image-count="{{ row.image_items|length }}"
-         data-provider-label="{% if row.provider_label %}{{ row.provider_label }}{% elif row.selected_provider %}{{ row.selected_provider }}{% endif %}">
+         data-provider-label="{% if show_internal_diagnostics %}{% if row.provider_label %}{{ row.provider_label }}{% elif row.selected_provider %}{{ row.selected_provider }}{% endif %}{% endif %}">
     {% if row.status == "failed" or row.status == "timeout" or row.status == "skipped" %}
         <div class="batch-result-main">
             <div class="batch-result-info">
@@ -18,19 +18,31 @@
                         <div class="batch-result-source">{{ row.source_text }}</div>
                     </div>
                     <div class="batch-status-pill batch-status-{{ row.status }}">
-                        {{ row.status }}
-                        {% if row.duration_ms %}· {{ row.duration_ms }}ms{% endif %}
+                        {% if show_internal_diagnostics %}
+                            {{ row.status }}
+                            {% if row.duration_ms %}· {{ row.duration_ms }}ms{% endif %}
+                        {% elif row.status == "skipped" %}
+                            已跳过
+                        {% elif row.status == "timeout" %}
+                            解析超时
+                        {% else %}
+                            解析失败
+                        {% endif %}
                     </div>
                 </div>
                 <div class="alert {% if row.status == 'failed' %}alert-danger{% else %}alert-warning{% endif %} mb-3"
                      data-batch-row-message>
                     <i class="bi bi-exclamation-triangle me-1"></i>
-                    {{ row.error_message|default:"解析执行失败" }}
+                    {% if show_internal_diagnostics %}
+                        {{ row.error_message|default:"解析执行失败" }}
+                    {% else %}
+                        {{ row.public_error_message|default:"解析执行失败，请检查链接后重试。" }}
+                    {% endif %}
                 </div>
                 <div class="batch-result-actions">
                     <button type="button"
                             class="btn btn-outline-secondary btn-sm batch-copy-btn"
-                            data-copy-text="{{ row.error_message|default:'解析执行失败' }}">
+                            data-copy-text="{% if show_internal_diagnostics %}{{ row.error_message|default:'解析执行失败' }}{% else %}{{ row.public_error_message|default:'解析执行失败，请检查链接后重试。' }}{% endif %}">
                         复制错误
                     </button>
                     <button type="button"
@@ -56,20 +68,32 @@
                         <div class="batch-result-source">{{ row.source_text }}</div>
                     </div>
                     <div class="batch-status-pill batch-status-{{ row.status }}">
-                        {{ row.status }}
-                        {% if row.duration_ms %}· {{ row.duration_ms }}ms{% endif %}
+                        {% if show_internal_diagnostics %}
+                            {{ row.status }}
+                            {% if row.duration_ms %}· {{ row.duration_ms }}ms{% endif %}
+                        {% else %}
+                            解析成功
+                        {% endif %}
                     </div>
                 </div>
 
                 <div class="batch-meta-row">
                     <span>{{ row.platform_name }}</span>
                     {% if row.display_author %}<span>作者 {{ row.display_author }}</span>{% endif %}
-                    {% if row.provider_label %}
-                        <span>Provider {{ row.provider_label }}</span>
-                    {% elif row.selected_provider %}
-                        <span>Provider {{ row.selected_provider }}</span>
+                    {% if show_internal_diagnostics %}
+                        {% if row.provider_label %}
+                            <span>Provider {{ row.provider_label }}</span>
+                        {% elif row.selected_provider %}
+                            <span>Provider {{ row.selected_provider }}</span>
+                        {% endif %}
+                        <span>{{ row.post_type }}</span>
+                    {% elif row.video_items and row.image_items %}
+                        <span>图片与视频</span>
+                    {% elif row.video_items %}
+                        <span>视频</span>
+                    {% elif row.image_items %}
+                        <span>图片</span>
                     {% endif %}
-                    <span>{{ row.post_type }}</span>
                     {% if row.video_items %}<span>视频 {{ row.video_items|length }}</span>{% endif %}
                     {% if row.image_items %}<span>图片 {{ row.image_items|length }}</span>{% endif %}
                 </div>
@@ -136,7 +160,7 @@
                                     <div class="batch-photo-meta">
                                         <div>
                                             <strong>图片 {{ forloop.counter }}</strong>
-                                            {% if item.strategy_label or item.download_strategy %}
+                                            {% if show_internal_diagnostics and item.strategy_label or show_internal_diagnostics and item.download_strategy %}
                                                 <small>{{ item.strategy_label|default:item.download_strategy }}</small>
                                             {% endif %}
                                         </div>
@@ -203,7 +227,7 @@
                                     class="btn btn-outline-secondary btn-sm"
                                     data-batch-photo-server-fallback
                                     hidden>
-                                使用服务器打包
+                                {% if show_internal_diagnostics %}使用服务器打包{% else %}换一种方式打包{% endif %}
                             </button>
                         </div>
                     </section>

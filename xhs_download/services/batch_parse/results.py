@@ -20,6 +20,7 @@ BATCH_SKIPPED_MESSAGE = "等待执行时批次处理窗口已结束，本条未�
 BATCH_ITEM_TIMEOUT_MESSAGE = "本条解析超过单条时间限制。"
 BATCH_PROVIDER_TIMEOUT_MESSAGE = "上游解析服务响应超时，请稍后重试。"
 BATCH_RESPONSE_TIMEOUT_MESSAGE = "本条解析超过批次最大响应时间。"
+BATCH_PUBLIC_FAILURE_MESSAGE = "解析执行失败，请检查链接后重试。"
 BATCH_PROVIDER_STAGES = frozenset(
     {"resolve", "tiantianjiexi", "native", "display_context", "completed", "unknown"}
 )
@@ -146,11 +147,13 @@ def split_batch_links(value, max_links=None):
 
 def build_batch_skipped_row(source_text, reason, started_at=None):
     started_at = started_at or time.monotonic()
+    safe_reason = sanitize_observability_text(reason)
     return {
         "status": "skipped",
         "source_text": source_text,
         "duration_ms": int((time.monotonic() - started_at) * 1000),
-        "error_message": sanitize_observability_text(reason),
+        "error_message": safe_reason,
+        "public_error_message": safe_reason,
     }
 
 
@@ -158,15 +161,23 @@ def build_batch_timeout_row(source_text, reason, started_at=None, duration_ms=No
     started_at = started_at or time.monotonic()
     if duration_ms is None:
         duration_ms = int((time.monotonic() - started_at) * 1000)
+    safe_reason = sanitize_observability_text(reason)
     return {
         "status": "timeout",
         "source_text": source_text,
         "duration_ms": max(0, int(duration_ms or 0)),
-        "error_message": sanitize_observability_text(reason),
+        "error_message": safe_reason,
+        "public_error_message": safe_reason,
     }
 
 
-def build_batch_failed_row(source_text, reason, started_at=None, duration_ms=None):
+def build_batch_failed_row(
+    source_text,
+    reason,
+    started_at=None,
+    duration_ms=None,
+    public_reason=BATCH_PUBLIC_FAILURE_MESSAGE,
+):
     started_at = started_at or time.monotonic()
     if duration_ms is None:
         duration_ms = int((time.monotonic() - started_at) * 1000)
@@ -175,6 +186,7 @@ def build_batch_failed_row(source_text, reason, started_at=None, duration_ms=Non
         "source_text": source_text,
         "duration_ms": max(0, int(duration_ms or 0)),
         "error_message": sanitize_observability_text(reason),
+        "public_error_message": sanitize_observability_text(public_reason),
     }
 
 

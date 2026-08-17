@@ -2257,7 +2257,7 @@ class BatchParseViewTests(TestCase):
 
     @override_settings(BATCH_PARSE_PUBLIC_ENABLED=True)
     @patch("xhs_download.views.parse_media_page")
-    def test_batch_public_mode_sanitizes_error_and_hides_strategy_matrix(self, mock_parse):
+    def test_batch_public_mode_hides_error_diagnostics_and_strategy_matrix(self, mock_parse):
         mock_parse.side_effect = RuntimeError(
             "failed https://v5-default.365yg.com/a.mp4?token=secret&signature=bad"
         )
@@ -2268,7 +2268,8 @@ class BatchParseViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "[url-redacted]")
+        self.assertContains(response, "解析执行失败，请检查链接后重试。")
+        self.assertNotContains(response, "[url-redacted]")
         self.assertNotContains(response, "token=secret")
         self.assertNotContains(response, "signature=bad")
         self.assertNotContains(response, "高级说明：下载策略矩阵")

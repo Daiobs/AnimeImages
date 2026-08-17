@@ -649,7 +649,7 @@ body {
     height: 100%;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
     padding: 36px 26px;
     border: 1px solid var(--line-soft);
     border-radius: 8px;
@@ -678,29 +678,29 @@ body {
     font-size: 1.75rem;
 }
 
-.feature-section .col-sm-6:nth-child(1) .feature-icon {
+.feature-section .feature-item:nth-child(1) .feature-icon {
     color: #db2777;
 }
 
-.feature-section .col-sm-6:nth-child(2) .feature-icon {
+.feature-section .feature-item:nth-child(2) .feature-icon {
     color: #2563eb;
 }
 
-.feature-section .col-sm-6:nth-child(3) .feature-icon {
+.feature-section .feature-item:nth-child(3) .feature-icon {
     color: #9333ea;
 }
 
-.feature-section .col-sm-6:nth-child(4) .feature-icon {
-    color: #16a34a;
-}
-
-.theme-xhs .feature-section .col-sm-6 .feature-icon,
-.theme-tiktok .feature-section .col-sm-6 .feature-icon,
-.theme-bilibili .feature-section .col-sm-6 .feature-icon {
+.theme-xhs .feature-section .feature-item .feature-icon,
+.theme-tiktok .feature-section .feature-item .feature-icon,
+.theme-bilibili .feature-section .feature-item .feature-icon {
     color: var(--brand);
 }
 
 .feature-card h3 {
+    display: flex;
+    min-height: 52px;
+    align-items: center;
+    justify-content: center;
     margin: 0 0 14px;
     color: var(--text-main);
     font-size: 1.2rem;

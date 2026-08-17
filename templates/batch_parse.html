@@ -10,7 +10,8 @@
          data-batch-retry-url="{% url 'batch_parse_retry' %}"
          data-batch-download-url="{{ download_url }}"
          data-batch-download-task-url="{{ download_task_url }}"
-         data-batch-download-async-enabled="{{ download_async_tasks_enabled|yesno:'true,false' }}">
+         data-batch-download-async-enabled="{{ download_async_tasks_enabled|yesno:'true,false' }}"
+         data-show-internal-diagnostics="{{ show_internal_diagnostics|yesno:'true,false' }}">
     <div class="container-fluid px-4 px-md-5">
         <div class="alert alert-warning ordinary-download-interruption"
              data-ordinary-download-interruption
@@ -88,7 +89,11 @@
                                                     >
                                                     <label class="form-check-label" for="batch-ultra-hd-setting">
                                                         <strong>抖音原画/超清</strong>
-                                                        <small>批量模式优先使用天天解析，未命中时回退本地解析。</small>
+                                                        {% if show_internal_diagnostics %}
+                                                            <small>批量模式优先使用天天解析，未命中时回退本地解析。</small>
+                                                        {% else %}
+                                                            <small>开启后优先获取原画或超高清资源，未获取到时返回可用清晰度。</small>
+                                                        {% endif %}
                                                     </label>
                                                 </div>
                                                 <div class="form-check batch-option">
@@ -105,7 +110,7 @@
                                                     >
                                                     <label class="form-check-label" for="batch-youtube-merge-setting">
                                                         <strong>YouTube 最高画质合并</strong>
-                                                        <small>开启后会优先获取高画质音视频并在服务端合并，耗时可能更长。</small>
+                                                        <small>开启后会优先获取高画质音视频并自动合并，耗时可能更长。</small>
                                                     </label>
                                                 </div>
                                             </div>
@@ -137,16 +142,21 @@
                         </summary>
                         <div class="batch-limit-row">
                             <span>本次最多链接数：{{ max_links }}</span>
-                            <span>每条执行预算：{{ batch_per_link_timeout_seconds }} 秒</span>
-                            <span>配置调度窗口：{{ batch_total_timeout_seconds }} 秒</span>
-                            <span>逐条启动窗口：{{ batch_progressive_scheduling_timeout_seconds }} 秒</span>
-                            <span>并发解析数：{{ batch_parallel_workers }}</span>
-                            <span>预计波次：{{ batch_budget.wave_count }}</span>
-                            <span>理论完整耗时：{{ batch_budget.theoretical_full_duration_seconds }} 秒</span>
-                            <span>按上限可启动：{{ batch_budget.fully_schedulable_capacity }} 条</span>
-                            <span>调度窗内可完成：{{ batch_budget.fully_completable_capacity }} 条</span>
-                            <span>逐条模式最长：{{ batch_progressive_max_duration_seconds }} 秒</span>
-                            <span>同步回退响应上限：{{ batch_budget.max_response_timeout_seconds }} 秒</span>
+                            {% if show_internal_diagnostics %}
+                                <span>每条执行预算：{{ batch_per_link_timeout_seconds }} 秒</span>
+                                <span>配置调度窗口：{{ batch_total_timeout_seconds }} 秒</span>
+                                <span>逐条启动窗口：{{ batch_progressive_scheduling_timeout_seconds }} 秒</span>
+                                <span>并发解析数：{{ batch_parallel_workers }}</span>
+                                <span>预计波次：{{ batch_budget.wave_count }}</span>
+                                <span>理论完整耗时：{{ batch_budget.theoretical_full_duration_seconds }} 秒</span>
+                                <span>按上限可启动：{{ batch_budget.fully_schedulable_capacity }} 条</span>
+                                <span>调度窗内可完成：{{ batch_budget.fully_completable_capacity }} 条</span>
+                                <span>逐条模式最长：{{ batch_progressive_max_duration_seconds }} 秒</span>
+                                <span>同步回退响应上限：{{ batch_budget.max_response_timeout_seconds }} 秒</span>
+                            {% else %}
+                                <span>单条处理最长：{{ batch_per_link_timeout_seconds }} 秒</span>
+                                <span>整批响应最长：{{ batch_budget.max_response_timeout_seconds }} 秒</span>
+                            {% endif %}
                         </div>
                     </details>
                 </div>
@@ -161,7 +171,7 @@
                         <h2 class="batch-section-title mb-1">解析结果</h2>
                         <div class="batch-summary"
                              data-batch-summary
-                             data-batch-wall-duration-ms="{{ batch_summary.batch_wall_duration_ms }}">
+                             data-batch-wall-duration-ms="{% if show_internal_diagnostics %}{{ batch_summary.batch_wall_duration_ms }}{% else %}0{% endif %}">
                             <span class="batch-summary-chip" data-batch-summary-key="total_count">总链接 {{ batch_summary.total_count }}</span>
                             <span class="batch-summary-chip text-success" data-batch-summary-key="success_count">成功 {{ batch_summary.success_count }}</span>
                             <span class="batch-summary-chip text-danger" data-batch-summary-key="failed_count">失败 {{ batch_summary.failed_count }}</span>
@@ -169,13 +179,15 @@
                             <span class="batch-summary-chip" data-batch-summary-key="skipped_count">跳过 {{ batch_summary.skipped_count }}</span>
                             <span class="batch-summary-chip" data-batch-summary-key="video_count">视频 {{ batch_summary.video_count }}</span>
                             <span class="batch-summary-chip" data-batch-summary-key="image_count">图片 {{ batch_summary.image_count }}</span>
-                            <span class="batch-summary-chip" data-batch-summary-key="total_duration_ms">行耗时合计 {{ batch_summary.total_duration_ms }}ms</span>
-                            <span class="batch-summary-chip" data-batch-summary-key="batch_wall_duration_ms">批次墙钟耗时 {{ batch_summary.batch_wall_duration_ms }}ms</span>
-                            <span data-batch-provider-summary>
-                                {% for provider, count in batch_summary.provider_counts.items %}
-                                    <span class="batch-summary-chip">{{ provider }} {{ count }}</span>
-                                {% endfor %}
-                            </span>
+                            {% if show_internal_diagnostics %}
+                                <span class="batch-summary-chip" data-batch-summary-key="total_duration_ms">行耗时合计 {{ batch_summary.total_duration_ms }}ms</span>
+                                <span class="batch-summary-chip" data-batch-summary-key="batch_wall_duration_ms">批次墙钟耗时 {{ batch_summary.batch_wall_duration_ms }}ms</span>
+                                <span data-batch-provider-summary>
+                                    {% for provider, count in batch_summary.provider_counts.items %}
+                                        <span class="batch-summary-chip">{{ provider }} {{ count }}</span>
+                                    {% endfor %}
+                                </span>
+                            {% endif %}
                         </div>
                     </div>
                     {% if batch_download_allowed or batch_raw_links_allowed %}

@@ -294,6 +294,10 @@
         const douyinContinuationUrl = page.dataset.douyinContinuationUrl;
         const downloadTaskUrl = page.dataset.downloadTaskUrl;
         const downloadAsyncEnabled = page.dataset.downloadAsyncEnabled === "true";
+        const showInternalDiagnostics = page.dataset.showInternalDiagnostics === "true";
+        const presentationText = (publicText, diagnosticText) => (
+            showInternalDiagnostics ? diagnosticText : publicText
+        );
         if (resultUrlSafetyApi && searchForm) {
             resultUrlSafetyApi.scrubServerRenderedResultUrl({
                 locationObject: window.location,
@@ -994,9 +998,13 @@
             if (!resultsRegion) {
                 return;
             }
-            const progressText = attempt && maxPolls
-                ? `自动续查 ${attempt}/${maxPolls}`
-                : "正在等待已启动的解析完成";
+            const progressText = showInternalDiagnostics
+                ? (
+                    attempt && maxPolls
+                        ? `自动续查 ${attempt}/${maxPolls}`
+                        : "正在等待已启动的解析完成"
+                )
+                : "正在获取高清资源";
             resultsRegion.innerHTML = `
                 <div class="parse-loading-card">
                     <div class="spinner-border" role="status" aria-hidden="true"></div>
@@ -1504,9 +1512,12 @@
 
             const filenames = await downloadDirectRouteItems(directItems);
             setProgress(100);
+            const completionLabel = showInternalDiagnostics
+                ? (routeData.route_reason || "已开始保存")
+                : "已开始保存";
             setStatus(
                 getStatusElement(),
-                `${routeData.route_reason || "已开始保存"}：${filenames.join("、")}${routeWarningText(routeData.warnings)}`,
+                `${completionLabel}：${filenames.join("、")}${routeWarningText(routeData.warnings)}`,
                 "text-success",
             );
         }
@@ -1631,7 +1642,10 @@
                     payload.download_mode = "zip";
                     payload.archive_profile = "batch_images";
                     clearPhotoServerFallback();
-                    setStatus(getStatusElement(), "服务器正在准备图片 ZIP...");
+                    setStatus(
+                        getStatusElement(),
+                        presentationText("正在准备图片 ZIP...", "服务器正在准备图片 ZIP..."),
+                    );
                 }
 
                 if (
@@ -1644,7 +1658,10 @@
                         setStatus(
                             getStatusElement(),
                             pendingPhotoServerFallback
-                                ? "浏览器图片下载组件不可用，可明确选择“使用服务器打包”。"
+                                ? presentationText(
+                                    "图片下载组件不可用，可选择“换一种方式打包”。",
+                                    "浏览器图片下载组件不可用，可明确选择“使用服务器打包”。"
+                                )
                                 : "浏览器图片下载组件不可用，请刷新页面后重试。",
                             "text-danger",
                         );
@@ -1689,7 +1706,7 @@
 
                 const requiresProviderProcessing = selectedRequiresProviderProcessing(selected);
                 const pendingLabel = requiresProviderProcessing
-                    ? "服务端处理"
+                    ? presentationText("准备文件", "服务端处理")
                     : (
                         payload.download_mode === "auto"
                             ? "判断中"
@@ -1697,13 +1714,24 @@
                     );
                 setProgressPending(pendingLabel);
                 if (requiresProviderProcessing) {
-                    setStatus(getStatusElement(), "Provider 资源正在服务端校验、恢复或合并，完成后会开始传输...");
+                    setStatus(
+                        getStatusElement(),
+                        showInternalDiagnostics
+                            ? "Provider 资源正在服务端校验、恢复或合并，完成后会开始传输..."
+                            : "正在准备所需文件，完成后会开始下载...",
+                    );
                 } else if (!selectedSingleItem(selected)) {
                     setStatus(
                         getStatusElement(),
                         forceServerPhotoArchive
-                            ? "服务器正在打包 ZIP，文件开始传输后会显示接收进度..."
-                            : "服务器正在生成所需文件，完成后会显示接收进度...",
+                            ? presentationText(
+                                "正在打包 ZIP，文件开始传输后会显示接收进度...",
+                                "服务器正在打包 ZIP，文件开始传输后会显示接收进度..."
+                            )
+                            : presentationText(
+                                "正在生成所需文件，完成后会显示接收进度...",
+                                "服务器正在生成所需文件，完成后会显示接收进度..."
+                            ),
                     );
                 }
                 const response = await postDownloadPayload(payload);
@@ -1724,7 +1752,7 @@
                         setProgress(100);
                         setStatus(
                             getStatusElement(),
-                            `${data.route_reason || "已生成代理下载建议"}${routeWarningText(data.warnings)}`,
+                            `${showInternalDiagnostics ? (data.route_reason || "已生成代理下载建议") : "下载已准备"}${routeWarningText(data.warnings)}`,
                             "text-muted",
                         );
                         return;
@@ -1736,7 +1764,13 @@
                     }
                     setStatus(
                         getStatusElement(),
-                        data.message || data.route_reason || "下载请求未返回可保存的文件，请刷新页面后重试。",
+                        data.message
+                        || (
+                            showInternalDiagnostics
+                                ? data.route_reason
+                                : "下载请求未返回可保存的文件，请刷新页面后重试。"
+                        )
+                        || "下载请求未返回可保存的文件，请刷新页面后重试。",
                         "text-danger",
                     );
                     return;
@@ -1747,7 +1781,10 @@
                 } else {
                     setProgressPending("下载中");
                 }
-                setStatus(getStatusElement(), "服务器处理完成，正在下载文件...");
+                setStatus(
+                    getStatusElement(),
+                    presentationText("文件准备完成，正在下载...", "服务器处理完成，正在下载文件..."),
+                );
                 const result = await saveDownloadResponse(response, getBaseFilename(), 0, 100);
                 setStatus(getStatusElement(), serverDownloadStatusMessage(result), result.variant);
             } catch (error) {

@@ -141,6 +141,7 @@ def build_batch_parse_context(
         "batch_staff_only": not batch_parse_access_allowed(request),
         "batch_download_allowed": batch_parse_access_allowed(request),
         "batch_raw_links_allowed": batch_parse_user_is_staff(request),
+        "show_internal_diagnostics": batch_parse_user_is_staff(request),
         "prefer_ultra_hd": prefer_ultra_hd,
         "batch_ultra_hd_checked": requested_ultra_hd and ultra_hd_available,
         "prefer_youtube_merge": prefer_youtube_merge,

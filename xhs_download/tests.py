@@ -5724,7 +5724,8 @@ class XhsDownloadViewTests(TestCase):
         self.assertTrue(payload["has_results"])
         self.assertIn("result-card", payload["html"])
         self.assertIn("TikTok", payload["html"])
-        self.assertIn("yt-dlp", payload["html"])
+        self.assertIn("本次已解析到可用资源", payload["html"])
+        self.assertNotIn("yt-dlp", payload["html"])
         self.assertIn('data-provider="yt_dlp_generic"', payload["html"])
         mock_kukutool_parse.assert_called_once()
         mock_ytdlp_parse.assert_called_once()
@@ -5768,7 +5769,8 @@ class XhsDownloadViewTests(TestCase):
         self.assertTrue(payload["has_results"])
         self.assertIn("result-card", payload["html"])
         self.assertIn("Flickr", payload["html"])
-        self.assertIn("gallery-dl", payload["html"])
+        self.assertIn("本次已解析到可用资源", payload["html"])
+        self.assertNotIn("gallery-dl", payload["html"])
         self.assertIn('data-provider="gallery_dl_generic"', payload["html"])
         self.assertIn("provider_manifest_token", payload["html"])
         mock_gallerydl_parse.assert_called_once()
@@ -5965,7 +5967,8 @@ class XhsDownloadViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "快手")
-        self.assertContains(response, "KuKuTool 第三方解析")
+        self.assertContains(response, "本次已解析到可用资源")
+        self.assertNotContains(response, "KuKuTool 第三方解析")
         self.assertNotContains(response, ">third_party<")
 
     @override_settings(
@@ -6011,7 +6014,8 @@ class XhsDownloadViewTests(TestCase):
             prefer_ultra_hd=True,
             client_country_code="CN",
         )
-        self.assertContains(response, "yt-dlp 高清合并")
+        self.assertContains(response, "已获取可用高清资源")
+        self.assertNotContains(response, "yt-dlp 高清合并")
         self.assertNotContains(response, "超高清 Provider 目前仅用于抖音视频")
 
     @override_settings(
@@ -6266,8 +6270,8 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "第三方解析正在后台处理中")
-        self.assertNotContains(response, "解析失败：第三方解析正在后台处理中")
+        self.assertContains(response, "上游解析响应超时，请稍后重试。")
+        self.assertNotContains(response, "第三方解析正在后台处理中")
         mock_parse.assert_called_once()
 
     @patch(
@@ -6317,7 +6321,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(parse_options["client_country_code"], "CN")
         controller = parse_options["ultra_attempt_controller"]
         self.assertEqual(controller.limit, 10)
-        self.assertContains(response, "本次未命中超高清上游，已自动回退本地解析。")
+        self.assertContains(response, "本次未获取到超高清资源，已返回可用清晰度。")
         self.assertContains(response, 'id="ultra-hd-request-input"')
         self.assertContains(response, 'value="1"')
 
@@ -6350,9 +6354,8 @@ class XhsDownloadViewTests(TestCase):
         response = Client().get("/results/", {"q": "https://www.douyin.com/video/123", "ultra_hd": "1"})
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "超高清上游仍在后台解析，本次先回退本地解析")
-        self.assertContains(response, "稍后重新解析此链接可能命中原画 / 超高清资源")
-        self.assertNotContains(response, "本次未命中超高清上游，已自动回退本地解析。")
+        self.assertContains(response, "已先返回可用清晰度，超高清资源仍在处理中，稍后可重试。")
+        self.assertNotContains(response, "超高清上游仍在后台解析")
 
     @override_settings(
         ULTRA_HD_PROVIDER_ENABLED=False,
@@ -6368,7 +6371,8 @@ class XhsDownloadViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'id="ultra-hd-setting"')
-        self.assertContains(response, "当前环境未启用抖音超高清上游")
+        self.assertContains(response, "当前无法使用抖音原画 / 超高清解析")
+        self.assertNotContains(response, "超高清上游")
         mock_health.assert_not_called()
 
     @override_settings(
@@ -6385,7 +6389,8 @@ class XhsDownloadViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'id="ultra-hd-setting"')
-        self.assertContains(response, "当前环境未启用抖音超高清上游")
+        self.assertContains(response, "当前无法使用抖音原画 / 超高清解析")
+        self.assertNotContains(response, "超高清上游")
         mock_health.assert_not_called()
 
     @override_settings(
@@ -6406,19 +6411,22 @@ class XhsDownloadViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         mock_parse.assert_called_once_with("https://www.douyin.com/video/123", prefer_ultra_hd=False)
-        self.assertContains(response, "feature-card", count=4)
+        self.assertContains(response, "feature-card", count=3)
         self.assertContains(response, "无需登录解析去水印，支持视频、图片、批量无水印保存")
         self.assertContains(response, 'placeholder="请将复制的链接粘贴到这里"')
         self.assertContains(response, "paste-link-icon-btn")
         self.assertContains(response, 'id="ultra-hd-request-input"')
         self.assertContains(response, 'id="ultra-hd-setting"')
         self.assertContains(response, "解析质量")
-        self.assertContains(response, "默认关闭，关闭时只使用本地解析")
+        self.assertContains(response, "默认关闭；开启后仅对抖音视频尝试原画 / 超高清")
+        self.assertNotContains(response, "超高清 Provider")
         self.assertNotContains(response, "hero-provider-row")
         self.assertContains(response, "无需登录/注册")
         self.assertContains(response, "打开页面即可解析链接，无使用限制。")
         self.assertContains(response, "原始文件保存")
         self.assertContains(response, "去除水印，保持原始画质。")
+        self.assertContains(response, "图片视频支持")
+        self.assertNotContains(response, "批量打包下载")
         self.assertContains(response, 'action="/results/"')
         self.assertContains(response, 'href="/xhs/"')
         self.assertContains(response, "小红书")
@@ -6584,7 +6592,10 @@ class XhsDownloadViewTests(TestCase):
 
         self.assertEqual(status_code, 200)
         self.assertFalse(context["prefer_youtube_merge"])
-        self.assertEqual(context["provider_notice"], "本次使用 yt-dlp 高清合并；默认优先 1080p，下载时将在服务端合并音频和视频。")
+        self.assertEqual(
+            context["provider_notice"],
+            "已获取可用高清资源；下载时将合并音频和视频。",
+        )
         mock_parse.assert_called_once_with(
             "https://www.youtube.com/watch?v=demo",
             prefer_ultra_hd=False,
@@ -6811,7 +6822,8 @@ class XhsDownloadViewTests(TestCase):
             "https://www.douyin.com/video/123",
             prefer_ultra_hd=False,
         )
-        self.assertContains(response, "当前环境未向访客开放超高清 Provider")
+        self.assertContains(response, "当前环境未开放超高清解析，本次使用标准解析。")
+        self.assertNotContains(response, "超高清 Provider")
 
     @override_settings(
         ULTRA_HD_PROVIDER_ENABLED=True,
@@ -6846,7 +6858,8 @@ class XhsDownloadViewTests(TestCase):
             "https://www.douyin.com/video/123",
             prefer_ultra_hd=False,
         )
-        self.assertContains(response, "当前环境未向访客开放超高清 Provider")
+        self.assertContains(response, "当前环境未开放超高清解析，本次使用标准解析。")
+        self.assertNotContains(response, "超高清 Provider")
 
     @override_settings(DOWNLOAD_ASYNC_TASKS_ENABLED=False)
     def test_page_omits_async_task_url_when_tasks_are_disabled(self):
@@ -6949,7 +6962,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(payload["has_results"])
         self.assertTrue(payload["has_content"])
-        self.assertIn("解析失败：没有解析到图片或视频", payload["message"])
+        self.assertEqual(payload["message"], "解析失败，请检查链接后重试。")
         self.assertIn("alert-danger", payload["html"])
 
     @patch("xhs_download.views.parse_media_page")
