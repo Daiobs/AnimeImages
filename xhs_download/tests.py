@@ -10667,14 +10667,18 @@ class ProviderControlViewTests(TestCase):
         from django.contrib.auth import get_user_model
 
         cache.clear()
-        self.user = get_user_model().objects.create_user(
-            username="provider-admin",
+        self.staff = get_user_model().objects.create_user(
+            username="provider-staff",
             password="test-password",
             is_staff=True,
         )
+        self.user = get_user_model().objects.create_superuser(
+            username="provider-admin",
+            password="test-password",
+        )
         self.client.force_login(self.user)
 
-    def test_staff_can_disable_and_enable_kukutool(self):
+    def test_superuser_can_disable_and_enable_kukutool(self):
         disabled = self.client.post(
             "/admin/provider-health/control/",
             data=json.dumps({"action": "disable"}),
@@ -10694,6 +10698,26 @@ class ProviderControlViewTests(TestCase):
         self.assertFalse(enabled.json()["admin_disabled"])
         self.assertIn("third_party_summary", disabled.json())
         self.assertIn("third_party_summary", enabled.json())
+        self.assertEqual(
+            list(
+                ProviderAdminAuditLog.objects.values_list("action", flat=True)
+            ),
+            ["kukutool_runtime_control", "kukutool_runtime_control"],
+        )
+
+    def test_unprivileged_staff_cannot_control_kukutool(self):
+        client = Client()
+        client.force_login(self.staff)
+
+        response = client.post(
+            "/admin/provider-health/control/",
+            data=json.dumps({"action": "disable"}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(self.client.get("/admin/provider-health/").json()["admin_disabled"])
+        self.assertFalse(ProviderAdminAuditLog.objects.exists())
 
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=False,
@@ -10902,6 +10926,16 @@ class ProviderSettingsAdminViewTests(TestCase):
         )
         self.client.force_login(self.user)
 
+    def grant_change_permission(self):
+        permission = Permission.objects.get(
+            content_type__app_label="xhs_download",
+            codename="change_providerruntimesetting",
+        )
+        self.user.user_permissions.add(permission)
+        for cache_name in ("_perm_cache", "_user_perm_cache", "_group_perm_cache"):
+            if hasattr(self.user, cache_name):
+                delattr(self.user, cache_name)
+
     def test_provider_settings_requires_staff_user(self):
         response = Client().get("/admin/provider-settings/")
 
@@ -10939,7 +10973,19 @@ class ProviderSettingsAdminViewTests(TestCase):
         self.assertContains(response, "抖音超高清")
         self.assertNotContains(response, "问题：not configured")
 
-    def test_staff_can_update_provider_access_modes(self):
+    def test_staff_needs_explicit_permission_to_update_provider_access_modes(self):
+        blocked = self.client.post(
+            "/admin/provider-settings/",
+            data={"douyin_ultra_mode": ProviderAccessMode.PUBLIC},
+        )
+
+        self.assertEqual(blocked.status_code, 404)
+        self.assertEqual(
+            ProviderRuntimeSetting.load().douyin_ultra_mode,
+            ProviderAccessMode.DISABLED,
+        )
+
+        self.grant_change_permission()
         response = self.client.post(
             "/admin/provider-settings/",
             data={
@@ -13372,6 +13418,10 @@ class AdminObservabilityMvpTests(TestCase):
         self.assertEqual(log.error_code, "PROVIDER_MANIFEST_REJECTED")
 
     def test_provider_settings_update_writes_audit_log(self):
+        self.grant_xhs_view_permission(
+            self.staff,
+            "change_providerruntimesetting",
+        )
         client = Client()
         client.force_login(self.staff)
 

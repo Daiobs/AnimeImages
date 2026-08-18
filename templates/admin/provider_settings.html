@@ -227,6 +227,25 @@
         gap: 16px;
     }
 
+    .provider-form-fields {
+        display: grid;
+        min-width: 0;
+        gap: 16px;
+        margin: 0;
+        padding: 0;
+        border: 0;
+    }
+
+    .provider-readonly-notice {
+        padding: 12px 14px;
+        border: 1px solid var(--provider-line);
+        border-radius: 8px;
+        background: #f9fafb;
+        color: var(--provider-muted);
+        font-size: 13px;
+        font-weight: 800;
+    }
+
     .provider-card-grid {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -600,6 +619,12 @@
         <form method="post" class="provider-form">
             {% csrf_token %}
 
+            {% if not can_change_provider_settings %}
+                <div class="provider-readonly-notice">当前账号可以查看 Provider 状态，但没有修改运行配置的权限。</div>
+            {% endif %}
+
+            <fieldset class="provider-form-fields"{% if not can_change_provider_settings %} disabled{% endif %}>
+
             <div class="provider-card-grid">
                 {% for row in provider_rows %}
                     <article class="provider-card" data-provider-id="{{ row.id }}">
@@ -844,9 +869,13 @@
                 </label>
             </section>
 
-            <div class="provider-actions">
-                <button type="submit" class="provider-btn provider-btn-primary">保存 Provider 设置</button>
-            </div>
+            </fieldset>
+
+            {% if can_change_provider_settings %}
+                <div class="provider-actions">
+                    <button type="submit" class="provider-btn provider-btn-primary">保存 Provider 设置</button>
+                </div>
+            {% endif %}
         </form>
     </div>
 </div>
