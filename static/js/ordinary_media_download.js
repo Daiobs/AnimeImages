@@ -651,7 +651,7 @@
             return "文件较大，当前浏览器暂时无法直接保存，请重新解析后再试。";
         }
         if (errorCode === "BROWSER_DOWNLOAD_UNSUPPORTED_CONTENT") {
-            return "上游没有返回可保存的视频文件，请重新解析后再试。";
+            return "没有获取到可保存的视频文件，请重新解析后再试。";
         }
         if (errorCode === "BROWSER_DOWNLOAD_STALLED") {
             return "资源连接长时间没有进展，请重试下载；若仍失败，请重新解析。";
@@ -1003,7 +1003,7 @@
             clearActiveProtection(true);
             throw downloadError(
                 "BROWSER_FETCH_HTTP_ERROR",
-                "上游资源请求失败。",
+                "资源请求失败。",
             );
         }
 
@@ -1017,7 +1017,7 @@
             clearActiveProtection(true);
             throw downloadError(
                 "BROWSER_DOWNLOAD_UNSUPPORTED_CONTENT",
-                "上游没有返回视频文件。",
+                "没有获取到视频文件。",
             );
         }
 
@@ -1067,7 +1067,7 @@
             clearActiveProtection(true);
             throw downloadError(
                 "BROWSER_DOWNLOAD_EMPTY",
-                "上游返回了空文件。",
+                "获取到的文件为空。",
             );
         }
         if (receivedBytes > maxBytes) {

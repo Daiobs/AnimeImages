@@ -1295,11 +1295,20 @@
             const prepared = await prepareServerSingleDownload(payload);
             const statusUrl = sameOriginHandoffPath(prepared.statusUrl);
             setProgressPending("连接下载");
-            setStatus(getStatusElement(), "下载通道已签发，正在连接上游资源...");
+            setStatus(
+                getStatusElement(),
+                presentationText(
+                    "正在连接资源...",
+                    "下载通道已签发，正在连接上游资源...",
+                ),
+            );
             handoffPreparedDownload(prepared);
             setStatus(
                 getStatusElement(),
-                "下载请求已交给浏览器，服务器正在建立资源连接...",
+                presentationText(
+                    "下载请求已交给浏览器，正在建立资源连接...",
+                    "下载请求已交给浏览器，服务器正在建立资源连接...",
+                ),
                 "text-muted",
             );
             const statusResult = downloadReliabilityApi

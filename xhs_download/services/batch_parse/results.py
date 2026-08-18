@@ -19,6 +19,7 @@ BATCH_DOUYIN_PROVIDER_ORDER = ("tiantianjiexi", "native")
 BATCH_SKIPPED_MESSAGE = "等待执行时批次处理窗口已结束，本条未启动。"
 BATCH_ITEM_TIMEOUT_MESSAGE = "本条解析超过单条时间限制。"
 BATCH_PROVIDER_TIMEOUT_MESSAGE = "上游解析服务响应超时，请稍后重试。"
+BATCH_PUBLIC_PROVIDER_TIMEOUT_MESSAGE = "解析服务响应超时，请稍后重试。"
 BATCH_RESPONSE_TIMEOUT_MESSAGE = "本条解析超过批次最大响应时间。"
 BATCH_PUBLIC_FAILURE_MESSAGE = "解析执行失败，请检查链接后重试。"
 BATCH_PROVIDER_STAGES = frozenset(
@@ -157,7 +158,13 @@ def build_batch_skipped_row(source_text, reason, started_at=None):
     }
 
 
-def build_batch_timeout_row(source_text, reason, started_at=None, duration_ms=None):
+def build_batch_timeout_row(
+    source_text,
+    reason,
+    started_at=None,
+    duration_ms=None,
+    public_reason=None,
+):
     started_at = started_at or time.monotonic()
     if duration_ms is None:
         duration_ms = int((time.monotonic() - started_at) * 1000)
@@ -167,7 +174,9 @@ def build_batch_timeout_row(source_text, reason, started_at=None, duration_ms=No
         "source_text": source_text,
         "duration_ms": max(0, int(duration_ms or 0)),
         "error_message": safe_reason,
-        "public_error_message": safe_reason,
+        "public_error_message": sanitize_observability_text(
+            public_reason if public_reason is not None else reason
+        ),
     }
 
 
@@ -356,12 +365,14 @@ def build_batch_result_row(
             source_text,
             BATCH_PROVIDER_TIMEOUT_MESSAGE,
             started_at,
+            public_reason=BATCH_PUBLIC_PROVIDER_TIMEOUT_MESSAGE,
         )
     except requests.Timeout:
         return build_batch_timeout_row(
             source_text,
             BATCH_PROVIDER_TIMEOUT_MESSAGE,
             started_at,
+            public_reason=BATCH_PUBLIC_PROVIDER_TIMEOUT_MESSAGE,
         )
     except XhsError as error:
         return build_batch_failed_row(

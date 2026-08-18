@@ -72,7 +72,7 @@ test("prepare failures map stable error codes to safe user messages", () => {
     assert.equal(failed.errorCode, "UPSTREAM_SSL_ERROR");
     assert.equal(
         failed.message,
-        "上游资源连接异常，请稍后重试。",
+        "资源连接异常，请稍后重试。",
     );
 });
 
@@ -172,7 +172,7 @@ test("failed and expired statuses terminate polling with safe messages", async (
     });
 
     assert.equal(failed.status, "failed");
-    assert.equal(failed.message, "上游资源连接异常，请稍后重试。");
+    assert.equal(failed.message, "资源连接异常，请稍后重试。");
     assert.equal(expired.status, "expired");
     assert.equal(expired.message, "下载链接已过期，请重新点击下载。");
 });

@@ -25,7 +25,7 @@
                     <div class="text-center">
                         <h1 class="hero-title">批量解析</h1>
                         <p class="hero-subtitle">
-                            一行一个链接，逐条解析并保留每条素材的独立状态。
+                            一行一个链接，一次最多 {{ max_links }} 条；逐条解析并保留每条素材的独立状态。
                         </p>
                     </div>
 
@@ -135,14 +135,14 @@
                         </div>
                     </form>
 
-                    <details class="batch-limits-details">
-                        <summary>
-                            <i class="bi bi-clock-history me-1" aria-hidden="true"></i>
-                            批量处理限制
-                        </summary>
-                        <div class="batch-limit-row">
-                            <span>本次最多链接数：{{ max_links }}</span>
-                            {% if show_internal_diagnostics %}
+                    {% if show_internal_diagnostics %}
+                        <details class="batch-limits-details">
+                            <summary>
+                                <i class="bi bi-clock-history me-1" aria-hidden="true"></i>
+                                批量处理限制
+                            </summary>
+                            <div class="batch-limit-row">
+                                <span>本次最多链接数：{{ max_links }}</span>
                                 <span>每条执行预算：{{ batch_per_link_timeout_seconds }} 秒</span>
                                 <span>配置调度窗口：{{ batch_total_timeout_seconds }} 秒</span>
                                 <span>逐条启动窗口：{{ batch_progressive_scheduling_timeout_seconds }} 秒</span>
@@ -153,12 +153,9 @@
                                 <span>调度窗内可完成：{{ batch_budget.fully_completable_capacity }} 条</span>
                                 <span>逐条模式最长：{{ batch_progressive_max_duration_seconds }} 秒</span>
                                 <span>同步回退响应上限：{{ batch_budget.max_response_timeout_seconds }} 秒</span>
-                            {% else %}
-                                <span>单条处理最长：{{ batch_per_link_timeout_seconds }} 秒</span>
-                                <span>整批响应最长：{{ batch_budget.max_response_timeout_seconds }} 秒</span>
-                            {% endif %}
-                        </div>
-                    </details>
+                            </div>
+                        </details>
+                    {% endif %}
                 </div>
             </div>
         </div>

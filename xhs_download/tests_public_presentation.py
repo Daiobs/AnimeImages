@@ -335,13 +335,53 @@ class PublicPresentationBoundaryTests(TestCase):
             render_to_string("batch_parse.html", staff_context, request=staff_request)
         )
 
-        for hidden_label in ("天天解析", "本地解析", "并发解析数", "预计波次", "理论完整耗时"):
+        for hidden_label in (
+            "天天解析",
+            "本地解析",
+            "批量处理限制",
+            "单条处理最长",
+            "整批响应最长",
+            "并发解析数",
+            "预计波次",
+            "理论完整耗时",
+        ):
             self.assertNotIn(hidden_label, public_text)
-        self.assertIn("单条处理最长", public_text)
-        self.assertIn("整批响应最长", public_text)
+        self.assertIn("一次最多 20 条", public_text)
+        self.assertNotIn("batch-limits-details", render_to_string(
+            "batch_parse.html",
+            public_context,
+            request=public_request,
+        ))
         self.assertIn("天天解析", staff_text)
+        self.assertIn("批量处理限制", staff_text)
         self.assertIn("并发解析数", staff_text)
         self.assertIn("42ms", staff_text)
+
+    def test_public_batch_provider_timeout_hides_upstream_implementation(self):
+        from xhs_download.services.batch_parse.results import (
+            BATCH_PROVIDER_TIMEOUT_MESSAGE,
+            BATCH_PUBLIC_PROVIDER_TIMEOUT_MESSAGE,
+            build_batch_timeout_row,
+        )
+
+        row = build_batch_timeout_row(
+            "https://example.com/source",
+            BATCH_PROVIDER_TIMEOUT_MESSAGE,
+            duration_ms=42,
+            public_reason=BATCH_PUBLIC_PROVIDER_TIMEOUT_MESSAGE,
+        )
+        public_html = render_to_string(
+            "partials/batch_result_card.html",
+            {"row": row, "show_internal_diagnostics": False},
+        )
+        staff_html = render_to_string(
+            "partials/batch_result_card.html",
+            {"row": row, "show_internal_diagnostics": True},
+        )
+
+        self.assertIn("解析服务响应超时", visible_text(public_html))
+        self.assertNotIn("上游", visible_text(public_html))
+        self.assertIn("上游解析服务响应超时", visible_text(staff_html))
 
     def test_single_settings_keep_product_claims_without_public_provider_copy(self):
         public_request, public_context = self.single_context(staff=False)

@@ -1730,7 +1730,7 @@ class DownloadHandoffTests(SimpleTestCase):
         self.assertEqual(failed["error_code"], "UPSTREAM_SSL_ERROR")
         self.assertEqual(
             failed["message"],
-            "上游资源连接异常，请稍后重试。",
+            "资源连接异常，请稍后重试。",
         )
         self.assertTrue(failed["stream_started"])
 

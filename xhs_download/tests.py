@@ -6110,7 +6110,7 @@ class XhsDownloadViewTests(TestCase):
 
         self.assertEqual(response.status_code, 403)
         mock_parse.assert_not_called()
-        self.assertContains(response, "第三方通用解析暂未开放", status_code=403)
+        self.assertContains(response, "该链接暂未开放解析", status_code=403)
 
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,
@@ -6134,7 +6134,7 @@ class XhsDownloadViewTests(TestCase):
         context, status_code = build_search_results_context(request, "home")
 
         self.assertEqual(status_code, 403)
-        self.assertEqual(context["error_message"], "第三方通用解析暂未向该用户开放。")
+        self.assertEqual(context["error_message"], "该链接暂未向当前用户开放。")
         self.assertFalse(third_party_provider_is_available(request))
         mock_parse.assert_not_called()
 
@@ -6245,7 +6245,7 @@ class XhsDownloadViewTests(TestCase):
 
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 429)
-        self.assertContains(second, "第三方解析当前排队请求较多", status_code=429)
+        self.assertContains(second, "当前解析请求较多", status_code=429)
         self.assertIn("Retry-After", second)
         self.assertEqual(mock_parse.call_count, 1)
 
@@ -6270,7 +6270,7 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "上游解析响应超时，请稍后重试。")
+        self.assertContains(response, "解析响应超时，请稍后重试。")
         self.assertNotContains(response, "第三方解析正在后台处理中")
         mock_parse.assert_called_once()
 

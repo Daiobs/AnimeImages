@@ -4306,7 +4306,7 @@ def apply_search_result_to_context(
         )
         set_result_provider_notice(
             context,
-            "本次已解析到可用资源，资源可用性取决于上游平台。",
+            "本次已解析到可用资源，资源可用性取决于原始页面。",
             (
                 f"本次由 {provider_label} 第三方解析，"
                 "资源可用性取决于上游平台。"
@@ -4446,7 +4446,7 @@ def build_search_results_context(request, platform_key="home"):
                 ProviderAccessMode.STAFF,
                 ProviderAccessMode.PUBLIC_GRAY,
             }:
-                context["error_message"] = "第三方通用解析暂未向该用户开放。"
+                context["error_message"] = "该链接暂未向当前用户开放。"
                 log_parse_request_event(
                     request,
                     "media_parse_blocked",
@@ -4463,7 +4463,7 @@ def build_search_results_context(request, platform_key="home"):
                     error_message_short=context["error_message"],
                 )
                 return context, 403
-            context["error_message"] = "第三方通用解析暂未开放。"
+            context["error_message"] = "该链接暂未开放解析。"
             log_parse_request_event(
                 request,
                 "media_parse_blocked",
@@ -4482,7 +4482,11 @@ def build_search_results_context(request, platform_key="home"):
             return context, 403
         third_party_gate = third_party_public_access_summary(query, request)
         if not third_party_gate["allowed"]:
-            context["error_message"] = third_party_gate["message"]
+            context["error_message"] = (
+                third_party_gate["message"]
+                if context.get("show_internal_diagnostics")
+                else "该链接当前无法解析。"
+            )
             if context.get("show_internal_diagnostics"):
                 context["provider_notice"] = third_party_gate.get("error_code", "")
             log_parse_request_event(
@@ -4510,7 +4514,7 @@ def build_search_results_context(request, platform_key="home"):
             )
         except Exception:
             logger.exception("Third-party provider rate-limit cache failed")
-            context["error_message"] = "第三方解析保护服务暂时不可用，请稍后再试。"
+            context["error_message"] = "解析保护服务暂时不可用，请稍后再试。"
             log_parse_request_event(
                 request,
                 "media_parse_failed",
@@ -4528,7 +4532,7 @@ def build_search_results_context(request, platform_key="home"):
             )
             return context, 503
         if not limit.allowed:
-            context["error_message"] = "第三方解析请求过于频繁，请稍后再试。"
+            context["error_message"] = "解析请求过于频繁，请稍后再试。"
             context["retry_after"] = limit.retry_after
             log_parse_request_event(
                 request,
@@ -4555,7 +4559,7 @@ def build_search_results_context(request, platform_key="home"):
             )
         except Exception:
             logger.exception("Third-party provider global rate-limit cache failed")
-            context["error_message"] = "第三方解析保护服务暂时不可用，请稍后再试。"
+            context["error_message"] = "解析保护服务暂时不可用，请稍后再试。"
             log_parse_request_event(
                 request,
                 "media_parse_failed",
@@ -4573,7 +4577,7 @@ def build_search_results_context(request, platform_key="home"):
             )
             return context, 503
         if not global_limit.allowed:
-            context["error_message"] = "第三方解析当前排队请求较多，请稍后再试。"
+            context["error_message"] = "当前解析请求较多，请稍后再试。"
             context["retry_after"] = global_limit.retry_after
             log_parse_request_event(
                 request,
@@ -4745,7 +4749,7 @@ def build_search_results_context(request, platform_key="home"):
     except XhsProviderTimeoutError as error:
         set_result_error_message(
             context,
-            "上游解析响应超时，请稍后重试。",
+            "解析响应超时，请稍后重试。",
             str(error),
         )
         log_parse_request_event(
@@ -4852,7 +4856,7 @@ def render_results_partial_response(request, context, status_code=200):
             )
             or DOUYIN_CONTINUATION_TTL_SECONDS,
             message=context.get("provider_notice")
-            or "超高清资源仍在处理中，正在自动续查。",
+            or "超高清资源仍在处理中，请稍候。",
         )
     response = JsonResponse(response_payload, status=status_code)
     if context.get("retry_after"):
