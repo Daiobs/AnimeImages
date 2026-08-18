@@ -11,8 +11,8 @@
         DOWNLOAD_HANDOFF_EXPIRED: "下载链接已过期，请重新点击下载。",
         PROXY_FAILED_RECOVERY_BLOCKED: "资源连接失败，自动恢复未成功，请重新解析后再试。",
         RATE_LIMIT_CACHE_ERROR: "下载状态服务暂时不可用，请稍后再试。",
-        UPSTREAM_SSL_ERROR: "上游资源连接异常，请稍后重试。",
-        UPSTREAM_CONNECTION_ERROR: "上游资源暂时无法连接，请稍后重试。",
+        UPSTREAM_SSL_ERROR: "资源连接异常，请稍后重试。",
+        UPSTREAM_CONNECTION_ERROR: "资源暂时无法连接，请稍后重试。",
         TIANTIANJIEXI_REFRESH_TIMEOUT: "资源刷新超时，请重新解析后再试。",
         TIANTIANJIEXI_REFRESH_FAILED: "资源已失效，自动刷新失败，请重新解析。",
         TIANTIANJIEXI_RESOURCE_EXPIRED: "资源已失效，请重新解析后再试。",
@@ -28,7 +28,7 @@
         "expired",
     ]);
     const DOWNLOAD_STATUS_POLL_TIMEOUT_MESSAGE =
-        "下载请求已交给浏览器，服务器仍在连接资源；"
+        "下载请求已交给浏览器，资源仍在连接；"
         + "请查看浏览器下载栏，若未开始可重新尝试。";
     const DEFAULT_STATUS_POLL_INTERVAL_MS = 500;
     const MAX_STATUS_POLL_INTERVAL_MS = 1000;

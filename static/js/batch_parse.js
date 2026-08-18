@@ -12,6 +12,21 @@
     const BATCH_SYNC_ARCHIVE_MAX_BYTES = 128 * 1024 * 1024;
     const batchPhotoControllers = new WeakMap();
 
+    function showBatchInternalDiagnostics(node) {
+        const page = node && typeof node.closest === "function"
+            ? node.closest(".batch-parse-page")
+            : (
+                typeof document !== "undefined"
+                    ? document.querySelector(".batch-parse-page")
+                    : null
+            );
+        return Boolean(page && page.dataset.showInternalDiagnostics === "true");
+    }
+
+    function batchPresentationText(node, publicText, diagnosticText) {
+        return showBatchInternalDiagnostics(node) ? diagnosticText : publicText;
+    }
+
     function buildEnabledPreferencePatch(ultraInput, youtubeInput) {
         const patch = {};
         if (ultraInput && !ultraInput.disabled) {
@@ -679,8 +694,12 @@
             setBatchPhotoArchiveState(section, "loading", {
                 progress,
                 progressLabel: contentLength
-                    ? `正在接收服务器 ZIP ${Math.round(progress)}%`
-                    : "正在接收服务器 ZIP...",
+                    ? batchPresentationText(
+                        section,
+                        `正在接收 ZIP ${Math.round(progress)}%`,
+                        `正在接收服务器 ZIP ${Math.round(progress)}%`
+                    )
+                    : batchPresentationText(section, "正在接收 ZIP...", "正在接收服务器 ZIP..."),
                 bytesLabel: contentLength
                     ? `${formatBatchArchiveBytes(received)} / ${formatBatchArchiveBytes(contentLength)}`
                     : `已接收 ${formatBatchArchiveBytes(received)}`,
@@ -690,7 +709,7 @@
                 etaLabel: etaSeconds && browserPhotoApi
                     ? browserPhotoApi.formatEta(etaSeconds)
                     : "",
-                buttonLabel: "服务器 ZIP 下载中...",
+                buttonLabel: batchPresentationText(section, "ZIP 下载中...", "服务器 ZIP 下载中..."),
                 allowCancel: false,
             });
         }
@@ -743,8 +762,12 @@
         }
         setBatchPhotoArchiveState(section, "loading", {
             progress: 2,
-            progressLabel: "服务器正在准备图片 ZIP...",
-            buttonLabel: "服务器正在打包...",
+            progressLabel: batchPresentationText(
+                section,
+                "正在准备图片 ZIP...",
+                "服务器正在准备图片 ZIP..."
+            ),
+            buttonLabel: batchPresentationText(section, "正在打包...", "服务器正在打包..."),
             allowCancel: false,
         });
         try {
@@ -782,7 +805,11 @@
         }
         if (!browserPhotoApi) {
             setBatchPhotoArchiveState(section, "error", {
-                message: "浏览器图片下载组件不可用，可明确选择“使用服务器打包”。",
+                message: batchPresentationText(
+                    section,
+                    "图片下载组件不可用，可选择“换一种方式打包”。",
+                    "浏览器图片下载组件不可用，可明确选择“使用服务器打包”。"
+                ),
                 showFallback: true,
             });
             return;
@@ -819,7 +846,11 @@
                 return;
             }
             setBatchPhotoArchiveState(section, "error", {
-                message: `${browserPhotoApi.safeErrorMessage(error)} 可明确选择“使用服务器打包”。`,
+                message: `${browserPhotoApi.safeErrorMessage(error)} ${batchPresentationText(
+                    section,
+                    "可选择“换一种方式打包”。",
+                    "可明确选择“使用服务器打包”。"
+                )}`,
                 showFallback: true,
             });
         } finally {

@@ -70,7 +70,11 @@
                 </div>
 
                 <div class="download-action-help small text-muted">
-                    普通图片由浏览器获取；纯多图由浏览器打包 ZIP。需合并或生成的新文件仍由服务器处理。
+                    {% if show_internal_diagnostics %}
+                        普通图片由浏览器获取；纯多图由浏览器打包 ZIP。需合并或生成的新文件仍由服务器处理。
+                    {% else %}
+                        图片、视频和多资源会按素材类型自动选择合适的保存方式。
+                    {% endif %}
                 </div>
             </div>
         </div>
@@ -140,7 +144,7 @@
 
                             <div class="position-absolute bottom-0 start-0 end-0 p-2 bg-dark bg-opacity-50 text-white small">
                                 视频资源 · {{ item.size_display_label|default:item.size_label|default:"大小未知" }}
-                                {% if item.strategy_label %}
+                                {% if show_internal_diagnostics and item.strategy_label %}
                                     · {{ item.strategy_label }}
                                 {% endif %}
                             </div>
@@ -219,7 +223,7 @@
                         class="btn btn-outline-secondary btn-sm"
                         data-photo-server-fallback
                         hidden>
-                    使用服务器打包
+                    {% if show_internal_diagnostics %}使用服务器打包{% else %}换一种方式打包{% endif %}
                 </button>
             </div>
             <div id="status" class="small text-muted">

@@ -1730,7 +1730,7 @@ class DownloadHandoffTests(SimpleTestCase):
         self.assertEqual(failed["error_code"], "UPSTREAM_SSL_ERROR")
         self.assertEqual(
             failed["message"],
-            "上游资源连接异常，请稍后重试。",
+            "资源连接异常，请稍后重试。",
         )
         self.assertTrue(failed["stream_started"])
 
@@ -3105,8 +3105,16 @@ class TianTianJieXiRecoveryTests(SimpleTestCase):
 
         self.assertEqual(ssl_contract["error_code"], "UPSTREAM_SSL_ERROR")
         self.assertEqual(
+            ssl_contract["message"],
+            "资源连接异常，请稍后重试。",
+        )
+        self.assertEqual(
             connection_contract["error_code"],
             "UPSTREAM_CONNECTION_ERROR",
+        )
+        self.assertEqual(
+            connection_contract["message"],
+            "资源暂时无法连接，请稍后重试。",
         )
         self.assertEqual(
             expired_contract["error_code"],
@@ -3374,7 +3382,8 @@ class DouyinContinuationViewTests(TestCase):
         self.assertTrue(body["has_results"])
         self.assertIn("asset-card", body["html"])
         self.assertTrue(body["continuation_token"])
-        self.assertIn("超高清资源仍在后台解析", body["message"])
+        self.assertIn("超高清资源仍在处理中", body["message"])
+        self.assertNotIn("后台解析", body["message"])
 
     @patch("xhs_download.views.probe_media_size")
     @patch("xhs_download.views.parse_media_page")
@@ -3404,7 +3413,8 @@ class DouyinContinuationViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         html = response.json()["html"]
         self.assertIn("大小未知", html)
-        self.assertIn("本次先回退本地解析", html)
+        self.assertIn("已先返回可用清晰度，超高清资源仍在处理中", html)
+        self.assertNotIn("本次先回退本地解析", html)
         self.assertNotIn("本次由 KuKuTool 返回", html)
         mock_probe_size.assert_not_called()
 

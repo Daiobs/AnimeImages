@@ -4208,6 +4208,9 @@ def server_save_mode_is_enabled():
 
 def get_download_settings_context(platform_key="home", request=None):
     page_config = get_platform_page_config(platform_key)
+    show_internal_diagnostics = bool(
+        request is not None and batch_parse_user_is_staff(request)
+    )
     return {
         "platform_key": platform_key,
         "theme_class": f"theme-{page_config['theme']}",
@@ -4241,7 +4244,24 @@ def get_download_settings_context(platform_key="home", request=None):
         "youtube_merge_mode_available": (
             youtube_merge_mode_is_available(request) if request is not None else False
         ),
+        "show_internal_diagnostics": show_internal_diagnostics,
     }
+
+
+def set_result_provider_notice(context, public_message, diagnostic_message=None):
+    context["provider_notice"] = (
+        diagnostic_message
+        if context.get("show_internal_diagnostics") and diagnostic_message is not None
+        else public_message
+    )
+
+
+def set_result_error_message(context, public_message, diagnostic_message=None):
+    context["error_message"] = (
+        diagnostic_message
+        if context.get("show_internal_diagnostics") and diagnostic_message is not None
+        else public_message
+    )
 
 
 def apply_search_result_to_context(
@@ -4284,19 +4304,31 @@ def apply_search_result_to_context(
         provider_label = (
             result_metadata.get("provider_label") or "第三方 Provider"
         )
-        context["provider_notice"] = (
-            f"本次由 {provider_label} 第三方解析，"
-            "资源可用性取决于上游平台。"
+        set_result_provider_notice(
+            context,
+            "本次已解析到可用资源，资源可用性取决于原始页面。",
+            (
+                f"本次由 {provider_label} 第三方解析，"
+                "资源可用性取决于上游平台。"
+            ),
         )
         if result_metadata.get("selected_provider") == "youtube_merge":
-            context["provider_notice"] = (
-                "本次使用 YouTube 最高画质任务；下载时将在服务端"
-                "合并音频和视频，文件可能更大。"
+            set_result_provider_notice(
+                context,
+                "已获取最高可用画质；下载时将合并音频和视频，文件可能更大。",
+                (
+                    "本次使用 YouTube 最高画质任务；下载时将在服务端"
+                    "合并音频和视频，文件可能更大。"
+                ),
             )
         elif result_metadata.get("selected_provider") == "yt_dlp_merge":
-            context["provider_notice"] = (
-                "本次使用 yt-dlp 高清合并；默认优先 1080p，"
-                "下载时将在服务端合并音频和视频。"
+            set_result_provider_notice(
+                context,
+                "已获取可用高清资源；下载时将合并音频和视频。",
+                (
+                    "本次使用 yt-dlp 高清合并；默认优先 1080p，"
+                    "下载时将在服务端合并音频和视频。"
+                ),
             )
     if prefer_ultra_hd and result.platform == "douyin":
         context["ultra_retry_after_seconds"] = max(
@@ -4316,23 +4348,40 @@ def apply_search_result_to_context(
             "mobile_share": "本地解析",
         }.get(ultra_provider, "")
         if ultra_provider_label in {"天天解析", "KuKuTool"}:
-            context["provider_notice"] = (
-                f"本次由 {ultra_provider_label} 返回抖音原画 / "
-                "超高清资源；若上游不可用会自动回退本地解析。"
+            set_result_provider_notice(
+                context,
+                "已获取抖音原画 / 超高清资源。",
+                (
+                    f"本次由 {ultra_provider_label} 返回抖音原画 / "
+                    "超高清资源；若上游不可用会自动回退本地解析。"
+                ),
             )
         elif result_metadata.get("kukutool_background_refresh"):
-            context["provider_notice"] = (
-                "超高清上游仍在后台解析，本次先回退本地解析；"
-                "稍后重新解析此链接可能命中原画 / 超高清资源。"
+            set_result_provider_notice(
+                context,
+                "已先返回可用清晰度，超高清资源仍在处理中，稍后可重试。",
+                (
+                    "超高清上游仍在后台解析，本次先回退本地解析；"
+                    "稍后重新解析此链接可能命中原画 / 超高清资源。"
+                ),
             )
         else:
-            context["provider_notice"] = (
-                "本次未命中超高清上游，已自动回退本地解析。"
+            set_result_provider_notice(
+                context,
+                "本次未获取到超高清资源，已返回可用清晰度。",
+                "本次未命中超高清上游，已自动回退本地解析。",
             )
             if context["ultra_retry_after_seconds"]:
-                context["provider_notice"] = (
-                    "超高清上游刚刚超时，已返回普通清晰度；约 "
-                    f"{context['ultra_retry_after_seconds']} 秒后可重新尝试超高清。"
+                set_result_provider_notice(
+                    context,
+                    (
+                        "超高清解析刚刚超时，已返回普通清晰度；约 "
+                        f"{context['ultra_retry_after_seconds']} 秒后可重新尝试。"
+                    ),
+                    (
+                        "超高清上游刚刚超时，已返回普通清晰度；约 "
+                        f"{context['ultra_retry_after_seconds']} 秒后可重新尝试超高清。"
+                    ),
                 )
     if provider_notice_override is not None:
         context["provider_notice"] = provider_notice_override
@@ -4397,7 +4446,7 @@ def build_search_results_context(request, platform_key="home"):
                 ProviderAccessMode.STAFF,
                 ProviderAccessMode.PUBLIC_GRAY,
             }:
-                context["error_message"] = "第三方通用解析暂未向该用户开放。"
+                context["error_message"] = "该链接暂未向当前用户开放。"
                 log_parse_request_event(
                     request,
                     "media_parse_blocked",
@@ -4414,7 +4463,7 @@ def build_search_results_context(request, platform_key="home"):
                     error_message_short=context["error_message"],
                 )
                 return context, 403
-            context["error_message"] = "第三方通用解析暂未开放。"
+            context["error_message"] = "该链接暂未开放解析。"
             log_parse_request_event(
                 request,
                 "media_parse_blocked",
@@ -4433,8 +4482,13 @@ def build_search_results_context(request, platform_key="home"):
             return context, 403
         third_party_gate = third_party_public_access_summary(query, request)
         if not third_party_gate["allowed"]:
-            context["error_message"] = third_party_gate["message"]
-            context["provider_notice"] = third_party_gate.get("error_code", "")
+            context["error_message"] = (
+                third_party_gate["message"]
+                if context.get("show_internal_diagnostics")
+                else "该链接当前无法解析。"
+            )
+            if context.get("show_internal_diagnostics"):
+                context["provider_notice"] = third_party_gate.get("error_code", "")
             log_parse_request_event(
                 request,
                 "media_parse_blocked",
@@ -4460,7 +4514,7 @@ def build_search_results_context(request, platform_key="home"):
             )
         except Exception:
             logger.exception("Third-party provider rate-limit cache failed")
-            context["error_message"] = "第三方解析保护服务暂时不可用，请稍后再试。"
+            context["error_message"] = "解析保护服务暂时不可用，请稍后再试。"
             log_parse_request_event(
                 request,
                 "media_parse_failed",
@@ -4478,7 +4532,7 @@ def build_search_results_context(request, platform_key="home"):
             )
             return context, 503
         if not limit.allowed:
-            context["error_message"] = "第三方解析请求过于频繁，请稍后再试。"
+            context["error_message"] = "解析请求过于频繁，请稍后再试。"
             context["retry_after"] = limit.retry_after
             log_parse_request_event(
                 request,
@@ -4505,7 +4559,7 @@ def build_search_results_context(request, platform_key="home"):
             )
         except Exception:
             logger.exception("Third-party provider global rate-limit cache failed")
-            context["error_message"] = "第三方解析保护服务暂时不可用，请稍后再试。"
+            context["error_message"] = "解析保护服务暂时不可用，请稍后再试。"
             log_parse_request_event(
                 request,
                 "media_parse_failed",
@@ -4523,7 +4577,7 @@ def build_search_results_context(request, platform_key="home"):
             )
             return context, 503
         if not global_limit.allowed:
-            context["error_message"] = "第三方解析当前排队请求较多，请稍后再试。"
+            context["error_message"] = "当前解析请求较多，请稍后再试。"
             context["retry_after"] = global_limit.retry_after
             log_parse_request_event(
                 request,
@@ -4543,10 +4597,17 @@ def build_search_results_context(request, platform_key="home"):
             return context, 429
 
     if not prefer_ultra_hd and requested_ultra_hd:
-        context["provider_notice"] = "当前环境未向访客开放超高清 Provider，本次使用本地解析。"
+        set_result_provider_notice(
+            context,
+            "当前环境未开放超高清解析，本次使用标准解析。",
+            "当前环境未向访客开放超高清 Provider，本次使用本地解析。",
+        )
 
     if requested_youtube_merge and not prefer_youtube_merge:
-        context["provider_notice"] = "当前环境未向该用户开放 YouTube 最高画质，本次默认优先 1080p。"
+        set_result_provider_notice(
+            context,
+            "当前环境未开放 YouTube 最高画质，本次默认优先 1080p。",
+        )
 
     try:
         client_country_code = (
@@ -4608,6 +4669,8 @@ def build_search_results_context(request, platform_key="home"):
                 prefer_ultra_hd=prefer_ultra_hd,
                 provider_notice_override=(
                     "已暂时返回普通清晰度，超高清资源仍在后台解析…"
+                    if context.get("show_internal_diagnostics")
+                    else "已暂时返回普通清晰度，超高清资源仍在处理中。"
                 ),
             )
         context["continuation_pending"] = True
@@ -4623,7 +4686,11 @@ def build_search_results_context(request, platform_key="home"):
             DOUYIN_CONTINUATION_TTL_SECONDS
         )
         if error.fallback_result is None:
-            context["provider_notice"] = str(error)
+            set_result_provider_notice(
+                context,
+                "正在获取高清资源，请稍候。",
+                str(error),
+            )
         log_parse_request_event(
             request,
             "media_parse_continuation_pending",
@@ -4658,7 +4725,11 @@ def build_search_results_context(request, platform_key="home"):
         )
         return context, 429
     except DouyinUltraAttemptAccountingError as error:
-        context["error_message"] = str(error)
+        set_result_error_message(
+            context,
+            "解析保护服务暂时不可用，请稍后再试。",
+            str(error),
+        )
         log_parse_request_event(
             request,
             "media_parse_failed",
@@ -4676,7 +4747,11 @@ def build_search_results_context(request, platform_key="home"):
         )
         return context, 503
     except XhsProviderTimeoutError as error:
-        context["error_message"] = str(error)
+        set_result_error_message(
+            context,
+            "解析响应超时，请稍后重试。",
+            str(error),
+        )
         log_parse_request_event(
             request,
             "media_parse_failed",
@@ -4692,7 +4767,11 @@ def build_search_results_context(request, platform_key="home"):
             error_code="PROVIDER_TIMEOUT",
         )
     except XhsError as error:
-        context["error_message"] = f"解析失败：{error}"
+        set_result_error_message(
+            context,
+            "解析失败，请检查链接后重试。",
+            f"解析失败：{error}",
+        )
         log_parse_request_event(
             request,
             "media_parse_failed",
@@ -4707,7 +4786,11 @@ def build_search_results_context(request, platform_key="home"):
             status=ObservabilityStatus.FAILED,
         )
     except requests.RequestException as error:
-        context["error_message"] = f"请求页面失败：{error}"
+        set_result_error_message(
+            context,
+            "请求页面失败，请稍后重试。",
+            f"请求页面失败：{error}",
+        )
         log_parse_request_event(
             request,
             "media_parse_failed",
@@ -4773,7 +4856,7 @@ def render_results_partial_response(request, context, status_code=200):
             )
             or DOUYIN_CONTINUATION_TTL_SECONDS,
             message=context.get("provider_notice")
-            or "超高清资源仍在处理中，正在自动续查。",
+            or "超高清资源仍在处理中，请稍候。",
         )
     response = JsonResponse(response_payload, status=status_code)
     if context.get("retry_after"):
@@ -5090,6 +5173,7 @@ def batch_parse_retry_view(request):
             "row": row,
             "batch_download_allowed": batch_parse_access_allowed(request),
             "batch_raw_links_allowed": batch_parse_user_is_staff(request),
+            "show_internal_diagnostics": batch_parse_user_is_staff(request),
             "proxy_image_url": reverse("media_proxy_image"),
         },
         request=request,

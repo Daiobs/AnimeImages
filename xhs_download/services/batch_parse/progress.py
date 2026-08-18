@@ -317,6 +317,7 @@ def build_batch_progress_item_response(
             "row": row,
             "batch_download_allowed": batch_parse_access_allowed(request),
             "batch_raw_links_allowed": batch_parse_user_is_staff(request),
+            "show_internal_diagnostics": batch_parse_user_is_staff(request),
             "proxy_image_url": reverse("media_proxy_image"),
         },
         request=request,

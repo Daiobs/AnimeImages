@@ -202,7 +202,7 @@ def observable_download_error(error, *, provider=""):
     if isinstance(error, requests.exceptions.SSLError):
         return {
             "error_code": "UPSTREAM_SSL_ERROR",
-            "message": "上游资源连接异常，请稍后重试。",
+            "message": "资源连接异常，请稍后重试。",
             "status_code": 502,
         }
     if isinstance(
@@ -215,7 +215,7 @@ def observable_download_error(error, *, provider=""):
     ):
         return {
             "error_code": "UPSTREAM_CONNECTION_ERROR",
-            "message": "上游资源暂时无法连接，请稍后重试。",
+            "message": "资源暂时无法连接，请稍后重试。",
             "status_code": 502,
         }
 
