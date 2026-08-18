@@ -1791,9 +1791,6 @@
                 setParseLoading(false);
                 return;
             }
-            updateUltraHdRequestValue();
-            updateYoutubeMergeRequestValue();
-
             if (!linkInput || !linkInput.value.trim()) {
                 linkInput && linkInput.focus();
                 return;

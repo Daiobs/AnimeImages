@@ -113,6 +113,16 @@ class GlobalSettingsPlacementTests(TestCase):
         self.assertIn("batchOperationInProgress()", batch_source)
         self.assertIn("applyPendingProjectSettings();", batch_source)
 
+    def test_single_parse_submit_uses_effective_project_settings_fields(self):
+        source = (PROJECT_ROOT / "static/js/xhs_download.js").read_text()
+        submit_start = source.index("async function handleSearchSubmit")
+        submit_end = source.index("applyProjectSettings(projectSettings);", submit_start)
+        submit_handler = source[submit_start:submit_end]
+
+        self.assertIn("new FormData(searchForm)", submit_handler)
+        self.assertNotIn("updateUltraHdRequestValue", source)
+        self.assertNotIn("updateYoutubeMergeRequestValue", source)
+
     def test_shared_assets_load_before_page_specific_scripts(self):
         self.client.force_login(self.staff_user)
         content = self.client.get(reverse("batch_parse")).content.decode()
