@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from PIL import Image
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, SimpleTestCase, TestCase, override_settings
@@ -373,6 +374,28 @@ class UserFeedbackAdminTests(TestCase):
         )
         self.client.force_login(self.superuser)
 
+    def make_staff(self, username, *permission_codenames):
+        user = get_user_model().objects.create_user(
+            username=username,
+            password="local-test-password",
+            is_staff=True,
+        )
+        for codename in permission_codenames:
+            permission = Permission.objects.get(
+                content_type__app_label="xhs_download",
+                codename=codename,
+            )
+            user.user_permissions.add(permission)
+        return user
+
+    def sidebar_html(self, response):
+        content = response.content.decode("utf-8")
+        self.assertIn('class="admin-sidebar"', content)
+        return content.split('<aside class="admin-sidebar"', 1)[1].split(
+            "</aside>",
+            1,
+        )[0]
+
     def test_admin_list_supports_review_fields_contact_and_image_state(self):
         response = self.client.get(
             reverse("admin:xhs_download_userfeedback_changelist"),
@@ -385,6 +408,74 @@ class UserFeedbackAdminTests(TestCase):
         self.assertContains(response, "处理状态")
         self.assertContains(response, "留有联系方式")
         self.assertContains(response, "包含截图")
+
+    def test_feedback_sidebar_is_hidden_from_anonymous_admin_login(self):
+        response = Client().get(reverse("admin:login"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'class="admin-sidebar"')
+        self.assertNotContains(response, "问题反馈")
+
+    def test_feedback_sidebar_is_visible_and_active_for_superuser(self):
+        changelist_url = reverse("admin:xhs_download_userfeedback_changelist")
+        detail_url = reverse(
+            "admin:xhs_download_userfeedback_change",
+            args=(self.feedback.pk,),
+        )
+
+        index_response = self.client.get(reverse("admin:index"))
+        index_sidebar = self.sidebar_html(index_response)
+        self.assertIn(f'href="{changelist_url}"', index_sidebar)
+        self.assertIn("问题反馈", index_sidebar)
+        self.assertLess(index_sidebar.index("下载"), index_sidebar.index("问题反馈"))
+        self.assertLess(index_sidebar.index("问题反馈"), index_sidebar.index("策略"))
+
+        for url in (changelist_url, detail_url):
+            with self.subTest(url=url):
+                response = self.client.get(url)
+                self.assertEqual(response.status_code, 200)
+                sidebar = self.sidebar_html(response)
+                active_fragment = sidebar.split(
+                    "admin-sidebar-link is-active",
+                    1,
+                )[1].split("</a>", 1)[0]
+                self.assertIn("问题反馈", active_fragment)
+
+    def test_feedback_sidebar_accepts_view_or_change_permission(self):
+        changelist_url = reverse("admin:xhs_download_userfeedback_changelist")
+        for codename in ("view_userfeedback", "change_userfeedback"):
+            with self.subTest(codename=codename):
+                user = self.make_staff(f"feedback-{codename}", codename)
+                client = Client()
+                client.force_login(user)
+
+                response = client.get(changelist_url)
+
+                self.assertEqual(response.status_code, 200)
+                sidebar = self.sidebar_html(response)
+                self.assertIn("问题反馈", sidebar)
+                self.assertIn("admin-sidebar-link is-active", sidebar)
+
+    def test_feedback_sidebar_and_admin_views_reject_unauthorized_staff(self):
+        user = self.make_staff("feedback-unauthorized")
+        client = Client()
+        client.force_login(user)
+        changelist_url = reverse("admin:xhs_download_userfeedback_changelist")
+        detail_url = reverse(
+            "admin:xhs_download_userfeedback_change",
+            args=(self.feedback.pk,),
+        )
+        image_url = reverse(
+            "admin:xhs_download_userfeedback_image",
+            args=(self.feedback.pk,),
+        )
+
+        index_response = client.get(reverse("admin:index"))
+        self.assertEqual(index_response.status_code, 200)
+        self.assertNotIn("问题反馈", self.sidebar_html(index_response))
+        self.assertEqual(client.get(changelist_url).status_code, 403)
+        self.assertEqual(client.get(detail_url).status_code, 403)
+        self.assertEqual(client.get(image_url).status_code, 404)
 
     def test_admin_can_update_status_without_editing_submission(self):
         response = self.client.post(
