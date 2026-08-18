@@ -57,8 +57,17 @@
             </div>
         </div>
 
-        <div class="ms-auto">
-            {% block nav_actions %}{% endblock %}
+        <div class="ms-auto d-flex align-items-center gap-2 site-nav-actions">
+            {% block nav_leading_actions %}{% endblock %}
+            {% block nav_actions %}
+                <button type="button"
+                        class="btn btn-outline-secondary btn-sm nav-settings-btn"
+                        data-bs-toggle="modal"
+                        data-bs-target="#projectSettingsModal">
+                    <i class="bi bi-gear" aria-hidden="true"></i>
+                    设置
+                </button>
+            {% endblock %}
         </div>
     </div>
 </nav>
@@ -66,6 +75,8 @@
 <main>
     {% block content %}{% endblock %}
 </main>
+
+{% include "partials/project_settings_modal.html" %}
 
 <footer class="border-top py-4 mt-5 text-center text-muted small">
     <div class="container">
@@ -75,6 +86,8 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="{% static 'js/app.js' %}?v={{ static_asset_version }}"></script>
+<script src="{% static 'js/parse_preferences.js' %}?v={{ static_asset_version }}"></script>
+<script src="{% static 'js/project_settings.js' %}?v={{ static_asset_version }}"></script>
 
 {% block extra_js %}{% endblock %}
 </body>

@@ -383,7 +383,7 @@ class PublicPresentationBoundaryTests(TestCase):
         self.assertNotIn("上游", visible_text(public_html))
         self.assertIn("上游解析服务响应超时", visible_text(staff_html))
 
-    def test_single_settings_keep_product_claims_without_public_provider_copy(self):
+    def test_single_settings_keep_product_claims_without_provider_copy(self):
         public_request, public_context = self.single_context(staff=False)
         staff_request, staff_context = self.single_context(staff=True)
         public_text = visible_text(
@@ -397,8 +397,7 @@ class PublicPresentationBoundaryTests(TestCase):
             self.assertIn(claim, public_text)
         for diagnostic in ("天天解析", "KuKuTool", "超高清 Provider", "本地解析"):
             self.assertNotIn(diagnostic, public_text)
-        self.assertIn("天天解析", staff_text)
-        self.assertIn("KuKuTool", staff_text)
+            self.assertNotIn(diagnostic, staff_text)
 
     def test_download_route_reason_is_guarded_by_staff_presentation_flag(self):
         source = Path("static/js/xhs_download.js").read_text()

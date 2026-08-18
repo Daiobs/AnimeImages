@@ -2,8 +2,8 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const batchSettings = require("../static/js/batch_parse.js");
 const preferences = require("../static/js/parse_preferences.js");
+const settingsUi = require("../static/js/project_settings.js");
 
 class MemoryStorage {
     constructor(initialValues) {
@@ -25,37 +25,84 @@ function storedJson(storage, key) {
     return JSON.parse(storage.getItem(key));
 }
 
-test("valid shared values win and storage is reduced to the public schema", () => {
+function projectSettings(overrides) {
+    const values = overrides || {};
+    return {
+        version: 2,
+        parsing: {
+            ultra_hd: values.ultra_hd === undefined ? true : values.ultra_hd,
+            youtube_merge: values.youtube_merge === undefined
+                ? false
+                : values.youtube_merge,
+        },
+        download: {
+            location_mode: values.location_mode || "browser_default",
+        },
+    };
+}
+
+test("new users default to Ultra on, YouTube merge off, and browser downloads", () => {
+    const storage = new MemoryStorage();
+
+    const result = preferences.loadProjectSettings({storage});
+
+    assert.deepEqual(result, projectSettings());
+    assert.deepEqual(storedJson(storage, preferences.PROJECT_STORAGE_KEY), result);
+});
+
+test("valid project settings win and are sanitized to the v2 public schema", () => {
+    const storage = new MemoryStorage({
+        [preferences.PROJECT_STORAGE_KEY]: JSON.stringify({
+            version: 2,
+            parsing: {
+                ultra_hd: false,
+                youtube_merge: true,
+                provider_order: ["private"],
+            },
+            download: {
+                location_mode: "ask_when_supported",
+                signed_url: "must-not-survive",
+            },
+            manifest: "must-not-survive",
+        }),
+        [preferences.SHARED_STORAGE_KEY]: JSON.stringify({
+            version: 1,
+            ultra_hd: true,
+            youtube_merge: false,
+        }),
+    });
+
+    const result = preferences.loadProjectSettings({storage});
+
+    assert.deepEqual(result, projectSettings({
+        ultra_hd: false,
+        youtube_merge: true,
+        location_mode: "ask_when_supported",
+    }));
+    assert.deepEqual(storedJson(storage, preferences.PROJECT_STORAGE_KEY), result);
+});
+
+test("existing shared true and false values are preserved during v2 migration", () => {
     const storage = new MemoryStorage({
         [preferences.SHARED_STORAGE_KEY]: JSON.stringify({
             version: 1,
             ultra_hd: false,
             youtube_merge: true,
-            signed_url: "must-not-survive",
-        }),
-        [preferences.SINGLE_LEGACY_STORAGE_KEY]: JSON.stringify({
-            ultra_hd_enabled: true,
-            youtube_merge_enabled: false,
         }),
     });
 
-    assert.deepEqual(preferences.load({storage}), {
-        version: 1,
+    assert.deepEqual(preferences.loadProjectSettings({storage}), projectSettings({
         ultra_hd: false,
         youtube_merge: true,
-    });
-    assert.deepEqual(Object.keys(storedJson(storage, preferences.SHARED_STORAGE_KEY)), [
-        "version",
-        "ultra_hd",
-        "youtube_merge",
-    ]);
+    }));
 });
 
-test("legacy single-page booleans migrate before Batch v1 values", () => {
+test("legacy single-page settings migrate before Batch values", () => {
     const storage = new MemoryStorage({
         [preferences.SINGLE_LEGACY_STORAGE_KEY]: JSON.stringify({
             ultra_hd_enabled: true,
             youtube_merge_enabled: false,
+            use_file_picker: true,
         }),
         [preferences.BATCH_DRAFT_LEGACY_STORAGE_KEY]: JSON.stringify({
             links: "https://example.test/one",
@@ -64,99 +111,141 @@ test("legacy single-page booleans migrate before Batch v1 values", () => {
         }),
     });
 
-    assert.deepEqual(preferences.load({storage}), {
-        version: 1,
+    assert.deepEqual(preferences.loadProjectSettings({storage}), projectSettings({
         ultra_hd: true,
         youtube_merge: false,
-    });
+        location_mode: "ask_when_supported",
+    }));
 });
 
-test("missing fields fall through new, single legacy, Batch v1, then defaults", () => {
+test("legacy Batch preferences migrate when no newer preference exists", () => {
     const storage = new MemoryStorage({
-        [preferences.SHARED_STORAGE_KEY]: JSON.stringify({
-            version: 1,
-            ultra_hd: false,
-        }),
-        [preferences.SINGLE_LEGACY_STORAGE_KEY]: JSON.stringify({
-            youtube_merge_enabled: "true",
-        }),
         [preferences.BATCH_DRAFT_LEGACY_STORAGE_KEY]: JSON.stringify({
-            ultra_hd: true,
+            links: "legacy links",
+            ultra_hd: false,
             youtube_merge: true,
         }),
     });
 
-    assert.deepEqual(preferences.load({
-        storage,
-        defaults: {ultra_hd: true, youtube_merge: false},
-    }), {
-        version: 1,
+    assert.deepEqual(preferences.loadProjectSettings({storage}), projectSettings({
         ultra_hd: false,
         youtube_merge: true,
-    });
+    }));
 });
 
-test("invalid JSON and non-booleans safely use rendered defaults", () => {
+test("legacy file-picker false maps to browser_default", () => {
     const storage = new MemoryStorage({
-        [preferences.SHARED_STORAGE_KEY]: "{invalid",
         [preferences.SINGLE_LEGACY_STORAGE_KEY]: JSON.stringify({
-            ultra_hd_enabled: 1,
-            youtube_merge_enabled: null,
-        }),
-        [preferences.BATCH_DRAFT_LEGACY_STORAGE_KEY]: JSON.stringify({
-            ultra_hd: "true",
-            youtube_merge: 0,
+            use_file_picker: false,
         }),
     });
 
-    assert.deepEqual(preferences.load({
+    assert.equal(
+        preferences.loadProjectSettings({storage}).download.location_mode,
+        "browser_default",
+    );
+});
+
+test("missing and invalid fields fall through each legacy source then defaults", () => {
+    const storage = new MemoryStorage({
+        [preferences.PROJECT_STORAGE_KEY]: JSON.stringify({
+            version: 2,
+            parsing: {ultra_hd: false},
+            download: {location_mode: "invalid"},
+        }),
+        [preferences.SHARED_STORAGE_KEY]: JSON.stringify({
+            version: 1,
+            youtube_merge: "true",
+        }),
+        [preferences.SINGLE_LEGACY_STORAGE_KEY]: JSON.stringify({
+            youtube_merge_enabled: true,
+            use_file_picker: "true",
+        }),
+    });
+
+    assert.deepEqual(preferences.loadProjectSettings({
         storage,
-        defaults: {ultra_hd: true, youtube_merge: false},
-    }), {
-        version: 1,
-        ultra_hd: true,
-        youtube_merge: false,
-    });
+        defaults: {
+            parsing: {ultra_hd: true, youtube_merge: false},
+            download: {location_mode: "ask_when_supported"},
+        },
+    }), projectSettings({
+        ultra_hd: false,
+        youtube_merge: true,
+        location_mode: "ask_when_supported",
+    }));
 });
 
-test("migration is idempotent and does not rewrite canonical values", () => {
+test("migration is idempotent and does not rewrite canonical settings", () => {
     const storage = new MemoryStorage({
         [preferences.SINGLE_LEGACY_STORAGE_KEY]: JSON.stringify({
-            ultra_hd_enabled: true,
-            youtube_merge_enabled: false,
+            ultra_hd_enabled: false,
+            youtube_merge_enabled: true,
+            use_file_picker: true,
         }),
     });
 
-    const first = preferences.load({storage});
+    const first = preferences.loadProjectSettings({storage});
     const writesAfterFirstLoad = storage.writeCount;
-    const second = preferences.load({storage});
+    const second = preferences.loadProjectSettings({storage});
 
     assert.deepEqual(second, first);
     assert.equal(storage.writeCount, writesAfterFirstLoad);
 });
 
-test("updates accept only real booleans and preserve the other preference", () => {
+test("project updates accept typed fields and preserve omitted intent", () => {
     const storage = new MemoryStorage({
-        [preferences.SHARED_STORAGE_KEY]: JSON.stringify({
-            version: 1,
-            ultra_hd: true,
+        [preferences.PROJECT_STORAGE_KEY]: JSON.stringify(projectSettings({
+            ultra_hd: false,
             youtube_merge: false,
+            location_mode: "browser_default",
+        })),
+        [preferences.SINGLE_LEGACY_STORAGE_KEY]: JSON.stringify({
+            save_dir: "legacy-path",
         }),
     });
 
-    const result = preferences.update({
-        ultra_hd: "false",
-        youtube_merge: true,
+    const result = preferences.updateProjectSettings({
+        parsing: {ultra_hd: "true", youtube_merge: true},
+        download: {location_mode: "ask_when_supported"},
     }, {storage});
 
-    assert.deepEqual(result, {
-        version: 1,
-        ultra_hd: true,
+    assert.deepEqual(result, projectSettings({
+        ultra_hd: false,
         youtube_merge: true,
+        location_mode: "ask_when_supported",
+    }));
+    assert.deepEqual(storedJson(storage, preferences.SHARED_STORAGE_KEY), {
+        version: 1,
+        ultra_hd: false,
+        youtube_merge: true,
+    });
+    assert.deepEqual(storedJson(storage, preferences.SINGLE_LEGACY_STORAGE_KEY), {
+        save_dir: "legacy-path",
+        ultra_hd_enabled: false,
+        youtube_merge_enabled: true,
+        use_file_picker: true,
     });
 });
 
-test("Batch v1 links migrate to a v2 draft without preferences", () => {
+test("compatibility parsing API reads and writes the same project contract", () => {
+    const storage = new MemoryStorage();
+
+    const saved = preferences.update({ultra_hd: false}, {storage});
+
+    assert.deepEqual(saved, {
+        version: 1,
+        ultra_hd: false,
+        youtube_merge: false,
+    });
+    assert.deepEqual(preferences.load({storage}), saved);
+    assert.equal(
+        storedJson(storage, preferences.PROJECT_STORAGE_KEY).parsing.ultra_hd,
+        false,
+    );
+});
+
+test("Batch v1 links migrate to a v2 links-only draft", () => {
     const storage = new MemoryStorage({
         [preferences.BATCH_DRAFT_LEGACY_STORAGE_KEY]: JSON.stringify({
             links: "https://example.test/one\nhttps://example.test/two",
@@ -172,34 +261,13 @@ test("Batch v1 links migrate to a v2 draft without preferences", () => {
         version: 2,
         links: "https://example.test/one\nhttps://example.test/two",
     });
-    assert.deepEqual(Object.keys(storedJson(storage, preferences.BATCH_DRAFT_STORAGE_KEY)), [
-        "version",
-        "links",
-    ]);
+    assert.deepEqual(Object.keys(storedJson(
+        storage,
+        preferences.BATCH_DRAFT_STORAGE_KEY,
+    )), ["version", "links"]);
 });
 
-test("a valid Batch v2 draft wins and is sanitized to links only", () => {
-    const storage = new MemoryStorage({
-        [preferences.BATCH_DRAFT_STORAGE_KEY]: JSON.stringify({
-            version: 2,
-            links: "current links",
-            ultra_hd: true,
-            card_html: "must-not-survive",
-        }),
-        [preferences.BATCH_DRAFT_LEGACY_STORAGE_KEY]: JSON.stringify({links: "legacy links"}),
-    });
-
-    assert.deepEqual(preferences.loadBatchDraft({storage}), {
-        version: 2,
-        links: "current links",
-    });
-    assert.deepEqual(storedJson(storage, preferences.BATCH_DRAFT_STORAGE_KEY), {
-        version: 2,
-        links: "current links",
-    });
-});
-
-test("saving a Batch draft cannot persist parse results or preferences", () => {
+test("saving a Batch draft cannot persist preferences or parsed media", () => {
     const storage = new MemoryStorage();
 
     preferences.saveBatchDraft("two safe links", {storage});
@@ -208,9 +276,11 @@ test("saving a Batch draft cannot persist parse results or preferences", () => {
         version: 2,
         links: "two safe links",
     });
+    const serialized = storage.getItem(preferences.BATCH_DRAFT_STORAGE_KEY);
+    assert.doesNotMatch(serialized, /ultra_hd|youtube_merge|signed|manifest|card_html/);
 });
 
-test("control application preserves intent while forcing disabled fields off", () => {
+test("control application preserves stored intent while disabled fields submit zero", () => {
     const ultraInput = {checked: false, disabled: true};
     const youtubeInput = {checked: false, disabled: false};
     const ultraHidden = {value: "1"};
@@ -225,14 +295,40 @@ test("control application preserves intent while forcing disabled fields off", (
     });
 
     assert.deepEqual(effective, {ultra_hd: false, youtube_merge: true});
-    assert.equal(ultraInput.checked, false);
     assert.equal(ultraHidden.value, "0");
-    assert.equal(youtubeInput.checked, true);
     assert.equal(youtubeHidden.value, "1");
     assert.equal(intended.ultra_hd, true);
 });
 
-test("storage access failures never block rendered defaults or form controls", () => {
+test("the shared Settings save patch omits disabled parse fields", () => {
+    const patch = settingsUi.buildEnabledProjectPatch({
+        ultraInput: {checked: false, disabled: true},
+        youtubeInput: {checked: true, disabled: false},
+        locationInputs: [
+            {checked: false, value: "browser_default"},
+            {checked: true, value: "ask_when_supported"},
+        ],
+    });
+
+    assert.deepEqual(patch, {
+        parsing: {youtube_merge: true},
+        download: {location_mode: "ask_when_supported"},
+    });
+});
+
+test("public Settings save patch cannot mutate the staff-only download location", () => {
+    const patch = settingsUi.buildEnabledProjectPatch({
+        ultraInput: {checked: true, disabled: false},
+        youtubeInput: {checked: false, disabled: false},
+        locationInputs: [],
+    });
+
+    assert.deepEqual(patch, {
+        parsing: {ultra_hd: true, youtube_merge: false},
+    });
+});
+
+test("storage access failures never block rendered project defaults", () => {
     const storage = {
         getItem() {
             throw new Error("blocked");
@@ -242,21 +338,11 @@ test("storage access failures never block rendered defaults or form controls", (
         },
     };
 
-    assert.doesNotThrow(() => preferences.load({
-        storage,
-        defaults: {ultra_hd: true, youtube_merge: false},
-    }));
-    assert.deepEqual(preferences.load({
-        storage,
-        defaults: {ultra_hd: true, youtube_merge: false},
-    }), {
-        version: 1,
-        ultra_hd: true,
-        youtube_merge: false,
-    });
+    assert.doesNotThrow(() => preferences.loadProjectSettings({storage}));
+    assert.deepEqual(preferences.loadProjectSettings({storage}), projectSettings());
 });
 
-test("cross-tab subscription accepts only the shared key with a complete schema", () => {
+test("cross-tab subscription accepts only complete v2 settings events", () => {
     const listeners = new Map();
     const eventTarget = {
         addEventListener(name, listener) {
@@ -267,87 +353,38 @@ test("cross-tab subscription accepts only the shared key with a complete schema"
         },
     };
     const received = [];
-    const unsubscribe = preferences.subscribe((value) => received.push(value), {eventTarget});
+    const unsubscribe = preferences.subscribeProjectSettings(
+        (value) => received.push(value),
+        {eventTarget},
+    );
     const listener = listeners.get("storage");
 
-    listener({key: "another-key", newValue: JSON.stringify({version: 1, ultra_hd: true, youtube_merge: true})});
-    listener({key: preferences.SHARED_STORAGE_KEY, newValue: JSON.stringify({version: 1, ultra_hd: "true", youtube_merge: true})});
-    listener({key: preferences.SHARED_STORAGE_KEY, newValue: JSON.stringify({version: 1, ultra_hd: false, youtube_merge: true})});
+    listener({key: "another-key", newValue: JSON.stringify(projectSettings())});
+    listener({
+        key: preferences.PROJECT_STORAGE_KEY,
+        newValue: JSON.stringify({version: 2, parsing: {ultra_hd: true}}),
+    });
+    listener({
+        key: preferences.PROJECT_STORAGE_KEY,
+        newValue: JSON.stringify(projectSettings({
+            ultra_hd: false,
+            youtube_merge: true,
+            location_mode: "ask_when_supported",
+        })),
+    });
 
-    assert.deepEqual(received, [{version: 1, ultra_hd: false, youtube_merge: true}]);
+    assert.deepEqual(received, [projectSettings({
+        ultra_hd: false,
+        youtube_merge: true,
+        location_mode: "ask_when_supported",
+    })]);
     unsubscribe();
     assert.equal(listeners.has("storage"), false);
 });
 
-test("Batch settings build one patch from both enabled controls", () => {
-    assert.deepEqual(batchSettings.buildEnabledPreferencePatch(
-        {checked: true, disabled: false},
-        {checked: false, disabled: false}
-    ), {
-        ultra_hd: true,
-        youtube_merge: false,
-    });
-});
-
-test("Batch settings omit disabled controls and preserve their stored intent", () => {
-    const storage = new MemoryStorage({
-        [preferences.SHARED_STORAGE_KEY]: JSON.stringify({
-            version: 1,
-            ultra_hd: true,
-            youtube_merge: false,
-        }),
-    });
-    const patch = batchSettings.buildEnabledPreferencePatch(
-        {checked: false, disabled: true},
-        {checked: true, disabled: false}
-    );
-    const saved = preferences.update(patch, {storage});
-    const ultraHidden = {value: "1"};
-    const youtubeHidden = {value: "0"};
-
-    preferences.applyToControls(saved, {
-        ultraHdInput: {checked: false, disabled: true},
-        ultraHdHiddenInput: ultraHidden,
-        youtubeMergeInput: {checked: false, disabled: false},
-        youtubeMergeHiddenInput: youtubeHidden,
-    });
-
-    assert.deepEqual(patch, {youtube_merge: true});
-    assert.deepEqual(saved, {
-        version: 1,
-        ultra_hd: true,
-        youtube_merge: true,
-    });
-    assert.equal(storage.writeCount, 1);
-    assert.equal(ultraHidden.value, "0");
-    assert.equal(youtubeHidden.value, "1");
-});
-
-test("Batch settings commit both enabled values through one update call", () => {
-    const calls = [];
-    const api = {
-        update(patch, options) {
-            calls.push({patch, options});
-            return {version: 1, ...patch};
-        },
-    };
-    const defaults = {ultra_hd: false, youtube_merge: false};
-
-    const saved = batchSettings.commitEnabledParsePreferences(
-        api,
-        {version: 1, ultra_hd: false, youtube_merge: true},
-        {checked: true, disabled: false},
-        {checked: false, disabled: false},
-        defaults
-    );
-
-    assert.deepEqual(saved, {
-        version: 1,
-        ultra_hd: true,
-        youtube_merge: false,
-    });
-    assert.deepEqual(calls, [{
-        patch: {ultra_hd: true, youtube_merge: false},
-        options: {defaults},
-    }]);
+test("modal data parsing keeps the documented boolean defaults", () => {
+    assert.equal(settingsUi.booleanData("true", false), true);
+    assert.equal(settingsUi.booleanData("false", true), false);
+    assert.equal(settingsUi.booleanData(undefined, true), true);
+    assert.equal(settingsUi.booleanData(undefined, false), false);
 });

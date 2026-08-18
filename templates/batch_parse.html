@@ -11,7 +11,9 @@
          data-batch-download-url="{{ download_url }}"
          data-batch-download-task-url="{{ download_task_url }}"
          data-batch-download-async-enabled="{{ download_async_tasks_enabled|yesno:'true,false' }}"
-         data-show-internal-diagnostics="{{ show_internal_diagnostics|yesno:'true,false' }}">
+         data-show-internal-diagnostics="{{ show_internal_diagnostics|yesno:'true,false' }}"
+         data-ultra-hd-available="{{ ultra_hd_available|yesno:'true,false' }}"
+         data-youtube-merge-available="{{ youtube_merge_mode_available|yesno:'true,false' }}">
     <div class="container-fluid px-4 px-md-5">
         <div class="alert alert-warning ordinary-download-interruption"
              data-ordinary-download-interruption
@@ -31,6 +33,14 @@
 
                     <form method="post" class="batch-form">
                         {% csrf_token %}
+                        <input type="hidden"
+                               name="ultra_hd"
+                               id="batch-ultra-hd-request-input"
+                               value="{% if batch_ultra_hd_checked %}1{% else %}0{% endif %}">
+                        <input type="hidden"
+                               name="youtube_merge"
+                               id="batch-youtube-merge-request-input"
+                               value="{% if batch_youtube_merge_checked %}1{% else %}0{% endif %}">
                         {% if batch_error %}
                             <div class="alert alert-danger">
                                 <i class="bi bi-exclamation-triangle me-1"></i>
@@ -53,85 +63,7 @@
                                 <i class="bi bi-magic me-1 batch-submit-icon"></i>
                                 <span class="batch-submit-label">开始批量解析</span>
                             </button>
-                            <button type="button"
-                                    class="btn btn-outline-secondary batch-settings-toggle"
-                                    data-bs-toggle="modal"
-                                    data-bs-target="#batchSettingsModal">
-                                <i class="bi bi-gear me-1"></i>
-                                设置
-                            </button>
                             <span class="text-muted small">解析结果会逐条展示，失败链接不会影响其他链接。</span>
-
-                            <div class="modal fade batch-settings-modal"
-                                 id="batchSettingsModal"
-                                 tabindex="-1"
-                                 aria-labelledby="batchSettingsModalLabel"
-                                 aria-hidden="true">
-                                <div class="modal-dialog modal-dialog-centered">
-                                    <div class="modal-content">
-                                        <div class="modal-header">
-                                            <h2 class="modal-title fs-5" id="batchSettingsModalLabel">解析设置</h2>
-                                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
-                                        </div>
-                                        <div class="modal-body">
-                                            <div class="batch-settings-panel">
-                                                <div class="form-check batch-option">
-                                                    <input type="hidden" name="ultra_hd" value="0"
-                                                           id="batch-ultra-hd-request-input">
-                                                    <input
-                                                            class="form-check-input"
-                                                            type="checkbox"
-                                                            id="batch-ultra-hd-setting"
-                                                            name="ultra_hd"
-                                                            value="1"
-                                                            {% if batch_ultra_hd_checked %}checked{% endif %}
-                                                            {% if not ultra_hd_available %}disabled{% endif %}
-                                                    >
-                                                    <label class="form-check-label" for="batch-ultra-hd-setting">
-                                                        <strong>抖音原画/超清</strong>
-                                                        {% if show_internal_diagnostics %}
-                                                            <small>批量模式优先使用天天解析，未命中时回退本地解析。</small>
-                                                        {% else %}
-                                                            <small>开启后优先获取原画或超高清资源，未获取到时返回可用清晰度。</small>
-                                                        {% endif %}
-                                                    </label>
-                                                </div>
-                                                <div class="form-check batch-option">
-                                                    <input type="hidden" name="youtube_merge" value="0"
-                                                           id="batch-youtube-merge-request-input">
-                                                    <input
-                                                            class="form-check-input"
-                                                            type="checkbox"
-                                                            id="batch-youtube-merge-setting"
-                                                            name="youtube_merge"
-                                                            value="1"
-                                                            {% if batch_youtube_merge_checked %}checked{% endif %}
-                                                            {% if not youtube_merge_mode_available %}disabled{% endif %}
-                                                    >
-                                                    <label class="form-check-label" for="batch-youtube-merge-setting">
-                                                        <strong>YouTube 最高画质合并</strong>
-                                                        <small>开启后会优先获取高画质音视频并自动合并，耗时可能更长。</small>
-                                                    </label>
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <div class="modal-footer">
-                                            <button type="button"
-                                                    class="btn btn-outline-secondary"
-                                                    id="batch-cancel-settings-btn"
-                                                    data-bs-dismiss="modal">
-                                                取消
-                                            </button>
-                                            <button type="button"
-                                                    class="btn btn-brand"
-                                                    id="batch-save-settings-btn"
-                                                    data-bs-dismiss="modal">
-                                                保存设置
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
                         </div>
                     </form>
 
@@ -322,7 +254,6 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/parse_preferences.js' %}?v={{ static_asset_version }}"></script>
 <script src="{% static 'js/ordinary_media_streaming_protocol.js' %}?v={{ static_asset_version }}"></script>
 <script src="{% static 'js/ordinary_media_streaming.js' %}?v={{ static_asset_version }}"></script>
 <script src="{% static 'js/ordinary_media_download.js' %}?v={{ static_asset_version }}"></script>

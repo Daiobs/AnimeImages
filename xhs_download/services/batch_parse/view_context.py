@@ -148,6 +148,8 @@ def build_batch_parse_context(
         "batch_youtube_merge_checked": requested_youtube_merge and youtube_merge_mode_available,
         "ultra_hd_available": ultra_hd_available,
         "youtube_merge_mode_available": youtube_merge_mode_available,
+        "project_settings_ultra_hd_default": True,
+        "project_settings_youtube_merge_default": False,
         "strategy_matrix": strategy_matrix,
         "proxy_image_url": proxy_image_url,
         "download_url": download_url,

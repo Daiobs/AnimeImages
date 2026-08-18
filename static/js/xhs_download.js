@@ -38,15 +38,6 @@
         }
     }
 
-    function saveSettings(settings) {
-        try {
-            window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-            return true;
-        } catch (error) {
-            return false;
-        }
-    }
-
     function retryImage(img) {
         let retry = Number.parseInt(img.dataset.retry || "0", 10);
 
@@ -116,10 +107,6 @@
 
     function getItemKey(item) {
         return `${item.type}:${item.url}`;
-    }
-
-    function optionExists(select, value) {
-        return Boolean(select) && Array.from(select.options).some((option) => option.value === value);
     }
 
     function decodeDispositionValue(value) {
@@ -212,10 +199,6 @@
         return selectedItems.length === 1;
     }
 
-    function normalizeDownloadMode(value) {
-        return value === "server" ? "browser" : (value || "browser");
-    }
-
     function itemRequiresZipTask(item) {
         const provider = item ? String(item.provider || "") : "";
         return ["kukutool_generic", "youtube_merge", "yt_dlp_merge"].includes(provider);
@@ -274,21 +257,10 @@
         const pasteLinkIconBtn = document.getElementById("paste-link-icon-btn");
         const clearLinkBtn = document.getElementById("clear-link-btn");
         const ultraHdRequestInput = document.getElementById("ultra-hd-request-input");
-        const ultraHdSettingInput = document.getElementById("ultra-hd-setting");
         const youtubeMergeRequestInput = document.getElementById("youtube-merge-request-input");
-        const youtubeMergeSettingInput = document.getElementById("youtube-merge-setting");
-        const downloadModeInput = document.getElementById("download-mode");
-        const browserDownloadSettings = document.getElementById("browser-download-settings");
-        const serverSaveSettings = document.getElementById("server-save-settings");
-        const saveDirInput = document.getElementById("save-dir");
-        const browserDefaultLocationBtn = document.getElementById("browser-default-location-btn");
-        const chooseDownloadLocationBtn = document.getElementById("choose-download-location-btn");
-        const browserLocationHelp = document.getElementById("browser-location-help");
-        const saveFormatInput = document.getElementById("save-format");
-        const qualityInput = document.getElementById("quality");
-        const settingsModal = document.getElementById("settingsModal");
-        const saveSettingsBtn = document.getElementById("save-settings-btn");
-        const videoSaveModeInput = document.getElementById("video-save-mode");
+        const downloadLocationSettingAvailable = (
+            page.dataset.downloadLocationSettingAvailable === "true"
+        );
         const downloadUrl = page.dataset.downloadUrl;
         const downloadPrepareUrl = page.dataset.downloadPrepareUrl;
         const douyinContinuationUrl = page.dataset.douyinContinuationUrl;
@@ -307,24 +279,41 @@
             });
         }
         const savedSettings = loadSettings();
-        const parsePreferencesApi = window.AnimeImagesParsePreferences || null;
-        const renderedParseDefaults = {
-            ultra_hd: Boolean(ultraHdSettingInput && ultraHdSettingInput.checked),
-            youtube_merge: Boolean(youtubeMergeSettingInput && youtubeMergeSettingInput.checked),
+        const projectSettingsApi = window.AnimeImagesProjectSettings
+            || window.AnimeImagesParsePreferences
+            || null;
+        const renderedProjectDefaults = {
+            parsing: {
+                ultra_hd: ultraHdRequestInput
+                    ? ultraHdRequestInput.value === "1"
+                    : true,
+                youtube_merge: youtubeMergeRequestInput
+                    ? youtubeMergeRequestInput.value === "1"
+                    : false,
+            },
+            download: {
+                location_mode: downloadLocationSettingAvailable
+                    && typeof savedSettings.use_file_picker === "boolean"
+                    && savedSettings.use_file_picker
+                    ? "ask_when_supported"
+                    : "browser_default",
+            },
         };
-        let parsePreferences = parsePreferencesApi
-            ? parsePreferencesApi.load({defaults: renderedParseDefaults})
-            : {version: 1, ...renderedParseDefaults};
+        let projectSettings = projectSettingsApi
+            ? projectSettingsApi.loadProjectSettings({defaults: renderedProjectDefaults})
+            : {version: 2, ...renderedProjectDefaults};
 
         let selected = [];
-        let useFilePicker = Boolean(savedSettings.use_file_picker);
-        let downloadMode = normalizeDownloadMode(savedSettings.download_mode);
+        let useFilePicker = (
+            downloadLocationSettingAvailable
+            && projectSettings.download.location_mode === "ask_when_supported"
+        );
         let activeParseController = null;
         let parseRequestId = 0;
         let downloadInProgress = false;
         let activePhotoController = null;
         let pendingPhotoServerFallback = false;
-        let pendingParsePreferences = null;
+        let pendingProjectSettings = null;
         let lastDownloadProgress = 0;
         let ultraRetryDeadline = 0;
         let ultraRetryTimer = null;
@@ -388,83 +377,60 @@
         }
 
         function isUltraHdEnabled() {
-            return Boolean(ultraHdSettingInput && ultraHdSettingInput.checked && !ultraHdSettingInput.disabled);
-        }
-
-        function updateUltraHdRequestValue() {
-            if (!ultraHdRequestInput) {
-                return;
-            }
-
-            ultraHdRequestInput.value = isUltraHdEnabled() ? "1" : "0";
+            return Boolean(
+                page.dataset.ultraHdAvailable === "true"
+                && ultraHdRequestInput
+                && ultraHdRequestInput.value === "1"
+            );
         }
 
         function isYoutubeMergeEnabled() {
             return Boolean(
-                youtubeMergeSettingInput
-                && youtubeMergeSettingInput.checked
-                && !youtubeMergeSettingInput.disabled
+                page.dataset.youtubeMergeAvailable === "true"
+                && youtubeMergeRequestInput
+                && youtubeMergeRequestInput.value === "1"
             );
         }
 
-        function updateYoutubeMergeRequestValue() {
-            if (!youtubeMergeRequestInput) {
-                return;
+        function applyProjectSettings(settings) {
+            projectSettings = settings;
+            const parsing = settings && settings.parsing ? settings.parsing : {};
+            if (ultraHdRequestInput) {
+                ultraHdRequestInput.value = (
+                    page.dataset.ultraHdAvailable === "true"
+                    && parsing.ultra_hd
+                ) ? "1" : "0";
             }
-
-            youtubeMergeRequestInput.value = isYoutubeMergeEnabled() ? "1" : "0";
-        }
-
-        function applyParsePreferences(preferences) {
-            parsePreferences = preferences;
-            if (parsePreferencesApi) {
-                parsePreferencesApi.applyToControls(parsePreferences, {
-                    ultraHdInput: ultraHdSettingInput,
-                    ultraHdHiddenInput: ultraHdRequestInput,
-                    youtubeMergeInput: youtubeMergeSettingInput,
-                    youtubeMergeHiddenInput: youtubeMergeRequestInput,
-                });
-            } else {
-                if (ultraHdSettingInput) {
-                    ultraHdSettingInput.checked = Boolean(preferences.ultra_hd)
-                        && !ultraHdSettingInput.disabled;
-                }
-                if (youtubeMergeSettingInput) {
-                    youtubeMergeSettingInput.checked = Boolean(preferences.youtube_merge)
-                        && !youtubeMergeSettingInput.disabled;
-                }
-                updateUltraHdRequestValue();
-                updateYoutubeMergeRequestValue();
+            if (youtubeMergeRequestInput) {
+                youtubeMergeRequestInput.value = (
+                    page.dataset.youtubeMergeAvailable === "true"
+                    && parsing.youtube_merge
+                ) ? "1" : "0";
             }
+            useFilePicker = Boolean(
+                downloadLocationSettingAvailable
+                && settings
+                && settings.download
+                && settings.download.location_mode === "ask_when_supported"
+            );
             if (!isUltraHdEnabled() && ultraRetryDeadline) {
                 startUltraRetryCountdown(0);
             }
         }
 
-        function saveParsePreferences() {
-            if (!parsePreferencesApi) {
-                updateUltraHdRequestValue();
-                updateYoutubeMergeRequestValue();
-                return;
+        function queueOrApplyProjectSettings(settings) {
+            if (!activeParseController && !downloadInProgress) {
+                applyProjectSettings(settings);
+            } else {
+                pendingProjectSettings = settings;
             }
-            const patch = {};
-            if (ultraHdSettingInput && !ultraHdSettingInput.disabled) {
-                patch.ultra_hd = ultraHdSettingInput.checked;
-            }
-            if (youtubeMergeSettingInput && !youtubeMergeSettingInput.disabled) {
-                patch.youtube_merge = youtubeMergeSettingInput.checked;
-            }
-            pendingParsePreferences = null;
-            applyParsePreferences(parsePreferencesApi.update(patch, {
-                defaults: renderedParseDefaults,
-            }));
         }
 
-        function applyPendingParsePreferences() {
-            if (pendingParsePreferences && !activeParseController && !downloadInProgress) {
-                const pending = pendingParsePreferences;
-                pendingParsePreferences = null;
-                applyParsePreferences(pending);
+        function applyPendingProjectSettings() {
+            if (pendingProjectSettings && !activeParseController && !downloadInProgress) {
+                const pending = pendingProjectSettings;
+                pendingProjectSettings = null;
+                applyProjectSettings(pending);
             }
         }
 
@@ -556,52 +522,6 @@
                     delete button.dataset.originalHtml;
                 }
             });
-        }
-
-        function updateDownloadLocationButtons() {
-            if (!browserDefaultLocationBtn || !chooseDownloadLocationBtn) {
-                return;
-            }
-
-            if (!window.showSaveFilePicker) {
-                useFilePicker = false;
-                chooseDownloadLocationBtn.disabled = true;
-                chooseDownloadLocationBtn.title = "当前浏览器不支持选择保存位置，将使用默认下载路径";
-
-                if (browserLocationHelp) {
-                    browserLocationHelp.innerText = "当前浏览器不支持选择保存位置，将使用浏览器默认下载目录。";
-                }
-            } else {
-                chooseDownloadLocationBtn.disabled = false;
-                chooseDownloadLocationBtn.title = "";
-
-                if (browserLocationHelp) {
-                    browserLocationHelp.innerText = "默认使用浏览器下载目录；选择保存位置后，每次下载 ZIP 时会弹出保存窗口。";
-                }
-            }
-
-            browserDefaultLocationBtn.classList.toggle("btn-brand", !useFilePicker);
-            browserDefaultLocationBtn.classList.toggle("btn-outline-secondary", useFilePicker);
-            browserDefaultLocationBtn.setAttribute("aria-pressed", String(!useFilePicker));
-
-            chooseDownloadLocationBtn.classList.toggle("btn-brand", useFilePicker);
-            chooseDownloadLocationBtn.classList.toggle("btn-outline-secondary", !useFilePicker);
-            chooseDownloadLocationBtn.setAttribute("aria-pressed", String(useFilePicker));
-        }
-
-        function updateModeVisibility() {
-            downloadMode = normalizeDownloadMode(downloadModeInput ? downloadModeInput.value : "browser");
-            if (downloadModeInput && downloadModeInput.value !== downloadMode) {
-                downloadModeInput.value = downloadMode;
-            }
-
-            if (browserDownloadSettings) {
-                browserDownloadSettings.hidden = downloadMode !== "browser";
-            }
-
-            if (serverSaveSettings) {
-                serverSaveSettings.hidden = downloadMode !== "server";
-            }
         }
 
         function resetDownloadProgressBaseline() {
@@ -1143,7 +1063,7 @@
                 resultsRegion.innerHTML = "";
             }
             setPageHasResults(false);
-            applyPendingParsePreferences();
+            applyPendingProjectSettings();
         }
 
         async function readResponseBlobWithProgress(response, startPercent, endPercent) {
@@ -1639,13 +1559,11 @@
                 const payload = {
                     media_items: selected,
                     base_filename: getBaseFilename(),
-                    download_mode: forceAutoMode
-                        ? "auto"
-                        : normalizeDownloadMode(downloadModeInput ? downloadModeInput.value : "browser"),
-                    save_dir: saveDirInput ? saveDirInput.value.trim() : "xhs",
-                    save_format: saveFormatInput ? saveFormatInput.value : "original",
-                    quality: qualityInput ? qualityInput.value || 95 : 95,
-                    video_save_mode: videoSaveModeInput ? videoSaveModeInput.value : "video",
+                    download_mode: forceAutoMode ? "auto" : "browser",
+                    save_dir: String(savedSettings.save_dir || "xhs").trim(),
+                    save_format: savedSettings.save_format || "original",
+                    quality: savedSettings.quality || 95,
+                    video_save_mode: savedSettings.video_save_mode || "video",
                 };
                 if (forceServerPhotoArchive) {
                     payload.download_mode = "zip";
@@ -1823,7 +1741,7 @@
             } finally {
                 downloadInProgress = false;
                 setDownloadButtonsBusy(false);
-                applyPendingParsePreferences();
+                applyPendingProjectSettings();
             }
         }
 
@@ -1879,9 +1797,6 @@
                 setParseLoading(false);
                 return;
             }
-            updateUltraHdRequestValue();
-            updateYoutubeMergeRequestValue();
-
             if (!linkInput || !linkInput.value.trim()) {
                 linkInput && linkInput.focus();
                 return;
@@ -1983,47 +1898,22 @@
                 if (currentRequestId === parseRequestId) {
                     activeParseController = null;
                     setParseLoading(false);
-                    applyPendingParsePreferences();
+                    applyPendingProjectSettings();
                 }
             }
         }
 
-        applyParsePreferences(parsePreferences);
+        applyProjectSettings(projectSettings);
 
-        if (parsePreferencesApi) {
-            parsePreferencesApi.subscribe((preferences) => {
-                if (!activeParseController && !downloadInProgress) {
-                    applyParsePreferences(preferences);
-                } else {
-                    pendingParsePreferences = preferences;
-                }
-            });
+        if (projectSettingsApi) {
+            projectSettingsApi.subscribeProjectSettings(queueOrApplyProjectSettings);
         }
-
-        if (optionExists(downloadModeInput, downloadMode)) {
-            downloadModeInput.value = downloadMode;
-        } else {
-            downloadMode = "browser";
-            if (downloadModeInput) {
-                downloadModeInput.value = "browser";
+        window.addEventListener("animeimages:project-settings-changed", (event) => {
+            const settings = event && event.detail ? event.detail.settings : null;
+            if (settings) {
+                queueOrApplyProjectSettings(settings);
             }
-        }
-
-        if (savedSettings.save_format && saveFormatInput) {
-            saveFormatInput.value = savedSettings.save_format;
-        }
-
-        if (savedSettings.quality && qualityInput) {
-            qualityInput.value = savedSettings.quality;
-        }
-
-        if (savedSettings.video_save_mode && videoSaveModeInput) {
-            videoSaveModeInput.value = savedSettings.video_save_mode;
-        }
-
-        if (savedSettings.save_dir && saveDirInput) {
-            saveDirInput.value = savedSettings.save_dir;
-        }
+        });
 
         if (searchForm) {
             searchForm.addEventListener("submit", handleSearchSubmit);
@@ -2103,63 +1993,6 @@
             });
         }
 
-        if (downloadModeInput) {
-            downloadModeInput.addEventListener("change", updateModeVisibility);
-        }
-
-        [ultraHdSettingInput, youtubeMergeSettingInput].forEach((input) => {
-            if (input) {
-                input.addEventListener("change", () => {
-                    updateUltraHdRequestValue();
-                    updateYoutubeMergeRequestValue();
-                    setParseLoading(Boolean(activeParseController));
-                });
-            }
-        });
-
-        if (settingsModal) {
-            settingsModal.addEventListener("hidden.bs.modal", () => {
-                applyParsePreferences(parsePreferences);
-            });
-        }
-
-        if (browserDefaultLocationBtn) {
-            browserDefaultLocationBtn.addEventListener("click", () => {
-                useFilePicker = false;
-                updateDownloadLocationButtons();
-            });
-        }
-
-        if (chooseDownloadLocationBtn) {
-            chooseDownloadLocationBtn.addEventListener("click", () => {
-                if (!window.showSaveFilePicker) {
-                    return;
-                }
-
-                useFilePicker = true;
-                updateDownloadLocationButtons();
-            });
-        }
-
-        if (saveSettingsBtn) {
-            saveSettingsBtn.addEventListener("click", () => {
-                saveSettings({
-                    ...savedSettings,
-                    download_mode: normalizeDownloadMode(downloadModeInput ? downloadModeInput.value : "browser"),
-                    save_dir: saveDirInput ? saveDirInput.value.trim() : "xhs",
-                    save_format: saveFormatInput ? saveFormatInput.value : "original",
-                    quality: qualityInput ? qualityInput.value || 95 : 95,
-                    video_save_mode: videoSaveModeInput ? videoSaveModeInput.value : "video",
-                    use_file_picker: useFilePicker,
-                });
-                saveParsePreferences();
-
-                setStatus(getStatusElement(), "设置已保存", "text-success");
-            });
-        }
-
-        updateDownloadLocationButtons();
-        updateModeVisibility();
         updateSelectAllButton();
         if (ordinaryMediaDownloadApi) {
             const interrupted = ordinaryMediaDownloadApi.consumeInterruptedDownloadMarker();

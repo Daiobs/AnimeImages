@@ -1,0 +1,111 @@
+<div class="modal fade project-settings-modal"
+     id="projectSettingsModal"
+     tabindex="-1"
+     aria-labelledby="projectSettingsModalLabel"
+     aria-hidden="true"
+     data-default-ultra-hd="{{ project_settings_ultra_hd_default|yesno:'true,false' }}"
+     data-default-youtube-merge="{{ project_settings_youtube_merge_default|yesno:'true,false' }}">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow">
+            <div class="modal-header">
+                <div>
+                    <h2 class="modal-title fs-5 fw-bold" id="projectSettingsModalLabel">项目设置</h2>
+                    <p class="project-settings-intro">设置会应用到首页、单平台解析和批量解析。</p>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+
+            <div class="modal-body settings-panel">
+                {% if request.user.is_staff %}
+                    <section class="settings-section">
+                        <div class="settings-section-title">
+                            <i class="bi bi-folder2-open" aria-hidden="true"></i>
+                            <span>浏览器保存位置</span>
+                        </div>
+                        <div class="download-location-toggle" role="radiogroup" aria-label="浏览器保存位置">
+                            <label class="btn btn-brand" aria-pressed="true">
+                                <input class="visually-hidden"
+                                       type="radio"
+                                       name="project-download-location"
+                                       value="browser_default"
+                                       checked>
+                                <i class="bi bi-download me-1" aria-hidden="true"></i>
+                                使用浏览器默认下载位置
+                            </label>
+                            <label class="btn btn-outline-secondary" aria-pressed="false">
+                                <input class="visually-hidden"
+                                       type="radio"
+                                       name="project-download-location"
+                                       value="ask_when_supported">
+                                <i class="bi bi-folder-plus me-1" aria-hidden="true"></i>
+                                下载时选择保存位置
+                            </label>
+                        </div>
+                        <div class="form-text">
+                            支持选择位置的浏览器和文件类型会显示保存窗口；其他情况继续使用浏览器默认下载位置。
+                        </div>
+                    </section>
+                {% endif %}
+
+                <section class="settings-section">
+                    <div class="settings-section-title">
+                        <i class="bi bi-speedometer2" aria-hidden="true"></i>
+                        <span>解析质量</span>
+                    </div>
+
+                    <label class="settings-toggle{% if not ultra_hd_available %} is-disabled{% endif %}">
+                        <input type="checkbox"
+                               id="project-ultra-hd-setting"
+                               {% if project_settings_ultra_hd_default and ultra_hd_available %}checked{% endif %}
+                               {% if not ultra_hd_available %}disabled{% endif %}>
+                        <span class="settings-switch-control" aria-hidden="true"></span>
+                        <span>
+                            <strong>抖音原画 / 超清</strong>
+                            <small>
+                                {% if ultra_hd_available %}
+                                    开启后优先获取抖音原画 / 超高清资源；未获取到时返回当前可用清晰度。
+                                {% else %}
+                                    当前无法使用抖音原画 / 超高清解析。
+                                {% endif %}
+                            </small>
+                        </span>
+                    </label>
+
+                    <label class="settings-toggle{% if not youtube_merge_mode_available %} is-disabled{% endif %}">
+                        <input type="checkbox"
+                               id="project-youtube-merge-setting"
+                               {% if project_settings_youtube_merge_default and youtube_merge_mode_available %}checked{% endif %}
+                               {% if not youtube_merge_mode_available %}disabled{% endif %}>
+                        <span class="settings-switch-control" aria-hidden="true"></span>
+                        <span>
+                            <strong>YouTube 最高画质合并</strong>
+                            <small>
+                                {% if youtube_merge_mode_available %}
+                                    开启后优先选择最高可用画质，完成下载可能需要更长时间。
+                                {% else %}
+                                    当前无法使用 YouTube 最高画质合并。
+                                {% endif %}
+                            </small>
+                        </span>
+                    </label>
+                </section>
+            </div>
+
+            <div class="modal-footer">
+                <button type="button"
+                        class="btn btn-outline-secondary"
+                        id="project-cancel-settings-btn"
+                        data-bs-dismiss="modal">
+                    取消
+                </button>
+                <button type="button"
+                        class="btn btn-brand"
+                        id="project-save-settings-btn"
+                        data-bs-dismiss="modal">
+                    <i class="bi bi-check-lg me-1" aria-hidden="true"></i>
+                    保存设置
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
