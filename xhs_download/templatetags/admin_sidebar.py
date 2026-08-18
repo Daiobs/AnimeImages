@@ -4,6 +4,12 @@ from django.urls import NoReverseMatch, reverse
 register = template.Library()
 
 
+USER_FEEDBACK_PERMISSIONS = (
+    "xhs_download.view_userfeedback",
+    "xhs_download.change_userfeedback",
+)
+
+
 SIDEBAR_GROUPS = (
     (
         "总览",
@@ -26,6 +32,17 @@ SIDEBAR_GROUPS = (
             ("下载限流", "admin:download_console_downloadruntimesetting_changelist", "限"),
             ("批量解析配置", "admin:xhs_download_batchparseruntimesetting_changelist", "批"),
             ("日志中心", "logs_center", "志"),
+        ),
+    ),
+    (
+        "反馈",
+        (
+            (
+                "问题反馈",
+                "admin:xhs_download_userfeedback_changelist",
+                "馈",
+                USER_FEEDBACK_PERMISSIONS,
+            ),
         ),
     ),
     (
@@ -81,6 +98,18 @@ def item_is_active(path, url, *, url_name="", view_name=""):
     return False
 
 
+def item_is_visible(request, permissions=()):
+    if not permissions:
+        return True
+    user = getattr(request, "user", None)
+    return bool(
+        user
+        and getattr(user, "is_active", False)
+        and getattr(user, "is_staff", False)
+        and any(user.has_perm(permission) for permission in permissions)
+    )
+
+
 @register.inclusion_tag("admin/sidebar_menu.html", takes_context=True)
 def admin_sidebar_menu(context):
     request = context.get("request")
@@ -90,7 +119,11 @@ def admin_sidebar_menu(context):
     for group_index, (group_label, items) in enumerate(SIDEBAR_GROUPS):
         resolved_items = []
         group_active = False
-        for label, url_name, short_label in items:
+        for item in items:
+            label, url_name, short_label = item[:3]
+            permissions = item[3] if len(item) > 3 else ()
+            if not item_is_visible(request, permissions):
+                continue
             url = reverse_optional(url_name)
             if not url:
                 continue

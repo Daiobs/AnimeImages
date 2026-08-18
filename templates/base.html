@@ -58,7 +58,16 @@
         </div>
 
         <div class="ms-auto d-flex align-items-center gap-2 site-nav-actions">
-            {% block nav_leading_actions %}{% endblock %}
+            {% block nav_leading_actions %}
+                <button type="button"
+                        class="btn btn-outline-secondary nav-feedback-btn"
+                        data-bs-toggle="modal"
+                        data-bs-target="#userFeedbackModal"
+                        title="问题反馈"
+                        aria-label="问题反馈">
+                    <i class="bi bi-chat-dots" aria-hidden="true"></i>
+                </button>
+            {% endblock %}
             {% block nav_actions %}
                 <button type="button"
                         class="btn btn-outline-secondary btn-sm nav-settings-btn"
@@ -78,6 +87,121 @@
 
 {% include "partials/project_settings_modal.html" %}
 
+<div class="modal fade feedback-modal"
+     id="userFeedbackModal"
+     tabindex="-1"
+     aria-labelledby="userFeedbackModalLabel"
+     aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <form id="user-feedback-form"
+                  method="post"
+                  action="{% url 'user_feedback_submit' %}"
+                  enctype="multipart/form-data">
+                {% csrf_token %}
+                <div class="modal-header">
+                    <div>
+                        <h2 class="modal-title fs-5" id="userFeedbackModalLabel">遇到了什么问题？</h2>
+                        <p class="feedback-modal-subtitle mb-0">告诉我们发生了什么，便于后续定位和改进。</p>
+                    </div>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="feedback-form-fields" data-feedback-form-fields>
+                        <div class="mb-3">
+                            <label class="form-label fw-bold" for="user-feedback-message">
+                                问题描述 <span class="text-danger" aria-hidden="true">*</span>
+                            </label>
+                            <textarea class="form-control feedback-message-input"
+                                      id="user-feedback-message"
+                                      name="message"
+                                      maxlength="1200"
+                                      placeholder="请描述出现问题时的操作和页面表现"
+                                      required></textarea>
+                            <div class="form-text">请勿填写密码、Cookie、令牌或带签名的资源链接。</div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-bold" for="user-feedback-image">问题截图（可选）</label>
+                            <input class="visually-hidden"
+                                   id="user-feedback-image"
+                                   name="image"
+                                   type="file"
+                                   accept="image/jpeg,image/png,image/webp"
+                                   aria-describedby="user-feedback-image-help">
+                            <div class="feedback-image-dropzone"
+                                 data-feedback-image-dropzone
+                                 role="button"
+                                 tabindex="0"
+                                 aria-controls="user-feedback-image">
+                                <div class="feedback-image-empty" data-feedback-image-empty>
+                                    <i class="bi bi-image" aria-hidden="true"></i>
+                                    <strong>选择图片或拖到这里</strong>
+                                    <span>提交前可以在这里预览</span>
+                                </div>
+                                <div class="feedback-image-preview" data-feedback-image-preview hidden>
+                                    <img data-feedback-image-preview-img alt="问题截图预览">
+                                    <div class="feedback-image-preview-actions">
+                                        <span>已选择 1 张图片</span>
+                                        <div>
+                                            <button type="button"
+                                                    class="btn btn-sm btn-outline-secondary"
+                                                    data-feedback-image-replace>重新选择</button>
+                                            <button type="button"
+                                                    class="btn btn-sm btn-outline-danger"
+                                                    data-feedback-image-remove>移除</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="form-text" id="user-feedback-image-help">
+                                支持 JPG、PNG、WebP，单张不超过 5 MB。
+                            </div>
+                        </div>
+                        <div>
+                            <label class="form-label fw-bold" for="user-feedback-contact">联系方式（可选）</label>
+                            <input class="form-control"
+                                   id="user-feedback-contact"
+                                   name="contact"
+                                   type="text"
+                                   maxlength="256"
+                                   autocomplete="off"
+                                   placeholder="邮箱、手机号或其他便于联系的方式">
+                            <div class="form-text">仅用于跟进本次反馈，不填写也可以提交。</div>
+                        </div>
+                    </div>
+
+                    <input type="hidden" name="page_path" value="{{ request.path|default:'/' }}">
+                    <input type="hidden" name="source_platform" value="">
+                    <input type="hidden" name="viewport_width" value="">
+                    <input type="hidden" name="viewport_height" value="">
+
+                    <div class="alert alert-success feedback-success-state mb-0"
+                         data-feedback-success
+                         role="status"
+                         hidden>
+                        <i class="bi bi-check-circle me-1" aria-hidden="true"></i>
+                        感谢反馈，我们已收到。
+                    </div>
+                    <div class="feedback-submit-status mt-3"
+                         data-feedback-status
+                         role="status"
+                         aria-live="polite"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button"
+                            class="btn btn-outline-secondary"
+                            data-bs-dismiss="modal"
+                            data-feedback-dismiss-label>取消</button>
+                    <button type="submit" class="btn btn-brand" data-feedback-submit>
+                        <span data-feedback-submit-label>提交反馈</span>
+                        <span class="spinner-border spinner-border-sm ms-1" data-feedback-spinner aria-hidden="true" hidden></span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
 <footer class="border-top py-4 mt-5 text-center text-muted small">
     <div class="container">
         仅用于授权内容、个人素材管理与备份
@@ -88,6 +212,7 @@
 <script src="{% static 'js/app.js' %}?v={{ static_asset_version }}"></script>
 <script src="{% static 'js/parse_preferences.js' %}?v={{ static_asset_version }}"></script>
 <script src="{% static 'js/project_settings.js' %}?v={{ static_asset_version }}"></script>
+<script src="{% static 'js/user_feedback.js' %}?v={{ static_asset_version }}"></script>
 
 {% block extra_js %}{% endblock %}
 </body>

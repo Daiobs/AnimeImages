@@ -1,5 +1,8 @@
 from django.contrib import admin, messages
+from django.http import FileResponse, Http404
 from django.shortcuts import redirect
+from django.urls import path, reverse
+from django.utils.html import format_html
 
 from .admin_batch_runtime import (
     BATCH_RUNTIME_MUTATION_FIELDS,
@@ -22,6 +25,7 @@ from .models import (
     ReleaseDeployJob,
     RoutingDecisionLog,
     SelfHealingEvent,
+    UserFeedback,
 )
 
 
@@ -218,6 +222,124 @@ class ReadOnlyLogAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return bool(getattr(request.user, "is_superuser", False))
+
+
+@admin.register(UserFeedback)
+class UserFeedbackAdmin(admin.ModelAdmin):
+    actions = None
+    list_display = (
+        "created_at",
+        "status",
+        "message_preview",
+        "contact_provided",
+        "image_provided",
+        "page_path",
+        "source_platform",
+        "request_id_preview",
+    )
+    list_editable = ("status",)
+    list_filter = ("status", "source_platform", "created_at")
+    search_fields = ("message", "contact", "request_id", "page_path")
+    ordering = ("-created_at",)
+    fields = (
+        "status",
+        "message",
+        "contact",
+        "image_link",
+        "page_path",
+        "request_id",
+        "source_platform",
+        "viewport_width",
+        "viewport_height",
+        "created_at",
+    )
+    readonly_fields = (
+        "message",
+        "contact",
+        "image_link",
+        "page_path",
+        "request_id",
+        "source_platform",
+        "viewport_width",
+        "viewport_height",
+        "created_at",
+    )
+
+    @admin.display(description="反馈摘要")
+    def message_preview(self, obj):
+        message = str(obj.message or "").replace("\n", " ")
+        return message if len(message) <= 80 else f"{message[:77]}..."
+
+    @admin.display(boolean=True, description="留有联系方式")
+    def contact_provided(self, obj):
+        return bool(str(obj.contact or "").strip())
+
+    @admin.display(boolean=True, description="包含截图")
+    def image_provided(self, obj):
+        return bool(obj.image)
+
+    @admin.display(description="问题截图")
+    def image_link(self, obj):
+        if not obj or not obj.pk or not obj.image:
+            return "未上传"
+        image_url = reverse(
+            "admin:xhs_download_userfeedback_image",
+            args=(obj.pk,),
+        )
+        return format_html(
+            '<a href="{}" target="_blank" rel="noopener">查看上传图片</a>',
+            image_url,
+        )
+
+    @admin.display(description="关联请求 ID", ordering="request_id")
+    def request_id_preview(self, obj):
+        request_id = str(obj.request_id or "")
+        return request_id if len(request_id) <= 20 else f"{request_id[:17]}..."
+
+    def get_urls(self):
+        custom_urls = [
+            path(
+                "<path:object_id>/image/",
+                self.admin_site.admin_view(self.image_view),
+                name="xhs_download_userfeedback_image",
+            ),
+        ]
+        return custom_urls + super().get_urls()
+
+    def image_view(self, request, object_id):
+        feedback = self.get_object(request, object_id)
+        if (
+            feedback is None
+            or not feedback.image
+            or not self.has_view_or_change_permission(request, feedback)
+        ):
+            raise Http404
+
+        suffix = str(feedback.image.name or "").lower().rsplit(".", 1)[-1]
+        content_type = {
+            "jpg": "image/jpeg",
+            "png": "image/png",
+            "webp": "image/webp",
+        }.get(suffix)
+        if content_type is None:
+            raise Http404
+
+        try:
+            image_file = feedback.image.storage.open(feedback.image.name, "rb")
+        except (FileNotFoundError, OSError):
+            raise Http404
+
+        response = FileResponse(image_file, content_type=content_type)
+        response["Content-Disposition"] = f'inline; filename="feedback-image.{suffix}"'
+        response["Cache-Control"] = "private, no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(ParseRequestLog)
