@@ -22,7 +22,12 @@ class GlobalSettingsPlacementTests(TestCase):
             is_staff=True,
         )
 
-    def assert_shared_settings_component(self, response):
+    def assert_shared_settings_component(
+        self,
+        response,
+        *,
+        download_location_visible,
+    ):
         content = response.content.decode()
         header = content[: content.index("<main>")]
 
@@ -32,22 +37,61 @@ class GlobalSettingsPlacementTests(TestCase):
         self.assertIn('data-bs-target="#projectSettingsModal"', header)
         self.assertIn('id="project-ultra-hd-setting"', content)
         self.assertIn('id="project-youtube-merge-setting"', content)
-        self.assertIn('value="browser_default"', content)
-        self.assertIn('value="ask_when_supported"', content)
+        if download_location_visible:
+            self.assertIn('value="browser_default"', content)
+            self.assertIn('value="ask_when_supported"', content)
+        else:
+            self.assertNotIn('name="project-download-location"', content)
+            self.assertNotIn("浏览器保存位置", content)
         self.assertNotIn('id="settingsModal"', content)
         self.assertNotIn('id="batchSettingsModal"', content)
 
     def test_all_single_parser_pages_share_one_project_settings_component(self):
         for route_name in ("home", "xhs_home", "tiktok_home", "bilibili_home"):
             with self.subTest(route_name=route_name):
-                self.assert_shared_settings_component(self.client.get(reverse(route_name)))
+                self.assert_shared_settings_component(
+                    self.client.get(reverse(route_name)),
+                    download_location_visible=False,
+                )
+
+    def test_staff_single_parser_can_control_browser_save_location(self):
+        self.client.force_login(self.staff_user)
+
+        response = self.client.get(reverse("home"))
+
+        self.assert_shared_settings_component(
+            response,
+            download_location_visible=True,
+        )
+        self.assertContains(
+            response,
+            'data-download-location-setting-available="true"',
+        )
+
+    def test_public_single_parser_enforces_browser_default_location(self):
+        response = self.client.get(reverse("home"))
+
+        self.assertContains(
+            response,
+            'data-download-location-setting-available="false"',
+        )
+        source = (PROJECT_ROOT / "static/js/xhs_download.js").read_text()
+        self.assertIn("downloadLocationSettingAvailable", source)
+        self.assertIn(
+            "downloadLocationSettingAvailable\n"
+            '            && projectSettings.download.location_mode === "ask_when_supported"',
+            source,
+        )
 
     def test_batch_uses_the_same_project_settings_component(self):
         self.client.force_login(self.staff_user)
 
         response = self.client.get(reverse("batch_parse"))
 
-        self.assert_shared_settings_component(response)
+        self.assert_shared_settings_component(
+            response,
+            download_location_visible=True,
+        )
         content = response.content.decode()
         self.assertNotIn("batch-settings-toggle", content)
         self.assertNotIn("batch-settings-panel", content)

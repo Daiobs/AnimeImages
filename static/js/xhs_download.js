@@ -258,6 +258,9 @@
         const clearLinkBtn = document.getElementById("clear-link-btn");
         const ultraHdRequestInput = document.getElementById("ultra-hd-request-input");
         const youtubeMergeRequestInput = document.getElementById("youtube-merge-request-input");
+        const downloadLocationSettingAvailable = (
+            page.dataset.downloadLocationSettingAvailable === "true"
+        );
         const downloadUrl = page.dataset.downloadUrl;
         const downloadPrepareUrl = page.dataset.downloadPrepareUrl;
         const douyinContinuationUrl = page.dataset.douyinContinuationUrl;
@@ -289,7 +292,8 @@
                     : false,
             },
             download: {
-                location_mode: typeof savedSettings.use_file_picker === "boolean"
+                location_mode: downloadLocationSettingAvailable
+                    && typeof savedSettings.use_file_picker === "boolean"
                     && savedSettings.use_file_picker
                     ? "ask_when_supported"
                     : "browser_default",
@@ -301,7 +305,8 @@
 
         let selected = [];
         let useFilePicker = (
-            projectSettings.download.location_mode === "ask_when_supported"
+            downloadLocationSettingAvailable
+            && projectSettings.download.location_mode === "ask_when_supported"
         );
         let activeParseController = null;
         let parseRequestId = 0;
@@ -403,7 +408,8 @@
                 ) ? "1" : "0";
             }
             useFilePicker = Boolean(
-                settings
+                downloadLocationSettingAvailable
+                && settings
                 && settings.download
                 && settings.download.location_mode === "ask_when_supported"
             );

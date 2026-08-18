@@ -16,34 +16,36 @@
             </div>
 
             <div class="modal-body settings-panel">
-                <section class="settings-section">
-                    <div class="settings-section-title">
-                        <i class="bi bi-folder2-open" aria-hidden="true"></i>
-                        <span>浏览器保存位置</span>
-                    </div>
-                    <div class="download-location-toggle" role="radiogroup" aria-label="浏览器保存位置">
-                        <label class="btn btn-brand" aria-pressed="true">
-                            <input class="visually-hidden"
-                                   type="radio"
-                                   name="project-download-location"
-                                   value="browser_default"
-                                   checked>
-                            <i class="bi bi-download me-1" aria-hidden="true"></i>
-                            使用浏览器默认下载位置
-                        </label>
-                        <label class="btn btn-outline-secondary" aria-pressed="false">
-                            <input class="visually-hidden"
-                                   type="radio"
-                                   name="project-download-location"
-                                   value="ask_when_supported">
-                            <i class="bi bi-folder-plus me-1" aria-hidden="true"></i>
-                            下载时选择保存位置
-                        </label>
-                    </div>
-                    <div class="form-text">
-                        支持选择位置的浏览器和文件类型会显示保存窗口；其他情况继续使用浏览器默认下载位置。
-                    </div>
-                </section>
+                {% if request.user.is_staff %}
+                    <section class="settings-section">
+                        <div class="settings-section-title">
+                            <i class="bi bi-folder2-open" aria-hidden="true"></i>
+                            <span>浏览器保存位置</span>
+                        </div>
+                        <div class="download-location-toggle" role="radiogroup" aria-label="浏览器保存位置">
+                            <label class="btn btn-brand" aria-pressed="true">
+                                <input class="visually-hidden"
+                                       type="radio"
+                                       name="project-download-location"
+                                       value="browser_default"
+                                       checked>
+                                <i class="bi bi-download me-1" aria-hidden="true"></i>
+                                使用浏览器默认下载位置
+                            </label>
+                            <label class="btn btn-outline-secondary" aria-pressed="false">
+                                <input class="visually-hidden"
+                                       type="radio"
+                                       name="project-download-location"
+                                       value="ask_when_supported">
+                                <i class="bi bi-folder-plus me-1" aria-hidden="true"></i>
+                                下载时选择保存位置
+                            </label>
+                        </div>
+                        <div class="form-text">
+                            支持选择位置的浏览器和文件类型会显示保存窗口；其他情况继续使用浏览器默认下载位置。
+                        </div>
+                    </section>
+                {% endif %}
 
                 <section class="settings-section">
                     <div class="settings-section-title">

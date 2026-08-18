@@ -36,14 +36,11 @@
         const selectedLocation = (values.locationInputs || []).find(
             (input) => input && input.checked
         );
-        return {
-            parsing,
-            download: {
-                location_mode: selectedLocation
-                    ? selectedLocation.value
-                    : "browser_default",
-            },
-        };
+        const patch = {parsing};
+        if (selectedLocation) {
+            patch.download = {location_mode: selectedLocation.value};
+        }
+        return patch;
     }
 
     function init() {

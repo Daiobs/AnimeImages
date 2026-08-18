@@ -316,6 +316,18 @@ test("the shared Settings save patch omits disabled parse fields", () => {
     });
 });
 
+test("public Settings save patch cannot mutate the staff-only download location", () => {
+    const patch = settingsUi.buildEnabledProjectPatch({
+        ultraInput: {checked: true, disabled: false},
+        youtubeInput: {checked: false, disabled: false},
+        locationInputs: [],
+    });
+
+    assert.deepEqual(patch, {
+        parsing: {ultra_hd: true, youtube_merge: false},
+    });
+});
+
 test("storage access failures never block rendered project defaults", () => {
     const storage = {
         getItem() {

@@ -17,6 +17,7 @@
             data-page-home-url="{{ page_home_url }}"
             data-ultra-hd-available="{{ ultra_hd_available|yesno:'true,false' }}"
             data-youtube-merge-available="{{ youtube_merge_mode_available|yesno:'true,false' }}"
+            data-download-location-setting-available="{{ request.user.is_staff|yesno:'true,false' }}"
     >
         <div class="container-fluid px-4 px-md-5">
             <div class="alert alert-warning ordinary-download-interruption"
