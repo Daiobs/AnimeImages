@@ -348,6 +348,14 @@ Provider/CDN -> Browser Service Worker -> Browser Download Manager -> Disk
   `RELEASE_MANAGEMENT_EXECUTOR_COMMAND` is empty and the separately reviewed
   executor helper/unit/sudoers boundary is not installed.
 
+### Browser Identity
+
+- Public pages and Django Admin share local favicon and Apple touch icon assets.
+- Platform and Batch tabs use concise product-qualified titles and public pages
+  expose only minimal description, theme color, and Open Graph metadata.
+- The current star/download icon is a temporary, replaceable brand placeholder;
+  it is not a final logo or a PWA commitment.
+
 ## Repository Governance State
 
 Repository Branch Archive & Cleanup v1 is complete:

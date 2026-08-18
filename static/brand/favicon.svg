@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="星空的高清下载小站">
+  <defs>
+    <linearGradient id="sky" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2f80ed"/>
+      <stop offset="1" stop-color="#7b3fe4"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="13" fill="url(#sky)"/>
+  <path d="M18 10l1.8 5.2L25 17l-5.2 1.8L18 24l-1.8-5.2L11 17l5.2-1.8L18 10z" fill="#fff"/>
+  <path d="M32 15v25m-9-9 9 9 9-9M20 48h24" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

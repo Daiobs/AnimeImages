@@ -11,6 +11,10 @@
 
 {% block extrahead %}
     {{ block.super }}
+    <meta name="theme-color" content="#6253d6">
+    <link rel="icon" type="image/svg+xml" href="{% static 'brand/favicon.svg' %}">
+    <link rel="icon" type="image/png" sizes="32x32" href="{% static 'brand/favicon-32.png' %}">
+    <link rel="apple-touch-icon" sizes="180x180" href="{% static 'brand/apple-touch-icon.png' %}">
     <script src="{% static 'js/admin_sidebar.js' %}" defer></script>
 {% endblock %}
 
