@@ -22,30 +22,37 @@ class GlobalSettingsPlacementTests(TestCase):
             is_staff=True,
         )
 
-    def test_single_page_keeps_one_header_settings_trigger(self):
-        response = self.client.get(reverse("home"))
+    def assert_shared_settings_component(self, response):
         content = response.content.decode()
         header = content[: content.index("<main>")]
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(content.count('data-bs-target="#settingsModal"'), 1)
-        self.assertIn('class="btn btn-outline-secondary btn-sm nav-settings-btn"', header)
-        self.assertIn("设置", header)
+        self.assertEqual(content.count('id="projectSettingsModal"'), 1)
+        self.assertEqual(content.count('data-bs-target="#projectSettingsModal"'), 1)
+        self.assertIn('data-bs-target="#projectSettingsModal"', header)
+        self.assertIn('id="project-ultra-hd-setting"', content)
+        self.assertIn('id="project-youtube-merge-setting"', content)
+        self.assertIn('value="browser_default"', content)
+        self.assertIn('value="ask_when_supported"', content)
+        self.assertNotIn('id="settingsModal"', content)
+        self.assertNotIn('id="batchSettingsModal"', content)
 
-    def test_batch_moves_its_only_settings_trigger_to_the_header(self):
+    def test_all_single_parser_pages_share_one_project_settings_component(self):
+        for route_name in ("home", "xhs_home", "tiktok_home", "bilibili_home"):
+            with self.subTest(route_name=route_name):
+                self.assert_shared_settings_component(self.client.get(reverse(route_name)))
+
+    def test_batch_uses_the_same_project_settings_component(self):
         self.client.force_login(self.staff_user)
+
         response = self.client.get(reverse("batch_parse"))
+
+        self.assert_shared_settings_component(response)
         content = response.content.decode()
-        header = content[: content.index("<main>")]
-        page = content[content.index("<main>") :]
+        self.assertNotIn("batch-settings-toggle", content)
+        self.assertNotIn("batch-settings-panel", content)
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(content.count('data-bs-target="#batchSettingsModal"'), 1)
-        self.assertIn('data-bs-target="#batchSettingsModal"', header)
-        self.assertNotIn("batch-settings-toggle", page)
-        self.assertIn('id="batchSettingsModal"', page)
-
-    def test_batch_settings_controls_remain_inside_the_parse_form(self):
+    def test_batch_effective_preferences_remain_hidden_form_fields(self):
         self.client.force_login(self.staff_user)
         response = self.client.get(reverse("batch_parse"))
         content = response.content.decode()
@@ -54,14 +61,69 @@ class GlobalSettingsPlacementTests(TestCase):
             content.index("</form>")
         ]
 
-        self.assertIn('name="ultra_hd" value="0"', form)
+        self.assertIn('id="batch-ultra-hd-request-input"', form)
         self.assertIn('name="ultra_hd"', form)
-        self.assertIn('name="youtube_merge" value="0"', form)
+        self.assertIn('id="batch-youtube-merge-request-input"', form)
         self.assertIn('name="youtube_merge"', form)
-        self.assertIn('id="batch-save-settings-btn"', form)
-        self.assertIn('id="batch-cancel-settings-btn"', form)
+        self.assertNotIn("project-save-settings-btn", form)
+        self.assertNotIn("project-cancel-settings-btn", form)
 
-    def test_header_reserves_a_leading_action_slot_for_future_feedback(self):
+    def test_project_settings_only_exposes_user_preferences(self):
+        source = (
+            PROJECT_ROOT / "templates/partials/project_settings_modal.html"
+        ).read_text()
+
+        self.assertIn("浏览器保存位置", source)
+        self.assertIn("解析质量", source)
+        self.assertIn("抖音原画 / 超清", source)
+        self.assertIn("YouTube 最高画质合并", source)
+        for forbidden in (
+            "下载处理方式",
+            "智能下载",
+            "Server Save",
+            "服务端保存路径",
+            "MEDIA_ROOT",
+            "save_dir",
+            "Provider",
+            "runtime",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, source)
+
+    def test_settings_commit_only_from_the_explicit_save_action(self):
+        source = (PROJECT_ROOT / "static/js/project_settings.js").read_text()
+
+        self.assertEqual(source.count("settingsApi.updateProjectSettings("), 1)
+        save_listener = source.index('saveButton.addEventListener("click"')
+        update_call = source.index("settingsApi.updateProjectSettings(")
+        self.assertGreater(update_call, save_listener)
+        self.assertIn('modal.addEventListener("show.bs.modal"', source)
+        self.assertIn('modal.addEventListener("hidden.bs.modal"', source)
+        self.assertIn("if (!saveCommitted)", source)
+        self.assertNotIn("localStorage", source)
+
+    def test_settings_changes_are_deferred_during_active_operations(self):
+        single_source = (PROJECT_ROOT / "static/js/xhs_download.js").read_text()
+        batch_source = (PROJECT_ROOT / "static/js/batch_parse.js").read_text()
+
+        self.assertIn("pendingProjectSettings", single_source)
+        self.assertIn("!activeParseController && !downloadInProgress", single_source)
+        self.assertIn("applyPendingProjectSettings();", single_source)
+        self.assertIn("pendingProjectSettings", batch_source)
+        self.assertIn("batchOperationInProgress()", batch_source)
+        self.assertIn("applyPendingProjectSettings();", batch_source)
+
+    def test_shared_assets_load_before_page_specific_scripts(self):
+        self.client.force_login(self.staff_user)
+        content = self.client.get(reverse("batch_parse")).content.decode()
+
+        preferences_index = content.index("js/parse_preferences.js?v=")
+        settings_index = content.index("js/project_settings.js?v=")
+        batch_index = content.index("js/batch_parse.js?v=")
+        self.assertLess(preferences_index, settings_index)
+        self.assertLess(settings_index, batch_index)
+
+    def test_header_keeps_feedback_before_the_rightmost_settings_action(self):
         source = (PROJECT_ROOT / "templates/base.html").read_text()
 
         leading_index = source.index("{% block nav_leading_actions %}")

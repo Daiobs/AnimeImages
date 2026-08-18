@@ -7,17 +7,24 @@
     }
     if (root && root.document) {
         root.AnimeImagesParsePreferences = api;
+        root.AnimeImagesProjectSettings = api;
     }
 })(typeof window !== "undefined" ? window : globalThis, function (root) {
     "use strict";
 
+    const PROJECT_STORAGE_KEY = "animeimages.settings.v2";
     const SHARED_STORAGE_KEY = "animeimages.parsePreferences.v1";
     const SINGLE_LEGACY_STORAGE_KEY = "xhsDownloadSettings";
     const BATCH_DRAFT_LEGACY_STORAGE_KEY = "animeimages.batchParseDraft.v1";
     const BATCH_DRAFT_STORAGE_KEY = "animeimages.batchParseDraft.v2";
+    const PROJECT_VERSION = 2;
     const SHARED_VERSION = 1;
     const BATCH_DRAFT_VERSION = 2;
     const PREFERENCE_FIELDS = ["ultra_hd", "youtube_merge"];
+    const LOCATION_MODES = Object.freeze([
+        "browser_default",
+        "ask_when_supported",
+    ]);
     const SINGLE_LEGACY_FIELDS = {
         ultra_hd: "ultra_hd_enabled",
         youtube_merge: "youtube_merge_enabled",
@@ -79,10 +86,21 @@
 
     function preferenceDefaults(defaults) {
         const source = isObject(defaults) ? defaults : {};
+        const parsing = isObject(source.parsing) ? source.parsing : source;
         return {
-            ultra_hd: typeof source.ultra_hd === "boolean" ? source.ultra_hd : false,
-            youtube_merge: typeof source.youtube_merge === "boolean" ? source.youtube_merge : false,
+            ultra_hd: typeof parsing.ultra_hd === "boolean" ? parsing.ultra_hd : true,
+            youtube_merge: typeof parsing.youtube_merge === "boolean"
+                ? parsing.youtube_merge
+                : false,
         };
+    }
+
+    function locationDefault(defaults) {
+        const source = isObject(defaults) ? defaults : {};
+        const download = isObject(source.download) ? source.download : source;
+        return LOCATION_MODES.includes(download.location_mode)
+            ? download.location_mode
+            : "browser_default";
     }
 
     function validSharedFields(value) {
@@ -98,6 +116,24 @@
         return fields;
     }
 
+    function validProjectFields(value) {
+        const fields = {parsing: {}, download: {}};
+        if (!isObject(value) || value.version !== PROJECT_VERSION) {
+            return fields;
+        }
+        const parsing = isObject(value.parsing) ? value.parsing : {};
+        PREFERENCE_FIELDS.forEach((field) => {
+            if (typeof parsing[field] === "boolean") {
+                fields.parsing[field] = parsing[field];
+            }
+        });
+        const download = isObject(value.download) ? value.download : {};
+        if (LOCATION_MODES.includes(download.location_mode)) {
+            fields.download.location_mode = download.location_mode;
+        }
+        return fields;
+    }
+
     function completeSharedPreferences(value) {
         const fields = validSharedFields(value);
         if (PREFERENCE_FIELDS.every((field) => typeof fields[field] === "boolean")) {
@@ -110,50 +146,133 @@
         return null;
     }
 
-    function load(options) {
+    function completeProjectSettings(value) {
+        const fields = validProjectFields(value);
+        if (
+            PREFERENCE_FIELDS.every(
+                (field) => typeof fields.parsing[field] === "boolean"
+            )
+            && LOCATION_MODES.includes(fields.download.location_mode)
+        ) {
+            return {
+                version: PROJECT_VERSION,
+                parsing: {
+                    ultra_hd: fields.parsing.ultra_hd,
+                    youtube_merge: fields.parsing.youtube_merge,
+                },
+                download: {
+                    location_mode: fields.download.location_mode,
+                },
+            };
+        }
+        return null;
+    }
+
+    function parsingPreferences(projectSettings) {
+        const settings = completeProjectSettings(projectSettings);
+        return {
+            version: SHARED_VERSION,
+            ultra_hd: Boolean(settings && settings.parsing.ultra_hd),
+            youtube_merge: Boolean(settings && settings.parsing.youtube_merge),
+        };
+    }
+
+    function loadProjectSettings(options) {
         const settings = isObject(options) ? options : {};
         const storage = getStorage(settings);
         const defaults = preferenceDefaults(settings.defaults);
+        const defaultLocation = locationDefault(settings.defaults);
+        const project = validProjectFields(readStoredObject(storage, PROJECT_STORAGE_KEY));
         const shared = validSharedFields(readStoredObject(storage, SHARED_STORAGE_KEY));
         const singleLegacy = readStoredObject(storage, SINGLE_LEGACY_STORAGE_KEY) || {};
         const batchLegacy = readStoredObject(storage, BATCH_DRAFT_LEGACY_STORAGE_KEY) || {};
-        const preferences = {version: SHARED_VERSION};
+        const next = {
+            version: PROJECT_VERSION,
+            parsing: {},
+            download: {},
+        };
 
         PREFERENCE_FIELDS.forEach((field) => {
             const singleLegacyField = SINGLE_LEGACY_FIELDS[field];
-            if (typeof shared[field] === "boolean") {
-                preferences[field] = shared[field];
+            if (typeof project.parsing[field] === "boolean") {
+                next.parsing[field] = project.parsing[field];
+            } else if (typeof shared[field] === "boolean") {
+                next.parsing[field] = shared[field];
             } else if (typeof singleLegacy[singleLegacyField] === "boolean") {
-                preferences[field] = singleLegacy[singleLegacyField];
+                next.parsing[field] = singleLegacy[singleLegacyField];
             } else if (typeof batchLegacy[field] === "boolean") {
-                preferences[field] = batchLegacy[field];
+                next.parsing[field] = batchLegacy[field];
             } else {
-                preferences[field] = defaults[field];
+                next.parsing[field] = defaults[field];
             }
         });
 
+        if (LOCATION_MODES.includes(project.download.location_mode)) {
+            next.download.location_mode = project.download.location_mode;
+        } else if (typeof singleLegacy.use_file_picker === "boolean") {
+            next.download.location_mode = singleLegacy.use_file_picker
+                ? "ask_when_supported"
+                : "browser_default";
+        } else {
+            next.download.location_mode = defaultLocation;
+        }
+
+        writeStoredObject(storage, PROJECT_STORAGE_KEY, next);
+        return next;
+    }
+
+    function mirrorLegacySettings(storage, projectSettings) {
+        const shared = parsingPreferences(projectSettings);
+        writeStoredObject(storage, SHARED_STORAGE_KEY, shared);
+
+        const legacy = readStoredObject(storage, SINGLE_LEGACY_STORAGE_KEY) || {};
+        writeStoredObject(storage, SINGLE_LEGACY_STORAGE_KEY, {
+            ...legacy,
+            ultra_hd_enabled: shared.ultra_hd,
+            youtube_merge_enabled: shared.youtube_merge,
+            use_file_picker: (
+                projectSettings.download.location_mode === "ask_when_supported"
+            ),
+        });
+    }
+
+    function updateProjectSettings(patch, options) {
+        const settings = isObject(options) ? options : {};
+        const storage = getStorage(settings);
+        const current = loadProjectSettings(settings);
+        const changes = isObject(patch) ? patch : {};
+        const parsingChanges = isObject(changes.parsing) ? changes.parsing : changes;
+        const downloadChanges = isObject(changes.download) ? changes.download : changes;
+        const next = {
+            version: PROJECT_VERSION,
+            parsing: {...current.parsing},
+            download: {...current.download},
+        };
+
+        PREFERENCE_FIELDS.forEach((field) => {
+            if (typeof parsingChanges[field] === "boolean") {
+                next.parsing[field] = parsingChanges[field];
+            }
+        });
+        if (LOCATION_MODES.includes(downloadChanges.location_mode)) {
+            next.download.location_mode = downloadChanges.location_mode;
+        }
+
+        writeStoredObject(storage, PROJECT_STORAGE_KEY, next);
+        mirrorLegacySettings(storage, next);
+        return next;
+    }
+
+    function load(options) {
+        const settings = isObject(options) ? options : {};
+        const storage = getStorage(settings);
+        const preferences = parsingPreferences(loadProjectSettings(settings));
         writeStoredObject(storage, SHARED_STORAGE_KEY, preferences);
         return preferences;
     }
 
     function update(patch, options) {
-        const settings = isObject(options) ? options : {};
-        const storage = getStorage(settings);
-        const current = load(settings);
-        const changes = isObject(patch) ? patch : {};
-        const next = {
-            version: SHARED_VERSION,
-            ultra_hd: current.ultra_hd,
-            youtube_merge: current.youtube_merge,
-        };
-
-        PREFERENCE_FIELDS.forEach((field) => {
-            if (typeof changes[field] === "boolean") {
-                next[field] = changes[field];
-            }
-        });
-        writeStoredObject(storage, SHARED_STORAGE_KEY, next);
-        return next;
+        return parsingPreferences(updateProjectSettings({parsing: patch}, options));
     }
 
     function loadBatchDraft(options) {
@@ -195,13 +314,14 @@
     function applyToControls(preferences, controls) {
         const values = completeSharedPreferences(preferences) || {
             version: SHARED_VERSION,
-            ultra_hd: false,
+            ultra_hd: true,
             youtube_merge: false,
         };
         const targets = isObject(controls) ? controls : {};
 
         function applyField(field, input, hiddenInput) {
-            const enabled = Boolean(input && !input.disabled && values[field]);
+            const available = input ? !input.disabled : true;
+            const enabled = Boolean(available && values[field]);
             if (input) {
                 input.checked = enabled;
             }
@@ -225,19 +345,21 @@
         };
     }
 
-    function subscribe(callback, options) {
+    function subscribeProjectSettings(callback, options) {
         const settings = isObject(options) ? options : {};
         const eventTarget = settings.eventTarget || root;
         if (!eventTarget || typeof eventTarget.addEventListener !== "function") {
             return function () {};
         }
         const listener = function (event) {
-            if (!event || event.key !== SHARED_STORAGE_KEY) {
+            if (!event || event.key !== PROJECT_STORAGE_KEY) {
                 return;
             }
-            const preferences = completeSharedPreferences(parseStoredObject(event.newValue));
-            if (preferences && typeof callback === "function") {
-                callback(preferences);
+            const projectSettings = completeProjectSettings(
+                parseStoredObject(event.newValue)
+            );
+            if (projectSettings && typeof callback === "function") {
+                callback(projectSettings);
             }
         };
         eventTarget.addEventListener("storage", listener);
@@ -248,16 +370,30 @@
         };
     }
 
+    function subscribe(callback, options) {
+        return subscribeProjectSettings((projectSettings) => {
+            if (typeof callback === "function") {
+                callback(parsingPreferences(projectSettings));
+            }
+        }, options);
+    }
+
     return Object.freeze({
+        PROJECT_STORAGE_KEY,
         SHARED_STORAGE_KEY,
         SINGLE_LEGACY_STORAGE_KEY,
         BATCH_DRAFT_LEGACY_STORAGE_KEY,
         BATCH_DRAFT_STORAGE_KEY,
+        LOCATION_MODES,
+        loadProjectSettings,
+        updateProjectSettings,
+        parsingPreferences,
         load,
         update,
         loadBatchDraft,
         saveBatchDraft,
         applyToControls,
+        subscribeProjectSettings,
         subscribe,
     });
 });

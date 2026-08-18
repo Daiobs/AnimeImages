@@ -4244,6 +4244,8 @@ def get_download_settings_context(platform_key="home", request=None):
         "youtube_merge_mode_available": (
             youtube_merge_mode_is_available(request) if request is not None else False
         ),
+        "project_settings_ultra_hd_default": True,
+        "project_settings_youtube_merge_default": False,
         "show_internal_diagnostics": show_internal_diagnostics,
     }
 

@@ -3,14 +3,6 @@
 
 {% block title %}{{ page_title|default:"星空的高清下载小站" }}{% endblock %}
 
-{% block nav_actions %}
-    <button type="button" class="btn btn-outline-secondary btn-sm nav-settings-btn" data-bs-toggle="modal"
-            data-bs-target="#settingsModal">
-        <i class="bi bi-gear"></i>
-        设置
-    </button>
-{% endblock %}
-
 {% block content %}
     <section
             class="xhs-download-page {{ theme_class|default:'theme-home' }}{% if image_items or video_items or error_message or platform_notice or provider_notice %} has-results{% endif %}"
@@ -23,6 +15,8 @@
             data-base-filename="{{ base_filename|default:'xhs_image' }}"
             data-platform-key="{{ platform_key|default:'home' }}"
             data-page-home-url="{{ page_home_url }}"
+            data-ultra-hd-available="{{ ultra_hd_available|yesno:'true,false' }}"
+            data-youtube-merge-available="{{ youtube_merge_mode_available|yesno:'true,false' }}"
     >
         <div class="container-fluid px-4 px-md-5">
             <div class="alert alert-warning ordinary-download-interruption"
@@ -32,7 +26,6 @@
                 上次下载可能因页面刷新或关闭而中断，请重新点击下载；若资源已经失效，请重新解析。
             </div>
 
-            <!-- 搜索区 -->
             <div class="hero-section">
                 <div class="row justify-content-center g-4">
                     <div class="col-lg-10 col-xl-8 text-center">
@@ -51,13 +44,13 @@
                                     type="hidden"
                                     name="ultra_hd"
                                     id="ultra-hd-request-input"
-                                    value="{% if prefer_ultra_hd and ultra_hd_available %}1{% else %}0{% endif %}"
+                                    value="{% if project_settings_ultra_hd_default and ultra_hd_available %}1{% else %}0{% endif %}"
                             >
                             <input
                                     type="hidden"
                                     name="youtube_merge"
                                     id="youtube-merge-request-input"
-                                    value="{% if prefer_youtube_merge and youtube_merge_mode_available %}1{% else %}0{% endif %}"
+                                    value="{% if project_settings_youtube_merge_default and youtube_merge_mode_available %}1{% else %}0{% endif %}"
                             >
 
                             <label class="visually-hidden" id="media-link-label" for="media-link-input">{{ link_label|default:"素材链接" }}</label>
@@ -100,7 +93,6 @@
                 </div>
             </div>
 
-            <!-- 解析结果区 -->
             <div id="parse-results-region" class="parse-results-region" aria-live="polite">
                 {% include "partials/xhs_results_region.html" %}
             </div>
@@ -136,11 +128,9 @@
                             <p>支持解析图文图片、视频和视频封面。</p>
                         </div>
                     </div>
-
                 </div>
             </section>
 
-            <!-- 使用说明 -->
             <section class="mt-5">
                 <h2 class="text-center fw-bold mb-4">如何使用</h2>
 
@@ -182,183 +172,11 @@
                     </div>
                 </div>
             </section>
-
         </div>
     </section>
-
-    <!-- 设置弹窗 -->
-    <div class="modal fade" id="settingsModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content rounded-4 border-0 shadow">
-                <div class="modal-header">
-                    <h5 class="modal-title fw-bold">
-                        <i class="bi bi-gear me-1"></i>
-                        下载设置
-                    </h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                </div>
-
-                <div class="modal-body settings-panel">
-                    <section class="settings-section">
-                        <div class="settings-section-title">
-                            <i class="bi bi-folder2-open"></i>
-                            <span>保存模式</span>
-                        </div>
-
-                        <label class="form-label" for="download-mode">下载处理方式</label>
-                        <select id="download-mode" class="form-select">
-                            <option value="browser" selected>智能下载：单图直链，单视频直下，多资源自动 ZIP</option>
-                            {% if xhs_show_server_save_mode %}
-                                <option value="server">开发保存模式：保存到服务端路径</option>
-                            {% endif %}
-                        </select>
-                        <div class="form-text">
-                            {% if show_internal_diagnostics %}
-                                图片优先浏览器直链；单视频优先直接下载；多资源自动打包 ZIP。YouTube 合并和需要签名恢复的 Provider 资源由服务端完成处理。
-                            {% else %}
-                                图片、视频和多资源会按素材类型自动选择合适的保存方式。
-                            {% endif %}
-                        </div>
-
-                        <div class="settings-subsection" id="browser-download-settings">
-                            <label class="form-label">浏览器保存位置</label>
-                            <div class="download-location-toggle" role="group" aria-label="浏览器保存位置">
-                                <button type="button" class="btn btn-outline-secondary" id="browser-default-location-btn">
-                                    <i class="bi bi-download me-1"></i>
-                                    使用浏览器默认路径
-                                </button>
-                                <button type="button" class="btn btn-outline-secondary" id="choose-download-location-btn">
-                                    <i class="bi bi-folder-plus me-1"></i>
-                                    下载时选择保存位置
-                                </button>
-                            </div>
-                            <div class="form-text" id="browser-location-help">
-                                默认使用浏览器下载目录；支持 File System Access API 的浏览器可在每次下载 ZIP 时自行选择保存位置。
-                            </div>
-                        </div>
-
-                        {% if xhs_show_server_save_mode %}
-                            <div class="settings-subsection" id="server-save-settings">
-                                <label class="form-label" for="save-dir">开发保存路径</label>
-                                <input
-                                        type="text"
-                                        id="save-dir"
-                                        class="form-control"
-                                        value="{{ xhs_default_server_save_dir|default:'xhs' }}"
-                                        placeholder="例如：xhs{% if xhs_allow_absolute_save_path %} 或 /Users/name/Downloads/xhs{% endif %}"
-                                >
-                                <div class="form-text">
-                                    相对路径会保存到 MEDIA_ROOT 下。
-                                    {% if xhs_allow_absolute_save_path %}
-                                        当前环境允许绝对路径，适合本机开发测试。
-                                    {% else %}
-                                        当前环境不允许绝对路径。
-                                    {% endif %}
-                                </div>
-                            </div>
-                        {% endif %}
-                    </section>
-
-                    <section class="settings-section">
-                        <div class="settings-section-title">
-                            <i class="bi bi-speedometer2"></i>
-                            <span>解析质量</span>
-                        </div>
-
-                        <label class="settings-toggle{% if not ultra_hd_available %} is-disabled{% endif %}">
-                            <input
-                                    type="checkbox"
-                                    id="ultra-hd-setting"
-                                    {% if prefer_ultra_hd and ultra_hd_available %}checked{% endif %}
-                                    {% if not ultra_hd_available %}disabled{% endif %}
-                            >
-                            <span class="settings-switch-control" aria-hidden="true"></span>
-                            <span>
-                                <strong>抖音原画/超清</strong>
-                                <small>
-                                    {% if ultra_hd_available %}
-                                        {% if show_internal_diagnostics %}
-                                            解析抖音时优先尝试天天解析与 KuKuTool 上游获取原画 / 超高清资源。
-                                        {% else %}
-                                            解析抖音时优先获取原画 / 超高清资源。
-                                        {% endif %}
-                                    {% else %}
-                                        {% if show_internal_diagnostics %}
-                                            当前环境未启用抖音超高清上游。
-                                        {% else %}
-                                            当前无法使用抖音原画 / 超高清解析。
-                                        {% endif %}
-                                    {% endif %}
-                                </small>
-                            </span>
-                        </label>
-
-                        <div class="form-text">
-                            {% if show_internal_diagnostics %}
-                                默认关闭，关闭时只使用本地解析；开启后仅对抖音视频尝试超高清 Provider，失败或超限会自动回退。
-                            {% else %}
-                                默认关闭；开启后仅对抖音视频尝试原画 / 超高清，未获取到时返回可用清晰度。
-                            {% endif %}
-                        </div>
-
-                        <label class="settings-toggle{% if not youtube_merge_mode_available %} is-disabled{% endif %}">
-                            <input
-                                    type="checkbox"
-                                    id="youtube-merge-setting"
-                                    {% if prefer_youtube_merge and youtube_merge_mode_available %}checked{% endif %}
-                                    {% if not youtube_merge_mode_available %}disabled{% endif %}
-                            >
-                            <span class="settings-switch-control" aria-hidden="true"></span>
-                            <span>
-                                <strong>YouTube 最高画质合并</strong>
-                                <small>
-                                    {% if youtube_merge_mode_available %}
-                                        开启后优先选择 2K/4K/8K 等最高可用画质。
-                                    {% else %}
-                                        当前环境未开放 YouTube 最高画质任务。
-                                    {% endif %}
-                                </small>
-                            </span>
-                        </label>
-                        <div class="form-text">
-                            关闭时默认优先 1080p；开启时优先最高画质。YouTube 1080p 及以上通常需要合并音频和视频。
-                        </div>
-                    </section>
-
-                    <section class="settings-section" hidden>
-                        <div class="settings-section-title">
-                            <i class="bi bi-play-circle"></i>
-                            <span>视频内容</span>
-                        </div>
-
-                        <label class="form-label" for="video-save-mode">视频保存内容</label>
-                        <select id="video-save-mode" class="form-select">
-                            <option value="video" selected>仅下载视频</option>
-                            <option value="cover">仅下载封面</option>
-                            <option value="both">视频 + 封面都下载</option>
-                        </select>
-                        <div class="form-text">
-                            仅对视频笔记生效；封面默认按原始文件保存。
-                        </div>
-                    </section>
-                </div>
-
-                <div class="modal-footer">
-                    <button class="btn btn-outline-secondary" data-bs-dismiss="modal">
-                        取消
-                    </button>
-                    <button class="btn btn-brand" id="save-settings-btn" data-bs-dismiss="modal">
-                        <i class="bi bi-check-lg me-1"></i>
-                        保存设置
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
 {% endblock %}
 
 {% block extra_js %}
-    <script src="{% static 'js/parse_preferences.js' %}?v={{ static_asset_version }}"></script>
     <script src="{% static 'js/ordinary_media_streaming_protocol.js' %}?v={{ static_asset_version }}"></script>
     <script src="{% static 'js/ordinary_media_streaming.js' %}?v={{ static_asset_version }}"></script>
     <script src="{% static 'js/ordinary_media_download.js' %}?v={{ static_asset_version }}"></script>

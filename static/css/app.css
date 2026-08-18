@@ -721,6 +721,20 @@ body {
     gap: 16px;
 }
 
+.project-settings-modal .modal-content {
+    border-radius: 8px;
+}
+
+.project-settings-modal .modal-header {
+    align-items: flex-start;
+}
+
+.project-settings-intro {
+    margin: 4px 0 0;
+    color: var(--text-muted);
+    font-size: .9rem;
+}
+
 .settings-section {
     border: 1px solid var(--line-soft);
     border-radius: 8px;
@@ -819,8 +833,15 @@ body {
 }
 
 .download-location-toggle .btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
     min-height: 44px;
     white-space: normal;
+}
+
+.download-location-toggle .btn:focus-within {
+    box-shadow: 0 0 0 .2rem rgba(110, 78, 225, .2);
 }
 
 .download-location-toggle .btn:disabled {
