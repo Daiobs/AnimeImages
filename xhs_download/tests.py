@@ -4687,7 +4687,7 @@ class XhsDownloadViewTests(TestCase):
             content.index("js/xhs_download.js?v="),
         )
         self.assertContains(response, 'data-page-home-url="/"')
-        self.assertContains(response, "抖音原画/超清")
+        self.assertContains(response, "抖音原画 / 超清")
         self.assertContains(response, "YouTube 最高画质合并")
         self.assertContains(response, "data-download-task-url")
         for asset_path in (
@@ -4707,11 +4707,12 @@ class XhsDownloadViewTests(TestCase):
         self.assertNotContains(response, "开发保存模式：保存到服务端路径")
 
     @override_settings(DEBUG=True, XHS_ALLOW_SERVER_SAVE=True, XHS_ENABLE_SERVER_SAVE_MODE=True)
-    def test_debug_page_can_show_server_save_mode(self):
+    def test_debug_page_keeps_server_save_mode_out_of_public_settings(self):
         response = Client().get("/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'value="server"')
+        self.assertNotContains(response, 'value="server"')
+        self.assertNotContains(response, "开发保存模式：保存到服务端路径")
 
     def test_download_page_marks_provider_notice_as_result_content(self):
         html = render_to_string(
@@ -6418,7 +6419,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertContains(response, 'id="ultra-hd-request-input"')
         self.assertContains(response, 'id="project-ultra-hd-setting"')
         self.assertContains(response, "解析质量")
-        self.assertContains(response, "开启后优先获取抖音原画 / 超高清资源")
+        self.assertContains(response, "抖音原画 / 超清")
         self.assertNotContains(response, "默认关闭")
         self.assertNotContains(response, "超高清 Provider")
         self.assertNotContains(response, "hero-provider-row")
@@ -6465,7 +6466,7 @@ class XhsDownloadViewTests(TestCase):
     @patch("xhs_download.services.platforms.external_tools.os.path.exists", return_value=True)
     @patch("xhs_download.services.platforms.external_tools.os.access", return_value=True)
     @patch("xhs_download.views.parse_media_page")
-    def test_results_passes_youtube_merge_request_flag(
+    def test_results_passes_youtube_merge_request_without_persisting_it(
         self,
         mock_parse,
         _mock_access,
@@ -6496,7 +6497,8 @@ class XhsDownloadViewTests(TestCase):
             prefer_youtube_merge=True,
         )
         self.assertContains(response, 'id="youtube-merge-request-input"')
-        self.assertContains(response, 'value="1"')
+        self.assertTrue(response.context["prefer_youtube_merge"])
+        self.assertFalse(response.context["project_settings_youtube_merge_default"])
 
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,
