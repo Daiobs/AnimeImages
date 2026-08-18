@@ -84,8 +84,8 @@ DOWNLOAD_STATUS_ERROR_MESSAGES = {
     "TIANTIANJIEXI_REFRESH_FAILED": "资源已失效，自动刷新失败，请重新解析。",
     "TIANTIANJIEXI_REFRESH_TIMEOUT": "资源刷新超时，请重新解析后再试。",
     "TIANTIANJIEXI_RESOURCE_EXPIRED": "资源已失效，请重新解析后再试。",
-    "UPSTREAM_CONNECTION_ERROR": "上游资源暂时无法连接，请稍后重试。",
-    "UPSTREAM_SSL_ERROR": "上游资源连接异常，请稍后重试。",
+    "UPSTREAM_CONNECTION_ERROR": "资源暂时无法连接，请稍后重试。",
+    "UPSTREAM_SSL_ERROR": "资源连接异常，请稍后重试。",
     "VISITOR_VIDEO_DOWNLOAD_DISABLED": "当前环境暂不允许访客下载视频资源。",
 }
 DOWNLOAD_STATUS_DEFAULT_ERROR_CODE = "PROXY_FAILED_RECOVERY_BLOCKED"

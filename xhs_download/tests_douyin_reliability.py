@@ -3105,8 +3105,16 @@ class TianTianJieXiRecoveryTests(SimpleTestCase):
 
         self.assertEqual(ssl_contract["error_code"], "UPSTREAM_SSL_ERROR")
         self.assertEqual(
+            ssl_contract["message"],
+            "资源连接异常，请稍后重试。",
+        )
+        self.assertEqual(
             connection_contract["error_code"],
             "UPSTREAM_CONNECTION_ERROR",
+        )
+        self.assertEqual(
+            connection_contract["message"],
+            "资源暂时无法连接，请稍后重试。",
         )
         self.assertEqual(
             expired_contract["error_code"],
