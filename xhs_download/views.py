@@ -4076,6 +4076,19 @@ def log_parse_request_event(
             0,
         ),
         "provider_fallback_count": metadata.get("provider_fallback_count", 0),
+        "input_kind": metadata.get("input_kind", ""),
+        "source_resolution_ms": metadata.get("source_resolution_ms", 0),
+        "aweme_identity_resolved": bool(
+            metadata.get("aweme_identity_resolved", False)
+        ),
+        "ultra_window_ms": metadata.get("ultra_window_ms", 0),
+        "provider_window_started_after_resolution": bool(
+            metadata.get(
+                "provider_window_started_after_resolution",
+                False,
+            )
+        ),
+        "provider_budget_ms": metadata.get("provider_budget_ms", 0),
         "image_count": image_count,
         "video_count": video_count,
     }

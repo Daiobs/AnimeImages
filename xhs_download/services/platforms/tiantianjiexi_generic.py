@@ -89,6 +89,39 @@ def build_circuit_failure_key(window):
     return f"third-party:tiantianjiexi:circuit:failures:{window}"
 
 
+def source_key_for_identity(source_identity):
+    """Build a bounded work key from an adapter-issued logical identity.
+
+    The Douyin namespace deliberately retains the existing canonical /video URL
+    hash so live payload and recovery cache keys stay compatible during rollout.
+    Other callers continue to use URL identity unless they explicitly opt in.
+    """
+    source_identity = str(source_identity or "").strip()
+    if (
+        not source_identity
+        or len(source_identity) > 256
+        or any(ord(character) < 32 for character in source_identity)
+    ):
+        raise ValueError("invalid logical source identity")
+    namespace, separator, resource_id = source_identity.partition(":")
+    if (
+        separator
+        and namespace == "douyin"
+        and resource_id.isdigit()
+        and 15 <= len(resource_id) <= 25
+    ):
+        return source_key_for_url(
+            f"https://www.douyin.com/video/{resource_id}"
+        )
+    return source_key_for_url(f"logical-source:{source_identity}")
+
+
+def source_key_for_request(url, source_identity=None):
+    if source_identity:
+        return source_key_for_identity(source_identity)
+    return source_key_for_url(url)
+
+
 def provider_configured():
     return bool(
         runtime_bool("THIRD_PARTY_PROVIDER_ENABLED", False)
@@ -682,6 +715,7 @@ class TianTianJieXiGenericProvider:
         deadline_monotonic=None,
         payload_validator=None,
         continuation_checker=None,
+        source_identity=None,
     ):
         started_at = time.perf_counter()
 
@@ -699,7 +733,7 @@ class TianTianJieXiGenericProvider:
 
         if not provider_configured():
             raise TianTianJieXiAuthError("天天解析 Provider 未启用或账号未配置")
-        source_key = source_key_for_url(url)
+        source_key = source_key_for_request(url, source_identity)
         cached, payload_age_ms = self.get_cached_payload_entry(
             source_key,
             payload_validator,

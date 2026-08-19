@@ -30,7 +30,15 @@ from ..douyin_ultra_attempts import (
 from ..diagnostics import select_best_media_candidate
 from ..provider_settings import get_platform_provider_settings
 from .base import BasePlatformAdapter, PlatformCapabilities, ProviderPolicy
-from .douyin_providers import DouyinParseContext, build_douyin_result_providers
+from .douyin_providers import (
+    DouyinParseContext,
+    build_douyin_canonical_url,
+    build_douyin_result_providers,
+    build_douyin_source_identity,
+    context_log_fields,
+    sanitize_provider_log_text,
+    with_parse_metadata,
+)
 
 
 DOUYIN_PAGE_HOST_SUFFIXES = ("douyin.com", "iesdouyin.com")
@@ -176,6 +184,34 @@ def extract_aweme_id(value):
 
 def is_douyin_short_url(url):
     return (urlparse(url or "").hostname or "").lower() == "v.douyin.com"
+
+
+def classify_douyin_input_kind(url):
+    parsed = urlparse(url or "")
+    path = parsed.path or ""
+    if is_douyin_short_url(url):
+        return "short_link"
+    if re.search(r"/share/(?:video|note)/\d{15,25}(?:/|$)", path):
+        return "share_url"
+    if re.search(r"/video/\d{15,25}(?:/|$)", path):
+        return "video_url"
+    if re.search(r"/note/\d{15,25}(?:/|$)", path):
+        return "note_url"
+    query_names = {key for key, _value in parse_qsl(parsed.query)}
+    if "modal_id" in query_names:
+        return "modal_url"
+    if query_names.intersection({"aweme_id", "item_id"}):
+        return "query_id"
+    return "other"
+
+
+def attach_douyin_lifecycle_metadata(result, **metadata):
+    if not result:
+        return result
+    if isinstance(result.metadata, dict):
+        result.metadata.update(metadata)
+        return result
+    return with_parse_metadata(result, **metadata)
 
 
 def first_url(value):
@@ -908,10 +944,13 @@ class DouyinAdapter(BasePlatformAdapter):
         request_deadline=0,
         prefer_ultra_hd=False,
     ):
+        resolution_started_monotonic = monotonic()
         context = DouyinParseContext(
             url=url,
+            raw_url=url,
             deadline_monotonic=request_deadline,
             prefer_ultra_hd=prefer_ultra_hd,
+            input_kind=classify_douyin_input_kind(url),
         )
         context.aweme_id = extract_aweme_id(context.url)
         short_url = is_douyin_short_url(url)
@@ -963,6 +1002,21 @@ class DouyinAdapter(BasePlatformAdapter):
             or extract_aweme_id(context.final_url)
             or extract_aweme_id(context.html)
         )
+        context.resolved_url = context.final_url or context.url
+        context.canonical_url = build_douyin_canonical_url(context.aweme_id)
+        context.source_identity = build_douyin_source_identity(context.aweme_id)
+        context.source_identity_resolved = bool(context.source_identity)
+        context.source_resolution_completed_monotonic = monotonic()
+        context.source_resolution_duration_ms = max(
+            0,
+            int(
+                (
+                    context.source_resolution_completed_monotonic
+                    - resolution_started_monotonic
+                )
+                * 1000
+            ),
+        )
         return context
 
     def get_result_providers(self, prefer_ultra_hd=False, provider_order=None):
@@ -989,22 +1043,78 @@ class DouyinAdapter(BasePlatformAdapter):
         self.require_supported_url(url)
         if callable(stage_callback):
             stage_callback("resolve")
-        request_deadline = float(deadline_monotonic or 0)
-        if not request_deadline and timeout_seconds is not None:
-            request_deadline = monotonic() + max(0.1, float(timeout_seconds or 0))
-        if prefer_ultra_hd and not request_deadline:
-            provider_settings = get_platform_provider_settings("douyin")
-            request_deadline = monotonic() + max(
+        outer_deadline = float(deadline_monotonic or 0)
+        if (
+            not outer_deadline
+            and timeout_seconds is not None
+            and not prefer_ultra_hd
+        ):
+            outer_deadline = monotonic() + max(
                 0.1,
-                float(provider_settings.ultra_total_timeout_seconds or 0),
+                float(timeout_seconds or 0),
             )
+        source_resolution_deadline = outer_deadline
+        if prefer_ultra_hd and not extract_aweme_id(url):
+            source_resolution_deadline = monotonic() + max(
+                0.1,
+                float(
+                    getattr(
+                        settings,
+                        "DOUYIN_SHORT_LINK_TIMEOUT_SECONDS",
+                        2.0,
+                    )
+                    or 0
+                ),
+            )
+            if outer_deadline:
+                source_resolution_deadline = min(
+                    source_resolution_deadline,
+                    outer_deadline,
+                )
         context = self.build_parse_context(
             url,
             fetch_direct_page=not bool(extract_aweme_id(url)),
             fast_short_link=prefer_ultra_hd,
-            request_deadline=request_deadline,
+            request_deadline=source_resolution_deadline,
             prefer_ultra_hd=prefer_ultra_hd,
         )
+        identity_ready_monotonic = (
+            context.source_resolution_completed_monotonic
+            or monotonic()
+        )
+        if prefer_ultra_hd:
+            provider_settings = get_platform_provider_settings("douyin")
+            provider_window_seconds = max(
+                0.1,
+                float(provider_settings.ultra_total_timeout_seconds or 0),
+            )
+            provider_window_started_monotonic = max(
+                monotonic(),
+                identity_ready_monotonic,
+            )
+            provider_deadline = (
+                provider_window_started_monotonic + provider_window_seconds
+            )
+            if outer_deadline:
+                provider_deadline = min(provider_deadline, outer_deadline)
+            context.deadline_monotonic = provider_deadline
+            context.provider_window_started_monotonic = (
+                provider_window_started_monotonic
+            )
+            context.provider_window_started_after_resolution = bool(
+                provider_window_started_monotonic
+                >= identity_ready_monotonic
+            )
+            context.ultra_window_ms = int(provider_window_seconds * 1000)
+            context.provider_budget_ms = max(
+                0,
+                int(
+                    (provider_deadline - provider_window_started_monotonic)
+                    * 1000
+                ),
+            )
+        elif outer_deadline:
+            context.deadline_monotonic = outer_deadline
         context.client_country_code = client_country_code
         context.prefer_ultra_hd = prefer_ultra_hd
         context.allow_continuation = bool(
@@ -1023,7 +1133,12 @@ class DouyinAdapter(BasePlatformAdapter):
                     attached=True,
                 )
             context.continuation_deadline_monotonic = (
-                parse_started_monotonic + DOUYIN_CONTINUATION_TTL_SECONDS
+                (
+                    context.provider_window_started_monotonic
+                    or identity_ready_monotonic
+                    or parse_started_monotonic
+                )
+                + DOUYIN_CONTINUATION_TTL_SECONDS
             )
 
         last_timeout_error = None
@@ -1046,6 +1161,29 @@ class DouyinAdapter(BasePlatformAdapter):
             try:
                 result = provider.parse(self, context)
                 if result and result.assets:
+                    provider_duration_ms = int(
+                        (time() - provider_started_at) * 1000
+                    )
+                    provider_total_duration_ms = int(
+                        (time() - parse_started_at) * 1000
+                    )
+                    result = attach_douyin_lifecycle_metadata(
+                        result,
+                        input_kind=context.input_kind,
+                        source_resolution_ms=(
+                            context.source_resolution_duration_ms
+                        ),
+                        aweme_identity_resolved=(
+                            context.source_identity_resolved
+                        ),
+                        ultra_window_ms=context.ultra_window_ms,
+                        provider_window_started_after_resolution=(
+                            context.provider_window_started_after_resolution
+                        ),
+                        provider_budget_ms=context.provider_budget_ms,
+                        selected_provider_duration_ms=provider_duration_ms,
+                        provider_total_duration_ms=provider_total_duration_ms,
+                    )
                     logger.info(
                         "douyin_parse_selected",
                         extra={
@@ -1054,9 +1192,21 @@ class DouyinAdapter(BasePlatformAdapter):
                             "fallback_reason": (result.metadata or {}).get("fallback_reason", ""),
                             "aweme_id": context.aweme_id,
                             "asset_count": len(result.assets),
-                            "duration_ms": int((time() - provider_started_at) * 1000),
-                            "total_duration_ms": int((time() - parse_started_at) * 1000),
+                            "duration_ms": provider_duration_ms,
+                            "total_duration_ms": provider_total_duration_ms,
                             "prefer_ultra_hd": prefer_ultra_hd,
+                            "input_kind": context.input_kind,
+                            "source_resolution_ms": (
+                                context.source_resolution_duration_ms
+                            ),
+                            "aweme_identity_resolved": (
+                                context.source_identity_resolved
+                            ),
+                            "ultra_window_ms": context.ultra_window_ms,
+                            "provider_window_started_after_resolution": (
+                                context.provider_window_started_after_resolution
+                            ),
+                            "provider_budget_ms": context.provider_budget_ms,
                         },
                     )
                     return result
@@ -1088,9 +1238,9 @@ class DouyinAdapter(BasePlatformAdapter):
                     "douyin_provider_failed",
                     extra={
                         "provider": getattr(provider, "name", type(provider).__name__),
-                        "aweme_id": context.aweme_id,
+                        **context_log_fields(context),
                         "error_type": type(error).__name__,
-                        "error": str(error),
+                        "error": sanitize_provider_log_text(error),
                         "duration_ms": int((time() - provider_started_at) * 1000),
                         "prefer_ultra_hd": prefer_ultra_hd,
                     },
@@ -1101,28 +1251,51 @@ class DouyinAdapter(BasePlatformAdapter):
                     "douyin_provider_failed",
                     extra={
                         "provider": getattr(provider, "name", type(provider).__name__),
-                        "aweme_id": context.aweme_id,
+                        **context_log_fields(context),
                         "error_type": type(error).__name__,
-                        "error": str(error),
+                        "error": sanitize_provider_log_text(error),
                         "duration_ms": int((time() - provider_started_at) * 1000),
                         "prefer_ultra_hd": prefer_ultra_hd,
                     },
                 )
                 continue
 
-        if context.direct_result is not None and context.direct_result.assets:
-            return context.direct_result
-
         if context.direct_result is not None:
-            return context.direct_result
+            return attach_douyin_lifecycle_metadata(
+                context.direct_result,
+                input_kind=context.input_kind,
+                source_resolution_ms=context.source_resolution_duration_ms,
+                aweme_identity_resolved=context.source_identity_resolved,
+                ultra_window_ms=context.ultra_window_ms,
+                provider_window_started_after_resolution=(
+                    context.provider_window_started_after_resolution
+                ),
+                provider_budget_ms=context.provider_budget_ms,
+                provider_total_duration_ms=int(
+                    (time() - parse_started_at) * 1000
+                ),
+            )
         if context.direct_error:
             raise context.direct_error
         if last_timeout_error:
             raise last_timeout_error
 
-        return ParseResult(
-            platform=self.platform_id,
-            post_type="unknown",
-            base_filename="douyin",
-            assets=(),
+        return attach_douyin_lifecycle_metadata(
+            ParseResult(
+                platform=self.platform_id,
+                post_type="unknown",
+                base_filename="douyin",
+                assets=(),
+            ),
+            input_kind=context.input_kind,
+            source_resolution_ms=context.source_resolution_duration_ms,
+            aweme_identity_resolved=context.source_identity_resolved,
+            ultra_window_ms=context.ultra_window_ms,
+            provider_window_started_after_resolution=(
+                context.provider_window_started_after_resolution
+            ),
+            provider_budget_ms=context.provider_budget_ms,
+            provider_total_duration_ms=int(
+                (time() - parse_started_at) * 1000
+            ),
         )
