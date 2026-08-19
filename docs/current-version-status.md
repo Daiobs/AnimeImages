@@ -1,6 +1,6 @@
 # Current Version Status
 
-Date: 2026-08-17
+Date: 2026-08-19
 
 ## Source Of Truth
 
@@ -18,13 +18,12 @@ related but separate facts.
 
 ## Canonical Repository
 
-The runtime baseline accepted by Browser Photo Archive Production Acceptance
-v2 is:
+The runtime baseline accepted by Production Polish Final Acceptance is:
 
 ```text
-runtime SHA: e70848c8b89225beba0838e9b681aaf5b7fdf789
-source:      Browser Photo Archive and Format Reliability v1 (#45)
-checkpoint:  checkpoint/production-browser-photo-archive-v1
+runtime SHA: a87ec4751c67208031e2f296507b304c7c5d890c
+source:      Production Polish (#47 through #52)
+checkpoint:  checkpoint/production-polish-v1
 ```
 
 Always resolve the current canonical SHA rather than treating the value above
@@ -35,14 +34,65 @@ git fetch --prune origin
 git rev-parse origin/main
 ```
 
-The production application SHA is the accepted runtime baseline above. At the
-close of acceptance, canonical `origin/main`, the production checkout, and the
-immutable checkpoint all resolved to the same application commit.
+The production application SHA and immutable checkpoint resolve to the accepted
+runtime above. After this docs-only closure merges, repository `main` is
+intentionally one documentation commit ahead of the deployed application; its
+application code remains the accepted runtime tree.
 
 ```text
 PRODUCTION_RUNTIME_CODE_DRIFT = 0
-REPO_HEAD_AHEAD_DOCS_ONLY = NO
+REPO_HEAD_AHEAD_DOCS_ONLY = YES
 MAIN_RUNTIME_AHEAD_PRODUCTION = NO
+```
+
+## Production Polish Acceptance
+
+Production Polish closed through six reviewed PRs:
+
+- PR #47 retired the public legacy submissions surface and hardened the Admin
+  login shell without deleting historical model or migration state.
+- PR #48 hid Provider, latency, fallback, strategy, and routing diagnostics
+  from public Single and Batch result surfaces while retaining staff detail.
+- PR #49 consolidated project-level settings and restored the Batch settings
+  trigger without changing Provider or Batch runtime behavior.
+- PR #50 added the lightweight feedback workflow: required description,
+  optional JPG/PNG/WebP screenshot, optional contact text, protected Admin
+  access, and migration `0024_userfeedback`.
+- PR #51 added shared browser identity assets and minimal public metadata.
+- PR #52 enforced XHS source identity, corrected zero-media Batch results,
+  aligned the responsive Gallery, and completed Douyin display metadata from
+  already-acquired trusted Provider data.
+
+The exact application SHA `a87ec475...` was deployed with the existing
+procedure. No new migration was planned or applied; `0024_userfeedback` was
+already present. `collectstatic` succeeded, only the application service was
+restarted, Nginx was not reloaded, and local/public home, Batch, and readiness
+checks returned 200 with `NRestarts=0`.
+
+Production browser acceptance established:
+
+- XHS note `69453774000000001f00dbb5` returned zero generic-shell media in
+  Single and Batch.
+- Valid XHS samples retained their titles/authors and ordered media (four
+  images in Single and five in Batch). Desktop/tablet previews used centered
+  `contain`, mobile used natural single-column sizing, Lightbox navigation and
+  Escape worked, and per-image plus five-entry Browser ZIP downloads completed
+  without an AnimeImages media relay.
+- Douyin aweme `7669858827638845160` showed its real title and trusted cover.
+  Browser Streaming created a Download Manager task and saved an exact
+  58,154,674-byte MP4 in 24.2 seconds on the first attempt. The ordinary-video
+  prepare/stream/status endpoint counts were all zero.
+- Public diagnostics remained hidden. Home, Settings, Feedback, Batch, and
+  Admin login browser smoke passed with no console errors.
+- The acceptance window had no Traceback, Critical, unexpected 5xx, or browser
+  download failure. Controlled Batch rate-limit responses and unsuccessful
+  Provider candidates were followed by successful accepted results.
+
+```text
+PRODUCTION_POLISH = PRODUCTION_ACCEPTED
+MIGRATION_0024_USERFEEDBACK = APPLIED
+ORDINARY_VIDEO_SERVER_RELAY = NO
+RUNTIME_CODE_DRIFT = 0
 ```
 
 ## Browser Photo Archive Acceptance
@@ -180,45 +230,27 @@ was recorded in the acceptance evidence.
 Production application code has been deployed and accepted at:
 
 ```text
-application SHA:  e70848c8b89225beba0838e9b681aaf5b7fdf789
-checkpoint:       checkpoint/production-browser-photo-archive-v1
-rollback:         checkpoint/production-download-ui-batch-actions-v1 -> 9ba5702e9a90b9179e21d53393d8e27c39c51833
+application SHA:  a87ec4751c67208031e2f296507b304c7c5d890c
+checkpoint:       checkpoint/production-polish-v1
+rollback:         checkpoint/production-browser-photo-archive-v1 -> e70848c8b89225beba0838e9b681aaf5b7fdf789
 site:             https://download.cosflow.icu/
 ```
 
 The checkpoint resolves exactly to the application SHA and must remain
-immutable. This application includes the accepted PR #26 Batch visibility and
-public-download behavior, PR #28 Batch Runtime Admin clarity, and PR #42
-Download UI and mixed-media Batch actions, plus PR #44 Gallery/Lightbox and
-PR #45 browser-first photo archive and format reliability behavior.
+immutable. This application includes the earlier accepted Batch visibility,
+Runtime Admin, Download UI, Gallery/Lightbox, and browser-first photo archive
+milestones, plus the complete PR #47 through #52 Production Polish release.
 
-A development-only Production Polish draft now separates public presentation
-from staff diagnostics across Single and Batch result surfaces. Public users
-see user-level Chinese status, retry, and download messages; active staff keep
-Provider names, internal status, latency, strategy, and routing diagnostics.
-The validated media capability fields required by the existing download
-contract remain unchanged. This presentation change has not been deployed to
-production.
-
-A stacked development-only draft places the existing Batch settings trigger in
-the same site-header action area used by Single pages. Git archaeology found
-the Batch modal lineage in PR #11 and the shared preference contract in PR #22,
-but no complete historical global-header implementation. The restoration moves
-only the trigger: preference storage, form fields, request payloads, runtime
-limits, and Provider behavior remain unchanged. It is not deployed.
-
-A further stacked development-only draft adds a lightweight public feedback
-workflow. Anonymous users provide a required problem description and may add one
-validated JPG, PNG, or WebP screenshot plus optional contact text. There is no
-category selector or user-editable request ID. URLs and explicit
-credential-like values are redacted before the message is stored, page queries
-are discarded, and the request ID is derived server-side. Screenshot names are
-randomized and the files are available only through a permission-checked Admin
-view; the broad production `/media/` boundary remains closed. The additive
-feedback table stores no IP address or full User-Agent. Django Admin exposes
-search, filters, and the `new` -> `reviewed` -> `resolved` status flow. This
-draft does not change parsing, Provider, download, or production runtime
-behavior and has not been deployed.
+Public users now see user-level Chinese status, retry, and download messages;
+active staff retain Provider names, internal status, latency, strategy, and
+routing diagnostics. The project settings entry is shared across product
+pages, while server runtime gates remain authoritative. The deployed feedback
+workflow accepts a required description, optional validated screenshot, and
+optional contact text; sensitive-looking values are redacted, screenshot names
+are randomized, and attachments are exposed only through permission-checked
+Admin views. Public browser identity and the minimal Admin login shell are also
+active. These changes do not alter Provider order, Batch deadlines, ordinary
+media routing, or the zero-server-media contract.
 
 Production topology at the accepted infrastructure audit:
 
@@ -333,9 +365,8 @@ Provider/CDN -> Browser Service Worker -> Browser Download Manager -> Disk
 
 ### Admin And Release
 
-- The repository state retires the public `/submissions/*` URL surface while
-  preserving the app, model, table, and migration history. This cleanup has
-  not been deployed by the current task.
+- Production retires the public `/submissions/*` URL surface while preserving
+  the app, model, table, and migration history.
 - Anonymous Django Admin login uses a minimal login shell. Authenticated active
   staff retain the existing Admin shell, while Provider runtime mutations
   require a superuser or the explicit Provider runtime change permission.
@@ -393,11 +424,17 @@ for exact branch tips, evidence, decisions, and checkpoint integrity records.
 5. Release Management automatic production deployment remains disabled.
 6. Browser Photo Archive is production accepted, but the current XHS download
    candidate has not been proven to be the highest-quality original variant.
-   `PHOTO_DOWNLOAD_VARIANT_FIDELITY_BACKLOG` remains open.
+   `PHOTO_DOWNLOAD_VARIANT_FIDELITY` remains `OPEN / NOT STARTED`.
 7. GitHub private-repository main protection remains subject to available
    plan/ruleset capabilities.
 8. Certbot, Redis/PostgreSQL host configuration, Cloud-init, DNS, and broader
    host recovery are outside the repository-owned infrastructure baseline.
+9. `BROWSER_STREAM_RANGE_RESUME_V1` is `DEFERRED_POST_RELEASE`.
+10. `DOWNLOAD_PAGE_CANCEL` is `DEFERRED_PENDING_USER_FEEDBACK`.
+11. `SUCCESSFUL_DOWNLOAD_STARTUP_TELEMETRY` requires a separate future
+    diagnostic PR.
+12. `MOBILE_REAL_DEVICE_ACCEPTANCE` remains pending.
+13. `ADMIN_DASHBOARD_REDESIGN` remains deferred.
 
 These are current boundaries. Production convergence, Streaming telemetry,
 the Nginx telemetry route, Nginx config-as-code, and historical branch cleanup

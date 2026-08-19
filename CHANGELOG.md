@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Closed Production Polish across PR #47 through #52 and production-accepted
+  exact application SHA `a87ec4751c67208031e2f296507b304c7c5d890c` at
+  immutable checkpoint `checkpoint/production-polish-v1`. The release includes
+  the hardened Admin login shell, public diagnostics boundary, consolidated
+  project settings, lightweight feedback workflow, browser identity, XHS
+  source-identity protection, zero-media Batch correctness, centered responsive
+  Gallery previews, and Douyin title/cover completion. Migration
+  `0024_userfeedback` was already applied; PR #52 added no migration. Production
+  browser acceptance passed invalid and valid XHS, Gallery/Lightbox, browser
+  photo actions, an exact 58,154,674-byte ordinary-video Streaming download
+  with no Server Relay, core UI smoke, health, and zero unexpected 5xx.
 - Added one shared browser-first photo path for Single, Batch Download All,
   per-image actions, and Lightbox download. It reads CDN bytes in the browser,
   detects JPEG/PNG/GIF/WebP/AVIF from bounded magic, saves single images with

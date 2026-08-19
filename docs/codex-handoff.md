@@ -59,27 +59,28 @@ https://download.cosflow.icu/
 ## Canonical And Production Baseline
 
 Canonical development always starts from the latest fetched `origin/main`.
-At the close of Browser Photo Archive Production Acceptance v2, it was:
+The Production Polish application baseline is:
 
 ```text
-e70848c8b89225beba0838e9b681aaf5b7fdf789
-Browser Photo Archive and Format Reliability v1 (#45)
+a87ec4751c67208031e2f296507b304c7c5d890c
+Production Polish (#47 through #52)
 ```
 
 Production application code was deployed and accepted at:
 
 ```text
-e70848c8b89225beba0838e9b681aaf5b7fdf789
-checkpoint/production-browser-photo-archive-v1
+a87ec4751c67208031e2f296507b304c7c5d890c
+checkpoint/production-polish-v1
 ```
 
-The checkpoint resolves exactly to the production application SHA. Isolated
-Playwright/Chromium production-origin acceptance verified XHS CORS, exact
-single-photo bytes, a five-entry STORE ZIP with valid CRC and 5/5 source-byte
-matches, real Browser archive progress, Gallery/Lightbox behavior, public
-permissions, and zero AnimeImages photo-media endpoint requests. The `@chrome`
-remote-HTTPS bridge and Codex in-app browser remained unreliable acceptance
-tools; that tooling state is not an application regression.
+The checkpoint resolves exactly to the production application SHA. Production
+Playwright/Chrome acceptance verified XHS false-positive rejection, valid
+ordered XHS galleries, centered responsive previews, Lightbox and browser
+photo downloads, the public diagnostics boundary, and exact ordinary-video
+Browser Streaming with zero prepare/stream/status relay requests. Migration
+`0024_userfeedback` was already applied; this release added no migration.
+After the docs-only closure merges, repository `main` is intentionally ahead of
+the production runtime by documentation only (`RUNTIME_CODE_DRIFT=0`).
 
 Fetch and resolve the live repository baseline before starting work:
 
@@ -95,6 +96,14 @@ behavior context. See that file and `docs/repository-governance.md` first.
 
 Recent merged milestones:
 
+- PR #52: XHS source-identity protection, zero-media Batch correctness,
+  responsive Gallery alignment, and Douyin display metadata completion.
+- PR #51: Shared browser identity and minimal public metadata.
+- PR #50: Lightweight, redacted user feedback with protected screenshot access
+  and migration `0024_userfeedback`.
+- PR #49: Consolidated project settings and restored the Batch header trigger.
+- PR #48: Public result presentation boundary with staff diagnostics retained.
+- PR #47: Legacy submissions retirement and hardened Admin login shell.
 - PR #45: Browser-first single-photo and pure-photo STORE archives with reliable image format resolution.
 - PR #44: Full Batch photo Gallery, responsive Lightbox, and download-all UX.
 - PR #43: Download UI and Batch Actions production acceptance reconciliation.
@@ -307,8 +316,8 @@ The canonical evidence and deployment state are in
 `docs/current-version-status.md`,
 `docs/research/service-worker-streaming-productionization-v1.md`, and the
 production infrastructure audit. The current production application SHA is
-`e70848c8b89225beba0838e9b681aaf5b7fdf789`, fixed by
-`checkpoint/production-browser-photo-archive-v1`. Verify real browser behavior, not
+`a87ec4751c67208031e2f296507b304c7c5d890c`, fixed by
+`checkpoint/production-polish-v1`. Verify real browser behavior, not
 only route metadata or unit tests, before changing this contract.
 
 ## Production Deployment Notes
@@ -637,12 +646,16 @@ Good next tasks from the reconciled baseline:
 
 1. Start from a freshly fetched `origin/main`, with one branch and one PR for
    one concrete task.
-2. Continue Provider stabilization and reliability; do not add a new Provider
-   or download architecture while resolving observed reliability issues.
-3. Treat finer browser failure-stage telemetry as a P1 observability backlog,
-   not a current production blocker.
-4. Do not reopen the Streaming architecture without new evidence of an
+2. Keep `BROWSER_STREAM_RANGE_RESUME_V1` deferred until post-release work.
+3. Keep `DOWNLOAD_PAGE_CANCEL` deferred pending user feedback.
+4. Implement successful download-startup telemetry only in a separate future
+   diagnostic PR.
+5. Keep photo original-variant fidelity open and not started; do not mix it
+   into unrelated XHS reliability work.
+6. Complete mobile real-device acceptance separately.
+7. Keep the Admin dashboard redesign deferred.
+8. Do not reopen the Streaming architecture without new evidence of an
    application regression.
-5. Keep production changes in separately approved exact-SHA deployment tasks.
-6. Keep Release Management record-only until its separately reviewed executor
-   boundary is installed and accepted.
+9. Keep production changes in separately approved exact-SHA deployment tasks.
+10. Keep Release Management record-only until its separately reviewed executor
+    boundary is installed and accepted.
