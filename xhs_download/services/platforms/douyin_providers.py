@@ -192,6 +192,28 @@ def build_douyin_canonical_url(aweme_id):
     return f"https://www.douyin.com/video/{aweme_id}" if aweme_id else ""
 
 
+def build_tiantian_douyin_request_url(aweme_id):
+    aweme_id = normalize_douyin_aweme_id(aweme_id)
+    if not aweme_id:
+        return ""
+    return (
+        "https://www.douyin.com/user/self"
+        f"?from_tab_name=main&modal_id={aweme_id}&showTab=record"
+    )
+
+
+def select_tiantian_request_url(context):
+    provider_url = build_tiantian_douyin_request_url(context.aweme_id)
+    if provider_url:
+        return provider_url
+    return (
+        context.canonical_url
+        or context.resolved_url
+        or context.final_url
+        or context.url
+    )
+
+
 def context_log_fields(context):
     safe_source_url = (
         getattr(context, "canonical_url", "")
@@ -1047,13 +1069,7 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
         if not self.provider_settings.provider_is_enabled(self.name):
             return None
 
-        source_url = (
-            context.canonical_url
-            or build_douyin_canonical_url(context.aweme_id)
-            or context.resolved_url
-            or context.final_url
-            or context.url
-        )
+        source_url = select_tiantian_request_url(context)
         source_identity = (
             context.source_identity
             or build_douyin_source_identity(context.aweme_id)

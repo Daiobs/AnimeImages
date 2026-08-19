@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Restored Douyin video size metadata by keeping the canonical
+  `douyin:<aweme_id>` work identity while sending TianTianJieXi the richer,
+  aweme-bound modal request representation. The Provider still receives one
+  request per fresh attempt, payload cache/single-flight/failure cooldown keys
+  remain unchanged, and no source-page or media-size probe was added. Ultra
+  timing, Provider order, Browser Streaming, and zero-Relay behavior are
+  unchanged; this fix has not been deployed.
 - Unified Douyin URL shapes around the resolved `aweme_id`, so short links,
   canonical video links, modal links, share links, and copied share text reuse
   the same TianTianJieXi payload cache, single-flight, and failure cooldown.
