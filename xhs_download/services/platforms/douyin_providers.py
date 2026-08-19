@@ -38,6 +38,7 @@ from ..provider_reliability import (
     safe_media_host,
 )
 from .douyin_kukutool import DouyinKukuToolProvider, submit_provider_task
+from .douyin_media_policy import validate_douyin_media_url
 from .tiantianjiexi_generic import (
     TianTianJieXiFailureCooldownError,
     TianTianJieXiGenericProvider,
@@ -977,10 +978,10 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             ):
                 continue
             try:
-                validate_external_url(
+                validate_douyin_media_url(
                     url,
-                    adapter.media_host_suffixes,
                     "天天解析返回了不受信任的抖音媒体域名",
+                    existing_suffixes=adapter.media_host_suffixes,
                 )
             except (TypeError, ValueError):
                 continue
@@ -1033,10 +1034,10 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
         if not cover_url:
             return ""
         try:
-            validate_external_url(
+            validate_douyin_media_url(
                 cover_url,
-                adapter.media_host_suffixes,
                 "天天解析封面 URL 不在允许的抖音媒体域名内",
+                existing_suffixes=adapter.media_host_suffixes,
             )
         except (TypeError, ValueError):
             return ""

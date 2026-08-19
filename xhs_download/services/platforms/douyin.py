@@ -30,6 +30,7 @@ from ..douyin_ultra_attempts import (
 from ..diagnostics import select_best_media_candidate
 from ..provider_settings import get_platform_provider_settings
 from .base import BasePlatformAdapter, PlatformCapabilities, ProviderPolicy
+from .douyin_media_policy import DOUYIN_MEDIA_HOST_SUFFIXES
 from .douyin_providers import (
     DouyinParseContext,
     build_douyin_canonical_url,
@@ -42,19 +43,6 @@ from .douyin_providers import (
 
 
 DOUYIN_PAGE_HOST_SUFFIXES = ("douyin.com", "iesdouyin.com")
-DOUYIN_MEDIA_HOST_SUFFIXES = (
-    "amemv.com",
-    "snssdk.com",
-    "douyin.com",
-    "douyinpic.com",
-    "douyinvod.com",
-    "douyincdn.com",
-    "douyinstatic.com",
-    "byteimg.com",
-    "bytetos.com",
-    "365yg.com",
-    "zjcdn.com",
-)
 DOUYIN_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

@@ -4,6 +4,8 @@ import re
 
 from django.conf import settings
 
+from .platforms.douyin_media_policy import DOUYIN_REVIEWED_EXACT_MEDIA_HOSTS
+
 
 logger = logging.getLogger("xhs_download.browser_streaming_telemetry")
 
@@ -16,6 +18,7 @@ DOWNLOAD_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 PROVIDER_PATTERN = re.compile(r"^[a-z0-9_-]{1,64}$")
 HOSTNAME_PATTERN = re.compile(r"^[a-z0-9.-]{1,255}$")
 ALLOWED_MEDIA_HOST_SUFFIXES = ("365yg.com", "douyinvod.com")
+ALLOWED_EXACT_MEDIA_HOSTS = DOUYIN_REVIEWED_EXACT_MEDIA_HOSTS
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
 
 REQUIRED_FIELDS = frozenset(
@@ -169,7 +172,13 @@ def _media_host(value):
         for label in labels
     ):
         _invalid()
-    if any(_hostname_matches_suffix(hostname, suffix) for suffix in ALLOWED_MEDIA_HOST_SUFFIXES):
+    if (
+        hostname in ALLOWED_EXACT_MEDIA_HOSTS
+        or any(
+            _hostname_matches_suffix(hostname, suffix)
+            for suffix in ALLOWED_MEDIA_HOST_SUFFIXES
+        )
+    ):
         return hostname
     if getattr(settings, "DEBUG", False) and hostname in LOOPBACK_HOSTS:
         return hostname
