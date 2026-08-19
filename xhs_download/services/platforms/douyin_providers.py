@@ -739,6 +739,18 @@ def build_external_parse_result(
     cover_url="",
 ):
     reference_asset = get_reference_video_asset(reference_result)
+    reference_cover_url = (
+        str(getattr(reference_asset, "cover_url", "") or "")
+        if reference_asset
+        else ""
+    )
+    resolved_cover_url = reference_cover_url or cover_url
+    reference_preview_url = (
+        str(getattr(reference_asset, "cover_preview_url", "") or "")
+        if reference_asset
+        else ""
+    )
+    resolved_preview_url = reference_preview_url or resolved_cover_url
     reference_filename = getattr(reference_result, "base_filename", "")
     base_filename = reference_filename or safe_external_base_filename(base_filename)
     if not base_filename:
@@ -769,16 +781,8 @@ def build_external_parse_result(
                 media_type="video",
                 url=candidate.url,
                 platform=adapter.platform_id,
-                cover_url=(
-                    getattr(reference_asset, "cover_url", "")
-                    if reference_asset
-                    else cover_url
-                ),
-                cover_preview_url=(
-                    getattr(reference_asset, "cover_preview_url", "")
-                    if reference_asset
-                    else cover_url
-                ),
+                cover_url=resolved_cover_url,
+                cover_preview_url=resolved_preview_url,
                 quality_label=candidate.quality_label,
                 size_bytes=candidate.size_bytes,
                 headers=adapter.headers,

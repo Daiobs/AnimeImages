@@ -73,6 +73,14 @@ class BatchPhotoGalleryRenderTests(SimpleTestCase):
         self.assertNotIn("复制直链", html)
         self.assertNotIn("打开直链", html)
 
+    def test_photo_cards_share_preview_metadata_and_action_layout_structure(self):
+        html = render_gallery(3, download_allowed=True)
+
+        self.assertEqual(html.count('class="batch-photo-item"'), 3)
+        self.assertEqual(html.count('class="batch-photo-preview"'), 3)
+        self.assertEqual(html.count('class="batch-photo-meta"'), 3)
+        self.assertEqual(html.count('class="batch-photo-actions"'), 3)
+
     def test_single_image_row_does_not_duplicate_download_all_action(self):
         html = render_gallery(1, download_allowed=True, raw_allowed=False)
 

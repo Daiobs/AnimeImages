@@ -29,6 +29,7 @@ XHS_TERMINAL_PAGE_STATES = frozenset(
 @dataclass(frozen=True)
 class XhsPageState:
     note_id: str = ""
+    source_note_id: str = ""
     title: str = ""
     author_name: str = ""
     post_type: str = "unknown"
@@ -590,6 +591,7 @@ def extract_xhs_page_state(soup, source_url=None):
     if note is None:
         return XhsPageState(
             note_id=source_note_id,
+            source_note_id=source_note_id,
             page_state=explicit_page_state,
             explicit_page_state=explicit_page_state,
             structured_state_found=explicit_page_state != "unknown",
@@ -610,6 +612,7 @@ def extract_xhs_page_state(soup, source_url=None):
 
     return XhsPageState(
         note_id=selected_note_id or source_note_id,
+        source_note_id=source_note_id,
         title=_extract_title(note),
         author_name=_extract_author(note),
         post_type=_extract_post_type(note, image_urls, video_urls),

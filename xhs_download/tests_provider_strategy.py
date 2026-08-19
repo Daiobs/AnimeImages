@@ -1056,7 +1056,13 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
                 platform="douyin",
                 post_type="video",
                 base_filename="demo",
-                assets=(),
+                assets=(
+                    MediaAsset(
+                        media_type="video",
+                        url="https://v3-dy-o.zjcdn.com/demo.mp4",
+                        platform="douyin",
+                    ),
+                ),
             )
 
         row = service_build_batch_result_row(
@@ -1066,7 +1072,9 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
             prefer_youtube_merge=False,
             per_link_timeout_seconds=1,
             parser=parser,
-            display_context_builder=Mock(return_value={}),
+            display_context_builder=Mock(
+                return_value={"image_items": [], "video_items": [{}]}
+            ),
             request_country_code_builder=Mock(return_value="CN"),
             query_uses_third_party_provider_func=Mock(return_value=False),
             third_party_provider_is_available_func=Mock(return_value=True),
@@ -1084,6 +1092,35 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
                 "elapsed_ms": snapshot["elapsed_ms"],
                 "request_id": "batch-request-456",
             },
+        )
+
+    def test_result_row_rejects_empty_display_context(self):
+        row = service_build_batch_result_row(
+            object(),
+            "https://www.xiaohongshu.com/explore/69453774000000001f00dbb5",
+            prefer_ultra_hd=False,
+            prefer_youtube_merge=False,
+            per_link_timeout_seconds=1,
+            parser=Mock(
+                return_value=ParseResult(
+                    platform="xiaohongshu",
+                    post_type="image",
+                    base_filename="69453774000000001f00dbb5",
+                    assets=(),
+                )
+            ),
+            display_context_builder=Mock(
+                return_value={"image_items": [], "video_items": []}
+            ),
+            request_country_code_builder=Mock(return_value=""),
+            query_uses_third_party_provider_func=Mock(return_value=False),
+            third_party_provider_is_available_func=Mock(return_value=True),
+        )
+
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(
+            row["public_error_message"],
+            "当前链接没有解析到可用图片或视频。",
         )
 
     def test_result_row_maps_non_timeout_error_to_failed(self):
@@ -2131,7 +2168,13 @@ class BatchParseViewTests(TestCase):
                     platform="douyin",
                     post_type="video",
                     base_filename=url.rsplit("/", 1)[-1],
-                    assets=(),
+                    assets=(
+                        MediaAsset(
+                            media_type="video",
+                            url="https://v3-dy-o.zjcdn.com/test-video.mp4",
+                            platform="douyin",
+                        ),
+                    ),
                 )
             finally:
                 with lock:

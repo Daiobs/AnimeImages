@@ -795,6 +795,121 @@ class DouyinExternalMetadataDeadlineTests(SimpleTestCase):
         )
         adapter.fetch_mobile_feed_result.assert_called_once()
 
+    def test_tiantianjiexi_provider_cover_survives_empty_existing_reference_cover(self):
+        class FakeTianTianProvider:
+            def parse(self, _url, timeout_seconds=None):
+                return {
+                    "title": "天天解析视频",
+                    "cover": "https://p3.douyinpic.com/provider-cover.jpeg",
+                    "videos": [
+                        {
+                            "url": MEDIA_URL,
+                            "quality": "4K",
+                            "size": 55 * 1024 * 1024,
+                        },
+                    ],
+                }
+
+        adapter = DouyinAdapter()
+        adapter.fetch_mobile_feed_result = Mock(
+            side_effect=AssertionError("existing reference must not trigger new network")
+        )
+        provider = DouyinTianTianJieXiProvider(
+            provider_settings=ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tiantianjiexi", "native"),
+            ),
+            provider=FakeTianTianProvider(),
+            reserve_fallback_grace=False,
+        )
+        context = DouyinParseContext(
+            url=f"https://www.douyin.com/video/{AWEME_ID}",
+            final_url=f"https://www.douyin.com/video/{AWEME_ID}",
+            aweme_id=AWEME_ID,
+            direct_result=ParseResult(
+                platform="douyin",
+                post_type="video",
+                base_filename="native title",
+                assets=(
+                    MediaAsset(
+                        media_type="video",
+                        url="https://v3-dy-o.zjcdn.com/path/native.mp4",
+                        platform="douyin",
+                    ),
+                ),
+            ),
+            deadline_monotonic=time.monotonic() + 12.0,
+        )
+
+        result = provider.parse(adapter, context)
+
+        self.assertEqual(
+            result.video_assets[0].cover_url,
+            "https://p3.douyinpic.com/provider-cover.jpeg",
+        )
+        self.assertEqual(
+            result.video_assets[0].cover_preview_url,
+            "https://p3.douyinpic.com/provider-cover.jpeg",
+        )
+        adapter.fetch_mobile_feed_result.assert_not_called()
+
+    def test_tiantianjiexi_existing_reference_cover_remains_authoritative(self):
+        provider = DouyinTianTianJieXiProvider(
+            provider_settings=ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tiantianjiexi", "native"),
+            ),
+            provider=Mock(
+                parse=Mock(
+                    return_value={
+                        "title": "天天解析视频",
+                        "cover": "https://p3.douyinpic.com/provider-cover.jpeg",
+                        "videos": [{"url": MEDIA_URL, "quality": "4K", "size": 1}],
+                    }
+                )
+            ),
+            reserve_fallback_grace=False,
+        )
+        reference_cover = "https://p3.douyinpic.com/reference-cover.jpeg"
+        context = DouyinParseContext(
+            url=f"https://www.douyin.com/video/{AWEME_ID}",
+            aweme_id=AWEME_ID,
+            direct_result=ParseResult(
+                platform="douyin",
+                post_type="video",
+                base_filename="native title",
+                assets=(
+                    MediaAsset(
+                        media_type="video",
+                        url="https://v3-dy-o.zjcdn.com/path/native.mp4",
+                        platform="douyin",
+                        cover_url=reference_cover,
+                    ),
+                ),
+            ),
+            deadline_monotonic=time.monotonic() + 12.0,
+        )
+        adapter = DouyinAdapter()
+        adapter.fetch_mobile_feed_result = Mock(
+            side_effect=AssertionError("existing reference must not trigger new network")
+        )
+
+        result = provider.parse(adapter, context)
+
+        self.assertEqual(result.video_assets[0].cover_url, reference_cover)
+        adapter.fetch_mobile_feed_result.assert_not_called()
+
+    def test_tiantianjiexi_invalid_provider_cover_is_rejected(self):
+        provider = DouyinTianTianJieXiProvider()
+
+        self.assertEqual(
+            provider.clean_cover_url(
+                {"cover": "https://example.com/not-a-douyin-cover.jpg"},
+                DouyinAdapter(),
+            ),
+            "",
+        )
+
 
 class DouyinContinuationServiceTests(SimpleTestCase):
     def setUp(self):

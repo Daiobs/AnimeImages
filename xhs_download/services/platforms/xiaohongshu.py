@@ -18,7 +18,9 @@ from .xhs_fallback_policy import resolve_xhs_fallback_policy
 from .xhs_page_state import (
     XHS_MAX_AUTHOR_LENGTH,
     XHS_MAX_TITLE_LENGTH,
+    extract_xhs_note_id,
     extract_xhs_page_state,
+    normalize_xhs_note_id,
     normalize_xhs_state_text,
 )
 
@@ -323,6 +325,41 @@ def _detect_dom_page_state(soup):
     return "unknown"
 
 
+def _identity_note_id(value):
+    note_id = normalize_xhs_note_id(value)
+    return note_id or extract_xhs_note_id(value)
+
+
+def _current_page_identity_source(soup, source_note_id):
+    source_note_id = normalize_xhs_note_id(source_note_id)
+    if not source_note_id:
+        return ""
+
+    for tag in soup.find_all("link"):
+        rel = tag.get("rel") or ()
+        rel_tokens = rel if isinstance(rel, (list, tuple)) else str(rel).split()
+        if "canonical" not in {str(value).lower() for value in rel_tokens}:
+            continue
+        if _identity_note_id(tag.get("href", "")) == source_note_id:
+            return "canonical"
+
+    for tag in soup.find_all("meta"):
+        key = str(tag.get("property") or tag.get("name") or "").strip().lower()
+        if key not in {"og:url", "twitter:url"}:
+            continue
+        if _identity_note_id(tag.get("content", "")) == source_note_id:
+            return "page_meta"
+
+    identity_attributes = ("data-note-id", "data-noteid", "data-note_id")
+    for container in soup.select("#noteContainer, .note-detail, .note-content"):
+        candidates = (container, *container.find_all(True))
+        for tag in candidates:
+            for attribute in identity_attributes:
+                if _identity_note_id(tag.get(attribute, "")) == source_note_id:
+                    return "current_note_dom"
+    return ""
+
+
 def _build_base_filename(author_name, title, note_id):
     if author_name and title:
         value = f"{author_name}_{title}"
@@ -361,7 +398,13 @@ def _build_xhs_metadata(
         "structured_payload_found": bool(structured_state.structured_payload_found),
         "current_note_found": bool(structured_state.current_note_found),
         "note_candidate_found": bool(structured_state.note_candidate_found),
+        "other_note_candidate_found": bool(
+            structured_state.other_note_candidate_found
+        ),
         "fallback_policy": fallback_policy.name,
+        "source_identity_verified": bool(
+            fallback_policy.source_identity_verified
+        ),
         "structured_image_authoritative": bool(
             fallback_policy.structured_image_authoritative
         ),
@@ -393,6 +436,10 @@ class XiaohongshuAdapter(BasePlatformAdapter):
     def parse_html(self, html, source_url=None):
         soup = BeautifulSoup(html, "html.parser")
         structured_state = extract_xhs_page_state(soup, source_url=source_url)
+        page_identity_source = _current_page_identity_source(
+            soup,
+            structured_state.source_note_id,
+        )
 
         structured_image_urls = _normalize_image_urls(structured_state.image_urls)
         structured_video_urls = []
@@ -410,6 +457,7 @@ class XiaohongshuAdapter(BasePlatformAdapter):
             structured_image_urls=structured_image_urls,
             structured_video_urls=structured_video_urls,
             dom_page_state=_detect_dom_page_state(soup),
+            page_identity_source=page_identity_source,
         )
         if fallback_policy.terminal_state:
             raise XhsParseError(
@@ -460,7 +508,7 @@ class XiaohongshuAdapter(BasePlatformAdapter):
         dom_image_urls = (
             _dom_image_urls(
                 soup,
-                strict_current_note=fallback_policy.name == "suppress_broad_scan",
+                strict_current_note=fallback_policy.strict_current_note_dom,
             )
             if fallback_policy.allow_dom_images
             else []
@@ -629,6 +677,7 @@ class XiaohongshuAdapter(BasePlatformAdapter):
             deadline_monotonic=deadline or None,
         )
         try:
-            return self.parse_html(response.text, source_url=response.url)
+            identity_url = url if extract_xhs_note_id(url) else response.url
+            return self.parse_html(response.text, source_url=identity_url)
         finally:
             response.close()
