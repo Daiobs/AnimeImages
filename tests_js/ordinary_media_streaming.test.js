@@ -423,6 +423,93 @@ test("protocol validates opaque IDs, bounded media hosts, and memory-safe snapsh
     assert.doesNotMatch(serialized, /media\/video\.mp4|fixture|signed|token|url/i);
 });
 
+test("reviewed ixigua admission is exact, HTTPS-only, and shared by descriptors", () => {
+    const exactUrl = (
+        "https://v3-dy-a-x.ixigua.com/media/video.mp4?fixture=fake"
+    );
+    const descriptor = protocol.createDescriptor({
+        downloadId: "10101010101010101010101010101010",
+        url: exactUrl,
+        filename: "reviewed.mp4",
+        provider: "tiantianjiexi",
+        expectedBytes: 1024,
+    });
+
+    assert.equal(descriptor.url, exactUrl);
+    assert.equal(protocol.isAllowedStreamingUrl(exactUrl), true);
+    assert.equal(
+        protocol.isAllowedStreamingUrl(
+            "https://V3-DY-A-X.IXIGUA.COM/media/video.mp4",
+        ),
+        true,
+    );
+    for (const rejected of [
+        "https://ixigua.com/media/video.mp4",
+        "https://www.ixigua.com/media/video.mp4",
+        "https://evil.v3-dy-a-x.ixigua.com/media/video.mp4",
+        "https://v3-dy-a-x.ixigua.com.evil.example/media/video.mp4",
+        "https://evilixigua.com/media/video.mp4",
+        "https://ixigua-example.com/media/video.mp4",
+        "http://v3-dy-a-x.ixigua.com/media/video.mp4",
+        "https://user@v3-dy-a-x.ixigua.com/media/video.mp4",
+        "https://v3-dy-a-x.ixigua.com./media/video.mp4",
+        "https://v3-dy-a-x.ixigua.com:444/media/video.mp4",
+    ]) {
+        assert.equal(protocol.isAllowedStreamingUrl(rejected), false, rejected);
+        assert.equal(protocol.sanitizeMediaHost(rejected), "unknown", rejected);
+    }
+    assert.equal(
+        protocol.sanitizeMediaHost(exactUrl),
+        "v3-dy-a-x.ixigua.com",
+    );
+    assert.equal(
+        protocol.sanitizeMediaHost("v3-dy-a-x.ixigua.com"),
+        "v3-dy-a-x.ixigua.com",
+    );
+    assert.equal(protocol.isAllowedStreamingUrl("https://v11-default.365yg.com/a"), true);
+    assert.equal(protocol.isAllowedStreamingUrl("https://v3-web.douyinvod.com/a"), true);
+});
+
+test("reviewed ixigua response keeps content and final-host gates", () => {
+    const body = {cancel() { return Promise.resolve(); }};
+    const accepted = protocol.classifyResponseRejection({
+        ok: true,
+        status: 200,
+        url: "https://v3-dy-a-x.ixigua.com/media/video.mp4?fixture=fake",
+        headers: new Headers({"Content-Type": "video/mp4"}),
+        body,
+    });
+    assert.deepEqual(accepted, {
+        rejected: false,
+        responseRejectReason: "",
+        httpStatus: 200,
+        contentTypeClass: "VIDEO",
+        finalMediaHost: "v3-dy-a-x.ixigua.com",
+    });
+
+    for (const contentType of ["text/html", "application/json"]) {
+        const rejected = protocol.classifyResponseRejection({
+            ok: true,
+            status: 200,
+            url: "https://v3-dy-a-x.ixigua.com/media/video.mp4",
+            headers: new Headers({"Content-Type": contentType}),
+            body,
+        });
+        assert.equal(rejected.responseRejectReason, "CONTENT_TYPE_REJECTED");
+    }
+    const untrustedRedirect = protocol.classifyResponseRejection({
+        ok: true,
+        status: 200,
+        url: "https://attacker.example/video.mp4",
+        headers: new Headers({"Content-Type": "video/mp4"}),
+        body,
+    });
+    assert.equal(
+        untrustedRedirect.responseRejectReason,
+        "FINAL_HOST_REJECTED",
+    );
+});
+
 test("fetch failures use fixed factual classes without inspecting raw messages", () => {
     const signedUrl = "https://v11-default.365yg.com/path/video.mp4?token=super-secret";
     const typeError = new TypeError(`failed to fetch ${signedUrl}`);
@@ -760,6 +847,37 @@ test("worker streams exact bytes without Blob, persistence, or AnimeImages relay
     assert.doesNotMatch(workerSource, /localStorage|sessionStorage/i);
     assert.doesNotMatch(workerSource, /skipWaiting\s*\(/);
     assert.doesNotMatch(productSource, /ordinary_media.*\/media\/download-(prepare|stream|status)/i);
+});
+
+test("worker streams a reviewed ixigua descriptor through the same zero-relay path", async () => {
+    const exactUrl = "https://v3-dy-a-x.ixigua.com/media/video.mp4?fixture=fake";
+    const upstream = chunkedUpstream([[1, 2, 3], [4, 5, 6]], {url: exactUrl});
+    const runtime = createWorkerRuntime(async () => upstream.response);
+    const downloadId = "12121212121212121212121212121212";
+    const registered = await runtime.send({
+        type: "REGISTER_DOWNLOAD",
+        descriptor: {
+            downloadId,
+            url: exactUrl,
+            filename: "ixigua.mp4",
+            provider: "tiantianjiexi",
+            expectedBytes: 6,
+        },
+    });
+
+    assert.equal(registered.ok, true);
+    const response = await runtime.startFetch(downloadId).response;
+    assert.deepEqual(
+        [...new Uint8Array(await response.arrayBuffer())],
+        [1, 2, 3, 4, 5, 6],
+    );
+    const finalStatus = await runtime.send({
+        type: "GET_DOWNLOAD_STATUS",
+        downloadId,
+    });
+    assert.equal(finalStatus.status.state, "completed");
+    assert.equal(finalStatus.status.receivedBytes, 6);
+    assert.equal(finalStatus.status.mediaHost, "v3-dy-a-x.ixigua.com");
 });
 
 test("worker reports a URL-free before-response TypeError classification", async () => {

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Unified Douyin URL shapes around the resolved `aweme_id`, so short links,
+  canonical video links, modal links, share links, and copied share text reuse
+  the same TianTianJieXi payload cache, single-flight, and failure cooldown.
+  Short-link resolution remains bounded separately, while the unchanged Ultra
+  Provider window starts after identity resolution and still respects an
+  explicit Batch outer deadline. This change adds no migration, does not alter
+  Provider order or attempt accounting, and has not been deployed.
 - Closed Production Polish across PR #47 through #52 and production-accepted
   exact application SHA `a87ec4751c67208031e2f296507b304c7c5d890c` at
   immutable checkpoint `checkpoint/production-polish-v1`. The release includes

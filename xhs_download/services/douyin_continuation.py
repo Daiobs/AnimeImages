@@ -15,9 +15,12 @@ from .assets import MediaAsset, ParseResult
 from .common import (
     XhsProviderTimeoutError,
     clean_filename,
-    validate_external_url,
 )
 from .provider_manifest import provider_manifest_is_valid
+from .platforms.douyin_media_policy import (
+    DOUYIN_MEDIA_HOST_SUFFIXES,
+    validate_douyin_media_url,
+)
 
 
 DOUYIN_CONTINUATION_SALT = "xhs_download.douyin_continuation.v1"
@@ -54,8 +57,6 @@ logger = logging.getLogger(__name__)
 
 
 def douyin_media_host_suffixes():
-    from .platforms.douyin import DOUYIN_MEDIA_HOST_SUFFIXES
-
     return DOUYIN_MEDIA_HOST_SUFFIXES
 
 
@@ -173,16 +174,14 @@ def serialize_douyin_continuation_result(result):
     item = asset.to_download_item()
     if not provider_manifest_is_valid(item):
         raise ValueError("continuation provider manifest is invalid")
-    validate_external_url(
+    validate_douyin_media_url(
         asset.url,
-        douyin_media_host_suffixes(),
         "续查资源 URL 不在允许的抖音媒体域名内",
     )
     for preview_url in (asset.cover_url, asset.cover_preview_url):
         if preview_url:
-            validate_external_url(
+            validate_douyin_media_url(
                 preview_url,
-                douyin_media_host_suffixes(),
                 "续查封面 URL 不在允许的抖音媒体域名内",
             )
 
@@ -250,9 +249,8 @@ def deserialize_douyin_continuation_result(payload):
     }
     if not provider_manifest_is_valid(item):
         raise ValueError("continuation provider manifest is invalid")
-    validate_external_url(
+    validate_douyin_media_url(
         item["url"],
-        douyin_media_host_suffixes(),
         "续查资源 URL 不在允许的抖音媒体域名内",
     )
     for preview_url in (
@@ -260,9 +258,8 @@ def deserialize_douyin_continuation_result(payload):
         asset_data.get("cover_preview_url"),
     ):
         if preview_url:
-            validate_external_url(
+            validate_douyin_media_url(
                 preview_url,
-                douyin_media_host_suffixes(),
                 "续查封面 URL 不在允许的抖音媒体域名内",
             )
 

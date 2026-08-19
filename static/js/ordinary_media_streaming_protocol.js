@@ -18,6 +18,9 @@
         "365yg.com",
         "douyinvod.com",
     ]);
+    const ALLOWED_EXACT_MEDIA_HOSTS = Object.freeze([
+        "v3-dy-a-x.ixigua.com",
+    ]);
     const SAFE_CONTENT_TYPES = Object.freeze([
         "application/octet-stream",
         "binary/octet-stream",
@@ -127,6 +130,37 @@
             || normalizedHost.endsWith(`.${normalizedSuffix}`);
     }
 
+    function isAllowedProviderMediaUrl(url) {
+        if (!url || url.protocol !== "https:") {
+            return false;
+        }
+        const rawHostname = String(url.hostname || "").toLowerCase();
+        if (!rawHostname) {
+            return false;
+        }
+        if (ALLOWED_EXACT_MEDIA_HOSTS.includes(rawHostname)) {
+            return (
+                !url.username
+                && !url.password
+                && (!url.port || url.port === "443")
+            );
+        }
+        return ALLOWED_MEDIA_HOST_SUFFIXES.some((suffix) => (
+            hostnameMatchesSuffix(rawHostname, suffix)
+        ));
+    }
+
+    function isAllowedProviderMediaHostname(hostname) {
+        const rawHostname = String(hostname || "").trim().toLowerCase();
+        if (!rawHostname) {
+            return false;
+        }
+        return ALLOWED_EXACT_MEDIA_HOSTS.includes(rawHostname)
+            || ALLOWED_MEDIA_HOST_SUFFIXES.some((suffix) => (
+                hostnameMatchesSuffix(rawHostname, suffix)
+            ));
+    }
+
     function isLoopbackHostname(hostname) {
         const normalizedHost = String(hostname || "").toLowerCase().replace(/\.$/, "");
         return normalizedHost === "localhost"
@@ -138,10 +172,7 @@
         const settings = options && typeof options === "object" ? options : {};
         try {
             const url = new URL(String(value || ""));
-            const providerMediaUrl = url.protocol === "https:"
-                && ALLOWED_MEDIA_HOST_SUFFIXES.some((suffix) => (
-                    hostnameMatchesSuffix(url.hostname, suffix)
-                ));
+            const providerMediaUrl = isAllowedProviderMediaUrl(url);
             const localBenchmarkUrl = Boolean(settings.allowLoopbackHttp)
                 && (url.protocol === "http:" || url.protocol === "https:")
                 && isLoopbackHostname(url.hostname);
@@ -154,20 +185,34 @@
     function sanitizeMediaHost(value, options) {
         const settings = options && typeof options === "object" ? options : {};
         let hostname = "";
+        let parsedUrl = null;
         try {
             const rawValue = String(value || "").trim();
-            hostname = rawValue.includes("://")
-                ? new URL(rawValue).hostname
-                : rawValue;
+            if (rawValue.includes("://")) {
+                parsedUrl = new URL(rawValue);
+                hostname = parsedUrl.hostname;
+            } else {
+                hostname = rawValue;
+            }
         } catch (error) {
             return "unknown";
         }
-        hostname = hostname.toLowerCase().replace(/\.$/, "");
-        const allowedProviderHost = ALLOWED_MEDIA_HOST_SUFFIXES.some((suffix) => (
-            hostnameMatchesSuffix(hostname, suffix)
-        ));
+        hostname = hostname.toLowerCase();
+        const exactProviderHost = ALLOWED_EXACT_MEDIA_HOSTS.includes(hostname);
+        const allowedProviderHost = isAllowedProviderMediaHostname(hostname);
         const allowedLoopback = Boolean(settings.allowLoopback)
             && isLoopbackHostname(hostname);
+        if (
+            parsedUrl
+            && exactProviderHost
+            && !isAllowedProviderMediaUrl(parsedUrl)
+            && !(
+                allowedLoopback
+                && (parsedUrl.protocol === "http:" || parsedUrl.protocol === "https:")
+            )
+        ) {
+            return "unknown";
+        }
         if (!allowedProviderHost && !allowedLoopback) {
             return "unknown";
         }
@@ -185,7 +230,7 @@
         ))) {
             return "unknown";
         }
-        return hostname;
+        return hostname.replace(/\.$/, "");
     }
 
     function classifyFetchFailure(error) {
@@ -451,6 +496,7 @@
     }
 
     return Object.freeze({
+        ALLOWED_EXACT_MEDIA_HOSTS,
         ALLOWED_MEDIA_HOST_SUFFIXES,
         CONTENT_TYPE_CLASSES,
         DEFAULT_STREAM_DESCRIPTOR_TTL_MS,

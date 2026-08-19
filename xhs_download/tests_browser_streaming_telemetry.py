@@ -171,6 +171,20 @@ class BrowserStreamingTelemetryEndpointTests(TestCase):
         response = self.post(self.payload(media_host="attacker.example"))
         self.assertEqual(response.status_code, 400)
 
+    def test_reviewed_ixigua_media_hostname_is_accepted_without_url_fields(self):
+        with self.assertLogs(
+            "xhs_download.browser_streaming_telemetry",
+            level="INFO",
+        ) as logs:
+            response = self.post(
+                self.payload(media_host="v3-dy-a-x.ixigua.com")
+            )
+
+        self.assertEqual(response.status_code, 204)
+        serialized = "\n".join(logs.output)
+        self.assertIn('"media_host":"v3-dy-a-x.ixigua.com"', serialized)
+        self.assertNotIn("/media/", serialized)
+
     def test_unknown_failure_class_is_rejected(self):
         response = self.post(self.payload(failure_class="CORS_FAILURE"))
         self.assertEqual(response.status_code, 400)

@@ -4,9 +4,10 @@ from time import monotonic
 from django.conf import settings
 from django.core.cache import cache
 
-from .common import XhsDownloadError, XhsProviderTimeoutError, validate_external_url
+from .common import XhsDownloadError, XhsProviderTimeoutError
 from .provider_manifest import provider_manifest_is_valid
 from .platforms.douyin import DouyinAdapter
+from .platforms.douyin_media_policy import validate_douyin_media_url
 from .platforms.douyin_kukutool import (
     AWEME_ID_PATTERN,
     DouyinKukuToolProvider,
@@ -96,10 +97,10 @@ def get_tiantianjiexi_manifest_identity(item):
         return None
 
     try:
-        validate_external_url(
+        validate_douyin_media_url(
             item.get("url"),
-            DouyinAdapter.media_host_suffixes,
             "天天解析抖音 Provider URL 不允许请求",
+            existing_suffixes=DouyinAdapter.media_host_suffixes,
         )
     except (TypeError, ValueError):
         return None

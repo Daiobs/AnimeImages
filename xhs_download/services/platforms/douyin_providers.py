@@ -38,6 +38,7 @@ from ..provider_reliability import (
     safe_media_host,
 )
 from .douyin_kukutool import DouyinKukuToolProvider, submit_provider_task
+from .douyin_media_policy import validate_douyin_media_url
 from .tiantianjiexi_generic import (
     TianTianJieXiFailureCooldownError,
     TianTianJieXiGenericProvider,
@@ -65,6 +66,18 @@ DOUYIN_ULTRA_EXECUTOR = ThreadPoolExecutor(
     thread_name_prefix="douyin-ultra",
 )
 logger = logging.getLogger(__name__)
+DOUYIN_AWEME_ID_PATTERN = re.compile(r"\d{15,25}")
+DOUYIN_INPUT_KINDS = frozenset(
+    {
+        "short_link",
+        "video_url",
+        "note_url",
+        "share_url",
+        "modal_url",
+        "query_id",
+        "other",
+    }
+)
 SENSITIVE_LOG_QUERY_RE = re.compile(
     r"(?i)([?&](?:token|sign|signature|auth_key|x-signature|x_bogus|x-bogus|msToken|verifyFp|password|phone)=)[^&\s]+"
 )
@@ -164,12 +177,59 @@ def duration_ms(started_at):
     return int((time() - started_at) * 1000)
 
 
+def normalize_douyin_aweme_id(value):
+    value = str(value or "").strip()
+    return value if DOUYIN_AWEME_ID_PATTERN.fullmatch(value) else ""
+
+
+def build_douyin_source_identity(aweme_id):
+    aweme_id = normalize_douyin_aweme_id(aweme_id)
+    return f"douyin:{aweme_id}" if aweme_id else ""
+
+
+def build_douyin_canonical_url(aweme_id):
+    aweme_id = normalize_douyin_aweme_id(aweme_id)
+    return f"https://www.douyin.com/video/{aweme_id}" if aweme_id else ""
+
+
 def context_log_fields(context):
-    parsed_url = urlsplit(getattr(context, "url", "") or "")
+    safe_source_url = (
+        getattr(context, "canonical_url", "")
+        or getattr(context, "resolved_url", "")
+        or getattr(context, "url", "")
+        or ""
+    )
+    parsed_url = urlsplit(safe_source_url)
+    input_kind = str(getattr(context, "input_kind", "other") or "other")
+    if input_kind not in DOUYIN_INPUT_KINDS:
+        input_kind = "other"
     return {
         "aweme_id": getattr(context, "aweme_id", ""),
         "source_host": parsed_url.hostname or "",
         "source_path": parsed_url.path or "",
+        "input_kind": input_kind,
+        "source_resolution_ms": max(
+            0,
+            int(getattr(context, "source_resolution_duration_ms", 0) or 0),
+        ),
+        "aweme_identity_resolved": bool(
+            getattr(context, "source_identity_resolved", False)
+        ),
+        "ultra_window_ms": max(
+            0,
+            int(getattr(context, "ultra_window_ms", 0) or 0),
+        ),
+        "provider_window_started_after_resolution": bool(
+            getattr(
+                context,
+                "provider_window_started_after_resolution",
+                False,
+            )
+        ),
+        "provider_budget_ms": max(
+            0,
+            int(getattr(context, "provider_budget_ms", 0) or 0),
+        ),
     }
 
 
@@ -200,9 +260,21 @@ def log_provider_event(event, provider, context, started_at=None, **extra_fields
 @dataclass
 class DouyinParseContext:
     url: str
+    raw_url: str = ""
     final_url: str = ""
+    resolved_url: str = ""
     html: str = ""
     aweme_id: str = ""
+    canonical_url: str = ""
+    source_identity: str = ""
+    input_kind: str = "other"
+    source_resolution_duration_ms: int = 0
+    source_identity_resolved: bool = False
+    source_resolution_completed_monotonic: float = 0
+    provider_window_started_monotonic: float = 0
+    provider_window_started_after_resolution: bool = False
+    ultra_window_ms: int = 0
+    provider_budget_ms: int = 0
     prefer_ultra_hd: bool = False
     direct_result: object | None = None
     direct_error: Exception | None = None
@@ -214,6 +286,38 @@ class DouyinParseContext:
     native_fallback_future: object | None = None
     ultra_retry_after_seconds: int = 0
     continuation_deadline_monotonic: float = 0
+
+    def __post_init__(self):
+        self.raw_url = self.raw_url or self.url
+        self.resolved_url = self.resolved_url or self.final_url or self.url
+        normalized_aweme_id = normalize_douyin_aweme_id(self.aweme_id)
+        if normalized_aweme_id:
+            self.aweme_id = normalized_aweme_id
+            self.canonical_url = (
+                self.canonical_url
+                or build_douyin_canonical_url(normalized_aweme_id)
+            )
+            self.source_identity = (
+                self.source_identity
+                or build_douyin_source_identity(normalized_aweme_id)
+            )
+            identity_sources = (
+                self.raw_url,
+                self.final_url,
+                self.resolved_url,
+            )
+            self.source_identity_resolved = bool(
+                self.source_identity_resolved
+                or any(
+                    re.search(
+                        rf"(?<!\d){re.escape(normalized_aweme_id)}(?!\d)",
+                        str(source or ""),
+                    )
+                    for source in identity_sources
+                )
+            )
+        if self.input_kind not in DOUYIN_INPUT_KINDS:
+            self.input_kind = "other"
 
     def record_ultra_retry_after(self, retry_after):
         self.ultra_retry_after_seconds = max(
@@ -874,10 +978,10 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             ):
                 continue
             try:
-                validate_external_url(
+                validate_douyin_media_url(
                     url,
-                    adapter.media_host_suffixes,
                     "天天解析返回了不受信任的抖音媒体域名",
+                    existing_suffixes=adapter.media_host_suffixes,
                 )
             except (TypeError, ValueError):
                 continue
@@ -930,10 +1034,10 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
         if not cover_url:
             return ""
         try:
-            validate_external_url(
+            validate_douyin_media_url(
                 cover_url,
-                adapter.media_host_suffixes,
                 "天天解析封面 URL 不在允许的抖音媒体域名内",
+                existing_suffixes=adapter.media_host_suffixes,
             )
         except (TypeError, ValueError):
             return ""
@@ -943,7 +1047,17 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
         if not self.provider_settings.provider_is_enabled(self.name):
             return None
 
-        source_url = context.final_url or context.url
+        source_url = (
+            context.canonical_url
+            or build_douyin_canonical_url(context.aweme_id)
+            or context.resolved_url
+            or context.final_url
+            or context.url
+        )
+        source_identity = (
+            context.source_identity
+            or build_douyin_source_identity(context.aweme_id)
+        )
         if not source_url:
             return None
 
@@ -1013,6 +1127,14 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
                 parse_options["payload_validator"] = lambda payload: bool(
                     self.build_candidates(payload, adapter)
                 )
+            if source_identity and (
+                "source_identity" in provider_parse_parameters
+                or any(
+                    parameter.kind == inspect.Parameter.VAR_KEYWORD
+                    for parameter in provider_parse_parameters.values()
+                )
+            ):
+                parse_options["source_identity"] = source_identity
             if (
                 context.allow_continuation
                 and context.continuation_deadline_monotonic
@@ -1078,9 +1200,12 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             provider_title = safe_external_base_filename(
                 payload.get("description")
             )
-        source_identity_verified = source_url_matches_aweme_id(
-            source_url,
-            context.aweme_id,
+        source_identity_verified = bool(
+            context.source_identity_resolved
+            and source_url_matches_aweme_id(
+                source_url,
+                context.aweme_id,
+            )
         )
         provider_cover_url = self.clean_cover_url(
             payload,

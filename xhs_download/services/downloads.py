@@ -21,13 +21,16 @@ from .common import (
     clean_filename,
     host_matches,
     request_get_with_retry,
-    validate_external_url,
     validate_media_url,
     validate_public_download_url,
     validate_public_url,
 )
 from .platforms.bilibili import BILIBILI_HEADERS, BILIBILI_MEDIA_HOST_SUFFIXES
-from .platforms.douyin import DOUYIN_HEADERS, DOUYIN_MEDIA_HOST_SUFFIXES
+from .platforms.douyin import DOUYIN_HEADERS
+from .platforms.douyin_media_policy import (
+    is_allowed_douyin_media_hostname,
+    validate_douyin_media_url,
+)
 from .platforms.external_tools import (
     clear_cached_external_failure,
     clear_cached_external_payload,
@@ -125,7 +128,7 @@ def get_media_headers(url, platform=None):
     hostname = (urlparse(url or "").hostname or "").lower()
     if host_matches(hostname, BILIBILI_MEDIA_HOST_SUFFIXES):
         return BILIBILI_HEADERS
-    if host_matches(hostname, DOUYIN_MEDIA_HOST_SUFFIXES):
+    if is_allowed_douyin_media_hostname(hostname):
         return DOUYIN_HEADERS
     if host_matches(hostname, YOUTUBE_MEDIA_HOST_SUFFIXES):
         return YOUTUBE_HEADERS
@@ -443,9 +446,8 @@ def tiantianjiexi_douyin_manifest_is_allowed(item):
     if str(item.get("asset_id") or "") != expected_asset_id:
         return False
     try:
-        validate_external_url(
+        validate_douyin_media_url(
             item.get("url"),
-            DOUYIN_MEDIA_HOST_SUFFIXES,
             "天天解析抖音 Provider URL 不允许请求",
         )
     except (TypeError, ValueError):
