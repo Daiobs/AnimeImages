@@ -1459,7 +1459,7 @@ body {
     position: relative;
     display: grid;
     width: 100%;
-    min-height: 160px;
+    height: clamp(240px, 22vw, 340px);
     place-items: center;
     padding: 0;
     overflow: hidden;
@@ -1469,11 +1469,11 @@ body {
 }
 
 .batch-photo-preview img {
+    position: absolute;
+    inset: 0;
     display: block;
-    width: auto;
-    max-width: 100%;
-    height: auto;
-    max-height: 520px;
+    width: 100%;
+    height: 100%;
     object-fit: contain;
 }
 
@@ -1826,6 +1826,20 @@ body {
 
     .batch-photo-item {
         height: auto;
+    }
+
+    .batch-photo-preview {
+        height: auto;
+        min-height: 160px;
+    }
+
+    .batch-photo-preview img {
+        position: static;
+        inset: auto;
+        width: auto;
+        max-width: 100%;
+        height: auto;
+        max-height: min(70vh, 520px);
     }
 
     .batch-photo-meta {

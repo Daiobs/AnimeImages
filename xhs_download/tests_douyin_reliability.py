@@ -8,10 +8,13 @@ from unittest.mock import Mock, patch
 import requests
 from django.core.cache import cache
 from django.http import HttpResponse
+from django.template.loader import render_to_string
 from django.test import Client, SimpleTestCase, TestCase, override_settings
 
 from .models import DownloadRequestLog, ObservabilityStatus
 from .services.assets import MediaAsset, ParseResult
+from .services.batch_parse.results import build_batch_result_row
+from .services.candidates import MediaCandidate
 from .services.common import XhsDownloadError, XhsProviderTimeoutError
 from .services.download_handoff import (
     DOWNLOAD_HANDOFF_TTL_SECONDS,
@@ -35,6 +38,7 @@ from .services.douyin_continuation import (
     DouyinContinuationPendingError,
     build_douyin_continuation_cache_key,
     build_douyin_continuation_source_key,
+    deserialize_douyin_continuation_result,
     find_active_douyin_continuation,
     issue_douyin_continuation_token,
     poll_douyin_continuation,
@@ -56,6 +60,7 @@ from .services.platforms.douyin_providers import (
     DouyinParseContext,
     DouyinTianTianJieXiProvider,
     DouyinUltraRaceProvider,
+    build_external_parse_result,
 )
 from .services.platforms.tiantianjiexi_generic import (
     TianTianJieXiFailureCooldownError,
@@ -78,6 +83,7 @@ from .services.rate_limits import LimitResult, consume_fixed_window
 from .views import (
     DownloadStreamStartTimeout,
     apply_upstream_startup_read_timeout,
+    build_result_display_context,
     build_single_attachment_response,
     inspect_single_attachment_download,
     open_single_attachment_upstream,
@@ -864,7 +870,13 @@ class DouyinExternalMetadataDeadlineTests(SimpleTestCase):
                     return_value={
                         "title": "天天解析视频",
                         "cover": "https://p3.douyinpic.com/provider-cover.jpeg",
-                        "videos": [{"url": MEDIA_URL, "quality": "4K", "size": 1}],
+                        "videos": [
+                            {
+                                "url": MEDIA_URL,
+                                "quality": "4K",
+                                "size": 1,
+                            }
+                        ],
                     }
                 )
             ),
@@ -908,6 +920,278 @@ class DouyinExternalMetadataDeadlineTests(SimpleTestCase):
                 DouyinAdapter(),
             ),
             "",
+        )
+
+    def test_tiantianjiexi_uses_single_response_image_as_verified_cover(self):
+        provider = DouyinTianTianJieXiProvider(
+            provider_settings=ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tiantianjiexi", "native"),
+            ),
+            provider=Mock(
+                parse=Mock(
+                    return_value={
+                        "title": "Provider title",
+                        "cover": "",
+                        "images": ("https://p3.douyinpic.com/provider-cover.jpeg",),
+                        "videos": [{"url": MEDIA_URL, "quality": "4K", "size": 1}],
+                    }
+                )
+            ),
+            reserve_fallback_grace=False,
+        )
+        adapter = DouyinAdapter()
+        adapter.fetch_mobile_feed_result = Mock(
+            side_effect=AssertionError("verified Provider metadata must not add native I/O")
+        )
+        context = DouyinParseContext(
+            url=f"https://www.douyin.com/user/self?modal_id={AWEME_ID}",
+            aweme_id=AWEME_ID,
+            deadline_monotonic=time.monotonic() + 12.0,
+        )
+
+        result = provider.parse(adapter, context)
+
+        self.assertEqual(
+            result.video_assets[0].cover_url,
+            "https://p3.douyinpic.com/provider-cover.jpeg",
+        )
+        adapter.fetch_mobile_feed_result.assert_not_called()
+
+    def test_tiantianjiexi_does_not_use_response_image_without_source_identity(self):
+        provider = DouyinTianTianJieXiProvider(
+            provider_settings=ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tiantianjiexi", "native"),
+            ),
+            provider=Mock(
+                parse=Mock(
+                    return_value={
+                        "title": "Provider title",
+                        "cover": "",
+                        "images": ("https://p3.douyinpic.com/unverified.jpeg",),
+                        "videos": [{"url": MEDIA_URL, "quality": "4K", "size": 1}],
+                    }
+                )
+            ),
+            reserve_fallback_grace=False,
+        )
+        adapter = DouyinAdapter()
+        adapter.fetch_mobile_feed_result = Mock(return_value=None)
+        context = DouyinParseContext(
+            url="https://www.douyin.com/user/self",
+            aweme_id=AWEME_ID,
+            deadline_monotonic=time.monotonic() + 12.0,
+        )
+
+        result = provider.parse(adapter, context)
+
+        self.assertEqual(result.video_assets[0].cover_url, "")
+
+    def test_tiantianjiexi_rejects_untrusted_response_image(self):
+        provider = DouyinTianTianJieXiProvider(
+            provider_settings=ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tiantianjiexi", "native"),
+            ),
+            provider=Mock(
+                parse=Mock(
+                    return_value={
+                        "title": "Provider title",
+                        "cover": "",
+                        "images": ("https://example.com/untrusted.jpeg",),
+                        "videos": [{"url": MEDIA_URL, "quality": "4K", "size": 1}],
+                    }
+                )
+            ),
+            reserve_fallback_grace=False,
+        )
+        adapter = DouyinAdapter()
+        adapter.fetch_mobile_feed_result = Mock(return_value=None)
+        context = DouyinParseContext(
+            url=f"https://www.douyin.com/video/{AWEME_ID}",
+            aweme_id=AWEME_ID,
+            deadline_monotonic=time.monotonic() + 12.0,
+        )
+
+        result = provider.parse(adapter, context)
+
+        self.assertEqual(result.video_assets[0].cover_url, "")
+
+    def test_tiantianjiexi_uses_same_response_description_when_title_is_empty(self):
+        provider = DouyinTianTianJieXiProvider(
+            provider_settings=ProviderSettings(
+                ultra_hd_enabled=True,
+                provider_order=("tiantianjiexi", "native"),
+            ),
+            provider=Mock(
+                parse=Mock(
+                    return_value={
+                        "title": "",
+                        "description": "Provider response description",
+                        "cover": "https://p3.douyinpic.com/provider-cover.jpeg",
+                        "images": (),
+                        "videos": [{"url": MEDIA_URL, "quality": "4K", "size": 1}],
+                    }
+                )
+            ),
+            reserve_fallback_grace=False,
+        )
+        adapter = DouyinAdapter()
+        adapter.fetch_mobile_feed_result = Mock(
+            side_effect=AssertionError("description fallback must not add native I/O")
+        )
+        context = DouyinParseContext(
+            url=f"https://www.douyin.com/video/{AWEME_ID}",
+            aweme_id=AWEME_ID,
+            deadline_monotonic=time.monotonic() + 12.0,
+        )
+
+        result = provider.parse(adapter, context)
+
+        self.assertEqual(
+            result.metadata["title"],
+            "Provider response description",
+        )
+        adapter.fetch_mobile_feed_result.assert_not_called()
+
+
+class DouyinDisplayMetadataTests(SimpleTestCase):
+    def build_external_result(self, provider_title="", reference_result=None):
+        return build_external_parse_result(
+            DouyinAdapter(),
+            DouyinParseContext(
+                url=f"https://www.douyin.com/video/{AWEME_ID}",
+                aweme_id=AWEME_ID,
+            ),
+            MediaCandidate(
+                url=MEDIA_URL,
+                quality_label="4K",
+                size_bytes=55 * 1024 * 1024,
+            ),
+            reference_result=reference_result,
+            provider_name="tiantianjiexi",
+            base_filename=provider_title,
+        )
+
+    def build_batch_row(self, result):
+        return build_batch_result_row(
+            Mock(),
+            f"https://www.douyin.com/video/{AWEME_ID}",
+            prefer_ultra_hd=False,
+            prefer_youtube_merge=False,
+            per_link_timeout_seconds=12,
+            parser=lambda *_args, **_kwargs: result,
+            display_context_builder=build_result_display_context,
+            request_country_code_builder=lambda _request: "",
+            query_uses_third_party_provider_func=lambda _source: False,
+            third_party_provider_is_available_func=lambda _request: True,
+        )
+
+    def test_provider_title_survives_fallback_reference_filename(self):
+        reference = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename=f"douyin_{AWEME_ID}",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url="https://v3-dy-o.zjcdn.com/reference.mp4",
+                    platform="douyin",
+                ),
+            ),
+        )
+
+        result = self.build_external_result("Provider real title", reference)
+        single = build_result_display_context(result)
+        batch = self.build_batch_row(result)
+
+        self.assertEqual(result.metadata["title"], "Provider real title")
+        self.assertEqual(single["display_title"], "Provider real title")
+        self.assertEqual(batch["display_title"], single["display_title"])
+
+    def test_reference_metadata_title_has_priority_over_provider_title(self):
+        reference = ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="Reference filename",
+            assets=(
+                MediaAsset(
+                    media_type="video",
+                    url="https://v3-dy-o.zjcdn.com/reference.mp4",
+                    platform="douyin",
+                ),
+            ),
+            metadata={"title": "Reference real title"},
+        )
+
+        result = self.build_external_result("Provider real title", reference)
+
+        self.assertEqual(result.metadata["title"], "Reference real title")
+        self.assertEqual(
+            build_result_display_context(result)["display_title"],
+            "Reference real title",
+        )
+
+    def test_empty_or_url_title_uses_existing_fallback(self):
+        empty = self.build_external_result("")
+        url_title = self.build_external_result("https://v.douyin.com/example/")
+
+        for result in (empty, url_title):
+            with self.subTest(base_filename=result.base_filename):
+                self.assertNotIn("title", result.metadata)
+                self.assertEqual(result.base_filename, f"douyin_{AWEME_ID}")
+                self.assertEqual(
+                    build_result_display_context(result)["display_title"],
+                    "",
+                )
+
+    def test_title_is_bounded_and_template_escaped_for_single_and_batch(self):
+        unsafe_title = "<script>alert('x')</script> & " + ("t" * 240)
+        result = self.build_external_result(unsafe_title)
+        single = build_result_display_context(result)
+        batch = self.build_batch_row(result)
+        single_html = render_to_string(
+            "partials/xhs_results_region.html",
+            {
+                **single,
+                "proxy_image_url": "/media/proxy-image/",
+                "show_internal_diagnostics": False,
+            },
+        )
+        batch_html = render_to_string(
+            "partials/batch_result_card.html",
+            {
+                "row": batch,
+                "proxy_image_url": "/media/proxy-image/",
+                "batch_download_allowed": True,
+                "batch_raw_links_allowed": False,
+                "show_internal_diagnostics": False,
+            },
+        )
+
+        self.assertEqual(len(single["display_title"]), 200)
+        self.assertEqual(batch["display_title"], single["display_title"])
+        self.assertNotIn("<script>", single_html)
+        self.assertNotIn("<script>", batch_html)
+        self.assertIn("&lt;script&gt;", single_html)
+        self.assertIn("&lt;script&gt;", batch_html)
+
+    def test_continuation_round_trip_preserves_display_title(self):
+        result = self.build_external_result("Provider real title")
+
+        restored = deserialize_douyin_continuation_result(
+            serialize_douyin_continuation_result(result)
+        )
+
+        self.assertEqual(restored.metadata["title"], "Provider real title")
+        self.assertEqual(
+            restored.metadata["title_source"],
+            "provider_payload",
+        )
+        self.assertEqual(
+            build_result_display_context(restored)["display_title"],
+            "Provider real title",
         )
 
 
