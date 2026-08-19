@@ -141,7 +141,10 @@ from .services.platforms.douyin_kukutool import (
 from .services.platforms.gallerydl_generic import GalleryDlGenericProvider
 from .services.platforms.kukutool_generic import KukutoolGenericProvider
 from .services.platforms.douyin import DouyinAdapter
-from .services.platforms.douyin_providers import DouyinTianTianJieXiProvider
+from .services.platforms.douyin_providers import (
+    DouyinTianTianJieXiProvider,
+    normalize_douyin_display_title,
+)
 from .services.platforms.xiaohongshu import normalize_xhs_preview_image_url
 from .services.platforms.tiantianjiexi_generic import (
     TianTianJieXiGenericProvider,
@@ -3940,7 +3943,11 @@ def build_result_display_context(
     display_title = (
         " ".join(str(result_metadata.get("title") or "").split())[:200]
         if is_xhs_result
-        else ""
+        else (
+            normalize_douyin_display_title(result_metadata.get("title"))
+            if result.platform == "douyin"
+            else ""
+        )
     )
     display_author = (
         " ".join(str(result_metadata.get("author_name") or "").split())[:80]

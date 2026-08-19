@@ -22,6 +22,7 @@ BATCH_PROVIDER_TIMEOUT_MESSAGE = "上游解析服务响应超时，请稍后重�
 BATCH_PUBLIC_PROVIDER_TIMEOUT_MESSAGE = "解析服务响应超时，请稍后重试。"
 BATCH_RESPONSE_TIMEOUT_MESSAGE = "本条解析超过批次最大响应时间。"
 BATCH_PUBLIC_FAILURE_MESSAGE = "解析执行失败，请检查链接后重试。"
+BATCH_NO_MEDIA_MESSAGE = "当前链接没有解析到可用图片或视频。"
 BATCH_PROVIDER_STAGES = frozenset(
     {"resolve", "tiantianjiexi", "native", "display_context", "completed", "unknown"}
 )
@@ -346,6 +347,16 @@ def build_batch_result_row(
         if stage_tracker is not None:
             stage_tracker.update("display_context")
         display_context = display_context_builder(result, platform_key="home")
+        if not (
+            display_context.get("video_items")
+            or display_context.get("image_items")
+        ):
+            return build_batch_failed_row(
+                source_text,
+                BATCH_NO_MEDIA_MESSAGE,
+                started_at,
+                public_reason=BATCH_NO_MEDIA_MESSAGE,
+            )
         metadata = result.metadata or {}
         selected_provider = metadata.get("selected_provider") or metadata.get("source_provider") or ""
         row = {

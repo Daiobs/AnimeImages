@@ -144,7 +144,7 @@ test("Batch gallery template renders all items and one global lightbox", () => {
 });
 
 
-test("Gallery CSS preserves intrinsic ratios and removes the cropped four-cell grid", () => {
+test("Gallery CSS centers contained previews in a shared desktop viewport", () => {
     const css = readProjectFile("static/css/app.css");
     const galleryBlock = css.slice(
         css.indexOf(".batch-photo-gallery"),
@@ -152,8 +152,23 @@ test("Gallery CSS preserves intrinsic ratios and removes the cropped four-cell g
     );
 
     assert.match(galleryBlock, /grid-template-columns:\s*repeat\(auto-fill, minmax\(280px, 1fr\)\)/);
-    assert.match(galleryBlock, /height:\s*auto/);
+    assert.match(galleryBlock, /\.batch-photo-preview\s*{[^}]*height:\s*clamp\(/s);
+    assert.match(galleryBlock, /\.batch-photo-preview\s*{[^}]*place-items:\s*center/s);
     assert.match(galleryBlock, /object-fit:\s*contain/);
+    assert.match(galleryBlock, /\.batch-photo-preview img\s*{[^}]*position:\s*absolute/s);
+    assert.match(galleryBlock, /\.batch-photo-preview img\s*{[^}]*inset:\s*0/s);
+    assert.match(galleryBlock, /\.batch-photo-preview img\s*{[^}]*width:\s*100%/s);
+    assert.match(galleryBlock, /\.batch-photo-preview img\s*{[^}]*height:\s*100%/s);
+    assert.match(galleryBlock, /\.batch-photo-gallery\s*{[^}]*align-items:\s*stretch/s);
+    assert.match(galleryBlock, /\.batch-photo-item\s*{[^}]*display:\s*flex/s);
+    assert.match(galleryBlock, /\.batch-photo-item\s*{[^}]*flex-direction:\s*column/s);
+    assert.match(galleryBlock, /\.batch-photo-meta\s*{[^}]*margin-top:\s*auto/s);
+    assert.match(css, /@media[^{}]*\{[\s\S]*\.batch-photo-gallery\s*{[^}]*align-items:\s*start/);
+    assert.match(css, /@media[^{}]*\{[\s\S]*\.batch-photo-preview\s*{[^}]*height:\s*auto/);
+    assert.match(css, /@media[^{}]*\{[\s\S]*\.batch-photo-preview img\s*{[^}]*position:\s*static/);
+    assert.match(css, /@media[^{}]*\{[\s\S]*\.batch-photo-preview img\s*{[^}]*width:\s*auto/);
+    assert.match(css, /@media[^{}]*\{[\s\S]*\.batch-photo-preview img\s*{[^}]*height:\s*auto/);
+    assert.match(css, /@media[^{}]*\{[\s\S]*\.batch-photo-meta\s*{[^}]*margin-top:\s*0/);
     assert.doesNotMatch(galleryBlock, /height:\s*220px/);
     assert.doesNotMatch(galleryBlock, /object-fit:\s*cover/);
     assert.doesNotMatch(css, /\.batch-image-grid/);

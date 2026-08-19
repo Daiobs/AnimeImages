@@ -40,8 +40,14 @@ DOUYIN_CONTINUATION_METADATA_KEYS = frozenset(
         "kukutool_candidate_count",
         "tiantianjiexi_candidate_count",
         "ultra_retry_after_seconds",
+        "title",
+        "title_source",
     }
 )
+DOUYIN_CONTINUATION_METADATA_STRING_LIMITS = {
+    "title": 200,
+    "title_source": 40,
+}
 
 
 logger = logging.getLogger(__name__)
@@ -145,7 +151,9 @@ def safe_continuation_metadata(metadata):
         elif isinstance(value, int):
             safe[key] = value
         elif isinstance(value, str):
-            safe[key] = value[:120]
+            safe[key] = value[
+                : DOUYIN_CONTINUATION_METADATA_STRING_LIMITS.get(key, 120)
+            ]
     return safe
 
 

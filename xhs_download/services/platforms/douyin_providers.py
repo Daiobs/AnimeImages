@@ -20,7 +20,7 @@ from django.utils import timezone
 
 from ..assets import MediaAsset, ParseResult
 from ..candidates import MediaCandidate
-from ..common import XhsProviderTimeoutError, validate_external_url
+from ..common import XhsProviderTimeoutError, clean_filename, validate_external_url
 from ..diagnostics import select_best_media_candidate
 from ..douyin_continuation import (
     DouyinContinuationCoordinator,
@@ -720,13 +720,37 @@ def get_reference_video_asset(result):
 
 
 def safe_external_base_filename(value):
-    value = str(value or "").strip()
+    value = normalize_douyin_display_title(value)
     if not value:
         return ""
-    parsed = urlsplit(value)
+    return clean_filename(value)[:200]
+
+
+def normalize_douyin_display_title(value):
+    value = " ".join(str(value or "").split())
+    if not value:
+        return ""
+    parsed_value = value
+    if value.startswith("//"):
+        parsed_value = f"https:{value}"
+    elif value.lower().startswith("www."):
+        parsed_value = f"https://{value}"
+    parsed = urlsplit(parsed_value)
     if parsed.scheme in {"http", "https"} and parsed.hostname:
         return ""
-    return value
+    return value[:200]
+
+
+def source_url_matches_aweme_id(source_url, aweme_id):
+    aweme_id = str(aweme_id or "").strip()
+    if not re.fullmatch(r"\d{8,24}", aweme_id):
+        return False
+    return bool(
+        re.search(
+            rf"(?<!\d){re.escape(aweme_id)}(?!\d)",
+            str(source_url or ""),
+        )
+    )
 
 
 def build_external_parse_result(
@@ -738,9 +762,33 @@ def build_external_parse_result(
     base_filename="",
     cover_url="",
 ):
+    reference_metadata = (
+        reference_result.metadata
+        if reference_result and isinstance(reference_result.metadata, dict)
+        else {}
+    )
+    reference_title = normalize_douyin_display_title(
+        reference_metadata.get("title")
+    )
+    provider_title = normalize_douyin_display_title(base_filename)
+    display_title = reference_title or provider_title
     reference_asset = get_reference_video_asset(reference_result)
-    reference_filename = getattr(reference_result, "base_filename", "")
-    base_filename = reference_filename or safe_external_base_filename(base_filename)
+    reference_cover_url = (
+        str(getattr(reference_asset, "cover_url", "") or "")
+        if reference_asset
+        else ""
+    )
+    resolved_cover_url = reference_cover_url or cover_url
+    reference_preview_url = (
+        str(getattr(reference_asset, "cover_preview_url", "") or "")
+        if reference_asset
+        else ""
+    )
+    resolved_preview_url = reference_preview_url or resolved_cover_url
+    reference_filename = safe_external_base_filename(
+        getattr(reference_result, "base_filename", "")
+    )
+    base_filename = reference_filename or safe_external_base_filename(provider_title)
     if not base_filename:
         base_filename = f"douyin_{context.aweme_id}" if context.aweme_id else "douyin"
     provider_fields = {"provider": provider_name}
@@ -760,6 +808,14 @@ def build_external_parse_result(
                 media_type="video",
             ),
         )
+    result_metadata = {}
+    if display_title:
+        result_metadata = {
+            "title": display_title,
+            "title_source": (
+                "reference_metadata" if reference_title else "provider_payload"
+            ),
+        }
     return ParseResult(
         platform=adapter.platform_id,
         post_type="video",
@@ -769,16 +825,8 @@ def build_external_parse_result(
                 media_type="video",
                 url=candidate.url,
                 platform=adapter.platform_id,
-                cover_url=(
-                    getattr(reference_asset, "cover_url", "")
-                    if reference_asset
-                    else cover_url
-                ),
-                cover_preview_url=(
-                    getattr(reference_asset, "cover_preview_url", "")
-                    if reference_asset
-                    else cover_url
-                ),
+                cover_url=resolved_cover_url,
+                cover_preview_url=resolved_preview_url,
                 quality_label=candidate.quality_label,
                 size_bytes=candidate.size_bytes,
                 headers=adapter.headers,
@@ -786,6 +834,7 @@ def build_external_parse_result(
                 **provider_fields,
             ),
         ),
+        metadata=result_metadata,
     )
 
 
@@ -859,8 +908,25 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             )
         )
 
-    def clean_cover_url(self, payload, adapter):
+    def clean_cover_url(
+        self,
+        payload,
+        adapter,
+        *,
+        allow_response_image=False,
+    ):
         cover_url = str(payload.get("cover") or "").strip()
+        if not cover_url and allow_response_image and payload.get("videos"):
+            raw_response_images = payload.get("images") or ()
+            response_images = (
+                (raw_response_images,)
+                if isinstance(raw_response_images, str)
+                else tuple(raw_response_images)
+                if isinstance(raw_response_images, (list, tuple))
+                else ()
+            )
+            if len(response_images) == 1:
+                cover_url = str(response_images[0] or "").strip()
         if not cover_url:
             return ""
         try:
@@ -1008,7 +1074,19 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             raise ValueError("天天解析未返回可用抖音视频资源")
 
         provider_title = safe_external_base_filename(payload.get("title"))
-        provider_cover_url = self.clean_cover_url(payload, adapter)
+        if not provider_title:
+            provider_title = safe_external_base_filename(
+                payload.get("description")
+            )
+        source_identity_verified = source_url_matches_aweme_id(
+            source_url,
+            context.aweme_id,
+        )
+        provider_cover_url = self.clean_cover_url(
+            payload,
+            adapter,
+            allow_response_image=source_identity_verified,
+        )
         # Reuse existing native metadata when available. When the provider
         # already supplied usable display metadata, do not spend the remaining
         # media deadline on an optional native enrichment request.

@@ -1,9 +1,14 @@
 import json
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 from bs4 import BeautifulSoup
 from django.test import SimpleTestCase
 
+from .services.batch_parse.results import (
+    BATCH_NO_MEDIA_MESSAGE,
+    build_batch_result_row,
+)
 from .services.common import XhsParseError
 from .services.platforms.xiaohongshu import (
     XiaohongshuAdapter,
@@ -30,6 +35,12 @@ VIDEO_URL = "https://sns-video-bd.xhscdn.com/stream/video-one.mp4"
 META_IMAGE = "https://sns-webpic-qc.xhscdn.com/notes_pre_post/meta-image"
 DOM_IMAGE = "https://sns-webpic-qc.xhscdn.com/notes_pre_post/dom-image"
 BROAD_IMAGE = "https://sns-webpic-qc.xhscdn.com/notes_pre_post/broad-image"
+CANONICAL_NOTE_HTML = f'<link rel="canonical" href="{NOTE_URL}">'
+GENERIC_SHELL_FIXTURE = (
+    Path(__file__).resolve().parent
+    / "test_fixtures"
+    / "xhs_generic_shell.html"
+)
 
 
 def hydration_html(payload, *, extra_html=""):
@@ -542,7 +553,134 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
             note_id=OTHER_NOTE_ID,
         )
 
-    def test_unrelated_json_ld_allows_safe_image_fallback(self):
+    def test_explicit_note_id_rejects_generic_shell_media(self):
+        source_url = (
+            "https://www.xiaohongshu.com/explore/"
+            "69453774000000001f00dbb5"
+        )
+        result = self.adapter.parse_html(
+            GENERIC_SHELL_FIXTURE.read_text(encoding="utf-8"),
+            source_url=source_url,
+        )
+
+        self.assertEqual(result.assets, ())
+        self.assertFalse(result.metadata["current_note_found"])
+        self.assertFalse(result.metadata["note_candidate_found"])
+        self.assertEqual(
+            result.metadata["fallback_policy"],
+            "source_identity_unverified",
+        )
+
+    def test_generic_shell_is_empty_for_single_display_and_failed_for_batch(self):
+        source_url = (
+            "https://www.xiaohongshu.com/explore/"
+            "69453774000000001f00dbb5"
+        )
+        result = self.adapter.parse_html(
+            GENERIC_SHELL_FIXTURE.read_text(encoding="utf-8"),
+            source_url=source_url,
+        )
+
+        single_context = build_result_display_context(result, platform_key="home")
+        batch_row = build_batch_result_row(
+            Mock(),
+            source_url,
+            prefer_ultra_hd=False,
+            prefer_youtube_merge=False,
+            per_link_timeout_seconds=2,
+            parser=lambda *_args, **_kwargs: result,
+            display_context_builder=build_result_display_context,
+            request_country_code_builder=lambda _request: "",
+            query_uses_third_party_provider_func=lambda _source: False,
+            third_party_provider_is_available_func=lambda _request: True,
+        )
+
+        self.assertEqual(single_context["image_items"], [])
+        self.assertEqual(single_context["video_items"], [])
+        self.assertEqual(batch_row["status"], "failed")
+        self.assertEqual(batch_row["error_message"], BATCH_NO_MEDIA_MESSAGE)
+        self.assertEqual(batch_row["public_error_message"], BATCH_NO_MEDIA_MESSAGE)
+
+    def test_verified_canonical_identity_allows_meta_fallback(self):
+        html = f'''
+        <link rel="canonical" href="{NOTE_URL}">
+        <meta property="og:image" content="{META_IMAGE}">
+        '''
+
+        result = self.adapter.parse_html(html, source_url=NOTE_URL)
+
+        self.assertEqual(result.metadata["fallback_policy"], "verified_page_fallback")
+        self.assertEqual(result.metadata["image_source"], "meta")
+        self.assertEqual(result.image_assets[0].url, normalize_xhs_image_url(META_IMAGE))
+
+    def test_verified_page_identity_allows_strict_current_note_dom(self):
+        html = f'''
+        <meta property="og:url" content="{NOTE_URL}">
+        <div id="noteContainer"><img src="{DOM_IMAGE}"></div>
+        '''
+
+        result = self.adapter.parse_html(html, source_url=NOTE_URL)
+
+        self.assertEqual(result.metadata["fallback_policy"], "verified_page_fallback")
+        self.assertEqual(result.metadata["image_source"], "dom")
+        self.assertEqual(result.image_assets[0].url, normalize_xhs_image_url(DOM_IMAGE))
+
+    def test_current_note_container_identity_allows_strict_dom_fallback(self):
+        html = (
+            f'<div id="noteContainer" data-note-id="{NOTE_ID}">'
+            f'<img src="{DOM_IMAGE}"></div>'
+        )
+
+        result = self.adapter.parse_html(html, source_url=NOTE_URL)
+
+        self.assertEqual(result.metadata["fallback_policy"], "verified_page_fallback")
+        self.assertEqual(result.metadata["image_source"], "dom")
+
+    def test_verified_page_identity_still_rejects_broad_shell_scan(self):
+        html = CANONICAL_NOTE_HTML + GENERIC_SHELL_FIXTURE.read_text(encoding="utf-8")
+
+        result = self.adapter.parse_html(html, source_url=NOTE_URL)
+
+        self.assertEqual(result.assets, ())
+        self.assertEqual(result.metadata["fallback_policy"], "verified_page_fallback")
+
+    def test_mismatched_note_rejects_meta_and_strict_dom(self):
+        for fallback_html in (
+            f'<meta property="og:image" content="{META_IMAGE}">',
+            f'<div id="noteContainer"><img src="{DOM_IMAGE}"></div>',
+        ):
+            with self.subTest(fallback_html=fallback_html):
+                result = self.parse_payload(
+                    self.other_note_payload(),
+                    extra_html=fallback_html,
+                )
+
+                self.assertEqual(result.assets, ())
+                self.assertEqual(
+                    result.metadata["fallback_policy"],
+                    "source_identity_mismatch",
+                )
+
+    @patch("xhs_download.services.platforms.xiaohongshu.request_get_with_retry")
+    def test_parse_url_preserves_requested_note_identity_after_generic_redirect(
+        self,
+        mock_get,
+    ):
+        response = Mock()
+        response.url = "https://www.xiaohongshu.com/explore"
+        response.text = GENERIC_SHELL_FIXTURE.read_text(encoding="utf-8")
+        mock_get.return_value = response
+
+        result = self.adapter.parse_url(NOTE_URL)
+
+        self.assertEqual(result.assets, ())
+        self.assertEqual(
+            result.metadata["fallback_policy"],
+            "source_identity_unverified",
+        )
+        response.close.assert_called_once()
+
+    def test_unrelated_json_ld_without_note_id_keeps_legacy_image_fallback(self):
         html = f'''
         <script type="application/ld+json">
           {{"@context":"https://schema.org","@type":"WebSite"}}
@@ -550,7 +688,7 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
         <script>const fallback = "{BROAD_IMAGE}";</script>
         '''
 
-        result = self.adapter.parse_html(html, source_url=NOTE_URL)
+        result = self.adapter.parse_html(html)
 
         self.assertEqual(
             [asset.url for asset in result.image_assets],
@@ -558,7 +696,7 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
         )
         self.assertEqual(result.metadata["fallback_policy"], "allow")
 
-    def test_unrelated_application_json_allows_safe_image_fallback(self):
+    def test_unrelated_application_json_without_note_id_keeps_legacy_fallback(self):
         config = {
             "siteConfig": {
                 "title": "站点配置",
@@ -574,13 +712,13 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
             + f'<script>const fallback = "{BROAD_IMAGE}";</script>'
         )
 
-        result = self.adapter.parse_html(html, source_url=NOTE_URL)
+        result = self.adapter.parse_html(html)
 
         self.assertEqual(len(result.image_assets), 1)
         self.assertEqual(result.metadata["image_source"], "fallback")
         self.assertFalse(result.metadata["note_candidate_found"])
 
-    def test_unrelated_hydration_config_allows_safe_image_fallback(self):
+    def test_unrelated_hydration_without_note_id_keeps_legacy_image_fallback(self):
         payload = {
             "siteConfig": {
                 "title": "配置标题",
@@ -590,21 +728,23 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
             }
         }
 
-        result = self.parse_payload(
-            payload,
-            extra_html=f'<script>const fallback = "{BROAD_IMAGE}";</script>',
+        result = self.adapter.parse_html(
+            hydration_html(
+                payload,
+                extra_html=f'<script>const fallback = "{BROAD_IMAGE}";</script>',
+            ),
         )
 
         self.assertEqual(result.metadata["image_source"], "fallback")
         self.assertEqual(result.metadata["fallback_policy"], "allow")
 
-    def test_unrelated_json_does_not_block_video_fallback(self):
+    def test_unrelated_json_without_note_id_keeps_legacy_video_fallback(self):
         html = '''
         <script type="application/json">{"siteConfig":{"theme":"light"}}</script>
         <script>{"originVideoKey":"legacy-video-key-1234567890"}</script>
         '''
 
-        result = self.adapter.parse_html(html, source_url=NOTE_URL)
+        result = self.adapter.parse_html(html)
 
         self.assertEqual(len(result.video_assets), 1)
         self.assertEqual(result.metadata["video_source"], "fallback")
@@ -720,56 +860,71 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
             [normalize_xhs_image_url(IMAGE_ONE), normalize_xhs_image_url(IMAGE_TWO)],
         )
 
-    def test_mismatched_note_can_use_explicit_page_meta(self):
+    def test_mismatched_note_rejects_explicit_page_meta_despite_canonical(self):
         result = self.parse_payload(
             self.other_note_payload(),
-            extra_html=f'<meta property="og:image" content="{META_IMAGE}">',
+            extra_html=(
+                CANONICAL_NOTE_HTML
+                + f'<meta property="og:image" content="{META_IMAGE}">'
+            ),
         )
 
-        self.assertEqual(result.metadata["image_source"], "meta")
-        self.assertEqual(result.metadata["fallback_policy"], "suppress_broad_scan")
+        self.assertEqual(result.assets, ())
+        self.assertEqual(result.metadata["image_source"], "")
+        self.assertEqual(result.metadata["fallback_policy"], "source_identity_mismatch")
+        self.assertFalse(result.metadata["source_identity_verified"])
         self.assertNotIn("推荐标题", result.base_filename)
 
-    def test_mismatched_note_can_use_strict_current_dom(self):
+    def test_mismatched_note_rejects_strict_dom_despite_canonical(self):
         result = self.parse_payload(
             self.other_note_payload(),
-            extra_html=f'<div id="noteContainer"><img src="{DOM_IMAGE}"></div>',
+            extra_html=(
+                CANONICAL_NOTE_HTML
+                + f'<div id="noteContainer"><img src="{DOM_IMAGE}"></div>'
+            ),
         )
 
-        self.assertEqual(result.metadata["image_source"], "dom")
-        self.assertEqual(result.image_assets[0].url, normalize_xhs_image_url(DOM_IMAGE))
+        self.assertEqual(result.assets, ())
+        self.assertEqual(result.metadata["image_source"], "")
+        self.assertEqual(result.metadata["fallback_policy"], "source_identity_mismatch")
 
     def test_mismatched_note_rejects_page_level_swiper_recommendation(self):
         result = self.parse_payload(
             self.other_note_payload(),
-            extra_html=f'<div class="swiper-slide"><img src="{DOM_IMAGE}"></div>',
+            extra_html=(
+                CANONICAL_NOTE_HTML
+                + f'<div class="swiper-slide"><img src="{DOM_IMAGE}"></div>'
+            ),
         )
 
         self.assertEqual(result.assets, ())
-        self.assertEqual(result.metadata["fallback_policy"], "suppress_broad_scan")
+        self.assertEqual(result.metadata["fallback_policy"], "source_identity_mismatch")
 
     def test_mismatched_note_rejects_page_level_carousel_recommendation(self):
         result = self.parse_payload(
             self.other_note_payload(),
             extra_html=(
-                f'<div class="carousel-container"><img src="{DOM_IMAGE}"></div>'
+                CANONICAL_NOTE_HTML
+                + f'<div class="carousel-container"><img src="{DOM_IMAGE}"></div>'
             ),
         )
 
         self.assertEqual(result.assets, ())
-        self.assertEqual(result.metadata["fallback_policy"], "suppress_broad_scan")
+        self.assertEqual(result.metadata["fallback_policy"], "source_identity_mismatch")
 
-    def test_mismatched_note_allows_swiper_scoped_to_note_container(self):
+    def test_mismatched_note_rejects_swiper_scoped_to_note_container(self):
         result = self.parse_payload(
             self.other_note_payload(),
             extra_html=(
-                '<div id="noteContainer"><div class="swiper-slide">'
+                CANONICAL_NOTE_HTML
+                + '<div id="noteContainer"><div class="swiper-slide">'
                 f'<img src="{DOM_IMAGE}"></div></div>'
             ),
         )
 
-        self.assertEqual(result.metadata["image_source"], "dom")
-        self.assertEqual(result.image_assets[0].url, normalize_xhs_image_url(DOM_IMAGE))
+        self.assertEqual(result.assets, ())
+        self.assertEqual(result.metadata["image_source"], "")
+        self.assertEqual(result.metadata["fallback_policy"], "source_identity_mismatch")
 
     def test_unrelated_json_keeps_legacy_page_level_swiper_fallback(self):
         html = f'''
@@ -777,7 +932,7 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
         <div class="swiper-slide"><img src="{DOM_IMAGE}"></div>
         '''
 
-        result = self.adapter.parse_html(html, source_url=NOTE_URL)
+        result = self.adapter.parse_html(html)
 
         self.assertEqual(result.metadata["fallback_policy"], "allow")
         self.assertEqual(result.metadata["image_source"], "dom")
@@ -787,7 +942,10 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
         result = self.parse_payload(self.other_note_payload())
 
         self.assertEqual(result.assets, ())
-        self.assertEqual(result.metadata["fallback_policy"], "suppress_broad_scan")
+        self.assertEqual(
+            result.metadata["fallback_policy"],
+            "source_identity_mismatch",
+        )
         self.assertNotIn("title", result.metadata)
 
     def test_mismatched_note_suppresses_recommendation_video(self):
@@ -982,4 +1140,8 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
         self.assertTrue(result.metadata["structured_payload_found"])
         self.assertFalse(result.metadata["current_note_found"])
         self.assertFalse(result.metadata["note_candidate_found"])
-        self.assertEqual(result.metadata["fallback_policy"], "allow")
+        self.assertEqual(
+            result.metadata["fallback_policy"],
+            "source_identity_unverified",
+        )
+        self.assertFalse(result.metadata["source_identity_verified"])

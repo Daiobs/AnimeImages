@@ -1441,11 +1441,14 @@ body {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
     gap: 16px;
-    align-items: start;
+    align-items: stretch;
 }
 
 .batch-photo-item {
+    display: flex;
+    height: 100%;
     min-width: 0;
+    flex-direction: column;
     overflow: hidden;
     border: 1px solid var(--line-soft);
     border-radius: 8px;
@@ -1456,7 +1459,7 @@ body {
     position: relative;
     display: grid;
     width: 100%;
-    min-height: 160px;
+    height: clamp(240px, 22vw, 340px);
     place-items: center;
     padding: 0;
     overflow: hidden;
@@ -1466,11 +1469,11 @@ body {
 }
 
 .batch-photo-preview img {
+    position: absolute;
+    inset: 0;
     display: block;
     width: 100%;
-    max-width: 100%;
-    height: auto;
-    max-height: 520px;
+    height: 100%;
     object-fit: contain;
 }
 
@@ -1500,6 +1503,7 @@ body {
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
+    margin-top: auto;
     gap: 10px;
     padding: 12px;
     border-top: 1px solid var(--line-soft);
@@ -1817,6 +1821,29 @@ body {
 
     .batch-photo-gallery {
         grid-template-columns: 1fr;
+        align-items: start;
+    }
+
+    .batch-photo-item {
+        height: auto;
+    }
+
+    .batch-photo-preview {
+        height: auto;
+        min-height: 160px;
+    }
+
+    .batch-photo-preview img {
+        position: static;
+        inset: auto;
+        width: auto;
+        max-width: 100%;
+        height: auto;
+        max-height: min(70vh, 520px);
+    }
+
+    .batch-photo-meta {
+        margin-top: 0;
     }
 
     .batch-photo-header .btn,
