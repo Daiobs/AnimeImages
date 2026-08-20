@@ -13,7 +13,9 @@ from .services.platforms.douyin import DouyinAdapter
 from .services.platforms.douyin_providers import (
     DouyinParseContext,
     DouyinTianTianJieXiProvider,
+    build_tiantian_douyin_request_url,
     context_log_fields,
+    select_tiantian_request_url,
 )
 from .services.platforms.kukutool_generic import source_key_for_url
 from .services.platforms.tiantianjiexi_generic import (
@@ -29,6 +31,10 @@ AWEME_ID = "7669858827638845160"
 CANONICAL_URL = f"https://www.douyin.com/video/{AWEME_ID}"
 SOURCE_IDENTITY = f"douyin:{AWEME_ID}"
 MEDIA_URL = "https://v26-default.365yg.com/controlled-video.mp4"
+TIANTIAN_REQUEST_URL = (
+    "https://www.douyin.com/user/self"
+    f"?from_tab_name=main&modal_id={AWEME_ID}&showTab=record"
+)
 
 
 class FakeMonotonicClock:
@@ -554,7 +560,7 @@ class TianTianDouyinIdentityTests(SimpleTestCase):
     def tearDown(self):
         cache.clear()
 
-    def test_douyin_wrapper_uses_canonical_provider_url_and_logical_identity(self):
+    def test_douyin_wrapper_separates_provider_url_from_logical_identity(self):
         calls = []
 
         class Provider:
@@ -602,8 +608,83 @@ class TianTianDouyinIdentityTests(SimpleTestCase):
         ).parse(DouyinAdapter(), context)
 
         self.assertEqual(result.metadata["selected_provider"], "tiantianjiexi")
-        self.assertEqual(calls[0][0], CANONICAL_URL)
+        self.assertEqual(calls[0][0], TIANTIAN_REQUEST_URL)
         self.assertEqual(calls[0][1], SOURCE_IDENTITY)
+
+    def test_tiantian_request_url_is_derived_from_validated_aweme_identity(self):
+        contexts = (
+            DouyinParseContext(
+                url="https://v.douyin.com/SAFE_TEST/",
+                final_url=CANONICAL_URL,
+                aweme_id=AWEME_ID,
+            ),
+            DouyinParseContext(
+                url=CANONICAL_URL,
+                final_url=CANONICAL_URL,
+                aweme_id=AWEME_ID,
+            ),
+            DouyinParseContext(
+                url=(
+                    "https://www.douyin.com/user/self"
+                    f"?modal_id={AWEME_ID}"
+                ),
+                aweme_id=AWEME_ID,
+            ),
+            DouyinParseContext(
+                url=f"https://www.iesdouyin.com/share/video/{AWEME_ID}/",
+                aweme_id=AWEME_ID,
+            ),
+        )
+
+        self.assertEqual(
+            {select_tiantian_request_url(context) for context in contexts},
+            {TIANTIAN_REQUEST_URL},
+        )
+        self.assertEqual(
+            {context.source_identity for context in contexts},
+            {SOURCE_IDENTITY},
+        )
+
+    def test_tiantian_request_url_rejects_invalid_aweme_identity(self):
+        self.assertEqual(build_tiantian_douyin_request_url("not-an-id"), "")
+
+    def test_fresh_wrapper_attempt_calls_tiantian_once_with_modal_representation(self):
+        payload = {
+            "title": "controlled title",
+            "cover": "https://p3.douyinpic.com/cover.jpeg",
+            "videos": [
+                {
+                    "url": MEDIA_URL,
+                    "quality": "原画",
+                    "size": 100 * 1024 * 1024,
+                }
+            ],
+        }
+        client = Mock()
+        client.parse_url.return_value = payload
+        context = DouyinParseContext(
+            url=CANONICAL_URL,
+            final_url=CANONICAL_URL,
+            aweme_id=AWEME_ID,
+            prefer_ultra_hd=True,
+            deadline_monotonic=time.monotonic() + 6,
+        )
+
+        result = DouyinTianTianJieXiProvider(
+            provider_settings=SimpleNamespace(
+                provider_is_enabled=lambda _name: True,
+                ultra_total_timeout_seconds=6.0,
+                enabled_provider_order=("tiantianjiexi", "native"),
+                ultra_kukutool_grace_seconds=1.0,
+                kukutool_sidecar_timeout_seconds=1.0,
+            ),
+            provider=TianTianJieXiGenericProvider(client=client),
+            reserve_fallback_grace=False,
+        ).parse(DouyinAdapter(), context)
+
+        self.assertEqual(result.video_assets[0].size_bytes, 100 * 1024 * 1024)
+        client.parse_url.assert_called_once()
+        self.assertEqual(client.parse_url.call_args.args[0], TIANTIAN_REQUEST_URL)
 
     def test_same_identity_reuses_payload_cache_across_url_shapes(self):
         payload = {
