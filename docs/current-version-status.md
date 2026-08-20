@@ -1,6 +1,6 @@
 # Current Version Status
 
-Date: 2026-08-19
+Date: 2026-08-20
 
 ## Source Of Truth
 
@@ -18,12 +18,12 @@ related but separate facts.
 
 ## Canonical Repository
 
-The runtime baseline accepted by Production Polish Final Acceptance is:
+The application baseline accepted for real-user promotion is:
 
 ```text
-runtime SHA: a87ec4751c67208031e2f296507b304c7c5d890c
-source:      Production Polish (#47 through #52)
-checkpoint:  checkpoint/production-polish-v1
+application SHA: 766cecfd239f594e791c556b4caa69aebf2d1f9f
+source:          PR #54 and PR #55 on top of the accepted Production Polish line
+checkpoint:      checkpoint/production-promotion-ready-v1
 ```
 
 Always resolve the current canonical SHA rather than treating the value above
@@ -41,8 +41,63 @@ application code remains the accepted runtime tree.
 
 ```text
 PRODUCTION_RUNTIME_CODE_DRIFT = 0
-REPO_HEAD_AHEAD_DOCS_ONLY = YES
-MAIN_RUNTIME_AHEAD_PRODUCTION = NO
+REPOSITORY_AHEAD_OF_RUNTIME = DOCS_ONLY
+ANIMEIMAGES_PROMOTION_READY = YES
+```
+
+## Production Promotion Ready
+
+PR #54 (squash merge `6d85c7c8d673aedecc5d182de497cb6f18b1ff9a`)
+unified the supported Douyin URL representations around the resolved
+`douyin:<aweme_id>` identity. Short-link source resolution is bounded
+separately, so the unchanged six-second Ultra Provider window starts only after
+identity resolution. TianTianJieXi payload cache, single-flight, failure
+cooldown, and attempt attribution now share that logical identity. Media
+admission was extended only to the reviewed exact host
+`v3-dy-a-x.ixigua.com`; no broad `ixigua.com` suffix or wildcard family was
+allowed. Provider order, retry, cooldown, Browser Streaming, and zero-Relay
+contracts remain unchanged.
+
+PR #55 (squash merge `766cecfd239f594e791c556b4caa69aebf2d1f9f`)
+restored Douyin video size metadata without weakening that identity model. The
+logical cache/work identity remains `douyin:<aweme_id>`, while the
+TianTianJieXi request uses an aweme-bound modal representation that retains the
+complete Provider candidate metadata. The fix adds no Provider request, HEAD,
+Range, or separate media-size probe.
+
+Production acceptance for the two changes established:
+
+- the PR #54 short-link matrix returned Ultra for two of three fresh samples;
+- source resolution no longer consumes the Ultra Provider window;
+- a reviewed-host 95,097,325-byte MP4 completed through Browser Streaming;
+- ordinary-video `prepare / stream / status` calls remained `0 / 0 / 0`;
+- AnimeImages ordinary-media bytes remained zero and Server Relay remained off;
+- PR #55 restored TianTianJieXi size metadata for three of three samples:
+  69,350,574 bytes (66.1 MB), 56,422,549 bytes (53.8 MB), and 79,910,405 bytes
+  (76.2 MB);
+- the 79,910,405-byte parsed size exactly matched the completed browser save.
+
+Real-device acceptance is complete:
+
+```text
+MOBILE_REAL_DEVICE_ACCEPTANCE = COMPLETE
+HUMAN_MOBILE_GATE = PASS
+MOBILE_SIZE_GATE = PASS
+```
+
+The tested Android flow completed the download and the result appeared in the
+system Gallery. The tested iOS flow completed the download and the result was
+available in Files, but it did not automatically appear in Photos. These are
+observations from the devices used for this gate, not claims about every mobile
+OS, browser, or version.
+
+```text
+ANDROID_DOWNLOAD = PASS / GALLERY OBSERVED
+IOS_DOWNLOAD = PASS / FILES OBSERVED
+IOS_SAVE_TO_PHOTOS = NOT IMPLEMENTED / NON_BLOCKING
+MOBILE_OS_SAVE_DESTINATION_VARIANCE = ACCEPTED_NON_BLOCKING
+PROMOTION_BLOCKERS = NONE
+PROMOTION_PHASE = REAL_USER_INTRODUCTION
 ```
 
 ## Production Polish Acceptance
@@ -230,8 +285,8 @@ was recorded in the acceptance evidence.
 Production application code has been deployed and accepted at:
 
 ```text
-application SHA:  a87ec4751c67208031e2f296507b304c7c5d890c
-checkpoint:       checkpoint/production-polish-v1
+application SHA:  766cecfd239f594e791c556b4caa69aebf2d1f9f
+checkpoint:       checkpoint/production-promotion-ready-v1
 rollback:         checkpoint/production-browser-photo-archive-v1 -> e70848c8b89225beba0838e9b681aaf5b7fdf789
 site:             https://download.cosflow.icu/
 ```
@@ -239,7 +294,9 @@ site:             https://download.cosflow.icu/
 The checkpoint resolves exactly to the application SHA and must remain
 immutable. This application includes the earlier accepted Batch visibility,
 Runtime Admin, Download UI, Gallery/Lightbox, and browser-first photo archive
-milestones, plus the complete PR #47 through #52 Production Polish release.
+milestones, the complete PR #47 through #52 Production Polish release, and the
+PR #54/#55 Douyin canonical-identity, short-link Ultra, reviewed media-host,
+and size-metadata repairs.
 
 Public users now see user-level Chinese status, retry, and download messages;
 active staff retain Provider names, internal status, latency, strategy, and
@@ -300,6 +357,15 @@ deployment-status statements. Changing a behavior still requires an explicit
 
 ### Douyin Ultra
 
+- Supported short, canonical, share, modal, and copied-text URL forms resolve
+  to the same `douyin:<aweme_id>` work identity before Provider execution.
+- Short-link source resolution has its own bound; it does not consume the
+  unchanged six-second Ultra Provider window.
+- TianTianJieXi uses an aweme-bound modal request representation while cache,
+  single-flight, cooldown, and attempt accounting remain keyed by the logical
+  identity.
+- The reviewed additional media admission is exact-host only:
+  `v3-dy-a-x.ixigua.com`.
 - A fresh request starts TianTianJieXi, KuKuTool, and Native at T=0.
 - Native remains hidden during the six-second foreground window.
 - Strong Ultra completed within that window is the first visible result.
@@ -410,6 +476,22 @@ See
 [`research/repository-branch-archive-cleanup-v1.md`](research/repository-branch-archive-cleanup-v1.md)
 for exact branch tips, evidence, decisions, and checkpoint integrity records.
 
+## Deferred After Promotion
+
+These items remain outside the promotion gate and require real demand or a
+separate evidence-backed diagnostic task:
+
+```text
+BROWSER_STREAM_RANGE_RESUME_V1 = DEFERRED_POST_RELEASE
+DOWNLOAD_PAGE_CANCEL = DEFERRED_PENDING_USER_FEEDBACK
+SUCCESSFUL_DOWNLOAD_STARTUP_TELEMETRY = SEPARATE_FUTURE_DIAGNOSTIC_PR
+PHOTO_DOWNLOAD_VARIANT_FIDELITY = DEFERRED / DEMAND-DRIVEN
+ADMIN_DASHBOARD_REDESIGN = DEFERRED_UNTIL_REAL_DATA
+BAIDU_BROWSER_DOWNLOAD_COMPATIBILITY = DEFERRED_PENDING_REAL_USER_DEMAND
+IOS_SAVE_TO_PHOTOS_UX = DEFERRED_PENDING_REAL_USER_FEEDBACK
+MOBILE_SAVE_DESTINATION_GUIDANCE = BACKLOG / NOT A PROMOTION BLOCKER
+```
+
 ## Known Boundaries
 
 1. Firefox and Edge Streaming production acceptance is not complete. Chrome is
@@ -429,18 +511,26 @@ for exact branch tips, evidence, decisions, and checkpoint integrity records.
    plan/ruleset capabilities.
 8. Certbot, Redis/PostgreSQL host configuration, Cloud-init, DNS, and broader
    host recovery are outside the repository-owned infrastructure baseline.
-9. `BROWSER_STREAM_RANGE_RESUME_V1` is `DEFERRED_POST_RELEASE`.
-10. `DOWNLOAD_PAGE_CANCEL` is `DEFERRED_PENDING_USER_FEEDBACK`.
-11. `SUCCESSFUL_DOWNLOAD_STARTUP_TELEMETRY` requires a separate future
-    diagnostic PR.
-12. `MOBILE_REAL_DEVICE_ACCEPTANCE` remains pending.
-13. `ADMIN_DASHBOARD_REDESIGN` remains deferred.
+9. Mobile download completion, Ultra, title, cover, and size passed the real
+   device gate. The observed Android Gallery versus iOS Files destination
+   difference is accepted and non-blocking; automatic iOS Photos placement is
+   not implemented.
+10. Range resume, page cancellation, successful-start telemetry, photo
+    original-variant fidelity, Admin dashboard redesign, Baidu Browser
+    compatibility, iOS Photos UX, and mobile destination guidance retain the
+    deferred statuses listed above.
 
 These are current boundaries. Production convergence, Streaming telemetry,
 the Nginx telemetry route, Nginx config-as-code, and historical branch cleanup
 are complete and are not active blockers.
 
 ## Next Product Work
+
+The project is now in the `REAL_USER_INTRODUCTION` phase. Do not continue
+pre-release opportunistic optimization. Start a new task only when it has at
+least one concrete source of evidence: Production Feedback, repeated user
+reports, a real failure log, a measurable success-rate issue, demonstrated
+interaction friction, or an actual platform requirement.
 
 1. Start every new task from a freshly fetched `origin/main`, using one branch
    and one PR for one concrete task.
@@ -449,6 +539,8 @@ are complete and are not active blockers.
 3. Do not reopen the Streaming architecture without new evidence of an
    application regression.
 4. Keep production changes as separate, approved exact-SHA deployment tasks.
+5. Do not treat a hypothetical technical gap as sufficient reason for a broad
+   refactor.
 
 Historical reconciliation, failure forensics, infrastructure, and branch audit
 documents remain immutable evidence and should not be rewritten as current
