@@ -2,20 +2,35 @@
 
 ## Unreleased
 
+- Closed the Production Promotion gate at application SHA
+  `766cecfd239f594e791c556b4caa69aebf2d1f9f` and immutable checkpoint
+  `checkpoint/production-promotion-ready-v1`. Production code, desktop browser,
+  exact-size, zero-Relay, and real-device mobile gates passed. On the tested
+  devices Android completed into Gallery, while iOS completed into Files and
+  did not automatically enter Photos; that destination difference is accepted
+  and non-blocking. AnimeImages is now promotion-ready for real-user
+  introduction, with future work driven by Production Feedback, repeated user
+  reports, real failure logs, measurable reliability issues, or demonstrated
+  interaction friction.
 - Restored Douyin video size metadata by keeping the canonical
   `douyin:<aweme_id>` work identity while sending TianTianJieXi the richer,
   aweme-bound modal request representation. The Provider still receives one
   request per fresh attempt, payload cache/single-flight/failure cooldown keys
   remain unchanged, and no source-page or media-size probe was added. Ultra
   timing, Provider order, Browser Streaming, and zero-Relay behavior are
-  unchanged; this fix has not been deployed.
+  unchanged. PR #55 was deployed and production-accepted; three of three
+  TianTianJieXi samples restored size metadata, and the accepted
+  79,910,405-byte browser save exactly matched the parsed size.
 - Unified Douyin URL shapes around the resolved `aweme_id`, so short links,
   canonical video links, modal links, share links, and copied share text reuse
   the same TianTianJieXi payload cache, single-flight, and failure cooldown.
   Short-link resolution remains bounded separately, while the unchanged Ultra
   Provider window starts after identity resolution and still respects an
   explicit Batch outer deadline. This change adds no migration, does not alter
-  Provider order or attempt accounting, and has not been deployed.
+  Provider order or attempt accounting, and admits only the reviewed exact
+  `v3-dy-a-x.ixigua.com` media host. PR #54 was deployed and
+  production-accepted with Browser Streaming and zero ordinary-media server
+  bytes preserved.
 - Closed Production Polish across PR #47 through #52 and production-accepted
   exact application SHA `a87ec4751c67208031e2f296507b304c7c5d890c` at
   immutable checkpoint `checkpoint/production-polish-v1`. The release includes

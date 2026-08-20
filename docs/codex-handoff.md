@@ -1,6 +1,6 @@
 # Codex Handoff
 
-Last updated: 2026-08-17
+Last updated: 2026-08-20
 
 This document is the first stop when a new Codex project or thread takes over AnimeImages.
 
@@ -59,28 +59,41 @@ https://download.cosflow.icu/
 ## Canonical And Production Baseline
 
 Canonical development always starts from the latest fetched `origin/main`.
-The Production Polish application baseline is:
+The promotion-ready application baseline is:
 
 ```text
-a87ec4751c67208031e2f296507b304c7c5d890c
-Production Polish (#47 through #52)
+766cecfd239f594e791c556b4caa69aebf2d1f9f
+PR #54 and PR #55 on top of Production Polish
 ```
 
 Production application code was deployed and accepted at:
 
 ```text
-a87ec4751c67208031e2f296507b304c7c5d890c
-checkpoint/production-polish-v1
+766cecfd239f594e791c556b4caa69aebf2d1f9f
+checkpoint/production-promotion-ready-v1
 ```
 
-The checkpoint resolves exactly to the production application SHA. Production
-Playwright/Chrome acceptance verified XHS false-positive rejection, valid
-ordered XHS galleries, centered responsive previews, Lightbox and browser
-photo downloads, the public diagnostics boundary, and exact ordinary-video
-Browser Streaming with zero prepare/stream/status relay requests. Migration
-`0024_userfeedback` was already applied; this release added no migration.
-After the docs-only closure merges, repository `main` is intentionally ahead of
-the production runtime by documentation only (`RUNTIME_CODE_DRIFT=0`).
+The checkpoint resolves exactly to the production application SHA. It includes
+the accepted Production Polish, Browser Photo Archive, Douyin canonical-source
+identity, short-link Ultra, exact reviewed media-host, and video-size metadata
+work. Production desktop and real-device acceptance verified Ultra, title,
+cover, size, complete Browser Streaming downloads, and zero ordinary-media
+server bytes. Migration `0024_userfeedback` remains the latest application
+migration; PR #54 and PR #55 added none. After the docs-only closure merges,
+repository `main` is intentionally ahead of the production runtime by
+documentation only (`RUNTIME_CODE_DRIFT=0`).
+
+```text
+ANIMEIMAGES_PROMOTION_READY = YES
+PROMOTION_BLOCKERS = NONE
+PROMOTION_PHASE = REAL_USER_INTRODUCTION
+HUMAN_MOBILE_GATE = PASS
+```
+
+On the devices used for the human gate, Android completed into Gallery and iOS
+completed into Files rather than automatically into Photos. This destination
+variance is accepted and non-blocking; it is not a universal claim about all
+Android/iOS browsers or versions.
 
 Fetch and resolve the live repository baseline before starting work:
 
@@ -96,6 +109,12 @@ behavior context. See that file and `docs/repository-governance.md` first.
 
 Recent merged milestones:
 
+- PR #55: Restored Douyin size metadata by separating canonical work identity
+  from the aweme-bound TianTianJieXi request representation, without adding a
+  Provider call or media-size probe.
+- PR #54: Unified supported Douyin URL forms around `douyin:<aweme_id>`, kept
+  short-link resolution outside the six-second Ultra window, and admitted only
+  the reviewed exact ixigua media host.
 - PR #52: XHS source-identity protection, zero-media Batch correctness,
   responsive Gallery alignment, and Douyin display metadata completion.
 - PR #51: Shared browser identity and minimal public metadata.
@@ -154,6 +173,16 @@ AnimeImages is no longer just a Xiaohongshu downloader. The current product shap
   - TianTianJieXi is the preferred official API upstream.
   - KuKuTool is fallback/race backup.
   - Native remains fallback.
+- Supported short, canonical, share, modal, and copied-text URL forms resolve
+  to `douyin:<aweme_id>` before Provider execution. Short-link resolution is
+  separately bounded and does not consume the six-second Ultra window.
+- TianTianJieXi cache, single-flight, cooldown, and attempt accounting use the
+  canonical identity, while its request representation is an aweme-bound modal
+  URL so the trusted Provider payload retains complete candidate and size
+  metadata.
+- The reviewed additional media host is the exact
+  `v3-dy-a-x.ixigua.com`; do not generalize it to an `ixigua.com` suffix or
+  wildcard family without a new security review.
 - Fresh Ultra attempts start TianTianJieXi, KuKuTool, and Native at T=0. Native
   remains hidden during the six-second foreground window; a strong Ultra result
   inside that window is the first visible result.
@@ -316,8 +345,8 @@ The canonical evidence and deployment state are in
 `docs/current-version-status.md`,
 `docs/research/service-worker-streaming-productionization-v1.md`, and the
 production infrastructure audit. The current production application SHA is
-`a87ec4751c67208031e2f296507b304c7c5d890c`, fixed by
-`checkpoint/production-polish-v1`. Verify real browser behavior, not
+`766cecfd239f594e791c556b4caa69aebf2d1f9f`, fixed by
+`checkpoint/production-promotion-ready-v1`. Verify real browser behavior, not
 only route metadata or unit tests, before changing this contract.
 
 ## Production Deployment Notes
@@ -642,7 +671,12 @@ Not needed: <reason>
 
 ## Suggested Next Work
 
-Good next tasks from the reconciled baseline:
+AnimeImages is in the `REAL_USER_INTRODUCTION` phase. Do not resume
+"pre-release polish" by default. A new task should be backed by Production
+Feedback, repeated user reports, a real failure log, a measurable success-rate
+problem, demonstrated interaction friction, or an actual platform request.
+
+Good next tasks from the promotion-ready baseline:
 
 1. Start from a freshly fetched `origin/main`, with one branch and one PR for
    one concrete task.
@@ -652,10 +686,12 @@ Good next tasks from the reconciled baseline:
    diagnostic PR.
 5. Keep photo original-variant fidelity open and not started; do not mix it
    into unrelated XHS reliability work.
-6. Complete mobile real-device acceptance separately.
-7. Keep the Admin dashboard redesign deferred.
-8. Do not reopen the Streaming architecture without new evidence of an
+6. Keep iOS Save to Photos UX and mobile save-destination guidance deferred
+   until real-user feedback establishes demand.
+7. Keep Baidu Browser compatibility deferred pending real-user demand.
+8. Keep the Admin dashboard redesign deferred until real data exists.
+9. Do not reopen the Streaming architecture without new evidence of an
    application regression.
-9. Keep production changes in separately approved exact-SHA deployment tasks.
-10. Keep Release Management record-only until its separately reviewed executor
+10. Keep production changes in separately approved exact-SHA deployment tasks.
+11. Keep Release Management record-only until its separately reviewed executor
     boundary is installed and accepted.
