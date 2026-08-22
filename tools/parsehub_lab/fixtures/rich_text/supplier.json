@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "case_id": "fictional_rich_text",
+  "source_project": "parsehub_supplier",
+  "source_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "platform": "fictional_article",
+  "input_kind": "sanitized_fixture",
+  "content_type": "rich_text",
+  "title_present": true,
+  "description_present": true,
+  "author_present": true,
+  "media_count": 1,
+  "media": [
+    {"index": 0, "type": "text", "role": "inline", "paired_group": "", "extension": "md", "width": 0, "height": 0, "duration_ms": 0, "size_bytes": 0, "size_is_estimate": false, "quality_label": "markdown", "hostname": "", "has_thumbnail": false, "has_video_pair": false}
+  ],
+  "elapsed_ms": 18,
+  "outcome_class": "success",
+  "error_class": "none",
+  "credential_required": false,
+  "network_executed": false,
+  "notes": "Fictional normalized rich-text fixture."
+}
