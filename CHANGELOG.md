@@ -18,12 +18,6 @@
   `MediaAsset` values. The current XHS adapter, Provider registry, hosts,
   requests, manifests, downloads, and runtime rich-media emission remain
   unchanged.
-- Added offline Bilibili Dynamic/Opus research primitives: a source-shape
-  classifier with separate identities and a dormant URL-free rich-media
-  normalizer that preserves source order and accepts Live Photo relationships
-  only from explicit pair and owner evidence. Cross-form identity mapping,
-  runtime payload evidence, media-host admission, registration, and deployment
-  remain blocked; the existing Bilibili video adapter is unchanged.
 - Added a frozen, network-free Source URL Lifecycle v1 foundation and an
   offline Provider Lab. The lifecycle separates input, parse, resolver-output,
   and post-parse URLs and uses closed parse-only, identity, safe-passthrough,
@@ -41,6 +35,12 @@
   animation formats, and inert rich-text references before any future consumer
   can observe the value. Bilibili Dynamic/LivePhoto implementation has not
   started.
+- Added offline Bilibili Dynamic/Opus research primitives: a source-shape
+  classifier with separate identities and a dormant URL-free rich-media
+  normalizer that preserves source order and accepts Live Photo relationships
+  only from explicit pair and owner evidence. Cross-form identity mapping,
+  runtime payload evidence, media-host admission, registration, and deployment
+  remain blocked; the existing Bilibili video adapter is unchanged.
 - Hardened AnimeImages-owned external-tool execution with one bounded `Popen`
   lifecycle for progress and non-progress calls. POSIX commands now run in an
   isolated session/process group; timeout, live stdout/stderr overflow,
