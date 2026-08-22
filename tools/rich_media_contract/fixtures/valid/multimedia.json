@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "case_id": "ordered_multimedia",
+  "post_type": "multimedia",
+  "assets": [
+    {"asset_id": "asset:mixed:1", "media_type": "image", "extension": "jpg", "role": "primary"},
+    {"asset_id": "asset:mixed:2", "media_type": "video", "extension": "mp4", "role": "primary"},
+    {"asset_id": "asset:mixed:3", "media_type": "image", "extension": "webp", "role": "gallery"}
+  ],
+  "groups": [],
+  "content_blocks": []
+}

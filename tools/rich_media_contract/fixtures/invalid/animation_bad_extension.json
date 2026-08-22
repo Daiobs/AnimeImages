@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "case_id": "animation_bad_extension",
+  "post_type": "image",
+  "assets": [
+    {"asset_id": "asset:animation-bad:1", "media_type": "image", "extension": "jpg", "role": "animation"}
+  ],
+  "groups": [],
+  "content_blocks": []
+}

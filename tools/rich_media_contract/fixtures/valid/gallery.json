@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "case_id": "ordered_gallery",
+  "post_type": "gallery",
+  "assets": [
+    {"asset_id": "asset:gallery:1", "media_type": "image", "extension": "webp", "role": "gallery"},
+    {"asset_id": "asset:gallery:2", "media_type": "image", "extension": "jpg", "role": "gallery"},
+    {"asset_id": "asset:gallery:3", "media_type": "image", "extension": "png", "role": "gallery"}
+  ],
+  "groups": [],
+  "content_blocks": []
+}

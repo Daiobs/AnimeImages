@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "case_id": "rich_text_media",
+  "post_type": "rich_text",
+  "assets": [
+    {"asset_id": "asset:article:1", "media_type": "image", "extension": "png", "role": "inline"},
+    {"asset_id": "asset:article:2", "media_type": "video", "extension": "mp4", "role": "inline"}
+  ],
+  "groups": [],
+  "content_blocks": [
+    {"type": "text", "text": "Opening paragraph."},
+    {"type": "media", "asset_ids": ["asset:article:1"]},
+    {"type": "text", "text": "Closing paragraph."},
+    {"type": "media", "asset_ids": ["asset:article:2"]}
+  ]
+}

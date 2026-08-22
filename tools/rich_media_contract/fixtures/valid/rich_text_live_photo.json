@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "case_id": "rich_text_live_photo",
+  "post_type": "rich_text",
+  "assets": [
+    {"asset_id": "asset:article-live:still", "media_type": "image", "extension": "avif", "role": "still"},
+    {"asset_id": "asset:article-live:motion", "media_type": "video", "extension": "mp4", "role": "motion"}
+  ],
+  "groups": [
+    {
+      "group_id": "group:article-live:1",
+      "relationship_type": "live_photo",
+      "members": [
+        {"asset_id": "asset:article-live:still", "role": "still"},
+        {"asset_id": "asset:article-live:motion", "role": "motion"}
+      ]
+    }
+  ],
+  "content_blocks": [
+    {"type": "text", "text": "A paired moment follows."},
+    {"type": "media", "asset_ids": ["asset:article-live:still", "asset:article-live:motion"]}
+  ]
+}

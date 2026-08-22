@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "case_id": "asset_in_two_groups",
+  "post_type": "live_photo",
+  "assets": [
+    {"asset_id": "asset:shared:still", "media_type": "image", "extension": "jpg", "role": "still"},
+    {"asset_id": "asset:first:motion", "media_type": "video", "extension": "mp4", "role": "motion"},
+    {"asset_id": "asset:second:motion", "media_type": "video", "extension": "mp4", "role": "motion"}
+  ],
+  "groups": [
+    {"group_id": "group:first:1", "relationship_type": "live_photo", "members": [{"asset_id": "asset:shared:still", "role": "still"}, {"asset_id": "asset:first:motion", "role": "motion"}]},
+    {"group_id": "group:second:1", "relationship_type": "live_photo", "members": [{"asset_id": "asset:shared:still", "role": "still"}, {"asset_id": "asset:second:motion", "role": "motion"}]}
+  ],
+  "content_blocks": []
+}

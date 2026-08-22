@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "case_id": "rich_text_orphan_asset",
+  "post_type": "rich_text",
+  "assets": [
+    {"asset_id": "asset:orphan:1", "media_type": "image", "extension": "jpg", "role": "inline"}
+  ],
+  "groups": [],
+  "content_blocks": [
+    {"type": "text", "text": "The media reference is intentionally absent."}
+  ]
+}

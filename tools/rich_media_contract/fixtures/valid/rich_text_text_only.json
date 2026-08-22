@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "case_id": "rich_text_only",
+  "post_type": "rich_text",
+  "assets": [],
+  "groups": [],
+  "content_blocks": [
+    {"type": "text", "text": "A fictional plain-text paragraph."},
+    {"type": "text", "text": "A second inert paragraph."}
+  ]
+}
