@@ -10,6 +10,10 @@ CLASSIFICATION = ADOPT_CANDIDATE
 The candidate is lifecycle behavior, not ParseHub installation or source
 vendoring.
 
+Implementation status: completed as an AnimeImages-owned design on the
+`feat/external-tool-subprocess-lifecycle-v1` task branch. The original decision
+and non-goals below remain the provenance record.
+
 ## Comparative score
 
 Scores are relative, 1 (low) to 5 (high). For risk/blast radius, lower is better.
@@ -52,7 +56,7 @@ Scores are relative, 1 (low) to 5 (high). For risk/blast radius, lower is better
 
 ## Required next task
 
-Proposed PR: `Harden external-tool subprocess cancellation lifecycle v1`.
+Implementation PR: `Harden external-tool subprocess lifecycle`.
 
 Expected scope:
 

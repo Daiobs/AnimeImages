@@ -578,7 +578,7 @@ class XhsUtilityTests(SimpleTestCase):
         with self.assertRaises(XhsSecurityError):
             validate_public_download_url("https://cdn.example.com:notaport/a.jpg")
 
-    @patch("xhs_download.services.platforms.external_tools.subprocess.run")
+    @patch("xhs_download.services.platforms.external_tools._execute_external_process")
     def test_external_command_version_probe_uses_short_cache(self, mock_run):
         cache.clear()
 
@@ -596,7 +596,7 @@ class XhsUtilityTests(SimpleTestCase):
         self.assertEqual(second, first)
         mock_run.assert_called_once()
 
-    @patch("xhs_download.services.platforms.external_tools.subprocess.run")
+    @patch("xhs_download.services.platforms.external_tools._execute_external_process")
     def test_external_command_version_probe_accepts_custom_version_args(self, mock_run):
         cache.clear()
 
@@ -619,7 +619,7 @@ class XhsUtilityTests(SimpleTestCase):
         )
 
     @override_settings(THIRD_PARTY_EXTERNAL_OUTPUT_MAX_BYTES=8)
-    @patch("xhs_download.services.platforms.external_tools.subprocess.run")
+    @patch("xhs_download.services.platforms.external_tools._execute_external_process")
     def test_external_command_version_probe_rejects_oversized_output(self, mock_run):
         cache.clear()
 
@@ -638,7 +638,7 @@ class XhsUtilityTests(SimpleTestCase):
         self.assertIn("output exceeded", result["error"])
 
     @patch("xhs_download.services.platforms.external_tools.os.path.exists", return_value=True)
-    @patch("xhs_download.services.platforms.external_tools.subprocess.run")
+    @patch("xhs_download.services.platforms.external_tools._execute_external_process")
     def test_external_command_runs_in_isolated_workdir(
         self,
         mock_run,
