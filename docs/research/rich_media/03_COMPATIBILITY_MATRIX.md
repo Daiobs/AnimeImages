@@ -8,13 +8,13 @@ existing `ParseResult`.
 | Input state | Future runtime treatment | Legacy output |
 | --- | --- | --- |
 | No rich-media value | Accept as current legacy result | Unchanged |
-| Valid v1 rich-media value | Accept semantics after validation | Existing assets and download items remain authoritative |
+| Valid v1 rich-media value | Validate immediately at `ParseResult` construction | Existing assets and download items remain authoritative |
 | Malformed/unknown v1 value | Fail closed before view construction | No partial legacy success from the invalid extension |
 | Unknown schema version | Fail closed | No implicit downgrade |
 
 ## Producer compatibility
 
-| Producer | Current shape | v1 mapping plan | Behavior in this research PR |
+| Producer | Current shape | v1 mapping plan | Behavior in the Runtime Draft |
 | --- | --- | --- | --- |
 | Xiaohongshu video | One video plus cover metadata | `video`, cover remains non-canonical | Unchanged |
 | Xiaohongshu gallery | Ordered image tuple | `image` or `gallery` using tuple order | Unchanged |
@@ -24,6 +24,29 @@ existing `ParseResult`.
 | yt-dlp selected video | One ordinary video | `video` | Unchanged |
 | Server-generated merge | One generated video | `video`; never source relation inference | Unchanged |
 | Future Bilibili Dynamic | Not implemented | First candidate for image/gallery/Live Photo/multimedia | Plan only |
+
+Every current Provider/adapter continues to construct `ParseResult` without a
+`rich_media` argument, so the runtime default is `None`.
+
+## Runtime consumer audit
+
+The exact-main audit found 107 `ParseResult` constructors, all using keyword
+arguments. The additive last field still retains the old five-argument
+positional API for external/legacy callers.
+
+| Consumer | Positional construct? | Keyword construct? | Reads metadata? | Dataclass serialization / equality / repr? | Assumes exact field count? | Reads post type / filtered assets / tuple order? | Can observe optional field now? |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Current platform Providers and adapters | No in repository | Yes | Some | No automatic serialization; normal dataclass equality only in tests | No | Build post type and ordered tuple | No; all omit it and receive `None` |
+| Third-party result normalizer | No | Yes | Yes | No | No | Copies post type and asset tuple | No for current Providers; future preservation needs its own consumer change |
+| Legacy parser serializer | No | No | No | Calls explicit `to_legacy_dict()` | No | Reads post type and filtered assets | No; method intentionally ignores it |
+| Provider manifest | No | No | No | No | No | Reads one physical download item | No |
+| Single result context | No | No | Yes | No | No | Reads post type, tuple, `image_assets`, `video_assets` | No |
+| Batch result/context | No | No | Yes | No | No | Reads post type and filtered assets | No |
+| Gallery and Browser Photo | No | No | No | No | No | Reads explicit image item/DOM order | No |
+| Browser Streaming | No | No | No | No | No | Reads one existing physical download descriptor | No |
+| Browser/Server ZIP and download-all | No | No | No | No | No | Reads explicit submitted item order | No |
+| Mixed export and copy-all | No | No | No | No | No | Reads current rendered item collections | No |
+| Tests/debug repr | Yes, compatibility coverage | Yes | Sometimes | Legacy equality preserved; `rich_media` excluded from repr | No | Varies | Tests can inspect it explicitly |
 
 ## Consumer matrix
 
@@ -90,6 +113,6 @@ request must contain and validate both independently.
 
 ## Migration and persistence
 
-The offline contract adds no model, database column, JSON field or migration.
-If persistence is ever proposed, it requires a separate data-retention and
-backfill review. v1 should first exist as a validated in-memory value.
+The runtime contract is a validated in-memory value only. It adds no model,
+database column, JSON field or migration. If persistence is ever proposed, it
+requires a separate data-retention and backfill review.

@@ -2,9 +2,20 @@
 
 ## Status
 
-This document is an offline design baseline. The machine-readable shape and
-standard-library validator live in `tools/rich_media_contract/`. They are not
+The offline design baseline is complete. The machine-readable shape and
+standard-library validator live in `tools/rich_media_contract/` and are not
 imported by production code.
+
+An independent AnimeImages-owned runtime implementation now exists in Draft at
+`xhs_download/services/rich_media.py`. It uses closed frozen dataclasses and
+does not read this JSON schema or import anything from `tools/`.
+
+Status:
+
+- `OFFLINE_CONTRACT = COMPLETE`
+- `RUNTIME_CONTRACT = IMPLEMENTED_IN_DRAFT`
+- `FIRST_CONSUMER = BILIBILI_DYNAMIC_LIVEPHOTO`
+- `PLATFORM_IMPLEMENTATION = NOT_STARTED`
 
 ## Goals
 
@@ -205,9 +216,10 @@ record rather than silently promoting it.
 
 `COVER_IS_NOT_CANONICAL_ASSET`
 
-## Runtime compatibility proposal
+## Runtime compatibility contract
 
-A future runtime PR may add an optional rich-media value to `ParseResult`.
+The Draft runtime implementation adds an optional rich-media value as the last
+field on `ParseResult`.
 
 - `rich_media is None`: current legacy behavior remains valid.
 - valid rich-media value: legacy assets remain the delivery source while the
@@ -215,8 +227,14 @@ A future runtime PR may add an optional rich-media value to `ParseResult`.
 - invalid rich-media value: reject before view construction; do not partially
   trust it and do not downgrade it into a legacy success.
 
-The exact Python object/API belongs to a separate implementation PR. This
-baseline does not change the dataclass.
+The runtime value contains `schema_version`, `post_type`, typed asset
+descriptors, typed relationship groups and typed content blocks. It deliberately
+omits offline `case_id`. It cross-validates every descriptor against the same
+position in `ParseResult.assets`, including asset ID, physical type and
+normalized extension. No runtime field provides a location or download token.
+
+Current Providers do not emit the value. No view, serializer, manifest or
+download path reads it in this Draft.
 
 ## Versioning
 

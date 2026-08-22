@@ -1,5 +1,11 @@
 from dataclasses import dataclass, field
 
+from .rich_media import (
+    RichMediaContractError,
+    RichMediaContractV1,
+    validate_parse_result_rich_media,
+)
+
 
 @dataclass(frozen=True)
 class MediaAsset:
@@ -49,6 +55,20 @@ class ParseResult:
     base_filename: str
     assets: tuple[MediaAsset, ...] = field(default_factory=tuple)
     metadata: dict = field(default_factory=dict)
+    rich_media: RichMediaContractV1 | None = field(default=None, repr=False)
+
+    def __post_init__(self):
+        if self.rich_media is None:
+            return
+        if type(self.assets) is not tuple or any(
+            type(asset) is not MediaAsset for asset in self.assets
+        ):
+            raise RichMediaContractError("RICH_MEDIA_RESULT_ASSET_TYPE_INVALID", "assets")
+        validate_parse_result_rich_media(
+            post_type=self.post_type,
+            assets=self.assets,
+            rich_media=self.rich_media,
+        )
 
     @property
     def image_assets(self):
