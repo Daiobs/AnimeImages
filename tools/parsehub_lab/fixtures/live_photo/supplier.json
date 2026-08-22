@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "case_id": "fictional_live_photo",
+  "source_project": "parsehub_supplier",
+  "source_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "platform": "fictional_social",
+  "input_kind": "sanitized_fixture",
+  "content_type": "live_photo",
+  "title_present": true,
+  "description_present": false,
+  "author_present": true,
+  "media_count": 2,
+  "media": [
+    {"index": 0, "type": "image", "role": "paired_image", "paired_group": "pair_1", "extension": "jpg", "width": 1440, "height": 1920, "duration_ms": 0, "size_bytes": 420000, "size_is_estimate": false, "quality_label": "original", "hostname": "live.example.invalid", "has_thumbnail": true, "has_video_pair": true},
+    {"index": 1, "type": "video", "role": "paired_video", "paired_group": "pair_1", "extension": "mp4", "width": 1440, "height": 1920, "duration_ms": 3000, "size_bytes": 5600000, "size_is_estimate": false, "quality_label": "motion", "hostname": "live.example.invalid", "has_thumbnail": true, "has_video_pair": true}
+  ],
+  "elapsed_ms": 45,
+  "outcome_class": "success",
+  "error_class": "none",
+  "credential_required": false,
+  "network_executed": false,
+  "notes": "Fictional paired LivePhoto fixture."
+}

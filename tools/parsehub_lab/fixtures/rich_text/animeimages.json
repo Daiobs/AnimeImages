@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "case_id": "fictional_rich_text",
+  "source_project": "animeimages",
+  "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "platform": "fictional_article",
+  "input_kind": "sanitized_fixture",
+  "content_type": "rich_text",
+  "title_present": true,
+  "description_present": false,
+  "author_present": true,
+  "media_count": 0,
+  "media": [],
+  "elapsed_ms": 12,
+  "outcome_class": "success",
+  "error_class": "none",
+  "credential_required": false,
+  "network_executed": false,
+  "notes": "Fictional title-only article fixture."
+}

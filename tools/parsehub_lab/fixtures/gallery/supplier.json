@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "case_id": "fictional_gallery",
+  "source_project": "parsehub_supplier",
+  "source_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "platform": "fictional_gallery",
+  "input_kind": "sanitized_fixture",
+  "content_type": "image_gallery",
+  "title_present": true,
+  "description_present": true,
+  "author_present": true,
+  "media_count": 2,
+  "media": [
+    {"index": 0, "type": "image", "role": "gallery", "paired_group": "", "extension": "webp", "width": 1200, "height": 1600, "duration_ms": 0, "size_bytes": 310000, "size_is_estimate": false, "quality_label": "original", "hostname": "images.example.invalid", "has_thumbnail": true, "has_video_pair": false},
+    {"index": 1, "type": "image", "role": "gallery", "paired_group": "", "extension": "webp", "width": 1200, "height": 1600, "duration_ms": 0, "size_bytes": 320000, "size_is_estimate": false, "quality_label": "original", "hostname": "images.example.invalid", "has_thumbnail": true, "has_video_pair": false}
+  ],
+  "elapsed_ms": 48,
+  "outcome_class": "success",
+  "error_class": "none",
+  "credential_required": false,
+  "network_executed": false,
+  "notes": "Fictional ordered gallery fixture."
+}

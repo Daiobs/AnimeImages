@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://animeimages.invalid/schemas/parsehub-lab-result-v1.json",
+  "title": "AnimeImages Offline Parser Lab Result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "case_id",
+    "source_project",
+    "source_commit",
+    "platform",
+    "input_kind",
+    "content_type",
+    "title_present",
+    "description_present",
+    "author_present",
+    "media_count",
+    "media",
+    "elapsed_ms",
+    "outcome_class",
+    "error_class",
+    "credential_required",
+    "network_executed",
+    "notes"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "case_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"},
+    "source_project": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$"},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{7,64}$"},
+    "platform": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"},
+    "input_kind": {"enum": ["sanitized_fixture", "offline_export"]},
+    "content_type": {
+      "enum": ["video", "image_gallery", "live_photo", "multimedia", "rich_text", "error"]
+    },
+    "title_present": {"type": "boolean"},
+    "description_present": {"type": "boolean"},
+    "author_present": {"type": "boolean"},
+    "media_count": {"type": "integer", "minimum": 0, "maximum": 1000},
+    "media": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {"$ref": "#/$defs/media"}
+    },
+    "elapsed_ms": {"type": "integer", "minimum": 0, "maximum": 86400000},
+    "outcome_class": {"enum": ["success", "failed", "timeout", "skipped"]},
+    "error_class": {
+      "enum": ["none", "parse_error", "auth_required", "unsupported", "timeout", "network", "invalid_result", "unknown"]
+    },
+    "credential_required": {"type": "boolean"},
+    "network_executed": {"type": "boolean"},
+    "notes": {"type": "string", "maxLength": 240}
+  },
+  "$defs": {
+    "media": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "type",
+        "role",
+        "paired_group",
+        "extension",
+        "width",
+        "height",
+        "duration_ms",
+        "size_bytes",
+        "size_is_estimate",
+        "quality_label",
+        "hostname",
+        "has_thumbnail",
+        "has_video_pair"
+      ],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0, "maximum": 999},
+        "type": {"enum": ["video", "image", "animation", "text"]},
+        "role": {"enum": ["primary", "gallery", "cover", "paired_image", "paired_video", "inline"]},
+        "paired_group": {"type": "string", "pattern": "^$|^[a-z0-9][a-z0-9_-]{0,31}$"},
+        "extension": {"type": "string", "pattern": "^$|^[a-z0-9]{1,10}$"},
+        "width": {"type": "integer", "minimum": 0, "maximum": 100000},
+        "height": {"type": "integer", "minimum": 0, "maximum": 100000},
+        "duration_ms": {"type": "integer", "minimum": 0, "maximum": 86400000},
+        "size_bytes": {"type": "integer", "minimum": 0, "maximum": 1099511627776},
+        "size_is_estimate": {"type": "boolean"},
+        "quality_label": {"type": "string", "maxLength": 80},
+        "hostname": {"type": "string", "maxLength": 253},
+        "has_thumbnail": {"type": "boolean"},
+        "has_video_pair": {"type": "boolean"}
+      }
+    }
+  }
+}
