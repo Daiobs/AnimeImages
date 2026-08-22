@@ -4,7 +4,9 @@
 
 `FIRST_CONSUMER = BILIBILI_DYNAMIC_LIVEPHOTO`
 
-This is a plan, not an implementation or rollout decision.
+This remains a plan, not an implementation or rollout decision. The offline
+contract is complete and the independent runtime contract is implemented only
+in Draft. No platform emits it yet.
 
 ## Why this consumer
 
@@ -65,7 +67,8 @@ Before public UI work:
 - add a shared ordered result projection used by Single and Batch;
 - render Live Photo as one semantic unit while retaining two selectable assets;
 - use escaped fixed UI labels only;
-- keep cover metadata outside canonical ordering;
+- do not automatically add cover metadata to canonical ordering; the future
+  Provider builder must explicitly identify canonical content assets;
 - do not implicitly select/download the motion member; and
 - retain all existing Public/Staff raw-link boundaries.
 
@@ -82,7 +85,7 @@ server-generated paths keep their current resource-type contracts.
 
 ## Future PR split
 
-### PR A - Runtime contract
+### PR A - Runtime contract (implemented in Draft)
 
 - Add an optional AnimeImages-owned rich-media value and validator.
 - Preserve `ParseResult.assets`, legacy views and serialization.
@@ -116,6 +119,7 @@ No later PR may be folded into PR A to accelerate platform rollout.
 
 ## Exit criteria for the next task
 
-The next task is allowed to start only after this RFC/schema/validator is
-reviewed. It must remain offline unless its instructions explicitly authorize a
-bounded staff-only live phase. Production remains out of scope until PR E.
+The Bilibili Dynamic research adapter task may start only after the runtime
+contract Draft is reviewed and merged. It must remain offline unless its own
+instructions explicitly authorize a bounded staff-only live phase. Production
+remains out of scope until PR E.

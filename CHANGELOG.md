@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Added a closed, typed, URL-free Rich Media Domain Contract v1 runtime model
+  as an optional final field on `ParseResult`. Legacy results continue to use
+  `rich_media=None`; current Providers emit no rich-media data, and existing
+  views, downloads, Provider manifests, serializers, settings, and database
+  behavior are unchanged. The Draft-only runtime contract validates source
+  tuple order, physical asset identity/type/extension, Live Photo pairing,
+  animation formats, and inert rich-text references before any future consumer
+  can observe the value. Bilibili Dynamic/LivePhoto implementation has not
+  started.
 - Hardened AnimeImages-owned external-tool execution with one bounded `Popen`
   lifecycle for progress and non-progress calls. POSIX commands now run in an
   isolated session/process group; timeout, live stdout/stderr overflow,

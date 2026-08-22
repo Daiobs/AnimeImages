@@ -15,6 +15,11 @@ media baseline.
 
 ## Current status
 
+- `OFFLINE_CONTRACT = COMPLETE`
+- `RUNTIME_CONTRACT = IMPLEMENTED_IN_DRAFT`
+- `FIRST_CONSUMER = BILIBILI_DYNAMIC_LIVEPHOTO`
+- `PLATFORM_IMPLEMENTATION = NOT_STARTED`
+
 The first selected adoption candidate, AnimeImages-owned external-tool process
 lifecycle hardening, is complete. The next research gate is now represented by:
 
@@ -25,13 +30,14 @@ lifecycle hardening, is complete. The next research gate is now represented by:
 - `docs/research/rich_media/05_FIRST_CONSUMER_PLAN.md`
 - `tools/rich_media_contract/`
 
-This is an offline contract baseline, not runtime adoption. It does not change
-AnimeImages parsing, Provider behavior, downloads, database, dependencies or
-production.
+The runtime Draft is an independent AnimeImages-owned typed implementation. It
+does not import ParseHub or `tools/`, and current Providers continue to emit no
+rich-media value. Parsing, registry behavior, views, downloads, database,
+dependencies and production remain unchanged.
 
 ## Next candidate
 
-After contract review, the first proposed consumer remains Bilibili
+After runtime-contract review, the first proposed consumer remains Bilibili
 Dynamic/LivePhoto under separate research, staff-only integration,
-presentation/download and production-acceptance PRs. No public capability is
-implied by this status update.
+presentation/download and production-acceptance PRs. No platform or public
+capability is implied by this status update.
