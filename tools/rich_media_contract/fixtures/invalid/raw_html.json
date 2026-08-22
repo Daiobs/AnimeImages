@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "case_id": "raw_html_rejected",
+  "post_type": "rich_text",
+  "assets": [],
+  "groups": [],
+  "content_blocks": [
+    {"type": "text", "text": "<img src=x onerror=alert(1)>"}
+  ]
+}

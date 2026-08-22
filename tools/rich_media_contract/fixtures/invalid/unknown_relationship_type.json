@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "case_id": "unknown_relationship",
+  "post_type": "live_photo",
+  "assets": [
+    {"asset_id": "asset:unknown-relation:still", "media_type": "image", "extension": "jpg", "role": "still"},
+    {"asset_id": "asset:unknown-relation:motion", "media_type": "video", "extension": "mp4", "role": "motion"}
+  ],
+  "groups": [
+    {"group_id": "group:unknown-relation:1", "relationship_type": "paired_media", "members": [{"asset_id": "asset:unknown-relation:still", "role": "still"}, {"asset_id": "asset:unknown-relation:motion", "role": "motion"}]}
+  ],
+  "content_blocks": []
+}

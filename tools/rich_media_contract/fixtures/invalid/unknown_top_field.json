@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "case_id": "unknown_top_field",
+  "post_type": "image",
+  "assets": [
+    {"asset_id": "asset:unknown-top:1", "media_type": "image", "extension": "jpg", "role": "primary"}
+  ],
+  "groups": [],
+  "content_blocks": [],
+  "unexpected": false
+}

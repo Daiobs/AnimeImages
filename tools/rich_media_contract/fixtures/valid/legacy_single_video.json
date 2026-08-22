@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "case_id": "legacy_single_video",
+  "post_type": "video",
+  "assets": [
+    {"asset_id": "asset:legacy-video:1", "media_type": "video", "extension": "mp4", "role": "primary"}
+  ],
+  "groups": [],
+  "content_blocks": []
+}

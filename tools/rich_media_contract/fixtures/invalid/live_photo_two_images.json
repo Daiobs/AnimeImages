@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "case_id": "live_photo_two_images",
+  "post_type": "live_photo",
+  "assets": [
+    {"asset_id": "asset:two-images:1", "media_type": "image", "extension": "jpg", "role": "still"},
+    {"asset_id": "asset:two-images:2", "media_type": "image", "extension": "png", "role": "gallery"}
+  ],
+  "groups": [
+    {"group_id": "group:two-images:1", "relationship_type": "live_photo", "members": [{"asset_id": "asset:two-images:1", "role": "still"}, {"asset_id": "asset:two-images:2", "role": "motion"}]}
+  ],
+  "content_blocks": []
+}

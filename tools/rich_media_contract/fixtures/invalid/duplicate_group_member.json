@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "case_id": "duplicate_group_member",
+  "post_type": "live_photo",
+  "assets": [
+    {"asset_id": "asset:duplicate-member:still", "media_type": "image", "extension": "jpg", "role": "still"},
+    {"asset_id": "asset:duplicate-member:motion", "media_type": "video", "extension": "mp4", "role": "motion"}
+  ],
+  "groups": [
+    {"group_id": "group:duplicate-member:1", "relationship_type": "live_photo", "members": [{"asset_id": "asset:duplicate-member:still", "role": "still"}, {"asset_id": "asset:duplicate-member:still", "role": "motion"}]}
+  ],
+  "content_blocks": []
+}

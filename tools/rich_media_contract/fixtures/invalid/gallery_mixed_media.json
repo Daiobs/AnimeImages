@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "case_id": "gallery_mixed_media",
+  "post_type": "gallery",
+  "assets": [
+    {"asset_id": "asset:mixed-gallery:1", "media_type": "image", "extension": "jpg", "role": "gallery"},
+    {"asset_id": "asset:mixed-gallery:2", "media_type": "video", "extension": "mp4", "role": "primary"}
+  ],
+  "groups": [],
+  "content_blocks": []
+}

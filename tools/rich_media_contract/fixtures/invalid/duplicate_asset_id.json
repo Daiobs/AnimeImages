@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "case_id": "duplicate_asset_id",
+  "post_type": "gallery",
+  "assets": [
+    {"asset_id": "asset:duplicate:1", "media_type": "image", "extension": "jpg", "role": "gallery"},
+    {"asset_id": "asset:duplicate:1", "media_type": "image", "extension": "png", "role": "gallery"}
+  ],
+  "groups": [],
+  "content_blocks": []
+}

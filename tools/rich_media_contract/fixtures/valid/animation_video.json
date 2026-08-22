@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "case_id": "animated_video",
+  "post_type": "video",
+  "assets": [
+    {"asset_id": "asset:animation:2", "media_type": "video", "extension": "mp4", "role": "animation"}
+  ],
+  "groups": [],
+  "content_blocks": []
+}

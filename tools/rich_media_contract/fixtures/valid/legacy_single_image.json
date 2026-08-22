@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "case_id": "legacy_single_image",
+  "post_type": "image",
+  "assets": [
+    {"asset_id": "asset:legacy-image:1", "media_type": "image", "extension": "jpg", "role": "primary"}
+  ],
+  "groups": [],
+  "content_blocks": []
+}

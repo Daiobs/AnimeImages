@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "case_id": "live_photo_missing_motion",
+  "post_type": "live_photo",
+  "assets": [
+    {"asset_id": "asset:missing-motion:still", "media_type": "image", "extension": "jpg", "role": "still"}
+  ],
+  "groups": [
+    {"group_id": "group:missing-motion:1", "relationship_type": "live_photo", "members": [{"asset_id": "asset:missing-motion:still", "role": "still"}]}
+  ],
+  "content_blocks": []
+}
