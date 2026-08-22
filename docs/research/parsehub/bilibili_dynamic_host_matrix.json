@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0",
+  "review_scope": "static evidence only; no host admission",
+  "upstream_commit": "144260f4349c5bb57415f7555a572fcd48c3b8ba",
+  "hosts": [
+    {
+      "category": "page",
+      "hostname": "www.bilibili.com",
+      "status": "HOST_DISCOVERED",
+      "evidence": "AnimeImages current video page and ParseHub parser source"
+    },
+    {
+      "category": "page",
+      "hostname": "t.bilibili.com",
+      "status": "HOST_DISCOVERED",
+      "evidence": "ParseHub Dynamic referer and numeric source shape"
+    },
+    {
+      "category": "short_link",
+      "hostname": "b23.tv",
+      "status": "HOST_DISCOVERED",
+      "evidence": "AnimeImages and ParseHub source"
+    },
+    {
+      "category": "short_link",
+      "hostname": "bili2233.cn",
+      "status": "HOST_UNVERIFIED",
+      "evidence": "ParseHub parser source only"
+    },
+    {
+      "category": "api",
+      "hostname": "api.bilibili.com",
+      "status": "HOST_DISCOVERED",
+      "evidence": "AnimeImages current video API and ParseHub Dynamic API source"
+    },
+    {
+      "category": "image",
+      "hostname": null,
+      "status": "HOST_REVIEW_REQUIRED",
+      "evidence": "ParseHub reads payload URLs but the pinned source proves no closed hostname set"
+    },
+    {
+      "category": "motion_video",
+      "hostname": null,
+      "status": "HOST_REVIEW_REQUIRED",
+      "evidence": "ParseHub reads live_url but the pinned source proves no closed hostname set"
+    },
+    {
+      "category": "cover",
+      "hostname": null,
+      "status": "HOST_REVIEW_REQUIRED",
+      "evidence": "No Dynamic cover-host admission evidence was collected"
+    }
+  ]
+}

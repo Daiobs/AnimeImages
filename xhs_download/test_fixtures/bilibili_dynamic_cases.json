@@ -1,0 +1,113 @@
+{
+  "schema_version": "1.0",
+  "source_cases": [
+    {
+      "case_id": "video_page",
+      "input": "https://www.bilibili.com/video/BV1fixture01?p=2",
+      "target_kind": "video",
+      "identity": null,
+      "requires_resolution": false
+    },
+    {
+      "case_id": "dynamic_page",
+      "input": "https://t.bilibili.com/123456789012345678",
+      "target_kind": "dynamic",
+      "identity": "bilibili_dynamic:123456789012345678",
+      "requires_resolution": false
+    },
+    {
+      "case_id": "opus_page",
+      "input": "https://www.bilibili.com/opus/1234567890123456789",
+      "target_kind": "opus",
+      "identity": "bilibili_opus:1234567890123456789",
+      "requires_resolution": false
+    },
+    {
+      "case_id": "numeric_dynamic_page",
+      "input": "https://www.bilibili.com/223456789012345678",
+      "target_kind": "dynamic",
+      "identity": "bilibili_dynamic:223456789012345678",
+      "requires_resolution": false
+    },
+    {
+      "case_id": "short_link",
+      "input": "https://b23.tv/fixture-only",
+      "target_kind": "short",
+      "identity": null,
+      "requires_resolution": true
+    },
+    {
+      "case_id": "share_text",
+      "input": "离线示例 https://www.bilibili.com/opus/323456789012345678，后续文字",
+      "target_kind": "opus",
+      "identity": "bilibili_opus:323456789012345678",
+      "requires_resolution": false
+    },
+    {
+      "case_id": "unknown_page",
+      "input": "https://www.bilibili.com/read/fixture-only",
+      "target_kind": "unknown",
+      "identity": null,
+      "requires_resolution": false
+    }
+  ],
+  "normalization_cases": {
+    "one_image": {
+      "requested_identity": {"kind": "bilibili_dynamic", "id": "123456789012345678"},
+      "payload_identity": {"kind": "bilibili_dynamic", "id": "123456789012345678"},
+      "target_state": "available",
+      "title": "Fictional image post",
+      "author": "Fixture author",
+      "items": [
+        {"kind": "image", "asset_id": "bili:image:one", "extension": "jpg"}
+      ]
+    },
+    "gallery": {
+      "requested_identity": {"kind": "bilibili_opus", "id": "1234567890123456789"},
+      "payload_identity": {"kind": "bilibili_opus", "id": "1234567890123456789"},
+      "target_state": "available",
+      "title": "Fictional gallery",
+      "author": "Fixture author",
+      "items": [
+        {"kind": "image", "asset_id": "bili:gallery:one", "extension": "jpeg"},
+        {"kind": "image", "asset_id": "bili:gallery:two", "extension": "webp"},
+        {"kind": "image", "asset_id": "bili:gallery:three", "extension": "png"}
+      ]
+    },
+    "one_live_photo": {
+      "requested_identity": {"kind": "bilibili_opus", "id": "1234567890123456789"},
+      "payload_identity": {"kind": "bilibili_opus", "id": "1234567890123456789"},
+      "target_state": "available",
+      "title": "Fictional live photo",
+      "author": "Fixture author",
+      "items": [
+        {
+          "kind": "live_photo",
+          "pair_id": "bili:pair:one",
+          "owner_identity": {"kind": "bilibili_opus", "id": "1234567890123456789"},
+          "still": {"asset_id": "bili:still:one", "extension": "jpg"},
+          "motion": {"asset_id": "bili:motion:one", "extension": "mp4"}
+        }
+      ]
+    },
+    "multimedia": {
+      "requested_identity": {"kind": "bilibili_dynamic", "id": "223456789012345678"},
+      "payload_identity": {"kind": "bilibili_dynamic", "id": "223456789012345678"},
+      "target_state": "available",
+      "title": "Fictional mixed post",
+      "author": "Fixture author",
+      "items": [
+        {"kind": "image", "asset_id": "bili:mixed:image-one", "extension": "avif"},
+        {
+          "kind": "live_photo",
+          "pair_id": "bili:mixed:pair-one",
+          "owner_identity": {"kind": "bilibili_dynamic", "id": "223456789012345678"},
+          "still": {"asset_id": "bili:mixed:still-one", "extension": "png"},
+          "motion": {"asset_id": "bili:mixed:motion-one", "extension": "mov"}
+        },
+        {"kind": "video", "asset_id": "bili:mixed:video-one", "extension": "mp4"},
+        {"kind": "image", "asset_id": "bili:mixed:image-two", "extension": "webp"}
+      ]
+    }
+  }
+}

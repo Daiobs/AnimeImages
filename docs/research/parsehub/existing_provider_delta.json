@@ -153,7 +153,7 @@
       "runtime_dependency_impact": "none for static research or a dormant normalizer",
       "recommended_action": "ADOPT_DORMANT",
       "selected_pr": "PR-D",
-      "status": "research_selected_identity_gate_open"
+      "status": "implemented_dormant_activation_gates_open"
     },
     {
       "capability_id": "ytdlp_structured_progress_materials",
