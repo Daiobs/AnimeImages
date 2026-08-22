@@ -479,15 +479,6 @@ def validate_parse_result_rich_media(
     if len(assets) != len(rich_media.assets):
         _reject("RICH_MEDIA_ASSET_COUNT_MISMATCH", "rich_media.assets")
 
-    cover_locations = {
-        value
-        for asset in assets
-        for value in (
-            getattr(asset, "cover_url", ""),
-            getattr(asset, "cover_preview_url", ""),
-        )
-        if value
-    }
     actual_ids: set[str] = set()
     for index, (asset, descriptor) in enumerate(zip(assets, rich_media.assets)):
         path = f"rich_media.assets[{index}]"
@@ -505,5 +496,3 @@ def validate_parse_result_rich_media(
             _reject("RICH_MEDIA_MEDIA_TYPE_MISMATCH", f"{path}.media_type")
         if descriptor.extension != normalize_media_extension(getattr(asset, "ext", "")):
             _reject("RICH_MEDIA_EXTENSION_MISMATCH", f"{path}.extension")
-        if actual_id in cover_locations:
-            _reject("RICH_MEDIA_COVER_REFERENCE_REJECTED", f"{path}.asset_id")

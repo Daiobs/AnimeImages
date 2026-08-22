@@ -210,11 +210,26 @@ Provider or Batch settings.
 
 ## Cover boundary
 
-A preview/video cover is not automatically a canonical asset and is not part of
-ordering, grouping or download selection. The Parser Lab mapper rejects a cover
-record rather than silently promoting it.
+A `RichMediaContractV1` contains no `cover_url`, `cover_preview_url`,
+`cover_asset_id`, cover role or cover relationship. Cover metadata therefore is
+not automatically promoted into canonical ordering, grouping, blocks, download
+items or Provider manifests.
+
+The Provider/result builder is responsible for constructing
+`ParseResult.assets` from canonical physical assets before relationship
+validation begins. Runtime validation cannot infer upstream cover provenance
+from location equality: a real content image may also be reused as a cover and
+remain a valid canonical asset when the builder includes it explicitly.
+
+The offline Parser Lab mapper can reject a source record explicitly labelled
+with `role=cover`; this does not imply that Runtime can discover cover
+provenance from existing `MediaAsset` locations.
 
 `COVER_IS_NOT_CANONICAL_ASSET`
+
+`COVER_AUTOMATIC_PROMOTION = NOT_SUPPORTED`
+
+`COVER_PROVENANCE_VALIDATION = PROVIDER_BUILDER_RESPONSIBILITY`
 
 ## Runtime compatibility contract
 

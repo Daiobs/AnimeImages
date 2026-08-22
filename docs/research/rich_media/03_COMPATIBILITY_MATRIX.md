@@ -16,7 +16,7 @@ existing `ParseResult`.
 
 | Producer | Current shape | v1 mapping plan | Behavior in the Runtime Draft |
 | --- | --- | --- | --- |
-| Xiaohongshu video | One video plus cover metadata | `video`, cover remains non-canonical | Unchanged |
+| Xiaohongshu video | One video plus cover metadata | `video`; cover metadata is not automatically promoted | Unchanged |
 | Xiaohongshu gallery | Ordered image tuple | `image` or `gallery` using tuple order | Unchanged |
 | Douyin video/gallery | One video or ordered images | `video`, `image` or `gallery` | Unchanged |
 | Bilibili video | Ordered video candidates/segments | Legacy `video` until a dedicated plan chooses one presentation | Unchanged |
@@ -109,7 +109,7 @@ request must contain and validate both independently.
 | Ordinary admitted video | Browser ordinary-media path when capable | None |
 | Server-generated merge | Existing generated-output path | Cannot be converted into ordinary direct media |
 | ZIP/archive | Existing explicit selected-items path | Group cannot silently add members |
-| Preview cover | Presentation-only proxy/preview path | Not a canonical member |
+| Preview cover metadata | Presentation-only proxy/preview path | Not automatically a canonical member; location reuse does not disqualify an explicitly built content asset |
 
 ## Migration and persistence
 

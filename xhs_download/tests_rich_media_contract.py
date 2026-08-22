@@ -1,5 +1,5 @@
 import json
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, fields
 from pathlib import Path
 
 from django.test import SimpleTestCase
@@ -600,47 +600,102 @@ class RichMediaInvalidRuntimeTests(SimpleTestCase):
             ),
         )
 
-    def test_cover_reference_attempt_is_rejected(self):
-        first = descriptor("asset:cover:one", "image", "jpg", "gallery")
-        second = descriptor("asset:cover:two", "image", "jpg", "gallery")
+    def test_realistic_cover_metadata_does_not_enter_structural_contract(self):
+        content = descriptor("asset:content:one", "image", "jpg", "primary")
         contract = RichMediaContractV1(
             "1.0",
-            "gallery",
-            (first, second),
+            "image",
+            (content,),
             (),
             (),
         )
-        same_asset_cover = (
+        cover_location = "https" + "://fictional.invalid/preview/cover.jpg"
+        result = parse_result_for_contract(
+            contract,
+            assets=(
+                MediaAsset(
+                    "image",
+                    "content-location",
+                    "fixture",
+                    ext="jpg",
+                    asset_id=content.asset_id,
+                    cover_url=cover_location,
+                    cover_preview_url="cover-preview-location",
+                ),
+            ),
+        )
+        structural = result.rich_media.to_structural_dict()
+        rendered = json.dumps(structural, ensure_ascii=False).lower()
+        self.assertEqual(result.assets[0].cover_url, cover_location)
+        for forbidden in ("cover", "preview", "location", "url"):
+            self.assertNotIn(forbidden, rendered)
+
+    def test_cover_only_identity_cannot_be_referenced_implicitly(self):
+        content = descriptor("asset:content:one", "image", "jpg", "inline")
+        canonical_assets = (
             MediaAsset(
                 "image",
-                "",
+                "content-location",
                 "fixture",
                 ext="jpg",
-                asset_id=first.asset_id,
-                cover_url=first.asset_id,
+                asset_id=content.asset_id,
+                cover_url="cover-only-location",
             ),
-            MediaAsset("image", "", "fixture", ext="jpg", asset_id=second.asset_id),
         )
-        cross_asset_cover = (
-            MediaAsset(
-                "image",
-                "",
-                "fixture",
-                ext="jpg",
-                asset_id=first.asset_id,
-                cover_preview_url=second.asset_id,
-            ),
-            MediaAsset("image", "", "fixture", ext="jpg", asset_id=second.asset_id),
-        )
-        for assets in (same_asset_cover, cross_asset_cover):
-            with self.subTest(cover_asset_ids=[asset.asset_id for asset in assets]):
-                self.assert_contract_error(
-                    "RICH_MEDIA_COVER_REFERENCE_REJECTED",
-                    lambda assets=assets: parse_result_for_contract(
-                        contract,
-                        assets=assets,
+
+        def build_result():
+            contract = RichMediaContractV1(
+                "1.0",
+                "rich_text",
+                (content,),
+                (),
+                (
+                    RichMediaMediaBlockV1(
+                        (content.asset_id, "asset:cover:only")
                     ),
-                )
+                ),
+            )
+            return parse_result_for_contract(contract, assets=canonical_assets)
+
+        self.assert_contract_error(
+            "RICH_MEDIA_MEDIA_REF_NOT_FOUND",
+            build_result,
+        )
+
+    def test_runtime_contract_types_have_no_cover_fields(self):
+        runtime_types = (
+            RichMediaAssetDescriptorV1,
+            RichMediaGroupMemberV1,
+            RichMediaGroupV1,
+            RichMediaTextBlockV1,
+            RichMediaMediaBlockV1,
+            RichMediaContractV1,
+        )
+        forbidden = {"cover", "cover_url", "cover_preview_url", "cover_asset_id"}
+        for runtime_type in runtime_types:
+            with self.subTest(runtime_type=runtime_type.__name__):
+                field_names = {field.name for field in fields(runtime_type)}
+                self.assertTrue(field_names.isdisjoint(forbidden))
+
+    def test_real_content_asset_may_reuse_its_cover_location(self):
+        content = descriptor("asset:content:one", "image", "jpg", "primary")
+        contract = RichMediaContractV1("1.0", "image", (content,), (), ())
+        shared_location = "shared-content-and-cover-location"
+        result = parse_result_for_contract(
+            contract,
+            assets=(
+                MediaAsset(
+                    "image",
+                    shared_location,
+                    "fixture",
+                    ext="jpg",
+                    asset_id=content.asset_id,
+                    cover_url=shared_location,
+                ),
+            ),
+        )
+        self.assertIs(result.rich_media, contract)
+        self.assertEqual(result.assets[0].url, result.assets[0].cover_url)
 
     def test_collection_and_text_limits_are_enforced(self):
         too_many_assets = tuple(

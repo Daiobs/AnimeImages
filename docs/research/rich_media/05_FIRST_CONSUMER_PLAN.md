@@ -67,7 +67,8 @@ Before public UI work:
 - add a shared ordered result projection used by Single and Batch;
 - render Live Photo as one semantic unit while retaining two selectable assets;
 - use escaped fixed UI labels only;
-- keep cover metadata outside canonical ordering;
+- do not automatically add cover metadata to canonical ordering; the future
+  Provider builder must explicitly identify canonical content assets;
 - do not implicitly select/download the motion member; and
 - retain all existing Public/Staff raw-link boundaries.
 
