@@ -134,6 +134,8 @@ motion stream occur in the same image item. PR-C may normalize that relationship
 into URL-free `RichMediaContractV1` values only after exact requested note ID
 and payload note ID equality. Unknown extensions are rejected, HEIC is deferred,
 and no media host or fallback is added. Current XHS parsing remains unchanged.
+PR-C implements that boundary as a dormant normalizer over an explicit
+pair/owner schema. It is not imported by the current XHS adapter or registry.
 
 ### Douyin
 

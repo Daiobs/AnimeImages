@@ -73,7 +73,7 @@
       "runtime_dependency_impact": "none",
       "recommended_action": "ADOPT_DORMANT",
       "selected_pr": "PR-C",
-      "status": "selected_for_dormant_normalizer"
+      "status": "implemented_dormant_not_registered"
     },
     {
       "capability_id": "xhs_head_extension_probe_and_unknown_jpeg",

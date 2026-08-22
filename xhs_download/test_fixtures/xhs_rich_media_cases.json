@@ -1,0 +1,73 @@
+{
+  "single_image": {
+    "requested_note_id": "note-fixture-1",
+    "payload_note_id": "note-fixture-1",
+    "items": [
+      {"kind": "image", "asset_id": "xhs:image:one", "extension": "jpg"}
+    ]
+  },
+  "gallery": {
+    "requested_note_id": "note-fixture-1",
+    "payload_note_id": "note-fixture-1",
+    "items": [
+      {"kind": "image", "asset_id": "xhs:gallery:one", "extension": "jpeg"},
+      {"kind": "image", "asset_id": "xhs:gallery:two", "extension": "webp"},
+      {"kind": "image", "asset_id": "xhs:gallery:three", "extension": "avif"}
+    ]
+  },
+  "video": {
+    "requested_note_id": "note-fixture-1",
+    "payload_note_id": "note-fixture-1",
+    "items": [
+      {"kind": "video", "asset_id": "xhs:video:one", "extension": "mp4"}
+    ]
+  },
+  "one_live_photo": {
+    "requested_note_id": "note-fixture-1",
+    "payload_note_id": "note-fixture-1",
+    "items": [
+      {
+        "kind": "live_photo",
+        "pair_id": "xhs:pair:one",
+        "owner_note_id": "note-fixture-1",
+        "still": {"asset_id": "xhs:still:one", "extension": "jpg"},
+        "motion": {"asset_id": "xhs:motion:one", "extension": "mp4"}
+      }
+    ]
+  },
+  "multiple_live_photos": {
+    "requested_note_id": "note-fixture-1",
+    "payload_note_id": "note-fixture-1",
+    "items": [
+      {
+        "kind": "live_photo",
+        "pair_id": "xhs:pair:one",
+        "owner_note_id": "note-fixture-1",
+        "still": {"asset_id": "xhs:still:one", "extension": "jpg"},
+        "motion": {"asset_id": "xhs:motion:one", "extension": "mp4"}
+      },
+      {
+        "kind": "live_photo",
+        "pair_id": "xhs:pair:two",
+        "owner_note_id": "note-fixture-1",
+        "still": {"asset_id": "xhs:still:two", "extension": "png"},
+        "motion": {"asset_id": "xhs:motion:two", "extension": "mov"}
+      }
+    ]
+  },
+  "mixed_image_live_photo": {
+    "requested_note_id": "note-fixture-1",
+    "payload_note_id": "note-fixture-1",
+    "items": [
+      {"kind": "image", "asset_id": "xhs:mixed:image-one", "extension": "webp"},
+      {
+        "kind": "live_photo",
+        "pair_id": "xhs:mixed:pair-one",
+        "owner_note_id": "note-fixture-1",
+        "still": {"asset_id": "xhs:mixed:still-one", "extension": "jpg"},
+        "motion": {"asset_id": "xhs:mixed:motion-one", "extension": "mp4"}
+      },
+      {"kind": "image", "asset_id": "xhs:mixed:image-two", "extension": "png"}
+    ]
+  }
+}
