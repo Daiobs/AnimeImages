@@ -1546,7 +1546,7 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         self.assertEqual(len(result.image_assets), 1)
         self.assertEqual(result.image_assets[0].url, "https://i.imgur.com/B5PvAkF.jpg")
 
-    @patch("xhs_download.services.platforms.external_tools.subprocess.run")
+    @patch("xhs_download.services.platforms.external_tools._execute_external_process")
     def test_run_gallerydl_json_ignores_user_config_and_limits_items(self, mock_run):
         def fake_run(_args, **kwargs):
             kwargs["stdout"].write(b'{"title": "gallery"}')
@@ -1572,7 +1572,7 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         assert_external_command_env_isolated(self, mock_run)
 
     @override_settings(THIRD_PARTY_EXTERNAL_OUTPUT_MAX_BYTES=8)
-    @patch("xhs_download.services.platforms.external_tools.subprocess.run")
+    @patch("xhs_download.services.platforms.external_tools._execute_external_process")
     def test_run_gallerydl_json_rejects_oversized_output(self, mock_run):
         def fake_run(_args, **kwargs):
             kwargs["stdout"].write(b"x" * 2048)
@@ -1919,7 +1919,7 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         self.assertEqual(result.video_assets[0].size_bytes, 2_800_000)
         self.assertTrue(result.video_assets[0].size_is_estimate)
 
-    @patch("xhs_download.services.platforms.external_tools.subprocess.run")
+    @patch("xhs_download.services.platforms.external_tools._execute_external_process")
     def test_run_ytdlp_json_ignores_user_config(self, mock_run):
         def fake_run(_args, **kwargs):
             kwargs["stdout"].write(b'{"title": "demo"}')
@@ -1941,7 +1941,7 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
         assert_external_command_env_isolated(self, mock_run)
 
     @override_settings(THIRD_PARTY_EXTERNAL_OUTPUT_MAX_BYTES=8)
-    @patch("xhs_download.services.platforms.external_tools.subprocess.run")
+    @patch("xhs_download.services.platforms.external_tools._execute_external_process")
     def test_run_ytdlp_json_rejects_oversized_output(self, mock_run):
         def fake_run(_args, **kwargs):
             kwargs["stdout"].write(b"x" * 2048)

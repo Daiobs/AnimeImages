@@ -74,12 +74,13 @@ explicit registry remains authoritative.
   lines, keeps bounded stdout/stderr tails, materializes Cookie and info JSON in
   private temporary files, sends SIGTERM, waits five seconds and escalates to
   SIGKILL, and cleans temporary files on cancellation.
-- **ANIMEIMAGES FACT:** AnimeImages already bounds command timeout, stdout/stderr
+- **ANIMEIMAGES FACT:** AnimeImages bounds command timeout, live stdout/stderr
   file size, environment, temporary cwd/HOME, executor concurrency and provider
-  budget. Its generic runner terminates the immediate process but does not yet
-  implement the same explicit process-group lifecycle.
-- **RECOMMENDATION:** this is the first adoption candidate, limited to an
-  AnimeImages-owned subprocess lifecycle primitive with sanitized errors.
+  budget. Its generic runner now uses an AnimeImages-owned process-group
+  lifecycle on POSIX, with a bounded direct-process fallback elsewhere.
+- **IMPLEMENTATION STATUS:** the first adoption candidate was implemented
+  independently in `external_tools.py`; ParseHub remains absent from the
+  runtime and dependency graph. See `08_EXTERNAL_TOOL_LIFECYCLE.md`.
 
 ### CLI and configuration
 

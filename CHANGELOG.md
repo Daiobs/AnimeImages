@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Hardened AnimeImages-owned external-tool execution with one bounded `Popen`
+  lifecycle for progress and non-progress calls. POSIX commands now run in an
+  isolated session/process group; timeout, live stdout/stderr overflow,
+  callback errors, runner exceptions, and normal parent exit all trigger
+  TERM-then-KILL cleanup of remaining same-group descendants. Existing
+  `CompletedProcess`, timeout, output-limit, Provider, cache, and temporary
+  environment contracts remain unchanged, with a conservative direct-process
+  fallback on non-POSIX systems. No ParseHub code or dependency was imported.
 - Closed the Production Promotion gate at application SHA
   `766cecfd239f594e791c556b4caa69aebf2d1f9f` and immutable checkpoint
   `checkpoint/production-promotion-ready-v1`. Production code, desktop browser,
