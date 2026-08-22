@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -120,6 +121,12 @@ if args.mode == "spawn-child":
         stderr=sys.stderr,
     )
     wait_for(args.child_pid_file)
+    if args.stdout_text:
+        sys.stdout.write(args.stdout_text)
+        sys.stdout.flush()
+    if args.stderr_text:
+        sys.stderr.write(args.stderr_text)
+        sys.stderr.flush()
     write(args.progress_file, "progress")
     write(args.ready_file)
     while True:
@@ -365,6 +372,68 @@ class ExternalProcessLifecycleTests(SimpleTestCase):
         self.assertTrue(callbacks)
         self.assertTrue(popen.called)
 
+    def test_structured_progress_is_reported_and_removed_from_raw_output(self):
+        prefix = "ANIMEIMAGES_PROGRESS_TEST_"
+        callbacks = []
+        result = self.run_tool(
+            markers={
+                "stdout_text": f"stdout before\n{prefix}stdout event\nstdout after\n",
+                "stderr_text": f"stderr before\n{prefix}stderr event\nstderr after\n",
+            },
+            structured_progress_prefix=prefix,
+            structured_progress_callback=callbacks.append,
+        )
+
+        self.assertEqual(
+            callbacks,
+            [f"{prefix}stdout event", f"{prefix}stderr event"],
+        )
+        self.assertEqual(result.stdout, "stdout before\nstdout after\n")
+        self.assertEqual(result.stderr, "stderr before\nstderr after\n")
+
+    def test_structured_progress_cannot_enter_nonzero_error_output(self):
+        prefix = "ANIMEIMAGES_PROGRESS_TEST_"
+        callbacks = []
+        result = self.run_tool(
+            "nonzero",
+            markers={
+                "exit_code": 9,
+                "stderr_text": f"provider failed\n{prefix}malformed event\n",
+            },
+            structured_progress_prefix=prefix,
+            structured_progress_callback=callbacks.append,
+        )
+
+        self.assertEqual(result.returncode, 9)
+        self.assertEqual(callbacks, [f"{prefix}malformed event"])
+        self.assertEqual(result.stderr, "provider failed\n")
+
+    def test_structured_progress_configuration_fails_closed_before_spawn(self):
+        with patch.object(external_tools.subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(ValueError, "configuration is invalid"):
+                self.run_tool(
+                    structured_progress_prefix="unsafe-prefix",
+                    structured_progress_callback=lambda _line: None,
+                )
+        popen.assert_not_called()
+
+    def test_external_temporary_output_streams_are_private(self):
+        observed_modes = []
+        original_hardener = external_tools._harden_external_temporary_file
+
+        def harden_and_record(file_obj):
+            original_hardener(file_obj)
+            observed_modes.append(stat.S_IMODE(os.fstat(file_obj.fileno()).st_mode))
+
+        with patch.object(
+            external_tools,
+            "_harden_external_temporary_file",
+            side_effect=harden_and_record,
+        ):
+            self.run_tool()
+
+        self.assertEqual(observed_modes, [0o600, 0o600])
+
     def test_nonprogress_path_uses_popen_lifecycle(self):
         with patch.object(
             external_tools.subprocess,
@@ -396,6 +465,31 @@ class ExternalProcessLifecycleTests(SimpleTestCase):
                 progress_callback=fail_progress,
                 progress_path=progress_dir,
                 estimated_size=100,
+            )
+        self.assert_marker_pid_stopped(child_pid)
+
+    @unittest.skipUnless(os.name == "posix", "process groups require POSIX")
+    def test_structured_progress_callback_error_kills_group(self):
+        prefix = "ANIMEIMAGES_PROGRESS_TEST_"
+        child_pid = self.marker("structured-callback-child.pid")
+
+        def fail_progress(_line):
+            raise ProgressCallbackError("structured callback failed")
+
+        with self.assertRaisesRegex(
+            ProgressCallbackError,
+            "structured callback failed",
+        ):
+            self.run_tool(
+                "spawn-child",
+                markers={
+                    "pid_file": self.marker("structured-callback-parent.pid"),
+                    "child_pid_file": child_pid,
+                    "ready_file": self.marker("structured-callback.ready"),
+                    "stdout_text": f"{prefix}downloading\n",
+                },
+                structured_progress_prefix=prefix,
+                structured_progress_callback=fail_progress,
             )
         self.assert_marker_pid_stopped(child_pid)
 

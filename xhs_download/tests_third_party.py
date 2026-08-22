@@ -21,6 +21,10 @@ from .services.platforms import (
     YtDlpResultNormalizer,
 )
 from .services.platforms.external_tools import safe_subprocess_env
+from .services.platforms.external_progress import (
+    YTDLP_PROGRESS_PREFIX,
+    YTDLP_PROGRESS_TEMPLATE,
+)
 from .services.platforms.gallerydl_generic import run_gallerydl_json
 from .services.platforms.kukutool_generic import source_key_for_url
 from .services.platforms.third_party import (
@@ -57,6 +61,13 @@ def assert_external_command_env_isolated(testcase, mock_run):
     testcase.assertIn("xhs_external_tool_", cwd)
     testcase.assertNotEqual(env["HOME"], base_env["HOME"])
     testcase.assertNotIn("DJANGO_SECRET_KEY", env)
+
+
+def structured_ytdlp_progress_line(downloaded=50, total=100):
+    return (
+        f"{YTDLP_PROGRESS_PREFIX}downloading\t{downloaded}\t{total}"
+        "\tNA\tNA\tNA"
+    )
 
 
 def youtube_merge_demo_payload():
@@ -276,7 +287,10 @@ class YouTubeMergePlannerTests(SimpleTestCase):
             youtube_merge_demo_payload(),
         ).video_assets[0]
 
-        def fake_run(args, **_kwargs):
+        def fake_run(args, **kwargs):
+            kwargs["structured_progress_callback"](
+                structured_ytdlp_progress_line(),
+            )
             output_template = args[args.index("-o") + 1]
             output_path = Path(str(output_template).replace("%(ext)s", "mp4"))
             output_path.write_bytes(b"merged-video")
@@ -302,10 +316,21 @@ class YouTubeMergePlannerTests(SimpleTestCase):
             self.assertIn("--merge-output-format", args)
             self.assertIn("mp4", args)
             self.assertIn("--ffmpeg-location", args)
+            self.assertIn("--newline", args)
+            self.assertEqual(
+                args[args.index("--progress-template") + 1],
+                YTDLP_PROGRESS_TEMPLATE,
+            )
             self.assertTrue(progress_events)
             self.assertIsNotNone(kwargs["progress_callback"])
             self.assertTrue(kwargs["progress_path"])
             self.assertGreater(kwargs["estimated_size"], 0)
+            self.assertEqual(
+                kwargs["structured_progress_prefix"],
+                YTDLP_PROGRESS_PREFIX,
+            )
+            self.assertTrue(callable(kwargs["structured_progress_callback"]))
+            self.assertIn((42_500_000, 85_000_000), progress_events)
         finally:
             Path(temp_result["path"]).unlink(missing_ok=True)
 
@@ -1199,7 +1224,10 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
             ytdlp_merge_demo_payload(),
         ).video_assets[0]
 
-        def fake_run(args, **_kwargs):
+        def fake_run(args, **kwargs):
+            kwargs["structured_progress_callback"](
+                structured_ytdlp_progress_line(),
+            )
             output_template = args[args.index("-o") + 1]
             output_path = Path(str(output_template).replace("%(ext)s", "mp4"))
             output_path.write_bytes(b"merged-video")
@@ -1218,11 +1246,22 @@ class GenericThirdPartyProviderTests(SimpleTestCase):
             args = mock_run.call_args.args[0]
             kwargs = mock_run.call_args.kwargs
             self.assertIn("bv*[height<=1080]+ba/b[height<=1080]/b", args)
+            self.assertIn("--newline", args)
+            self.assertEqual(
+                args[args.index("--progress-template") + 1],
+                YTDLP_PROGRESS_TEMPLATE,
+            )
             self.assertEqual(Path(temp_result["path"]).read_bytes(), b"merged-video")
             self.assertTrue(progress_events)
             self.assertIsNotNone(kwargs["progress_callback"])
             self.assertTrue(kwargs["progress_path"])
             self.assertGreater(kwargs["estimated_size"], 0)
+            self.assertEqual(
+                kwargs["structured_progress_prefix"],
+                YTDLP_PROGRESS_PREFIX,
+            )
+            self.assertTrue(callable(kwargs["structured_progress_callback"]))
+            self.assertIn((42_500_000, 85_000_000), progress_events)
         finally:
             Path(temp_result["path"]).unlink(missing_ok=True)
 

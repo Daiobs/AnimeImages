@@ -15,6 +15,11 @@ from .platforms.external_tools import (
     run_external_command,
     split_external_command,
 )
+from .platforms.external_progress import (
+    YTDLP_PROGRESS_PREFIX,
+    YtDlpProgressTracker,
+    with_ytdlp_progress_arguments,
+)
 from .platforms.ytdlp_generic import (
     YtDlpGenericProvider,
     float_value,
@@ -555,18 +560,39 @@ def download_youtube_merge_to_temp_path(item, progress_callback=None):
     output_template = Path(work_dir) / "merged.%(ext)s"
     try:
         estimated_size = int(item.get("size_bytes") or 0)
-        if progress_callback and estimated_size:
-            progress_callback(max(1, int(estimated_size * 0.02)), estimated_size)
+        progress_tracker = (
+            YtDlpProgressTracker(
+                progress_callback,
+                estimated_size=estimated_size,
+            )
+            if progress_callback
+            else None
+        )
+        if progress_tracker:
+            progress_tracker.emit_initial()
+        command = build_youtube_merge_command(
+            source_url,
+            output_template,
+            max_height=parsed_asset["max_height"],
+        )
+        if progress_tracker:
+            command = with_ytdlp_progress_arguments(command)
         completed = run_external_command(
-            build_youtube_merge_command(
-                source_url,
-                output_template,
-                max_height=parsed_asset["max_height"],
-            ),
+            command,
             timeout_seconds=timeout_seconds,
-            progress_callback=progress_callback,
+            progress_callback=(
+                progress_tracker.emit_directory_fallback
+                if progress_tracker
+                else None
+            ),
             progress_path=work_dir,
             estimated_size=estimated_size,
+            structured_progress_prefix=(
+                YTDLP_PROGRESS_PREFIX if progress_tracker else ""
+            ),
+            structured_progress_callback=(
+                progress_tracker.consume_line if progress_tracker else None
+            ),
         )
         if completed.returncode != 0:
             message = (completed.stderr or completed.stdout or "yt-dlp merge failed").strip()
@@ -582,8 +608,8 @@ def download_youtube_merge_to_temp_path(item, progress_callback=None):
         output_size = output_path.stat().st_size
         if max_bytes and output_size > max_bytes:
             raise XhsDownloadError("YouTube 合并文件超过允许大小限制")
-        if progress_callback and estimated_size:
-            progress_callback(max(output_size, int(estimated_size * 0.98)), estimated_size)
+        if progress_tracker:
+            progress_tracker.emit_finished(output_size)
 
         target = tempfile.NamedTemporaryFile(
             prefix="youtube_merge_result_",

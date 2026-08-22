@@ -18,6 +18,14 @@
   diagnostics expose only structural fields and parameter names. Existing
   Providers do not consume the contract yet, so routing, output, deadlines,
   cache, downloads, and production behavior remain unchanged.
+- Improved the existing YouTube and generic yt-dlp merge progress callbacks
+  with an AnimeImages-owned, bounded structured-progress parser while retaining
+  directory-size progress as a compatibility fallback. Reserved progress lines
+  are excluded from caller error output, temporary stdout/stderr files are
+  explicitly mode `0600`, and the deployed process-group, output-cap, timeout,
+  format-selection, Provider, and download contracts remain unchanged. No
+  Cookie or info-JSON material handling was added because no current caller
+  requires it.
 - Added a closed, typed, URL-free Rich Media Domain Contract v1 runtime model
   as an optional final field on `ParseResult`. Legacy results continue to use
   `rich_media=None`; current Providers emit no rich-media data, and existing
