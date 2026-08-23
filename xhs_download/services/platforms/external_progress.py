@@ -51,13 +51,12 @@ def _bounded_integer(value: str, *, maximum: int) -> int | None:
 
 
 def parse_ytdlp_progress_line(line: str) -> YtDlpProgressEvent | None:
-    text = str(line or "")
+    text = str(line or "").strip(" \t\r\n")
     if len(text) > MAX_PROGRESS_LINE_CHARS:
         return None
-    marker_index = text.find(YTDLP_PROGRESS_PREFIX)
-    if marker_index < 0:
+    if not text.startswith(YTDLP_PROGRESS_PREFIX):
         return None
-    payload = text[marker_index + len(YTDLP_PROGRESS_PREFIX) :].strip(" \r\n")
+    payload = text[len(YTDLP_PROGRESS_PREFIX) :]
     parts = payload.split("\t")
     if len(parts) != 6 or parts[0] not in {"downloading", "finished"}:
         return None
@@ -77,7 +76,11 @@ def ytdlp_progress_arguments() -> tuple[str, ...]:
 
 def with_ytdlp_progress_arguments(args) -> list[str]:
     result = list(args or ())
-    if not result or "--progress-template" in result:
+    if not result or any(
+        item == "--progress-template"
+        or str(item).startswith("--progress-template=")
+        for item in result
+    ):
         return result
     result[-1:-1] = ytdlp_progress_arguments()
     return result
@@ -144,13 +147,13 @@ class YtDlpProgressTracker:
         event = parse_ytdlp_progress_line(line)
         if event is None:
             return
-        self.structured_seen = True
         normalized = normalized_ytdlp_progress(
             event,
             estimated_size=self.estimated_size,
         )
         if normalized is None:
             return
+        self.structured_seen = True
         completed, total = normalized
         cap = max(1, int(total * STRUCTURED_PROGRESS_COMPLETION_RATIO))
         self._emit(min(completed, cap), total)

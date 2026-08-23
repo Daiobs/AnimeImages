@@ -60,9 +60,13 @@ The existing process runner reads progress lines from its bounded temporary
 stdout/stderr files with positional reads on POSIX. Positional reads do not
 change the child process file offset. On systems without positional reads,
 events are replayed after process completion; lifecycle and output bounds remain
-the same. Reserved progress lines are removed from returned stdout/stderr so
-they cannot enter caller error text. Non-progress output remains available
-under the existing live output cap.
+the same. `LIVE_STRUCTURED_PROGRESS` is therefore available only when
+`os.pread` is available; the directory-size fallback continues while the
+command runs on other platforms. Reserved progress lines are removed from
+returned stdout/stderr so they cannot enter caller error text. They are first
+written to the same bounded temporary streams and still count toward the
+existing output cap; this is not an independent or unbounded side channel.
+Non-progress output remains available under that same cap.
 
 If no valid structured event arrives, the existing directory-size callback
 continues to operate. Once a valid structured event is observed, directory
@@ -82,6 +86,18 @@ AnimeImages has no current caller that supplies Cookie text or needs
 `--load-info-json`, so those facilities are not adopted. This PR does not read
 browser Cookies, add account configuration, introduce credential storage, or
 create new temporary content files.
+
+## Loopback Compatibility Canary
+
+The project-resolved yt-dlp `2026.03.17` command was exercised against a
+2 MiB fixture served only from `127.0.0.1`. The real command accepted the
+progress template, produced 13 structured records, completed an exact-size
+download, and drove 12 monotonic callback updates with `completed <= total`.
+Reserved records were absent from returned stdout/stderr, ordinary yt-dlp
+stdout remained available, and both temporary output streams were mode `0600`.
+The local HTTP server, command process, output, and task-owned temporary
+directory were closed by the canary. No public platform or Provider was
+accessed.
 
 ## Safety And Compatibility
 

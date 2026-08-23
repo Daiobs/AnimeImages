@@ -142,7 +142,7 @@ def _strip_structured_progress_lines(text, prefix):
     return "".join(
         line
         for line in str(text or "").splitlines(keepends=True)
-        if prefix not in line
+        if not line.lstrip(" \t").startswith(prefix)
     )
 
 
@@ -188,14 +188,14 @@ class _StructuredProgressReader:
             self._handle(pending.rstrip(b"\r"))
 
     def _handle(self, line):
-        if self.prefix not in line:
+        if not line.lstrip(b" \t").startswith(self.prefix):
             return
         self.callback(line.decode("utf-8", errors="replace"))
 
 
 def _replay_structured_progress(text, prefix, callback):
     for line in str(text or "").splitlines():
-        if prefix in line:
+        if line.lstrip(" \t").startswith(prefix):
             callback(line)
 
 

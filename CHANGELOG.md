@@ -38,11 +38,12 @@
 - Improved the existing YouTube and generic yt-dlp merge progress callbacks
   with an AnimeImages-owned, bounded structured-progress parser while retaining
   directory-size progress as a compatibility fallback. Reserved progress lines
-  are excluded from caller error output, temporary stdout/stderr files are
-  explicitly mode `0600`, and the deployed process-group, output-cap, timeout,
-  format-selection, Provider, and download contracts remain unchanged. No
-  Cookie or info-JSON material handling was added because no current caller
-  requires it.
+  still count toward the existing output cap before being excluded from caller
+  error output, temporary stdout/stderr files are explicitly mode `0600`, and
+  live structured updates require `os.pread` while other platforms replay them
+  after completion. The deployed process-group, timeout, format-selection,
+  Provider, and download contracts remain unchanged. No Cookie or info-JSON
+  material handling was added because no current caller requires it.
 - Closed the Production Promotion gate at application SHA
   `766cecfd239f594e791c556b4caa69aebf2d1f9f` and immutable checkpoint
   `checkpoint/production-promotion-ready-v1`. Production code, desktop browser,

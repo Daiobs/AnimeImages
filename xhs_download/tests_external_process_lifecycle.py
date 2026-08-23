@@ -408,6 +408,42 @@ class ExternalProcessLifecycleTests(SimpleTestCase):
         self.assertEqual(callbacks, [f"{prefix}malformed event"])
         self.assertEqual(result.stderr, "provider failed\n")
 
+    def test_prefix_inside_ordinary_line_is_preserved_and_not_replayed(self):
+        prefix = "ANIMEIMAGES_PROGRESS_TEST_"
+        ordinary_line = f"ordinary output contains {prefix}but is not reserved\n"
+        callbacks = []
+        result = self.run_tool(
+            markers={"stdout_text": ordinary_line},
+            structured_progress_prefix=prefix,
+            structured_progress_callback=callbacks.append,
+        )
+        self.assertEqual(callbacks, [])
+        self.assertEqual(result.stdout, ordinary_line)
+
+    def test_structured_progress_replays_after_exit_without_pread(self):
+        prefix = "ANIMEIMAGES_PROGRESS_TEST_"
+        callbacks = []
+        with patch.object(external_tools.os, "pread", None):
+            result = self.run_tool(
+                markers={
+                    "stdout_text": f"before\n{prefix}event\nafter\n",
+                },
+                structured_progress_prefix=prefix,
+                structured_progress_callback=callbacks.append,
+            )
+        self.assertEqual(callbacks, [f"{prefix}event"])
+        self.assertEqual(result.stdout, "before\nafter\n")
+
+    def test_structured_progress_still_counts_toward_output_limit(self):
+        prefix = "ANIMEIMAGES_PROGRESS_TEST_"
+        progress_output = f"{prefix}event\n" * 40
+        with self.assertRaises(ExternalCommandOutputTooLarge):
+            self.run_tool(
+                markers={"stdout_text": progress_output},
+                structured_progress_prefix=prefix,
+                structured_progress_callback=lambda _line: None,
+            )
+
     def test_structured_progress_configuration_fails_closed_before_spawn(self):
         with patch.object(external_tools.subprocess, "Popen") as popen:
             with self.assertRaisesRegex(ValueError, "configuration is invalid"):

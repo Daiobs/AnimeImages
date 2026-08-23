@@ -102,12 +102,30 @@ class YtDlpProgressParserTests(SimpleTestCase):
             with self.subTest(line=line):
                 self.assertIsNone(parse_ytdlp_progress_line(line).downloaded_bytes)
 
+    def test_prefix_inside_ordinary_output_is_not_a_progress_record(self):
+        line = f"ordinary output before {progress_line()}"
+        self.assertIsNone(parse_ytdlp_progress_line(line))
+
+    def test_oversized_progress_record_is_ignored(self):
+        line = progress_line() + ("x" * 4096)
+        self.assertIsNone(parse_ytdlp_progress_line(line))
+
     def test_progress_arguments_are_inserted_before_source_once(self):
         source = "https://video.example/watch/fixture"
         args = with_ytdlp_progress_arguments(["yt-dlp", "-o", "out", source])
         self.assertEqual(args[-1], source)
         self.assertEqual(args.count("--progress-template"), 1)
         self.assertEqual(with_ytdlp_progress_arguments(args), args)
+
+    def test_inline_custom_progress_template_is_not_duplicated(self):
+        source = "https://video.example/watch/fixture"
+        args = [
+            "yt-dlp",
+            "--progress-template=download:custom",
+            source,
+        ]
+        self.assertEqual(with_ytdlp_progress_arguments(args), args)
+        self.assertEqual(with_ytdlp_progress_arguments(args)[-1], source)
 
 
 class YtDlpProgressTrackerTests(SimpleTestCase):
@@ -161,6 +179,25 @@ class YtDlpProgressTrackerTests(SimpleTestCase):
         )
         tracker.emit_directory_fallback(30, 100)
         tracker.emit_directory_fallback(20, 100)
+        self.assertEqual(events, [(30, 100)])
+
+    def test_malformed_numeric_event_does_not_disable_directory_fallback(self):
+        events = []
+        tracker = YtDlpProgressTracker(
+            lambda completed, total: events.append((completed, total)),
+            estimated_size=100,
+        )
+        tracker.consume_line(
+            progress_line(
+                downloaded="invalid",
+                total="invalid",
+                estimate="invalid",
+                fragment_index="invalid",
+                fragment_count="invalid",
+            )
+        )
+        tracker.emit_directory_fallback(30, 100)
+        self.assertFalse(tracker.structured_seen)
         self.assertEqual(events, [(30, 100)])
 
     def test_callback_error_is_not_swallowed(self):
