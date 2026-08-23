@@ -44,18 +44,18 @@ def _policy(value: Any) -> SourceParameterPolicy:
     if not isinstance(value, dict):
         raise ValueError("fixture policy must be an object")
     allowed = {
-        "retain_for_parse",
-        "retain_for_identity",
-        "remove_after_parse",
-        "always_drop",
+        "parse_only",
+        "identity",
+        "safe_passthrough",
+        "drop",
     }
     if set(value) != allowed:
         raise ValueError("fixture policy fields are invalid")
     return SourceParameterPolicy(
-        retain_for_parse=tuple(value["retain_for_parse"]),
-        retain_for_identity=tuple(value["retain_for_identity"]),
-        remove_after_parse=tuple(value["remove_after_parse"]),
-        always_drop=tuple(value["always_drop"]),
+        parse_only=tuple(value["parse_only"]),
+        identity=tuple(value["identity"]),
+        safe_passthrough=tuple(value["safe_passthrough"]),
+        drop=tuple(value["drop"]),
     )
 
 

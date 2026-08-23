@@ -14,6 +14,7 @@ SOURCE_URL_MAX_CHARS = 4096
 SOURCE_QUERY_MAX_FIELDS = 64
 SOURCE_PARAMETER_NAME_MAX_CHARS = 64
 SOURCE_RESOLUTION_MAX_DURATION_MS = 300_000
+CURRENT_SOURCE_LIFECYCLE_CONSUMERS = 0
 
 _PLATFORM_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _PARAMETER_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
@@ -47,10 +48,10 @@ def _reject(code: str, path: str) -> None:
 
 
 class SourceParameterAction(str, Enum):
-    RETAIN_FOR_PARSE = "retain_for_parse"
-    RETAIN_FOR_IDENTITY = "retain_for_identity"
-    REMOVE_AFTER_PARSE = "remove_after_parse"
-    ALWAYS_DROP = "always_drop"
+    PARSE_ONLY = "parse_only"
+    IDENTITY = "identity"
+    SAFE_PASSTHROUGH = "safe_passthrough"
+    DROP = "drop"
 
 
 class SourceInputKind(str, Enum):
@@ -65,13 +66,20 @@ class SourceInputKind(str, Enum):
     UNKNOWN = "unknown"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class SourceParameterApplication:
     """Internal URL result; callers must not serialize ``url`` as diagnostics."""
 
     url: str
     retained_parameter_names: tuple[str, ...]
     removed_parameter_names: tuple[str, ...]
+
+    def __repr__(self) -> str:
+        return (
+            "SourceParameterApplication("
+            f"retained_parameter_names={self.retained_parameter_names!r}, "
+            f"removed_parameter_names={self.removed_parameter_names!r})"
+        )
 
 
 def _normalize_parameter_names(value: Any, path: str) -> tuple[str, ...]:
@@ -98,24 +106,24 @@ def _normalize_parameter_names(value: Any, path: str) -> tuple[str, ...]:
 class SourceParameterPolicy:
     """Closed parameter policy applied without resolving or requesting a URL.
 
-    ``retain_for_parse`` survives parse cleanup but is not declared identity
-    material. ``retain_for_identity`` is the only class retained by
-    :meth:`for_identity`. ``remove_after_parse`` is available only to the
-    parser, and every unknown parameter follows the fail-closed drop policy.
+    ``parse_only`` is available only while parsing. ``identity`` is the only
+    class retained by :meth:`for_identity`. ``safe_passthrough`` survives
+    post-parse cleanup without becoming identity material, and every unknown
+    parameter follows the fail-closed ``drop`` policy.
     """
 
-    retain_for_parse: tuple[str, ...] = ()
-    retain_for_identity: tuple[str, ...] = ()
-    remove_after_parse: tuple[str, ...] = ()
-    always_drop: tuple[str, ...] = ()
+    parse_only: tuple[str, ...] = ()
+    identity: tuple[str, ...] = ()
+    safe_passthrough: tuple[str, ...] = ()
+    drop: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         groups = {}
         for field_name in (
-            "retain_for_parse",
-            "retain_for_identity",
-            "remove_after_parse",
-            "always_drop",
+            "parse_only",
+            "identity",
+            "safe_passthrough",
+            "drop",
         ):
             normalized = _normalize_parameter_names(
                 getattr(self, field_name),
@@ -132,21 +140,21 @@ class SourceParameterPolicy:
 
     def action_for(self, parameter_name: str) -> SourceParameterAction:
         name = str(parameter_name or "").lower()
-        if name in self.retain_for_parse:
-            return SourceParameterAction.RETAIN_FOR_PARSE
-        if name in self.retain_for_identity:
-            return SourceParameterAction.RETAIN_FOR_IDENTITY
-        if name in self.remove_after_parse:
-            return SourceParameterAction.REMOVE_AFTER_PARSE
-        return SourceParameterAction.ALWAYS_DROP
+        if name in self.parse_only:
+            return SourceParameterAction.PARSE_ONLY
+        if name in self.identity:
+            return SourceParameterAction.IDENTITY
+        if name in self.safe_passthrough:
+            return SourceParameterAction.SAFE_PASSTHROUGH
+        return SourceParameterAction.DROP
 
     def for_parse(self, url: str) -> SourceParameterApplication:
         return self._apply(
             url,
             allowed_actions={
-                SourceParameterAction.RETAIN_FOR_PARSE,
-                SourceParameterAction.RETAIN_FOR_IDENTITY,
-                SourceParameterAction.REMOVE_AFTER_PARSE,
+                SourceParameterAction.PARSE_ONLY,
+                SourceParameterAction.IDENTITY,
+                SourceParameterAction.SAFE_PASSTHROUGH,
             },
         )
 
@@ -154,15 +162,15 @@ class SourceParameterPolicy:
         return self._apply(
             url,
             allowed_actions={
-                SourceParameterAction.RETAIN_FOR_PARSE,
-                SourceParameterAction.RETAIN_FOR_IDENTITY,
+                SourceParameterAction.IDENTITY,
+                SourceParameterAction.SAFE_PASSTHROUGH,
             },
         )
 
     def for_identity(self, url: str) -> SourceParameterApplication:
         return self._apply(
             url,
-            allowed_actions={SourceParameterAction.RETAIN_FOR_IDENTITY},
+            allowed_actions={SourceParameterAction.IDENTITY},
         )
 
     def _apply(
@@ -304,13 +312,14 @@ def _normalize_name_tuple(value: Any, path: str) -> tuple[str, ...]:
     return tuple(names)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class SourceResolutionV1:
     platform_id: str
     input_kind: SourceInputKind
     input_url: str
     parse_url: str
     resolved_url: str
+    post_parse_url: str
     canonical_identity: str
     retained_parameter_names: tuple[str, ...]
     removed_parameter_names: tuple[str, ...]
@@ -323,7 +332,12 @@ class SourceResolutionV1:
             _reject("SOURCE_PLATFORM_ID_INVALID", "source_resolution.platform_id")
         if type(self.input_kind) is not SourceInputKind:
             _reject("SOURCE_INPUT_KIND_INVALID", "source_resolution.input_kind")
-        for field_name in ("input_url", "parse_url", "resolved_url"):
+        for field_name in (
+            "input_url",
+            "parse_url",
+            "resolved_url",
+            "post_parse_url",
+        ):
             _parse_public_source_url(
                 getattr(self, field_name),
                 f"source_resolution.{field_name}",
@@ -367,10 +381,27 @@ class SourceResolutionV1:
     def canonical_identity_kind(self) -> str:
         return self.canonical_identity.partition(":")[0]
 
+    def __repr__(self) -> str:
+        parsed = _parse_public_source_url(
+            self.post_parse_url,
+            "source_resolution.post_parse_url",
+        )
+        return (
+            "SourceResolutionV1("
+            f"platform_id={self.platform_id!r}, "
+            f"input_kind={self.input_kind.value!r}, "
+            f"hostname={(parsed.hostname or '').lower()!r}, "
+            f"path_class={_path_class(self.input_kind, parsed.path)!r}, "
+            f"canonical_identity_kind={self.canonical_identity_kind!r}, "
+            f"resolution_duration_ms={self.resolution_duration_ms!r}, "
+            f"retained_parameter_names={self.retained_parameter_names!r}, "
+            f"removed_parameter_names={self.removed_parameter_names!r})"
+        )
+
     def to_safe_diagnostic(self) -> SafeSourceDiagnostic:
         parsed = _parse_public_source_url(
-            self.resolved_url,
-            "source_resolution.resolved_url",
+            self.post_parse_url,
+            "source_resolution.post_parse_url",
         )
         return SafeSourceDiagnostic(
             platform_id=self.platform_id,
@@ -419,8 +450,8 @@ def build_source_resolution(
         _reject("SOURCE_PARAMETER_POLICY_INVALID", "source_parameter_policy")
     input_url = extract_source_url(input_value)
     parse_application = parameter_policy.for_parse(input_url)
-    resolved_input = resolved_url or parse_application.url
-    final_application = parameter_policy.after_parse(resolved_input)
+    resolver_output = resolved_url or parse_application.url
+    final_application = parameter_policy.after_parse(resolver_output)
     removed_names = list(parse_application.removed_parameter_names)
     for name in final_application.removed_parameter_names:
         if name not in removed_names:
@@ -430,7 +461,8 @@ def build_source_resolution(
         input_kind=input_kind,
         input_url=input_url,
         parse_url=parse_application.url,
-        resolved_url=final_application.url,
+        resolved_url=resolver_output,
+        post_parse_url=final_application.url,
         canonical_identity=canonical_identity,
         retained_parameter_names=final_application.retained_parameter_names,
         removed_parameter_names=tuple(removed_names),

@@ -63,10 +63,10 @@ class ProviderLabCommandTests(unittest.TestCase):
                 canonical_identity="xhs_note:note_fixture",
                 parameter_policy=json.dumps(
                     {
-                        "retain_for_parse": [],
-                        "retain_for_identity": [],
-                        "remove_after_parse": ["xsec_token"],
-                        "always_drop": ["utm_source"],
+                        "parse_only": ["xsec_token"],
+                        "identity": [],
+                        "safe_passthrough": [],
+                        "drop": ["utm_source"],
                     }
                 ),
                 resolution_duration_ms=3,
@@ -97,10 +97,10 @@ class ProviderLabCommandTests(unittest.TestCase):
                     "--parameter-policy",
                     json.dumps(
                         {
-                            "retain_for_parse": [],
-                            "retain_for_identity": [],
-                            "remove_after_parse": [],
-                            "always_drop": ["token"],
+                            "parse_only": [],
+                            "identity": [],
+                            "safe_passthrough": [],
+                            "drop": ["token"],
                         }
                     ),
                 ]

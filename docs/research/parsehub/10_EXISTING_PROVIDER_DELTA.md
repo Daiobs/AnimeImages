@@ -42,14 +42,13 @@ PR-A adds AnimeImages-owned, frozen, network-free runtime types:
 
 The closed parameter actions are:
 
-- `retain_for_parse`: available while parsing and after cleanup, but not
-  automatically part of logical identity;
-- `retain_for_identity`: the only query class retained for identity-relevant
-  source selection;
-- `remove_after_parse`: available to the parser, removed from the resolved
-  lifecycle value; and
-- `always_drop`: explicitly discarded. Unknown parameters also fail closed to
-  this action.
+- `parse_only`: available in `parse_url`, then removed from `post_parse_url`;
+- `identity`: retained through `post_parse_url` and available to an adapter's
+  explicit identity projection;
+- `safe_passthrough`: retained through `post_parse_url` without becoming
+  identity material; and
+- `drop`: removed before parsing. Unknown parameters also fail closed to this
+  action.
 
 XHS `xsec_token` is represented as parse-only, Bilibili `p` as page/identity
 relevant, Douyin `modal_id`/`aweme_id` as identity relevant, and tracking
@@ -57,16 +56,28 @@ parameters as dropped in fictional fixtures. Existing adapters do not migrate
 in this PR, so Provider output, order, deadlines, cache and fallback behavior
 do not change.
 
+The four URL stages are deliberately separate: `input_url` is extracted from
+the user input, `parse_url` applies the parse-stage policy, `resolved_url`
+preserves the exact output supplied by an existing safe resolver, and
+`post_parse_url` applies post-parse cleanup to that output. Without a resolver,
+`resolved_url` equals `parse_url`. `resolved_url` is internal data, not a safe
+diagnostic.
+
 The platform supplies `canonical_identity`. The lifecycle validates and
-carries it but never derives identity from raw URL bytes or a URL hash. Full
-input, parse, and resolved URLs are internal runtime values. Safe output is
-limited to platform, input kind, hostname, path class, canonical identity kind,
-duration, and parameter names. Query values, fragments, raw share text, tokens,
-and canonical identity values are excluded.
+carries it but never derives identity from raw URL bytes or a URL hash. All four
+URLs and the identity value are internal runtime values with redacted `repr`
+behavior. Safe output derives hostname and path class from `post_parse_url` and
+is limited to platform, input kind, hostname, path class, canonical identity
+kind, duration, and parameter names. Query values, fragments, raw share text,
+tokens, path resource IDs, and canonical identity values are excluded.
 
 The primitive does not follow redirects or make any request. Existing platform
 resolvers remain responsible for safe redirects, host allowlists, private and
 loopback rejection, bounded redirect counts, and deadlines.
+
+No current Provider or adapter consumes this lifecycle foundation
+(`CURRENT_SOURCE_LIFECYCLE_CONSUMERS = 0`). Existing XHS, Douyin, Bilibili and
+generic behavior remains unchanged.
 
 ## Provider Lab v1
 

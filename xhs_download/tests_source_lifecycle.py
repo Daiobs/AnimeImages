@@ -4,6 +4,7 @@ from pathlib import Path
 from django.test import SimpleTestCase
 
 from .services.source_lifecycle import (
+    CURRENT_SOURCE_LIFECYCLE_CONSUMERS,
     SafeSourceDiagnostic,
     SourceInputKind,
     SourceLifecycleError,
@@ -16,16 +17,16 @@ from .services.source_lifecycle import (
 
 
 XHS_POLICY = SourceParameterPolicy(
-    remove_after_parse=("xsec_token",),
-    always_drop=("utm_source", "source_note_id"),
+    parse_only=("xsec_token",),
+    drop=("utm_source", "source_note_id"),
 )
 DOUYIN_POLICY = SourceParameterPolicy(
-    retain_for_identity=("modal_id", "aweme_id"),
-    always_drop=("from_tab_name", "showtab", "utm_source"),
+    identity=("modal_id", "aweme_id"),
+    drop=("from_tab_name", "showtab", "utm_source"),
 )
 BILIBILI_POLICY = SourceParameterPolicy(
-    retain_for_identity=("p",),
-    always_drop=("spm_id_from", "vd_source", "utm_source"),
+    identity=("p",),
+    drop=("spm_id_from", "vd_source", "utm_source"),
 )
 
 
@@ -63,8 +64,8 @@ class SourceParameterPolicyTests(SimpleTestCase):
         )
         self.assertIn("modal_id=", result.url)
 
-    def test_retain_for_parse_is_distinct_from_identity(self):
-        policy = SourceParameterPolicy(retain_for_parse=("quality",))
+    def test_safe_passthrough_is_distinct_from_identity(self):
+        policy = SourceParameterPolicy(safe_passthrough=("quality",))
         url = "https://media.example/item?quality=original"
         self.assertIn("quality=original", policy.for_parse(url).url)
         self.assertIn("quality=original", policy.after_parse(url).url)
@@ -78,27 +79,40 @@ class SourceParameterPolicyTests(SimpleTestCase):
         self.assertEqual(result.removed_parameter_names, ("unknown",))
 
     def test_action_for_returns_closed_enum(self):
+        policy = SourceParameterPolicy(
+            parse_only=("parse",),
+            identity=("identity",),
+            safe_passthrough=("safe",),
+            drop=("drop",),
+        )
+        self.assertIs(policy.action_for("parse"), SourceParameterAction.PARSE_ONLY)
+        self.assertIs(policy.action_for("identity"), SourceParameterAction.IDENTITY)
+        self.assertIs(
+            policy.action_for("safe"),
+            SourceParameterAction.SAFE_PASSTHROUGH,
+        )
+        self.assertIs(policy.action_for("drop"), SourceParameterAction.DROP)
         self.assertIs(
             DOUYIN_POLICY.action_for("modal_id"),
-            SourceParameterAction.RETAIN_FOR_IDENTITY,
+            SourceParameterAction.IDENTITY,
         )
         self.assertIs(
             DOUYIN_POLICY.action_for("other"),
-            SourceParameterAction.ALWAYS_DROP,
+            SourceParameterAction.DROP,
         )
 
     def test_policy_rejects_overlapping_parameter_names(self):
         with self.assertRaises(SourceLifecycleError) as raised:
             SourceParameterPolicy(
-                retain_for_parse=("p",),
-                retain_for_identity=("P",),
+                safe_passthrough=("p",),
+                identity=("P",),
             )
         self.assertEqual(raised.exception.code, "SOURCE_PARAMETER_POLICY_OVERLAP")
 
     def test_policy_rejects_non_tuple_and_invalid_name(self):
         for kwargs, expected_code in (
-            ({"retain_for_parse": ["p"]}, "SOURCE_PARAMETER_COLLECTION_INVALID"),
-            ({"retain_for_parse": ("bad name",)}, "SOURCE_PARAMETER_NAME_INVALID"),
+            ({"safe_passthrough": ["p"]}, "SOURCE_PARAMETER_COLLECTION_INVALID"),
+            ({"safe_passthrough": ("bad name",)}, "SOURCE_PARAMETER_NAME_INVALID"),
         ):
             with self.subTest(kwargs=kwargs):
                 with self.assertRaises(SourceLifecycleError) as raised:
@@ -106,7 +120,7 @@ class SourceParameterPolicyTests(SimpleTestCase):
                 self.assertEqual(raised.exception.code, expected_code)
 
     def test_duplicate_query_values_preserve_order(self):
-        policy = SourceParameterPolicy(retain_for_identity=("p",))
+        policy = SourceParameterPolicy(identity=("p",))
         result = policy.for_parse("https://media.example/item?p=2&p=3")
         self.assertTrue(result.url.endswith("?p=2&p=3"))
         self.assertEqual(result.retained_parameter_names, ("p",))
@@ -142,7 +156,8 @@ class SourceResolutionTests(SimpleTestCase):
         )
         self.assertEqual(result.canonical_identity, "xhs:note123")
         self.assertIn("xsec_token", result.parse_url)
-        self.assertNotIn("xsec_token", result.resolved_url)
+        self.assertIn("xsec_token", result.resolved_url)
+        self.assertNotIn("xsec_token", result.post_parse_url)
         self.assertEqual(result.retained_parameter_names, ())
         self.assertEqual(
             result.removed_parameter_names,
@@ -150,21 +165,85 @@ class SourceResolutionTests(SimpleTestCase):
         )
 
     def test_caller_supplied_redirect_result_is_cleaned_without_network(self):
+        resolver_output = (
+            "https://www.douyin.example/user/self"
+            "?modal_id=7312345678901234567&showTab=record#resolved-fragment"
+        )
         result = build_source_resolution(
             platform_id="douyin",
             input_kind=SourceInputKind.SHORT_URL,
             input_value="https://v.douyin.example/fixture/",
-            resolved_url=(
-                "https://www.douyin.example/user/self"
-                "?modal_id=7312345678901234567&showTab=record"
-            ),
+            resolved_url=resolver_output,
             canonical_identity="douyin:7312345678901234567",
             parameter_policy=DOUYIN_POLICY,
             resolution_duration_ms=11,
         )
+        self.assertEqual(result.resolved_url, resolver_output)
         self.assertIn("modal_id=", result.resolved_url)
-        self.assertNotIn("showTab", result.resolved_url)
+        self.assertIn("showTab", result.resolved_url)
+        self.assertIn("#resolved-fragment", result.resolved_url)
+        self.assertIn("modal_id=", result.post_parse_url)
+        self.assertNotIn("showTab", result.post_parse_url)
+        self.assertNotIn("#", result.post_parse_url)
         self.assertEqual(result.retained_parameter_names, ("modal_id",))
+
+    def test_input_parse_resolved_and_post_parse_stages_are_distinct(self):
+        resolver_output = (
+            "https://target.example/video/resolved_fixture"
+            "?identity_key=identity-value&parse_key=resolved-value"
+            "&safe_key=safe-value&drop_key=drop-value#resolved-fragment"
+        )
+        result = build_source_resolution(
+            platform_id="generic",
+            input_kind=SourceInputKind.SHARE_TEXT,
+            input_value=(
+                "share https://source.example/start/input_fixture"
+                "?parse_key=input-value&drop_key=input-drop#input-fragment"
+            ),
+            resolved_url=resolver_output,
+            canonical_identity="generic_media:resolved_fixture",
+            parameter_policy=SourceParameterPolicy(
+                parse_only=("parse_key",),
+                identity=("identity_key",),
+                safe_passthrough=("safe_key",),
+                drop=("drop_key",),
+            ),
+        )
+
+        self.assertEqual(result.resolved_url, resolver_output)
+        self.assertIn("drop_key=input-drop", result.input_url)
+        self.assertIn("parse_key=input-value", result.parse_url)
+        self.assertNotIn("drop_key", result.parse_url)
+        self.assertIn("identity_key=identity-value", result.post_parse_url)
+        self.assertIn("safe_key=safe-value", result.post_parse_url)
+        self.assertNotIn("parse_key", result.post_parse_url)
+        self.assertNotIn("drop_key", result.post_parse_url)
+        self.assertNotIn("#", result.post_parse_url)
+        self.assertEqual(
+            len(
+                {
+                    result.input_url,
+                    result.parse_url,
+                    result.resolved_url,
+                    result.post_parse_url,
+                }
+            ),
+            4,
+        )
+
+    def test_without_resolution_resolved_url_equals_parse_url(self):
+        result = build_source_resolution(
+            platform_id="generic",
+            input_kind=SourceInputKind.URL,
+            input_value="https://media.example/item?parse_key=value&drop_key=value",
+            canonical_identity="generic_media:item",
+            parameter_policy=SourceParameterPolicy(
+                parse_only=("parse_key",),
+                drop=("drop_key",),
+            ),
+        )
+        self.assertEqual(result.resolved_url, result.parse_url)
+        self.assertNotEqual(result.post_parse_url, result.resolved_url)
 
     def test_safe_diagnostic_contains_names_but_not_values_or_urls(self):
         token_value = "fictional-sensitive-token-value"
@@ -184,6 +263,44 @@ class SourceResolutionTests(SimpleTestCase):
         self.assertNotIn("https://", rendered)
         self.assertNotIn("note123", rendered)
 
+    def test_internal_representations_do_not_expose_urls_or_values(self):
+        token_value = "fictional-sensitive-token-value"
+        resource_id = "private_resource_fixture"
+        identity_value = "private_identity_fixture"
+        result = build_source_resolution(
+            platform_id="xhs",
+            input_kind=SourceInputKind.NOTE_PAGE,
+            input_value=(
+                f"https://www.xiaohongshu.example/explore/{resource_id}"
+                f"?xsec_token={token_value}"
+            ),
+            canonical_identity=f"xhs_note:{identity_value}",
+            parameter_policy=XHS_POLICY,
+        )
+        application = XHS_POLICY.for_parse(result.input_url)
+
+        for rendered in (repr(result), repr(application)):
+            self.assertNotIn("https://", rendered)
+            self.assertNotIn(token_value, rendered)
+            self.assertNotIn(resource_id, rendered)
+            self.assertNotIn(identity_value, rendered)
+
+    def test_safe_diagnostic_uses_post_parse_target_structure(self):
+        result = build_source_resolution(
+            platform_id="generic",
+            input_kind=SourceInputKind.URL,
+            input_value="https://source.example/start",
+            resolved_url=(
+                "https://target.example/video/target_fixture"
+                "?parse_key=secret#fragment"
+            ),
+            canonical_identity="generic_media:target_fixture",
+            parameter_policy=SourceParameterPolicy(parse_only=("parse_key",)),
+        )
+        diagnostic = result.to_safe_diagnostic()
+        self.assertEqual(diagnostic.hostname, "target.example")
+        self.assertEqual(diagnostic.path_class, "video")
+
     def test_safe_diagnostic_has_only_closed_fields(self):
         diagnostic = SourceResolutionV1(
             platform_id="bilibili",
@@ -191,6 +308,7 @@ class SourceResolutionTests(SimpleTestCase):
             input_url="https://www.bilibili.example/video/BVfixture?p=2",
             parse_url="https://www.bilibili.example/video/BVfixture?p=2",
             resolved_url="https://www.bilibili.example/video/BVfixture?p=2",
+            post_parse_url="https://www.bilibili.example/video/BVfixture?p=2",
             canonical_identity="bilibili_video:BVfixture:2",
             retained_parameter_names=("p",),
             removed_parameter_names=(),
@@ -288,6 +406,7 @@ class SourceResolutionTests(SimpleTestCase):
             "input_url": "https://media.example/item",
             "parse_url": "https://media.example/item",
             "resolved_url": "https://media.example/item",
+            "post_parse_url": "https://media.example/item",
             "canonical_identity": "xhs:item",
             "retained_parameter_names": (),
             "removed_parameter_names": (),
@@ -320,3 +439,14 @@ class SourceResolutionTests(SimpleTestCase):
         self.assertNotIn("socket", joined)
         self.assertNotIn("hashlib", joined)
         self.assertNotIn("source_key_for_url", function_names)
+
+    def test_current_provider_consumer_count_remains_zero(self):
+        self.assertEqual(CURRENT_SOURCE_LIFECYCLE_CONSUMERS, 0)
+        app_root = Path(__file__).resolve().parent
+        runtime_references = []
+        for path in app_root.rglob("*.py"):
+            if path.name.startswith("tests") or path.name == "source_lifecycle.py":
+                continue
+            if "source_lifecycle" in path.read_text(encoding="utf-8"):
+                runtime_references.append(path.relative_to(app_root).as_posix())
+        self.assertEqual(runtime_references, [])

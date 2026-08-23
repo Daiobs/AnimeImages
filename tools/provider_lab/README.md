@@ -21,5 +21,10 @@ process. Its output is a closed structural diagnostic: platform, input kind,
 hostname, path class, canonical identity kind, duration, and parameter names.
 It never emits the URL, canonical identity value, or query values.
 
+Source fixtures use the closed `parse_only`, `identity`, `safe_passthrough`,
+and `drop` action vocabulary. The lifecycle keeps `input_url`, `parse_url`,
+the resolver's unmodified `resolved_url`, and cleaned `post_parse_url` as four
+separate internal stages. None of those URL-bearing objects is a diagnostic.
+
 Fixtures under `fixtures/` are fictional and use reserved example domains.
 Failures return fixed codes without echoing rejected input.

@@ -21,7 +21,7 @@
       "animeimages_current_behavior": "Platform adapters clean URLs independently and platform code owns canonical resource identity.",
       "parsehub_corresponding_module": "BaseParser reserved and after-clean parameter declarations.",
       "animeimages_already_stronger": "Existing safe redirects, explicit host admission, private-address rejection, and platform canonical identities remain authoritative.",
-      "parsehub_unique_capability": "A concise declaration of parse-required, identity-relevant, post-parse, and dropped parameters.",
+      "parsehub_unique_capability": "A concise declaration of parse-only, identity, safe-passthrough, and dropped parameters.",
       "overlap": "Both systems separate URL cleanup from media extraction.",
       "adoption_value": "high: provides one typed vocabulary for future adapter migrations and offline fixtures.",
       "quality_impact": "Improves source-shape consistency without changing current provider output.",
@@ -33,7 +33,7 @@
       "runtime_dependency_impact": "standard library only",
       "recommended_action": "ADOPT_NOW",
       "selected_pr": "PR-A",
-      "status": "implemented_dormant_foundation"
+      "status": "implemented_dormant_foundation_no_current_consumers"
     },
     {
       "capability_id": "provider_lab_offline_commands",

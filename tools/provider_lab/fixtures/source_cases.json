@@ -8,10 +8,10 @@
       "input_value": "离线示例 https://www.xiaohongshu.example/explore/note_fixture?xsec_token=fictional&utm_source=lab，后续文字",
       "canonical_identity": "xhs_note:note_fixture",
       "parameter_policy": {
-        "retain_for_parse": [],
-        "retain_for_identity": [],
-        "remove_after_parse": ["xsec_token"],
-        "always_drop": ["utm_source"]
+        "safe_passthrough": [],
+        "identity": [],
+        "parse_only": ["xsec_token"],
+        "drop": ["utm_source"]
       },
       "resolution_duration_ms": 0,
       "expected": {
@@ -33,10 +33,10 @@
       "input_value": "https://v.douyin.example/fixtureA?utm_source=lab",
       "canonical_identity": "douyin_aweme:7312345678901234567",
       "parameter_policy": {
-        "retain_for_parse": [],
-        "retain_for_identity": [],
-        "remove_after_parse": [],
-        "always_drop": ["utm_source"]
+        "safe_passthrough": [],
+        "identity": [],
+        "parse_only": [],
+        "drop": ["utm_source"]
       },
       "resolution_duration_ms": 4,
       "expected": {
@@ -58,10 +58,10 @@
       "input_value": "https://www.douyin.example/user/self?from_tab_name=main&modal_id=7312345678901234567&showTab=record",
       "canonical_identity": "douyin_aweme:7312345678901234567",
       "parameter_policy": {
-        "retain_for_parse": [],
-        "retain_for_identity": ["modal_id"],
-        "remove_after_parse": [],
-        "always_drop": ["from_tab_name", "showtab"]
+        "safe_passthrough": [],
+        "identity": ["modal_id"],
+        "parse_only": [],
+        "drop": ["from_tab_name", "showtab"]
       },
       "resolution_duration_ms": 0,
       "expected": {
@@ -83,10 +83,10 @@
       "input_value": "https://www.bilibili.example/video/BVfixture?p=3&spm_id_from=lab",
       "canonical_identity": "bilibili_video:BVfixture:3",
       "parameter_policy": {
-        "retain_for_parse": [],
-        "retain_for_identity": ["p"],
-        "remove_after_parse": [],
-        "always_drop": ["spm_id_from"]
+        "safe_passthrough": [],
+        "identity": ["p"],
+        "parse_only": [],
+        "drop": ["spm_id_from"]
       },
       "resolution_duration_ms": 0,
       "expected": {
@@ -108,10 +108,10 @@
       "input_value": "https://www.bilibili.example/opus/123456789012345678?from=lab",
       "canonical_identity": "bilibili_opus:123456789012345678",
       "parameter_policy": {
-        "retain_for_parse": [],
-        "retain_for_identity": [],
-        "remove_after_parse": [],
-        "always_drop": ["from"]
+        "safe_passthrough": [],
+        "identity": [],
+        "parse_only": [],
+        "drop": ["from"]
       },
       "resolution_duration_ms": 0,
       "expected": {
@@ -130,10 +130,10 @@
       "input_value": "https://t.bilibili.example/123456789012345678",
       "canonical_identity": "bilibili_dynamic:123456789012345678",
       "parameter_policy": {
-        "retain_for_parse": [],
-        "retain_for_identity": [],
-        "remove_after_parse": [],
-        "always_drop": []
+        "safe_passthrough": [],
+        "identity": [],
+        "parse_only": [],
+        "drop": []
       },
       "resolution_duration_ms": 0,
       "expected": {
@@ -153,10 +153,10 @@
       "resolved_url": "https://www.youtube.example/video/fixture?feature=share&utm_source=lab",
       "canonical_identity": "youtube_video:fixture",
       "parameter_policy": {
-        "retain_for_parse": ["feature"],
-        "retain_for_identity": [],
-        "remove_after_parse": [],
-        "always_drop": ["utm_source"]
+        "safe_passthrough": ["feature"],
+        "identity": [],
+        "parse_only": [],
+        "drop": ["utm_source"]
       },
       "resolution_duration_ms": 9,
       "expected": {
@@ -177,10 +177,10 @@
       "input_value": "https://media.example/item?token=fictional-secret&signature=fictional-signature&quality=original",
       "canonical_identity": "generic_media:item_fixture",
       "parameter_policy": {
-        "retain_for_parse": ["quality"],
-        "retain_for_identity": [],
-        "remove_after_parse": [],
-        "always_drop": ["token", "signature"]
+        "safe_passthrough": ["quality"],
+        "identity": [],
+        "parse_only": [],
+        "drop": ["token", "signature"]
       },
       "resolution_duration_ms": 0,
       "expected": {
@@ -198,10 +198,10 @@
       "input_value": "http://127.0.0.1/private",
       "canonical_identity": "generic_media:private_fixture",
       "parameter_policy": {
-        "retain_for_parse": [],
-        "retain_for_identity": [],
-        "remove_after_parse": [],
-        "always_drop": []
+        "safe_passthrough": [],
+        "identity": [],
+        "parse_only": [],
+        "drop": []
       },
       "resolution_duration_ms": 0,
       "expected": {"error_code": "SOURCE_HOST_PRIVATE"}
@@ -213,10 +213,10 @@
       "input_value": "https://fictional-user@media.example/item",
       "canonical_identity": "generic_media:userinfo_fixture",
       "parameter_policy": {
-        "retain_for_parse": [],
-        "retain_for_identity": [],
-        "remove_after_parse": [],
-        "always_drop": []
+        "safe_passthrough": [],
+        "identity": [],
+        "parse_only": [],
+        "drop": []
       },
       "resolution_duration_ms": 0,
       "expected": {"error_code": "SOURCE_URL_USERINFO_REJECTED"}
@@ -228,10 +228,10 @@
       "input_value": "https://media.example:notaport/item",
       "canonical_identity": "generic_media:port_fixture",
       "parameter_policy": {
-        "retain_for_parse": [],
-        "retain_for_identity": [],
-        "remove_after_parse": [],
-        "always_drop": []
+        "safe_passthrough": [],
+        "identity": [],
+        "parse_only": [],
+        "drop": []
       },
       "resolution_duration_ms": 0,
       "expected": {"error_code": "SOURCE_URL_INVALID"}
@@ -243,10 +243,10 @@
       "input_value": "https://media.example:8443/item",
       "canonical_identity": "generic_media:port_fixture",
       "parameter_policy": {
-        "retain_for_parse": [],
-        "retain_for_identity": [],
-        "remove_after_parse": [],
-        "always_drop": []
+        "safe_passthrough": [],
+        "identity": [],
+        "parse_only": [],
+        "drop": []
       },
       "resolution_duration_ms": 0,
       "expected": {"error_code": "SOURCE_URL_PORT_REJECTED"}
