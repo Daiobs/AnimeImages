@@ -249,13 +249,18 @@ function ordinaryItem(overrides) {
 }
 
 function responseFor(body) {
-    return new Response(body, {
+    const response = new Response(body, {
         status: 200,
         headers: {
             "Content-Length": String(Buffer.byteLength(body)),
             "Content-Type": "video/mp4",
         },
     });
+    Object.defineProperty(response, "url", {
+        configurable: true,
+        value: "https://v11-default.365yg.com/media/video.mp4",
+    });
+    return response;
 }
 
 function deferred() {
@@ -472,19 +477,24 @@ test("reviewed ixigua admission is exact, HTTPS-only, and shared by descriptors"
 
 test("reviewed ixigua response keeps content and final-host gates", () => {
     const body = {cancel() { return Promise.resolve(); }};
+    const initialUrl = "https://v3-dy-a-x.ixigua.com/media/video.mp4?fixture=fake";
     const accepted = protocol.classifyResponseRejection({
         ok: true,
         status: 200,
         url: "https://v3-dy-a-x.ixigua.com/media/video.mp4?fixture=fake",
         headers: new Headers({"Content-Type": "video/mp4"}),
         body,
-    });
+    }, {initialUrl});
     assert.deepEqual(accepted, {
         rejected: false,
         responseRejectReason: "",
         httpStatus: 200,
         contentTypeClass: "VIDEO",
         finalMediaHost: "v3-dy-a-x.ixigua.com",
+        initialMediaFamily: "DOUYIN_IXIGUA_EXACT",
+        observedFinalHost: "v3-dy-a-x.ixigua.com",
+        observedFinalHostClass: "INITIAL_SOURCE",
+        redirected: false,
     });
 
     for (const contentType of ["text/html", "application/json"]) {
@@ -494,7 +504,7 @@ test("reviewed ixigua response keeps content and final-host gates", () => {
             url: "https://v3-dy-a-x.ixigua.com/media/video.mp4",
             headers: new Headers({"Content-Type": contentType}),
             body,
-        });
+        }, {initialUrl});
         assert.equal(rejected.responseRejectReason, "CONTENT_TYPE_REJECTED");
     }
     const untrustedRedirect = protocol.classifyResponseRejection({
@@ -503,11 +513,91 @@ test("reviewed ixigua response keeps content and final-host gates", () => {
         url: "https://attacker.example/video.mp4",
         headers: new Headers({"Content-Type": "video/mp4"}),
         body,
-    });
+    }, {initialUrl});
     assert.equal(
         untrustedRedirect.responseRejectReason,
         "FINAL_HOST_REJECTED",
     );
+});
+
+test("initial and source-bound final redirect policies reject bypasses", () => {
+    const source365 = "https://v5-default.365yg.com/media/source.mp4";
+    const sourceDouyinVod = "https://v3-web.douyinvod.com/media/source.mp4";
+    const sourceIxigua = "https://v3-dy-a-x.ixigua.com/media/source.mp4";
+    const finalBdcg = "https://random.edge.bdcgslb.com/media/final.mp4";
+
+    assert.equal(protocol.isAllowedInitialMediaUrl(source365), true);
+    assert.equal(protocol.isAllowedInitialMediaUrl(sourceDouyinVod), true);
+    assert.equal(protocol.isAllowedInitialMediaUrl(sourceIxigua), true);
+    assert.equal(protocol.isAllowedInitialMediaUrl(finalBdcg), false);
+    assert.throws(() => protocol.createDescriptor({
+        downloadId: "31313131313131313131313131313131",
+        url: finalBdcg,
+        filename: "blocked.mp4",
+        provider: "tiantianjiexi",
+    }), /STREAMING_URL_UNSUPPORTED/);
+
+    for (const [initialUrl, finalUrl] of [
+        [source365, "https://v11-default.365yg.com/media/final.mp4"],
+        [sourceDouyinVod, "https://v6-web.douyinvod.com/media/final.mp4"],
+        [sourceIxigua, sourceIxigua],
+    ]) {
+        assert.equal(protocol.isAllowedFinalMediaUrl({initialUrl, finalUrl}), true);
+    }
+    assert.equal(protocol.isAllowedFinalMediaUrl({
+        initialUrl: source365,
+        finalUrl: finalBdcg,
+        redirected: true,
+    }), true);
+    assert.equal(protocol.isAllowedFinalMediaUrl({
+        initialUrl: source365,
+        finalUrl: finalBdcg,
+        redirected: false,
+    }), false);
+
+    for (const [initialUrl, finalUrl] of [
+        ["https://attacker.example/source.mp4", finalBdcg],
+        [sourceIxigua, finalBdcg],
+        [sourceDouyinVod, finalBdcg],
+        [source365, "https://bdcgslb.com/media/final.mp4"],
+        [source365, "https://bdcgslb.com.evil.example/media/final.mp4"],
+        [source365, "https://evilbdcgslb.com/media/final.mp4"],
+        [source365, "https://bdcgslb-example.com/media/final.mp4"],
+        [source365, "http://random.bdcgslb.com/media/final.mp4"],
+        [source365, "https://user@random.bdcgslb.com/media/final.mp4"],
+        [source365, "https://random.bdcgslb.com:444/media/final.mp4"],
+        [source365, "https://random.bdcgslb.com./media/final.mp4"],
+        [source365, "https://127.0.0.1/media/final.mp4"],
+        [source365, "https://localhost/media/final.mp4"],
+    ]) {
+        assert.equal(
+            protocol.isAllowedFinalMediaUrl({initialUrl, finalUrl}),
+            false,
+            `${initialUrl} -> ${finalUrl}`,
+        );
+    }
+
+    const unknown = protocol.classifyFinalRedirect({
+        initialUrl: source365,
+        finalUrl: "https://unreviewed.example/media/final.mp4?token=secret",
+        redirected: true,
+    });
+    assert.equal(unknown.allowed, false);
+    assert.equal(unknown.observedFinalHost, "unreviewed.example");
+    assert.equal(unknown.observedFinalHostClass, "UNREVIEWED_PUBLIC");
+    assert.equal(unknown.finalMediaHost, "unknown");
+    assert.doesNotMatch(JSON.stringify(unknown), /media\/final|token|secret|https:\/\//i);
+    for (const unsafeHost of [
+        "https://unreviewed.example/path?token=secret",
+        "user@unreviewed.example",
+        "unreviewed.example/path",
+        "unreviewed.example?token=secret",
+        "127.0.0.1",
+        "localhost",
+        "unreviewed.example.",
+    ]) {
+        assert.equal(protocol.sanitizeObservedMediaHostname(unsafeHost), "unknown");
+    }
 });
 
 test("fetch failures use fixed factual classes without inspecting raw messages", () => {
@@ -880,6 +970,39 @@ test("worker streams a reviewed ixigua descriptor through the same zero-relay pa
     assert.equal(finalStatus.status.mediaHost, "v3-dy-a-x.ixigua.com");
 });
 
+test("worker admits a reviewed 365yg to bdcgslb final redirect and streams exact bytes", async () => {
+    const initialUrl = "https://v5-default.365yg.com/media/source.mp4?fixture=fake";
+    const finalUrl = "https://random.edge.bdcgslb.com/media/final.mp4?fixture=fake";
+    const upstream = chunkedUpstream([[1, 2, 3], [4, 5]], {url: finalUrl});
+    upstream.response.redirected = true;
+    const runtime = createWorkerRuntime(async () => upstream.response);
+    const downloadId = "34343434343434343434343434343434";
+    const registered = await runtime.send({
+        type: "REGISTER_DOWNLOAD",
+        descriptor: {
+            downloadId,
+            url: initialUrl,
+            filename: "redirected.mp4",
+            provider: "tiantianjiexi",
+            expectedBytes: 5,
+        },
+    });
+
+    assert.equal(registered.ok, true);
+    const response = await runtime.startFetch(downloadId).response;
+    assert.equal(response.status, 200);
+    assert.deepEqual([...new Uint8Array(await response.arrayBuffer())], [1, 2, 3, 4, 5]);
+    const finalStatus = await runtime.send({type: "GET_DOWNLOAD_STATUS", downloadId});
+    assert.equal(finalStatus.status.state, "completed");
+    assert.equal(finalStatus.status.receivedBytes, 5);
+    assert.equal(finalStatus.status.initialMediaFamily, "DOUYIN_365YG");
+    assert.equal(finalStatus.status.finalMediaHost, "random.edge.bdcgslb.com");
+    assert.equal(finalStatus.status.observedFinalHost, "random.edge.bdcgslb.com");
+    assert.equal(finalStatus.status.observedFinalHostClass, "REVIEWED_FINAL_ONLY");
+    assert.equal(finalStatus.status.redirected, true);
+    assert.doesNotMatch(JSON.stringify(finalStatus), /media\/(?:source|final)\.mp4|fixture|https:\/\//i);
+});
+
 test("worker reports a URL-free before-response TypeError classification", async () => {
     const signedUrl = "https://v11-default.365yg.com/path/video.mp4?token=super-secret";
     const runtime = createWorkerRuntime(async () => {
@@ -929,20 +1052,25 @@ test("worker keeps AbortError factual and does not label it as CORS", async () =
 
 test("response rejection predicates have stable status-body-type-host order", () => {
     const body = {cancel() { return Promise.resolve(); }};
+    const initialUrl = "https://v11-default.365yg.com/media/source.mp4";
     const allInvalid = protocol.classifyResponseRejection({
         ok: false,
         status: 403,
         url: "https://attacker.example/redirected.mp4?token=secret",
         headers: new Headers({"Content-Type": "text/html"}),
         body: null,
-    });
+    }, {initialUrl});
     assert.deepEqual(allInvalid, {
         rejected: true,
         responseRejectReason: "HTTP_STATUS_REJECTED",
         httpStatus: 403,
         contentTypeClass: "OTHER",
         finalMediaHost: "unknown",
-    });
+        initialMediaFamily: "DOUYIN_365YG",
+        observedFinalHost: "attacker.example",
+        observedFinalHostClass: "UNREVIEWED_PUBLIC",
+        redirected: false,
+    }, {initialUrl});
 
     const missingBody = protocol.classifyResponseRejection({
         ok: true,
@@ -950,7 +1078,7 @@ test("response rejection predicates have stable status-body-type-host order", ()
         url: "https://v11-default.365yg.com/media/video.mp4",
         headers: new Headers({"Content-Type": "text/html"}),
         body: null,
-    });
+    }, {initialUrl});
     assert.equal(missingBody.responseRejectReason, "BODY_UNAVAILABLE");
 
     const badType = protocol.classifyResponseRejection({
@@ -959,7 +1087,7 @@ test("response rejection predicates have stable status-body-type-host order", ()
         url: "https://attacker.example/redirected.mp4",
         headers: new Headers({"Content-Type": "text/html"}),
         body,
-    });
+    }, {initialUrl});
     assert.equal(badType.responseRejectReason, "CONTENT_TYPE_REJECTED");
 
     const badHost = protocol.classifyResponseRejection({
@@ -971,7 +1099,7 @@ test("response rejection predicates have stable status-body-type-host order", ()
     });
     assert.equal(badHost.responseRejectReason, "FINAL_HOST_REJECTED");
     assert.equal(badHost.finalMediaHost, "unknown");
-    assert.doesNotMatch(JSON.stringify(badHost), /redirected|token|secret|https:\/\//i);
+    assert.doesNotMatch(JSON.stringify(badHost), /\/redirected\.mp4|token|secret|https:\/\//i);
 });
 
 test("worker reports each response rejection reason without response URLs", async () => {
@@ -1029,7 +1157,7 @@ test("worker reports each response rejection reason without response URLs", asyn
         assert.equal(status.status.errorCode, "UPSTREAM_MEDIA_INVALID");
         assert.doesNotMatch(
             JSON.stringify(status),
-            /media\/(?:body|html|source)\.mp4|redirected|token|secret|https:\/\//i,
+            /media\/(?:body|html|source)\.mp4|\/redirected\.mp4|token|secret|https:\/\//i,
         );
     }
 });
@@ -1269,6 +1397,11 @@ test("response-gate telemetry adds the fixed rejection field group", () => {
         httpStatus: 403,
         contentTypeClass: "OTHER",
         finalMediaHost: "v11-default.365yg.com",
+        mediaHost: "v11-default.365yg.com",
+        initialMediaFamily: "DOUYIN_365YG",
+        observedFinalHost: "v11-default.365yg.com",
+        observedFinalHostClass: "INITIAL_SOURCE",
+        redirected: false,
     }), {}, {telemetryId: "11111111111111111111111111111111"});
 
     assert.deepEqual({
@@ -1276,12 +1409,53 @@ test("response-gate telemetry adds the fixed rejection field group", () => {
         http_status: payload.http_status,
         content_type_class: payload.content_type_class,
         final_media_host: payload.final_media_host,
+        initial_media_host: payload.initial_media_host,
+        initial_media_family: payload.initial_media_family,
+        observed_final_host: payload.observed_final_host,
+        observed_final_host_class: payload.observed_final_host_class,
+        redirected: payload.redirected,
     }, {
         response_reject_reason: "HTTP_STATUS_REJECTED",
         http_status: 403,
         content_type_class: "OTHER",
         final_media_host: "v11-default.365yg.com",
+        initial_media_host: "v11-default.365yg.com",
+        initial_media_family: "DOUYIN_365YG",
+        observed_final_host: "v11-default.365yg.com",
+        observed_final_host_class: "INITIAL_SOURCE",
+        redirected: false,
     });
+});
+
+test("new page keeps the legacy telemetry shape for an old worker status", () => {
+    const legacyStatus = safeStatus({
+        state: "failed",
+        errorCode: "UPSTREAM_MEDIA_INVALID",
+        failureClass: "NOT_APPLICABLE",
+        failureStage: "HTTP_RESPONSE_REJECTED",
+        responseRejectReason: "FINAL_HOST_REJECTED",
+        httpStatus: 200,
+        contentTypeClass: "VIDEO",
+        finalMediaHost: "unknown",
+        mediaHost: "v11-default.365yg.com",
+    });
+    const payload = streaming.createTerminalTelemetryPayload(
+        legacyStatus,
+        {},
+        {telemetryId: "11111111111111111111111111111111"},
+    );
+
+    assert.equal(payload.response_reject_reason, "FINAL_HOST_REJECTED");
+    assert.equal(payload.final_media_host, "unknown");
+    for (const field of [
+        "initial_media_host",
+        "initial_media_family",
+        "observed_final_host",
+        "observed_final_host_class",
+        "redirected",
+    ]) {
+        assert.equal(Object.prototype.hasOwnProperty.call(payload, field), false, field);
+    }
 });
 
 test("a throwing telemetry reporter cannot change post-start failure semantics", async () => {

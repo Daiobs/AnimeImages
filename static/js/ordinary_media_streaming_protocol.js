@@ -14,13 +14,33 @@
     const DEFAULT_STREAM_DESCRIPTOR_TTL_MS = 120000;
     const MAX_STREAM_BYTES = 2 * 1024 * 1024 * 1024;
     const DOWNLOAD_ID_PATTERN = /^[a-f0-9]{32}$/;
-    const ALLOWED_MEDIA_HOST_SUFFIXES = Object.freeze([
+    const INITIAL_MEDIA_HOST_SUFFIXES = Object.freeze([
         "365yg.com",
         "douyinvod.com",
     ]);
-    const ALLOWED_EXACT_MEDIA_HOSTS = Object.freeze([
+    const INITIAL_EXACT_MEDIA_HOSTS = Object.freeze([
         "v3-dy-a-x.ixigua.com",
     ]);
+    const REVIEWED_FINAL_ONLY_HOST_SUFFIXES = Object.freeze([
+        "bdcgslb.com",
+    ]);
+    const INITIAL_MEDIA_FAMILIES = Object.freeze([
+        "DOUYIN_365YG",
+        "DOUYIN_DOUYINVOD",
+        "DOUYIN_IXIGUA_EXACT",
+        "LOOPBACK_TEST",
+        "UNKNOWN",
+    ]);
+    const FINAL_MEDIA_HOST_CLASSES = Object.freeze([
+        "INITIAL_SOURCE",
+        "REVIEWED_FINAL_ONLY",
+        "UNREVIEWED_PUBLIC",
+        "LOOPBACK_TEST",
+        "INVALID",
+    ]);
+    // Compatibility exports. These remain initial-admission rules only.
+    const ALLOWED_MEDIA_HOST_SUFFIXES = INITIAL_MEDIA_HOST_SUFFIXES;
+    const ALLOWED_EXACT_MEDIA_HOSTS = INITIAL_EXACT_MEDIA_HOSTS;
     const SAFE_CONTENT_TYPES = Object.freeze([
         "application/octet-stream",
         "binary/octet-stream",
@@ -124,26 +144,82 @@
     }
 
     function hostnameMatchesSuffix(hostname, suffix) {
-        const normalizedHost = String(hostname || "").toLowerCase().replace(/\.$/, "");
+        const normalizedHost = String(hostname || "").trim().toLowerCase();
         const normalizedSuffix = String(suffix || "").toLowerCase().replace(/^\./, "");
+        if (!normalizedHost || normalizedHost.endsWith(".")) {
+            return false;
+        }
         return normalizedHost === normalizedSuffix
             || normalizedHost.endsWith(`.${normalizedSuffix}`);
     }
 
+    function hostnameIsStrictSubdomain(hostname, suffix) {
+        const normalizedHost = String(hostname || "").trim().toLowerCase();
+        const normalizedSuffix = String(suffix || "").toLowerCase().replace(/^\./, "");
+        return Boolean(
+            normalizedHost
+            && !normalizedHost.endsWith(".")
+            && normalizedHost !== normalizedSuffix
+            && normalizedHost.endsWith(`.${normalizedSuffix}`)
+        );
+    }
+
+    function isIpLiteral(hostname) {
+        const value = String(hostname || "").trim().toLowerCase();
+        return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(value)
+            || value.includes(":")
+            || value.startsWith("[");
+    }
+
+    function sanitizeObservedMediaHostname(value, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        const hostname = String(value || "").trim().toLowerCase();
+        if (hostname === "unknown") {
+            return "unknown";
+        }
+        if (
+            !hostname
+            || hostname.length > 255
+            || hostname.endsWith(".")
+            || /[:/@?#\\]/.test(hostname)
+        ) {
+            return "unknown";
+        }
+        if (isLoopbackHostname(hostname)) {
+            return settings.allowLoopback ? hostname : "unknown";
+        }
+        if (isIpLiteral(hostname) || !/^[a-z0-9.-]+$/.test(hostname)) {
+            return "unknown";
+        }
+        if (hostname.split(".").some((label) => (
+            !label
+            || label.length > 63
+            || label.startsWith("-")
+            || label.endsWith("-")
+        ))) {
+            return "unknown";
+        }
+        return hostname;
+    }
+
+    function isSecureProviderUrl(url) {
+        return Boolean(
+            url
+            && url.protocol === "https:"
+            && !url.username
+            && !url.password
+            && (!url.port || url.port === "443")
+            && sanitizeObservedMediaHostname(url.hostname) !== "unknown"
+        );
+    }
+
     function isAllowedProviderMediaUrl(url) {
-        if (!url || url.protocol !== "https:") {
+        if (!isSecureProviderUrl(url)) {
             return false;
         }
-        const rawHostname = String(url.hostname || "").toLowerCase();
-        if (!rawHostname) {
-            return false;
-        }
+        const rawHostname = String(url.hostname || "").trim().toLowerCase();
         if (ALLOWED_EXACT_MEDIA_HOSTS.includes(rawHostname)) {
-            return (
-                !url.username
-                && !url.password
-                && (!url.port || url.port === "443")
-            );
+            return true;
         }
         return ALLOWED_MEDIA_HOST_SUFFIXES.some((suffix) => (
             hostnameMatchesSuffix(rawHostname, suffix)
@@ -151,8 +227,8 @@
     }
 
     function isAllowedProviderMediaHostname(hostname) {
-        const rawHostname = String(hostname || "").trim().toLowerCase();
-        if (!rawHostname) {
+        const rawHostname = sanitizeObservedMediaHostname(hostname);
+        if (rawHostname === "unknown") {
             return false;
         }
         return ALLOWED_EXACT_MEDIA_HOSTS.includes(rawHostname)
@@ -168,18 +244,44 @@
             || normalizedHost === "[::1]";
     }
 
-    function isAllowedStreamingUrl(value, options) {
+    function classifyInitialMediaFamily(value, options) {
         const settings = options && typeof options === "object" ? options : {};
+        let url;
         try {
-            const url = new URL(String(value || ""));
-            const providerMediaUrl = isAllowedProviderMediaUrl(url);
-            const localBenchmarkUrl = Boolean(settings.allowLoopbackHttp)
-                && (url.protocol === "http:" || url.protocol === "https:")
-                && isLoopbackHostname(url.hostname);
-            return providerMediaUrl || localBenchmarkUrl;
+            url = value instanceof URL ? value : new URL(String(value || ""));
         } catch (error) {
-            return false;
+            return "UNKNOWN";
         }
+        const localBenchmarkUrl = Boolean(settings.allowLoopbackHttp)
+            && (url.protocol === "http:" || url.protocol === "https:")
+            && !url.username
+            && !url.password
+            && isLoopbackHostname(url.hostname);
+        if (localBenchmarkUrl) {
+            return "LOOPBACK_TEST";
+        }
+        if (!isSecureProviderUrl(url)) {
+            return "UNKNOWN";
+        }
+        const hostname = String(url.hostname || "").toLowerCase();
+        if (hostnameMatchesSuffix(hostname, "365yg.com")) {
+            return "DOUYIN_365YG";
+        }
+        if (hostnameMatchesSuffix(hostname, "douyinvod.com")) {
+            return "DOUYIN_DOUYINVOD";
+        }
+        if (hostname === "v3-dy-a-x.ixigua.com") {
+            return "DOUYIN_IXIGUA_EXACT";
+        }
+        return "UNKNOWN";
+    }
+
+    function isAllowedInitialMediaUrl(value, options) {
+        return classifyInitialMediaFamily(value, options) !== "UNKNOWN";
+    }
+
+    function isAllowedStreamingUrl(value, options) {
+        return isAllowedInitialMediaUrl(value, options);
     }
 
     function sanitizeMediaHost(value, options) {
@@ -198,13 +300,12 @@
             return "unknown";
         }
         hostname = hostname.toLowerCase();
-        const exactProviderHost = ALLOWED_EXACT_MEDIA_HOSTS.includes(hostname);
         const allowedProviderHost = isAllowedProviderMediaHostname(hostname);
         const allowedLoopback = Boolean(settings.allowLoopback)
             && isLoopbackHostname(hostname);
         if (
             parsedUrl
-            && exactProviderHost
+            && allowedProviderHost
             && !isAllowedProviderMediaUrl(parsedUrl)
             && !(
                 allowedLoopback
@@ -216,21 +317,97 @@
         if (!allowedProviderHost && !allowedLoopback) {
             return "unknown";
         }
-        if (
-            hostname.length > 255
-            || (!isLoopbackHostname(hostname) && !/^[a-z0-9.-]+$/.test(hostname))
-        ) {
-            return "unknown";
+        return sanitizeObservedMediaHostname(hostname, {
+            allowLoopback: allowedLoopback,
+        });
+    }
+
+    function observedFinalUrl(value, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        let url;
+        try {
+            url = new URL(String(value || ""));
+        } catch (error) {
+            return Object.freeze({url: null, hostname: "unknown", secure: false});
         }
-        if (!isLoopbackHostname(hostname) && hostname.split(".").some((label) => (
-            !label
-            || label.length > 63
-            || label.startsWith("-")
-            || label.endsWith("-")
+        const loopback = Boolean(settings.allowLoopbackHttp)
+            && (url.protocol === "http:" || url.protocol === "https:")
+            && !url.username
+            && !url.password
+            && isLoopbackHostname(url.hostname);
+        const secure = isSecureProviderUrl(url) || loopback;
+        const hostname = secure
+            ? sanitizeObservedMediaHostname(url.hostname, {allowLoopback: loopback})
+            : "unknown";
+        return Object.freeze({url, hostname, secure});
+    }
+
+    function classifyObservedFinalHost(hostname, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        const safeHostname = sanitizeObservedMediaHostname(hostname, {
+            allowLoopback: Boolean(settings.allowLoopbackHttp),
+        });
+        if (safeHostname === "unknown") {
+            return "INVALID";
+        }
+        if (isLoopbackHostname(safeHostname)) {
+            return settings.allowLoopbackHttp ? "LOOPBACK_TEST" : "INVALID";
+        }
+        if (isAllowedProviderMediaHostname(safeHostname)) {
+            return "INITIAL_SOURCE";
+        }
+        if (REVIEWED_FINAL_ONLY_HOST_SUFFIXES.some((suffix) => (
+            hostnameIsStrictSubdomain(safeHostname, suffix)
         ))) {
-            return "unknown";
+            return "REVIEWED_FINAL_ONLY";
         }
-        return hostname.replace(/\.$/, "");
+        return "UNREVIEWED_PUBLIC";
+    }
+
+    function classifyFinalRedirect(input) {
+        const value = input && typeof input === "object" ? input : {};
+        const allowLoopbackHttp = Boolean(value.allowLoopbackHttp);
+        const initialUrl = String(value.initialUrl || "");
+        const finalUrl = String(value.finalUrl || "");
+        const initialMediaFamily = classifyInitialMediaFamily(initialUrl, {
+            allowLoopbackHttp,
+        });
+        const observed = observedFinalUrl(finalUrl, {allowLoopbackHttp});
+        const observedFinalHost = observed.hostname;
+        const observedFinalHostClass = classifyObservedFinalHost(
+            observedFinalHost,
+            {allowLoopbackHttp},
+        );
+        const finalInitialFamily = classifyInitialMediaFamily(finalUrl, {
+            allowLoopbackHttp,
+        });
+        let allowed = false;
+        if (initialMediaFamily === "LOOPBACK_TEST") {
+            allowed = finalInitialFamily === "LOOPBACK_TEST";
+        } else if (initialMediaFamily !== "UNKNOWN" && observed.secure) {
+            // Existing reviewed Douyin byte-media hosts remain mutually compatible.
+            allowed = finalInitialFamily !== "UNKNOWN";
+            if (
+                !allowed
+                && initialMediaFamily === "DOUYIN_365YG"
+                && observedFinalHostClass === "REVIEWED_FINAL_ONLY"
+                && Boolean(value.redirected)
+            ) {
+                allowed = true;
+            }
+        }
+        return Object.freeze({
+            allowed,
+            initialMediaFamily,
+            finalMediaHost: allowed ? observedFinalHost : "unknown",
+            observedFinalHost,
+            observedFinalHostClass,
+            redirected: Boolean(value.redirected),
+        });
+    }
+
+    function isAllowedFinalMediaUrl(input) {
+        return classifyFinalRedirect(input).allowed;
     }
 
     function classifyFetchFailure(error) {
@@ -279,6 +456,43 @@
             : 0;
     }
 
+    function normalizeInitialMediaFamily(value) {
+        const family = String(value || "").toUpperCase();
+        return INITIAL_MEDIA_FAMILIES.includes(family) ? family : "UNKNOWN";
+    }
+
+    function normalizeFinalMediaHostClass(value) {
+        const hostClass = String(value || "").toUpperCase();
+        return FINAL_MEDIA_HOST_CLASSES.includes(hostClass) ? hostClass : "INVALID";
+    }
+
+    function sanitizeAdmittedFinalMediaHostname(value, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        const hostname = sanitizeObservedMediaHostname(value, {
+            allowLoopback: Boolean(settings.allowLoopback),
+        });
+        const initialMediaFamily = normalizeInitialMediaFamily(
+            settings.initialMediaFamily,
+        );
+        if (isAllowedProviderMediaHostname(hostname)) {
+            return hostname;
+        }
+        if (
+            initialMediaFamily === "DOUYIN_365YG"
+            && hostnameIsStrictSubdomain(hostname, "bdcgslb.com")
+        ) {
+            return hostname;
+        }
+        if (
+            Boolean(settings.allowLoopback)
+            && initialMediaFamily === "LOOPBACK_TEST"
+            && isLoopbackHostname(hostname)
+        ) {
+            return hostname;
+        }
+        return "unknown";
+    }
+
     function classifyResponseRejection(response, options) {
         const value = response && typeof response === "object" ? response : {};
         const settings = options && typeof options === "object" ? options : {};
@@ -287,14 +501,12 @@
             ? value.headers.get("Content-Type")
             : "";
         const contentTypeClass = classifyContentType(rawContentType);
-        const finalUrlAllowed = isAllowedStreamingUrl(value.url, {
+        const finalRedirect = classifyFinalRedirect({
+            initialUrl: settings.initialUrl,
+            finalUrl: value.url,
+            redirected: Boolean(value.redirected),
             allowLoopbackHttp: Boolean(settings.allowLoopbackHttp),
         });
-        const finalMediaHost = finalUrlAllowed
-            ? sanitizeMediaHost(value.url, {
-                allowLoopback: Boolean(settings.allowLoopbackHttp),
-            })
-            : "unknown";
         let responseRejectReason = "";
         if (!value.ok) {
             responseRejectReason = "HTTP_STATUS_REJECTED";
@@ -302,7 +514,7 @@
             responseRejectReason = "BODY_UNAVAILABLE";
         } else if (!isAllowedMediaContentType(rawContentType)) {
             responseRejectReason = "CONTENT_TYPE_REJECTED";
-        } else if (!finalUrlAllowed) {
+        } else if (!finalRedirect.allowed) {
             responseRejectReason = "FINAL_HOST_REJECTED";
         }
         return Object.freeze({
@@ -310,7 +522,11 @@
             responseRejectReason,
             httpStatus,
             contentTypeClass,
-            finalMediaHost,
+            finalMediaHost: finalRedirect.finalMediaHost,
+            initialMediaFamily: finalRedirect.initialMediaFamily,
+            observedFinalHost: finalRedirect.observedFinalHost,
+            observedFinalHostClass: finalRedirect.observedFinalHostClass,
+            redirected: finalRedirect.redirected,
         });
     }
 
@@ -355,7 +571,7 @@
         if (!id) {
             throw new Error("INVALID_DOWNLOAD_ID");
         }
-        if (!isAllowedStreamingUrl(value.url, settings)) {
+        if (!isAllowedInitialMediaUrl(value.url, settings)) {
             throw new Error("STREAMING_URL_UNSUPPORTED");
         }
         if (expectedBytes > MAX_STREAM_BYTES) {
@@ -367,6 +583,7 @@
             mediaHost: sanitizeMediaHost(value.url, {
                 allowLoopback: Boolean(settings.allowLoopbackHttp),
             }),
+            initialMediaFamily: classifyInitialMediaFamily(value.url, settings),
             filename: sanitizeFilename(value.filename),
             provider: sanitizeProvider(value.provider),
             expectedBytes,
@@ -407,6 +624,21 @@
             ? Math.min(100, (receivedBytes / totalBytes) * 100)
             : null;
         const state = normalizeState(status.state);
+        const initialMediaFamily = normalizeInitialMediaFamily(
+            status.initialMediaFamily,
+        );
+        const mediaHost = sanitizeMediaHost(status.mediaHost, {allowLoopback: true});
+        const observedFinalHost = sanitizeObservedMediaHostname(
+            status.observedFinalHost,
+            {allowLoopback: true},
+        );
+        const observedFinalHostClass = normalizeFinalMediaHostClass(
+            status.observedFinalHostClass,
+        );
+        const finalMediaHost = sanitizeAdmittedFinalMediaHostname(
+            status.finalMediaHost,
+            {allowLoopback: true, initialMediaFamily},
+        );
         return Object.freeze({
             protocolVersion: PROTOCOL_VERSION,
             downloadId: normalizeDownloadId(status.downloadId),
@@ -436,11 +668,12 @@
             ),
             httpStatus: normalizeHttpStatus(status.httpStatus),
             contentTypeClass: normalizeContentTypeClass(status.contentTypeClass),
-            finalMediaHost: sanitizeMediaHost(
-                status.finalMediaHost,
-                {allowLoopback: true},
-            ),
-            mediaHost: sanitizeMediaHost(status.mediaHost, {allowLoopback: true}),
+            finalMediaHost,
+            initialMediaFamily,
+            observedFinalHost,
+            observedFinalHostClass,
+            redirected: Boolean(status.redirected),
+            mediaHost,
             registrationToFetchMs: safeTiming(
                 status.registrationToFetchMs
                 || elapsedTiming(status.registeredAt, status.fetchStartedAt),
@@ -503,17 +736,27 @@
         DOWNLOAD_PATH_SEGMENT,
         FAILURE_CLASSES,
         FAILURE_STAGES,
+        FINAL_MEDIA_HOST_CLASSES,
+        INITIAL_EXACT_MEDIA_HOSTS,
+        INITIAL_MEDIA_FAMILIES,
+        INITIAL_MEDIA_HOST_SUFFIXES,
         MAX_STREAM_BYTES,
         PROTOCOL_VERSION,
         RESPONSE_REJECT_REASONS,
+        REVIEWED_FINAL_ONLY_HOST_SUFFIXES,
         TERMINAL_STATES,
         classifyFetchFailure,
         classifyContentType,
+        classifyFinalRedirect,
+        classifyInitialMediaFamily,
+        classifyObservedFinalHost,
         classifyResponseRejection,
         createDescriptor,
         createProgressEstimator,
         descriptorIdFromPath,
         downloadPath,
+        isAllowedFinalMediaUrl,
+        isAllowedInitialMediaUrl,
         isAllowedMediaContentType,
         isAllowedStreamingUrl,
         isLoopbackHostname,
@@ -523,10 +766,14 @@
         normalizeContentType,
         normalizeDownloadId,
         normalizeHttpStatus,
+        normalizeInitialMediaFamily,
+        normalizeFinalMediaHostClass,
         normalizeResponseRejectReason,
         positiveInteger,
         randomDownloadId,
         safeSnapshot,
+        sanitizeAdmittedFinalMediaHostname,
+        sanitizeObservedMediaHostname,
         sanitizeMediaHost,
         sanitizeFilename,
         sanitizeProvider,

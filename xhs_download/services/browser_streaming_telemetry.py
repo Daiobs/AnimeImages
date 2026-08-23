@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import logging
 import re
@@ -59,7 +60,16 @@ OPTIONAL_FIELDS = frozenset(
         "final_media_host",
     }
 )
-ALLOWED_FIELDS = REQUIRED_FIELDS | OPTIONAL_FIELDS
+FINAL_REDIRECT_FIELDS = frozenset(
+    {
+        "initial_media_host",
+        "initial_media_family",
+        "observed_final_host",
+        "observed_final_host_class",
+        "redirected",
+    }
+)
+ALLOWED_FIELDS = REQUIRED_FIELDS | OPTIONAL_FIELDS | FINAL_REDIRECT_FIELDS
 ALLOWED_STATES = frozenset({"failed", "cancelled"})
 ALLOWED_ERROR_CODES = frozenset(
     {
@@ -115,6 +125,25 @@ ALLOWED_WORKER_STATES = frozenset(
     {"activated", "activating", "installed", "installing", "redundant", "none", "unknown"}
 )
 ALLOWED_BROWSER_FAMILIES = frozenset({"chromium", "firefox", "safari", "unknown"})
+ALLOWED_INITIAL_MEDIA_FAMILIES = frozenset(
+    {
+        "DOUYIN_365YG",
+        "DOUYIN_DOUYINVOD",
+        "DOUYIN_IXIGUA_EXACT",
+        "LOOPBACK_TEST",
+        "UNKNOWN",
+    }
+)
+ALLOWED_FINAL_MEDIA_HOST_CLASSES = frozenset(
+    {
+        "INITIAL_SOURCE",
+        "REVIEWED_FINAL_ONLY",
+        "UNREVIEWED_PUBLIC",
+        "LOOPBACK_TEST",
+        "INVALID",
+    }
+)
+REVIEWED_FINAL_ONLY_HOST_SUFFIX = "bdcgslb.com"
 
 
 class BrowserStreamingTelemetryValidationError(ValueError):
@@ -153,15 +182,17 @@ def _hostname_matches_suffix(hostname, suffix):
     return hostname == suffix or hostname.endswith(f".{suffix}")
 
 
-def _media_host(value):
+def _hostname_is_strict_subdomain(hostname, suffix):
+    return hostname != suffix and hostname.endswith(f".{suffix}")
+
+
+def _validated_public_hostname(value, *, allow_unknown=True):
     if not isinstance(value, str):
         _invalid()
-    hostname = value.strip().lower().rstrip(".")
-    if hostname == "unknown":
+    hostname = value.strip().lower()
+    if allow_unknown and hostname == "unknown":
         return hostname
-    if not HOSTNAME_PATTERN.fullmatch(hostname):
-        if getattr(settings, "DEBUG", False) and hostname in LOOPBACK_HOSTS:
-            return hostname
+    if not hostname or hostname.endswith(".") or not HOSTNAME_PATTERN.fullmatch(hostname):
         _invalid()
     labels = hostname.split(".")
     if any(
@@ -172,6 +203,26 @@ def _media_host(value):
         for label in labels
     ):
         _invalid()
+    if hostname in LOOPBACK_HOSTS:
+        _invalid()
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        _invalid()
+    return hostname
+
+
+def _media_host(value):
+    if not isinstance(value, str):
+        _invalid()
+    hostname = value.strip().lower()
+    if hostname == "unknown":
+        return hostname
+    if getattr(settings, "DEBUG", False) and hostname in LOOPBACK_HOSTS:
+        return hostname
+    hostname = _validated_public_hostname(hostname, allow_unknown=False)
     if (
         hostname in ALLOWED_EXACT_MEDIA_HOSTS
         or any(
@@ -180,9 +231,59 @@ def _media_host(value):
         )
     ):
         return hostname
-    if getattr(settings, "DEBUG", False) and hostname in LOOPBACK_HOSTS:
-        return hostname
     _invalid()
+
+
+def _initial_media_family_for_host(hostname):
+    if hostname == "unknown":
+        return "UNKNOWN"
+    if hostname in LOOPBACK_HOSTS:
+        return "LOOPBACK_TEST"
+    if _hostname_matches_suffix(hostname, "365yg.com"):
+        return "DOUYIN_365YG"
+    if _hostname_matches_suffix(hostname, "douyinvod.com"):
+        return "DOUYIN_DOUYINVOD"
+    if hostname in ALLOWED_EXACT_MEDIA_HOSTS:
+        return "DOUYIN_IXIGUA_EXACT"
+    return "UNKNOWN"
+
+
+def _observed_final_host(value):
+    return _validated_public_hostname(value)
+
+
+def _observed_final_host_class(hostname):
+    if hostname == "unknown":
+        return "INVALID"
+    if (
+        hostname in ALLOWED_EXACT_MEDIA_HOSTS
+        or any(
+            _hostname_matches_suffix(hostname, suffix)
+            for suffix in ALLOWED_MEDIA_HOST_SUFFIXES
+        )
+    ):
+        return "INITIAL_SOURCE"
+    if _hostname_is_strict_subdomain(hostname, REVIEWED_FINAL_ONLY_HOST_SUFFIX):
+        return "REVIEWED_FINAL_ONLY"
+    return "UNREVIEWED_PUBLIC"
+
+
+def _admitted_final_media_host(value, *, initial_media_family):
+    if value == "unknown":
+        return value
+    try:
+        return _media_host(value)
+    except BrowserStreamingTelemetryValidationError:
+        hostname = _validated_public_hostname(value, allow_unknown=False)
+        if (
+            initial_media_family == "DOUYIN_365YG"
+            and _hostname_is_strict_subdomain(
+                hostname,
+                REVIEWED_FINAL_ONLY_HOST_SUFFIX,
+            )
+        ):
+            return hostname
+        _invalid()
 
 
 def validate_browser_streaming_telemetry(payload):
@@ -193,6 +294,11 @@ def validate_browser_streaming_telemetry(payload):
         _invalid()
     optional_fields = OPTIONAL_FIELDS.intersection(payload_fields)
     if optional_fields and optional_fields != OPTIONAL_FIELDS:
+        _invalid()
+    redirect_fields = FINAL_REDIRECT_FIELDS.intersection(payload_fields)
+    if redirect_fields and redirect_fields != FINAL_REDIRECT_FIELDS:
+        _invalid()
+    if redirect_fields and optional_fields != OPTIONAL_FIELDS:
         _invalid()
 
     telemetry_id = payload["telemetry_id"]
@@ -249,6 +355,10 @@ def validate_browser_streaming_telemetry(payload):
         "browser_family": _fixed_string(payload["browser_family"], ALLOWED_BROWSER_FAMILIES),
     }
     if optional_fields:
+        initial_media_family = _fixed_string(
+            payload.get("initial_media_family", "UNKNOWN"),
+            ALLOWED_INITIAL_MEDIA_FAMILIES,
+        )
         normalized.update(
             response_reject_reason=_fixed_string(
                 payload["response_reject_reason"],
@@ -259,7 +369,10 @@ def validate_browser_streaming_telemetry(payload):
                 payload["content_type_class"],
                 ALLOWED_CONTENT_TYPE_CLASSES,
             ),
-            final_media_host=_media_host(payload["final_media_host"]),
+            final_media_host=_admitted_final_media_host(
+                payload["final_media_host"],
+                initial_media_family=initial_media_family,
+            ),
         )
         if (
             normalized["state"] != "failed"
@@ -267,6 +380,36 @@ def validate_browser_streaming_telemetry(payload):
             or normalized["failure_stage"] != "HTTP_RESPONSE_REJECTED"
         ):
             _invalid()
+    if redirect_fields:
+        initial_media_host = _media_host(payload["initial_media_host"])
+        initial_media_family = _fixed_string(
+            payload["initial_media_family"],
+            ALLOWED_INITIAL_MEDIA_FAMILIES,
+        )
+        observed_final_host = _observed_final_host(payload["observed_final_host"])
+        observed_final_host_class = _fixed_string(
+            payload["observed_final_host_class"],
+            ALLOWED_FINAL_MEDIA_HOST_CLASSES,
+        )
+        redirected = _boolean(payload["redirected"])
+        if initial_media_host != normalized["media_host"]:
+            _invalid()
+        if _initial_media_family_for_host(initial_media_host) != initial_media_family:
+            _invalid()
+        if _observed_final_host_class(observed_final_host) != observed_final_host_class:
+            _invalid()
+        final_media_host = normalized["final_media_host"]
+        if final_media_host != "unknown" and final_media_host != observed_final_host:
+            _invalid()
+        if observed_final_host_class == "REVIEWED_FINAL_ONLY" and not redirected:
+            _invalid()
+        normalized.update(
+            initial_media_host=initial_media_host,
+            initial_media_family=initial_media_family,
+            observed_final_host=observed_final_host,
+            observed_final_host_class=observed_final_host_class,
+            redirected=redirected,
+        )
     if normalized["schema_version"] != SCHEMA_VERSION or normalized["protocol_version"] < 1:
         _invalid()
     if normalized["received_bytes"] > MAX_MEDIA_BYTES:

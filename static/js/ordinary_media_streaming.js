@@ -91,6 +91,18 @@
         return "";
     }
 
+    function hasCompleteFinalRedirectObservation(status) {
+        if (!status || typeof status !== "object") {
+            return false;
+        }
+        return [
+            "initialMediaFamily",
+            "observedFinalHost",
+            "observedFinalHostClass",
+            "redirected",
+        ].every((field) => Object.prototype.hasOwnProperty.call(status, field));
+    }
+
     function createTerminalTelemetryPayload(status, environment, options) {
         const safe = protocol.safeSnapshot(status);
         const env = environment && typeof environment === "object" ? environment : {};
@@ -134,6 +146,15 @@
                 content_type_class: safe.contentTypeClass,
                 final_media_host: safe.finalMediaHost,
             });
+            if (hasCompleteFinalRedirectObservation(status)) {
+                Object.assign(payload, {
+                    initial_media_host: safe.mediaHost,
+                    initial_media_family: safe.initialMediaFamily,
+                    observed_final_host: safe.observedFinalHost,
+                    observed_final_host_class: safe.observedFinalHostClass,
+                    redirected: safe.redirected,
+                });
+            }
         }
         return Object.freeze(payload);
     }

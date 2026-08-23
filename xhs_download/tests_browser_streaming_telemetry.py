@@ -53,6 +53,30 @@ class BrowserStreamingTelemetryEndpointTests(TestCase):
             **extra,
         )
 
+    def response_fields(self, **overrides):
+        fields = {
+            "error_code": "UPSTREAM_MEDIA_INVALID",
+            "failure_class": "NOT_APPLICABLE",
+            "failure_stage": "HTTP_RESPONSE_REJECTED",
+            "response_reject_reason": "FINAL_HOST_REJECTED",
+            "http_status": 200,
+            "content_type_class": "VIDEO",
+            "final_media_host": "unknown",
+        }
+        fields.update(overrides)
+        return fields
+
+    def redirect_fields(self, **overrides):
+        fields = {
+            "initial_media_host": "v11-default.365yg.com",
+            "initial_media_family": "DOUYIN_365YG",
+            "observed_final_host": "unreviewed.example",
+            "observed_final_host_class": "UNREVIEWED_PUBLIC",
+            "redirected": True,
+        }
+        fields.update(overrides)
+        return fields
+
     def test_valid_terminal_failure_is_logged_as_client_observed_metadata(self):
         with self.assertLogs("xhs_download.browser_streaming_telemetry", level="INFO") as logs:
             response = self.post(self.payload())
@@ -82,6 +106,136 @@ class BrowserStreamingTelemetryEndpointTests(TestCase):
         serialized = "\n".join(logs.output)
         self.assertIn('"response_reject_reason":"HTTP_STATUS_REJECTED"', serialized)
         self.assertIn('"http_status":403', serialized)
+
+    def test_source_bound_final_observation_is_logged_without_url_data(self):
+        payload = self.payload(
+            **self.response_fields(),
+            **self.redirect_fields(),
+        )
+        with self.assertLogs("xhs_download.browser_streaming_telemetry", level="INFO") as logs:
+            response = self.post(payload)
+
+        self.assertEqual(response.status_code, 204)
+        serialized = "\n".join(logs.output)
+        self.assertIn('"initial_media_family":"DOUYIN_365YG"', serialized)
+        self.assertIn('"observed_final_host":"unreviewed.example"', serialized)
+        self.assertIn('"observed_final_host_class":"UNREVIEWED_PUBLIC"', serialized)
+        self.assertIn('"redirected":true', serialized)
+        self.assertNotIn("/media/", serialized)
+        self.assertNotIn("token", serialized.lower())
+
+    def test_reviewed_bdcgslb_final_host_requires_a_365yg_initial_family(self):
+        accepted = self.post(
+            self.payload(
+                **self.response_fields(final_media_host="random.edge.bdcgslb.com"),
+                **self.redirect_fields(
+                    observed_final_host="random.edge.bdcgslb.com",
+                    observed_final_host_class="REVIEWED_FINAL_ONLY",
+                ),
+            )
+        )
+        self.assertEqual(accepted.status_code, 204)
+
+        ixigua_mismatch = self.post(
+            self.payload(
+                media_host="v3-dy-a-x.ixigua.com",
+                **self.response_fields(final_media_host="random.edge.bdcgslb.com"),
+                **self.redirect_fields(
+                    initial_media_host="v3-dy-a-x.ixigua.com",
+                    initial_media_family="DOUYIN_IXIGUA_EXACT",
+                    observed_final_host="random.edge.bdcgslb.com",
+                    observed_final_host_class="REVIEWED_FINAL_ONLY",
+                ),
+            )
+        )
+        self.assertEqual(ixigua_mismatch.status_code, 400)
+
+        ixigua_observation_only = self.post(
+            self.payload(
+                media_host="v3-dy-a-x.ixigua.com",
+                **self.response_fields(final_media_host="unknown"),
+                **self.redirect_fields(
+                    initial_media_host="v3-dy-a-x.ixigua.com",
+                    initial_media_family="DOUYIN_IXIGUA_EXACT",
+                    observed_final_host="random.edge.bdcgslb.com",
+                    observed_final_host_class="REVIEWED_FINAL_ONLY",
+                ),
+            )
+        )
+        self.assertEqual(ixigua_observation_only.status_code, 204)
+
+        mismatched_observation = self.post(
+            self.payload(
+                **self.response_fields(final_media_host="random.edge.bdcgslb.com"),
+                **self.redirect_fields(
+                    observed_final_host="different.edge.bdcgslb.com",
+                    observed_final_host_class="REVIEWED_FINAL_ONLY",
+                ),
+            )
+        )
+        self.assertEqual(mismatched_observation.status_code, 400)
+
+        missing_redirect = self.post(
+            self.payload(
+                **self.response_fields(final_media_host="random.edge.bdcgslb.com"),
+                **self.redirect_fields(
+                    observed_final_host="random.edge.bdcgslb.com",
+                    observed_final_host_class="REVIEWED_FINAL_ONLY",
+                    redirected=False,
+                ),
+            )
+        )
+        self.assertEqual(missing_redirect.status_code, 400)
+
+    def test_final_observation_group_is_all_or_nothing_and_source_consistent(self):
+        complete = self.redirect_fields()
+        for field in complete:
+            with self.subTest(missing=field):
+                cache.clear()
+                partial = {key: value for key, value in complete.items() if key != field}
+                response = self.post(
+                    self.payload(**self.response_fields(), **partial)
+                )
+                self.assertEqual(response.status_code, 400)
+
+        inconsistent = (
+            {"initial_media_host": "v3-web.douyinvod.com"},
+            {"initial_media_family": "DOUYIN_DOUYINVOD"},
+            {"observed_final_host_class": "INITIAL_SOURCE"},
+            {"redirected": "true"},
+        )
+        for overrides in inconsistent:
+            with self.subTest(overrides=overrides):
+                cache.clear()
+                response = self.post(
+                    self.payload(
+                        **self.response_fields(),
+                        **self.redirect_fields(**overrides),
+                    )
+                )
+                self.assertEqual(response.status_code, 400)
+
+    def test_observed_final_host_rejects_urls_tokens_ip_loopback_and_trailing_dot(self):
+        unsafe_values = (
+            "https://unreviewed.example/media.mp4?token=secret",
+            "unreviewed.example/path",
+            "unreviewed.example?token=secret",
+            "user@unreviewed.example",
+            "127.0.0.1",
+            "localhost",
+            "unreviewed.example.",
+        )
+        for observed_host in unsafe_values:
+            with self.subTest(observed_host=observed_host):
+                cache.clear()
+                response = self.post(
+                    self.payload(
+                        **self.response_fields(),
+                        **self.redirect_fields(observed_final_host=observed_host),
+                    )
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertNotContains(response, observed_host, status_code=400)
 
     def test_invalid_response_rejection_fields_are_rejected(self):
         cases = (
@@ -170,6 +324,11 @@ class BrowserStreamingTelemetryEndpointTests(TestCase):
     def test_invalid_media_hostname_is_rejected(self):
         response = self.post(self.payload(media_host="attacker.example"))
         self.assertEqual(response.status_code, 400)
+
+        direct_final_only = self.post(
+            self.payload(media_host="random.edge.bdcgslb.com")
+        )
+        self.assertEqual(direct_final_only.status_code, 400)
 
     def test_reviewed_ixigua_media_hostname_is_accepted_without_url_fields(self):
         with self.assertLogs(

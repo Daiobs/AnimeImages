@@ -103,10 +103,21 @@ function markTerminal(state, nextState, errorCode, options) {
     state.contentTypeClass = protocol.normalizeContentTypeClass(
         settings.contentTypeClass || state.contentTypeClass,
     );
-    state.finalMediaHost = protocol.sanitizeMediaHost(
+    state.initialMediaFamily = protocol.normalizeInitialMediaFamily(
+        settings.initialMediaFamily || state.initialMediaFamily,
+    );
+    state.finalMediaHost = protocol.sanitizeAdmittedFinalMediaHostname(
         settings.finalMediaHost || state.finalMediaHost,
+        {allowLoopback: true, initialMediaFamily: state.initialMediaFamily},
+    );
+    state.observedFinalHost = protocol.sanitizeObservedMediaHostname(
+        settings.observedFinalHost || state.observedFinalHost,
         {allowLoopback: true},
     );
+    state.observedFinalHostClass = protocol.normalizeFinalMediaHostClass(
+        settings.observedFinalHostClass || state.observedFinalHostClass,
+    );
+    state.redirected = Boolean(settings.redirected || state.redirected);
     state.updatedAt = Date.now();
     state.terminalAt = state.updatedAt;
     const notification = postToClients(`DOWNLOAD_${nextState.toUpperCase()}`, state)
@@ -193,6 +204,13 @@ function createDownloadState(descriptor, ownerClientId) {
         errorCode: "",
         failureClass: "NOT_APPLICABLE",
         failureStage: "",
+        responseRejectReason: "",
+        httpStatus: 0,
+        contentTypeClass: "MISSING",
+        finalMediaHost: "unknown",
+        observedFinalHost: "unknown",
+        observedFinalHostClass: "INVALID",
+        redirected: false,
         streamingStarted: false,
         terminalAt: 0,
         registeredAt: Date.now(),
@@ -333,9 +351,10 @@ async function streamDownload(state) {
     state.abortController = new AbortController();
     await postToClients("DOWNLOAD_FETCH_STARTED", state);
 
+    const initialUrl = state.url;
     let upstream;
     try {
-        upstream = await fetch(state.url, {
+        upstream = await fetch(initialUrl, {
             method: "GET",
             credentials: "omit",
             cache: "no-store",
@@ -360,13 +379,18 @@ async function streamDownload(state) {
         return errorResponse(499, "DOWNLOAD_CANCELLED");
     }
     state.firstResponseAt = Date.now();
-    state.url = "";
-
     const contentType = protocol.normalizeContentType(upstream.headers.get("Content-Type"));
     const contentLength = protocol.positiveInteger(upstream.headers.get("Content-Length"));
     const responseGate = protocol.classifyResponseRejection(upstream, {
+        initialUrl,
         allowLoopbackHttp: ALLOW_LOOPBACK_HTTP,
     });
+    state.url = "";
+    state.initialMediaFamily = responseGate.initialMediaFamily;
+    state.finalMediaHost = responseGate.finalMediaHost;
+    state.observedFinalHost = responseGate.observedFinalHost;
+    state.observedFinalHostClass = responseGate.observedFinalHostClass;
+    state.redirected = responseGate.redirected;
     if (responseGate.rejected) {
         if (upstream.body && typeof upstream.body.cancel === "function") {
             await upstream.body.cancel().catch(() => {});
@@ -377,6 +401,10 @@ async function streamDownload(state) {
             httpStatus: responseGate.httpStatus,
             contentTypeClass: responseGate.contentTypeClass,
             finalMediaHost: responseGate.finalMediaHost,
+            initialMediaFamily: responseGate.initialMediaFamily,
+            observedFinalHost: responseGate.observedFinalHost,
+            observedFinalHostClass: responseGate.observedFinalHostClass,
+            redirected: responseGate.redirected,
         });
         return errorResponse(502, "UPSTREAM_MEDIA_INVALID");
     }

@@ -121,6 +121,7 @@
             speed: wrap ? wrap.querySelector("[data-download-progress-speed]") : null,
             eta: wrap ? wrap.querySelector("[data-download-progress-eta]") : null,
             blobWarning: wrap ? wrap.querySelector("[data-blob-download-warning]") : null,
+            status: item ? item.querySelector("[data-batch-download-status]") : null,
         };
     }
 
@@ -152,6 +153,65 @@
         if (progress.blobWarning) {
             progress.blobWarning.hidden = true;
         }
+        if (progress.status) {
+            progress.status.hidden = true;
+            progress.status.textContent = "";
+        }
+    }
+
+    function applyBatchDownloadTerminalFailure(button, error, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        const downloadApi = settings.downloadApi || ordinaryMediaDownloadApi;
+        const progress = getBatchDownloadProgress(button);
+        const publicMessage = downloadApi && typeof downloadApi.safeErrorMessage === "function"
+            ? downloadApi.safeErrorMessage(error)
+            : "当前媒体节点未能启动下载，请重试。";
+        const diagnostic = settings.showDiagnostics
+            && downloadApi
+            && typeof downloadApi.safeFailureDiagnostic === "function"
+            ? downloadApi.safeFailureDiagnostic(error)
+            : "";
+        const message = diagnostic ? `${publicMessage} (${diagnostic})` : publicMessage;
+        if (progress.wrap) {
+            progress.wrap.hidden = true;
+            progress.wrap.classList.remove("is-pending");
+        }
+        if (progress.track) {
+            progress.track.setAttribute("aria-valuenow", "0");
+            progress.track.setAttribute("aria-valuetext", "下载失败");
+        }
+        if (progress.bar) {
+            progress.bar.style.width = "0%";
+        }
+        if (progress.percent) {
+            progress.percent.textContent = "";
+        }
+        if (progress.bytes) {
+            progress.bytes.textContent = "";
+        }
+        if (progress.speed) {
+            progress.speed.textContent = "";
+        }
+        if (progress.eta) {
+            progress.eta.textContent = "";
+        }
+        if (progress.blobWarning) {
+            progress.blobWarning.hidden = true;
+        }
+        if (progress.status) {
+            progress.status.textContent = message;
+            progress.status.hidden = false;
+        }
+        setBatchDownloadButtonLoading(button, false);
+        const labelNode = button ? button.querySelector(".batch-download-label") : null;
+        if (labelNode) {
+            labelNode.textContent = "重试下载";
+        }
+        if (button) {
+            button.disabled = false;
+            button.title = message;
+        }
+        return message;
     }
 
     function applyBatchDownloadProgress(button, event) {
@@ -167,6 +227,10 @@
         if (progress.wrap) {
             progress.wrap.hidden = false;
             progress.wrap.classList.toggle("is-pending", percentValue === null);
+        }
+        if (progress.status) {
+            progress.status.hidden = true;
+            progress.status.textContent = "";
         }
         if (progress.track) {
             if (percentValue === null) {
@@ -1733,9 +1797,9 @@
                         "Batch ordinary browser download failed",
                         String(error && error.errorCode || "BROWSER_DOWNLOAD_FAILED"),
                     );
-                    setBatchDownloadButtonLoading(directDownloadButton, false);
-                    showBatchDownloadButtonMessage(directDownloadButton, "重试下载");
-                    directDownloadButton.title = ordinaryMediaDownloadApi.safeErrorMessage(error);
+                    applyBatchDownloadTerminalFailure(directDownloadButton, error, {
+                        showDiagnostics: showBatchInternalDiagnostics(directDownloadButton),
+                    });
                 }
                 return;
             }
@@ -1771,6 +1835,7 @@
         getBatchPhotoItems,
         getBatchLightboxNavigation,
         assertBatchSyncArchiveSize,
+        applyBatchDownloadTerminalFailure,
         readBatchPhotoArchiveResponse,
     });
     if (typeof module === "object" && module.exports) {
