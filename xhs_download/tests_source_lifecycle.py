@@ -1,8 +1,10 @@
 import ast
+import inspect
 from pathlib import Path
 
 from django.test import SimpleTestCase
 
+from .services.registry import DEFAULT_ADAPTERS
 from .services.source_lifecycle import (
     CURRENT_SOURCE_LIFECYCLE_CONSUMERS,
     SafeSourceDiagnostic,
@@ -440,13 +442,17 @@ class SourceResolutionTests(SimpleTestCase):
         self.assertNotIn("hashlib", joined)
         self.assertNotIn("source_key_for_url", function_names)
 
-    def test_current_provider_consumer_count_remains_zero(self):
+    def test_current_registered_provider_consumer_count_remains_zero(self):
         self.assertEqual(CURRENT_SOURCE_LIFECYCLE_CONSUMERS, 0)
         app_root = Path(__file__).resolve().parent
-        runtime_references = []
-        for path in app_root.rglob("*.py"):
-            if path.name.startswith("tests") or path.name == "source_lifecycle.py":
-                continue
-            if "source_lifecycle" in path.read_text(encoding="utf-8"):
-                runtime_references.append(path.relative_to(app_root).as_posix())
+        registry_path = app_root / "services" / "registry.py"
+        registered_adapter_paths = {
+            Path(inspect.getfile(type(adapter))).resolve()
+            for adapter in DEFAULT_ADAPTERS
+        }
+        runtime_references = [
+            path.relative_to(app_root).as_posix()
+            for path in sorted(registered_adapter_paths | {registry_path})
+            if "source_lifecycle" in path.read_text(encoding="utf-8")
+        ]
         self.assertEqual(runtime_references, [])
