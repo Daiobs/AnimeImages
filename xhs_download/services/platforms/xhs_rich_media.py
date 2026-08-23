@@ -6,7 +6,6 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from ..assets import MediaAsset
 from ..rich_media import (
     RICH_MEDIA_IMAGE_EXTENSIONS,
     RICH_MEDIA_SCHEMA_VERSION,
@@ -51,8 +50,18 @@ def _reject(code: str, path: str) -> None:
 
 
 @dataclass(frozen=True)
+class XhsRichMediaAssetSpec:
+    """URL-free intermediate media evidence for a future Provider builder."""
+
+    asset_id: str
+    media_type: str
+    extension: str
+    role: str
+
+
+@dataclass(frozen=True)
 class XhsRichMediaNormalization:
-    assets: tuple[MediaAsset, ...]
+    asset_specs: tuple[XhsRichMediaAssetSpec, ...]
     rich_media: RichMediaContractV1 | None
 
 
@@ -257,7 +266,7 @@ def normalize_xhs_rich_media_payload(
     """Normalize explicit, sanitized XHS media evidence without network I/O."""
 
     if payload is None:
-        return XhsRichMediaNormalization(assets=(), rich_media=None)
+        return XhsRichMediaNormalization(asset_specs=(), rich_media=None)
     payload = _require_exact_mapping(
         payload,
         fields=_PAYLOAD_FIELDS,
@@ -311,13 +320,12 @@ def normalize_xhs_rich_media_payload(
             specs.append(spec)
 
     post_type = _post_type_for_specs(specs, live_photos)
-    assets = tuple(
-        MediaAsset(
-            media_type=spec.media_type,
-            url="",
-            platform="xiaohongshu",
-            ext=spec.extension,
+    asset_specs = tuple(
+        XhsRichMediaAssetSpec(
             asset_id=spec.asset_id,
+            media_type=spec.media_type,
+            extension=spec.extension,
+            role=_role_for_spec(spec, post_type=post_type),
         )
         for spec in specs
     )
@@ -326,9 +334,9 @@ def normalize_xhs_rich_media_payload(
             asset_id=spec.asset_id,
             media_type=spec.media_type,
             extension=spec.extension,
-            role=_role_for_spec(spec, post_type=post_type),
+            role=spec.role,
         )
-        for spec in specs
+        for spec in asset_specs
     )
     groups = tuple(
         RichMediaGroupV1(
@@ -348,11 +356,15 @@ def normalize_xhs_rich_media_payload(
         groups=groups,
         content_blocks=(),
     )
-    return XhsRichMediaNormalization(assets=assets, rich_media=contract)
+    return XhsRichMediaNormalization(
+        asset_specs=asset_specs,
+        rich_media=contract,
+    )
 
 
 __all__ = [
     "XHS_RICH_MEDIA_MAX_ITEMS",
+    "XhsRichMediaAssetSpec",
     "XhsRichMediaNormalization",
     "XhsRichMediaNormalizationError",
     "normalize_xhs_rich_media_payload",

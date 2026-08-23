@@ -21,9 +21,10 @@ files were inspected statically:
 
 ParseHub's XHS payload handling identifies a Live Photo when one image-list
 item contains both its still-image field and an item-local motion stream. That
-is useful relationship-shape evidence. ParseHub also selects the first note in
-initial state, issues per-image HEAD requests for extensions, and converts an
-unknown extension to JPEG. Those broader behaviors are not adopted.
+is the source-derived relationship-shape evidence. It does not establish
+AnimeImages fields named `pair_id` or `owner_note_id`. ParseHub also selects the
+first note in initial state, issues per-image HEAD requests for extensions, and
+converts an unknown extension to JPEG. Those broader behaviors are not adopted.
 
 ParseHub is not installed, imported, or executed. The implementation in this
 PR is an AnimeImages-owned, network-free normalizer over a new sanitized input
@@ -58,7 +59,8 @@ The two note IDs must match exactly before any item is normalized. Regular
 items contain only a media kind, domain asset ID, and extension. They cannot
 contain URLs, covers, headers, tokens, or Provider data.
 
-A Live Photo item must contain all of the following in one record:
+A Live Photo item in the AnimeImages sanitized contract must contain all of the
+following in one record:
 
 - a stable domain `pair_id`;
 - an `owner_note_id` equal to the exact payload note ID;
@@ -70,16 +72,23 @@ similar names, URL paths, or media order. Missing members, duplicate members,
 duplicate pair IDs, duplicate asset IDs, and ownership mismatches fail with
 fixed URL-free error codes.
 
+`requested_note_id`, `payload_note_id`, `owner_note_id`, and `pair_id` are
+AnimeImages adapter-required evidence. A future adapter must construct and
+prove them from a reviewed real payload mapping; they are not represented here
+as native ParseHub field names.
+
 The production XHS adapter does not yet supply this sanitized schema. A future
 adapter change would need separate payload-field evidence, host review, and
 runtime acceptance before this dormant module could be wired.
 
 ## Ordered Output
 
-Each regular item contributes one `MediaAsset`. Each Live Photo contributes its
-still followed by its motion at the same ordered item position. The output is:
+Each regular item contributes one intermediate `XhsRichMediaAssetSpec`. Each
+Live Photo contributes its still followed by its motion at the same ordered
+item position. The output is:
 
-- ordered `MediaAsset` candidates with empty URLs and no Provider authority;
+- ordered URL-free asset specs containing only asset ID, media type, extension,
+  and structural role;
 - an optional existing `RichMediaContractV1`;
 - explicit still/motion descriptors and `live_photo` groups when pair evidence
   is complete.
@@ -88,6 +97,11 @@ Single images, galleries, videos, Live Photos, multiple Live Photos, and mixed
 image/Live Photo posts map to existing Contract v1 post types. No cover is
 promoted and no relationship grants download authority. The contract is
 structural metadata only.
+
+A future Provider Builder, not this dormant normalizer, is responsible for URL
+admission, host review, format verification, size, Provider provenance,
+manifest identity, and final `MediaAsset` construction. The intermediate specs
+have no URL, preview, cover, headers, Provider, manifest, or download method.
 
 ## Format Boundary
 
@@ -112,7 +126,7 @@ Fictional URL-free fixtures and offline tests cover:
 - flattened order and still-before-motion order;
 - no cover promotion;
 - relationship metadata without download authority;
-- existing `ParseResult`/`RichMediaContractV1` compatibility;
+- intermediate spec and `RichMediaContractV1` descriptor alignment;
 - bounded item count, input immutability, and dormant registry status.
 
 Automated tests perform no XHS request and use no real user or signed media URL.
@@ -124,3 +138,13 @@ Automated tests perform no XHS request and use no real user or signed media URL.
 - Rich Media Contract v1 enum changes.
 - HEIC conversion or extension probing.
 - Provider registration, runtime emission, download, view, UI, or deployment.
+
+## Remaining Gates
+
+```text
+XHS_LIVEPHOTO_INTERMEDIATE_CONTRACT = READY_FOR_REVIEW
+XHS_REAL_PAYLOAD_MAPPING = NOT_STARTED
+XHS_PROVIDER_WIRING = NOT_STARTED
+XHS_MEDIA_HOST_REVIEW = NOT_STARTED
+XHS_PUBLIC_SUPPORT = NO
+```

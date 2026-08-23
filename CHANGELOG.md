@@ -11,11 +11,13 @@
   progress for an explicit retryable terminal state. Provider behavior,
   response media gates, timeouts, and the zero-Relay data path are unchanged.
 - Added a dormant, URL-free XHS rich-media normalizer behind exact requested
-  and payload note identity. It preserves ordered image/video candidates and
-  creates Live Photo relationships only from explicit same-item pair and owner
-  evidence; unknown extensions and HEIC fail closed. The current XHS adapter,
-  Provider registry, hosts, requests, manifests, downloads, and runtime
-  rich-media emission remain unchanged.
+  and payload note identity. It preserves ordered image/video intermediate
+  specs and creates Live Photo relationships only from explicit same-item pair
+  and owner evidence that a future AnimeImages adapter must construct and
+  prove; unknown extensions and HEIC fail closed. It does not create empty-URL
+  `MediaAsset` values. The current XHS adapter, Provider registry, hosts,
+  requests, manifests, downloads, and runtime rich-media emission remain
+  unchanged.
 - Added a frozen, network-free Source URL Lifecycle v1 foundation and an
   offline Provider Lab. The lifecycle separates input, parse, resolver-output,
   and post-parse URLs and uses closed parse-only, identity, safe-passthrough,

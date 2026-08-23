@@ -1,12 +1,14 @@
 import copy
 import json
+from dataclasses import fields
 from pathlib import Path
 
 from django.test import SimpleTestCase
 
-from .services.assets import ParseResult
+from .services.assets import MediaAsset
 from .services.platforms.xhs_rich_media import (
     XHS_RICH_MEDIA_MAX_ITEMS,
+    XhsRichMediaAssetSpec,
     XhsRichMediaNormalizationError,
     normalize_xhs_rich_media_payload,
 )
@@ -36,14 +38,14 @@ class XhsDormantRichMediaNormalizerTests(SimpleTestCase):
 
     def test_absent_payload_emits_no_contract_or_assets(self):
         result = normalize_xhs_rich_media_payload(None)
-        self.assertEqual(result.assets, ())
+        self.assertEqual(result.asset_specs, ())
         self.assertIsNone(result.rich_media)
 
     def test_single_image_builds_one_primary_asset(self):
         result = self.normalize("single_image")
         self.assertEqual(result.rich_media.post_type, "image")
         self.assertEqual(result.rich_media.assets[0].role, "primary")
-        self.assertEqual(result.assets[0].ext, "jpg")
+        self.assertEqual(result.asset_specs[0].extension, "jpg")
 
     def test_gallery_preserves_all_image_extensions(self):
         result = self.normalize("gallery")
@@ -84,7 +86,7 @@ class XhsDormantRichMediaNormalizerTests(SimpleTestCase):
             ["xhs:pair:one", "xhs:pair:two"],
         )
         self.assertEqual(
-            [asset.asset_id for asset in result.assets],
+            [asset.asset_id for asset in result.asset_specs],
             [
                 "xhs:still:one",
                 "xhs:motion:one",
@@ -98,7 +100,7 @@ class XhsDormantRichMediaNormalizerTests(SimpleTestCase):
         self.assertEqual(result.rich_media.post_type, "multimedia")
         self.assertEqual(len(result.rich_media.groups), 1)
         self.assertEqual(
-            [asset.media_type for asset in result.assets],
+            [asset.media_type for asset in result.asset_specs],
             ["image", "image", "video", "image"],
         )
 
@@ -166,7 +168,7 @@ class XhsDormantRichMediaNormalizerTests(SimpleTestCase):
     def test_order_preservation_flattens_each_pair_still_then_motion(self):
         result = self.normalize("mixed_image_live_photo")
         self.assertEqual(
-            [asset.asset_id for asset in result.assets],
+            [asset.asset_id for asset in result.asset_specs],
             [
                 "xhs:mixed:image-one",
                 "xhs:mixed:still-one",
@@ -176,36 +178,43 @@ class XhsDormantRichMediaNormalizerTests(SimpleTestCase):
         )
         self.assertEqual(
             [asset.asset_id for asset in result.rich_media.assets],
-            [asset.asset_id for asset in result.assets],
+            [asset.asset_id for asset in result.asset_specs],
         )
 
-    def test_no_candidate_is_promoted_to_cover_or_primary_in_multimedia(self):
+    def test_no_candidate_is_promoted_to_primary_in_multimedia(self):
         result = self.normalize("mixed_image_live_photo")
-        self.assertTrue(all(asset.cover_url == "" for asset in result.assets))
         self.assertNotIn(
             "primary",
-            [asset.role for asset in result.rich_media.assets],
+            [asset.role for asset in result.asset_specs],
         )
 
     def test_relationship_metadata_does_not_grant_download_authority(self):
         result = self.normalize("one_live_photo")
-        for asset in result.assets:
-            self.assertEqual(asset.url, "")
-            self.assertEqual(asset.provider, "")
-            self.assertEqual(asset.provider_manifest_token, "")
-            self.assertNotIn("provider_manifest_token", asset.to_download_item())
-
-    def test_normalized_assets_and_contract_satisfy_parse_result_boundary(self):
-        result = self.normalize("mixed_image_live_photo")
-        parsed = ParseResult(
-            platform="xiaohongshu",
-            post_type=result.rich_media.post_type,
-            base_filename="fixture",
-            assets=result.assets,
-            metadata={},
-            rich_media=result.rich_media,
+        allowed_fields = {"asset_id", "media_type", "extension", "role"}
+        self.assertEqual(
+            {field.name for field in fields(XhsRichMediaAssetSpec)},
+            allowed_fields,
         )
-        self.assertIs(parsed.rich_media, result.rich_media)
+        for asset in result.asset_specs:
+            self.assertIs(type(asset), XhsRichMediaAssetSpec)
+            self.assertNotIsInstance(asset, MediaAsset)
+            self.assertFalse(hasattr(asset, "url"))
+            self.assertFalse(hasattr(asset, "provider"))
+            self.assertFalse(hasattr(asset, "provider_manifest_token"))
+            self.assertFalse(hasattr(asset, "to_download_item"))
+
+    def test_asset_specs_and_contract_descriptors_remain_aligned(self):
+        result = self.normalize("mixed_image_live_photo")
+        self.assertEqual(
+            [
+                (asset.asset_id, asset.media_type, asset.extension, asset.role)
+                for asset in result.asset_specs
+            ],
+            [
+                (asset.asset_id, asset.media_type, asset.extension, asset.role)
+                for asset in result.rich_media.assets
+            ],
+        )
 
     def test_input_fixture_is_not_mutated(self):
         payload = copy.deepcopy(self.cases["one_live_photo"])
@@ -231,3 +240,4 @@ class XhsDormantRichMediaNormalizerTests(SimpleTestCase):
             source = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
             self.assertNotIn("xhs_rich_media", source)
             self.assertNotIn("normalize_xhs_rich_media_payload", source)
+            self.assertNotIn("rich_media=", source)
