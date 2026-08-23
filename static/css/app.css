@@ -662,6 +662,17 @@ body {
     background: #fff;
 }
 
+.batch-download-terminal-message {
+    width: 100%;
+    margin-top: 8px;
+    font-size: .8rem;
+    font-weight: 700;
+}
+
+.batch-download-terminal-message[hidden] {
+    display: none;
+}
+
 .ordinary-download-interruption {
     margin-top: 18px;
 }

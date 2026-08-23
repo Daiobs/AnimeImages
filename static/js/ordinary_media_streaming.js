@@ -133,6 +133,11 @@
                 http_status: safe.httpStatus,
                 content_type_class: safe.contentTypeClass,
                 final_media_host: safe.finalMediaHost,
+                initial_media_host: safe.mediaHost,
+                initial_media_family: safe.initialMediaFamily,
+                observed_final_host: safe.observedFinalHost,
+                observed_final_host_class: safe.observedFinalHostClass,
+                redirected: safe.redirected,
             });
         }
         return Object.freeze(payload);

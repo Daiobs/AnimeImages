@@ -531,6 +531,9 @@
         function hideDownloadProgress() {
             const {
                 progressWrap,
+                progressTrack,
+                progressBar,
+                progressPercent,
                 progressItems,
                 progressBytes,
                 progressSpeed,
@@ -540,6 +543,16 @@
             if (progressWrap) {
                 progressWrap.hidden = true;
                 progressWrap.classList.remove("is-pending");
+            }
+            if (progressTrack) {
+                progressTrack.setAttribute("aria-valuenow", "0");
+                progressTrack.setAttribute("aria-valuetext", "0%");
+            }
+            if (progressBar) {
+                progressBar.style.width = "0%";
+            }
+            if (progressPercent) {
+                progressPercent.innerText = "0%";
             }
             if (progressBytes) {
                 progressBytes.innerText = "0 B";
@@ -1129,12 +1142,21 @@
         }
 
         function ordinaryMediaFailure(error) {
+            const publicMessage = ordinaryMediaDownloadApi
+                ? ordinaryMediaDownloadApi.safeErrorMessage(error)
+                : "当前浏览器无法保存文件，请重试下载。";
+            const diagnostic = (
+                showInternalDiagnostics
+                && ordinaryMediaDownloadApi
+                && typeof ordinaryMediaDownloadApi.safeFailureDiagnostic === "function"
+            ) ? ordinaryMediaDownloadApi.safeFailureDiagnostic(error) : "";
             const wrapped = new Error(
-                ordinaryMediaDownloadApi
-                    ? ordinaryMediaDownloadApi.safeErrorMessage(error)
-                    : "当前浏览器无法保存文件，请重试下载。",
+                diagnostic ? `${publicMessage} (${diagnostic})` : publicMessage,
             );
             wrapped.errorCode = String(error && error.errorCode || "BROWSER_DOWNLOAD_FAILED");
+            wrapped.streamingStarted = Boolean(error && error.streamingStarted);
+            wrapped.status = error && error.status ? error.status : null;
+            wrapped.isOrdinaryMediaFailure = true;
             return wrapped;
         }
 
@@ -1725,7 +1747,10 @@
                             : "DOWNLOAD_FAILED",
                     );
                     console.warn("Download request failed", errorCode);
-                    if (errorCode.startsWith("BROWSER_")) {
+                    if (
+                        errorCode.startsWith("BROWSER_")
+                        || Boolean(error && error.isOrdinaryMediaFailure)
+                    ) {
                         hideDownloadProgress();
                     } else {
                         setProgress(0);

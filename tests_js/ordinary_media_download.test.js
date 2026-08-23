@@ -23,6 +23,8 @@ function responseFor(content, options) {
     return {
         ok: settings.ok !== false,
         status: settings.status || 200,
+        redirected: Boolean(settings.redirected),
+        url: settings.url || "https://v11-default.365yg.com/media/video.mp4",
         headers: headers({
             "Content-Type": settings.contentType || "video/mp4",
             "Content-Length": settings.contentLength === undefined
@@ -32,13 +34,14 @@ function responseFor(content, options) {
         async blob() {
             return blob;
         },
+        body: settings.body === undefined ? {} : settings.body,
     };
 }
 
 function ordinaryItem(overrides) {
     return {
         type: "video",
-        url: "https://media.example.test/video.mp4",
+        url: "https://v11-default.365yg.com/media/video.mp4",
         filename: "demo.mp4",
         provider: "tiantianjiexi",
         size_bytes: 5,
@@ -209,6 +212,38 @@ test("diagnostic probe rejects a final response outside the Worker media allowli
     assert.doesNotMatch(JSON.stringify(result), /attacker|redirected/i);
 });
 
+test("diagnostic probe accepts the reviewed 365yg to bdcgslb final relation", async () => {
+    let cancelled = false;
+    const result = await ordinary.probeOrdinaryMediaFetch(ordinaryItem({
+        url: "https://v5-default.365yg.com/media/source.mp4?fixture=fake",
+    }), {
+        fetchImpl: async () => ({
+            ok: true,
+            status: 200,
+            redirected: true,
+            url: "https://random.edge.bdcgslb.com/media/final.mp4?fixture=fake",
+            headers: headers({"Content-Type": "video/mp4", "Content-Length": 10}),
+            body: {
+                getReader() {
+                    return {
+                        async read() { return {done: false, value: new Uint8Array(1024)}; },
+                        cancel() {
+                            cancelled = true;
+                            return Promise.resolve();
+                        },
+                        releaseLock() {},
+                    };
+                },
+            },
+        }),
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.mediaHost, "v5-default.365yg.com");
+    assert.equal(cancelled, true);
+    assert.doesNotMatch(JSON.stringify(result), /bdcgslb|media\/(?:source|final)|fixture/i);
+});
+
 test("diagnostic probe has a deterministic timeout and never invokes server relay", async () => {
     let relayCalls = 0;
     const result = await ordinary.probeOrdinaryMediaFetch(ordinaryItem({
@@ -228,6 +263,71 @@ test("diagnostic probe has a deterministic timeout and never invokes server rela
     assert.equal(result.failureClass, "FETCH_TIMEOUT_ERROR");
     assert.equal(result.failureStage, "FETCH_REJECTED_BEFORE_RESPONSE");
     assert.equal(relayCalls, 0);
+});
+
+test("Blob fallback applies the same source-bound final redirect policy", async () => {
+    const initialUrl = "https://v5-default.365yg.com/media/source.mp4?fixture=fake";
+    const finalUrl = "https://random.edge.bdcgslb.com/media/final.mp4?fixture=fake";
+    let handoffBytes = 0;
+    const result = await ordinary.downloadViaBlob(ordinaryItem({url: initialUrl}), {
+        fetchImpl: async () => responseFor("12345", {
+            redirected: true,
+            url: finalUrl,
+        }),
+        async handoffBlob(blob) {
+            handoffBytes = blob.size;
+        },
+    });
+
+    assert.equal(result.receivedBytes, 5);
+    assert.equal(handoffBytes, 5);
+
+    let cancelled = false;
+    await assert.rejects(
+        ordinary.downloadViaBlob(ordinaryItem({url: initialUrl}), {
+            fetchImpl: async () => responseFor("12345", {
+                redirected: true,
+                url: "https://unreviewed.example/media/final.mp4?fixture=fake",
+                body: {
+                    cancel() {
+                        cancelled = true;
+                        return Promise.resolve();
+                    },
+                },
+            }),
+            async handoffBlob() {
+                assert.fail("unreviewed final hosts must fail before browser handoff");
+            },
+        }),
+        (error) => {
+            assert.equal(error.errorCode, "UPSTREAM_MEDIA_INVALID");
+            assert.equal(error.status.responseRejectReason, "FINAL_HOST_REJECTED");
+            assert.equal(error.status.mediaHost, "v5-default.365yg.com");
+            assert.equal(error.status.observedFinalHost, "unreviewed.example");
+            assert.equal(error.status.finalMediaHost, "unknown");
+            assert.doesNotMatch(JSON.stringify(error.status), /media\/final|fixture|https:\/\//i);
+            return true;
+        },
+    );
+    assert.equal(cancelled, true);
+
+    let directFinalOnlyFetches = 0;
+    await assert.rejects(
+        ordinary.downloadViaBlob(ordinaryItem({url: finalUrl}), {
+            fetchImpl: async () => {
+                directFinalOnlyFetches += 1;
+                return responseFor("12345", {url: finalUrl});
+            },
+        }),
+        (error) => {
+            assert.equal(error.errorCode, "UPSTREAM_MEDIA_INVALID");
+            assert.equal(error.status.responseRejectReason, "FINAL_HOST_REJECTED");
+            assert.equal(error.status.mediaHost, "unknown");
+            assert.doesNotMatch(JSON.stringify(error.status), /media\/final|fixture|https:\/\//i);
+            return true;
+        },
+    );
+    assert.equal(directFinalOnlyFetches, 0);
 });
 
 test("complete browser response is handed off once with exact bytes", async () => {
@@ -260,6 +360,8 @@ test("progress events use received chunks and finish at exact bytes", async () =
     let now = 0;
     const response = {
         ok: true,
+        status: 200,
+        url: "https://v11-default.365yg.com/media/video.mp4",
         headers: headers({"Content-Type": "video/mp4", "Content-Length": 5}),
         body: {
             getReader() {
@@ -368,7 +470,7 @@ test("active marker is cleared after completion and stores no URL or token", asy
     const target = eventTarget();
     let markerDuringFetch = "";
     await ordinary.download(ordinaryItem({
-        url: "https://media.example.test/video.mp4?token=secret",
+        url: "https://v11-default.365yg.com/video.mp4?token=secret",
         provider_manifest_token: "manifest-secret",
     }), {
         sessionStorage: storage,
@@ -381,7 +483,7 @@ test("active marker is cleared after completion and stores no URL or token", asy
     });
     assert.match(markerDuringFetch, /downloadActive/);
     assert.match(markerDuringFetch, /tiantianjiexi/);
-    assert.doesNotMatch(markerDuringFetch, /media\.example|token|secret|manifest/);
+    assert.doesNotMatch(markerDuringFetch, /365yg|token|secret|manifest/);
     assert.equal(storage.getItem(ordinary.ACTIVE_DOWNLOAD_STORAGE_KEY), null);
     assert.equal(target.listener("beforeunload"), undefined);
 });
@@ -516,7 +618,10 @@ test("HTML, JSON, XML, and SVG responses are rejected", async () => {
                     assert.fail("unsafe content must not be handed off");
                 },
             }),
-            (error) => error.errorCode === "BROWSER_DOWNLOAD_UNSUPPORTED_CONTENT",
+            (error) => (
+                error.errorCode === "UPSTREAM_MEDIA_INVALID"
+                && error.status.responseRejectReason === "CONTENT_TYPE_REJECTED"
+            ),
         );
     }
 });
@@ -550,6 +655,8 @@ test("a missing Content-Length is still bounded while the response body is read"
     let readCount = 0;
     const response = {
         ok: true,
+        status: 200,
+        url: "https://v11-default.365yg.com/media/video.mp4",
         headers: headers({"Content-Type": "video/mp4"}),
         body: {
             getReader() {
@@ -613,6 +720,8 @@ test("a stalled response body is aborted by the same inactivity guard", async ()
             idleTimeoutMs: 5,
             fetchImpl: async (_url, options) => ({
                 ok: true,
+                status: 200,
+                url: "https://v11-default.365yg.com/media/video.mp4",
                 headers: headers({
                     "Content-Type": "video/mp4",
                     "Content-Length": 5,
@@ -642,7 +751,7 @@ test("a stalled response body is aborted by the same inactivity guard", async ()
 });
 
 test("network and HTTP errors never include the signed URL", async () => {
-    const signedUrl = "https://media.example.test/video.mp4?token=secret";
+    const signedUrl = "https://v11-default.365yg.com/video.mp4?token=secret";
     for (const fetchImpl of [
         async () => { throw new TypeError(`failed ${signedUrl}`); },
         async () => responseFor("error", {ok: false, status: 403}),

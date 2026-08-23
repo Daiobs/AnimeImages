@@ -432,6 +432,38 @@
         return error;
     }
 
+    function responseGateDownloadError(responseGate, sourceUrl, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        const gate = responseGate && typeof responseGate === "object"
+            ? responseGate
+            : {};
+        const error = downloadError(
+            "UPSTREAM_MEDIA_INVALID",
+            "当前媒体节点未能启动下载，请重试。",
+        );
+        error.streamingStarted = false;
+        error.status = {
+            state: "failed",
+            errorCode: error.errorCode,
+            failureClass: "NOT_APPLICABLE",
+            failureStage: "HTTP_RESPONSE_REJECTED",
+            responseRejectReason: String(gate.responseRejectReason || "FINAL_HOST_REJECTED"),
+            httpStatus: positiveInteger(gate.httpStatus),
+            contentTypeClass: String(gate.contentTypeClass || "MISSING"),
+            finalMediaHost: String(gate.finalMediaHost || "unknown"),
+            mediaHost: streamingProtocol && typeof streamingProtocol.sanitizeMediaHost === "function"
+                ? streamingProtocol.sanitizeMediaHost(sourceUrl, {
+                    allowLoopback: Boolean(settings.allowLoopback),
+                })
+                : "unknown",
+            initialMediaFamily: String(gate.initialMediaFamily || "UNKNOWN"),
+            observedFinalHost: String(gate.observedFinalHost || "unknown"),
+            observedFinalHostClass: String(gate.observedFinalHostClass || "INVALID"),
+            redirected: Boolean(gate.redirected),
+        };
+        return error;
+    }
+
     async function probeOrdinaryMediaFetch(item, options) {
         const settings = options && typeof options === "object" ? options : {};
         const now = typeof settings.now === "function" ? settings.now : Date.now;
@@ -510,15 +542,18 @@
                 contentType,
                 contentLength,
             };
+            const responseGate = response
+                ? streamingProtocol.classifyResponseRejection(response, {
+                    initialUrl: sourceUrl,
+                    allowLoopbackHttp: Boolean(settings.allowLoopback),
+                })
+                : {rejected: true};
             if (
                 !response
-                || !response.ok
+                || responseGate.rejected
                 || !response.body
                 || typeof response.body.getReader !== "function"
                 || !contentTypeAllowsOrdinaryVideo(contentType)
-                || !streamingProtocol.isAllowedStreamingUrl(response.url, {
-                    allowLoopbackHttp: Boolean(settings.allowLoopback),
-                })
             ) {
                 return finish({...responseMetadata, failureStage: "HTTP_RESPONSE_REJECTED"});
             }
@@ -641,6 +676,9 @@
         if (errorCode === "DESCRIPTOR_EXPIRED") {
             return "下载链接已失效，请重新解析后再试。";
         }
+        if (errorCode === "UPSTREAM_MEDIA_INVALID") {
+            return "当前媒体节点未能启动下载，请重试。";
+        }
         if (error && error.streamingStarted) {
             return "浏览器下载未能完成，请重新点击下载；若仍失败，请重新解析。";
         }
@@ -657,6 +695,38 @@
             return "资源连接长时间没有进展，请重试下载；若仍失败，请重新解析。";
         }
         return "资源获取失败，请重试下载；若仍失败，请重新解析。";
+    }
+
+    function safeFailureDiagnostic(error) {
+        if (
+            !error
+            || !error.status
+            || !streamingProtocol
+            || typeof streamingProtocol.safeSnapshot !== "function"
+        ) {
+            return "";
+        }
+        const status = streamingProtocol.safeSnapshot(error && error.status);
+        const fields = [];
+        if (status.failureStage) {
+            fields.push(`stage=${status.failureStage}`);
+        }
+        if (status.responseRejectReason) {
+            fields.push(`reason=${status.responseRejectReason}`);
+        }
+        if (status.mediaHost !== "unknown") {
+            fields.push(`initial=${status.mediaHost}`);
+        }
+        if (status.observedFinalHost !== "unknown") {
+            fields.push(`final=${status.observedFinalHost}`);
+        }
+        if (status.httpStatus) {
+            fields.push(`http=${status.httpStatus}`);
+        }
+        if (status.contentTypeClass) {
+            fields.push(`content=${status.contentTypeClass}`);
+        }
+        return fields.join("; ");
     }
 
     function canFallbackToBlob(error) {
@@ -918,6 +988,16 @@
         const maxBytes = positiveInteger(settings.maxBytes) || MAX_BROWSER_BLOB_BYTES;
         const filename = sanitizeFilename(settings.filename || item.filename);
         const downloadId = createDownloadId(settings);
+        const sourceUrl = String(item.url || item.video_url || "");
+        if (
+            !streamingProtocol
+            || typeof streamingProtocol.isAllowedInitialMediaUrl !== "function"
+            || !streamingProtocol.isAllowedInitialMediaUrl(sourceUrl, {
+                allowLoopbackHttp: Boolean(settings.allowLoopback),
+            })
+        ) {
+            throw responseGateDownloadError(null, sourceUrl, settings);
+        }
         if (declaredSize > maxBytes) {
             throw downloadError(
                 "BROWSER_BLOB_TOO_LARGE",
@@ -978,7 +1058,7 @@
         try {
             fetchGuard.touch();
             response = await fetchImpl(
-                String(item.url || item.video_url),
+                sourceUrl,
                 browserFetchOptions(fetchGuard.signal),
             );
         } catch (error) {
@@ -1005,6 +1085,19 @@
                 "BROWSER_FETCH_HTTP_ERROR",
                 "资源请求失败。",
             );
+        }
+
+        const responseGate = streamingProtocol.classifyResponseRejection(response, {
+            initialUrl: sourceUrl,
+            allowLoopbackHttp: Boolean(settings.allowLoopback),
+        });
+        if (responseGate.rejected) {
+            fetchGuard.clear();
+            clearActiveProtection(true);
+            if (response.body && typeof response.body.cancel === "function") {
+                await response.body.cancel().catch(() => {});
+            }
+            throw responseGateDownloadError(responseGate, sourceUrl, settings);
         }
 
         const contentType = normalizedContentType(
@@ -1205,6 +1298,7 @@
         formatRate,
         readBlobWithinLimit,
         safeErrorMessage,
+        safeFailureDiagnostic,
         sanitizeFilename,
     });
 }));

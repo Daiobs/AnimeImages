@@ -53,6 +53,176 @@ test("Batch exposes one ordinary-video action and no compatibility transport UI"
     assert.doesNotMatch(template, /data-batch-compat-download/);
     assert.doesNotMatch(template, /兼容下载/);
     assert.doesNotMatch(template, /高速直连/);
+    assert.match(template, /data-batch-download-status/);
+});
+
+
+function fakeClassList(initial) {
+    const values = new Set(initial || []);
+    return {
+        add(value) { values.add(value); },
+        remove(value) { values.delete(value); },
+        toggle(value, force) {
+            if (force === undefined ? !values.has(value) : force) {
+                values.add(value);
+            } else {
+                values.delete(value);
+            }
+        },
+        contains(value) { return values.has(value); },
+    };
+}
+
+
+function fakeBatchVideoDownloadUi() {
+    const label = {textContent: "下载"};
+    const track = {
+        attributes: {},
+        setAttribute(name, value) { this.attributes[name] = String(value); },
+        removeAttribute(name) { delete this.attributes[name]; },
+    };
+    const bar = {style: {width: "42%"}};
+    const percent = {textContent: "42%"};
+    const bytes = {textContent: "44 MiB / 106 MiB"};
+    const speed = {textContent: "2.00 MiB/s"};
+    const eta = {textContent: "剩余约 31 秒"};
+    const warning = {hidden: false};
+    const status = {hidden: true, textContent: ""};
+    const progress = {
+        hidden: false,
+        classList: fakeClassList(["is-pending"]),
+        querySelector(selector) {
+            return {
+                "[role='progressbar']": track,
+                ".download-progress-bar": bar,
+                "[data-download-progress-percent]": percent,
+                "[data-download-progress-bytes]": bytes,
+                "[data-download-progress-speed]": speed,
+                "[data-download-progress-eta]": eta,
+                "[data-blob-download-warning]": warning,
+            }[selector] || null;
+        },
+    };
+    const item = {
+        querySelector(selector) {
+            if (selector === "[data-batch-download-progress]") {
+                return progress;
+            }
+            if (selector === "[data-batch-download-status]") {
+                return status;
+            }
+            return null;
+        },
+    };
+    const button = {
+        dataset: {},
+        disabled: true,
+        title: "",
+        classList: fakeClassList(["is-loading"]),
+        querySelector(selector) {
+            return selector === ".batch-download-label" ? label : null;
+        },
+        closest(selector) {
+            return selector === ".batch-direct-item" ? item : null;
+        },
+    };
+    return {bar, button, bytes, eta, label, percent, progress, speed, status, track, warning};
+}
+
+
+test("Batch ordinary failures enter a sanitized terminal retry state", () => {
+    const failureCases = [
+        ["UPSTREAM_MEDIA_INVALID", "FINAL_HOST_REJECTED", "HTTP_RESPONSE_REJECTED"],
+        ["UPSTREAM_FETCH_FAILED", "", "FETCH_REJECTED_BEFORE_RESPONSE"],
+        ["UPSTREAM_MEDIA_INVALID", "HTTP_STATUS_REJECTED", "HTTP_RESPONSE_REJECTED"],
+        ["UPSTREAM_STREAM_FAILED", "", "STREAM_BODY_FAILURE"],
+        ["UPSTREAM_SIZE_MISMATCH", "", "SIZE_VALIDATION_FAILURE"],
+    ];
+    failureCases.forEach(([errorCode, responseRejectReason, failureStage]) => {
+        const ui = fakeBatchVideoDownloadUi();
+        const error = Object.assign(new Error("unsafe signed URL"), {
+            errorCode,
+            streamingStarted: true,
+            status: {
+                state: "failed",
+                errorCode,
+                failureStage,
+                responseRejectReason,
+                mediaHost: "v5-default.365yg.com",
+                initialMediaFamily: "DOUYIN_365YG",
+                observedFinalHost: "random.edge.bdcgslb.com",
+                observedFinalHostClass: "REVIEWED_FINAL_ONLY",
+                httpStatus: 200,
+                contentTypeClass: "VIDEO",
+            },
+        });
+        const message = batch.applyBatchDownloadTerminalFailure(ui.button, error, {
+            downloadApi: ordinary,
+            showDiagnostics: false,
+        });
+
+        assert.equal(ui.progress.hidden, true);
+        assert.equal(ui.progress.classList.contains("is-pending"), false);
+        assert.equal(ui.bar.style.width, "0%");
+        assert.equal(ui.percent.textContent, "");
+        assert.equal(ui.bytes.textContent, "");
+        assert.equal(ui.speed.textContent, "");
+        assert.equal(ui.eta.textContent, "");
+        assert.equal(ui.warning.hidden, true);
+        assert.equal(ui.button.disabled, false);
+        assert.equal(ui.button.classList.contains("is-loading"), false);
+        assert.equal(ui.label.textContent, "重试下载");
+        assert.equal(ui.status.hidden, false);
+        assert.equal(ui.status.textContent, message);
+        assert.doesNotMatch(message, /FINAL_HOST|bdcgslb|Service Worker|Provider|CORS/i);
+    });
+});
+
+
+test("staff terminal diagnostics contain only safe fixed fields and hostnames", () => {
+    const ui = fakeBatchVideoDownloadUi();
+    const error = {
+        errorCode: "UPSTREAM_MEDIA_INVALID",
+        streamingStarted: true,
+        status: {
+            state: "failed",
+            errorCode: "UPSTREAM_MEDIA_INVALID",
+            failureStage: "HTTP_RESPONSE_REJECTED",
+            responseRejectReason: "FINAL_HOST_REJECTED",
+            mediaHost: "v5-default.365yg.com",
+            initialMediaFamily: "DOUYIN_365YG",
+            observedFinalHost: "unreviewed.example",
+            observedFinalHostClass: "UNREVIEWED_PUBLIC",
+            httpStatus: 200,
+            contentTypeClass: "VIDEO",
+            unsafeUrl: "https://unreviewed.example/media.mp4?token=secret",
+        },
+    };
+    const message = batch.applyBatchDownloadTerminalFailure(ui.button, error, {
+        downloadApi: ordinary,
+        showDiagnostics: true,
+    });
+
+    assert.match(message, /stage=HTTP_RESPONSE_REJECTED/);
+    assert.match(message, /reason=FINAL_HOST_REJECTED/);
+    assert.match(message, /initial=v5-default\.365yg\.com/);
+    assert.match(message, /final=unreviewed\.example/);
+    assert.doesNotMatch(message, /media\.mp4|token|secret|https:\/\//i);
+});
+
+
+test("Single ordinary failures hide stale progress and preserve safe diagnostics", () => {
+    const source = readProjectFile("static/js/xhs_download.js");
+
+    assert.match(source, /wrapped\.isOrdinaryMediaFailure = true/);
+    assert.match(source, /error\.isOrdinaryMediaFailure[\s\S]*hideDownloadProgress\(\)/);
+    assert.equal(
+        ordinary.safeErrorMessage({
+            errorCode: "UPSTREAM_MEDIA_INVALID",
+            streamingStarted: true,
+        }),
+        "当前媒体节点未能启动下载，请重试。",
+    );
 });
 
 

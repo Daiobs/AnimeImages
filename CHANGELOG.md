@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Split ordinary-media URL trust into strict initial admission and
+  source-bound final redirect policy. A reviewed strict `*.bdcgslb.com`
+  subdomain is now accepted only after an admitted `*.365yg.com` source
+  redirects there; direct descriptors, apex/lookalike hosts, unsafe URL forms,
+  and unknown final hosts remain rejected. Failure telemetry records only
+  sanitized hostname-level facts, and Single/Batch now leave stale transfer
+  progress for an explicit retryable terminal state. Provider behavior,
+  response media gates, timeouts, and the zero-Relay data path are unchanged.
 - Added a closed, typed, URL-free Rich Media Domain Contract v1 runtime model
   as an optional final field on `ParseResult`. Legacy results continue to use
   `rich_media=None`; current Providers emit no rich-media data, and existing
