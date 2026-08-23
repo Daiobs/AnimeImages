@@ -8,7 +8,6 @@ from enum import Enum
 from typing import Any
 from urllib.parse import urlsplit
 
-from ..assets import MediaAsset
 from ..rich_media import (
     RICH_MEDIA_IMAGE_EXTENSIONS,
     RICH_MEDIA_SCHEMA_VERSION,
@@ -77,6 +76,7 @@ class BilibiliSourceTargetKind(str, Enum):
     DYNAMIC = "dynamic"
     OPUS = "opus"
     SHORT = "short"
+    NUMERIC_UNVERIFIED = "numeric_unverified"
     UNKNOWN = "unknown"
 
 
@@ -99,11 +99,21 @@ class BilibiliSourceShape:
 
 
 @dataclass(frozen=True)
+class BilibiliDynamicAssetSpec:
+    """URL-free intermediate media evidence for a future Provider builder."""
+
+    asset_id: str
+    media_type: str
+    extension: str
+    role: str
+
+
+@dataclass(frozen=True)
 class BilibiliDynamicNormalization:
     identity: BilibiliContentIdentity
     title_candidate: str
     author_candidate: str
-    assets: tuple[MediaAsset, ...]
+    asset_specs: tuple[BilibiliDynamicAssetSpec, ...]
     rich_media: RichMediaContractV1
 
 
@@ -203,17 +213,10 @@ def classify_bilibili_source_shape(value: str) -> BilibiliSourceShape:
             )
     if len(segments) == 1 and _NUMERIC_CONTENT_ID_RE.fullmatch(segments[0]):
         return BilibiliSourceShape(
-            input_kind=_classified_input_kind(
-                original_input_kind,
-                SourceInputKind.DYNAMIC_PAGE,
-            ),
-            target_kind=BilibiliSourceTargetKind.DYNAMIC.value,
-            identity=_identity(
-                "bilibili_dynamic",
-                segments[0],
-                path="source.identity",
-            ),
-            requires_resolution=False,
+            input_kind=original_input_kind,
+            target_kind=BilibiliSourceTargetKind.NUMERIC_UNVERIFIED.value,
+            identity=None,
+            requires_resolution=True,
         )
     if len(segments) >= 2 and segments[0].lower() == "video":
         video_id = segments[1]
@@ -487,13 +490,12 @@ def normalize_bilibili_dynamic_payload(
             specs.append(spec)
 
     post_type = _post_type_for_specs(specs, live_photos)
-    assets = tuple(
-        MediaAsset(
-            media_type=spec.media_type,
-            url="",
-            platform="bilibili",
-            ext=spec.extension,
+    asset_specs = tuple(
+        BilibiliDynamicAssetSpec(
             asset_id=spec.asset_id,
+            media_type=spec.media_type,
+            extension=spec.extension,
+            role=_role_for_spec(spec, post_type=post_type),
         )
         for spec in specs
     )
@@ -502,9 +504,9 @@ def normalize_bilibili_dynamic_payload(
             asset_id=spec.asset_id,
             media_type=spec.media_type,
             extension=spec.extension,
-            role=_role_for_spec(spec, post_type=post_type),
+            role=spec.role,
         )
-        for spec in specs
+        for spec in asset_specs
     )
     groups = tuple(
         RichMediaGroupV1(
@@ -528,7 +530,7 @@ def normalize_bilibili_dynamic_payload(
         identity=payload_identity,
         title_candidate=title_candidate,
         author_candidate=author_candidate,
-        assets=assets,
+        asset_specs=asset_specs,
         rich_media=rich_media,
     )
 
@@ -536,6 +538,7 @@ def normalize_bilibili_dynamic_payload(
 __all__ = [
     "BILIBILI_DYNAMIC_MAX_ITEMS",
     "BilibiliContentIdentity",
+    "BilibiliDynamicAssetSpec",
     "BilibiliDynamicNormalization",
     "BilibiliDynamicNormalizationError",
     "BilibiliSourceShape",

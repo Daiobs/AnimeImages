@@ -4,15 +4,18 @@
 
 ```text
 STATIC_RESEARCH = COMPLETE
-DORMANT_NORMALIZER = READY_FOR_REVIEW
+DORMANT_INTERMEDIATE_NORMALIZER = READY_FOR_REVIEW
 REGISTERED = NO
 PUBLIC = NO
 DEPLOYED = NO
 
+BILIBILI_INTERMEDIATE_CONTRACT = READY_FOR_REVIEW
+BILIBILI_REAL_PAYLOAD_MAPPING = NOT_STARTED
+BILIBILI_PROVIDER_WIRING = NOT_STARTED
+BILIBILI_MEDIA_HOST_REVIEW = NOT_STARTED
+BILIBILI_PUBLIC_SUPPORT = NO
 BILIBILI_DYNAMIC_BLOCKED_IDENTITY_MAPPING = OPEN
-BILIBILI_DYNAMIC_BLOCKED_PAYLOAD_EVIDENCE = OPEN_FOR_RUNTIME_WIRING
-BILIBILI_DYNAMIC_BLOCKED_HOST_REVIEW = OPEN
-BILIBILI_DYNAMIC_LIVEPHOTO_BLOCKED_PAIR_EVIDENCE = OPEN_FOR_RUNTIME_WIRING
+BILIBILI_DYNAMIC_LIVEPHOTO_BLOCKED_PAIR_EVIDENCE = OPEN
 RICH_TEXT_PRESENTATION = DEFERRED
 ```
 
@@ -58,7 +61,7 @@ The offline classifier distinguishes the following without resolving a URL:
 | `/video/BV...` or `/video/av...` | existing video | current adapter remains authoritative |
 | `t.bilibili.com/<18-19 digits>` | Dynamic | `bilibili_dynamic:<id>` |
 | `bilibili.com/opus/<18-19 digits>` | Opus | `bilibili_opus:<id>` |
-| `bilibili.com/<18-19 digits>` | numeric Dynamic shape | `bilibili_dynamic:<id>` |
+| `*.bilibili.com/<18-19 digits>` | numeric unverified | no identity; resolution required |
 | `b23.tv/...` | short link | unresolved; no identity is guessed |
 | share text containing one of the above | share text plus target shape | target identity only when direct numeric evidence exists |
 | other Bilibili page | unknown | no video or Dynamic identity is guessed |
@@ -78,7 +81,10 @@ typed payload identity. Kind and numeric value must match exactly. Even equal
 digits fail closed when one side is `bilibili_dynamic` and the other is
 `bilibili_opus`.
 
-No cross-form canonicalization is implemented. Proving a stable mapping remains
+No cross-form canonicalization is implemented. A generic numeric root path is
+not sufficient evidence of either namespace: it is classified
+`numeric_unverified`, has no identity, requires resolution, and is not routed
+or registered. Proving a stable mapping remains
 `BILIBILI_DYNAMIC_BLOCKED_IDENTITY_MAPPING`.
 
 ## Payload And Pair Evidence
@@ -96,10 +102,12 @@ The pinned source does not establish all activation requirements:
 - it optionally accepts Cookie input and reports risk-control behavior.
 
 The AnimeImages normalizer consequently accepts only a new sanitized schema in
-which an upstream mapper has already supplied exact payload identity, pair ID,
-owner identity, media kind, domain asset ID, and closed Contract v1 extension.
-No current adapter supplies that schema. Future runtime wiring must prove those
-fields from an approved payload before calling this module.
+which a future AnimeImages Provider Builder has already supplied exact payload
+identity, pair ID, owner identity, media kind, domain asset ID, and closed
+Contract v1 extension. Requested/payload identity, pair ID, and owner identity
+are AnimeImages adapter-required evidence, not claimed upstream-native fields.
+No current adapter supplies that schema. Future runtime wiring must first prove
+and construct those fields from an approved real payload mapping.
 
 ## Dormant Normalization Contract
 
@@ -116,8 +124,10 @@ have at least one bounded item.
 
 Regular image and video items contain only kind, domain asset ID, and extension.
 A Live Photo item must contain an explicit pair ID, an owner identity equal to
-the exact payload identity, one still member, and one motion member. Missing,
-duplicate, or mismatched evidence fails with a fixed URL-free error code.
+the exact payload identity, one still member, and one motion member. These
+pair/owner values are future AnimeImages adapter evidence, not names asserted to
+exist in ParseHub or Bilibili payloads. Missing, duplicate, or mismatched
+evidence fails with a fixed URL-free error code.
 
 The normalizer never infers relationships from adjacency, array index, filename,
 URL path, dimensions, or matching numeric fragments.
@@ -133,13 +143,19 @@ The mapping uses the existing `RichMediaContractV1`:
 - images plus a pair or video -> `multimedia`.
 
 Each regular item stays at its payload position. Each Live Photo item contributes
-its still followed immediately by its motion at that position. Assets are never
-regrouped by media type.
+its still followed immediately by its motion at that position. Intermediate
+`BilibiliDynamicAssetSpec` values are never regrouped by media type and contain
+only asset ID, media type, extension, and structural role.
 
 Title and author are bounded metadata candidates only. Dynamic text does not
 create a Rich Text block, so `RICH_TEXT_PRESENTATION = DEFERRED`. No candidate is
 promoted to cover. URL-free relationship metadata grants no Provider manifest
 or download authority.
+
+A future Provider Builder, not this dormant normalizer, owns URL admission,
+host review, format verification, size, Provider provenance, manifest identity,
+and final `MediaAsset` construction. Intermediate specs contain no URL, preview,
+cover, headers, Provider, manifest, or download method.
 
 ## Host Matrix
 
@@ -166,7 +182,7 @@ bounded staff-only review.
 
 Fictional source and URL-free payload fixtures cover:
 
-- video, Dynamic, Opus, numeric Dynamic, short-link, share-text, and unknown
+- video, Dynamic, Opus, numeric-unverified, short-link, share-text, and unknown
   source shapes;
 - distinct Dynamic and Opus identities, including equal-digit mismatch;
 - one image, gallery, explicit Live Photo, and ordered multimedia;
@@ -175,7 +191,8 @@ Fictional source and URL-free payload fixtures cover:
 - terminal and empty-target false-positive rejection;
 - missing members, duplicate members, pair IDs, and asset IDs;
 - unknown extension, unsafe metadata, and unexpected URL/cover/text fields;
-- no cover, Provider authority, manifest token, or registered runtime import;
+- exact intermediate-spec fields with no URL, cover, headers, Provider,
+  manifest, download method, or registered runtime import;
 - host statuses with no admitted Dynamic media host.
 
 Tests use fictional IDs and make no Provider or public-network request.

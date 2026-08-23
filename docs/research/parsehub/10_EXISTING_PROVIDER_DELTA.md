@@ -158,10 +158,13 @@ be proven before routing. PR-D may add only documentation, fixtures, and a
 dormant network-free normalizer if that evidence is sufficient.
 
 PR-D keeps Dynamic and Opus in separate identity namespaces and adds a dormant,
-URL-free normalizer that requires exact requested/payload/owner identity plus
-explicit pair evidence. Cross-form identity mapping, runtime payload fields,
-media hosts, and activation remain blocked pending separate proof. The current
-Bilibili video adapter and registry are unchanged.
+URL-free intermediate-spec normalizer that requires exact
+requested/payload/owner identity plus explicit pair evidence. Pair and owner are
+AnimeImages future Provider Builder requirements, not claimed upstream-native
+fields. Generic numeric Bilibili paths remain identity-free and require
+resolution. Cross-form identity mapping, real payload mapping, media hosts,
+final `MediaAsset` construction, and activation remain blocked pending separate
+proof. The current Bilibili video adapter and registry are unchanged.
 
 ## Unchanged product surface
 

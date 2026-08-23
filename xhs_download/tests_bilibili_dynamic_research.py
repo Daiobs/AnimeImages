@@ -1,12 +1,14 @@
 import copy
 import json
+from dataclasses import fields
 from pathlib import Path
 
 from django.test import SimpleTestCase
 
-from .services.assets import ParseResult
+from .services.assets import MediaAsset
 from .services.platforms.bilibili_dynamic_normalizer import (
     BILIBILI_DYNAMIC_MAX_ITEMS,
+    BilibiliDynamicAssetSpec,
     BilibiliDynamicNormalizationError,
     classify_bilibili_source_shape,
     normalize_bilibili_dynamic_payload,
@@ -72,6 +74,18 @@ class BilibiliDormantSourceShapeTests(SimpleTestCase):
         self.assertIsNone(result.identity)
         self.assertTrue(result.requires_resolution)
 
+    def test_generic_numeric_page_remains_unverified_without_identity(self):
+        for source in (
+            "https://www.bilibili.com/223456789012345678",
+            "https://space.bilibili.com/223456789012345678",
+        ):
+            with self.subTest(source=source):
+                result = classify_bilibili_source_shape(source)
+                self.assertEqual(result.input_kind, "url")
+                self.assertEqual(result.target_kind, "numeric_unverified")
+                self.assertIsNone(result.identity)
+                self.assertTrue(result.requires_resolution)
+
     def test_unknown_bilibili_page_is_not_classified_as_video(self):
         result = classify_bilibili_source_shape(
             "https://www.bilibili.com/read/fixture-only"
@@ -121,7 +135,7 @@ class BilibiliDormantDynamicNormalizerTests(SimpleTestCase):
         result = self.normalize("gallery")
         self.assertEqual(result.rich_media.post_type, "gallery")
         self.assertEqual(
-            [asset.asset_id for asset in result.assets],
+            [asset.asset_id for asset in result.asset_specs],
             ["bili:gallery:one", "bili:gallery:two", "bili:gallery:three"],
         )
 
@@ -138,7 +152,7 @@ class BilibiliDormantDynamicNormalizerTests(SimpleTestCase):
         result = self.normalize("multimedia")
         self.assertEqual(result.rich_media.post_type, "multimedia")
         self.assertEqual(
-            [asset.asset_id for asset in result.assets],
+            [asset.asset_id for asset in result.asset_specs],
             [
                 "bili:mixed:image-one",
                 "bili:mixed:still-one",
@@ -242,31 +256,43 @@ class BilibiliDormantDynamicNormalizerTests(SimpleTestCase):
 
     def test_relationships_do_not_grant_download_authority(self):
         result = self.normalize("one_live_photo")
-        for asset in result.assets:
-            self.assertEqual(asset.url, "")
-            self.assertEqual(asset.provider, "")
-            self.assertEqual(asset.provider_manifest_token, "")
-            self.assertNotIn("provider_manifest_token", asset.to_download_item())
-
-    def test_no_asset_is_promoted_to_cover(self):
-        result = self.normalize("multimedia")
-        self.assertTrue(all(asset.cover_url == "" for asset in result.assets))
-        self.assertTrue(all(asset.cover_preview_url == "" for asset in result.assets))
-
-    def test_normalization_satisfies_existing_parse_result_contract(self):
-        result = self.normalize("multimedia")
-        parsed = ParseResult(
-            platform="bilibili",
-            post_type=result.rich_media.post_type,
-            base_filename="fixture",
-            assets=result.assets,
-            metadata={
-                "title_candidate": result.title_candidate,
-                "author_candidate": result.author_candidate,
-            },
-            rich_media=result.rich_media,
+        self.assertEqual(
+            {field.name for field in fields(BilibiliDynamicAssetSpec)},
+            {"asset_id", "media_type", "extension", "role"},
         )
-        self.assertIs(parsed.rich_media, result.rich_media)
+        for asset in result.asset_specs:
+            self.assertIs(type(asset), BilibiliDynamicAssetSpec)
+            self.assertNotIsInstance(asset, MediaAsset)
+            for delivery_field in (
+                "url",
+                "preview_url",
+                "cover_url",
+                "headers",
+                "provider",
+                "provider_manifest_token",
+                "to_download_item",
+            ):
+                self.assertFalse(hasattr(asset, delivery_field))
+
+    def test_no_asset_spec_contains_cover_or_delivery_fields(self):
+        result = self.normalize("multimedia")
+        self.assertNotIn("primary", [asset.role for asset in result.asset_specs])
+        self.assertTrue(
+            all(not hasattr(asset, "cover_url") for asset in result.asset_specs)
+        )
+
+    def test_asset_specs_and_contract_descriptors_remain_aligned(self):
+        result = self.normalize("multimedia")
+        self.assertEqual(
+            [
+                (asset.asset_id, asset.media_type, asset.extension, asset.role)
+                for asset in result.asset_specs
+            ],
+            [
+                (asset.asset_id, asset.media_type, asset.extension, asset.role)
+                for asset in result.rich_media.assets
+            ],
+        )
 
     def test_input_is_not_mutated(self):
         payload = copy.deepcopy(self.cases["one_live_photo"])
@@ -306,3 +332,4 @@ class BilibiliDormantDynamicNormalizerTests(SimpleTestCase):
             source = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
             self.assertNotIn("bilibili_dynamic_normalizer", source)
             self.assertNotIn("normalize_bilibili_dynamic_payload", source)
+            self.assertNotIn("rich_media=", source)
