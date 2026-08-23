@@ -4,6 +4,8 @@
 
 - `BDCGSLB_ATTRIBUTION = SUFFICIENT`
 - `BDCGSLB_MEDIA_BEHAVIOR = PASS`
+- `POST_FIX_LIVE_BDCGSLB_REPRODUCTION = NOT_DETERMINISTICALLY_REPRODUCED`
+- `INTERMEDIATE_REDIRECT_CHAIN_VISIBILITY = BROWSER_OPAQUE`
 - `UNKNOWN_FINAL_HOST_AUTO_ADMISSION = NO`
 - `MEDIA_MAGIC_ATTESTATION = DEFERRED_NO_SAFE_COMPATIBILITY_PROOF`
 - `BROWSER_MEDIA_CANDIDATE_FALLBACK_V1 = DEFERRED_SEPARATE_PR`
@@ -58,15 +60,24 @@ The review collected only hostname-level and public infrastructure evidence:
   `*.bdcgslb.com` subdomains.
 - The observed address resolved publicly and was not private, loopback, or an
   IP literal supplied as a hostname.
-- Chrome observed the direct relation `*.365yg.com` to a strict
-  `*.bdcgslb.com` subdomain, followed by HTTP 200 and `video/mp4`.
+- Earlier real-browser evidence observed an approved `*.365yg.com` initial
+  request and a strict `*.bdcgslb.com` final response, followed by HTTP 200
+  and `video/mp4`.
 - Browser CORS and body access were sufficient for the ordinary-media stream.
-- No further redirect to an unreviewed registrable domain was observed.
+
+The browser reliably exposes the initial request, final `Response.url`, the
+`redirected` flag, and final response headers/body. It does not expose the
+complete cross-origin intermediate redirect chain, so the evidence proves the
+reviewed initial-to-final relationship without claiming visibility into every
+intermediate hop.
 
 The exact edge label is dynamic infrastructure and is deliberately not pinned.
-Only the strict subdomain relation is reviewed. Bounded follow-up attempts did
-not consistently reproduce a BDCGSLB redirect; some remained on `365yg.com`.
-That does not widen the policy or establish any other final-only family.
+Only the strict subdomain relation is reviewed. Post-fix live downloads
+completed successfully, but bounded follow-up attempts did not deterministically
+reproduce BDCGSLB and instead remained on `365yg.com`. The final-only branch is
+therefore supported by the earlier real-browser evidence, domain review, and
+controlled protocol/Worker/Blob tests. This does not widen the policy or
+establish any other final-only family.
 
 A 1,024-byte Range response was confirmed on a current `365yg.com` source.
 Range behavior was not independently proven for BDCGSLB and is not used as an

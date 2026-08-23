@@ -1427,6 +1427,37 @@ test("response-gate telemetry adds the fixed rejection field group", () => {
     });
 });
 
+test("new page keeps the legacy telemetry shape for an old worker status", () => {
+    const legacyStatus = safeStatus({
+        state: "failed",
+        errorCode: "UPSTREAM_MEDIA_INVALID",
+        failureClass: "NOT_APPLICABLE",
+        failureStage: "HTTP_RESPONSE_REJECTED",
+        responseRejectReason: "FINAL_HOST_REJECTED",
+        httpStatus: 200,
+        contentTypeClass: "VIDEO",
+        finalMediaHost: "unknown",
+        mediaHost: "v11-default.365yg.com",
+    });
+    const payload = streaming.createTerminalTelemetryPayload(
+        legacyStatus,
+        {},
+        {telemetryId: "11111111111111111111111111111111"},
+    );
+
+    assert.equal(payload.response_reject_reason, "FINAL_HOST_REJECTED");
+    assert.equal(payload.final_media_host, "unknown");
+    for (const field of [
+        "initial_media_host",
+        "initial_media_family",
+        "observed_final_host",
+        "observed_final_host_class",
+        "redirected",
+    ]) {
+        assert.equal(Object.prototype.hasOwnProperty.call(payload, field), false, field);
+    }
+});
+
 test("a throwing telemetry reporter cannot change post-start failure semantics", async () => {
     const harness = createClientHarness({
         telemetryReporter: {report() { throw new Error("telemetry failed"); }},
