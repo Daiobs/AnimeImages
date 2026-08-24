@@ -1,0 +1,196 @@
+{
+  "schema_version": 1,
+  "evidence_id": "xhs-livephoto-real-payload-evidence-v1",
+  "observed_at_utc": "2026-08-24",
+  "collection_mode": "public_html_without_credentials",
+  "sample_count": 5,
+  "identity_policy": {
+    "requested_payload_identity_match_required": true,
+    "first_note_id_allowed": false,
+    "recommendation_payload_allowed": false
+  },
+  "pairing_policy": {
+    "required_basis": "same_item_explicit_fields",
+    "array_position_allowed": false,
+    "url_similarity_allowed": false,
+    "filename_similarity_allowed": false,
+    "dimension_similarity_allowed": false
+  },
+  "observed_field_paths": {
+    "item_collection": "note.imageList[]",
+    "livephoto_marker": "item.livePhoto",
+    "still_candidates": [
+      "item.urlDefault",
+      "item.infoList[]"
+    ],
+    "motion_candidates": [
+      "item.stream.<codec-family>[].masterUrl",
+      "item.stream.<codec-family>[].backupUrls[]"
+    ]
+  },
+  "host_review": {
+    "still_host_families": [
+      "sns-webpic-qc.xhscdn.com"
+    ],
+    "motion_host_families": [
+      "sns-video-v*.xhscdn.com",
+      "sns-bak-v*.xhscdn.com"
+    ],
+    "allowlist_changed": false,
+    "download_authority_granted": false
+  },
+  "format_review": {
+    "representative_still_signature_family": "jpeg",
+    "representative_motion_signature_family": "iso_bmff_mp4",
+    "representative_video_signature_family": "iso_bmff_mp4",
+    "sample_method": "bounded_first_128_bytes",
+    "media_saved": false,
+    "payload_native_still_format_field_confirmed": false,
+    "mapper_extension_population_authorized": false
+  },
+  "samples": [
+    {
+      "sample_id": "xhs-livephoto-01",
+      "sample_type": "livephoto",
+      "source_short_link": "sha256:1c0465f56850abe5f31f786b4aa043445ef264891eadad78ecc0aa83e9098376",
+      "target_identity_confirmed": true,
+      "target_note_id": "sha256:b647deeab17b81434c3a60ea508401e968e35ccae8e43d6d8371999b297d3a92",
+      "payload_note_id": "sha256:b647deeab17b81434c3a60ea508401e968e35ccae8e43d6d8371999b297d3a92",
+      "item_count": 14,
+      "livephoto_item_count": 14,
+      "regular_image_item_count": 0,
+      "item_local_pair_evidence": true,
+      "pair_evidence_basis": "same_item_live_marker_still_and_motion",
+      "negative_false_positive": false,
+      "invalid_fail_closed": false,
+      "still_host_family": [
+        "sns-webpic-qc.xhscdn.com"
+      ],
+      "motion_host_family": [
+        "sns-video-v*.xhscdn.com",
+        "sns-bak-v*.xhscdn.com"
+      ],
+      "format_family": [
+        "jpeg",
+        "iso_bmff_mp4"
+      ],
+      "mapper_ready_signal": true,
+      "notes": "All 14 ordered image items contain an explicit LivePhoto marker, an item-local still field, and an item-local motion stream."
+    },
+    {
+      "sample_id": "xhs-livephoto-02",
+      "sample_type": "livephoto",
+      "source_short_link": "sha256:829fed6e2655218930ced67b756132305444971453dee64b17c9ed6fbd74222b",
+      "target_identity_confirmed": true,
+      "target_note_id": "sha256:25b75efe2e7957af1abff2412df7dda1c9ca4436bb701dfde4cf153015e3a3f2",
+      "payload_note_id": "sha256:25b75efe2e7957af1abff2412df7dda1c9ca4436bb701dfde4cf153015e3a3f2",
+      "item_count": 17,
+      "livephoto_item_count": 12,
+      "regular_image_item_count": 5,
+      "item_local_pair_evidence": true,
+      "pair_evidence_basis": "same_item_live_marker_still_and_motion",
+      "negative_false_positive": false,
+      "invalid_fail_closed": false,
+      "still_host_family": [
+        "sns-webpic-qc.xhscdn.com"
+      ],
+      "motion_host_family": [
+        "sns-video-v*.xhscdn.com",
+        "sns-bak-v*.xhscdn.com"
+      ],
+      "format_family": [
+        "jpeg",
+        "iso_bmff_mp4"
+      ],
+      "mapper_ready_signal": true,
+      "notes": "Twelve ordered items contain direct LivePhoto pairs; five interleaved items remain ordinary images without a motion member."
+    },
+    {
+      "sample_id": "xhs-gallery-01",
+      "sample_type": "image_gallery",
+      "source_short_link": "sha256:e075ddb6fe2cb2d12427e682482ea424b75c03741ae7f0b92b2282a5658ab0bf",
+      "target_identity_confirmed": true,
+      "target_note_id": "sha256:da2f673e5eaf44e48a7d40982d130dec7f51bb3c84429c1240394accdfe6f22b",
+      "payload_note_id": "sha256:da2f673e5eaf44e48a7d40982d130dec7f51bb3c84429c1240394accdfe6f22b",
+      "item_count": 4,
+      "livephoto_item_count": 0,
+      "regular_image_item_count": 4,
+      "item_local_pair_evidence": false,
+      "pair_evidence_basis": "none",
+      "negative_false_positive": false,
+      "invalid_fail_closed": false,
+      "still_host_family": [
+        "sns-webpic-qc.xhscdn.com"
+      ],
+      "motion_host_family": [],
+      "format_family": [
+        "jpeg"
+      ],
+      "mapper_ready_signal": true,
+      "notes": "All four items are ordinary images; no LivePhoto marker and motion member combination was observed."
+    },
+    {
+      "sample_id": "xhs-video-01",
+      "sample_type": "video",
+      "source_short_link": "sha256:d43cc6aeb9a1be65bcd3b3f47a05540166eba8bb1effe7be0e618491ac5d1c5e",
+      "target_identity_confirmed": true,
+      "target_note_id": "sha256:881a22703595f6069b8224299ae38ad8abb3592b168d121f718e0016ee3076c4",
+      "payload_note_id": "sha256:881a22703595f6069b8224299ae38ad8abb3592b168d121f718e0016ee3076c4",
+      "item_count": 1,
+      "livephoto_item_count": 0,
+      "regular_image_item_count": 1,
+      "item_local_pair_evidence": false,
+      "pair_evidence_basis": "none",
+      "negative_false_positive": false,
+      "invalid_fail_closed": false,
+      "still_host_family": [
+        "sns-webpic-qc.xhscdn.com"
+      ],
+      "motion_host_family": [],
+      "format_family": [
+        "jpeg",
+        "iso_bmff_mp4"
+      ],
+      "mapper_ready_signal": true,
+      "notes": "The note-level video remains distinct from its regular image cover; no image item contains a LivePhoto pair."
+    },
+    {
+      "sample_id": "xhs-invalid-01",
+      "sample_type": "invalid",
+      "source_short_link": "sha256:5b09d8d82317c617fb6d8097ed64851d5f2168ce35ea3ac9548c4397367ca024",
+      "target_identity_confirmed": false,
+      "target_note_id": "sha256:b2201deef340cfb59be660af476854f85dd2dc4b18b7e9d606b476d556483ed4",
+      "payload_note_id": null,
+      "item_count": 0,
+      "livephoto_item_count": 0,
+      "regular_image_item_count": 0,
+      "item_local_pair_evidence": false,
+      "pair_evidence_basis": "none",
+      "negative_false_positive": false,
+      "invalid_fail_closed": true,
+      "still_host_family": [],
+      "motion_host_family": [],
+      "format_family": [],
+      "mapper_ready_signal": true,
+      "notes": "The intended identity was resolved from the short-link target, but no matching payload note or media was admitted from the generic error destination."
+    }
+  ],
+  "gate_results": {
+    "two_livephoto_samples_with_direct_pairs": true,
+    "gallery_false_positive_zero": true,
+    "video_false_positive_zero": true,
+    "invalid_sample_fail_closed": true,
+    "heuristic_pairing_used": false,
+    "mapper_implementation_ready": true,
+    "provider_integration_ready": false
+  },
+  "runtime_changes": {
+    "provider_wiring": false,
+    "registry": false,
+    "public_routes": false,
+    "ui": false,
+    "download": false,
+    "host_allowlist": false,
+    "production": false
+  }
+}

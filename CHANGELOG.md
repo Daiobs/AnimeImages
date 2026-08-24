@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Completed a fail-closed, URL-free evidence review of two real XHS LivePhoto
+  notes plus gallery, video, and invalid controls. Both positive payloads expose
+  direct same-item marker/still/motion ownership; the negative controls produce
+  no false LivePhoto pairs and the invalid target emits no media. This permits
+  a later offline mapper implementation, but adds no Provider wiring, registry,
+  host admission, public UI, download capability, migration, or deployment.
 - Split ordinary-media URL trust into strict initial admission and
   source-bound final redirect policy. A reviewed strict `*.bdcgslb.com`
   subdomain is now accepted only after an admitted `*.365yg.com` source
