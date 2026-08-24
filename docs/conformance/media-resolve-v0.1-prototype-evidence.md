@@ -22,7 +22,10 @@ current-consumer, production-feature, or lifecycle-promotion claim.
 | Remote default branch | `main` |
 | Known observed SHA from task | `176e4e3b0975ee66bf7788e1b826c06b40e38502` |
 | Implementation Base SHA | `cf19ef32ac2d2730c5ed4511f516eedc557f84c4` |
-| Tested implementation commit SHA | `IMPLEMENTATION_SHA_AFTER_COMMIT` |
+| Locally tested Prototype commit SHA | `01a0df5ff0983b160360c229b38ae4991a2de12a` |
+| Initial remote Prototype commit SHA | `41c1da71595cb4f363f8ead6e8f0188054ecba40` |
+| Exact shared implementation tree SHA | `b04fc08730b9ec6068140c259906a46dc789abfb` |
+| Draft PR | `#69` — `https://github.com/Daiobs/AnimeImages/pull/69` |
 | Historical Sample B SHA | `2373bdf996ccd0f2596eb081a5ea781b7c268a6a` |
 | Foundry Contract repository | `Brilliant666/cosflow-product-assets` |
 | Contract acceptance SHA | `b0e94237b182d41377401c74f79e60aa07765cbe` |
@@ -40,6 +43,11 @@ The RFC, Conformance Plan, and Model Review were read from their fixed commits.
 Their expected blob SHAs, accepted statuses, object/vector budgets, and selected
 outcome matched exactly. `CONTRACT_AUTHORITY_DRIFT = NO`.
 
+The local and remote Prototype commit SHAs differ because the remote commit was
+serialized through the GitHub Git Database API after HTTPS Git transport was
+unavailable. Both commits have the exact tree SHA recorded above, so the bytes
+tested locally and the bytes tested by the initial Draft PR CI are identical.
+
 ## 2. Product drift and eligibility
 
 The remote `main` observed at task start had advanced from the task's known SHA
@@ -52,6 +60,15 @@ preflight and branch/worktree creation. Relative to historical Sample B SHA
 - an unwired XHS rich-media normalizer;
 - unwired Bilibili Dynamic/LivePhoto research and normalizer;
 - repository-safe XHS LivePhoto payload evidence.
+
+After branch/worktree creation, remote `main` advanced once more to
+`3b396f75968ad0a0f92cb089f9705dd93d5e4e8e` (`Implement dormant XHS LivePhoto
+relationship mapper v1 (#68)`). Its four-path delta was limited to
+`CHANGELOG.md`, one research document, one dormant relationship-mapper module,
+and its test. It touched none of this task's four target paths or the
+`ParseResult`/`MediaAsset` seam. In accordance with the task's fixed-Base rule,
+the implementation retained Base `cf19ef32ac2d2730c5ed4511f516eedc557f84c4`
+and was not rebased. `EXECUTION_TIME_PRODUCT_DRIFT_CONFLICT = NO`.
 
 The targeted diff proved that `xhs_download/services/assets.py`,
 `candidates.py`, `registry.py`, and `rich_media.py` did not change across that
@@ -229,7 +246,7 @@ are reported rather than concealed.
 
 | Check | Before at Base | After Prototype | Interpretation |
 | --- | --- | --- | --- |
-| Latest official main CI | success, run `32728285058`, exact Base SHA | PR CI: `PR_CI_AFTER_PUSH` | Base authority green; final Draft PR head is separately required to be green |
+| Latest official main CI | success, run `32728285058`, exact Base SHA | initial Prototype head: PR run `32734283396` success; push run `32734241027` success | Base and identical implementation tree are green; the evidence-only final head must repeat CI |
 | `manage.py check` | PASS; 4 missing optional local-tool warnings | PASS; identical warnings | no regression |
 | `makemigrations --check --dry-run` | PASS / no changes | PASS / no changes | no schema change |
 | Relevant RichMedia/XHS/Bilibili/Source Lifecycle/telemetry tests | 166/166 PASS | 166/166 PASS | no regression |
