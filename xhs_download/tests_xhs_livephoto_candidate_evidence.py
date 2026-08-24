@@ -191,6 +191,39 @@ class XhsLivePhotoCandidateEvidenceTests(SimpleTestCase):
         )
         self.assertEqual(collection["bounded_prefix_bytes"], 4096)
 
+    def test_probe_transport_observations_are_complete_or_explicitly_unretained(self):
+        collection = self.evidence["collection"]
+        probe = self.evidence["probe_observations"]
+        total = collection["unique_candidate_probe_count"]
+
+        self.assertEqual(sum(probe["http_status_counts"].values()), total)
+        self.assertEqual(probe["response_total_size_observed_count"], total)
+        self.assertEqual(
+            probe["content_range_total_present_count"]
+            + probe["content_length_total_used_count"],
+            total,
+        )
+        self.assertEqual(
+            sum(probe["first_byte_latency_bucket_counts"].values()),
+            total,
+        )
+        self.assertEqual(
+            probe["size_bucket_retained_count"]
+            + probe["size_bucket_not_retained_count"],
+            total,
+        )
+        self.assertEqual(
+            sum(probe["size_bucket_counts"].values()),
+            total,
+        )
+        self.assertEqual(probe["body_prefix_readable_count"], total)
+        self.assertEqual(probe["server_observed_cors_wildcard_count"], total)
+        self.assertEqual(probe["redirected_count"], 0)
+        self.assertEqual(
+            sum(probe["final_host_family_counts"].values()),
+            total,
+        )
+
     def test_host_values_are_family_labels_only(self):
         families = (
             self.evidence["still_evidence"]["host_families"]

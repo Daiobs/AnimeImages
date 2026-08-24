@@ -12,6 +12,35 @@
     "raw_payload_saved": false,
     "candidate_values_saved": false
   },
+  "probe_observations": {
+    "probe_batch_count": 2,
+    "http_status_counts": {
+      "200": 72,
+      "206": 78
+    },
+    "response_total_size_observed_count": 150,
+    "content_range_total_present_count": 78,
+    "content_length_total_used_count": 72,
+    "first_byte_latency_bucket_counts": {
+      "250_999_ms": 116,
+      "1_3_s": 34
+    },
+    "size_bucket_counts": {
+      "lt_1_mib": 80,
+      "not_retained": 70
+    },
+    "size_bucket_retained_count": 80,
+    "size_bucket_not_retained_count": 70,
+    "body_prefix_readable_count": 150,
+    "redirected_count": 0,
+    "server_observed_cors_wildcard_count": 150,
+    "final_host_family_counts": {
+      "sns-webpic-qc.xhscdn.com": 72,
+      "sns-video-vN.xhscdn.com": 14,
+      "sns-video-zl.xhscdn.com": 12,
+      "sns-bak-vN.xhscdn.com": 52
+    }
+  },
   "samples": [
     {
       "sample_id": "xhs-livephoto-01",
@@ -98,11 +127,11 @@
       "WB_PRV"
     ],
     "url_default_equals_wb_dft_count": 35,
-        "url_default_larger_than_wb_prv_count": 35,
-        "duplicate_field_reference_count": 35,
-        "image_note_unique_candidate_probe_count": 70,
-        "video_control_cover_probe_count": 2,
-        "unique_candidate_probe_count": 72,
+    "url_default_larger_than_wb_prv_count": 35,
+    "duplicate_field_reference_count": 35,
+    "image_note_unique_candidate_probe_count": 70,
+    "video_control_cover_probe_count": 2,
+    "unique_candidate_probe_count": 72,
     "selected_policy": "url_default",
     "fallback_policy": "single_wb_dft_info_list_url",
     "selected_format_counts": {

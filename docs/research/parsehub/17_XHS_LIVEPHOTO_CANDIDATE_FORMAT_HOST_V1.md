@@ -197,6 +197,27 @@ The review made 150 unique bounded candidate requests:
 | still (70 image-note candidates + 2 video-cover controls) | 72 | WebP | WebP image | 0 | 0 |
 | motion | 78 | MP4 / ISO BMFF | MP4 video | 0 | 0 |
 
+The probes ran in two bounded batches because one positive note did not expose
+an exact current-note payload during the first request and was recovered by a
+later identity-checked request. Their sanitized transport totals combine as:
+
+| Signal | Result |
+| --- | --- |
+| HTTP status | 72 x `200`; 78 x `206` |
+| response total observed | 150 / 150 |
+| total source | 72 Content-Length; 78 Content-Range |
+| first-byte latency buckets | 116 x 250-999 ms; 34 x 1-3 s |
+| bounded body readable | 150 / 150 |
+| server-observed wildcard CORS header | 150 / 150 |
+| redirects | 0 |
+
+The first batch retained 80 `lt_1_mib` size buckets. The follow-up batch used
+the response totals to prove all still size relations and all master/backup
+equivalence checks, but its 70 individual size buckets were not retained in
+the sanitized aggregate. They are recorded as `not_retained`; they are not
+guessed, and the candidates were not re-requested after this review. Exact
+sizes are not committed.
+
 Still servers ignored Range and returned status 200, so the client consumed
 only the first bounded chunk and closed the response. Motion servers honored
 the range and returned partial content.
