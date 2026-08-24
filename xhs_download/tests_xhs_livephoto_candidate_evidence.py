@@ -29,6 +29,10 @@ class XhsLivePhotoCandidateEvidenceTests(SimpleTestCase):
 
     def test_schema_and_sample_inventory_are_fixed(self):
         self.assertEqual(self.evidence["schema_version"], 1)
+        self.assertEqual(
+            self.evidence["locator_scope"],
+            "same_selected_payload_snapshot",
+        )
         self.assertEqual(self.evidence["collection"]["sample_count"], 5)
         self.assertEqual(
             set(self.samples),
@@ -125,6 +129,10 @@ class XhsLivePhotoCandidateEvidenceTests(SimpleTestCase):
             still["fallback_policy"],
             "single_wb_dft_info_list_url",
         )
+        self.assertEqual(
+            still["drift_policy"],
+            "all_non_empty_wb_dft_equal_url_default",
+        )
         self.assertTrue(still["selection_ready"])
 
     def test_still_scene_values_are_closed_and_order_independent(self):
@@ -158,6 +166,14 @@ class XhsLivePhotoCandidateEvidenceTests(SimpleTestCase):
             52,
         )
         self.assertEqual(motion["selected_source_policy"], "master_url")
+        self.assertEqual(
+            motion["fallback_policy"],
+            "first_backup_only_when_master_field_absent",
+        )
+        self.assertEqual(
+            motion["present_invalid_master_policy"],
+            "fail_closed",
+        )
 
     def test_all_selected_still_and_motion_formats_are_magic_proven(self):
         still = self.evidence["still_evidence"]

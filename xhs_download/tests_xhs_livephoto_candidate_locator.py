@@ -6,6 +6,7 @@ from django.test import SimpleTestCase
 from .services.image_formats import resolve_image_format
 from .services.platforms.xhs_livephoto_candidate_locator import (
     XHS_LIVEPHOTO_CANDIDATE_SCHEMA_VERSION,
+    XHS_LIVEPHOTO_LOCATOR_SCOPE,
     XhsLivePhotoCandidateError,
     XhsLivePhotoMemberLocatorV1,
     XhsPrivateMediaCandidateV1,
@@ -212,6 +213,34 @@ class XhsLivePhotoCandidateSelectionTests(SimpleTestCase):
         self.assertEqual(locator.source_kind, "url_default")
         self.assertIsNone(locator.info_list_index)
 
+    def test_url_default_and_reviewed_default_scene_must_match(self):
+        items = [regular_item("one")]
+        items[0]["infoList"][1]["url"] = PRIVATE_VALUE
+
+        self.assert_candidate_error(
+            "XHS_LIVEPHOTO_CANDIDATE_STILL_POLICY_DRIFT",
+            lambda: candidate_map(items),
+        )
+
+    def test_multiple_inconsistent_reviewed_defaults_fail_closed(self):
+        items = [regular_item("one")]
+        items[0]["infoList"].append(
+            {"imageScene": "WB_DFT", "url": PRIVATE_VALUE}
+        )
+
+        self.assert_candidate_error(
+            "XHS_LIVEPHOTO_CANDIDATE_STILL_POLICY_DRIFT",
+            lambda: candidate_map(items),
+        )
+
+    def test_url_default_without_reviewed_default_scene_is_supported(self):
+        items = [regular_item("one")]
+        items[0]["infoList"] = items[0]["infoList"][:1]
+
+        locator = candidate_map(items).items[0].still_locator
+
+        self.assertEqual(locator.source_kind, "url_default")
+
     def test_reviewed_default_scene_is_the_still_fallback(self):
         items = [regular_item("one")]
         del items[0]["urlDefault"]
@@ -252,6 +281,18 @@ class XhsLivePhotoCandidateSelectionTests(SimpleTestCase):
             ),
         )
 
+    def test_duplicate_equal_default_scene_fallbacks_are_ambiguous(self):
+        items = [regular_item("one")]
+        del items[0]["urlDefault"]
+        items[0]["infoList"].append(
+            {"imageScene": "WB_DFT", "url": "private-default-one"}
+        )
+
+        self.assert_candidate_error(
+            "XHS_LIVEPHOTO_CANDIDATE_STILL_POLICY_AMBIGUOUS",
+            lambda: candidate_map(items),
+        )
+
     def test_master_url_is_the_primary_motion_locator(self):
         result = candidate_map([livephoto_item("one")])
 
@@ -270,6 +311,46 @@ class XhsLivePhotoCandidateSelectionTests(SimpleTestCase):
         locator = result.items[0].motion_locator
         self.assertEqual(locator.source_kind, "backup_url")
         self.assertEqual(locator.backup_index, 0)
+
+    def test_empty_master_field_fails_closed(self):
+        items = [livephoto_item("one")]
+        items[0]["stream"]["h264"][0]["masterUrl"] = ""
+
+        self.assert_candidate_error(
+            "XHS_LIVEPHOTO_CANDIDATE_MASTER_FIELD_INVALID",
+            lambda: candidate_map(items),
+        )
+
+    def test_whitespace_master_field_fails_closed(self):
+        items = [livephoto_item("one")]
+        items[0]["stream"]["h264"][0]["masterUrl"] = "   "
+
+        self.assert_candidate_error(
+            "XHS_LIVEPHOTO_CANDIDATE_MASTER_FIELD_INVALID",
+            lambda: candidate_map(items),
+        )
+
+    def test_none_master_field_fails_closed(self):
+        items = [livephoto_item("one")]
+        items[0]["stream"]["h264"][0]["masterUrl"] = None
+
+        self.assert_candidate_error(
+            "XHS_LIVEPHOTO_CANDIDATE_MASTER_FIELD_INVALID",
+            lambda: candidate_map(items),
+        )
+
+    def test_non_string_master_field_fails_closed(self):
+        items = [livephoto_item("one")]
+        relationships = relationship_map(items)
+        items[0]["stream"]["h264"][0]["masterUrl"] = {"value": PRIVATE_VALUE}
+
+        self.assert_candidate_error(
+            "XHS_LIVEPHOTO_CANDIDATE_MASTER_FIELD_INVALID",
+            lambda: locate_xhs_livephoto_candidates(
+                relationship_map=relationships,
+                image_list=items,
+            ),
+        )
 
     def test_codec_ordinal_is_recorded_but_h264_class_is_authoritative(self):
         first = candidate_map([livephoto_item("one", codec_before=True)])
@@ -365,6 +446,28 @@ class XhsLivePhotoCandidateSelectionTests(SimpleTestCase):
 
 
 class XhsLivePhotoCandidateReadSafetyTests(SimpleTestCase):
+    def test_locator_scope_is_the_same_selected_payload_snapshot(self):
+        self.assertEqual(
+            XHS_LIVEPHOTO_LOCATOR_SCOPE,
+            "same_selected_payload_snapshot",
+        )
+
+    def test_same_snapshot_reread_passes(self):
+        items = [livephoto_item("one")]
+        locators = candidate_map(items).items[0]
+
+        still = read_candidate_from_locator(
+            image_list=items,
+            locator=locators.still_locator,
+        )
+        motion = read_candidate_from_locator(
+            image_list=items,
+            locator=locators.motion_locator,
+        )
+
+        self.assertEqual(still.value, "private-default-one")
+        self.assertEqual(motion.value, "private-motion-one")
+
     def test_read_url_default_returns_a_private_wrapper(self):
         items = [regular_item("one")]
         locator = candidate_map(items).items[0].still_locator
@@ -413,6 +516,34 @@ class XhsLivePhotoCandidateReadSafetyTests(SimpleTestCase):
 
         with self.assertRaises(XhsLivePhotoCandidateError) as raised:
             read_candidate_from_locator(image_list=items, locator=locator)
+        self.assertEqual(
+            raised.exception.code,
+            "XHS_LIVEPHOTO_CANDIDATE_LOCATOR_INVALID",
+        )
+
+    def test_reordered_info_list_invalidates_an_old_locator(self):
+        items = [regular_item("one")]
+        del items[0]["urlDefault"]
+        locator = candidate_map(items).items[0].still_locator
+        items[0]["infoList"] = list(reversed(items[0]["infoList"]))
+
+        with self.assertRaises(XhsLivePhotoCandidateError) as raised:
+            read_candidate_from_locator(image_list=items, locator=locator)
+
+        self.assertEqual(
+            raised.exception.code,
+            "XHS_LIVEPHOTO_CANDIDATE_LOCATOR_INVALID",
+        )
+
+    def test_backup_locator_is_invalid_after_master_field_appears(self):
+        items = [livephoto_item("one")]
+        del items[0]["stream"]["h264"][0]["masterUrl"]
+        locator = candidate_map(items).items[0].motion_locator
+        items[0]["stream"]["h264"][0]["masterUrl"] = "private-new-master"
+
+        with self.assertRaises(XhsLivePhotoCandidateError) as raised:
+            read_candidate_from_locator(image_list=items, locator=locator)
+
         self.assertEqual(
             raised.exception.code,
             "XHS_LIVEPHOTO_CANDIDATE_LOCATOR_INVALID",
@@ -493,6 +624,12 @@ class XhsLivePhotoCandidateReadSafetyTests(SimpleTestCase):
             "private-backup-a-one",
         ):
             self.assertNotIn(private, rendered)
+
+    def test_structural_output_contains_no_cross_snapshot_identity(self):
+        rendered = repr(candidate_map([livephoto_item("one")]).to_structural_dict())
+
+        for forbidden in ("snapshot", "payload_identity", "note_id", "fingerprint"):
+            self.assertNotIn(forbidden, rendered.lower())
 
     def test_locator_and_candidate_objects_are_frozen(self):
         items = [regular_item("one")]

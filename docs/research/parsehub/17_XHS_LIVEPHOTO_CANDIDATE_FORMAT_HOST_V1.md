@@ -96,16 +96,22 @@ candidate map.
 
 ### Still policy
 
-1. Select a non-empty `urlDefault`.
-2. If that field is absent, select exactly one non-empty `WB_DFT`
+1. When `urlDefault` is non-empty, every simultaneously present, non-empty
+   `WB_DFT` value must match it exactly; any mismatch is policy drift and fails
+   closed without exposing either value.
+2. Select that validated `urlDefault`. A non-empty `urlDefault` without a
+   `WB_DFT` entry remains supported by `urlDefault` alone.
+3. If `urlDefault` is absent, select exactly one non-empty `WB_DFT`
    `infoList[].url`.
-3. Do not use `WB_PRV` as a full still fallback.
-4. Multiple eligible `WB_DFT` fallbacks are ambiguous and fail closed.
-5. Cross-check the total still-candidate count against the PR #68 relationship
+4. Do not use `WB_PRV` as a full still fallback.
+5. Multiple eligible `WB_DFT` fallbacks are ambiguous and fail closed even
+   when their values happen to match.
+6. Cross-check the total still-candidate count against the PR #68 relationship
    item before returning a locator.
 
-This policy does not compare URLs at runtime and does not infer format from a
-field name.
+This policy compares private candidate values only inside the same selected
+payload snapshot to detect field-policy drift. It does not parse them as URLs,
+infer format from a field name, or expose either value in an error.
 
 ## Motion Candidate Evidence
 
@@ -138,8 +144,9 @@ bounded equivalence evidence, not a claim of full-byte equality.
 2. Record both the current codec ordinal and the closed codec class.
 3. Require exactly one viable `h264` variant.
 4. Select its non-empty `masterUrl`.
-5. If the master field is absent, select the first non-empty backup in source
-   order.
+5. If and only if the `masterUrl` key is structurally absent, select the first
+   non-empty backup in source order. A present master containing `None`, an
+   empty or whitespace-only string, or a non-string value fails closed.
 6. A non-empty unreviewed codec family or multiple viable `h264` variants is
    ambiguous and fails closed.
 7. Re-reading checks that the recorded ordinal still points to `h264`; a
@@ -180,9 +187,24 @@ fingerprint.
 
 `locate_xhs_livephoto_candidates()` cross-checks item count, source ordinals,
 item kinds, and relationship candidate counts. `read_candidate_from_locator()`
-returns the value only inside `XhsPrivateMediaCandidateV1`. The private value is
-excluded from repr, comparison, hashing, and structural output. Fixed errors
+reruns the selection policy and accepts the locator only when the current
+indexes and closed codec class still select the same structural location. It
+returns the value only inside `XhsPrivateMediaCandidateV1`. The private value
+is excluded from repr, comparison, hashing, and structural output. Fixed errors
 contain only closed codes and safe paths.
+
+The formal locator scope is:
+
+```text
+XHS_LIVEPHOTO_LOCATOR_SCOPE = SAME_SELECTED_PAYLOAD_SNAPSHOT
+```
+
+The relationship map, candidate selector, and re-read must operate on the same
+exact-note `imageList` snapshot. A locator is not a cross-request handle: it
+must not enter a database, cache, manifest, or public JSON and must be rebuilt
+after any payload refresh. Codec or `infoList` reordering fails closed rather
+than silently selecting another member. Structural output intentionally carries
+no payload identity that could invite persistence or cross-request reuse.
 
 ```text
 CANDIDATE_LOCATOR_IS_NOT_DOWNLOAD_AUTHORITY = YES

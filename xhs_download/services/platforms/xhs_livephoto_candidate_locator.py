@@ -21,6 +21,7 @@ from .xhs_livephoto_relationship_mapper import (
 
 
 XHS_LIVEPHOTO_CANDIDATE_SCHEMA_VERSION = "1.0"
+XHS_LIVEPHOTO_LOCATOR_SCOPE = "same_selected_payload_snapshot"
 
 _MEMBER_ROLES = frozenset({"still", "motion"})
 _SOURCE_KINDS = frozenset(
@@ -42,10 +43,12 @@ _ERROR_CODES = frozenset(
         "XHS_LIVEPHOTO_CANDIDATE_ITEM_KIND_MISMATCH",
         "XHS_LIVEPHOTO_CANDIDATE_LOCATOR_INVALID",
         "XHS_LIVEPHOTO_CANDIDATE_MAP_INVALID",
+        "XHS_LIVEPHOTO_CANDIDATE_MASTER_FIELD_INVALID",
         "XHS_LIVEPHOTO_CANDIDATE_MEMBER_MISSING",
         "XHS_LIVEPHOTO_CANDIDATE_MOTION_POLICY_AMBIGUOUS",
         "XHS_LIVEPHOTO_CANDIDATE_RELATIONSHIP_INVALID",
         "XHS_LIVEPHOTO_CANDIDATE_STILL_POLICY_AMBIGUOUS",
+        "XHS_LIVEPHOTO_CANDIDATE_STILL_POLICY_DRIFT",
         "XHS_LIVEPHOTO_CANDIDATE_UNSUPPORTED_CODEC",
         "XHS_LIVEPHOTO_CANDIDATE_UNSUPPORTED_NOTE_KIND",
     }
@@ -334,9 +337,14 @@ def _still_locator(
         value = _candidate_value(info.get("url"), path=f"{info_path}.url")
         count += int(bool(value))
         if value and info.get("imageScene") == _REVIEWED_STILL_SCENE:
-            reviewed_fallbacks.append(index)
+            reviewed_fallbacks.append((index, value))
 
     if default_value:
+        if any(value != default_value for _, value in reviewed_fallbacks):
+            _reject(
+                "XHS_LIVEPHOTO_CANDIDATE_STILL_POLICY_DRIFT",
+                f"{path}.infoList",
+            )
         locator = XhsLivePhotoMemberLocatorV1(
             source_item_ordinal=source_item_ordinal,
             member_role="still",
@@ -347,7 +355,7 @@ def _still_locator(
             source_item_ordinal=source_item_ordinal,
             member_role="still",
             source_kind="info_list_url",
-            info_list_index=reviewed_fallbacks[0],
+            info_list_index=reviewed_fallbacks[0][0],
         )
     elif reviewed_fallbacks:
         _reject(
@@ -357,6 +365,19 @@ def _still_locator(
     else:
         _reject("XHS_LIVEPHOTO_CANDIDATE_MEMBER_MISSING", f"{path}.urlDefault")
     return count, locator
+
+
+def _master_candidate_value(
+    variant: Mapping[str, Any],
+    *,
+    path: str,
+) -> tuple[bool, str]:
+    if "masterUrl" not in variant:
+        return False, ""
+    value = variant["masterUrl"]
+    if type(value) is not str or not value.strip():
+        _reject("XHS_LIVEPHOTO_CANDIDATE_MASTER_FIELD_INVALID", path)
+    return True, value.strip()
 
 
 def _motion_locator(
@@ -386,8 +407,8 @@ def _motion_locator(
             variant_path = f"{codec_path}[{variant_index}]"
             if not isinstance(variant, Mapping):
                 _reject("XHS_LIVEPHOTO_CANDIDATE_ITEM_INVALID", variant_path)
-            master = _candidate_value(
-                variant.get("masterUrl"),
+            master_present, master = _master_candidate_value(
+                variant,
                 path=f"{variant_path}.masterUrl",
             )
             backups = variant.get("backupUrls", ())
@@ -421,7 +442,7 @@ def _motion_locator(
                 (
                     codec_ordinal,
                     variant_index,
-                    bool(master),
+                    master_present,
                     tuple(backup_indexes),
                 )
             )
@@ -537,7 +558,7 @@ def read_candidate_from_locator(
     image_list: Any,
     locator: XhsLivePhotoMemberLocatorV1,
 ) -> XhsPrivateMediaCandidateV1:
-    """Read a private value without turning the locator into download authority."""
+    """Revalidate and read within the same selected payload snapshot."""
 
     if type(locator) is not XhsLivePhotoMemberLocatorV1:
         _reject("XHS_LIVEPHOTO_CANDIDATE_LOCATOR_INVALID", "locator")
@@ -549,6 +570,19 @@ def read_candidate_from_locator(
     item = image_list[locator.source_item_ordinal]
     if not isinstance(item, Mapping):
         _reject("XHS_LIVEPHOTO_CANDIDATE_ITEM_INVALID", "locator")
+
+    if locator.member_role == "still":
+        _, current_locator = _still_locator(
+            item,
+            source_item_ordinal=locator.source_item_ordinal,
+        )
+    else:
+        _, current_locator = _motion_locator(
+            item,
+            source_item_ordinal=locator.source_item_ordinal,
+        )
+    if current_locator != locator:
+        _reject("XHS_LIVEPHOTO_CANDIDATE_LOCATOR_INVALID", "locator")
 
     value: Any
     if locator.source_kind == "url_default":
@@ -583,8 +617,12 @@ def read_candidate_from_locator(
         if not isinstance(variant, Mapping):
             _reject("XHS_LIVEPHOTO_CANDIDATE_LOCATOR_INVALID", "locator")
         if locator.source_kind == "master_url":
-            value = variant.get("masterUrl")
+            if "masterUrl" not in variant:
+                _reject("XHS_LIVEPHOTO_CANDIDATE_LOCATOR_INVALID", "locator")
+            value = variant["masterUrl"]
         else:
+            if "masterUrl" in variant:
+                _reject("XHS_LIVEPHOTO_CANDIDATE_LOCATOR_INVALID", "locator")
             backups = variant.get("backupUrls")
             if not isinstance(backups, (list, tuple)) or not _valid_index(
                 locator.backup_index,
@@ -680,6 +718,7 @@ def classify_xhs_livephoto_host_for_research(
 
 __all__ = (
     "XHS_LIVEPHOTO_CANDIDATE_SCHEMA_VERSION",
+    "XHS_LIVEPHOTO_LOCATOR_SCOPE",
     "XhsLivePhotoCandidateError",
     "XhsLivePhotoCandidateMapV1",
     "XhsLivePhotoItemCandidateMapV1",
