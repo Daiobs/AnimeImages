@@ -19,10 +19,10 @@ HOST_FAMILY_RE = re.compile(
 SAMPLE_FIELDS = {
     "sample_id",
     "sample_type",
-    "source_short_link",
+    "source_fingerprint",
     "target_identity_confirmed",
-    "target_note_id",
-    "payload_note_id",
+    "target_identity_fingerprint",
+    "payload_identity_fingerprint",
     "item_count",
     "livephoto_item_count",
     "regular_image_item_count",
@@ -33,7 +33,7 @@ SAMPLE_FIELDS = {
     "still_host_family",
     "motion_host_family",
     "format_family",
-    "mapper_ready_signal",
+    "sample_gate_passed",
     "notes",
 }
 
@@ -80,12 +80,18 @@ class XhsLivePhotoRealPayloadEvidenceTests(SimpleTestCase):
 
     def test_source_and_note_identity_values_are_fingerprints_only(self):
         for sample in self.samples.values():
-            self.assertRegex(sample["source_short_link"], SHA256_FINGERPRINT_RE)
-            self.assertRegex(sample["target_note_id"], SHA256_FINGERPRINT_RE)
+            self.assertRegex(sample["source_fingerprint"], SHA256_FINGERPRINT_RE)
+            self.assertRegex(
+                sample["target_identity_fingerprint"],
+                SHA256_FINGERPRINT_RE,
+            )
             if sample["target_identity_confirmed"]:
-                self.assertEqual(sample["payload_note_id"], sample["target_note_id"])
+                self.assertEqual(
+                    sample["payload_identity_fingerprint"],
+                    sample["target_identity_fingerprint"],
+                )
             else:
-                self.assertIsNone(sample["payload_note_id"])
+                self.assertIsNone(sample["payload_identity_fingerprint"])
 
     def test_evidence_file_contains_no_url_query_or_secret_material(self):
         rendered = EVIDENCE_PATH.read_text(encoding="utf-8").lower()
@@ -111,10 +117,18 @@ class XhsLivePhotoRealPayloadEvidenceTests(SimpleTestCase):
                 sample["pair_evidence_basis"],
                 "same_item_live_marker_still_and_motion",
             )
-            self.assertTrue(sample["mapper_ready_signal"])
+            self.assertTrue(sample["sample_gate_passed"])
         self.assertEqual(first["livephoto_item_count"], 14)
         self.assertEqual(second["livephoto_item_count"], 12)
         self.assertEqual(second["regular_image_item_count"], 5)
+
+    def test_sample_gate_reports_each_samples_own_control_result(self):
+        self.assertTrue(
+            all(sample["sample_gate_passed"] for sample in self.samples.values())
+        )
+        self.assertFalse(self.samples["xhs-gallery-01"]["item_local_pair_evidence"])
+        self.assertFalse(self.samples["xhs-video-01"]["item_local_pair_evidence"])
+        self.assertTrue(self.samples["xhs-invalid-01"]["invalid_fail_closed"])
 
     def test_array_position_alone_is_not_pair_evidence(self):
         guessed = {
@@ -163,7 +177,7 @@ class XhsLivePhotoRealPayloadEvidenceTests(SimpleTestCase):
         sample = self.samples["xhs-invalid-01"]
         self.assertEqual(sample["sample_type"], "invalid")
         self.assertFalse(sample["target_identity_confirmed"])
-        self.assertIsNone(sample["payload_note_id"])
+        self.assertIsNone(sample["payload_identity_fingerprint"])
         self.assertEqual(sample["item_count"], 0)
         self.assertEqual(sample["livephoto_item_count"], 0)
         self.assertFalse(sample["item_local_pair_evidence"])
@@ -202,7 +216,11 @@ class XhsLivePhotoRealPayloadEvidenceTests(SimpleTestCase):
             not gates["heuristic_pairing_used"],
         )
         self.assertTrue(all(required))
-        self.assertEqual(gates["mapper_implementation_ready"], all(required))
+        self.assertEqual(gates["relationship_mapper_ready"], all(required))
+        self.assertEqual(
+            gates["asset_spec_mapper_status"],
+            "partial_blocked_by_format_evidence",
+        )
         self.assertFalse(gates["provider_integration_ready"])
 
     def test_runtime_capabilities_remain_disconnected(self):

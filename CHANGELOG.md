@@ -6,8 +6,9 @@
   notes plus gallery, video, and invalid controls. Both positive payloads expose
   direct same-item marker/still/motion ownership; the negative controls produce
   no false LivePhoto pairs and the invalid target emits no media. This permits
-  a later offline mapper implementation, but adds no Provider wiring, registry,
-  host admission, public UI, download capability, migration, or deployment.
+  only a later offline relationship mapper; per-item format evidence, final
+  asset construction, Provider wiring, registry, host admission, public UI,
+  download capability, migration, and deployment remain outside the gate.
 - Split ordinary-media URL trust into strict initial admission and
   source-bound final redirect policy. A reviewed strict `*.bdcgslb.com`
   subdomain is now accepted only after an admitted `*.365yg.com` source

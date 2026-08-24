@@ -4,11 +4,13 @@
 
 ```text
 XHS_LIVEPHOTO_REAL_PAYLOAD_EVIDENCE = COMPLETE
-MAPPER_IMPLEMENTATION_READY = YES
+XHS_LIVEPHOTO_RELATIONSHIP_MAPPER_READY = YES
+XHS_LIVEPHOTO_ASSET_SPEC_MAPPER_READY = PARTIAL_BLOCKED_BY_FORMAT_EVIDENCE
+XHS_LIVEPHOTO_PROVIDER_INTEGRATION_READY = NO
 XHS_STILL_FORMAT_PAYLOAD_FIELD = NOT_PROVEN
-PROVIDER_INTEGRATION_READY = NO
 XHS_PROVIDER_WIRING = NOT_STARTED
 XHS_PUBLIC_SUPPORT = NO
+SUPERSEDES_PR_66_EVIDENCE_GAP_STATE = YES
 DEPLOYED = NO
 ```
 
@@ -24,6 +26,21 @@ account credential. Complete source links, redirect queries, page payloads,
 media URLs, request tokens, headers, titles, authors, and user identities are
 not retained. Source links and note identities appear only as SHA-256
 fingerprints in the structured evidence file.
+
+The evidence schema names these repository-safe correlation values explicitly:
+
+```text
+source_fingerprint
+target_identity_fingerprint
+payload_identity_fingerprint
+```
+
+A SHA-256 fingerprint is not a secret and is not an anonymized identity
+guarantee. Anyone who already knows a candidate public link or note identity
+can recompute its deterministic hash and confirm a match. These fingerprints
+are retained only for research-evidence correlation. They must not be used as
+a runtime source identity, cache key, asset ID, Provider resource ID, or public
+source identifier.
 
 Each short link was resolved first. The intended note identity was taken from
 the identity-bearing target path, then the current AnimeImages exact-identity
@@ -88,6 +105,41 @@ A future mapper may emit one relationship only when the selected exact target
 note contains one item with all three direct fields: marker, still, and motion.
 Missing any one of them must fail closed for that relationship.
 
+The item ordinal may preserve source order and locate an already-proven
+relationship. It is not pairing evidence and must never be used to align a
+compacted still list with a compacted motion list.
+
+## Superseded Research And Retained Protocol
+
+PR #66 documented the earlier evidence-gap state before these five qualifying
+samples were available. Its `qualified samples = 0` and `pair evidence blocked`
+conclusions are superseded by this evidence. The following safety lessons and
+bounded acquisition protocol remain applicable:
+
+- select the exact requested note by requested/payload identity equality;
+- never treat `firstNoteId`, feed order, or a recommendation card as target
+  authority;
+- never infer relationships from array position, filenames, URL similarity,
+  dimensions, or codec-family names;
+- collect only the minimum public samples and fields required by a stated gate;
+- redact complete links, redirect queries, tokens, headers, and payload bodies
+  before durable output;
+- record redirects, CORS behavior, and failed routes as fixed outcomes rather
+  than admitting content from a default, login, recommendation, or error page;
+- construct fictional sanitized fixtures only after the real field shape has
+  been independently confirmed; and
+- keep host admission and per-member format proof as separate later reviews.
+
+The failed routes were useful negative evidence: login-gated search results and
+a historical short link that no longer resolved to an identity-bearing note
+could not pass exact identity admission. They yielded no relationship evidence
+and did not justify a guessed fixture.
+
+The pinned ParseHub field paths were also only a hypothesis until current real
+payloads confirmed them. Its unconditional `firstNoteId` selection, per-image
+network extension probes, and unknown-to-JPEG fallback remain explicitly
+rejected.
+
 ## Negative Controls
 
 ### Ordinary gallery
@@ -149,7 +201,7 @@ an offline mapper to label every still as JPEG. A later mapper must leave
 extension population fail-closed or require separately verified format
 evidence before creating `XhsRichMediaAssetSpec`.
 
-## Mapper Entry Decision
+## Capability Entry Decision
 
 All required gates passed:
 
@@ -161,27 +213,31 @@ All required gates passed:
 6. no positional, URL-similarity, or `firstNoteId` inference was used.
 
 ```text
-MAPPER_IMPLEMENTATION_READY = YES
+XHS_LIVEPHOTO_RELATIONSHIP_MAPPER_READY = YES
+XHS_LIVEPHOTO_ASSET_SPEC_MAPPER_READY = PARTIAL_BLOCKED_BY_FORMAT_EVIDENCE
+XHS_LIVEPHOTO_PROVIDER_INTEGRATION_READY = NO
 ```
 
-This status authorizes only a later offline mapper implementation PR. It does
-not authorize Provider wiring, runtime emission, host allowlisting, manifest
-creation, per-item extension inference, download behavior, or public UI.
+The first status authorizes only a later offline relationship mapper that
+preserves same-item ownership and source order. The second remains blocked
+because no trusted payload-native format or per-item extension was proved. The
+third remains closed because host admission, backup selection, final
+`MediaAsset`, Provider manifest, and download authority have not been reviewed.
 
 ## Expected Next Mapper Boundary
 
 The next PR may accept an already-selected exact target-note mapping and emit:
 
-- sanitized requested/payload identity evidence;
-- ordered, URL-free relationship input for later `XhsRichMediaAssetSpec`
-  construction;
+- an exact requested/payload identity gate whose values are not retained;
+- ordered, URL-free and identity-free relationship structure for a later
+  `XhsRichMediaAssetSpec` builder;
 - explicit still/motion relationship evidence; and
-- `RichMediaContractV1` only when each member also has independently verified
-  Contract v1 format evidence.
+- fixed `unverified` format status without extensions.
 
-It must not emit final `MediaAsset` values, manifests, tokens, or URLs, and the
-current XHS Provider must continue emitting no rich-media contract until a
-later separately reviewed wiring task.
+It must not construct `XhsRichMediaAssetSpec`, `RichMediaContractV1`, final
+`MediaAsset` values, manifests, tokens, or URLs. The current XHS Provider must
+continue emitting no rich-media contract until later, separately reviewed
+format, host, and wiring tasks.
 
 ## Evidence Artifact
 
