@@ -1,0 +1,255 @@
+{
+  "schema_version": "1.0",
+  "cases": [
+    {
+      "case_id": "xhs_share_parse_only",
+      "platform_id": "xhs",
+      "input_kind": "share_text",
+      "input_value": "离线示例 https://www.xiaohongshu.example/explore/note_fixture?xsec_token=fictional&utm_source=lab，后续文字",
+      "canonical_identity": "xhs_note:note_fixture",
+      "parameter_policy": {
+        "safe_passthrough": [],
+        "identity": [],
+        "parse_only": ["xsec_token"],
+        "drop": ["utm_source"]
+      },
+      "resolution_duration_ms": 0,
+      "expected": {
+        "safe": {
+          "platform_id": "xhs",
+          "input_kind": "share_text",
+          "hostname": "www.xiaohongshu.example",
+          "path_class": "note",
+          "canonical_identity_kind": "xhs_note",
+          "retained_parameter_names": [],
+          "removed_parameter_names": ["utm_source", "xsec_token"]
+        }
+      }
+    },
+    {
+      "case_id": "douyin_short_tracking_drop",
+      "platform_id": "douyin",
+      "input_kind": "short_url",
+      "input_value": "https://v.douyin.example/fixtureA?utm_source=lab",
+      "canonical_identity": "douyin_aweme:7312345678901234567",
+      "parameter_policy": {
+        "safe_passthrough": [],
+        "identity": [],
+        "parse_only": [],
+        "drop": ["utm_source"]
+      },
+      "resolution_duration_ms": 4,
+      "expected": {
+        "safe": {
+          "platform_id": "douyin",
+          "input_kind": "short_url",
+          "hostname": "v.douyin.example",
+          "path_class": "short_link",
+          "canonical_identity_kind": "douyin_aweme",
+          "resolution_duration_ms": 4,
+          "removed_parameter_names": ["utm_source"]
+        }
+      }
+    },
+    {
+      "case_id": "douyin_modal_identity",
+      "platform_id": "douyin",
+      "input_kind": "modal_url",
+      "input_value": "https://www.douyin.example/user/self?from_tab_name=main&modal_id=7312345678901234567&showTab=record",
+      "canonical_identity": "douyin_aweme:7312345678901234567",
+      "parameter_policy": {
+        "safe_passthrough": [],
+        "identity": ["modal_id"],
+        "parse_only": [],
+        "drop": ["from_tab_name", "showtab"]
+      },
+      "resolution_duration_ms": 0,
+      "expected": {
+        "safe": {
+          "platform_id": "douyin",
+          "input_kind": "modal_url",
+          "hostname": "www.douyin.example",
+          "path_class": "modal",
+          "canonical_identity_kind": "douyin_aweme",
+          "retained_parameter_names": ["modal_id"],
+          "removed_parameter_names": ["from_tab_name", "showtab"]
+        }
+      }
+    },
+    {
+      "case_id": "bilibili_video_part",
+      "platform_id": "bilibili",
+      "input_kind": "video_page",
+      "input_value": "https://www.bilibili.example/video/BVfixture?p=3&spm_id_from=lab",
+      "canonical_identity": "bilibili_video:BVfixture:3",
+      "parameter_policy": {
+        "safe_passthrough": [],
+        "identity": ["p"],
+        "parse_only": [],
+        "drop": ["spm_id_from"]
+      },
+      "resolution_duration_ms": 0,
+      "expected": {
+        "safe": {
+          "platform_id": "bilibili",
+          "input_kind": "video_page",
+          "hostname": "www.bilibili.example",
+          "path_class": "video",
+          "canonical_identity_kind": "bilibili_video",
+          "retained_parameter_names": ["p"],
+          "removed_parameter_names": ["spm_id_from"]
+        }
+      }
+    },
+    {
+      "case_id": "bilibili_opus",
+      "platform_id": "bilibili",
+      "input_kind": "opus_page",
+      "input_value": "https://www.bilibili.example/opus/123456789012345678?from=lab",
+      "canonical_identity": "bilibili_opus:123456789012345678",
+      "parameter_policy": {
+        "safe_passthrough": [],
+        "identity": [],
+        "parse_only": [],
+        "drop": ["from"]
+      },
+      "resolution_duration_ms": 0,
+      "expected": {
+        "safe": {
+          "input_kind": "opus_page",
+          "path_class": "opus",
+          "canonical_identity_kind": "bilibili_opus",
+          "removed_parameter_names": ["from"]
+        }
+      }
+    },
+    {
+      "case_id": "bilibili_dynamic",
+      "platform_id": "bilibili",
+      "input_kind": "dynamic_page",
+      "input_value": "https://t.bilibili.example/123456789012345678",
+      "canonical_identity": "bilibili_dynamic:123456789012345678",
+      "parameter_policy": {
+        "safe_passthrough": [],
+        "identity": [],
+        "parse_only": [],
+        "drop": []
+      },
+      "resolution_duration_ms": 0,
+      "expected": {
+        "safe": {
+          "platform_id": "bilibili",
+          "input_kind": "dynamic_page",
+          "path_class": "dynamic",
+          "canonical_identity_kind": "bilibili_dynamic"
+        }
+      }
+    },
+    {
+      "case_id": "caller_supplied_resolution",
+      "platform_id": "youtube",
+      "input_kind": "short_url",
+      "input_value": "https://youtu.example/fixture?feature=share",
+      "resolved_url": "https://www.youtube.example/video/fixture?feature=share&utm_source=lab",
+      "canonical_identity": "youtube_video:fixture",
+      "parameter_policy": {
+        "safe_passthrough": ["feature"],
+        "identity": [],
+        "parse_only": [],
+        "drop": ["utm_source"]
+      },
+      "resolution_duration_ms": 9,
+      "expected": {
+        "safe": {
+          "hostname": "www.youtube.example",
+          "path_class": "short_link",
+          "canonical_identity_kind": "youtube_video",
+          "resolution_duration_ms": 9,
+          "retained_parameter_names": ["feature"],
+          "removed_parameter_names": ["utm_source"]
+        }
+      }
+    },
+    {
+      "case_id": "unknown_token_values_drop",
+      "platform_id": "generic",
+      "input_kind": "url",
+      "input_value": "https://media.example/item?token=fictional-secret&signature=fictional-signature&quality=original",
+      "canonical_identity": "generic_media:item_fixture",
+      "parameter_policy": {
+        "safe_passthrough": ["quality"],
+        "identity": [],
+        "parse_only": [],
+        "drop": ["token", "signature"]
+      },
+      "resolution_duration_ms": 0,
+      "expected": {
+        "safe": {
+          "platform_id": "generic",
+          "retained_parameter_names": ["quality"],
+          "removed_parameter_names": ["token", "signature"]
+        }
+      }
+    },
+    {
+      "case_id": "private_host_rejected",
+      "platform_id": "generic",
+      "input_kind": "url",
+      "input_value": "http://127.0.0.1/private",
+      "canonical_identity": "generic_media:private_fixture",
+      "parameter_policy": {
+        "safe_passthrough": [],
+        "identity": [],
+        "parse_only": [],
+        "drop": []
+      },
+      "resolution_duration_ms": 0,
+      "expected": {"error_code": "SOURCE_HOST_PRIVATE"}
+    },
+    {
+      "case_id": "userinfo_rejected",
+      "platform_id": "generic",
+      "input_kind": "url",
+      "input_value": "https://fictional-user@media.example/item",
+      "canonical_identity": "generic_media:userinfo_fixture",
+      "parameter_policy": {
+        "safe_passthrough": [],
+        "identity": [],
+        "parse_only": [],
+        "drop": []
+      },
+      "resolution_duration_ms": 0,
+      "expected": {"error_code": "SOURCE_URL_USERINFO_REJECTED"}
+    },
+    {
+      "case_id": "malformed_port_rejected",
+      "platform_id": "generic",
+      "input_kind": "url",
+      "input_value": "https://media.example:notaport/item",
+      "canonical_identity": "generic_media:port_fixture",
+      "parameter_policy": {
+        "safe_passthrough": [],
+        "identity": [],
+        "parse_only": [],
+        "drop": []
+      },
+      "resolution_duration_ms": 0,
+      "expected": {"error_code": "SOURCE_URL_INVALID"}
+    },
+    {
+      "case_id": "disallowed_port_rejected",
+      "platform_id": "generic",
+      "input_kind": "url",
+      "input_value": "https://media.example:8443/item",
+      "canonical_identity": "generic_media:port_fixture",
+      "parameter_policy": {
+        "safe_passthrough": [],
+        "identity": [],
+        "parse_only": [],
+        "drop": []
+      },
+      "resolution_duration_ms": 0,
+      "expected": {"error_code": "SOURCE_URL_PORT_REJECTED"}
+    }
+  ]
+}

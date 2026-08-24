@@ -10,6 +10,14 @@
   sanitized hostname-level facts, and Single/Batch now leave stale transfer
   progress for an explicit retryable terminal state. Provider behavior,
   response media gates, timeouts, and the zero-Relay data path are unchanged.
+- Added a frozen, network-free Source URL Lifecycle v1 foundation and an
+  offline Provider Lab. The lifecycle separates input, parse, resolver-output,
+  and post-parse URLs and uses closed parse-only, identity, safe-passthrough,
+  and drop parameter actions while requiring platform-supplied canonical
+  identities. URL-bearing internal representations are redacted, and safe
+  diagnostics expose only structural fields and parameter names. Existing
+  Providers do not consume the contract yet, so routing, output, deadlines,
+  cache, downloads, and production behavior remain unchanged.
 - Added a closed, typed, URL-free Rich Media Domain Contract v1 runtime model
   as an optional final field on `ParseResult`. Legacy results continue to use
   `rich_media=None`; current Providers emit no rich-media data, and existing
