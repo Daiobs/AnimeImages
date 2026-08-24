@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added a dormant, URL-free XHS LivePhoto candidate locator plus sanitized
+  still/motion selection and bounded format/host evidence. Deterministic still,
+  motion, and per-selected-candidate format gates now pass; browser CORS and
+  raw-HTTP-to-HTTPS admission remain explicitly unproven, so Asset Spec and
+  Provider integration stay closed. Current adapters, registry, UI, downloads,
+  migrations, dependencies, and production behavior are unchanged.
 - Added a dormant, network-free XHS LivePhoto relationship mapper backed by the
   merged PR #67 evidence. It validates exact note identity and maps only
   same-item boolean marker, still, and motion evidence into ordered, URL-free
