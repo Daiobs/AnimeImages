@@ -1,0 +1,250 @@
+{
+  "schema_version": 1,
+  "evidence_id": "xhs-livephoto-candidate-format-host-v1",
+  "observed_at_utc": "2026-08-24",
+  "locator_scope": "same_selected_payload_snapshot",
+  "collection": {
+    "sample_count": 5,
+    "exact_identity_required": true,
+    "credentials_used": false,
+    "bounded_prefix_bytes": 4096,
+    "unique_candidate_probe_count": 150,
+    "full_media_saved": false,
+    "raw_payload_saved": false,
+    "candidate_values_saved": false
+  },
+  "probe_observations": {
+    "probe_batch_count": 2,
+    "http_status_counts": {
+      "200": 72,
+      "206": 78
+    },
+    "response_total_size_observed_count": 150,
+    "content_range_total_present_count": 78,
+    "content_length_total_used_count": 72,
+    "first_byte_latency_bucket_counts": {
+      "250_999_ms": 116,
+      "1_3_s": 34
+    },
+    "size_bucket_counts": {
+      "lt_1_mib": 80,
+      "not_retained": 70
+    },
+    "size_bucket_retained_count": 80,
+    "size_bucket_not_retained_count": 70,
+    "body_prefix_readable_count": 150,
+    "redirected_count": 0,
+    "server_observed_cors_wildcard_count": 150,
+    "final_host_family_counts": {
+      "sns-webpic-qc.xhscdn.com": 72,
+      "sns-video-vN.xhscdn.com": 14,
+      "sns-video-zl.xhscdn.com": 12,
+      "sns-bak-vN.xhscdn.com": 52
+    }
+  },
+  "samples": [
+    {
+      "sample_id": "xhs-livephoto-01",
+      "sample_type": "livephoto",
+      "target_identity_confirmed": true,
+      "item_count": 14,
+      "livephoto_item_count": 14,
+      "regular_image_item_count": 0,
+      "selected_still_count": 14,
+      "selected_motion_count": 14,
+      "selected_still_format": "webp",
+      "selected_motion_format": "mp4",
+      "candidate_selection_passed": true,
+      "negative_false_positive": false,
+      "invalid_fail_closed": false
+    },
+    {
+      "sample_id": "xhs-livephoto-02",
+      "sample_type": "mixed_livephoto_gallery",
+      "target_identity_confirmed": true,
+      "item_count": 17,
+      "livephoto_item_count": 12,
+      "regular_image_item_count": 5,
+      "selected_still_count": 17,
+      "selected_motion_count": 12,
+      "selected_still_format": "webp",
+      "selected_motion_format": "mp4",
+      "candidate_selection_passed": true,
+      "negative_false_positive": false,
+      "invalid_fail_closed": false
+    },
+    {
+      "sample_id": "xhs-gallery-01",
+      "sample_type": "image_gallery",
+      "target_identity_confirmed": true,
+      "item_count": 4,
+      "livephoto_item_count": 0,
+      "regular_image_item_count": 4,
+      "selected_still_count": 4,
+      "selected_motion_count": 0,
+      "selected_still_format": "webp",
+      "selected_motion_format": "not_applicable",
+      "candidate_selection_passed": true,
+      "negative_false_positive": false,
+      "invalid_fail_closed": false
+    },
+    {
+      "sample_id": "xhs-video-01",
+      "sample_type": "video",
+      "target_identity_confirmed": true,
+      "item_count": 1,
+      "livephoto_item_count": 0,
+      "regular_image_item_count": 0,
+      "selected_still_count": 0,
+      "selected_motion_count": 0,
+      "selected_still_format": "not_applicable",
+      "selected_motion_format": "not_applicable",
+      "candidate_selection_passed": true,
+      "negative_false_positive": false,
+      "invalid_fail_closed": false
+    },
+    {
+      "sample_id": "xhs-invalid-01",
+      "sample_type": "invalid",
+      "target_identity_confirmed": false,
+      "item_count": 0,
+      "livephoto_item_count": 0,
+      "regular_image_item_count": 0,
+      "selected_still_count": 0,
+      "selected_motion_count": 0,
+      "selected_still_format": "not_applicable",
+      "selected_motion_format": "not_applicable",
+      "candidate_selection_passed": false,
+      "negative_false_positive": false,
+      "invalid_fail_closed": true
+    }
+  ],
+  "still_evidence": {
+    "image_note_item_count": 35,
+    "url_default_coverage_count": 35,
+    "info_list_coverage_count": 35,
+    "reviewed_scene_values": [
+      "WB_DFT",
+      "WB_PRV"
+    ],
+    "url_default_equals_wb_dft_count": 35,
+    "url_default_larger_than_wb_prv_count": 35,
+    "duplicate_field_reference_count": 35,
+    "image_note_unique_candidate_probe_count": 70,
+    "video_control_cover_probe_count": 2,
+    "unique_candidate_probe_count": 72,
+    "selected_policy": "url_default",
+    "fallback_policy": "single_wb_dft_info_list_url",
+    "drift_policy": "all_non_empty_wb_dft_equal_url_default",
+    "selected_format_counts": {
+      "webp": 35,
+      "unknown": 0,
+      "invalid": 0
+    },
+    "host_families": [
+      "sns-webpic-qc.xhscdn.com"
+    ],
+    "range_response": "ignored_with_bounded_client_read",
+    "selection_ready": true,
+    "format_ready": true
+  },
+  "motion_evidence": {
+    "livephoto_item_count": 26,
+    "observed_codec_family_keys": [
+      "av1",
+      "h264",
+      "h265",
+      "h266"
+    ],
+    "codec_families_with_candidates": [
+      "h264"
+    ],
+    "h264_codec_ordinal_values": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "viable_variant_count_per_item": 1,
+    "master_coverage_count": 26,
+    "backup_candidate_count": 52,
+    "bounded_master_backup_equivalent_count": 52,
+    "unique_candidate_probe_count": 78,
+    "selected_codec_policy": "closed_h264_to_avc_class",
+    "selected_variant_policy": "single_viable_h264_variant",
+    "selected_source_policy": "master_url",
+    "fallback_policy": "first_backup_only_when_master_field_absent",
+    "present_invalid_master_policy": "fail_closed",
+    "selected_format_counts": {
+      "mp4": 26,
+      "unknown": 0,
+      "invalid": 0
+    },
+    "host_families": [
+      "sns-video-vN.xhscdn.com",
+      "sns-video-zl.xhscdn.com",
+      "sns-bak-vN.xhscdn.com"
+    ],
+    "range_response": "partial_content",
+    "selection_ready": true,
+    "format_ready": true
+  },
+  "host_review": {
+    "payload_scheme": "http",
+    "https_upgrade_required_before_browser_use": true,
+    "reviewed_family_count": 4,
+    "dns_public": true,
+    "tls_valid": true,
+    "default_port_only": true,
+    "userinfo_absent": true,
+    "redirected_candidate_count": 0,
+    "server_observed_cors_header": "wildcard",
+    "server_observed_body_readable": true,
+    "browser_fetch_attempted": true,
+    "browser_fetch_completed": false,
+    "browser_fetch_fixed_failure": "browser_control_timeout",
+    "browser_direct_download_ready": false,
+    "host_review_status": "partial_browser_cors_not_proven",
+    "production_allowlist_changed": false
+  },
+  "format_review": {
+    "still_probe_count": 72,
+    "motion_probe_count": 78,
+    "still_magic_counts": {
+      "webp": 72
+    },
+    "motion_magic_counts": {
+      "mp4": 78
+    },
+    "still_declared_content_type": "image_webp",
+    "motion_declared_content_type": "video_mp4",
+    "unknown_count": 0,
+    "invalid_count": 0,
+    "url_suffix_used_as_proof": false,
+    "per_selected_candidate_format_proven": true
+  },
+  "readiness": {
+    "relationship_mapper": "merged",
+    "candidate_selection_ready": true,
+    "still_format_ready": true,
+    "motion_format_ready": true,
+    "host_review_ready": false,
+    "asset_spec_mapper_ready": false,
+    "provider_integration_ready": false,
+    "current_provider_emission_count": 0
+  },
+  "runtime_changes": {
+    "xhs_adapter": false,
+    "registry": false,
+    "provider_emission": false,
+    "public_routes": false,
+    "templates": false,
+    "static_assets": false,
+    "downloads": false,
+    "host_allowlist": false,
+    "settings": false,
+    "database": false,
+    "dependencies": false,
+    "production": false
+  }
+}
