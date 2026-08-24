@@ -1,6 +1,8 @@
 # Media Resolve v0.1 Project-local Prototype Evidence
 
-> **Status: `PROTOTYPE IMPLEMENTED / CORE CONFORMANCE 12 OF 12 PASS`**
+> **Status: `ACCEPTED / PROJECT-LOCAL PROTOTYPE EVIDENCE V1`**
+>
+> **Human Disposition: `ACCEPT`**
 >
 > **Realization: `EXTRACT_IN_PLACE / PROJECT_LOCAL PROTOTYPE`**
 >
@@ -10,11 +12,28 @@
 >
 > **Lifecycle effect: `NONE`; `media-resolve` remains `REFERENCE`**
 
-This is bounded implementation and conformance evidence for later Human Review.
-It is not a canonical-implementation, Adapter, Delivery, compatibility,
-current-consumer, production-feature, or lifecycle-promotion claim.
+This is Human-accepted bounded implementation and same-implementation Core
+Conformance evidence. It is not a canonical-implementation, Adapter, Delivery,
+compatibility, current-consumer, production-feature, or lifecycle-promotion
+claim.
 
-## 1. Authorities
+## Human acceptance
+
+Human disposition is `ACCEPT`. The accepted facts are:
+
+- a Media Resolve v0.1 Prototype implementation exists in AnimeImages;
+- the exercised realization is `EXTRACT_IN_PLACE / PROJECT_LOCAL PROTOTYPE`;
+- Core Conformance is `12/12 PASS`, and the same implementation produced both
+  real-domain mappings and all twelve vectors;
+- production integration, current consumer, canonical implementation claim,
+  lifecycle effect, and Foundry Schema effect are all `NONE`.
+
+Acceptance does not authorize runtime wiring, Provider or Delivery integration,
+a Douyin Adapter, Workbench integration, a Registry current-consumer claim,
+lifecycle promotion, Schema v0.2, or a canonical-implementation declaration.
+`media-resolve` remains `REFERENCE`.
+
+## 1. Authorities and review snapshots
 
 | Authority | Recorded value |
 | --- | --- |
@@ -22,10 +41,20 @@ current-consumer, production-feature, or lifecycle-promotion claim.
 | Remote default branch | `main` |
 | Known observed SHA from task | `176e4e3b0975ee66bf7788e1b826c06b40e38502` |
 | Implementation Base SHA | `cf19ef32ac2d2730c5ed4511f516eedc557f84c4` |
-| Locally tested Prototype commit SHA | `01a0df5ff0983b160360c229b38ae4991a2de12a` |
-| Initial remote Prototype commit SHA | `41c1da71595cb4f363f8ead6e8f0188054ecba40` |
-| Exact shared implementation tree SHA | `b04fc08730b9ec6068140c259906a46dc789abfb` |
-| Draft PR | `#69` — `https://github.com/Daiobs/AnimeImages/pull/69` |
+| Initial locally tested Prototype commit | `01a0df5ff0983b160360c229b38ae4991a2de12a` |
+| Initial remote implementation commit | `41c1da71595cb4f363f8ead6e8f0188054ecba40` |
+| Initial implementation tree | `b04fc08730b9ec6068140c259906a46dc789abfb` |
+| Verified local final snapshot commit | `b97e471c39fb2eb822b0c3b560143217b9e9fdb2` |
+| Verified local final snapshot tree | `aa2f1d74e7670d2abba08ce9f29240a0ab17cc28` |
+| Human-reviewed remote snapshot Head | `092bf1f79d6d3d0985e046f808622e22025f0986` |
+| Human-reviewed remote snapshot tree | `aa2f1d74e7670d2abba08ce9f29240a0ab17cc28` |
+| Human-reviewed PR Base | `3b396f75968ad0a0f92cb089f9705dd93d5e4e8e` |
+| Final reviewed PR CI | `32734911706` — `SUCCESS` |
+| Final reviewed push CI | `32734906064` — `SUCCESS` |
+| Core implementation blob | `427f6e50122464de73e22622de7447802c5050fd` |
+| Projection implementation blob | `ce7381cc41008520a1881d0bf74f6a963ebc3b22` |
+| Conformance test blob | `cbd1806f2ca8ef26e8ced1b145edcaceb4d92f9c` |
+| Human-reviewed PR snapshot | `#69` — `https://github.com/Daiobs/AnimeImages/pull/69` |
 | Historical Sample B SHA | `2373bdf996ccd0f2596eb081a5ea781b7c268a6a` |
 | Foundry Contract repository | `Brilliant666/cosflow-product-assets` |
 | Contract acceptance SHA | `b0e94237b182d41377401c74f79e60aa07765cbe` |
@@ -43,10 +72,24 @@ The RFC, Conformance Plan, and Model Review were read from their fixed commits.
 Their expected blob SHAs, accepted statuses, object/vector budgets, and selected
 outcome matched exactly. `CONTRACT_AUTHORITY_DRIFT = NO`.
 
-The local and remote Prototype commit SHAs differ because the remote commit was
-serialized through the GitHub Git Database API after HTTPS Git transport was
-unavailable. Both commits have the exact tree SHA recorded above, so the bytes
-tested locally and the bytes tested by the initial Draft PR CI are identical.
+GitHub Git Database API serialized the corresponding remote commits
+independently after HTTPS Git transport was unavailable. Therefore local commit
+`01a0df5ff0983b160360c229b38ae4991a2de12a` and remote commit
+`41c1da71595cb4f363f8ead6e8f0188054ecba40` differ while sharing initial tree
+`b04fc08730b9ec6068140c259906a46dc789abfb`; likewise verified local final
+commit `b97e471c39fb2eb822b0c3b560143217b9e9fdb2` and Human-reviewed remote Head
+`092bf1f79d6d3d0985e046f808622e22025f0986` differ while sharing complete
+reviewed tree `aa2f1d74e7670d2abba08ce9f29240a0ab17cc28`.
+
+Tree `b04fc08730b9ec6068140c259906a46dc789abfb` is the initial executable
+Prototype tree. Tree `aa2f1d74e7670d2abba08ce9f29240a0ab17cc28`
+is the complete Human-reviewed evidence snapshot tree. The three code/test blob
+SHAs in the table stayed unchanged, and the only change from remote commit
+`41c1da71595cb4f363f8ead6e8f0188054ecba40` to
+`092bf1f79d6d3d0985e046f808622e22025f0986` was this Evidence document. No Core,
+projection, or test behavior changed during evidence finalization. The later
+acceptance-metadata Head and Squash Merge SHA are intentionally recorded in Git
+history and the acceptance task report rather than recursively in this file.
 
 ## 2. Product drift and eligibility
 
@@ -182,6 +225,19 @@ Synthetic redaction markers placed in those fields were absent from Core
 `repr` output. The request reference is also `repr=False` and is never copied
 to `ResolveResult`.
 
+### 4.4 Accepted binding boundary
+
+`MediaAsset.url` is inspected only as the current AnimeImages-domain signal
+that an asset has a representation. It is not a validated locator, source
+identity evidence, or Delivery-eligibility proof; it is not copied into Core
+and is not used for ID derivation.
+
+`sourceIdentity` (`SourceIdentity`) is trusted as an Adapter-verified input.
+`mediaItemsCompleteness`, `candidateCompleteness`, and `selectionOwner` are
+binding-supplied semantic facts. This unwired Prototype does not prove that a
+production binding supplies those facts correctly; that proof belongs to a
+future Adapter/runtime-integration task.
+
 ## 5. Core Conformance
 
 The authoritative class-only command executed exactly 12 tests and reported:
@@ -246,7 +302,7 @@ are reported rather than concealed.
 
 | Check | Before at Base | After Prototype | Interpretation |
 | --- | --- | --- | --- |
-| Latest official main CI | success, run `32728285058`, exact Base SHA | initial Prototype head: PR run `32734283396` success; push run `32734241027` success | Base and identical implementation tree are green; the evidence-only final head must repeat CI |
+| Latest official main CI | success, run `32728285058`, exact Base SHA | Human-reviewed snapshot: PR run `32734911706` success; push run `32734906064` success | Base and complete reviewed snapshot are green; acceptance-head CI is recorded by GitHub and the acceptance task report |
 | `manage.py check` | PASS; 4 missing optional local-tool warnings | PASS; identical warnings | no regression |
 | `makemigrations --check --dry-run` | PASS / no changes | PASS / no changes | no schema change |
 | Relevant RichMedia/XHS/Bilibili/Source Lifecycle/telemetry tests | 166/166 PASS | 166/166 PASS | no regression |
@@ -256,13 +312,31 @@ are reported rather than concealed.
 | Node syntax and workflow test selection | official Base CI success | 141/141 PASS locally | no frontend changes |
 | Nginx repository drift | official Base CI success | `NGINX_CONFIG_DRIFT=0` | no infrastructure changes |
 
+### 7.1 Human-acceptance finalization validation
+
+The acceptance task reran these gates against the unchanged implementation and
+test blobs before creating the acceptance-metadata commit:
+
+| Acceptance gate | Result | Recorded evidence |
+| --- | --- | --- |
+| Code/test blob stability | PASS | Core `427f6e50122464de73e22622de7447802c5050fd`; projection `ce7381cc41008520a1881d0bf74f6a963ebc3b22`; tests `cbd1806f2ca8ef26e8ced1b145edcaceb4d92f9c` |
+| Starting-snapshot delta | PASS | only `docs/conformance/media-resolve-v0.1-prototype-evidence.md` changed from the clean reviewed local snapshot |
+| MR-CV-01 through MR-CV-12 | PASS | 12 passed, 0 failed, 0 skipped |
+| Complete new test module | PASS | 22/22, including all ten `NON_CONFORMANCE_SUPPORTING_TEST` cases |
+| Relevant existing test selection | PASS | 245/245 across RichMedia, XHS, Bilibili, Source Lifecycle, LivePhoto evidence, and browser telemetry |
+| `manage.py check` | PASS | only the same four unavailable optional local-tool warnings |
+| `makemigrations --check --dry-run` | PASS | no changes detected |
+| Import boundary / no network / no persistent mutation | PASS | rerun by the supporting tests in the complete 22-test module |
+| `git diff --check` | PASS | no whitespace error |
+
 The unchanged local Python failures are outside the modified paths and consist
 of Windows default-encoding reads, Windows subprocess/path semantics, and
 pre-existing timing/data-order assertions. The local Nginx unit selection has
 one Windows effective-dump formatting error; the exact Base's Linux CI passes.
 No failure names, failure/error counts, or related-test results regressed after
-the Prototype. The Draft PR's Linux/Python 3.14 CI is the authoritative final
-cross-platform gate.
+the Prototype. GitHub's Linux/Python 3.14 CI is the authoritative final
+cross-platform gate and is recorded per reviewed or acceptance Head outside any
+recursive Head-SHA claim in this document.
 
 ## 8. Removal boundary and ownership
 
@@ -310,6 +384,8 @@ media URLs, no external code copy, no consumer/lifecycle claim, and complete
 deletion-only removal.
 
 ```text
+HUMAN_DISPOSITION = ACCEPT
+EVIDENCE_STATUS = ACCEPTED / PROJECT-LOCAL PROTOTYPE EVIDENCE V1
 PROTOTYPE = PASS
 CORE_CONFORMANCE = 12/12 PASS
 RUNTIME_WIRING = NONE
@@ -317,5 +393,6 @@ PRODUCT_BEHAVIOR_CHANGED = NO
 CURRENT_CONSUMER = NO
 CANONICAL_IMPLEMENTATION_CLAIM = NO
 LIFECYCLE_EFFECT = NONE
-NEXT = HUMAN REVIEW OF THIS PROTOTYPE AND CORE CONFORMANCE ONLY
+FOUNDRY_SCHEMA_EFFECT = NONE
+NEXT = POST-IMPLEMENTATION FOUNDRY MODEL EVIDENCE REVIEW
 ```
