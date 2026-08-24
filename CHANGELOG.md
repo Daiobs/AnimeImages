@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Added a dormant XHS LivePhoto HTTPS admission helper and URL-free real-browser
+  transport evidence. Strict HTTP-to-HTTPS normalization, bounded equivalence,
+  Chromium CORS, readable body, format magic, and final-host checks pass for
+  reviewed still, numeric motion, and backup classes. The required alternate
+  motion class was observed in transient payloads but was unavailable when its
+  browser probe was due, so the global host, Asset Spec, and Provider gates
+  remain fail-closed. No adapter, registry, manifest, UI, download, migration,
+  dependency, production allowlist, or production behavior changed.
 - Added a dormant, URL-free XHS LivePhoto candidate locator plus sanitized
   still/motion selection and bounded format/host evidence. Deterministic still,
   motion, and per-selected-candidate format gates now pass; browser CORS and
