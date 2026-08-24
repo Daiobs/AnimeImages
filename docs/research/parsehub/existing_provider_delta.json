@@ -145,7 +145,7 @@
       "overlap": "Platform ownership and ordered media normalization.",
       "adoption_value": "medium-to-high after stable source identity and payload mapping are proven.",
       "quality_impact": "Could add a future non-video post family without flattening LivePhoto media.",
-      "metadata_impact": "Potential URL-free RichMediaContractV1 output.",
+      "metadata_impact": "Adds URL-free intermediate asset specs and relationship metadata only; final MediaAsset construction remains a future Provider Builder responsibility.",
       "fallback_impact": "none while research/dormant",
       "security_risk": "medium: dynamic-to-opus identity mapping and media hosts are not yet verified.",
       "credential_requirement": "no credential accepted in this research task",
@@ -153,7 +153,7 @@
       "runtime_dependency_impact": "none for static research or a dormant normalizer",
       "recommended_action": "ADOPT_DORMANT",
       "selected_pr": "PR-D",
-      "status": "research_selected_identity_gate_open"
+      "status": "intermediate_contract_ready_real_mapping_not_started"
     },
     {
       "capability_id": "ytdlp_structured_progress_materials",

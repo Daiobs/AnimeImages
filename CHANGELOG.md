@@ -35,6 +35,15 @@
   animation formats, and inert rich-text references before any future consumer
   can observe the value. Bilibili Dynamic/LivePhoto implementation has not
   started.
+- Added offline Bilibili Dynamic/Opus research primitives: a source-shape
+  classifier with separate identities and a dormant URL-free intermediate-spec
+  normalizer that preserves source order and accepts Live Photo relationships
+  only from explicit pair and owner evidence a future AnimeImages adapter must
+  construct and prove. Generic numeric Bilibili paths remain unverified and do
+  not receive a guessed identity. Final `MediaAsset` construction, cross-form
+  identity mapping, runtime payload evidence, media-host admission,
+  registration, and deployment remain blocked; the existing Bilibili video
+  adapter is unchanged.
 - Hardened AnimeImages-owned external-tool execution with one bounded `Popen`
   lifecycle for progress and non-progress calls. POSIX commands now run in an
   isolated session/process group; timeout, live stdout/stderr overflow,
