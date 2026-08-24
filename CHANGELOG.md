@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added a dormant, network-free XHS LivePhoto relationship mapper backed by the
+  merged PR #67 evidence. It validates exact note identity and maps only
+  same-item boolean marker, still, and motion evidence into ordered, URL-free
+  frozen objects. Format resolution, Asset Specs, rich-media contracts,
+  Provider wiring, UI, downloads, migrations, and production behavior remain
+  unchanged and explicitly out of scope.
 - Completed a fail-closed, URL-free evidence review of two real XHS LivePhoto
   notes plus gallery, video, and invalid controls. Both positive payloads expose
   direct same-item marker/still/motion ownership; the negative controls produce
