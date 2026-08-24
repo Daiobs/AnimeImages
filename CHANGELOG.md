@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Recorded the blocked XHS LivePhoto real-payload mapping gate. Pinned static
+  evidence identifies an item-local still/marker/motion shape, but no current
+  public sample passed exact note-identity admission without credentials, and
+  the current parser flattens item-local relationship and format evidence.
+  No mapper, Provider wiring, host admission, registry, manifest, download,
+  UI, migration, dependency, or production behavior changed.
 - Split ordinary-media URL trust into strict initial admission and
   source-bound final redirect policy. A reviewed strict `*.bdcgslb.com`
   subdomain is now accepted only after an admitted `*.365yg.com` source
