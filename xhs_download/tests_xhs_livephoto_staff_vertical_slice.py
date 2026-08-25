@@ -1,8 +1,10 @@
 import json
+import os
 import re
 import threading
 import time
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from bs4 import BeautifulSoup
@@ -10,7 +12,10 @@ from django.contrib.auth.models import AnonymousUser, User
 from django.template.loader import render_to_string
 from django.test import RequestFactory, SimpleTestCase
 
-from djangoProject.context_processors import STATIC_VERSION_FILES
+from djangoProject.context_processors import (
+    STATIC_VERSION_FILES,
+    source_static_asset_version,
+)
 
 from .services.assets import MediaAsset, ParseResult
 from .services.downloads import provider_manifest_allows_public_download
@@ -705,6 +710,27 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
         self.assertIn("xhs_livephoto_staff_preview.js", html)
         self.assertIn("data-livephoto-staff-loader", html)
 
+        shell = BeautifulSoup(html, "html.parser")
+        shell_script = shell.select_one("script[data-livephoto-staff-loader]")
+        preview_html = render_to_string(
+            "partials/xhs_livephoto_staff_preview.html",
+            {
+                "static_asset_version": "test",
+                "xhs_livephoto_staff_preview": (
+                    build_xhs_livephoto_staff_preview_context(self.result)
+                ),
+            },
+            request=self.request,
+        )
+        preview = BeautifulSoup(preview_html, "html.parser")
+        preview_root = preview.select_one("[data-xhs-livephoto-staff-preview]")
+
+        self.assertEqual(
+            shell_script.get("src"),
+            preview_root.get("data-preview-script-url"),
+        )
+        self.assertTrue(shell_script.get("src", "").endswith("?v=test"))
+
     def test_staff_context_uses_contract_groups_not_asset_id_parsing(self):
         context = build_xhs_livephoto_staff_preview_context(self.result)
 
@@ -722,6 +748,29 @@ class XhsLivePhotoStaffStaticBoundaryTests(SimpleTestCase):
             "static/js/xhs_livephoto_staff_preview.js",
             STATIC_VERSION_FILES,
         )
+
+    def test_controller_only_source_change_updates_static_version(self):
+        relative_path = "static/js/xhs_livephoto_staff_preview.js"
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            controller = root / relative_path
+            controller.parent.mkdir(parents=True)
+            controller.write_text("first", encoding="utf-8")
+            os.utime(controller, (100, 100))
+
+            with patch(
+                "djangoProject.context_processors.settings.BASE_DIR",
+                root,
+            ), patch(
+                "djangoProject.context_processors.STATIC_VERSION_FILES",
+                (relative_path,),
+            ):
+                before = source_static_asset_version()
+                os.utime(controller, (200, 200))
+                after = source_static_asset_version()
+
+        self.assertEqual(before, "100")
+        self.assertEqual(after, "200")
 
     def test_staff_javascript_has_no_download_or_persistence_surface(self):
         source = (
