@@ -48,11 +48,13 @@ function fakeVideo(options) {
     const video = {
         hidden: true,
         src: "",
+        loop: settings.loop !== undefined ? settings.loop : true,
         error: null,
         readyState: 0,
         networkState: 0,
         pauseCount: 0,
         loadCount: 0,
+        playCount: 0,
         pause() { this.pauseCount += 1; },
         load() { this.loadCount += 1; },
         removeAttribute(name) {
@@ -78,6 +80,7 @@ function fakeVideo(options) {
             return [...listeners.values()].reduce((total, values) => total + values.size, 0);
         },
         play() {
+            this.playCount += 1;
             if (typeof settings.play === "function") {
                 return settings.play();
             }
@@ -103,6 +106,16 @@ function fakeCard(url, options) {
     const playIcon = {hidden: false};
     const attributes = {};
     const video = fakeVideo(options);
+    const stateHistory = ["idle"];
+    let livephotoState = "idle";
+    const dataset = {};
+    Object.defineProperty(dataset, "livephotoState", {
+        get() { return livephotoState; },
+        set(value) {
+            livephotoState = value;
+            stateHistory.push(value);
+        },
+    });
     let card;
     const button = {
         dataset: {motionUrl: url},
@@ -112,7 +125,7 @@ function fakeCard(url, options) {
         },
     };
     card = {
-        dataset: {livephotoState: "idle"},
+        dataset,
         classList: fakeClassList(),
         querySelector(selector) {
             return {
@@ -137,6 +150,7 @@ function fakeCard(url, options) {
         label,
         playIcon,
         spinner,
+        stateHistory,
         status,
         still,
         video,
@@ -144,7 +158,7 @@ function fakeCard(url, options) {
 }
 
 
-function fakeDocument() {
+function fakeDocument(items) {
     const listeners = new Map();
     return {
         listeners,
@@ -153,6 +167,11 @@ function fakeDocument() {
             if (listeners.get(name) === callback) {
                 listeners.delete(name);
             }
+        },
+        querySelectorAll(selector) {
+            return selector === "[data-livephoto-motion]"
+                ? (items || []).map((item) => item.video)
+                : [];
         },
     };
 }
@@ -171,13 +190,14 @@ function clickEvent(button) {
 
 
 function createHarness(options) {
-    const documentObject = fakeDocument();
+    const settings = options || {};
+    const documentObject = fakeDocument(settings.items);
     const clock = fakeClock();
     const controller = preview.createController(documentObject, {
         setTimeout: clock.setTimeout,
         clearTimeout: clock.clearTimeout,
         startupTimeoutMs: 8000,
-        ...(options || {}),
+        ...settings,
     });
     return {clock, controller, documentObject};
 }
@@ -207,6 +227,20 @@ test("motion URL admission accepts only verified HTTPS XHS host classes", () => 
     ]) {
         assert.equal(preview.isSafeMotionUrl(rejected), false);
     }
+});
+
+
+test("controller initialization and playback both disable video looping", async () => {
+    const item = fakeCard("https://sns-video-v7.xhscdn.com/path/one.mp4");
+    const harness = createHarness({items: [item]});
+
+    assert.equal(item.video.loop, false);
+    item.video.loop = true;
+    harness.documentObject.listeners.get("click")(clickEvent(item.button));
+    await settle();
+
+    assert.equal(item.video.loop, false);
+    harness.controller.destroy();
 });
 
 
@@ -271,6 +305,78 @@ test("a second click stops and unloads the active card", async () => {
     assert.equal(item.label.textContent, "播放实况");
     assert.equal(item.video.listenerCount(), 0);
     assert.equal(harness.clock.pendingCount(), 0);
+    harness.controller.destroy();
+});
+
+
+test("ended returns an active card to idle without an error or replay", async () => {
+    const harness = createHarness();
+    const item = fakeCard("https://sns-video-v7.xhscdn.com/path/one-shot.mp4");
+    harness.documentObject.listeners.get("click")(clickEvent(item.button));
+    await settle();
+    item.video.dispatch("playing");
+    const loadCountBeforeEnded = item.video.loadCount;
+
+    item.video.dispatch("ended");
+    await settle();
+
+    assert.equal(item.card.dataset.livephotoState, "idle");
+    assert.deepEqual(item.stateHistory.slice(-2), ["ended", "idle"]);
+    assert.equal(item.video.hidden, true);
+    assert.equal(item.video.src, "");
+    assert.equal(item.video.loadCount, loadCountBeforeEnded + 1);
+    assert.equal(item.video.pauseCount >= 1, true);
+    assert.equal(item.still.hidden, false);
+    assert.equal(item.label.textContent, "播放实况");
+    assert.equal(item.attributes["aria-pressed"], "false");
+    assert.equal(item.card.classList.contains("is-active"), false);
+    assert.equal(item.error.hidden, true);
+    assert.equal(item.video.listenerCount(), 0);
+    assert.equal(harness.clock.pendingCount(), 0);
+    assert.equal(item.video.playCount, 1);
+    harness.controller.destroy();
+});
+
+
+test("an ended card can be clicked again for one new one-shot playback", async () => {
+    const harness = createHarness();
+    const item = fakeCard("https://sns-video-v7.xhscdn.com/path/replay.mp4");
+
+    harness.documentObject.listeners.get("click")(clickEvent(item.button));
+    await settle();
+    item.video.dispatch("playing");
+    item.video.dispatch("ended");
+    harness.documentObject.listeners.get("click")(clickEvent(item.button));
+    await settle();
+
+    assert.equal(item.video.playCount, 2);
+    assert.equal(item.card.dataset.livephotoState, "loading");
+    item.video.dispatch("playing");
+    item.video.dispatch("ended");
+    assert.equal(item.card.dataset.livephotoState, "idle");
+    assert.equal(item.video.playCount, 2);
+    assert.equal(item.error.hidden, true);
+    harness.controller.destroy();
+});
+
+
+test("a stale ended event cannot stop the current card", async () => {
+    const harness = createHarness();
+    const first = fakeCard("https://sns-video-v7.xhscdn.com/path/first.mp4");
+    const second = fakeCard("https://sns-video-v7.xhscdn.com/path/second.mp4");
+
+    harness.documentObject.listeners.get("click")(clickEvent(first.button));
+    await settle();
+    first.video.dispatch("playing");
+    harness.documentObject.listeners.get("click")(clickEvent(second.button));
+    await settle();
+    second.video.dispatch("playing");
+    first.video.dispatch("ended");
+
+    assert.equal(first.card.dataset.livephotoState, "stopped");
+    assert.equal(second.card.dataset.livephotoState, "playing");
+    assert.equal(second.video.src, second.button.dataset.motionUrl);
+    assert.equal(second.still.hidden, true);
     harness.controller.destroy();
 });
 
@@ -452,6 +558,7 @@ test("safe state vocabulary is fixed and contains no transport detail", () => {
             "aborted",
             "canplay",
             "decode_error",
+            "ended",
             "idle",
             "loading",
             "metadata",

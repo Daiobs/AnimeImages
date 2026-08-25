@@ -645,6 +645,7 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
         self.assertNotIn("proxy-image", html)
         for video in soup.select("[data-livephoto-motion]"):
             self.assertFalse(video.has_attr("src"))
+            self.assertFalse(video.has_attr("loop"))
             self.assertEqual(video.get("preload"), "none")
             self.assertEqual(video.get("crossorigin"), "anonymous")
             self.assertEqual(video.get("referrerpolicy"), "no-referrer")

@@ -20,6 +20,7 @@
         "metadata",
         "canplay",
         "playing",
+        "ended",
         "stopped",
         "startup_timeout",
         "network_error",
@@ -44,6 +45,7 @@
         metadata: "已读取媒体",
         canplay: "可以播放",
         playing: "正在播放",
+        ended: "播放结束",
         stopped: "已停止",
         startup_timeout: "加载超时",
         network_error: "媒体请求失败",
@@ -95,6 +97,15 @@
         return "network_error";
     }
 
+    function disableLooping(root) {
+        if (!root || typeof root.querySelectorAll !== "function") {
+            return;
+        }
+        for (const video of root.querySelectorAll("[data-livephoto-motion]")) {
+            video.loop = false;
+        }
+    }
+
     function createController(documentObject, options) {
         if (!documentObject || typeof documentObject.addEventListener !== "function") {
             return null;
@@ -107,6 +118,8 @@
             : STARTUP_TIMEOUT_MS;
         let activeAttempt = null;
         let attemptSequence = 0;
+
+        disableLooping(documentObject);
 
         function cardParts(card) {
             return {
@@ -161,6 +174,7 @@
             if (!video) {
                 return;
             }
+            video.loop = false;
             video.pause();
             video.removeAttribute("src");
             if (typeof video.load === "function") {
@@ -220,6 +234,19 @@
             const parts = resetCard(attempt.card, state, "重试播放");
             showError(parts, state);
             return false;
+        }
+
+        function finishAttempt(attempt) {
+            if (!isCurrent(attempt)) {
+                return false;
+            }
+            cleanupAttempt(attempt);
+            activeAttempt = null;
+            attemptSequence += 1;
+            setCardState(attempt.card, "ended");
+            const parts = resetCard(attempt.card, "idle", "播放实况");
+            hideError(parts);
+            return true;
         }
 
         function stopActiveAttempt(state) {
@@ -314,6 +341,9 @@
                 }
                 setCardState(card, "playing");
             });
+            registerAttemptListener(attempt, "ended", () => {
+                finishAttempt(attempt);
+            });
             registerAttemptListener(attempt, "error", () => {
                 failAttempt(
                     attempt,
@@ -324,6 +354,7 @@
                 failAttempt(attempt, "aborted");
             });
 
+            parts.video.loop = false;
             parts.video.src = motionUrl;
             parts.video.load();
             attempt.timeoutId = setTimer(() => {
@@ -388,6 +419,7 @@
     }
 
     function ensureController(documentObject) {
+        disableLooping(documentObject);
         if (browserController && browserDocument === documentObject) {
             return browserController;
         }
@@ -406,6 +438,7 @@
         STARTUP_TIMEOUT_MS,
         classifyMediaError,
         createController,
+        disableLooping,
         ensureController,
         isSafeMotionUrl,
     });
