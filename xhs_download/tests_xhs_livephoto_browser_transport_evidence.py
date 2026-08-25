@@ -95,6 +95,23 @@ class XhsLivePhotoBrowserTransportEvidenceTests(SimpleTestCase):
             self.assertTrue(policy[key])
         self.assertEqual(policy["unknown_host_network_requests"], 0)
 
+    def test_discovered_and_browser_verified_host_inventories_are_distinct(self):
+        policy = self.evidence["host_class_policy"]
+        self.assertEqual(
+            policy["discovered_host_classes"],
+            [
+                "still_exact",
+                "motion_versioned",
+                "motion_zl",
+                "motion_backup",
+            ],
+        )
+        self.assertEqual(
+            policy["browser_verified_host_classes"],
+            ["still_exact", "motion_versioned", "motion_backup"],
+        )
+        self.assertEqual(policy["motion_zl_status"], "discovered_unverified")
+
     def test_three_observed_host_classes_pass_equivalence_and_browser_body(self):
         for host_class in (
             "still_exact",
@@ -103,6 +120,8 @@ class XhsLivePhotoBrowserTransportEvidenceTests(SimpleTestCase):
         ):
             with self.subTest(host_class=host_class):
                 row = self.hosts[host_class]
+                self.assertEqual(row["discovery_status"], "discovered_verified")
+                self.assertEqual(row["browser_admission"], "admitted")
                 self.assertEqual(row["representative_count"], 2)
                 self.assertEqual(row["https_normalization"], "pass")
                 self.assertEqual(row["http_https_equivalence"], "pass")
@@ -140,7 +159,13 @@ class XhsLivePhotoBrowserTransportEvidenceTests(SimpleTestCase):
     def test_motion_zl_gap_is_not_inferred_from_other_host_classes(self):
         zl = self.hosts["motion_zl"]
         self.assertTrue(zl["payload_observed"])
+        self.assertEqual(zl["discovery_status"], "discovered_unverified")
+        self.assertEqual(zl["browser_admission"], "rejected")
         self.assertEqual(zl["representative_count"], 0)
+        self.assertEqual(
+            zl["https_normalization"],
+            "rejected_unverified_host_class",
+        )
         self.assertEqual(
             zl["http_https_equivalence"],
             "not_run_fresh_candidate_unavailable",
@@ -148,7 +173,7 @@ class XhsLivePhotoBrowserTransportEvidenceTests(SimpleTestCase):
         self.assertEqual(zl["browser_body_readable_count"], 0)
         self.assertEqual(
             zl["status"],
-            "blocked_browser_evidence_unavailable",
+            "discovered_unverified",
         )
 
     def test_gallery_video_and_invalid_controls_remain_fail_closed(self):
@@ -166,7 +191,7 @@ class XhsLivePhotoBrowserTransportEvidenceTests(SimpleTestCase):
         self.assertFalse(video["negative_false_positive"])
         self.assertTrue(self.samples["xhs-invalid-01"]["invalid_fail_closed"])
 
-    def test_asset_spec_readiness_remains_closed_by_required_host_gap(self):
+    def test_verified_subset_is_ready_while_full_observed_coverage_is_closed(self):
         readiness = self.evidence["readiness"]
         for key in (
             "relationship_mapper_ready",
@@ -174,20 +199,27 @@ class XhsLivePhotoBrowserTransportEvidenceTests(SimpleTestCase):
             "still_format_ready",
             "motion_format_ready",
             "https_normalization_ready",
+            "verified_browser_host_subset_ready",
+            "http_https_equivalence_ready_for_verified_subset",
+            "browser_cors_ready_for_verified_subset",
+            "browser_body_readable_ready_for_verified_subset",
+            "host_review_ready_for_verified_subset",
+            "asset_spec_mapper_ready_for_verified_subset",
         ):
             self.assertTrue(readiness[key])
         for key in (
-            "http_https_equivalence_ready",
-            "browser_cors_ready",
-            "browser_body_readable_ready",
-            "host_review_ready",
+            "full_observed_host_coverage_ready",
+            "http_https_equivalence_ready_for_all_discovered_hosts",
+            "browser_cors_ready_for_all_discovered_hosts",
+            "browser_body_readable_ready_for_all_discovered_hosts",
+            "host_review_ready_for_all_discovered_hosts",
             "raw_http_browser_ready",
-            "asset_spec_mapper_ready",
             "provider_integration_ready",
         ):
             self.assertFalse(readiness[key])
+        self.assertEqual(readiness["motion_zl_status"], "discovered_unverified")
         self.assertEqual(
-            readiness["fixed_blocker"],
+            readiness["full_observed_host_coverage_blocker"],
             "required_motion_zl_browser_evidence_unavailable",
         )
 

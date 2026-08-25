@@ -9,10 +9,18 @@ XHS_LIVEPHOTO_CANDIDATE_SELECTION_READY = YES
 XHS_LIVEPHOTO_STILL_FORMAT_READY = YES
 XHS_LIVEPHOTO_MOTION_FORMAT_READY = YES
 XHS_LIVEPHOTO_HTTPS_NORMALIZATION_READY = YES
-XHS_LIVEPHOTO_HTTP_HTTPS_EQUIVALENCE_READY = NO
-XHS_LIVEPHOTO_BROWSER_CORS_READY = NO
-XHS_LIVEPHOTO_HOST_REVIEW_READY = NO
-XHS_LIVEPHOTO_ASSET_SPEC_MAPPER_READY = NO
+XHS_LIVEPHOTO_VERIFIED_BROWSER_HOST_SUBSET_READY = YES
+XHS_LIVEPHOTO_FULL_OBSERVED_HOST_COVERAGE_READY = NO
+XHS_LIVEPHOTO_MOTION_ZL_STATUS = DISCOVERED_UNVERIFIED
+XHS_LIVEPHOTO_HTTP_HTTPS_EQUIVALENCE_READY_FOR_VERIFIED_SUBSET = YES
+XHS_LIVEPHOTO_HTTP_HTTPS_EQUIVALENCE_READY_FOR_ALL_DISCOVERED_HOSTS = NO
+XHS_LIVEPHOTO_BROWSER_CORS_READY_FOR_VERIFIED_SUBSET = YES
+XHS_LIVEPHOTO_BROWSER_CORS_READY_FOR_ALL_DISCOVERED_HOSTS = NO
+XHS_LIVEPHOTO_BROWSER_BODY_READABLE_READY_FOR_VERIFIED_SUBSET = YES
+XHS_LIVEPHOTO_BROWSER_BODY_READABLE_READY_FOR_ALL_DISCOVERED_HOSTS = NO
+XHS_LIVEPHOTO_HOST_REVIEW_READY_FOR_VERIFIED_SUBSET = YES
+XHS_LIVEPHOTO_HOST_REVIEW_READY_FOR_ALL_DISCOVERED_HOSTS = NO
+XHS_LIVEPHOTO_ASSET_SPEC_MAPPER_READY_FOR_VERIFIED_SUBSET = YES
 XHS_LIVEPHOTO_PROVIDER_INTEGRATION_READY = NO
 CURRENT_XHS_BROWSER_ADMISSION_CONSUMERS = 0
 CURRENT_XHS_PROVIDER_RICH_MEDIA_EMISSION = 0
@@ -20,18 +28,19 @@ RAW_HTTP_BROWSER_READY = NO
 PRODUCTION_DEPLOYMENT = NO
 ```
 
-The fixed blocker is:
+The fixed blocker for full observed-host coverage is:
 
 ```text
 XHS_BROWSER_TRANSPORT_BLOCKED_BROWSER_EVIDENCE_UNAVAILABLE
 required_host_class = motion_zl
 ```
 
-This is a fail-closed research result. Three reviewed host classes passed
-HTTPS equivalence and real Chromium body-readability checks. The required
-`motion_zl` class appeared in transient exact-note payloads early in the
-review, but no candidate value was retained. Later bounded fresh snapshots did
-not supply that class again, so no HTTP/HTTPS or browser request was made for
+This is a verified-subset result with a fail-closed full-coverage boundary.
+Three discovered host classes passed HTTPS equivalence and real Chromium
+body-readability checks and form the browser-verified subset. The `motion_zl`
+class appeared in transient exact-note payloads early in the review, but no
+candidate value was retained. Later bounded fresh snapshots did not supply that
+class again, so it remains `DISCOVERED_UNVERIFIED` and browser admission rejects
 it. Results from other classes are not used as a substitute.
 
 ## Scope And Boundaries
@@ -79,14 +88,16 @@ upgrade was applied.
 
 ### Reviewed classes
 
-| Role | Closed class | Classifier |
-| --- | --- | --- |
-| still | `still_exact` | exact reviewed still hostname |
-| motion | `motion_versioned` | reviewed numeric version label |
-| motion | `motion_zl` | exact reviewed alternate hostname |
-| motion | `motion_backup` | reviewed numeric backup label |
+| Role | Discovered class | Browser admission | Classifier |
+| --- | --- | --- | --- |
+| still | `still_exact` | verified | exact reviewed still hostname |
+| motion | `motion_versioned` | verified | reviewed numeric version label |
+| motion | `motion_zl` | rejected | exact discovered alternate hostname |
+| motion | `motion_backup` | verified | reviewed numeric backup label |
 
 These labels are research classifications, not production wildcard rules.
+Discovery does not grant browser admission. The browser-verified set is exactly
+`still_exact`, `motion_versioned`, and `motion_backup`.
 
 ### Normalization rules
 
@@ -99,6 +110,8 @@ These labels are research classifications, not production wildcard rules.
 - Userinfo, passwords, IP literals, localhost, trailing dots, empty paths,
   backslash paths, non-default ports, lookalikes, and unrelated CDN hosts fail
   before network access.
+- The classifier can preserve the historical `motion_zl` discovery, but HTTPS
+  normalization and admission fail with the fixed unverified-host error.
 
 Unknown-host negative controls produced zero network requests.
 
@@ -136,7 +149,7 @@ The comparison required:
 | --- | ---: | ---: | ---: | --- | --- | --- |
 | `still_exact` | 2 | 2/2 match | 2/2 match | JPEG | none | pass |
 | `motion_versioned` | 2, two numeric labels | 2/2 match | 2/2 match | MP4 | none | pass |
-| `motion_zl` | 0 fresh candidates | not run | not run | not run | not run | blocked |
+| `motion_zl` | 0 fresh candidates | not run | not run | not run | not run | discovered, unverified |
 | `motion_backup` | 2, two numeric labels | 2/2 match | 2/2 match | MP4 | none | pass |
 
 Fresh still candidates returned JPEG magic in this phase, whereas the PR #70
@@ -180,9 +193,10 @@ use Server Relay.
 CORS failure because the response was non-opaque, `response.body` was readable,
 and the MP4 prefix was valid. Browser console errors were zero.
 
-The aggregate `BROWSER_CORS_READY` remains false because the required
-`motion_zl` row has no fresh browser evidence. A server-observed wildcard CORS
-header and success on sibling host classes do not grant that missing proof.
+`BROWSER_CORS_READY_FOR_VERIFIED_SUBSET` is true. The corresponding gate for
+all discovered hosts remains false because `motion_zl` has no fresh browser
+evidence. A server-observed wildcard CORS header and success on sibling host
+classes do not grant that missing proof.
 
 ## Negative Controls
 
@@ -209,26 +223,34 @@ CANDIDATE_SELECTION_READY = YES
 STILL_FORMAT_READY = YES
 MOTION_FORMAT_READY = YES
 HTTPS_NORMALIZATION_READY = YES
-HTTP_HTTPS_EQUIVALENCE_READY = NO
-BROWSER_CORS_READY = NO
-BROWSER_BODY_READABLE_READY = NO
-HOST_REVIEW_READY = NO
-ASSET_SPEC_MAPPER_READY = NO
+VERIFIED_BROWSER_HOST_SUBSET_READY = YES
+FULL_OBSERVED_HOST_COVERAGE_READY = NO
+MOTION_ZL_STATUS = DISCOVERED_UNVERIFIED
+HTTP_HTTPS_EQUIVALENCE_READY_FOR_VERIFIED_SUBSET = YES
+HTTP_HTTPS_EQUIVALENCE_READY_FOR_ALL_DISCOVERED_HOSTS = NO
+BROWSER_CORS_READY_FOR_VERIFIED_SUBSET = YES
+BROWSER_CORS_READY_FOR_ALL_DISCOVERED_HOSTS = NO
+BROWSER_BODY_READABLE_READY_FOR_VERIFIED_SUBSET = YES
+BROWSER_BODY_READABLE_READY_FOR_ALL_DISCOVERED_HOSTS = NO
+HOST_REVIEW_READY_FOR_VERIFIED_SUBSET = YES
+HOST_REVIEW_READY_FOR_ALL_DISCOVERED_HOSTS = NO
+ASSET_SPEC_MAPPER_READY_FOR_VERIFIED_SUBSET = YES
 PROVIDER_INTEGRATION_READY = NO
 ```
 
-The body-readability gate is globally false only because one required class was
-not tested; all executed browser observations were readable and non-opaque.
+All executed browser observations in the verified subset were readable and
+non-opaque. Full observed-host coverage remains false rather than weakening the
+subset proof or admitting the unverified class.
 
 The next admissible research action is narrow: obtain a fresh exact-note
 `motion_zl` candidate, run the same two bounded HTTP/HTTPS comparisons and two
 browser normal/Range reads, and update this artifact. Do not infer the result,
 retain a stale signed candidate, synthesize a hostname, or use Server Relay.
 
-Even if that gate later passes, Provider integration remains closed. Separate
-work is still required for asset/group identity, `XhsRichMediaAssetSpec`,
-`MediaAsset`, Provider provenance, manifest authorization, adapter wiring, UI,
-and download product decisions.
+The verified subset is sufficient to begin a separate dormant Asset Spec Mapper
+that rejects `motion_zl` and any unknown class. Provider integration remains
+closed. Separate work is still required for `MediaAsset`, Provider provenance,
+manifest authorization, adapter wiring, UI, and download product decisions.
 
 ## Runtime Impact
 

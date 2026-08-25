@@ -4,9 +4,12 @@ from django.test import SimpleTestCase
 
 from .services.platforms.xhs_livephoto_browser_admission import (
     XHS_LIVEPHOTO_BROWSER_ADMISSION_SCHEMA_VERSION,
+    XHS_LIVEPHOTO_BROWSER_VERIFIED_HOST_CLASSES,
+    XHS_LIVEPHOTO_DISCOVERED_HOST_CLASSES,
     XhsLivePhotoBrowserAdmissionError,
     XhsLivePhotoBrowserAdmissionEvidenceV1,
     XhsPrivateHttpsMediaCandidateV1,
+    classify_xhs_livephoto_discovered_host,
     normalize_xhs_livephoto_candidate_https,
 )
 from .services.platforms.xhs_livephoto_candidate_locator import (
@@ -83,10 +86,37 @@ class XhsLivePhotoBrowserAdmissionTests(SimpleTestCase):
         self.assertEqual(result.host_class, "still_exact")
         self.assertTrue(result.upgrade_applied)
 
-    def test_reviewed_http_motion_families_are_upgraded(self):
+    def test_discovered_and_browser_verified_host_sets_are_distinct(self):
+        self.assertEqual(
+            XHS_LIVEPHOTO_DISCOVERED_HOST_CLASSES,
+            frozenset(
+                {
+                    "still_exact",
+                    "motion_versioned",
+                    "motion_zl",
+                    "motion_backup",
+                }
+            ),
+        )
+        self.assertEqual(
+            XHS_LIVEPHOTO_BROWSER_VERIFIED_HOST_CLASSES,
+            frozenset(
+                {"still_exact", "motion_versioned", "motion_backup"}
+            ),
+        )
+
+    def test_discovered_classifier_recognizes_motion_zl_without_admitting_it(self):
+        self.assertEqual(
+            classify_xhs_livephoto_discovered_host(
+                "sns-video-zl.xhscdn.com",
+                member_role="motion",
+            ),
+            "motion_zl",
+        )
+
+    def test_browser_verified_http_motion_families_are_upgraded(self):
         cases = (
             ("sns-video-v7.xhscdn.com", "motion_versioned"),
-            ("sns-video-zl.xhscdn.com", "motion_zl"),
             ("sns-bak-v12.xhscdn.com", "motion_backup"),
         )
 
@@ -95,6 +125,15 @@ class XhsLivePhotoBrowserAdmissionTests(SimpleTestCase):
                 result = normalize(media_url("http", host), "motion")
                 self.assertEqual(result.host_class, host_class)
                 self.assertTrue(result.upgrade_applied)
+
+    def test_motion_zl_browser_admission_is_rejected(self):
+        self.assert_admission_error(
+            "XHS_LIVEPHOTO_BROWSER_HOST_CLASS_UNVERIFIED",
+            lambda: normalize(
+                media_url("http", "sns-video-zl.xhscdn.com"),
+                "motion",
+            ),
+        )
 
     def test_reviewed_https_remains_https_without_upgrade(self):
         source = media_url("https", "sns-video-v3.xhscdn.com")
@@ -289,6 +328,17 @@ class XhsLivePhotoBrowserAdmissionTests(SimpleTestCase):
             ),
         )
 
+    def test_motion_zl_cannot_construct_private_https_candidate(self):
+        self.assert_admission_error(
+            "XHS_LIVEPHOTO_BROWSER_HOST_CLASS_UNVERIFIED",
+            lambda: XhsPrivateHttpsMediaCandidateV1(
+                value=media_url("https", "sns-video-zl.xhscdn.com"),
+                member_role="motion",
+                host_class="motion_zl",
+                upgrade_applied=False,
+            ),
+        )
+
     def test_unknown_hosts_are_rejected_before_network_callback(self):
         network_request_count = 0
 
@@ -386,12 +436,28 @@ class XhsLivePhotoBrowserAdmissionTests(SimpleTestCase):
             "XHS_LIVEPHOTO_BROWSER_ADMISSION_CANDIDATE_INVALID",
             lambda: XhsLivePhotoBrowserAdmissionEvidenceV1(
                 member_role="still",
-                host_class="motion_zl",
+                host_class="motion_versioned",
                 format_class="jpeg",
                 response_type="cors",
                 body_readable=True,
-                final_host_class="motion_zl",
+                final_host_class="motion_versioned",
                 range_result="ignored_bounded_200",
+                redirect_class="none",
+                upgrade_applied=True,
+            ),
+        )
+
+    def test_motion_zl_cannot_construct_browser_admission_evidence(self):
+        self.assert_admission_error(
+            "XHS_LIVEPHOTO_BROWSER_HOST_CLASS_UNVERIFIED",
+            lambda: XhsLivePhotoBrowserAdmissionEvidenceV1(
+                member_role="motion",
+                host_class="motion_zl",
+                format_class="mp4",
+                response_type="cors",
+                body_readable=True,
+                final_host_class="motion_zl",
+                range_result="partial_206",
                 redirect_class="none",
                 upgrade_applied=True,
             ),

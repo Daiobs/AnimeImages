@@ -14,11 +14,14 @@ from .xhs_livephoto_candidate_locator import XhsPrivateMediaCandidateV1
 XHS_LIVEPHOTO_BROWSER_ADMISSION_SCHEMA_VERSION = "1.0"
 
 _MEMBER_ROLES = frozenset({"still", "motion"})
-_HOST_CLASSES = frozenset(
+XHS_LIVEPHOTO_DISCOVERED_HOST_CLASSES = frozenset(
     {"still_exact", "motion_versioned", "motion_zl", "motion_backup"}
 )
-_MOTION_HOST_CLASSES = frozenset(
-    {"motion_versioned", "motion_zl", "motion_backup"}
+XHS_LIVEPHOTO_BROWSER_VERIFIED_HOST_CLASSES = frozenset(
+    {"still_exact", "motion_versioned", "motion_backup"}
+)
+_VERIFIED_MOTION_HOST_CLASSES = frozenset(
+    {"motion_versioned", "motion_backup"}
 )
 _STILL_FORMAT_CLASSES = frozenset({"jpeg", "webp"})
 _MOTION_FORMAT_CLASSES = frozenset({"mp4"})
@@ -33,6 +36,7 @@ _ERROR_CODES = frozenset(
     {
         _GENERIC_ERROR_CODE,
         "XHS_LIVEPHOTO_BROWSER_ADMISSION_CANDIDATE_INVALID",
+        "XHS_LIVEPHOTO_BROWSER_HOST_CLASS_UNVERIFIED",
         "XHS_LIVEPHOTO_BROWSER_ADMISSION_HOST_REJECTED",
         "XHS_LIVEPHOTO_BROWSER_ADMISSION_PATH_INVALID",
         "XHS_LIVEPHOTO_BROWSER_ADMISSION_PORT_REJECTED",
@@ -57,7 +61,13 @@ def _reject(code: str) -> None:
     raise XhsLivePhotoBrowserAdmissionError(code)
 
 
-def _reviewed_host_class(hostname: str, *, member_role: str) -> str:
+def classify_xhs_livephoto_discovered_host(
+    hostname: str,
+    *,
+    member_role: str,
+) -> str:
+    """Classify a payload-observed host without granting browser admission."""
+
     hostname = str(hostname or "").lower()
     if member_role == "still":
         return "still_exact" if hostname == _STILL_HOST else ""
@@ -70,6 +80,13 @@ def _reviewed_host_class(hostname: str, *, member_role: str) -> str:
     if _MOTION_BACKUP_HOST_RE.fullmatch(hostname):
         return "motion_backup"
     return ""
+
+
+def _require_browser_verified_host_class(host_class: str) -> None:
+    if host_class not in XHS_LIVEPHOTO_BROWSER_VERIFIED_HOST_CLASSES:
+        if host_class in XHS_LIVEPHOTO_DISCOVERED_HOST_CLASSES:
+            _reject("XHS_LIVEPHOTO_BROWSER_HOST_CLASS_UNVERIFIED")
+        _reject("XHS_LIVEPHOTO_BROWSER_ADMISSION_HOST_REJECTED")
 
 
 def _is_ip_literal(hostname: str) -> bool:
@@ -115,7 +132,10 @@ def _validated_candidate_parts(value: Any, *, member_role: str):
         or _is_ip_literal(hostname)
     ):
         _reject("XHS_LIVEPHOTO_BROWSER_ADMISSION_HOST_REJECTED")
-    host_class = _reviewed_host_class(hostname, member_role=member_role)
+    host_class = classify_xhs_livephoto_discovered_host(
+        hostname,
+        member_role=member_role,
+    )
     if not host_class:
         _reject("XHS_LIVEPHOTO_BROWSER_ADMISSION_HOST_REJECTED")
     if not parsed.path or not parsed.path.strip("/") or "\\" in parsed.path:
@@ -135,16 +155,17 @@ class XhsPrivateHttpsMediaCandidateV1:
             self.value,
             member_role=self.member_role,
         )
+        _require_browser_verified_host_class(validated_host_class)
         if (
             scheme != "https"
-            or self.host_class not in _HOST_CLASSES
+            or self.host_class not in XHS_LIVEPHOTO_BROWSER_VERIFIED_HOST_CLASSES
             or validated_host_class != self.host_class
             or (
                 self.member_role == "still" and self.host_class != "still_exact"
             )
             or (
                 self.member_role == "motion"
-                and self.host_class not in _MOTION_HOST_CLASSES
+                and self.host_class not in _VERIFIED_MOTION_HOST_CLASSES
             )
             or type(self.upgrade_applied) is not bool
         ):
@@ -172,10 +193,11 @@ class XhsLivePhotoBrowserAdmissionEvidenceV1:
     upgrade_applied: bool
 
     def __post_init__(self) -> None:
+        _require_browser_verified_host_class(self.host_class)
         valid_host_class = (
             self.host_class == "still_exact"
             if self.member_role == "still"
-            else self.host_class in _MOTION_HOST_CLASSES
+            else self.host_class in _VERIFIED_MOTION_HOST_CLASSES
         )
         valid_format = (
             self.format_class in _STILL_FORMAT_CLASSES
@@ -184,7 +206,7 @@ class XhsLivePhotoBrowserAdmissionEvidenceV1:
         )
         if (
             self.member_role not in _MEMBER_ROLES
-            or self.host_class not in _HOST_CLASSES
+            or self.host_class not in XHS_LIVEPHOTO_BROWSER_VERIFIED_HOST_CLASSES
             or not valid_host_class
             or self.final_host_class != self.host_class
             or not valid_format
@@ -231,6 +253,7 @@ def normalize_xhs_livephoto_candidate_https(
         value,
         member_role=member_role,
     )
+    _require_browser_verified_host_class(host_class)
 
     # Replace only the scheme prefix so signed path/query bytes remain unchanged.
     fragmentless = value.split("#", 1)[0]
@@ -255,8 +278,11 @@ def normalize_xhs_livephoto_candidate_https(
 
 __all__ = (
     "XHS_LIVEPHOTO_BROWSER_ADMISSION_SCHEMA_VERSION",
+    "XHS_LIVEPHOTO_BROWSER_VERIFIED_HOST_CLASSES",
+    "XHS_LIVEPHOTO_DISCOVERED_HOST_CLASSES",
     "XhsLivePhotoBrowserAdmissionError",
     "XhsLivePhotoBrowserAdmissionEvidenceV1",
     "XhsPrivateHttpsMediaCandidateV1",
+    "classify_xhs_livephoto_discovered_host",
     "normalize_xhs_livephoto_candidate_https",
 )
