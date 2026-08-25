@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Added a dormant, URL-free XHS LivePhoto asset identity and Asset Spec mapper
+  on top of the browser-verified host subset merged in PR #71. Exact selected
+  candidates are rebound to their same-snapshot locators with private SHA-256
+  proof, extensions require bounded magic evidence, source item order expands
+  to still-then-motion groups, and AnimeImages-owned IDs expose neither note
+  identity nor candidate material. The discovered but unverified `motion_zl`
+  class and all unknown hosts fail closed. A sanitized test-only bridge proves
+  compatibility with the existing Rich Media contract; no `MediaAsset`,
+  Provider result, manifest, adapter, registry, UI, download, migration,
+  dependency, or production behavior is wired or changed.
 - Added a dormant XHS LivePhoto HTTPS admission helper and URL-free real-browser
   transport evidence. Strict HTTP-to-HTTPS normalization, bounded equivalence,
   Chromium CORS, readable body, format magic, and final-host checks pass for
