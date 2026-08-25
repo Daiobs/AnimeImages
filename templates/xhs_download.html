@@ -186,4 +186,7 @@
     <script src="{% static 'js/result_url_safety.js' %}?v={{ static_asset_version }}"></script>
     <script src="{% static 'js/browser_photo_archive.js' %}?v={{ static_asset_version }}"></script>
     <script src="{% static 'js/xhs_download.js' %}?v={{ static_asset_version }}"></script>
+    {% if request.user.is_active and request.user.is_staff %}
+        <script src="{% static 'js/xhs_livephoto_staff_preview.js' %}?v={{ static_asset_version }}"></script>
+    {% endif %}
 {% endblock %}

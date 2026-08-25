@@ -1,0 +1,76 @@
+<section class="xhs-livephoto-staff-preview" data-xhs-livephoto-staff-preview>
+    <div class="alert alert-info xhs-livephoto-staff-notice" role="status">
+        <i class="bi bi-person-badge me-1"></i>
+        实况照片预览（Staff 验证）：当前仅验证解析、配对与播放，不开放下载。
+    </div>
+
+    <div class="xhs-livephoto-staff-summary small text-muted mb-3">
+        按原始顺序显示 {{ xhs_livephoto_staff_preview.source_item_count }} 项：
+        {{ xhs_livephoto_staff_preview.livephoto_count }} 项实况照片，
+        {{ xhs_livephoto_staff_preview.regular_count }} 项普通图片。
+    </div>
+
+    <div class="xhs-livephoto-staff-grid">
+        {% for item in xhs_livephoto_staff_preview.items %}
+            {% if item.kind == "live_photo" %}
+                <article class="xhs-livephoto-preview-card" data-livephoto-card>
+                    <div class="xhs-livephoto-preview-media">
+                        <img
+                            src="{{ item.still_url }}"
+                            alt="实况照片静态画面"
+                            loading="lazy"
+                            decoding="async"
+                            crossorigin="anonymous"
+                            referrerpolicy="no-referrer"
+                            data-livephoto-still
+                        >
+                        <video
+                            muted
+                            loop
+                            playsinline
+                            crossorigin="anonymous"
+                            preload="none"
+                            referrerpolicy="no-referrer"
+                            data-livephoto-motion
+                            hidden
+                        ></video>
+                        <span class="xhs-livephoto-badge">实况</span>
+                    </div>
+                    <div class="xhs-livephoto-preview-footer">
+                        <span>第 {{ forloop.counter }} 项</span>
+                        <button
+                            type="button"
+                            class="btn btn-outline-primary btn-sm"
+                            data-livephoto-toggle
+                            data-motion-url="{{ item.motion_url }}"
+                            aria-pressed="false"
+                        >
+                            <i class="bi bi-play-fill" aria-hidden="true"></i>
+                            <span data-livephoto-toggle-label>播放实况</span>
+                        </button>
+                    </div>
+                    <p class="xhs-livephoto-preview-error" data-livephoto-error hidden>
+                        实况预览加载失败，可重新解析后再试。
+                    </p>
+                </article>
+            {% else %}
+                <article class="xhs-livephoto-preview-card xhs-livephoto-preview-card-regular">
+                    <div class="xhs-livephoto-preview-media">
+                        <img
+                            src="{{ item.still_url }}"
+                            alt="普通图片"
+                            loading="lazy"
+                            decoding="async"
+                            crossorigin="anonymous"
+                            referrerpolicy="no-referrer"
+                        >
+                    </div>
+                    <div class="xhs-livephoto-preview-footer">
+                        <span>第 {{ forloop.counter }} 项</span>
+                        <span class="text-muted small">普通图片</span>
+                    </div>
+                </article>
+            {% endif %}
+        {% endfor %}
+    </div>
+</section>

@@ -4293,13 +4293,15 @@ def apply_search_result_to_context(
     platform_key,
     prefer_ultra_hd,
     provider_notice_override=None,
+    enable_xhs_livephoto_staff_preview=False,
 ):
     result_metadata = result.metadata or {}
     display_context = build_result_display_context(
         result,
         platform_key=platform_key,
-        probe_missing_video_sizes=not (
-            prefer_ultra_hd and result.platform == "douyin"
+        probe_missing_video_sizes=(
+            getattr(result, "rich_media", None) is None
+            and not (prefer_ultra_hd and result.platform == "douyin")
         ),
     )
     context["platform"] = result.platform
@@ -4416,6 +4418,32 @@ def apply_search_result_to_context(
     context["image_items"] = display_context["image_items"]
     context["video_items"] = display_context["video_items"]
 
+    if (
+        enable_xhs_livephoto_staff_preview
+        and result.platform == "xiaohongshu"
+        and result.rich_media is not None
+    ):
+        from .services.platforms.xhs_livephoto_staff_builder import (
+            build_xhs_livephoto_staff_preview_context,
+        )
+
+        context["xhs_livephoto_staff_preview"] = (
+            build_xhs_livephoto_staff_preview_context(result)
+        )
+        context["show_xhs_livephoto_staff_preview"] = True
+    elif (
+        enable_xhs_livephoto_staff_preview
+        and result_metadata.get("xhs_livephoto_staff_preview_status") == "fallback"
+    ):
+        error_code = str(
+            result_metadata.get("xhs_livephoto_staff_preview_error_code") or ""
+        )
+        context["provider_notice"] = (
+            "该笔记包含尚未完成浏览器验证的实况媒体节点，已显示普通图片结果。"
+            if "HOST" in error_code
+            else "实况照片预览暂不可用，已显示普通图片结果。"
+        )
+
     if not context["image_items"] and not context["video_items"]:
         context["error_message"] = "没有解析到图片或视频。"
 
@@ -4448,6 +4476,8 @@ def build_search_results_context(request, platform_key="home"):
         "display_author": "",
         "note_id": "",
         "metadata_source": "",
+        "show_xhs_livephoto_staff_preview": False,
+        "xhs_livephoto_staff_preview": {},
     }
 
     if not query:
@@ -4639,6 +4669,14 @@ def build_search_results_context(request, platform_key="home"):
         )
         client_identity = get_client_identity(request)
         parse_options = {"prefer_ultra_hd": prefer_ultra_hd}
+        enable_xhs_livephoto_staff_preview = bool(
+            query_platform_id == "xiaohongshu"
+            and getattr(request.user, "is_authenticated", False)
+            and getattr(request.user, "is_active", False)
+            and getattr(request.user, "is_staff", False)
+        )
+        if enable_xhs_livephoto_staff_preview:
+            parse_options["enable_xhs_livephoto_staff_preview"] = True
         if prefer_youtube_merge:
             parse_options["prefer_youtube_merge"] = True
         if client_country_code:
@@ -4667,6 +4705,7 @@ def build_search_results_context(request, platform_key="home"):
             result,
             platform_key=platform_key,
             prefer_ultra_hd=prefer_ultra_hd,
+            enable_xhs_livephoto_staff_preview=enable_xhs_livephoto_staff_preview,
         )
         log_parse_request_event(
             request,

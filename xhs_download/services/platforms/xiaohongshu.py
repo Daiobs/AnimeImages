@@ -1,3 +1,4 @@
+import logging
 import re
 import time
 from urllib.parse import urlparse
@@ -23,9 +24,10 @@ from .xhs_page_state import (
     normalize_xhs_note_id,
     normalize_xhs_state_text,
 )
+from .xhs_livephoto_staff_builder import build_xhs_livephoto_staff_result
 
 
-XHS_PAGE_HOST_SUFFIXES = ("xiaohongshu.com", "xhslink.com")
+XHS_PAGE_HOST_SUFFIXES = ("xiaohongshu.com", "xhslink.com", "xhslink.cn")
 XHS_MEDIA_HOST_SUFFIXES = ("xiaohongshu.com", "xhscdn.com")
 XHS_EMPTY_RESOURCE_VALUES = {"", ".", "..", "null", "none", "undefined"}
 XHS_NON_NOTE_IMAGE_HINTS = (
@@ -54,6 +56,8 @@ XHS_PAGE_STATE_MESSAGES = {
     "deleted": "当前笔记已不可用或未返回公开素材。",
     "unavailable": "当前笔记已不可用或未返回公开素材。",
 }
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_xhs_image_candidate(url):
@@ -431,9 +435,20 @@ class XiaohongshuAdapter(BasePlatformAdapter):
         cover=True,
     )
     provider_policy = ProviderPolicy(primary_provider="native")
-    parse_option_names = ("timeout_seconds", "deadline_monotonic")
+    parse_option_names = (
+        "timeout_seconds",
+        "deadline_monotonic",
+        "enable_xhs_livephoto_staff_preview",
+    )
 
-    def parse_html(self, html, source_url=None):
+    def parse_html(
+        self,
+        html,
+        source_url=None,
+        *,
+        enable_xhs_livephoto_staff_preview=False,
+        deadline_monotonic=None,
+    ):
         soup = BeautifulSoup(html, "html.parser")
         structured_state = extract_xhs_page_state(soup, source_url=source_url)
         page_identity_source = _current_page_identity_source(
@@ -608,7 +623,7 @@ class XiaohongshuAdapter(BasePlatformAdapter):
                 structured_state=structured_state,
                 fallback_policy=fallback_policy,
             )
-            return ParseResult(
+            flat_result = ParseResult(
                 platform=self.platform_id,
                 post_type="image",
                 base_filename=base_filename,
@@ -623,6 +638,40 @@ class XiaohongshuAdapter(BasePlatformAdapter):
                 ),
                 metadata=metadata,
             )
+            if (
+                not enable_xhs_livephoto_staff_preview
+                or structured_state.private_selected_note_snapshot is None
+            ):
+                return flat_result
+            try:
+                outcome = build_xhs_livephoto_staff_result(
+                    flat_result=flat_result,
+                    snapshot=structured_state.private_selected_note_snapshot,
+                    deadline_monotonic=float(deadline_monotonic or 0),
+                )
+                return outcome.result or flat_result
+            except Exception as error:
+                error_code = str(getattr(error, "code", "") or "")
+                if not error_code.startswith("XHS_LIVEPHOTO_"):
+                    error_code = "XHS_LIVEPHOTO_STAFF_PREVIEW_FAILED"
+                logger.warning(
+                    "xhs_livephoto_staff_preview_fallback",
+                    extra={"error_code": error_code[:96]},
+                )
+                fallback_metadata = dict(flat_result.metadata)
+                fallback_metadata.update(
+                    {
+                        "xhs_livephoto_staff_preview_status": "fallback",
+                        "xhs_livephoto_staff_preview_error_code": error_code[:96],
+                    }
+                )
+                return ParseResult(
+                    platform=flat_result.platform,
+                    post_type=flat_result.post_type,
+                    base_filename=flat_result.base_filename,
+                    assets=flat_result.assets,
+                    metadata=fallback_metadata,
+                )
 
         return ParseResult(
             platform=self.platform_id,
@@ -656,11 +705,20 @@ class XiaohongshuAdapter(BasePlatformAdapter):
 
         return fallback_image_urls
 
-    def parse_url(self, url, timeout_seconds=None, deadline_monotonic=None):
+    def parse_url(
+        self,
+        url,
+        timeout_seconds=None,
+        deadline_monotonic=None,
+        enable_xhs_livephoto_staff_preview=False,
+    ):
+        parse_started_at = time.monotonic()
         self.require_supported_url(url)
         deadline = float(deadline_monotonic or 0)
         if not deadline and timeout_seconds is not None:
             deadline = time.monotonic() + max(0.001, float(timeout_seconds or 0))
+        if enable_xhs_livephoto_staff_preview and not deadline:
+            deadline = parse_started_at + 20.0
         request_timeout = 15.0
         if deadline:
             request_timeout = min(
@@ -677,7 +735,37 @@ class XiaohongshuAdapter(BasePlatformAdapter):
             deadline_monotonic=deadline or None,
         )
         try:
+            page_fetch_duration_ms = round((time.monotonic() - parse_started_at) * 1000)
             identity_url = url if extract_xhs_note_id(url) else response.url
-            return self.parse_html(response.text, source_url=identity_url)
+            result = self.parse_html(
+                response.text,
+                source_url=identity_url,
+                enable_xhs_livephoto_staff_preview=bool(
+                    enable_xhs_livephoto_staff_preview
+                ),
+                deadline_monotonic=deadline or None,
+            )
+            if not str(
+                (result.metadata or {}).get("xhs_livephoto_staff_preview_status")
+                or ""
+            ):
+                return result
+            metadata = dict(result.metadata)
+            metadata.update(
+                {
+                    "xhs_livephoto_staff_page_fetch_duration_ms": page_fetch_duration_ms,
+                    "xhs_livephoto_staff_parse_total_duration_ms": round(
+                        (time.monotonic() - parse_started_at) * 1000
+                    ),
+                }
+            )
+            return ParseResult(
+                platform=result.platform,
+                post_type=result.post_type,
+                base_filename=result.base_filename,
+                assets=result.assets,
+                metadata=metadata,
+                rich_media=result.rich_media,
+            )
         finally:
             response.close()

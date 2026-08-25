@@ -119,6 +119,40 @@ class XhsStructuredPageStateTests(SimpleTestCase):
         self.assertEqual(state.post_type, "image")
         self.assertEqual(state.image_urls, (IMAGE_ONE, IMAGE_TWO))
 
+    def test_exact_selected_note_retains_a_private_mapper_snapshot(self):
+        state = self.parse_state(note_payload(image_note()))
+
+        snapshot = state.private_selected_note_snapshot
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(len(snapshot.image_list), 2)
+        self.assertFalse(snapshot.note_level_video_present)
+        snapshot_repr = repr(snapshot)
+        self.assertNotIn(NOTE_ID, snapshot_repr)
+        self.assertNotIn(IMAGE_ONE, snapshot_repr)
+        self.assertNotIn("image_list", snapshot_repr)
+        self.assertNotIn("private_selected_note_snapshot", repr(state))
+
+    def test_private_snapshot_comes_only_from_the_exact_selected_note(self):
+        payload = note_payload(image_note(imageList=[{"urlDefault": IMAGE_ONE}]))
+        payload["recommend"] = image_note(
+            noteId=OTHER_NOTE_ID,
+            imageList=[{"urlDefault": IMAGE_TWO}],
+        )
+
+        state = self.parse_state(payload)
+
+        snapshot = state.private_selected_note_snapshot
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(len(snapshot.image_list), 1)
+        self.assertEqual(snapshot.image_list[0]["urlDefault"], IMAGE_ONE)
+
+    def test_invalid_or_unmatched_note_has_no_private_snapshot(self):
+        state = self.parse_state(
+            note_payload(image_note(noteId=OTHER_NOTE_ID), note_id=OTHER_NOTE_ID)
+        )
+
+        self.assertIsNone(state.private_selected_note_snapshot)
+
     def test_application_json_hydration_and_balanced_string_content_are_supported(self):
         note = image_note(title='标题包含 } 和转义 " 引号')
         payload = note_payload(note)

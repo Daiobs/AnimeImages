@@ -1,7 +1,10 @@
 import json
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from html import unescape
+from types import MappingProxyType
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from ..common import normalize_text
@@ -24,6 +27,37 @@ XHS_MAX_VIDEO_SIZE_BYTES = 100 * 1024 * 1024 * 1024
 XHS_TERMINAL_PAGE_STATES = frozenset(
     {"login_required", "private", "deleted", "unavailable"}
 )
+XHS_PRIVATE_SELECTED_NOTE_SNAPSHOT_SCHEMA_VERSION = "1.0"
+_PRIVATE_SELECTED_NOTE_SNAPSHOT_SEAL = object()
+
+
+@dataclass(frozen=True)
+class XhsPrivateSelectedNoteSnapshotV1:
+    schema_version: str
+    note_id: str = field(repr=False, compare=False)
+    image_list: tuple[Mapping[str, Any], ...] = field(
+        repr=False,
+        compare=False,
+    )
+    note_level_video_present: bool = False
+    _private_factory_seal: object | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self):
+        if (
+            self._private_factory_seal is not _PRIVATE_SELECTED_NOTE_SNAPSHOT_SEAL
+            or self.schema_version
+            != XHS_PRIVATE_SELECTED_NOTE_SNAPSHOT_SCHEMA_VERSION
+            or not normalize_xhs_note_id(self.note_id)
+            or type(self.image_list) is not tuple
+            or any(not isinstance(item, Mapping) for item in self.image_list)
+            or type(self.note_level_video_present) is not bool
+        ):
+            raise ValueError("XHS_PRIVATE_SELECTED_NOTE_SNAPSHOT_INVALID")
+        object.__setattr__(self, "_private_factory_seal", None)
 
 
 @dataclass(frozen=True)
@@ -48,6 +82,11 @@ class XhsPageState:
     structured_image_list_present: bool = False
     structured_video_present: bool = False
     terminal_page_state: bool = False
+    private_selected_note_snapshot: XhsPrivateSelectedNoteSnapshotV1 | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 def normalize_xhs_note_id(value):
@@ -413,6 +452,55 @@ def _structured_video_present(note):
     return isinstance(_mapping_value(note, ("video", "videoInfo", "video_info")), dict)
 
 
+def _freeze_private_value(value):
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {str(key): _freeze_private_value(child) for key, child in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_private_value(child) for child in value)
+    return value
+
+
+def _private_image_item_snapshot(item):
+    if not isinstance(item, Mapping):
+        return item
+    retained = {}
+    for key in ("livePhoto", "urlDefault", "infoList", "stream"):
+        if key in item:
+            retained[key] = item[key]
+    return _freeze_private_value(retained)
+
+
+def _build_private_selected_note_snapshot(
+    note,
+    *,
+    source_note_id,
+    selected_note_id,
+):
+    if (
+        not source_note_id
+        or selected_note_id != source_note_id
+        or not isinstance(note, Mapping)
+    ):
+        return None
+    image_list = _mapping_value(
+        note,
+        ("imageList", "image_list", "imageItems", "images"),
+    )
+    if not isinstance(image_list, list):
+        return None
+    if any(not isinstance(item, Mapping) for item in image_list):
+        return None
+    return XhsPrivateSelectedNoteSnapshotV1(
+        schema_version=XHS_PRIVATE_SELECTED_NOTE_SNAPSHOT_SCHEMA_VERSION,
+        note_id=selected_note_id,
+        image_list=tuple(_private_image_item_snapshot(item) for item in image_list),
+        note_level_video_present=_structured_video_present(note),
+        _private_factory_seal=_PRIVATE_SELECTED_NOTE_SNAPSHOT_SEAL,
+    )
+
+
 def _iter_nested_mappings(root, max_depth=6):
     stack = [(root, 0)]
     while stack:
@@ -633,5 +721,10 @@ def extract_xhs_page_state(soup, source_url=None):
         terminal_page_state=(
             current_note_page_state in XHS_TERMINAL_PAGE_STATES
             or explicit_page_state in XHS_TERMINAL_PAGE_STATES
+        ),
+        private_selected_note_snapshot=_build_private_selected_note_snapshot(
+            note,
+            source_note_id=source_note_id,
+            selected_note_id=selected_note_id,
         ),
     )

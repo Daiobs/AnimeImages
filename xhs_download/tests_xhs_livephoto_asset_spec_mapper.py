@@ -1009,6 +1009,53 @@ class XhsLivePhotoAssetSpecBoundaryTests(SimpleTestCase):
         self.assertEqual(raised.exception.code, code)
         return raised.exception
 
+    def test_cross_contract_asset_and_group_limits(self):
+        thirty_two_livephotos = [
+            livephoto_item(f"live-{index}") for index in range(32)
+        ]
+        at_limit = build_result(thirty_two_livephotos)
+        self.assertEqual(len(at_limit.assets), 64)
+        self.assertEqual(len(at_limit.groups), 32)
+
+        thirty_three_livephotos = [
+            livephoto_item(f"overflow-{index}") for index in range(33)
+        ]
+        relationships, candidates = build_maps(thirty_three_livephotos)
+        self.assert_mapper_error(
+            "XHS_LIVEPHOTO_ASSET_SPEC_GROUP_LIMIT",
+            lambda: build_result(
+                thirty_three_livephotos,
+                relationships=relationships,
+                candidates=candidates,
+                proofs=(),
+            ),
+        )
+
+        mixed_at_limit = [
+            livephoto_item(f"mixed-{index}") for index in range(31)
+        ] + [regular_item("regular-one"), regular_item("regular-two")]
+        mixed_result = build_result(mixed_at_limit)
+        self.assertEqual(len(mixed_result.assets), 64)
+        self.assertEqual(len(mixed_result.groups), 31)
+
+        mixed_over_limit = [
+            livephoto_item(f"mixed-overflow-{index}") for index in range(31)
+        ] + [
+            regular_item("regular-one"),
+            regular_item("regular-two"),
+            regular_item("regular-three"),
+        ]
+        relationships, candidates = build_maps(mixed_over_limit)
+        self.assert_mapper_error(
+            "XHS_LIVEPHOTO_ASSET_SPEC_PHYSICAL_ASSET_LIMIT",
+            lambda: build_result(
+                mixed_over_limit,
+                relationships=relationships,
+                candidates=candidates,
+                proofs=(),
+            ),
+        )
+
     def test_relationship_and_candidate_count_mismatch_is_rejected(self):
         two_items = [regular_item("one"), regular_item("two")]
         relationships, _ = build_maps(two_items)
@@ -1136,16 +1183,7 @@ class XhsLivePhotoAssetSpecBoundaryTests(SimpleTestCase):
             XHS_LIVEPHOTO_BROWSER_ADMISSION_SCHEMA_VERSION,
         )
 
-    def test_current_adapter_registry_and_provider_emission_remain_disconnected(self):
-        for relative_path in (
-            "xhs_download/services/platforms/xiaohongshu.py",
-            "xhs_download/services/registry.py",
-            "xhs_download/services/parser.py",
-            "xhs_download/views.py",
-        ):
-            source = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
-            self.assertNotIn("xhs_livephoto_asset_spec_mapper", source)
-            self.assertNotIn("build_xhs_livephoto_asset_specs", source)
+    def test_runtime_wiring_is_confined_to_the_staff_builder_boundary(self):
         adapter = (
             PROJECT_ROOT
             / "xhs_download"
@@ -1153,7 +1191,22 @@ class XhsLivePhotoAssetSpecBoundaryTests(SimpleTestCase):
             / "platforms"
             / "xiaohongshu.py"
         ).read_text(encoding="utf-8")
-        self.assertNotIn("rich_media=", adapter)
+        registry = (
+            PROJECT_ROOT / "xhs_download" / "services" / "registry.py"
+        ).read_text(encoding="utf-8")
+        staff_builder = (
+            PROJECT_ROOT
+            / "xhs_download"
+            / "services"
+            / "platforms"
+            / "xhs_livephoto_staff_builder.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("build_xhs_livephoto_staff_result", adapter)
+        self.assertIn("enable_xhs_livephoto_staff_preview", adapter)
+        self.assertIn("enable_xhs_livephoto_staff_preview", registry)
+        self.assertIn("build_xhs_livephoto_asset_specs", staff_builder)
+        self.assertIn("RichMediaContractV1", staff_builder)
 
     def test_mapper_constructs_no_runtime_asset_manifest_or_provider_result(self):
         source = MAPPER_PATH.read_text(encoding="utf-8")
