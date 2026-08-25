@@ -1,0 +1,291 @@
+{
+  "schema_version": 1,
+  "evidence_id": "xhs-livephoto-browser-transport-v1",
+  "observed_at_utc": "2026-08-24",
+  "collection": {
+    "sample_count": 5,
+    "exact_identity_required": true,
+    "credentials_used": false,
+    "browser_profile_used": false,
+    "bounded_prefix_bytes": 4096,
+    "retained_equivalence_candidate_count": 6,
+    "retained_browser_request_count": 12,
+    "full_media_saved": false,
+    "raw_payload_saved": false,
+    "candidate_values_saved": false,
+    "response_headers_saved": false,
+    "server_relay_used": false
+  },
+  "normalization_policy": {
+    "input_schemes": [
+      "http",
+      "https"
+    ],
+    "output_scheme": "https",
+    "http_default_port_only": true,
+    "https_default_port_only": true,
+    "signed_parameter_bytes_preserved": true,
+    "fragment_removed": true,
+    "userinfo_rejected": true,
+    "ip_literal_rejected": true,
+    "localhost_rejected": true,
+    "trailing_dot_rejected": true,
+    "lookalike_rejected": true,
+    "unreviewed_host_rejected": true,
+    "unknown_host_network_requests": 0
+  },
+  "host_class_policy": {
+    "discovered_host_classes": [
+      "still_exact",
+      "motion_versioned",
+      "motion_zl",
+      "motion_backup"
+    ],
+    "browser_verified_host_classes": [
+      "still_exact",
+      "motion_versioned",
+      "motion_backup"
+    ],
+    "motion_zl_status": "discovered_unverified"
+  },
+  "browser_harness": {
+    "origin_class": "local_http_loopback",
+    "browser_class": "playwright_chromium_ephemeral_context",
+    "credentials_mode": "omit",
+    "referrer_policy": "no-referrer",
+    "cache_mode": "no-store",
+    "console_error_count": 0,
+    "opaque_response_count": 0,
+    "content_range_exposure_required": false
+  },
+  "samples": [
+    {
+      "sample_id": "xhs-livephoto-01",
+      "sample_type": "livephoto",
+      "target_identity_confirmed": true,
+      "item_count": 14,
+      "livephoto_item_count": 14,
+      "regular_image_item_count": 0,
+      "selected_still_count": 14,
+      "selected_motion_count": 14,
+      "negative_false_positive": false,
+      "invalid_fail_closed": false
+    },
+    {
+      "sample_id": "xhs-livephoto-02",
+      "sample_type": "livephoto",
+      "target_identity_confirmed": true,
+      "item_count": 17,
+      "livephoto_item_count": 12,
+      "regular_image_item_count": 5,
+      "selected_still_count": 17,
+      "selected_motion_count": 12,
+      "negative_false_positive": false,
+      "invalid_fail_closed": false
+    },
+    {
+      "sample_id": "xhs-gallery-01",
+      "sample_type": "image_gallery",
+      "target_identity_confirmed": true,
+      "item_count": 4,
+      "livephoto_item_count": 0,
+      "regular_image_item_count": 4,
+      "selected_still_count": 4,
+      "selected_motion_count": 0,
+      "negative_false_positive": false,
+      "invalid_fail_closed": false
+    },
+    {
+      "sample_id": "xhs-video-01",
+      "sample_type": "video",
+      "target_identity_confirmed": true,
+      "item_count": 1,
+      "livephoto_item_count": 0,
+      "regular_image_item_count": 0,
+      "selected_still_count": 0,
+      "selected_motion_count": 0,
+      "negative_false_positive": false,
+      "invalid_fail_closed": false
+    },
+    {
+      "sample_id": "xhs-invalid-01",
+      "sample_type": "invalid",
+      "target_identity_confirmed": false,
+      "item_count": 0,
+      "livephoto_item_count": 0,
+      "regular_image_item_count": 0,
+      "selected_still_count": 0,
+      "selected_motion_count": 0,
+      "negative_false_positive": false,
+      "invalid_fail_closed": true
+    }
+  ],
+  "host_matrix": [
+    {
+      "host_class": "still_exact",
+      "member_role": "still",
+      "payload_observed": true,
+      "discovery_status": "discovered_verified",
+      "browser_admission": "admitted",
+      "representative_count": 2,
+      "distinct_numeric_label_count": null,
+      "https_normalization": "pass",
+      "http_https_equivalence": "pass",
+      "prefix_sha256_match_count": 2,
+      "reported_total_match_count": 2,
+      "format_classes": [
+        "jpeg"
+      ],
+      "browser_response_types": [
+        "cors"
+      ],
+      "browser_body_readable_count": 2,
+      "browser_normal_fetch_pass_count": 2,
+      "browser_range_fetch_pass_count": 0,
+      "range_result": "ignored_bounded_200",
+      "content_range_exposed_count": 0,
+      "final_host_classes": [
+        "still_exact"
+      ],
+      "redirect_classes": [
+        "none"
+      ],
+      "latency_bucket": "not_retained",
+      "status": "pass",
+      "fixed_failure_class": ""
+    },
+    {
+      "host_class": "motion_versioned",
+      "member_role": "motion",
+      "payload_observed": true,
+      "discovery_status": "discovered_verified",
+      "browser_admission": "admitted",
+      "representative_count": 2,
+      "distinct_numeric_label_count": 2,
+      "https_normalization": "pass",
+      "http_https_equivalence": "pass",
+      "prefix_sha256_match_count": 2,
+      "reported_total_match_count": 2,
+      "format_classes": [
+        "mp4"
+      ],
+      "browser_response_types": [
+        "cors"
+      ],
+      "browser_body_readable_count": 2,
+      "browser_normal_fetch_pass_count": 2,
+      "browser_range_fetch_pass_count": 2,
+      "range_result": "partial_206",
+      "content_range_exposed_count": 0,
+      "final_host_classes": [
+        "motion_versioned"
+      ],
+      "redirect_classes": [
+        "none"
+      ],
+      "latency_bucket": "not_retained",
+      "status": "pass",
+      "fixed_failure_class": ""
+    },
+    {
+      "host_class": "motion_zl",
+      "member_role": "motion",
+      "payload_observed": true,
+      "discovery_status": "discovered_unverified",
+      "browser_admission": "rejected",
+      "representative_count": 0,
+      "distinct_numeric_label_count": null,
+      "https_normalization": "rejected_unverified_host_class",
+      "http_https_equivalence": "not_run_fresh_candidate_unavailable",
+      "prefix_sha256_match_count": 0,
+      "reported_total_match_count": 0,
+      "format_classes": [],
+      "browser_response_types": [],
+      "browser_body_readable_count": 0,
+      "browser_normal_fetch_pass_count": 0,
+      "browser_range_fetch_pass_count": 0,
+      "range_result": "not_run",
+      "content_range_exposed_count": 0,
+      "final_host_classes": [],
+      "redirect_classes": [],
+      "latency_bucket": "not_run",
+      "status": "discovered_unverified",
+      "fixed_failure_class": "required_fresh_candidate_unavailable"
+    },
+    {
+      "host_class": "motion_backup",
+      "member_role": "motion",
+      "payload_observed": true,
+      "discovery_status": "discovered_verified",
+      "browser_admission": "admitted",
+      "representative_count": 2,
+      "distinct_numeric_label_count": 2,
+      "https_normalization": "pass",
+      "http_https_equivalence": "pass",
+      "prefix_sha256_match_count": 2,
+      "reported_total_match_count": 2,
+      "format_classes": [
+        "mp4"
+      ],
+      "browser_response_types": [
+        "cors"
+      ],
+      "browser_body_readable_count": 2,
+      "browser_normal_fetch_pass_count": 2,
+      "browser_range_fetch_pass_count": 2,
+      "range_result": "partial_206",
+      "content_range_exposed_count": 0,
+      "final_host_classes": [
+        "motion_backup"
+      ],
+      "redirect_classes": [
+        "none"
+      ],
+      "latency_bucket": "not_retained",
+      "status": "pass",
+      "fixed_failure_class": ""
+    }
+  ],
+  "negative_controls": {
+    "gallery_still_fetch_passed": true,
+    "gallery_motion_fetch_count": 0,
+    "video_cover_fetch_passed": true,
+    "video_livephoto_fetch_count": 0,
+    "invalid_media_request_count": 0
+  },
+  "readiness": {
+    "relationship_mapper_ready": true,
+    "candidate_selection_ready": true,
+    "still_format_ready": true,
+    "motion_format_ready": true,
+    "https_normalization_ready": true,
+    "verified_browser_host_subset_ready": true,
+    "full_observed_host_coverage_ready": false,
+    "motion_zl_status": "discovered_unverified",
+    "http_https_equivalence_ready_for_verified_subset": true,
+    "http_https_equivalence_ready_for_all_discovered_hosts": false,
+    "browser_cors_ready_for_verified_subset": true,
+    "browser_cors_ready_for_all_discovered_hosts": false,
+    "browser_body_readable_ready_for_verified_subset": true,
+    "browser_body_readable_ready_for_all_discovered_hosts": false,
+    "host_review_ready_for_verified_subset": true,
+    "host_review_ready_for_all_discovered_hosts": false,
+    "raw_http_browser_ready": false,
+    "asset_spec_mapper_ready_for_verified_subset": true,
+    "provider_integration_ready": false,
+    "full_observed_host_coverage_blocker": "required_motion_zl_browser_evidence_unavailable"
+  },
+  "runtime_changes": {
+    "current_xhs_adapter": false,
+    "registry": false,
+    "provider_rich_media_emission": false,
+    "manifest": false,
+    "public_routes": false,
+    "ui": false,
+    "download": false,
+    "host_allowlist": false,
+    "settings": false,
+    "migration": false,
+    "production": false
+  }
+}
