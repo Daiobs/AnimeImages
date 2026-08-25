@@ -8,12 +8,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..image_formats import ImageFormatResolution
+from ..image_formats import resolve_image_format
 from .xhs_livephoto_browser_admission import (
     XHS_LIVEPHOTO_BROWSER_ADMISSION_SCHEMA_VERSION,
     XHS_LIVEPHOTO_BROWSER_VERIFIED_HOST_CLASSES,
     XhsLivePhotoBrowserAdmissionError,
-    XhsLivePhotoBrowserAdmissionEvidenceV1,
     XhsPrivateHttpsMediaCandidateV1,
     normalize_xhs_livephoto_candidate_https,
 )
@@ -22,8 +21,8 @@ from .xhs_livephoto_candidate_locator import (
     XhsLivePhotoCandidateError,
     XhsLivePhotoCandidateMapV1,
     XhsLivePhotoMemberLocatorV1,
-    XhsMotionFormatEvidenceV1,
     read_candidate_from_locator,
+    resolve_xhs_motion_format_for_research,
 )
 from .xhs_livephoto_relationship_mapper import (
     XHS_LIVEPHOTO_RELATIONSHIP_SCHEMA_VERSION,
@@ -46,6 +45,8 @@ _FORMAT_EXTENSIONS = {
     "webp": "webp",
     "mp4": "mp4",
 }
+_PRIVATE_FORMAT_PROOF_SEAL = object()
+_PRIVATE_MEMBER_PROOF_SEAL = object()
 _POST_TYPES = frozenset({"image", "gallery", "live_photo", "multimedia"})
 _GENERIC_ERROR_CODE = "XHS_LIVEPHOTO_ASSET_SPEC_ERROR"
 _ERROR_CODES = frozenset(
@@ -53,8 +54,8 @@ _ERROR_CODES = frozenset(
         _GENERIC_ERROR_CODE,
         "XHS_LIVEPHOTO_ASSET_SPEC_CANDIDATE_BINDING_MISMATCH",
         "XHS_LIVEPHOTO_ASSET_SPEC_CANDIDATE_MAP_MISMATCH",
+        "XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_CANDIDATE_BINDING_MISMATCH",
         "XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_EVIDENCE_INVALID",
-        "XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_MISMATCH",
         "XHS_LIVEPHOTO_ASSET_SPEC_HOST_UNVERIFIED",
         "XHS_LIVEPHOTO_ASSET_SPEC_IMAGE_LIST_SNAPSHOT_MISMATCH",
         "XHS_LIVEPHOTO_ASSET_SPEC_INPUT_INVALID",
@@ -108,24 +109,36 @@ def _candidate_binding(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _format_and_extension(
-    format_evidence: Any,
+def _resolve_format_and_extension(
+    prefix: Any,
     *,
     member_role: str,
+    content_type: Any,
 ) -> tuple[str, str]:
+    if not isinstance(prefix, (bytes, bytearray, memoryview)) or type(
+        content_type
+    ) is not str:
+        _reject("XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_EVIDENCE_INVALID")
+    prefix = bytes(prefix)
     if member_role == "still":
+        format_evidence = resolve_image_format(
+            prefix,
+            content_type=content_type,
+        )
         if (
-            type(format_evidence) is not ImageFormatResolution
-            or format_evidence.confidence != "magic"
+            format_evidence.confidence != "magic"
             or not format_evidence.valid
             or format_evidence.format not in {"jpeg", "webp"}
         ):
             _reject("XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_EVIDENCE_INVALID")
         format_class = format_evidence.format
     elif member_role == "motion":
+        format_evidence = resolve_xhs_motion_format_for_research(
+            prefix,
+            content_type=content_type,
+        )
         if (
-            type(format_evidence) is not XhsMotionFormatEvidenceV1
-            or format_evidence.confidence != "magic"
+            format_evidence.confidence != "magic"
             or not format_evidence.valid
             or format_evidence.format_class != "mp4"
         ):
@@ -137,16 +150,66 @@ def _format_and_extension(
 
 
 @dataclass(frozen=True)
+class XhsLivePhotoPrivateFormatProofV1:
+    member_role: str
+    format_class: str
+    extension: str
+    confidence: str
+    candidate_binding: str = field(repr=False, compare=False, hash=False)
+    _private_factory_seal: object | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+        hash=False,
+    )
+
+    def __post_init__(self) -> None:
+        if self._private_factory_seal is not _PRIVATE_FORMAT_PROOF_SEAL:
+            _reject("XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_EVIDENCE_INVALID")
+        if (
+            self.member_role not in {"still", "motion"}
+            or self.format_class not in _FORMAT_EXTENSIONS
+            or self.extension != _FORMAT_EXTENSIONS[self.format_class]
+            or (
+                self.member_role == "still"
+                and self.format_class not in {"jpeg", "webp"}
+            )
+            or (self.member_role == "motion" and self.format_class != "mp4")
+            or self.confidence != "magic"
+            or type(self.candidate_binding) is not str
+            or not _BINDING_RE.fullmatch(self.candidate_binding)
+        ):
+            _reject("XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_EVIDENCE_INVALID")
+        object.__setattr__(self, "_private_factory_seal", None)
+
+    def to_structural_dict(self) -> dict[str, Any]:
+        return {
+            "member_role": self.member_role,
+            "format_class": self.format_class,
+            "extension": self.extension,
+            "confidence": self.confidence,
+        }
+
+
+@dataclass(frozen=True)
 class XhsLivePhotoPrivateMemberProofV1:
     locator: XhsLivePhotoMemberLocatorV1
     member_role: str
     host_class: str
     format_class: str
     extension: str
-    browser_verified: bool
+    host_class_browser_verified: bool
     candidate_binding: str = field(repr=False, compare=False, hash=False)
+    _private_factory_seal: object | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+        hash=False,
+    )
 
     def __post_init__(self) -> None:
+        if self._private_factory_seal is not _PRIVATE_MEMBER_PROOF_SEAL:
+            _reject("XHS_LIVEPHOTO_ASSET_SPEC_MEMBER_PROOF_INVALID")
         _require_verified_host_class(
             self.host_class,
             member_role=self.member_role,
@@ -161,11 +224,12 @@ class XhsLivePhotoPrivateMemberProofV1:
                 and self.format_class not in {"jpeg", "webp"}
             )
             or (self.member_role == "motion" and self.format_class != "mp4")
-            or self.browser_verified is not True
+            or self.host_class_browser_verified is not True
             or type(self.candidate_binding) is not str
             or not _BINDING_RE.fullmatch(self.candidate_binding)
         ):
             _reject("XHS_LIVEPHOTO_ASSET_SPEC_MEMBER_PROOF_INVALID")
+        object.__setattr__(self, "_private_factory_seal", None)
 
     def to_structural_dict(self) -> dict[str, Any]:
         return {
@@ -174,7 +238,7 @@ class XhsLivePhotoPrivateMemberProofV1:
             "host_class": self.host_class,
             "format_class": self.format_class,
             "extension": self.extension,
-            "browser_verified": self.browser_verified,
+            "host_class_browser_verified": self.host_class_browser_verified,
         }
 
 
@@ -306,46 +370,83 @@ class XhsLivePhotoAssetSpecMapV1:
 
         asset_ids = [asset.asset_spec.asset_id for asset in self.assets]
         group_ids = [group.group_id for group in self.groups]
-        grouped_asset_ids = {
-            asset_id
-            for group in self.groups
-            for asset_id in (group.still_asset_id, group.motion_asset_id)
-        }
-        asset_by_id = {asset.asset_spec.asset_id: asset for asset in self.assets}
-        if (
-            len(asset_ids) != len(set(asset_ids))
-            or len(group_ids) != len(set(group_ids))
-            or any(asset_id not in asset_by_id for asset_id in grouped_asset_ids)
-            or any(
-                asset.group_id is not None
-                and asset.asset_spec.asset_id not in grouped_asset_ids
-                for asset in self.assets
-            )
-            or any(
-                asset.group_id is None
-                and asset.asset_spec.asset_id in grouped_asset_ids
-                for asset in self.assets
-            )
-            or [asset.source_item_ordinal for asset in self.assets]
-            != sorted(asset.source_item_ordinal for asset in self.assets)
+        if len(asset_ids) != len(set(asset_ids)) or len(group_ids) != len(
+            set(group_ids)
         ):
             _reject("XHS_LIVEPHOTO_ASSET_SPEC_OUTPUT_INVALID")
 
+        asset_by_id = {
+            asset.asset_spec.asset_id: asset
+            for asset in self.assets
+        }
+        asset_index_by_id = {
+            asset.asset_spec.asset_id: index
+            for index, asset in enumerate(self.assets)
+        }
+        assets_by_ordinal: dict[int, list[XhsLivePhotoAssetBindingV1]] = {}
+        for asset in self.assets:
+            assets_by_ordinal.setdefault(asset.source_item_ordinal, []).append(asset)
+
+        group_by_ordinal: dict[int, XhsLivePhotoGroupSpecV1] = {}
+        grouped_asset_ids: list[str] = []
+        group_ordinals: list[int] = []
         for group in self.groups:
-            still = asset_by_id[group.still_asset_id]
-            motion = asset_by_id[group.motion_asset_id]
+            if group.source_item_ordinal in group_by_ordinal:
+                _reject("XHS_LIVEPHOTO_ASSET_SPEC_OUTPUT_INVALID")
+            group_by_ordinal[group.source_item_ordinal] = group
+            group_ordinals.append(group.source_item_ordinal)
+            grouped_asset_ids.extend((group.still_asset_id, group.motion_asset_id))
+
+        source_ordinals = [asset.source_item_ordinal for asset in self.assets]
+        expected_ordinals = list(range(len(assets_by_ordinal)))
+        grouped_asset_id_set = set(grouped_asset_ids)
+        if (
+            source_ordinals != sorted(source_ordinals)
+            or group_ordinals != sorted(group_ordinals)
+            or sorted(assets_by_ordinal) != expected_ordinals
+            or not set(group_by_ordinal).issubset(assets_by_ordinal)
+            or len(grouped_asset_ids) != len(grouped_asset_id_set)
+            or any(asset_id not in asset_by_id for asset_id in grouped_asset_id_set)
+            or any(
+                (asset.group_id is None)
+                != (asset.asset_spec.asset_id not in grouped_asset_id_set)
+                for asset in self.assets
+            )
+        ):
+            _reject("XHS_LIVEPHOTO_ASSET_SPEC_OUTPUT_INVALID")
+
+        for ordinal in expected_ordinals:
+            ordinal_assets = assets_by_ordinal[ordinal]
+            group = group_by_ordinal.get(ordinal)
+            if group is None:
+                if (
+                    len(ordinal_assets) != 1
+                    or ordinal_assets[0].asset_spec.media_type != "image"
+                    or ordinal_assets[0].group_id is not None
+                ):
+                    _reject("XHS_LIVEPHOTO_ASSET_SPEC_OUTPUT_INVALID")
+                continue
+
+            if len(ordinal_assets) != 2:
+                _reject("XHS_LIVEPHOTO_ASSET_SPEC_OUTPUT_INVALID")
+            still, motion = ordinal_assets
             if (
-                still.group_id != group.group_id
+                still.asset_spec.asset_id != group.still_asset_id
+                or motion.asset_spec.asset_id != group.motion_asset_id
+                or still.group_id != group.group_id
                 or motion.group_id != group.group_id
                 or still.source_item_ordinal != group.source_item_ordinal
                 or motion.source_item_ordinal != group.source_item_ordinal
                 or still.asset_spec.role != "still"
                 or motion.asset_spec.role != "motion"
-                or self.assets.index(still) + 1 != self.assets.index(motion)
+                or asset_index_by_id[still.asset_spec.asset_id] + 1
+                != asset_index_by_id[motion.asset_spec.asset_id]
             ):
                 _reject("XHS_LIVEPHOTO_ASSET_SPEC_OUTPUT_INVALID")
 
-        grouped_all = bool(self.groups) and len(grouped_asset_ids) == len(self.assets)
+        grouped_all = bool(self.groups) and len(grouped_asset_id_set) == len(
+            self.assets
+        )
         expected_post_type = (
             "live_photo"
             if grouped_all
@@ -356,6 +457,13 @@ class XhsLivePhotoAssetSpecMapV1:
             else "gallery"
         )
         if self.post_type != expected_post_type:
+            _reject("XHS_LIVEPHOTO_ASSET_SPEC_OUTPUT_INVALID")
+        expected_regular_role = _regular_role(post_type=expected_post_type)
+        if any(
+            asset.group_id is None
+            and asset.asset_spec.role != expected_regular_role
+            for asset in self.assets
+        ):
             _reject("XHS_LIVEPHOTO_ASSET_SPEC_OUTPUT_INVALID")
 
     def to_structural_dict(self) -> dict[str, Any]:
@@ -371,56 +479,76 @@ class XhsLivePhotoAssetSpecMapV1:
         }
 
 
+def build_xhs_livephoto_private_format_proof(
+    *,
+    private_https_candidate: XhsPrivateHttpsMediaCandidateV1,
+    prefix: bytes,
+    content_type: str,
+) -> XhsLivePhotoPrivateFormatProofV1:
+    """Bind magic-derived format evidence to one exact private candidate."""
+
+    if type(private_https_candidate) is not XhsPrivateHttpsMediaCandidateV1:
+        _reject("XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_EVIDENCE_INVALID")
+    _require_verified_host_class(
+        private_https_candidate.host_class,
+        member_role=private_https_candidate.member_role,
+    )
+    if type(private_https_candidate.value) is not str:
+        _reject("XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_EVIDENCE_INVALID")
+    format_class, extension = _resolve_format_and_extension(
+        prefix,
+        member_role=private_https_candidate.member_role,
+        content_type=content_type,
+    )
+    return XhsLivePhotoPrivateFormatProofV1(
+        member_role=private_https_candidate.member_role,
+        format_class=format_class,
+        extension=extension,
+        confidence="magic",
+        candidate_binding=_candidate_binding(private_https_candidate.value),
+        _private_factory_seal=_PRIVATE_FORMAT_PROOF_SEAL,
+    )
+
+
 def build_xhs_livephoto_member_proof(
     *,
     locator: XhsLivePhotoMemberLocatorV1,
     private_https_candidate: XhsPrivateHttpsMediaCandidateV1,
-    browser_admission_evidence: XhsLivePhotoBrowserAdmissionEvidenceV1,
-    format_evidence: ImageFormatResolution | XhsMotionFormatEvidenceV1,
+    private_format_proof: XhsLivePhotoPrivateFormatProofV1,
 ) -> XhsLivePhotoPrivateMemberProofV1:
-    """Bind browser and magic evidence to one exact private candidate value."""
+    """Combine class-level transport policy with exact-candidate format proof."""
 
     if type(locator) is not XhsLivePhotoMemberLocatorV1:
         _reject("XHS_LIVEPHOTO_ASSET_SPEC_MEMBER_PROOF_INVALID")
     if type(private_https_candidate) is not XhsPrivateHttpsMediaCandidateV1:
         _reject("XHS_LIVEPHOTO_ASSET_SPEC_MEMBER_PROOF_INVALID")
+    if type(private_https_candidate.value) is not str:
+        _reject("XHS_LIVEPHOTO_ASSET_SPEC_MEMBER_PROOF_INVALID")
+    if private_https_candidate.member_role != locator.member_role:
+        _reject("XHS_LIVEPHOTO_ASSET_SPEC_ROLE_MISMATCH")
     _require_verified_host_class(
         private_https_candidate.host_class,
-        member_role=locator.member_role,
+        member_role=private_https_candidate.member_role,
     )
-    if type(browser_admission_evidence) is not XhsLivePhotoBrowserAdmissionEvidenceV1:
-        _reject("XHS_LIVEPHOTO_ASSET_SPEC_MEMBER_PROOF_INVALID")
-    if (
-        private_https_candidate.member_role != locator.member_role
-        or browser_admission_evidence.member_role != locator.member_role
-    ):
+    if type(private_format_proof) is not XhsLivePhotoPrivateFormatProofV1:
+        _reject("XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_EVIDENCE_INVALID")
+    if private_format_proof.member_role != locator.member_role:
         _reject("XHS_LIVEPHOTO_ASSET_SPEC_ROLE_MISMATCH")
-    if (
-        private_https_candidate.host_class != browser_admission_evidence.host_class
-        or browser_admission_evidence.final_host_class
-        != private_https_candidate.host_class
+    current_binding = _candidate_binding(private_https_candidate.value)
+    if not hmac.compare_digest(
+        current_binding,
+        private_format_proof.candidate_binding,
     ):
-        _reject("XHS_LIVEPHOTO_ASSET_SPEC_HOST_UNVERIFIED")
-    if (
-        private_https_candidate.upgrade_applied
-        != browser_admission_evidence.upgrade_applied
-    ):
-        _reject("XHS_LIVEPHOTO_ASSET_SPEC_MEMBER_PROOF_INVALID")
-
-    format_class, extension = _format_and_extension(
-        format_evidence,
-        member_role=locator.member_role,
-    )
-    if browser_admission_evidence.format_class != format_class:
-        _reject("XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_MISMATCH")
+        _reject("XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_CANDIDATE_BINDING_MISMATCH")
     return XhsLivePhotoPrivateMemberProofV1(
         locator=locator,
         member_role=locator.member_role,
         host_class=private_https_candidate.host_class,
-        format_class=format_class,
-        extension=extension,
-        browser_verified=True,
-        candidate_binding=_candidate_binding(private_https_candidate.value),
+        format_class=private_format_proof.format_class,
+        extension=private_format_proof.extension,
+        host_class_browser_verified=True,
+        candidate_binding=current_binding,
+        _private_factory_seal=_PRIVATE_MEMBER_PROOF_SEAL,
     )
 
 
@@ -659,7 +787,9 @@ __all__ = (
     "XhsLivePhotoAssetSpecMapV1",
     "XhsLivePhotoAssetSpecMappingError",
     "XhsLivePhotoGroupSpecV1",
+    "XhsLivePhotoPrivateFormatProofV1",
     "XhsLivePhotoPrivateMemberProofV1",
     "build_xhs_livephoto_asset_specs",
     "build_xhs_livephoto_member_proof",
+    "build_xhs_livephoto_private_format_proof",
 )

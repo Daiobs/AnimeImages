@@ -23,7 +23,11 @@ media baseline.
 - `XHS_CANDIDATE_SELECTION = MERGED`
 - `XHS_VERIFIED_BROWSER_HOST_SUBSET = MERGED`
 - `XHS_FULL_BROWSER_HOST_COVERAGE = NO`
-- `XHS_ASSET_SPEC_MAPPER = IMPLEMENTED_IN_DRAFT`
+- `XHS_ASSET_SPEC_MAPPER = IMPLEMENTED_AFTER_CORRECTION`
+- `XHS_HOST_CLASS_TRANSPORT_POLICY = VERIFIED_SUBSET`
+- `XHS_FORMAT_PROOF_SCOPE = EXACT_CANDIDATE`
+- `XHS_CANDIDATE_SNAPSHOT_BINDING = EXACT_CANDIDATE`
+- `XHS_EXACT_CANDIDATE_BROWSER_FETCH = NOT_REQUIRED_BY_ASSET_SPEC_MAPPER`
 - `XHS_RICH_MEDIA_BRIDGE = COMPATIBILITY_PROVEN_NOT_WIRED`
 - `PLATFORM_RUNTIME_INTEGRATION = NOT_STARTED`
 
@@ -46,9 +50,13 @@ continue to emit no rich-media value. The dormant XHS normalizer merged in PR
 The XHS research sequence now includes exact-note relationship mapping,
 candidate location and magic format evidence, and the browser-verified host
 subset merged in PR #71. The Asset Spec mapper described in
-`19_XHS_LIVEPHOTO_ASSET_SPEC_MAPPER_V1.md` is a Draft-only compatibility layer
-for that subset. It rejects the discovered but unverified `motion_zl` class and
-does not construct `MediaAsset`, Provider results, manifests, or downloads.
+`19_XHS_LIVEPHOTO_ASSET_SPEC_MAPPER_V1.md` keeps that class-level transport
+policy separate from factory-only magic format proof bound to one exact
+normalized candidate. Mapping then revalidates the same candidate against the
+current selected snapshot. The dormant compatibility layer rejects the
+discovered but unverified `motion_zl` class, closes source-item and group
+cardinality, and does not construct `MediaAsset`, Provider results, manifests,
+or downloads.
 
 ## Next Gate
 

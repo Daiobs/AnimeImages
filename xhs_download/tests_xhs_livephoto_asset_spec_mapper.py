@@ -1,24 +1,29 @@
 import copy
+import inspect
 import json
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
+from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
-from .services.image_formats import ImageFormatResolution, resolve_image_format
+from .services.image_formats import resolve_image_format
 from .services.platforms.xhs_livephoto_asset_spec_mapper import (
     XHS_LIVEPHOTO_ASSET_ID_SCOPE,
     XHS_LIVEPHOTO_ASSET_SCOPE_HEX_LENGTH,
     XHS_LIVEPHOTO_ASSET_SPEC_SCHEMA_VERSION,
+    XhsLivePhotoAssetBindingV1,
     XhsLivePhotoAssetSpecMapV1,
     XhsLivePhotoAssetSpecMappingError,
+    XhsLivePhotoGroupSpecV1,
+    XhsLivePhotoPrivateFormatProofV1,
     XhsLivePhotoPrivateMemberProofV1,
     build_xhs_livephoto_asset_specs,
     build_xhs_livephoto_member_proof,
+    build_xhs_livephoto_private_format_proof,
 )
 from .services.platforms.xhs_livephoto_browser_admission import (
     XHS_LIVEPHOTO_BROWSER_ADMISSION_SCHEMA_VERSION,
-    XhsLivePhotoBrowserAdmissionEvidenceV1,
     XhsPrivateHttpsMediaCandidateV1,
     normalize_xhs_livephoto_candidate_https,
 )
@@ -27,7 +32,6 @@ from .services.platforms.xhs_livephoto_candidate_locator import (
     XhsLivePhotoMemberLocatorV1,
     locate_xhs_livephoto_candidates,
     read_candidate_from_locator,
-    resolve_xhs_motion_format_for_research,
 )
 from .services.platforms.xhs_livephoto_relationship_mapper import (
     XHS_LIVEPHOTO_RELATIONSHIP_SCHEMA_VERSION,
@@ -111,48 +115,32 @@ def private_https_candidate(items, locator):
     )
 
 
-def format_evidence(role, *, still_format="jpeg"):
+def format_prefix(role, *, still_format="jpeg"):
     if role == "motion":
-        return resolve_xhs_motion_format_for_research(
-            MP4,
-            content_type="application/octet-stream",
-        )
-    prefix = JPEG if still_format == "jpeg" else WEBP
-    return resolve_image_format(
-        prefix,
+        return MP4
+    return JPEG if still_format == "jpeg" else WEBP
+
+
+def private_format_proof(candidate, *, still_format="jpeg"):
+    return build_xhs_livephoto_private_format_proof(
+        private_https_candidate=candidate,
+        prefix=format_prefix(
+            candidate.member_role,
+            still_format=still_format,
+        ),
         content_type="application/octet-stream",
-    )
-
-
-def browser_evidence(candidate, *, format_class):
-    role = candidate.member_role
-    return XhsLivePhotoBrowserAdmissionEvidenceV1(
-        member_role=role,
-        host_class=candidate.host_class,
-        format_class=format_class,
-        response_type="cors",
-        body_readable=True,
-        final_host_class=candidate.host_class,
-        range_result="partial_206" if role == "motion" else "ignored_bounded_200",
-        redirect_class="none",
-        upgrade_applied=candidate.upgrade_applied,
     )
 
 
 def proof_for_locator(items, locator, *, still_format="jpeg"):
     candidate = private_https_candidate(items, locator)
-    evidence = format_evidence(locator.member_role, still_format=still_format)
-    evidence_format = (
-        evidence.format if locator.member_role == "still" else evidence.format_class
-    )
     return build_xhs_livephoto_member_proof(
         locator=locator,
         private_https_candidate=candidate,
-        browser_admission_evidence=browser_evidence(
+        private_format_proof=private_format_proof(
             candidate,
-            format_class=evidence_format,
+            still_format=still_format,
         ),
-        format_evidence=evidence,
     )
 
 
@@ -199,6 +187,18 @@ def build_result(
         candidate_map=candidates,
         image_list=items,
         member_proofs=proofs,
+    )
+
+
+def rebuild_spec_map(result, *, assets=None, groups=None, post_type=None):
+    return XhsLivePhotoAssetSpecMapV1(
+        schema_version=result.schema_version,
+        relationship_schema_version=result.relationship_schema_version,
+        candidate_schema_version=result.candidate_schema_version,
+        browser_admission_schema_version=result.browser_admission_schema_version,
+        post_type=post_type or result.post_type,
+        assets=result.assets if assets is None else tuple(assets),
+        groups=result.groups if groups is None else tuple(groups),
     )
 
 
@@ -460,8 +460,140 @@ class XhsLivePhotoAssetSpecShapeTests(SimpleTestCase):
                 browser_admission_schema_version=result.browser_admission_schema_version,
                 post_type=result.post_type,
                 assets=result.assets,
-                groups=(result.groups[0], duplicate_members),
+                    groups=(result.groups[0], duplicate_members),
+                )
+
+
+class XhsLivePhotoAssetSpecOutputInvariantTests(SimpleTestCase):
+    def assert_output_rejected(self, callback):
+        with self.assertRaises(XhsLivePhotoAssetSpecMappingError) as raised:
+            callback()
+        self.assertEqual(
+            raised.exception.code,
+            "XHS_LIVEPHOTO_ASSET_SPEC_OUTPUT_INVALID",
+        )
+
+    def test_two_groups_cannot_share_one_source_ordinal(self):
+        result = build_result([livephoto_item("one"), livephoto_item("two")])
+        duplicate_ordinal = replace(result.groups[1], source_item_ordinal=0)
+
+        self.assert_output_rejected(
+            lambda: rebuild_spec_map(
+                result,
+                groups=(result.groups[0], duplicate_ordinal),
             )
+        )
+
+    def test_one_ordinary_ordinal_cannot_have_two_assets(self):
+        result = build_result([regular_item("one"), regular_item("two")])
+        duplicate_ordinal = replace(
+            result.assets[1],
+            locator=result.assets[0].locator,
+            source_item_ordinal=0,
+        )
+
+        self.assert_output_rejected(
+            lambda: rebuild_spec_map(
+                result,
+                assets=(result.assets[0], duplicate_ordinal),
+            )
+        )
+
+    def test_source_ordinal_gap_is_rejected(self):
+        result = build_result(
+            [regular_item("zero"), regular_item("one"), regular_item("two")]
+        )
+
+        self.assert_output_rejected(
+            lambda: rebuild_spec_map(
+                result,
+                assets=(result.assets[0], result.assets[2]),
+            )
+        )
+
+    def test_source_ordinals_must_start_at_zero(self):
+        result = build_result([regular_item("zero"), regular_item("one")])
+        ordinal_one = replace(
+            result.assets[1],
+            asset_spec=replace(result.assets[1].asset_spec, role="primary"),
+        )
+
+        self.assert_output_rejected(
+            lambda: rebuild_spec_map(
+                result,
+                assets=(ordinal_one,),
+                post_type="image",
+            )
+        )
+
+    def test_grouped_ordinal_cannot_have_three_assets(self):
+        result = build_result([livephoto_item("one")])
+        still = result.assets[0]
+        scope = still.asset_spec.asset_id.split(":")[1]
+        extra_still = replace(
+            still,
+            asset_spec=replace(
+                still.asset_spec,
+                asset_id=f"xhs:{scope}:i0:extra",
+            ),
+        )
+
+        self.assert_output_rejected(
+            lambda: rebuild_spec_map(
+                result,
+                assets=result.assets + (extra_still,),
+            )
+        )
+
+    def test_grouped_ordinal_cannot_have_only_still(self):
+        result = build_result([livephoto_item("one")])
+
+        self.assert_output_rejected(
+            lambda: rebuild_spec_map(result, assets=(result.assets[0],))
+        )
+
+    def test_grouped_ordinal_requires_still_then_motion_order(self):
+        result = build_result([livephoto_item("one")])
+
+        self.assert_output_rejected(
+            lambda: rebuild_spec_map(result, assets=tuple(reversed(result.assets)))
+        )
+
+    def test_ungrouped_motion_is_rejected(self):
+        result = build_result([livephoto_item("one")])
+
+        self.assert_output_rejected(
+            lambda: replace(result.assets[1], group_id=None)
+        )
+
+    def test_ordinary_images_cannot_be_referenced_by_group(self):
+        result = build_result([regular_item("one"), regular_item("two")])
+        scope = result.assets[0].asset_spec.asset_id.split(":")[1]
+        forged_group = XhsLivePhotoGroupSpecV1(
+            group_id=f"xhs:{scope}:i0:live",
+            source_item_ordinal=0,
+            still_asset_id=result.assets[0].asset_spec.asset_id,
+            motion_asset_id=result.assets[1].asset_spec.asset_id,
+        )
+
+        self.assert_output_rejected(
+            lambda: rebuild_spec_map(result, groups=(forged_group,))
+        )
+
+    def test_group_ordinal_must_match_member_ordinal(self):
+        result = build_result([livephoto_item("one")])
+        mismatched_group = replace(result.groups[0], source_item_ordinal=1)
+
+        self.assert_output_rejected(
+            lambda: rebuild_spec_map(result, groups=(mismatched_group,))
+        )
+
+    def test_group_specs_follow_source_ordinal_order(self):
+        result = build_result([livephoto_item("one"), livephoto_item("two")])
+
+        self.assert_output_rejected(
+            lambda: rebuild_spec_map(result, groups=tuple(reversed(result.groups)))
+        )
 
 
 class XhsLivePhotoMemberProofTests(SimpleTestCase):
@@ -472,17 +604,55 @@ class XhsLivePhotoMemberProofTests(SimpleTestCase):
         self.assertEqual(str(raised.exception), code)
         return raised.exception
 
-    def test_candidate_binding_match_passes(self):
+    def test_exact_candidate_with_own_format_proof_passes(self):
         items = [livephoto_item("one")]
-        result = build_result(items)
+        _, candidates = build_maps(items)
+        locator = candidates.items[0].motion_locator
+        candidate = private_https_candidate(items, locator)
+        format_proof = private_format_proof(candidate)
 
-        self.assertEqual(len(result.assets), 2)
+        proof = build_xhs_livephoto_member_proof(
+            locator=locator,
+            private_https_candidate=candidate,
+            private_format_proof=format_proof,
+        )
+
+        self.assertEqual(proof.format_class, "mp4")
+        self.assertTrue(proof.host_class_browser_verified)
+
+    def test_exact_still_candidate_uses_magic_not_declared_mime(self):
+        items = [regular_item("one")]
+        _, candidates = build_maps(items)
+        locator = candidates.items[0].still_locator
+        candidate = private_https_candidate(items, locator)
+        format_proof = build_xhs_livephoto_private_format_proof(
+            private_https_candidate=candidate,
+            prefix=WEBP,
+            content_type="image/jpeg",
+        )
+
+        proof = build_xhs_livephoto_member_proof(
+            locator=locator,
+            private_https_candidate=candidate,
+            private_format_proof=format_proof,
+        )
+
+        self.assertEqual(proof.format_class, "webp")
+        self.assertEqual(proof.extension, "webp")
 
     def test_candidate_proof_from_another_item_fails(self):
         items = [regular_item("one"), regular_item("two")]
         relationships, candidates = build_maps(items)
         proofs = proofs_for_map(items, candidates)
-        forged = replace(proofs[1], locator=proofs[0].locator)
+        other_candidate = private_https_candidate(
+            items,
+            candidates.items[1].still_locator,
+        )
+        forged = build_xhs_livephoto_member_proof(
+            locator=candidates.items[0].still_locator,
+            private_https_candidate=other_candidate,
+            private_format_proof=private_format_proof(other_candidate),
+        )
 
         self.assert_mapper_error(
             "XHS_LIVEPHOTO_ASSET_SPEC_CANDIDATE_BINDING_MISMATCH",
@@ -519,7 +689,8 @@ class XhsLivePhotoMemberProofTests(SimpleTestCase):
     def test_master_to_backup_candidate_binding_mismatch_fails(self):
         master_items = [livephoto_item("one")]
         _, master_candidates = build_maps(master_items)
-        master_proofs = proofs_for_map(master_items, master_candidates)
+        master_locator = master_candidates.items[0].motion_locator
+        master_candidate = private_https_candidate(master_items, master_locator)
         backup_items = [
             livephoto_item(
                 "one",
@@ -529,10 +700,10 @@ class XhsLivePhotoMemberProofTests(SimpleTestCase):
         ]
         relationships, backup_candidates = build_maps(backup_items)
         backup_proofs = proofs_for_map(backup_items, backup_candidates)
-        forged_motion = replace(
-            master_proofs[1],
+        forged_motion = build_xhs_livephoto_member_proof(
             locator=backup_candidates.items[0].motion_locator,
-            host_class="motion_backup",
+            private_https_candidate=master_candidate,
+            private_format_proof=private_format_proof(master_candidate),
         )
 
         self.assert_mapper_error(
@@ -545,73 +716,135 @@ class XhsLivePhotoMemberProofTests(SimpleTestCase):
             ),
         )
 
-    def test_host_class_mismatch_fails(self):
-        items = [livephoto_item("one")]
-        _, candidates = build_maps(items)
-        locator = candidates.items[0].motion_locator
-        candidate = private_https_candidate(items, locator)
-        mismatched_evidence = XhsLivePhotoBrowserAdmissionEvidenceV1(
-            member_role="motion",
-            host_class="motion_backup",
-            format_class="mp4",
-            response_type="cors",
-            body_readable=True,
-            final_host_class="motion_backup",
-            range_result="partial_206",
-            redirect_class="none",
-            upgrade_applied=False,
+    def test_same_host_and_format_cross_candidate_proof_fails(self):
+        first_items = [regular_item("one", query="proof=first")]
+        second_items = [regular_item("one", query="proof=second")]
+        _, first_map = build_maps(first_items)
+        _, second_map = build_maps(second_items)
+        first_candidate = private_https_candidate(
+            first_items,
+            first_map.items[0].still_locator,
         )
+        second_locator = second_map.items[0].still_locator
+        second_candidate = private_https_candidate(second_items, second_locator)
 
         self.assert_mapper_error(
-            "XHS_LIVEPHOTO_ASSET_SPEC_HOST_UNVERIFIED",
+            "XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_CANDIDATE_BINDING_MISMATCH",
             lambda: build_xhs_livephoto_member_proof(
-                locator=locator,
-                private_https_candidate=candidate,
-                browser_admission_evidence=mismatched_evidence,
-                format_evidence=format_evidence("motion"),
+                locator=second_locator,
+                private_https_candidate=second_candidate,
+                private_format_proof=private_format_proof(first_candidate),
             ),
         )
 
-    def test_format_evidence_mismatch_fails(self):
-        items = [regular_item("one")]
-        _, candidates = build_maps(items)
-        locator = candidates.items[0].still_locator
-        candidate = private_https_candidate(items, locator)
+    def test_still_format_proof_cannot_be_reused_across_candidates(self):
+        first_items = [regular_item("one", query="proof=still-a")]
+        second_items = [regular_item("one", query="proof=still-b")]
+        _, first_map = build_maps(first_items)
+        _, second_map = build_maps(second_items)
+        first_candidate = private_https_candidate(
+            first_items,
+            first_map.items[0].still_locator,
+        )
+        second_locator = second_map.items[0].still_locator
+        second_candidate = private_https_candidate(second_items, second_locator)
 
         self.assert_mapper_error(
-            "XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_MISMATCH",
+            "XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_CANDIDATE_BINDING_MISMATCH",
             lambda: build_xhs_livephoto_member_proof(
-                locator=locator,
-                private_https_candidate=candidate,
-                browser_admission_evidence=browser_evidence(
-                    candidate,
-                    format_class="jpeg",
+                locator=second_locator,
+                private_https_candidate=second_candidate,
+                private_format_proof=private_format_proof(
+                    first_candidate,
+                    still_format="webp",
                 ),
-                format_evidence=format_evidence("still", still_format="webp"),
+            ),
+        )
+
+    def test_motion_format_proof_cannot_be_reused_across_candidates(self):
+        first_items = [livephoto_item("one", query="proof=motion-a")]
+        second_items = [livephoto_item("one", query="proof=motion-b")]
+        _, first_map = build_maps(first_items)
+        _, second_map = build_maps(second_items)
+        first_candidate = private_https_candidate(
+            first_items,
+            first_map.items[0].motion_locator,
+        )
+        second_locator = second_map.items[0].motion_locator
+        second_candidate = private_https_candidate(second_items, second_locator)
+
+        self.assert_mapper_error(
+            "XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_CANDIDATE_BINDING_MISMATCH",
+            lambda: build_xhs_livephoto_member_proof(
+                locator=second_locator,
+                private_https_candidate=second_candidate,
+                private_format_proof=private_format_proof(first_candidate),
+            ),
+        )
+
+    def test_stale_signed_query_format_proof_fails(self):
+        first_items = [regular_item("one", query="token=old")]
+        fresh_items = [regular_item("one", query="token=fresh")]
+        _, first_map = build_maps(first_items)
+        _, fresh_map = build_maps(fresh_items)
+        first_candidate = private_https_candidate(
+            first_items,
+            first_map.items[0].still_locator,
+        )
+        fresh_locator = fresh_map.items[0].still_locator
+        fresh_candidate = private_https_candidate(fresh_items, fresh_locator)
+
+        self.assert_mapper_error(
+            "XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_CANDIDATE_BINDING_MISMATCH",
+            lambda: build_xhs_livephoto_member_proof(
+                locator=fresh_locator,
+                private_https_candidate=fresh_candidate,
+                private_format_proof=private_format_proof(first_candidate),
+            ),
+        )
+
+    def test_master_format_proof_cannot_authorize_backup_candidate(self):
+        master_items = [livephoto_item("one")]
+        backup_items = [
+            livephoto_item(
+                "one",
+                motion_host="sns-bak-v9.xhscdn.com",
+                use_backup=True,
+            )
+        ]
+        _, master_map = build_maps(master_items)
+        _, backup_map = build_maps(backup_items)
+        master_candidate = private_https_candidate(
+            master_items,
+            master_map.items[0].motion_locator,
+        )
+        backup_locator = backup_map.items[0].motion_locator
+        backup_candidate = private_https_candidate(backup_items, backup_locator)
+
+        self.assert_mapper_error(
+            "XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_CANDIDATE_BINDING_MISMATCH",
+            lambda: build_xhs_livephoto_member_proof(
+                locator=backup_locator,
+                private_https_candidate=backup_candidate,
+                private_format_proof=private_format_proof(master_candidate),
             ),
         )
 
     def test_mime_only_format_evidence_is_rejected(self):
         items = [regular_item("one")]
         _, candidates = build_maps(items)
-        locator = candidates.items[0].still_locator
-        candidate = private_https_candidate(items, locator)
-        mime_only = resolve_image_format(b"", content_type="image/jpeg")
+        candidate = private_https_candidate(items, candidates.items[0].still_locator)
 
         self.assert_mapper_error(
             "XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_EVIDENCE_INVALID",
-            lambda: build_xhs_livephoto_member_proof(
-                locator=locator,
+            lambda: build_xhs_livephoto_private_format_proof(
                 private_https_candidate=candidate,
-                browser_admission_evidence=browser_evidence(
-                    candidate,
-                    format_class="jpeg",
-                ),
-                format_evidence=mime_only,
+                prefix=b"",
+                content_type="image/jpeg",
             ),
         )
 
-    def test_url_suffix_only_format_evidence_is_rejected(self):
+    def test_raw_or_url_suffix_format_resolution_cannot_authorize_member(self):
         items = [regular_item("one")]
         _, candidates = build_maps(items)
         locator = candidates.items[0].still_locator
@@ -626,37 +859,30 @@ class XhsLivePhotoMemberProofTests(SimpleTestCase):
             lambda: build_xhs_livephoto_member_proof(
                 locator=locator,
                 private_https_candidate=candidate,
-                browser_admission_evidence=browser_evidence(
-                    candidate,
-                    format_class="jpeg",
-                ),
-                format_evidence=suffix_only,
+                private_format_proof=suffix_only,
             ),
         )
 
     def test_unknown_format_is_rejected(self):
         items = [regular_item("one")]
         _, candidates = build_maps(items)
-        locator = candidates.items[0].still_locator
-        candidate = private_https_candidate(items, locator)
+        candidate = private_https_candidate(items, candidates.items[0].still_locator)
 
         self.assert_mapper_error(
             "XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_EVIDENCE_INVALID",
-            lambda: build_xhs_livephoto_member_proof(
-                locator=locator,
+            lambda: build_xhs_livephoto_private_format_proof(
                 private_https_candidate=candidate,
-                browser_admission_evidence=browser_evidence(
-                    candidate,
-                    format_class="jpeg",
-                ),
-                format_evidence=ImageFormatResolution(),
+                prefix=b"unknown-binary",
+                content_type="application/octet-stream",
             ),
         )
 
-    def test_motion_zl_and_unknown_hosts_are_rejected(self):
-        items = [livephoto_item("one")]
-        _, candidates = build_maps(items)
-        locator = candidates.items[0].motion_locator
+    def test_motion_zl_and_unknown_hosts_fail_before_format_resolution(self):
+        resolver_path = (
+            "xhs_download.services.platforms."
+            "xhs_livephoto_asset_spec_mapper."
+            "resolve_xhs_motion_format_for_research"
+        )
 
         for host_class in ("motion_zl", "motion_unknown"):
             with self.subTest(host_class=host_class):
@@ -669,27 +895,67 @@ class XhsLivePhotoMemberProofTests(SimpleTestCase):
                 object.__setattr__(forged, "member_role", "motion")
                 object.__setattr__(forged, "host_class", host_class)
                 object.__setattr__(forged, "upgrade_applied", False)
-                self.assert_mapper_error(
-                    "XHS_LIVEPHOTO_ASSET_SPEC_HOST_UNVERIFIED",
-                    lambda forged=forged: build_xhs_livephoto_member_proof(
-                        locator=locator,
-                        private_https_candidate=forged,
-                        browser_admission_evidence=object(),
-                        format_evidence=format_evidence("motion"),
-                    ),
-                )
+                with patch(resolver_path) as resolver:
+                    self.assert_mapper_error(
+                        "XHS_LIVEPHOTO_ASSET_SPEC_HOST_UNVERIFIED",
+                        lambda forged=forged: (
+                            build_xhs_livephoto_private_format_proof(
+                                private_https_candidate=forged,
+                                prefix=MP4,
+                                content_type="video/mp4",
+                            )
+                        ),
+                    )
+                    resolver.assert_not_called()
 
     def test_private_binding_is_excluded_from_repr_equality_hash_and_output(self):
-        items = [regular_item("one")]
-        _, candidates = build_maps(items)
-        proof = proofs_for_map(items, candidates)[0]
-        alternate = replace(proof, candidate_binding="f" * 64)
+        first_items = [regular_item("one", query="proof=first")]
+        second_items = [regular_item("one", query="proof=second")]
+        _, first_map = build_maps(first_items)
+        _, second_map = build_maps(second_items)
+        proof = proof_for_locator(first_items, first_map.items[0].still_locator)
+        alternate = proof_for_locator(
+            second_items,
+            second_map.items[0].still_locator,
+        )
         rendered = repr(proof) + json.dumps(proof.to_structural_dict())
 
         self.assertEqual(proof, alternate)
         self.assertEqual(hash(proof), hash(alternate))
         self.assertNotIn(proof.candidate_binding, rendered)
         self.assertNotIn("candidate_binding", rendered)
+
+    def test_format_binding_is_excluded_from_repr_equality_hash_and_output(self):
+        first_items = [regular_item("one", query="proof=first")]
+        second_items = [regular_item("one", query="proof=second")]
+        _, first_map = build_maps(first_items)
+        _, second_map = build_maps(second_items)
+        first_candidate = private_https_candidate(
+            first_items,
+            first_map.items[0].still_locator,
+        )
+        second_candidate = private_https_candidate(
+            second_items,
+            second_map.items[0].still_locator,
+        )
+        proof = private_format_proof(first_candidate)
+        alternate = private_format_proof(second_candidate)
+        rendered = repr(proof) + json.dumps(proof.to_structural_dict())
+
+        self.assertEqual(proof, alternate)
+        self.assertEqual(hash(proof), hash(alternate))
+        self.assertNotIn(proof.candidate_binding, rendered)
+        self.assertNotIn("candidate_binding", rendered)
+
+    def test_host_browser_policy_is_class_level_not_factory_input(self):
+        parameters = inspect.signature(build_xhs_livephoto_member_proof).parameters
+        items = [regular_item("one")]
+        _, candidates = build_maps(items)
+        proof = proofs_for_map(items, candidates)[0]
+
+        self.assertNotIn("browser_admission_evidence", parameters)
+        self.assertTrue(proof.host_class_browser_verified)
+        self.assertNotIn("browser_verified", proof.to_structural_dict())
 
     def test_output_contains_no_candidate_or_binding_material(self):
         items = [livephoto_item(PRIVATE_MARKER)]
@@ -707,6 +973,33 @@ class XhsLivePhotoMemberProofTests(SimpleTestCase):
         self.assertNotIn(NOTE_ID, rendered)
         for proof in proofs:
             self.assertNotIn(proof.candidate_binding, rendered)
+
+    def test_binding_mismatch_error_contains_no_candidate_material(self):
+        first_items = [regular_item(PRIVATE_MARKER, query="token=private-a")]
+        second_items = [regular_item("second", query="token=private-b")]
+        _, first_map = build_maps(first_items)
+        _, second_map = build_maps(second_items)
+        first_candidate = private_https_candidate(
+            first_items,
+            first_map.items[0].still_locator,
+        )
+        second_locator = second_map.items[0].still_locator
+        second_candidate = private_https_candidate(second_items, second_locator)
+        first_format_proof = private_format_proof(first_candidate)
+
+        error = self.assert_mapper_error(
+            "XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_CANDIDATE_BINDING_MISMATCH",
+            lambda: build_xhs_livephoto_member_proof(
+                locator=second_locator,
+                private_https_candidate=second_candidate,
+                private_format_proof=first_format_proof,
+            ),
+        )
+        rendered = repr(error) + str(error)
+        self.assertNotIn(PRIVATE_MARKER, rendered)
+        self.assertNotIn("private-a", rendered)
+        self.assertNotIn(first_candidate.value, rendered)
+        self.assertNotIn(first_format_proof.candidate_binding, rendered)
 
 
 class XhsLivePhotoAssetSpecBoundaryTests(SimpleTestCase):
@@ -895,39 +1188,66 @@ class XhsLivePhotoAssetSpecBoundaryTests(SimpleTestCase):
 
 
 class XhsLivePhotoPrivateProofInvariantTests(SimpleTestCase):
-    def test_direct_motion_zl_proof_construction_fails_closed(self):
-        locator = XhsLivePhotoMemberLocatorV1(
-            source_item_ordinal=0,
-            member_role="motion",
-            source_kind="master_url",
-            codec_family_ordinal=0,
-            codec_family_class="avc",
-            stream_variant_index=0,
-        )
+    def test_direct_format_proof_construction_fails_closed(self):
         with self.assertRaises(XhsLivePhotoAssetSpecMappingError) as raised:
-            XhsLivePhotoPrivateMemberProofV1(
-                locator=locator,
-                member_role="motion",
-                host_class="motion_zl",
-                format_class="mp4",
-                extension="mp4",
-                browser_verified=True,
+            XhsLivePhotoPrivateFormatProofV1(
+                member_role="still",
+                format_class="jpeg",
+                extension="jpg",
+                confidence="magic",
                 candidate_binding="a" * 64,
             )
         self.assertEqual(
             raised.exception.code,
-            "XHS_LIVEPHOTO_ASSET_SPEC_HOST_UNVERIFIED",
+            "XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_EVIDENCE_INVALID",
         )
 
-    def test_browser_verified_flag_and_binding_shape_are_mandatory(self):
+    def test_format_proof_replace_cannot_reseal_private_binding(self):
+        items = [regular_item("one")]
+        _, candidates = build_maps(items)
+        candidate = private_https_candidate(items, candidates.items[0].still_locator)
+        proof = private_format_proof(candidate)
+
+        with self.assertRaises(XhsLivePhotoAssetSpecMappingError) as raised:
+            replace(proof, candidate_binding="f" * 64)
+        self.assertEqual(
+            raised.exception.code,
+            "XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_EVIDENCE_INVALID",
+        )
+
+    def test_direct_member_proof_construction_fails_closed(self):
+        items = [regular_item("one")]
+        _, candidates = build_maps(items)
+        locator = candidates.items[0].still_locator
+
+        with self.assertRaises(XhsLivePhotoAssetSpecMappingError) as raised:
+            XhsLivePhotoPrivateMemberProofV1(
+                locator=locator,
+                member_role="still",
+                host_class="still_exact",
+                format_class="jpeg",
+                extension="jpg",
+                host_class_browser_verified=True,
+                candidate_binding="a" * 64,
+            )
+        self.assertEqual(
+            raised.exception.code,
+            "XHS_LIVEPHOTO_ASSET_SPEC_MEMBER_PROOF_INVALID",
+        )
+
+    def test_member_proof_replace_cannot_reseal_assertions(self):
         items = [regular_item("one")]
         _, candidates = build_maps(items)
         proof = proofs_for_map(items, candidates)[0]
 
         for changes in (
-            {"browser_verified": False},
+            {"host_class_browser_verified": False},
             {"candidate_binding": "short"},
         ):
             with self.subTest(changes=tuple(changes)):
-                with self.assertRaises(XhsLivePhotoAssetSpecMappingError):
+                with self.assertRaises(XhsLivePhotoAssetSpecMappingError) as raised:
                     replace(proof, **changes)
+                self.assertEqual(
+                    raised.exception.code,
+                    "XHS_LIVEPHOTO_ASSET_SPEC_MEMBER_PROOF_INVALID",
+                )

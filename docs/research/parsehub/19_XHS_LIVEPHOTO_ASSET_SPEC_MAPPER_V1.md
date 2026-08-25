@@ -8,7 +8,11 @@ CANDIDATE_SELECTION = MERGED
 VERIFIED_BROWSER_HOST_SUBSET = MERGED
 FULL_HOST_COVERAGE = NO
 ASSET_IDENTITY = IMPLEMENTED_IN_DRAFT
-ASSET_SPEC_MAPPER = IMPLEMENTED_IN_DRAFT
+ASSET_SPEC_MAPPER = IMPLEMENTED_AFTER_CORRECTION
+HOST_CLASS_TRANSPORT_POLICY = VERIFIED_SUBSET
+FORMAT_PROOF_SCOPE = EXACT_CANDIDATE
+CANDIDATE_SNAPSHOT_BINDING = EXACT_CANDIDATE
+EXACT_CANDIDATE_BROWSER_FETCH = NOT_REQUIRED
 RICH_MEDIA_CONTRACT_BRIDGE = COMPATIBILITY_PROVEN_NOT_WIRED
 MEDIAASSET_BUILDER = NOT_STARTED
 PROVIDER_INTEGRATION = NOT_STARTED
@@ -43,9 +47,9 @@ result identity and physical order.
 
 | Member | Host class | Mapper policy |
 | --- | --- | --- |
-| still | `still_exact` | allowed after browser and format proof |
-| motion | `motion_versioned` | allowed after browser and format proof |
-| motion | `motion_backup` | allowed after browser and format proof |
+| still | `still_exact` | class-level transport policy plus exact-candidate format proof |
+| motion | `motion_versioned` | class-level transport policy plus exact-candidate format proof |
+| motion | `motion_backup` | class-level transport policy plus exact-candidate format proof |
 | motion | `motion_zl` | discovered, unverified, rejected |
 | either | unknown or lookalike | rejected |
 
@@ -54,14 +58,51 @@ mapping operation to fail with the fixed code
 `XHS_LIVEPHOTO_ASSET_SPEC_HOST_UNVERIFIED`; the item is not silently omitted and
 evidence from a sibling host is not borrowed.
 
-## Private Member Proof
+The PR #71 evidence establishes a host-class browser transport policy. It does
+not claim that every future exact candidate has independently been fetched in a
+browser. The Asset Spec mapper relies on the closed
+`XhsPrivateHttpsMediaCandidateV1` host subset and the pinned browser-admission
+schema version; it does not accept browser-admission evidence as a per-candidate
+format authorization input.
 
-`XhsLivePhotoPrivateMemberProofV1` is frozen and binds four independent facts:
+## Evidence Layers
+
+The corrected mapper keeps three boundaries separate:
+
+1. **Host-class transport policy:** `still_exact`, `motion_versioned`, and
+   `motion_backup` are the reviewed browser-capable subset from PR #71.
+2. **Exact-candidate format proof:** a factory reads bounded magic bytes and
+   binds the resulting format to the exact normalized candidate value.
+3. **Current-candidate snapshot binding:** mapping rereads the selected locator
+   from the supplied `imageList` and confirms that it is still the candidate
+   bound into the member proof.
+
+Exact-candidate browser Fetch is not a prerequisite of this dormant Asset Spec
+mapper. Exact-candidate magic format evidence is.
+
+## Private Format And Member Proofs
+
+`XhsLivePhotoPrivateFormatProofV1` is frozen and factory-only. Its factory
+accepts the private normalized candidate, bounded prefix bytes, and declared
+content type, invokes the closed image or motion resolver internally, and
+stores a private SHA-256 binding over that exact candidate. Callers cannot pass
+a prebuilt `ImageFormatResolution` or motion evidence object as authorization.
+Direct construction and `dataclasses.replace()` fail closed through a private,
+single-use factory seal.
+
+`XhsLivePhotoPrivateMemberProofV1` is also frozen and factory-only. It binds
+four independent facts:
 
 1. the selected member locator and role;
-2. a browser-verified closed host class;
-3. a magic-derived closed format class and extension; and
+2. a browser-verified host **class** from the closed transport-policy subset;
+3. an exact-candidate, magic-derived closed format class and extension; and
 4. a SHA-256 binding over the exact normalized private HTTPS candidate value.
+
+The member factory compares the candidate and format-proof bindings with
+`hmac.compare_digest()`. Reusing JPEG, WebP, or MP4 evidence for another
+candidate fails with
+`XHS_LIVEPHOTO_ASSET_SPEC_FORMAT_CANDIDATE_BINDING_MISMATCH`, even when role,
+host class, and format are otherwise identical.
 
 The candidate binding field is excluded from repr, comparison, hashing, and
 structural output. It is never used in an asset ID, group ID, cache key, log,
@@ -85,8 +126,9 @@ Only bounded magic evidence authorizes an extension:
 | still | `webp` | `webp` |
 | motion | `mp4` | `mp4` |
 
-MIME-only evidence, URL suffixes, host names, field names, unknown formats,
-and historical representative observations cannot authorize an extension.
+MIME-only evidence, URL suffixes, host names, field names, raw caller-created
+format-resolution objects, unknown formats, and historical representative
+observations cannot authorize an extension.
 
 ## Asset Identity
 
@@ -164,6 +206,12 @@ precedes its motion. A regular image cannot enter a group, a group cannot miss
 a member, one asset cannot belong to multiple groups, and groups cannot span
 source items.
 
+The output constructor independently enforces a contiguous `0..N-1` source
+ordinal set in linear time. Each ordinal has exactly one ungrouped image or
+exactly one adjacent `still, motion` pair. Group ordinals are unique and
+ordered, member ordinals match their group, and neither duplicate ordinary
+assets nor three-member/partial groups can be represented.
+
 ## Rich Media Compatibility
 
 Tests convert the Asset Spec map into a completely synthetic, URL-free payload
@@ -185,9 +233,10 @@ a Provider manifest, or emit `ParseResult.rich_media`.
 The focused suite is fully offline and uses synthetic values on reviewed host
 families plus bounded synthetic magic prefixes. It covers deterministic and
 opaque IDs, 14-LivePhoto and mixed 17-item shapes, exact physical order,
-same-candidate binding, host and format mismatch rejection, group invariants,
-sanitized output, Rich Media compatibility, and static proof that current
-runtime consumers remain zero.
+same-candidate binding, cross-candidate format-proof rejection, factory-only
+private proofs, class-level host policy, contiguous source cardinality, exact
+still-then-motion group invariants, sanitized output, Rich Media compatibility,
+and static proof that current runtime consumers remain zero.
 
 No test accesses XHS, a media CDN, ParseHub, or production. No real source URL,
 candidate, note identity, candidate digest, Cookie, token, or response body is

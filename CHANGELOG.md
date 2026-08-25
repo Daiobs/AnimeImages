@@ -3,10 +3,13 @@
 ## Unreleased
 
 - Added a dormant, URL-free XHS LivePhoto asset identity and Asset Spec mapper
-  on top of the browser-verified host subset merged in PR #71. Exact selected
-  candidates are rebound to their same-snapshot locators with private SHA-256
-  proof, extensions require bounded magic evidence, source item order expands
-  to still-then-motion groups, and AnimeImages-owned IDs expose neither note
+  on top of the browser-verified host-class subset merged in PR #71. The
+  class-level transport policy is separate from factory-only format proof,
+  which derives bounded magic internally and binds it to one exact normalized
+  candidate before a member proof can be created. Mapping revalidates that
+  candidate against the current snapshot, and linear output checks require
+  contiguous source ordinals plus exactly one ordinary image or one ordered
+  still/motion group per item. AnimeImages-owned IDs expose neither note
   identity nor candidate material. The discovered but unverified `motion_zl`
   class and all unknown hosts fail closed. A sanitized test-only bridge proves
   compatibility with the existing Rich Media contract; no `MediaAsset`,
