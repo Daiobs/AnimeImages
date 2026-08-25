@@ -10,6 +10,8 @@ from django.contrib.auth.models import AnonymousUser, User
 from django.template.loader import render_to_string
 from django.test import RequestFactory, SimpleTestCase
 
+from djangoProject.context_processors import STATIC_VERSION_FILES
+
 from .services.assets import MediaAsset, ParseResult
 from .services.downloads import provider_manifest_allows_public_download
 from .services.platforms.xiaohongshu import XiaohongshuAdapter
@@ -715,6 +717,12 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
 
 
 class XhsLivePhotoStaffStaticBoundaryTests(SimpleTestCase):
+    def test_staff_javascript_participates_in_static_cache_versioning(self):
+        self.assertIn(
+            "static/js/xhs_livephoto_staff_preview.js",
+            STATIC_VERSION_FILES,
+        )
+
     def test_staff_javascript_has_no_download_or_persistence_surface(self):
         source = (
             Path(__file__).resolve().parents[1]
