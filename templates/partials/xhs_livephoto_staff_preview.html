@@ -1,7 +1,12 @@
-<section class="xhs-livephoto-staff-preview" data-xhs-livephoto-staff-preview>
+{% load static %}
+<section
+    class="xhs-livephoto-staff-preview"
+    data-xhs-livephoto-staff-preview
+    data-preview-script-url="{% static 'js/xhs_livephoto_staff_preview.js' %}?v={{ static_asset_version }}"
+>
     <div class="alert alert-info xhs-livephoto-staff-notice" role="status">
         <i class="bi bi-person-badge me-1"></i>
-        实况照片预览（Staff 验证）：当前仅验证解析、配对与播放，不开放下载。
+        实况照片 Staff 预览：当前验证配对与播放；下载功能尚未实现，不受项目设置控制。
     </div>
 
     <div class="xhs-livephoto-staff-summary small text-muted mb-3">
@@ -13,7 +18,11 @@
     <div class="xhs-livephoto-staff-grid">
         {% for item in xhs_livephoto_staff_preview.items %}
             {% if item.kind == "live_photo" %}
-                <article class="xhs-livephoto-preview-card" data-livephoto-card>
+                <article
+                    class="xhs-livephoto-preview-card"
+                    data-livephoto-card
+                    data-livephoto-state="idle"
+                >
                     <div class="xhs-livephoto-preview-media">
                         <img
                             src="{{ item.still_url }}"
@@ -35,23 +44,37 @@
                             hidden
                         ></video>
                         <span class="xhs-livephoto-badge">实况</span>
-                    </div>
-                    <div class="xhs-livephoto-preview-footer">
-                        <span>第 {{ forloop.counter }} 项</span>
                         <button
                             type="button"
-                            class="btn btn-outline-primary btn-sm"
+                            class="xhs-livephoto-overlay-control"
                             data-livephoto-toggle
                             data-motion-url="{{ item.motion_url }}"
                             aria-pressed="false"
+                            aria-label="播放第 {{ forloop.counter }} 项实况照片"
                         >
-                            <i class="bi bi-play-fill" aria-hidden="true"></i>
+                            <i class="bi bi-play-fill" data-livephoto-play-icon aria-hidden="true"></i>
+                            <span
+                                class="spinner-border spinner-border-sm"
+                                data-livephoto-spinner
+                                aria-hidden="true"
+                                hidden
+                            ></span>
                             <span data-livephoto-toggle-label>播放实况</span>
                         </button>
+                        <div
+                            class="xhs-livephoto-preview-error"
+                            data-livephoto-error
+                            role="status"
+                            hidden
+                        >
+                            <i class="bi bi-exclamation-circle" aria-hidden="true"></i>
+                            <span data-livephoto-error-text>实况预览加载失败，可重新解析后再试。</span>
+                        </div>
                     </div>
-                    <p class="xhs-livephoto-preview-error" data-livephoto-error hidden>
-                        实况预览加载失败，可重新解析后再试。
-                    </p>
+                    <div class="xhs-livephoto-preview-footer">
+                        <span>第 {{ forloop.counter }} 项</span>
+                        <span class="text-muted small" data-livephoto-status>实况照片</span>
+                    </div>
                 </article>
             {% else %}
                 <article class="xhs-livephoto-preview-card xhs-livephoto-preview-card-regular">

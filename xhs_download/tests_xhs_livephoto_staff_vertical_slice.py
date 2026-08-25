@@ -1,5 +1,7 @@
 import json
 import re
+import threading
+import time
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -362,6 +364,84 @@ class XhsLivePhotoStaffBuilderTests(SimpleTestCase):
             any("unverified.example" in value for value in requested_urls)
         )
 
+    def test_probe_post_deadline_residue_is_bounded_and_closed(self):
+        adapter = XiaohongshuAdapter()
+        items = [livephoto_item(0), livephoto_item(1)]
+        lock = threading.Lock()
+        active_responses = 0
+        started_responses = 0
+
+        class BlockingResponse:
+            def __init__(self, url):
+                nonlocal active_responses, started_responses
+                self.status_code = 206
+                self.url = url
+                self.headers = {"Content-Type": "application/octet-stream"}
+                self.closed = False
+                with lock:
+                    active_responses += 1
+                    started_responses += 1
+
+            def iter_content(self, *, chunk_size):
+                self.assert_chunk_size = chunk_size
+                time.sleep(0.25)
+                yield MP4 if "sns-video" in self.url else JPEG
+
+            def close(self):
+                nonlocal active_responses
+                with lock:
+                    if not self.closed:
+                        self.closed = True
+                        active_responses -= 1
+
+        started_at = time.monotonic()
+        with patch(
+            "xhs_download.services.platforms.xhs_livephoto_staff_builder.requests.get",
+            side_effect=lambda url, **_kwargs: BlockingResponse(url),
+        ):
+            result = adapter.parse_html(
+                page_html(items),
+                source_url=NOTE_URL,
+                enable_xhs_livephoto_staff_preview=True,
+                deadline_monotonic=time.monotonic() + 0.03,
+            )
+        foreground_duration = time.monotonic() - started_at
+
+        self.assertLess(foreground_duration, 0.15)
+        self.assertIsNone(result.rich_media)
+        self.assertEqual(
+            result.metadata["xhs_livephoto_staff_preview_status"],
+            "fallback",
+        )
+        self.assertEqual(
+            result.metadata["xhs_livephoto_staff_preview_error_code"],
+            "XHS_LIVEPHOTO_STAFF_PREVIEW_DEADLINE",
+        )
+        with lock:
+            self.assertGreaterEqual(started_responses, 2)
+
+        residue_deadline = time.monotonic() + 0.8
+        while time.monotonic() < residue_deadline:
+            with lock:
+                response_count = active_responses
+            owned_threads = [
+                thread
+                for thread in threading.enumerate()
+                if thread.name.startswith("xhs-livephoto-probe")
+            ]
+            if response_count == 0 and not owned_threads:
+                break
+            time.sleep(0.01)
+
+        with lock:
+            self.assertEqual(active_responses, 0)
+        self.assertFalse(
+            any(
+                thread.name.startswith("xhs-livephoto-probe")
+                for thread in threading.enumerate()
+            )
+        )
+
     def test_unverified_motion_host_falls_back_without_partial_result(self):
         adapter = XiaohongshuAdapter()
         items = [livephoto_item(0, host="sns-video-zl.xhscdn.com")]
@@ -535,6 +615,29 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
         self.assertEqual(len(soup.select("[data-livephoto-card]")), 2)
         self.assertEqual(len(soup.select(".xhs-livephoto-preview-card")), 3)
         self.assertEqual(len(soup.select(".xhs-livephoto-badge")), 2)
+        self.assertEqual(
+            len(soup.select(".xhs-livephoto-preview-media > [data-livephoto-toggle]")),
+            2,
+        )
+        self.assertFalse(
+            soup.select(".xhs-livephoto-preview-footer [data-livephoto-toggle]")
+        )
+        self.assertEqual(
+            len(soup.select(".xhs-livephoto-preview-media > [data-livephoto-error]")),
+            2,
+        )
+        self.assertTrue(
+            all(
+                card.get("data-livephoto-state") == "idle"
+                for card in soup.select("[data-livephoto-card]")
+            )
+        )
+        preview_root = soup.select_one("[data-xhs-livephoto-staff-preview]")
+        self.assertRegex(
+            preview_root.get("data-preview-script-url", ""),
+            r"/static/js/xhs_livephoto_staff_preview\.js",
+        )
+        self.assertIn("不受项目设置控制", html)
         self.assertIsNone(soup.select_one("#download-btn"))
         self.assertIsNone(soup.select_one("#select-all-btn"))
         self.assertFalse(soup.select(".asset-card"))
@@ -543,6 +646,8 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
         for video in soup.select("[data-livephoto-motion]"):
             self.assertFalse(video.has_attr("src"))
             self.assertEqual(video.get("preload"), "none")
+            self.assertEqual(video.get("crossorigin"), "anonymous")
+            self.assertEqual(video.get("referrerpolicy"), "no-referrer")
 
     def test_public_template_contains_no_livephoto_data_or_staff_diagnostic(self):
         public_result = flat_result([regular_item(0), regular_item(1)])
@@ -557,8 +662,45 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
         self.assertNotIn("实况", html)
         self.assertNotIn("LivePhoto", html)
         self.assertNotIn("data-motion-url", html)
+        self.assertNotIn("xhs_livephoto_staff_preview.js", html)
         self.assertNotIn(motion_url(0), html)
         self.assertIn('id="download-btn"', html)
+
+    def test_public_shell_does_not_load_staff_preview_javascript(self):
+        public_request = RequestFactory().get("/xhs/")
+        public_request.user = AnonymousUser()
+        html = render_to_string(
+            "xhs_download.html",
+            {
+                "static_asset_version": "test",
+                "image_items": [],
+                "video_items": [],
+                "error_message": "",
+                "platform_notice": "",
+                "provider_notice": "",
+            },
+            request=public_request,
+        )
+
+        self.assertNotIn("xhs_livephoto_staff_preview.js", html)
+        self.assertNotIn("data-livephoto-staff-loader", html)
+
+    def test_staff_shell_loads_preview_javascript(self):
+        html = render_to_string(
+            "xhs_download.html",
+            {
+                "static_asset_version": "test",
+                "image_items": [],
+                "video_items": [],
+                "error_message": "",
+                "platform_notice": "",
+                "provider_notice": "",
+            },
+            request=self.request,
+        )
+
+        self.assertIn("xhs_livephoto_staff_preview.js", html)
+        self.assertIn("data-livephoto-staff-loader", html)
 
     def test_staff_context_uses_contract_groups_not_asset_id_parsing(self):
         context = build_xhs_livephoto_staff_preview_context(self.result)
@@ -591,3 +733,45 @@ class XhsLivePhotoStaffStaticBoundaryTests(SimpleTestCase):
         ):
             self.assertNotIn(forbidden, source)
         self.assertNotRegex(source, re.compile(r"console\.(?:log|error|warn)"))
+
+    def test_layout_is_viewport_bounded_and_controls_are_in_media(self):
+        css = (
+            Path(__file__).resolve().parents[1] / "static" / "css" / "app.css"
+        ).read_text(encoding="utf-8")
+        template = (
+            Path(__file__).resolve().parents[1]
+            / "templates"
+            / "partials"
+            / "xhs_livephoto_staff_preview.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("repeat(auto-fit, minmax(280px, 380px))", css)
+        self.assertIn("height: clamp(320px, 56vh, 560px)", css)
+        self.assertNotIn("aspect-ratio: 3 / 4", css)
+        self.assertIn("xhs-livephoto-overlay-control", css)
+        self.assertLess(
+            template.index("data-livephoto-toggle"),
+            template.index("xhs-livephoto-preview-footer"),
+        )
+
+    def test_async_staff_result_has_same_origin_lazy_script_bootstrap(self):
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "js"
+            / "xhs_download.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("ensureLivePhotoStaffPreview", source)
+        self.assertIn("scriptUrl.origin !== window.location.origin", source)
+        self.assertIn(
+            'scriptUrl.pathname.endsWith("/js/xhs_livephoto_staff_preview.js")',
+            source,
+        )
+        self.assertRegex(
+            source,
+            re.compile(
+                r"resultsRegion\.innerHTML = payload\.html \|\| \"\";\s+"
+                r"void ensureLivePhotoStaffPreview\(\);"
+            ),
+        )

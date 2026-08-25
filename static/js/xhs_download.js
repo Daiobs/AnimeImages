@@ -318,6 +318,7 @@
         let ultraRetryDeadline = 0;
         let ultraRetryTimer = null;
         let ultraRetrySource = "";
+        let livePhotoStaffScriptPromise = null;
 
         function getBaseFilename() {
             return page.dataset.baseFilename || "xhs_image";
@@ -325,6 +326,63 @@
 
         function getCards() {
             return Array.from(resultsRegion ? resultsRegion.querySelectorAll(".asset-card") : []);
+        }
+
+        function initializeLivePhotoStaffPreview() {
+            const api = window.AnimeImagesXhsLivePhotoStaffPreview;
+            if (!api || typeof api.ensureController !== "function") {
+                return false;
+            }
+            return Boolean(api.ensureController(document));
+        }
+
+        function ensureLivePhotoStaffPreview() {
+            const previewRoot = resultsRegion
+                ? resultsRegion.querySelector("[data-xhs-livephoto-staff-preview]")
+                : null;
+            if (!previewRoot) {
+                return Promise.resolve(false);
+            }
+            if (initializeLivePhotoStaffPreview()) {
+                return Promise.resolve(true);
+            }
+            if (livePhotoStaffScriptPromise) {
+                return livePhotoStaffScriptPromise;
+            }
+
+            let scriptUrl;
+            try {
+                scriptUrl = new URL(previewRoot.dataset.previewScriptUrl || "", window.location.origin);
+            } catch (error) {
+                return Promise.resolve(false);
+            }
+            if (
+                scriptUrl.origin !== window.location.origin
+                || !scriptUrl.pathname.endsWith("/js/xhs_livephoto_staff_preview.js")
+            ) {
+                return Promise.resolve(false);
+            }
+
+            const existingScript = document.querySelector("script[data-livephoto-staff-loader]");
+            if (existingScript) {
+                return Promise.resolve(initializeLivePhotoStaffPreview());
+            }
+
+            livePhotoStaffScriptPromise = new Promise((resolve) => {
+                const script = document.createElement("script");
+                script.src = scriptUrl.toString();
+                script.async = true;
+                script.dataset.livephotoStaffLoader = "true";
+                script.addEventListener("load", () => {
+                    resolve(initializeLivePhotoStaffPreview());
+                }, {once: true});
+                script.addEventListener("error", () => {
+                    livePhotoStaffScriptPromise = null;
+                    resolve(false);
+                }, {once: true});
+                document.head.appendChild(script);
+            });
+            return livePhotoStaffScriptPromise;
         }
 
         function getStatusElement() {
@@ -988,6 +1046,7 @@
             selected = [];
             pendingPhotoServerFallback = false;
             resultsRegion.innerHTML = payload.html || "";
+            void ensureLivePhotoStaffPreview();
             page.dataset.baseFilename = payload.base_filename || "xhs_image";
             setPageHasResults(Boolean(payload.has_content || payload.has_results));
             updateSelectAllButton();
@@ -2019,6 +2078,7 @@
         }
 
         updateSelectAllButton();
+        void ensureLivePhotoStaffPreview();
         if (ordinaryMediaDownloadApi) {
             const interrupted = ordinaryMediaDownloadApi.consumeInterruptedDownloadMarker();
             const interruptionNotice = page.querySelector("[data-ordinary-download-interruption]");
