@@ -98,6 +98,13 @@
                     {% if row.image_items %}<span>图片 {{ row.image_items|length }}</span>{% endif %}
                 </div>
 
+                {% if row.provider_notice %}
+                    <div class="alert alert-info mb-3" data-batch-provider-notice>
+                        <i class="bi bi-info-circle me-1"></i>
+                        {{ row.provider_notice }}
+                    </div>
+                {% endif %}
+
                 <div class="alert alert-danger mb-3 d-none"
                      data-batch-retry-request-error></div>
 
@@ -259,6 +266,7 @@
                                 <div class="batch-direct-item"
                                  data-batch-download-item
                                  data-type="video"
+                                 data-source-platform="{{ row.platform|default:'' }}"
                                  data-url="{{ item.direct_url }}"
                                  data-size-bytes="{{ item.size_bytes|default:0 }}"
                                  data-provider="{{ item.provider|default:'' }}"
@@ -299,6 +307,7 @@
                                                     data-batch-direct-url="{{ item.direct_url }}"
                                                     data-batch-direct-filename="{{ row.base_filename|default:'video' }}_{{ forloop.counter }}.mp4"
                                                     data-batch-direct-provider="{{ item.provider|default:'' }}"
+                                                    data-batch-direct-source-platform="{{ row.platform|default:'' }}"
                                                     data-batch-direct-size-bytes="{{ item.size_bytes|default:0 }}"
                                                     data-batch-direct-size-is-estimate="{{ item.size_is_estimate|yesno:'true,false' }}"
                                                     data-batch-browser-fetch-safe="true"

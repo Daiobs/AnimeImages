@@ -1,5 +1,6 @@
 import logging
 import math
+import re
 import time
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
@@ -44,6 +45,7 @@ PROVIDER_ID = "tiantianjiexi_generic"
 PROVIDER_LABEL = "天天解析"
 ACCOUNT_STATUS_CACHE_KEY = "third-party:tiantianjiexi:account-status"
 FAILURE_HIT_COUNT_KEY = "third-party:tiantianjiexi:failure-hit-count"
+XHS_NOTE_ID_RE = re.compile(r"(?<![0-9a-f])([0-9a-f]{24})(?![0-9a-f])", re.IGNORECASE)
 
 
 class TianTianJieXiApiError(RuntimeError):
@@ -1087,7 +1089,7 @@ class TianTianJieXiResultNormalizer:
             title = f"{nickname}_{title}"
         cover = first_text(payload, ("cover", "cover_url", "pic", "image", "thumbnail"))
         audio_url = first_text(payload, ("audio", "audio_url", "music", "music_url"))
-        return {
+        normalized = {
             "title": title,
             "description": description,
             "cover": cover,
@@ -1095,6 +1097,39 @@ class TianTianJieXiResultNormalizer:
             "images": cls.collect_image_urls(payload),
             "audio_url": audio_url,
         }
+        identity_signals = cls.collect_source_identity_signals(payload)
+        if identity_signals:
+            normalized["_source_identity_signals"] = identity_signals
+        return normalized
+
+    @classmethod
+    def collect_source_identity_signals(cls, payload):
+        signals = []
+
+        def add(value):
+            match = XHS_NOTE_ID_RE.search(str(value or "")[:4096])
+            if match:
+                note_id = match.group(1).lower()
+                if note_id not in signals:
+                    signals.append(note_id)
+
+        existing = payload.get("_source_identity_signals") or ()
+        if isinstance(existing, (list, tuple)):
+            for value in existing[:8]:
+                add(value)
+        for key in ("note_id", "noteId", "item_id", "itemId"):
+            add(payload.get(key))
+        for key in (
+            "canonical_url",
+            "canonicalUrl",
+            "source_url",
+            "sourceUrl",
+            "share_url",
+            "shareUrl",
+            "link",
+        ):
+            add(payload.get(key))
+        return tuple(signals[:8])
 
     @classmethod
     def collect_video_resources(cls, payload):

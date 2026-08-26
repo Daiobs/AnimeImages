@@ -11,8 +11,10 @@ from ..common import XhsError, XhsParseError, XhsProviderTimeoutError
 from ..env_config import runtime_int as env_runtime_int
 from ..observability import sanitize_observability_text
 from ..provider_access import PROVIDER_THIRD_PARTY, provider_is_allowed_for_request
+from ..rate_limits import get_client_identity
 from ..registry import get_adapter_for_url, parse_media_page
 from ..region_routing import get_request_country_code
+from ..platforms.xhs_tiantian_hybrid import XhsUltraAttemptController
 
 
 BATCH_DOUYIN_PROVIDER_ORDER = ("tiantianjiexi", "native")
@@ -338,6 +340,11 @@ def build_batch_result_row(
             "timeout_seconds": remaining_timeout,
             "deadline_monotonic": execution_deadline,
         }
+        if prefer_ultra_hd and batch_platform_for_source(source_text) == "xiaohongshu":
+            parser_kwargs["ultra_attempt_controller"] = XhsUltraAttemptController(
+                client_identity=get_client_identity(request),
+                limit=env_runtime_int("ULTRA_HD_RATE_LIMIT_PER_MINUTE", 10),
+            )
         if stage_tracker is not None:
             parser_kwargs["stage_callback"] = stage_tracker.update
         result = parser(
@@ -359,12 +366,19 @@ def build_batch_result_row(
             )
         metadata = result.metadata or {}
         selected_provider = metadata.get("selected_provider") or metadata.get("source_provider") or ""
+        provider_notice = ""
+        if result.platform == "xiaohongshu" and prefer_ultra_hd:
+            if metadata.get("xhs_tiantian_hybrid_status") == "success":
+                provider_notice = "已获取小红书原画 / 超高清资源。"
+            elif metadata.get("xhs_tiantian_hybrid_status") == "fallback":
+                provider_notice = "超高清解析暂不可用，已返回普通清晰度。"
         row = {
             "status": "success",
             "source_text": source_text,
             "duration_ms": int((time.monotonic() - started_at) * 1000),
             "provider_label": batch_provider_display_label(metadata),
             "selected_provider": selected_provider,
+            "provider_notice": provider_notice,
             **display_context,
         }
         enrich_batch_media_items(row)

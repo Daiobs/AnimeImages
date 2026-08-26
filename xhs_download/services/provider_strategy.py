@@ -35,6 +35,16 @@ def build_download_strategy(asset, *, result_platform="", result_metadata=None):
     source_provider = normalize_provider((result_metadata or {}).get("source_provider"))
     selected_provider = normalize_provider((result_metadata or {}).get("selected_provider"))
     effective_provider = provider or selected_provider or source_provider
+    is_xhs_tiantian_video = bool(
+        result_platform == "xiaohongshu"
+        and effective_provider == "tiantianjiexi_generic"
+        and (result_metadata or {}).get("xhs_tiantian_hybrid_status") == "success"
+    )
+    is_xhs_native_video = bool(
+        result_platform == "xiaohongshu"
+        and media_type == "video"
+        and effective_provider in {"", "native"}
+    )
 
     if media_type == "image":
         return {
@@ -56,6 +66,17 @@ def build_download_strategy(asset, *, result_platform="", result_metadata=None):
             "requires_merge": True,
             "requires_cookie": False,
             "strategy_label": "服务端合并下载",
+        }
+
+    if media_type == "video" and (is_xhs_tiantian_video or is_xhs_native_video):
+        return {
+            "download_strategy": DOWNLOAD_STRATEGY_BROWSER_STREAMING,
+            "fallback_strategy": FALLBACK_BROWSER_BLOB,
+            "cors_expected": True,
+            "browser_direct_fetch_safe": True,
+            "requires_merge": False,
+            "requires_cookie": False,
+            "strategy_label": "浏览器下载",
         }
 
     if effective_provider in BROWSER_BLOB_VIDEO_PROVIDERS:

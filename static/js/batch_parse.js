@@ -1757,6 +1757,7 @@
                     url,
                     filename,
                     provider: directDownloadButton.getAttribute("data-batch-direct-provider") || "",
+                    source_platform: directDownloadButton.getAttribute("data-batch-direct-source-platform") || "",
                     size_bytes: directDownloadButton.getAttribute("data-batch-direct-size-bytes") || "0",
                     size_is_estimate: (
                         directDownloadButton.getAttribute("data-batch-direct-size-is-estimate") === "true"

@@ -50,6 +50,9 @@ from .provider_recovery import (
 from .provider_runtime_config import runtime_float
 from .provider_manifest import build_provider_manifest_token, provider_manifest_is_valid
 from .platforms.third_party import third_party_manifest_item_is_allowed
+from .platforms.xhs_tiantian_media_policy import (
+    xhs_tiantian_manifest_item_is_allowed,
+)
 from .platforms.ytdlp_merge import (
     PROVIDER_ID as YTDLP_MERGE_PROVIDER_ID,
     download_to_temp_path as download_ytdlp_merge_to_temp_path,
@@ -479,6 +482,8 @@ def provider_manifest_allows_public_download(item):
         return provider_manifest_allows_ytdlp_merge(item)
     if not provider_manifest_is_valid(item):
         return False
+    if xhs_tiantian_manifest_item_is_allowed(item):
+        return True
     if third_party_manifest_item_is_allowed(item):
         return True
     logger.warning(
@@ -579,6 +584,10 @@ def validate_provider_signed_download_url(provider_item, url, message):
         allowed = bool(get_kukutool_manifest_identity(provider_item)) and is_byte_cdn_url(url)
     elif provider == "tiantianjiexi":
         allowed = tiantianjiexi_douyin_manifest_is_allowed(signed_url_item)
+    elif provider == "tiantianjiexi_generic" and str(
+        provider_item.get("asset_id") or ""
+    ).startswith("xhs:"):
+        allowed = xhs_tiantian_manifest_item_is_allowed(signed_url_item)
     else:
         allowed = third_party_manifest_item_is_allowed(signed_url_item)
     if not allowed:
