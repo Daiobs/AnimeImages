@@ -22,6 +22,8 @@ class ExternalCommandOutputTooLarge(RuntimeError):
 
 EXTERNAL_PROCESS_POLL_INTERVAL_SECONDS = 0.02
 EXTERNAL_PROCESS_TERM_GRACE_SECONDS = 0.5
+EXTERNAL_PROGRESS_READ_CHUNK_BYTES = 64 * 1024
+EXTERNAL_PROGRESS_PENDING_MAX_BYTES = 4096
 
 
 def safe_subprocess_env():
@@ -118,6 +120,90 @@ def _enforce_external_output_limit(stdout_file, stderr_file, *, max_bytes):
         raise ExternalCommandOutputTooLarge(
             f"external command output exceeded {max_bytes} bytes"
         )
+
+
+def _validate_structured_progress(prefix, callback):
+    if not prefix and callback is None:
+        return ""
+    if (
+        not isinstance(prefix, str)
+        or not 1 <= len(prefix) <= 80
+        or not prefix.isascii()
+        or not all(character.isalnum() or character == "_" for character in prefix)
+        or not callable(callback)
+    ):
+        raise ValueError("structured progress configuration is invalid")
+    return prefix
+
+
+def _strip_structured_progress_lines(text, prefix):
+    if not prefix:
+        return text
+    return "".join(
+        line
+        for line in str(text or "").splitlines(keepends=True)
+        if not line.lstrip(" \t").startswith(prefix)
+    )
+
+
+class _StructuredProgressReader:
+    def __init__(self, prefix, callback):
+        self.prefix = prefix.encode("ascii")
+        self.callback = callback
+        self.offsets = {}
+        self.pending = {}
+        self.live_supported = callable(getattr(os, "pread", None))
+
+    def drain(self, file_obj, stream_name, *, final=False):
+        if not self.live_supported:
+            return
+        file_descriptor = file_obj.fileno()
+        offset = self.offsets.get(stream_name, 0)
+        size = _external_output_size(file_obj)
+        while offset < size:
+            chunk = os.pread(
+                file_descriptor,
+                min(EXTERNAL_PROGRESS_READ_CHUNK_BYTES, size - offset),
+                offset,
+            )
+            if not chunk:
+                break
+            offset += len(chunk)
+            self._consume(stream_name, chunk, final=False)
+        self.offsets[stream_name] = offset
+        if final:
+            self._consume(stream_name, b"", final=True)
+
+    def _consume(self, stream_name, chunk, *, final):
+        data = self.pending.get(stream_name, b"") + chunk
+        lines = data.split(b"\n")
+        pending = lines.pop()
+        if len(pending) > EXTERNAL_PROGRESS_PENDING_MAX_BYTES:
+            pending = pending[-EXTERNAL_PROGRESS_PENDING_MAX_BYTES:]
+        self.pending[stream_name] = pending
+        for line in lines:
+            self._handle(line.rstrip(b"\r"))
+        if final and pending:
+            self.pending[stream_name] = b""
+            self._handle(pending.rstrip(b"\r"))
+
+    def _handle(self, line):
+        if not line.lstrip(b" \t").startswith(self.prefix):
+            return
+        self.callback(line.decode("utf-8", errors="replace"))
+
+
+def _replay_structured_progress(text, prefix, callback):
+    for line in str(text or "").splitlines():
+        if line.lstrip(" \t").startswith(prefix):
+            callback(line)
+
+
+def _harden_external_temporary_file(file_obj):
+    try:
+        os.fchmod(file_obj.fileno(), 0o600)
+    except (AttributeError, OSError):
+        return
 
 
 def _process_group_exists(process_group_id):
@@ -254,6 +340,8 @@ def _execute_external_process(
     progress_path=None,
     estimated_size=0,
     progress_interval_seconds=0.25,
+    structured_progress_prefix="",
+    structured_progress_callback=None,
 ):
     popen_kwargs = {
         "stdout": stdout,
@@ -267,6 +355,12 @@ def _execute_external_process(
     process = None
     process_group_id = None
     executable_name = _sanitized_external_executable_name(args)
+    progress_reader = None
+    if structured_progress_prefix:
+        progress_reader = _StructuredProgressReader(
+            structured_progress_prefix,
+            structured_progress_callback,
+        )
     try:
         process = subprocess.Popen(args, **popen_kwargs)
         if os.name == "posix":
@@ -280,6 +374,9 @@ def _execute_external_process(
 
         while process.poll() is None:
             _enforce_external_output_limit(stdout, stderr, max_bytes=max_bytes)
+            if progress_reader:
+                progress_reader.drain(stdout, "stdout")
+                progress_reader.drain(stderr, "stderr")
             now = time.monotonic()
             elapsed = now - started_at
             if elapsed >= timeout_seconds:
@@ -307,6 +404,9 @@ def _execute_external_process(
                 pass
 
         _enforce_external_output_limit(stdout, stderr, max_bytes=max_bytes)
+        if progress_reader:
+            progress_reader.drain(stdout, "stdout", final=True)
+            progress_reader.drain(stderr, "stderr", final=True)
         if progress_callback and progress_path and estimated_size:
             emit_external_progress(progress_callback, progress_path, estimated_size)
         completed = subprocess.CompletedProcess(args, process.returncode)
@@ -335,13 +435,21 @@ def run_external_command(
     progress_path=None,
     estimated_size=0,
     progress_interval_seconds=0.25,
+    structured_progress_prefix="",
+    structured_progress_callback=None,
 ):
     args = resolve_external_command_for_cwd(args)
+    structured_progress_prefix = _validate_structured_progress(
+        structured_progress_prefix,
+        structured_progress_callback,
+    )
     with (
         tempfile.TemporaryDirectory(prefix="xhs_external_tool_") as work_dir,
         tempfile.TemporaryFile() as stdout_file,
         tempfile.TemporaryFile() as stderr_file,
     ):
+        _harden_external_temporary_file(stdout_file)
+        _harden_external_temporary_file(stderr_file)
         env = safe_subprocess_env()
         env["HOME"] = work_dir
         timeout_seconds = max(0.1, float(timeout_seconds or 15.0))
@@ -358,9 +466,33 @@ def run_external_command(
             progress_path=progress_path,
             estimated_size=estimated_size,
             progress_interval_seconds=progress_interval_seconds,
+            structured_progress_prefix=structured_progress_prefix,
+            structured_progress_callback=structured_progress_callback,
         )
-        completed.stdout = read_external_output(stdout_file, max_bytes=max_bytes)
-        completed.stderr = read_external_output(stderr_file, max_bytes=max_bytes)
+        stdout = read_external_output(stdout_file, max_bytes=max_bytes)
+        stderr = read_external_output(stderr_file, max_bytes=max_bytes)
+        if structured_progress_prefix:
+            if not callable(getattr(os, "pread", None)):
+                _replay_structured_progress(
+                    stdout,
+                    structured_progress_prefix,
+                    structured_progress_callback,
+                )
+                _replay_structured_progress(
+                    stderr,
+                    structured_progress_prefix,
+                    structured_progress_callback,
+                )
+            stdout = _strip_structured_progress_lines(
+                stdout,
+                structured_progress_prefix,
+            )
+            stderr = _strip_structured_progress_lines(
+                stderr,
+                structured_progress_prefix,
+            )
+        completed.stdout = stdout
+        completed.stderr = stderr
         return completed
 
 
