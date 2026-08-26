@@ -134,11 +134,21 @@ def request_is_in_public_rollout(provider_id, request=None, percent=0):
     return bucket < percent
 
 
-def provider_access_summary(provider_id, request=None, runtime_setting=None):
+def provider_access_summary(
+    provider_id,
+    request=None,
+    runtime_setting=None,
+    *,
+    hard_enabled_override=None,
+):
     configured_mode = configured_mode_for_provider(provider_id, runtime_setting)
     default_mode = default_mode_for_provider(provider_id)
     effective_mode = configured_mode
-    hard_enabled = hard_enabled_for_provider(provider_id)
+    hard_enabled = (
+        hard_enabled_for_provider(provider_id)
+        if hard_enabled_override is None
+        else bool(hard_enabled_override)
+    )
     staff_user = request_user_is_staff(request) if request is not None else False
     rollout_percent = rollout_percent_for_provider(provider_id, runtime_setting)
     rollout_bucket = request_rollout_bucket(provider_id, request)

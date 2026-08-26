@@ -5,6 +5,12 @@ from ..models import KukuToolDownloadDeliveryMode, ProviderRuntimeSetting
 
 from .downloads import provider_manifest_allows_public_download
 from .provider_strategy import BROWSER_DIRECT_FETCH_SAFE_PROVIDERS
+from .platforms.xhs_tiantian_media_policy import (
+    xhs_tiantian_manifest_item_is_allowed,
+)
+from .platforms.xiaohongshu import (
+    xhs_native_video_url_is_browser_streaming_allowed,
+)
 
 
 ROUTE_DIRECT = "direct"
@@ -86,6 +92,17 @@ def item_is_image(item):
 
 def item_is_video(item):
     return item_type(item) == "video"
+
+
+def item_is_xhs_native_browser_video(item):
+    return bool(
+        isinstance(item, dict)
+        and item_is_video(item)
+        and not item_provider(item)
+        and str(item.get("source_platform") or "").strip().lower()
+        == "xiaohongshu"
+        and xhs_native_video_url_is_browser_streaming_allowed(item_url(item))
+    )
 
 
 def is_http_url(url):
@@ -172,6 +189,13 @@ def item_can_browser_direct_video(item):
     if not is_http_url(url):
         return False
     provider = item_provider(item)
+    if item_is_xhs_native_browser_video(item):
+        return True
+    if (
+        provider == "tiantianjiexi_generic"
+        and xhs_tiantian_manifest_item_is_allowed(item)
+    ):
+        return True
     return (
         provider in BROWSER_DIRECT_VIDEO_PROVIDERS
         and provider in BROWSER_DIRECT_FETCH_SAFE_VIDEO_PROVIDERS
@@ -200,7 +224,7 @@ def single_video_can_attachment_download(item):
         return False
     if not is_http_url(item_url(item)):
         return False
-    return not item_provider(item)
+    return not item_provider(item) and not item_can_browser_direct_video(item)
 
 
 def single_video_can_browser_direct_download(item):

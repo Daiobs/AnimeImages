@@ -4687,7 +4687,7 @@ class XhsDownloadViewTests(TestCase):
             content.index("js/xhs_download.js?v="),
         )
         self.assertContains(response, 'data-page-home-url="/"')
-        self.assertContains(response, "抖音原画 / 超清")
+        self.assertContains(response, "抖音 / 小红书原画与超清")
         self.assertContains(response, "YouTube 最高画质合并")
         self.assertContains(response, "data-download-task-url")
         for asset_path in (
@@ -6372,7 +6372,7 @@ class XhsDownloadViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'id="project-ultra-hd-setting"')
-        self.assertContains(response, "当前无法使用抖音原画 / 超高清解析")
+        self.assertContains(response, "当前无法使用原画 / 超高清解析")
         self.assertNotContains(response, "超高清上游")
         mock_health.assert_not_called()
 
@@ -6390,7 +6390,7 @@ class XhsDownloadViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'id="project-ultra-hd-setting"')
-        self.assertContains(response, "当前无法使用抖音原画 / 超高清解析")
+        self.assertContains(response, "当前无法使用原画 / 超高清解析")
         self.assertNotContains(response, "超高清上游")
         mock_health.assert_not_called()
 
@@ -6419,7 +6419,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertContains(response, 'id="ultra-hd-request-input"')
         self.assertContains(response, 'id="project-ultra-hd-setting"')
         self.assertContains(response, "解析质量")
-        self.assertContains(response, "抖音原画 / 超清")
+        self.assertContains(response, "抖音 / 小红书原画与超清")
         self.assertNotContains(response, "默认关闭")
         self.assertNotContains(response, "超高清 Provider")
         self.assertNotContains(response, "hero-provider-row")

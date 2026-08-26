@@ -102,6 +102,7 @@
                     {% for item in video_items %}
                         <div class="asset-card"
                              data-type="video"
+                             data-source-platform="{{ item.source_platform|default:'' }}"
                              data-url="{{ item.video_url }}"
                              data-cover-url="{{ item.cover_url|default:'' }}"
                              data-size-bytes="{{ item.size_bytes|default:0 }}"

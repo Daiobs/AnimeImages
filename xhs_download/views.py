@@ -146,6 +146,10 @@ from .services.platforms.douyin_providers import (
     normalize_douyin_display_title,
 )
 from .services.platforms.xiaohongshu import normalize_xhs_preview_image_url
+from .services.platforms.xhs_tiantian_hybrid import (
+    XhsUltraAttemptController,
+    xhs_tiantian_provider_is_available,
+)
 from .services.platforms.tiantianjiexi_generic import (
     TianTianJieXiGenericProvider,
     TianTianJieXiResultNormalizer,
@@ -475,11 +479,31 @@ def request_flag(value):
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def ultra_hd_is_available(request=None):
-    if not provider_is_allowed_for_request(PROVIDER_DOUYIN_ULTRA, request):
-        return False
+def ultra_hd_is_available(request=None, platform_id=""):
+    normalized_platform_id = str(platform_id or "").strip().lower()
+    douyin_access_allowed = provider_is_allowed_for_request(
+        PROVIDER_DOUYIN_ULTRA,
+        request,
+    )
+    xhs_access_allowed = provider_access_summary(
+        PROVIDER_DOUYIN_ULTRA,
+        request,
+        hard_enabled_override=bool(
+            getattr(settings, "ULTRA_HD_PROVIDER_ENABLED", False)
+        ),
+    )["request_allowed"]
+    xhs_available = bool(
+        xhs_access_allowed and xhs_tiantian_provider_is_available()
+    )
+    if normalized_platform_id == "xiaohongshu":
+        return xhs_available
+    if not douyin_access_allowed:
+        return xhs_available if not normalized_platform_id else False
     health = get_kukutool_provider_health()
-    return health["available"]
+    douyin_available = bool(health["available"])
+    if normalized_platform_id in {"douyin", "tiktok"}:
+        return douyin_available
+    return bool(douyin_available or xhs_available)
 
 
 def youtube_merge_mode_is_available(request):
@@ -3909,6 +3933,7 @@ def build_video_item(asset, result, *, probe_missing_size=True):
         **asset.to_download_item(),
         **build_asset_strategy_fields(asset, result),
         "type": "video",
+        "source_platform": result.platform,
         "video_url": asset.url,
         "cover_url": asset.cover_url,
         "size_bytes": size_bytes,
@@ -4260,7 +4285,10 @@ def get_download_settings_context(platform_key="home", request=None):
         "xhs_show_server_save_mode": server_save_mode_is_enabled(),
         "xhs_allow_absolute_save_path": settings.XHS_ALLOW_ABSOLUTE_SAVE_PATH,
         "xhs_default_server_save_dir": settings.XHS_DEFAULT_SERVER_SAVE_DIR,
-        "ultra_hd_available": ultra_hd_is_available(request),
+        "ultra_hd_available": ultra_hd_is_available(
+            request,
+            page_config["platform_id"],
+        ),
         "youtube_merge_mode_available": (
             youtube_merge_mode_is_available(request) if request is not None else False
         ),
@@ -4407,6 +4435,25 @@ def apply_search_result_to_context(
                         f"{context['ultra_retry_after_seconds']} 秒后可重新尝试超高清。"
                     ),
                 )
+    if prefer_ultra_hd and result.platform == "xiaohongshu":
+        hybrid_status = str(
+            result_metadata.get("xhs_tiantian_hybrid_status") or ""
+        )
+        if hybrid_status == "success":
+            set_result_provider_notice(
+                context,
+                "已获取小红书原画 / 超高清资源。",
+                "XHS Native 身份与元数据校验通过，已采用天天解析高质量视频候选。",
+            )
+        elif hybrid_status == "fallback":
+            fallback_reason = str(
+                result_metadata.get("xhs_tiantian_fallback_reason") or "unavailable"
+            )[:80]
+            set_result_provider_notice(
+                context,
+                "超高清解析暂不可用，已返回普通清晰度。",
+                f"XHS 超高清增强已安全回退 Native；阶段={fallback_reason}。",
+            )
     if provider_notice_override is not None:
         context["provider_notice"] = provider_notice_override
     context["post_type"] = display_context["post_type"]
@@ -4450,8 +4497,23 @@ def apply_search_result_to_context(
 
 def build_search_results_context(request, platform_key="home"):
     query = request.GET.get("q", "").strip()
+    query_platform_id = ""
+    if query:
+        try:
+            query_platform_id = str(
+                getattr(get_adapter_for_url(query), "platform_id", "") or ""
+            )
+        except XhsError:
+            query_platform_id = ""
+    availability_platform_id = (
+        query_platform_id
+        or get_platform_page_config(platform_key).get("platform_id", "")
+    )
     requested_ultra_hd = request_flag(request.GET.get("ultra_hd"))
-    prefer_ultra_hd = requested_ultra_hd and ultra_hd_is_available(request)
+    prefer_ultra_hd = requested_ultra_hd and ultra_hd_is_available(
+        request,
+        availability_platform_id,
+    )
     requested_youtube_merge = request_flag(request.GET.get("youtube_merge"))
     prefer_youtube_merge = (
         requested_youtube_merge and youtube_merge_mode_is_available(request)
@@ -4484,12 +4546,6 @@ def build_search_results_context(request, platform_key="home"):
         return context, 200
 
     parse_started_at = time.monotonic()
-    try:
-        query_platform_id = str(
-            getattr(get_adapter_for_url(query), "platform_id", "") or ""
-        )
-    except XhsError:
-        query_platform_id = ""
 
     if query_platform_id == "third_party":
         if not third_party_provider_is_available(request):
@@ -4698,6 +4754,15 @@ def build_search_results_context(request, platform_key="home"):
                     ),
                     consume=consume_fixed_window,
                 )
+            )
+        elif prefer_ultra_hd and query_platform_id == "xiaohongshu":
+            parse_options["ultra_attempt_controller"] = XhsUltraAttemptController(
+                client_identity=client_identity,
+                limit=runtime_default_int(
+                    "ULTRA_HD_RATE_LIMIT_PER_MINUTE",
+                    10,
+                ),
+                consume=consume_fixed_window,
             )
         result = parse_media_page(query, **parse_options)
         apply_search_result_to_context(

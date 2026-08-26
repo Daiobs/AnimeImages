@@ -71,6 +71,7 @@
         const type = card.dataset.type || "image";
         const sizeBytes = Number.parseInt(card.dataset.sizeBytes || "0", 10) || 0;
         const providerFields = {
+            source_platform: card.dataset.sourcePlatform || "",
             asset_id: card.dataset.assetId || "",
             provider: card.dataset.provider || "",
             provider_resource_id: card.dataset.providerResourceId || "",

@@ -105,6 +105,13 @@ function createClientHarness(options) {
             calls.push({type: "message", message});
             const reply = ports[0];
             if (message.type === "REGISTER_DOWNLOAD") {
+                if (settings.registerDownloadErrorCode) {
+                    reply.postMessage({
+                        ok: false,
+                        code: settings.registerDownloadErrorCode,
+                    });
+                    return;
+                }
                 const status = safeStatus({
                     downloadId: message.descriptor.downloadId,
                     filename: message.descriptor.filename,
@@ -248,7 +255,8 @@ function ordinaryItem(overrides) {
     };
 }
 
-function responseFor(body) {
+function responseFor(body, options) {
+    const settings = options || {};
     const response = new Response(body, {
         status: 200,
         headers: {
@@ -258,7 +266,7 @@ function responseFor(body) {
     });
     Object.defineProperty(response, "url", {
         configurable: true,
-        value: "https://v11-default.365yg.com/media/video.mp4",
+        value: settings.url || "https://v11-default.365yg.com/media/video.mp4",
     });
     return response;
 }
@@ -520,6 +528,92 @@ test("reviewed ixigua response keeps content and final-host gates", () => {
     );
 });
 
+test("reviewed XHS TianTian host is exact, HTTPS-only, and descriptor-safe", () => {
+    const exactUrl = "https://sns-video-hw.xhscdn.com/media/video.mp4?fixture=fake";
+    const descriptor = protocol.createDescriptor({
+        downloadId: "45454545454545454545454545454545",
+        url: exactUrl,
+        filename: "xhs-video.mp4",
+        provider: "tiantianjiexi_generic",
+        expectedBytes: 2048,
+    });
+
+    assert.equal(descriptor.initialMediaFamily, "XHS_TIANTIAN_HW_EXACT");
+    assert.equal(protocol.isAllowedStreamingUrl(exactUrl), true);
+    for (const rejected of [
+        "https://other.xhscdn.com/media/video.mp4",
+        "https://evil.sns-video-hw.xhscdn.com/media/video.mp4",
+        "https://sns-video-hw.xhscdn.com.evil.example/media/video.mp4",
+        "http://sns-video-hw.xhscdn.com/media/video.mp4",
+        "https://user@sns-video-hw.xhscdn.com/media/video.mp4",
+        "https://sns-video-hw.xhscdn.com:444/media/video.mp4",
+        "https://sns-video-hw.xhscdn.com./media/video.mp4",
+    ]) {
+        assert.equal(protocol.isAllowedStreamingUrl(rejected), false, rejected);
+        assert.equal(protocol.sanitizeMediaHost(rejected), "unknown", rejected);
+    }
+});
+
+test("XHS final-host policy cannot cross into Douyin or unreviewed XHS hosts", () => {
+    const source = "https://sns-video-hw.xhscdn.com/media/source.mp4";
+    assert.equal(protocol.isAllowedFinalMediaUrl({
+        initialUrl: source,
+        finalUrl: "https://sns-video-hw.xhscdn.com/media/final.mp4",
+        redirected: true,
+    }), true);
+    for (const finalUrl of [
+        "https://other.xhscdn.com/media/final.mp4",
+        "https://v11-default.365yg.com/media/final.mp4",
+        "https://v3-web.douyinvod.com/media/final.mp4",
+        "https://v3-dy-a-x.ixigua.com/media/final.mp4",
+        "https://attacker.example/media/final.mp4",
+    ]) {
+        assert.equal(protocol.isAllowedFinalMediaUrl({
+            initialUrl: source,
+            finalUrl,
+            redirected: true,
+        }), false, finalUrl);
+    }
+    assert.equal(protocol.isAllowedFinalMediaUrl({
+        initialUrl: "https://v11-default.365yg.com/media/source.mp4",
+        finalUrl: source,
+        redirected: true,
+    }), false);
+});
+
+test("reviewed XHS Native host is exact and isolated from TianTian", () => {
+    const source = "https://sns-video-v28.xhscdn.com/native/source.mp4";
+    const descriptor = protocol.createDescriptor({
+        downloadId: "67676767676767676767676767676767",
+        url: source,
+        filename: "xhs-native.mp4",
+        provider: "native",
+        expectedBytes: 1024,
+    });
+    assert.equal(descriptor.initialMediaFamily, "XHS_NATIVE_REVIEWED");
+    assert.equal(protocol.isAllowedStreamingUrl(source), true);
+    assert.equal(protocol.isAllowedFinalMediaUrl({
+        initialUrl: source,
+        finalUrl: "https://sns-video-v28.xhscdn.com/native/final.mp4",
+        redirected: true,
+    }), true);
+    for (const rejected of [
+        "https://sns-video-hw.xhscdn.com/media/final.mp4",
+        "https://sns-video-v27.xhscdn.com/native/final.mp4",
+        "https://sns-video-vx.xhscdn.com/native/final.mp4",
+        "https://evil-sns-video-v28.xhscdn.com/native/final.mp4",
+        "https://other.xhscdn.com/media/final.mp4",
+        "https://v11-default.365yg.com/media/final.mp4",
+        "https://evil.sns-video-bd.xhscdn.com/native/final.mp4",
+    ]) {
+        assert.equal(protocol.isAllowedFinalMediaUrl({
+            initialUrl: source,
+            finalUrl: rejected,
+            redirected: true,
+        }), false, rejected);
+    }
+});
+
 test("initial and source-bound final redirect policies reject bypasses", () => {
     const source365 = "https://v5-default.365yg.com/media/source.mp4";
     const sourceDouyinVod = "https://v3-web.douyinvod.com/media/source.mp4";
@@ -694,7 +788,7 @@ test("client registers the root-scoped worker and launches one opaque download p
     assert.equal(active.transport, "browser_streaming");
     assert.deepEqual(harness.calls[0], {
         type: "register",
-        url: "/ordinary-media-download-sw.js",
+        url: "/ordinary-media-download-sw.js?v=2",
         options: {scope: "/", updateViaCache: "none"},
     });
     assert.match(harness.clicked[0], /^\/__animeimages-stream-download\/[a-f0-9]{32}$/);
@@ -830,13 +924,74 @@ test("only explicit pre-start capability failures permit Blob fallback", async (
     )), true);
     assert.equal(ordinary.canFallbackToBlob(streaming.streamingError(
         "STREAMING_URL_UNSUPPORTED",
-        "unsafe URL",
-    )), false);
+        "stale worker protocol",
+    )), true);
     assert.equal(ordinary.canFallbackToBlob(streaming.streamingError(
         "STREAMING_START_STATE_UNKNOWN",
         "start state unknown",
         {streamingStarted: true},
     )), false);
+});
+
+test("a stale worker URL rejection falls back through the current page gate once", async () => {
+    const harness = createClientHarness({
+        registerDownloadErrorCode: "STREAMING_URL_UNSUPPORTED",
+    });
+    let mediaFetches = 0;
+    let blobHandoffs = 0;
+    let fallbacks = 0;
+    const result = await ordinary.download(ordinaryItem({
+        url: "https://sns-video-hw.xhscdn.com/media/video.mp4?fixture=fake",
+        provider: "tiantianjiexi_generic",
+        size_bytes: 5,
+    }), {
+        streamingClient: harness.client,
+        fetchImpl: async () => {
+            mediaFetches += 1;
+            return responseFor("12345", {
+                url: "https://sns-video-hw.xhscdn.com/media/video.mp4?fixture=fake",
+            });
+        },
+        async handoffBlob() { blobHandoffs += 1; },
+        onTransportFallback() { fallbacks += 1; },
+    });
+
+    assert.equal(result.transport, "browser_blob");
+    assert.equal(mediaFetches, 1);
+    assert.equal(blobHandoffs, 1);
+    assert.equal(fallbacks, 1);
+    assert.equal(harness.clicked.length, 0);
+});
+
+test("a page-rejected URL never fetches even when URL rejection is fallback-eligible", async () => {
+    let mediaFetches = 0;
+    await assert.rejects(ordinary.download(ordinaryItem({
+        url: "https://attacker.example/video.mp4",
+        size_bytes: 5,
+    }), {
+        fetchImpl: async () => {
+            mediaFetches += 1;
+            return responseFor("12345");
+        },
+        async handoffBlob() {},
+    }), (error) => error && error.errorCode === "UPSTREAM_MEDIA_INVALID");
+    assert.equal(mediaFetches, 0);
+});
+
+test("worker and registration URLs stay bound to the current protocol version", () => {
+    assert.equal(protocol.PROTOCOL_VERSION, 2);
+    assert.equal(
+        streaming.DEFAULT_WORKER_URL,
+        `/ordinary-media-download-sw.js?v=${protocol.PROTOCOL_VERSION}`,
+    );
+    assert.match(
+        workerSource,
+        new RegExp(`STREAMING_PROTOCOL_ASSET_VERSION = ["']${protocol.PROTOCOL_VERSION}["']`),
+    );
+    assert.match(
+        workerSource,
+        /ordinary_media_streaming_protocol\.js\?v=\$\{STREAMING_PROTOCOL_ASSET_VERSION\}/,
+    );
 });
 
 test("a confirmed unstarted descriptor timeout falls back to Blob once", async () => {
@@ -968,6 +1123,68 @@ test("worker streams a reviewed ixigua descriptor through the same zero-relay pa
     assert.equal(finalStatus.status.state, "completed");
     assert.equal(finalStatus.status.receivedBytes, 6);
     assert.equal(finalStatus.status.mediaHost, "v3-dy-a-x.ixigua.com");
+});
+
+test("worker streams reviewed XHS TianTian bytes without server relay", async () => {
+    const exactUrl = "https://sns-video-hw.xhscdn.com/media/video.mp4?fixture=fake";
+    const upstream = chunkedUpstream([[1, 2, 3], [4, 5, 6]], {url: exactUrl});
+    const runtime = createWorkerRuntime(async () => upstream.response);
+    const downloadId = "56565656565656565656565656565656";
+    const registered = await runtime.send({
+        type: "REGISTER_DOWNLOAD",
+        descriptor: {
+            downloadId,
+            url: exactUrl,
+            filename: "xhs-video.mp4",
+            provider: "tiantianjiexi_generic",
+            expectedBytes: 6,
+        },
+    });
+
+    assert.equal(registered.ok, true);
+    const response = await runtime.startFetch(downloadId).response;
+    assert.deepEqual(
+        [...new Uint8Array(await response.arrayBuffer())],
+        [1, 2, 3, 4, 5, 6],
+    );
+    const finalStatus = await runtime.send({
+        type: "GET_DOWNLOAD_STATUS",
+        downloadId,
+    });
+    assert.equal(finalStatus.status.state, "completed");
+    assert.equal(finalStatus.status.receivedBytes, 6);
+    assert.equal(finalStatus.status.mediaHost, "sns-video-hw.xhscdn.com");
+});
+
+test("worker streams reviewed XHS Native bytes without server relay", async () => {
+    const exactUrl = "https://sns-video-v28.xhscdn.com/native/video.mp4?fixture=fake";
+    const upstream = chunkedUpstream([[1, 2, 3], [4, 5, 6]], {url: exactUrl});
+    const runtime = createWorkerRuntime(async () => upstream.response);
+    const downloadId = "68686868686868686868686868686868";
+    const registered = await runtime.send({
+        type: "REGISTER_DOWNLOAD",
+        descriptor: {
+            downloadId,
+            url: exactUrl,
+            filename: "xhs-native.mp4",
+            provider: "native",
+            expectedBytes: 6,
+        },
+    });
+
+    assert.equal(registered.ok, true);
+    const response = await runtime.startFetch(downloadId).response;
+    assert.deepEqual(
+        [...new Uint8Array(await response.arrayBuffer())],
+        [1, 2, 3, 4, 5, 6],
+    );
+    const finalStatus = await runtime.send({
+        type: "GET_DOWNLOAD_STATUS",
+        downloadId,
+    });
+    assert.equal(finalStatus.status.state, "completed");
+    assert.equal(finalStatus.status.receivedBytes, 6);
+    assert.equal(finalStatus.status.mediaHost, "sns-video-v28.xhscdn.com");
 });
 
 test("worker admits a reviewed 365yg to bdcgslb final redirect and streams exact bytes", async () => {

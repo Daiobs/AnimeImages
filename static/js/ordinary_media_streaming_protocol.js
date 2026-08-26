@@ -9,7 +9,7 @@
 }(typeof self !== "undefined" ? self : globalThis, function () {
     "use strict";
 
-    const PROTOCOL_VERSION = 1;
+    const PROTOCOL_VERSION = 2;
     const DOWNLOAD_PATH_SEGMENT = "__animeimages-stream-download";
     const DEFAULT_STREAM_DESCRIPTOR_TTL_MS = 120000;
     const MAX_STREAM_BYTES = 2 * 1024 * 1024 * 1024;
@@ -20,6 +20,8 @@
     ]);
     const INITIAL_EXACT_MEDIA_HOSTS = Object.freeze([
         "v3-dy-a-x.ixigua.com",
+        "sns-video-hw.xhscdn.com",
+        "sns-video-bd.xhscdn.com",
     ]);
     const REVIEWED_FINAL_ONLY_HOST_SUFFIXES = Object.freeze([
         "bdcgslb.com",
@@ -28,6 +30,8 @@
         "DOUYIN_365YG",
         "DOUYIN_DOUYINVOD",
         "DOUYIN_IXIGUA_EXACT",
+        "XHS_TIANTIAN_HW_EXACT",
+        "XHS_NATIVE_REVIEWED",
         "LOOPBACK_TEST",
         "UNKNOWN",
     ]);
@@ -164,6 +168,12 @@
         );
     }
 
+    function isXhsNativeVersionedHostname(hostname) {
+        return /^sns-video-v[1-9][0-9]*\.xhscdn\.com$/.test(
+            String(hostname || "").trim().toLowerCase(),
+        );
+    }
+
     function isIpLiteral(hostname) {
         const value = String(hostname || "").trim().toLowerCase();
         return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(value)
@@ -218,7 +228,10 @@
             return false;
         }
         const rawHostname = String(url.hostname || "").trim().toLowerCase();
-        if (ALLOWED_EXACT_MEDIA_HOSTS.includes(rawHostname)) {
+        if (
+            ALLOWED_EXACT_MEDIA_HOSTS.includes(rawHostname)
+            || isXhsNativeVersionedHostname(rawHostname)
+        ) {
             return true;
         }
         return ALLOWED_MEDIA_HOST_SUFFIXES.some((suffix) => (
@@ -232,6 +245,7 @@
             return false;
         }
         return ALLOWED_EXACT_MEDIA_HOSTS.includes(rawHostname)
+            || isXhsNativeVersionedHostname(rawHostname)
             || ALLOWED_MEDIA_HOST_SUFFIXES.some((suffix) => (
                 hostnameMatchesSuffix(rawHostname, suffix)
             ));
@@ -272,6 +286,15 @@
         }
         if (hostname === "v3-dy-a-x.ixigua.com") {
             return "DOUYIN_IXIGUA_EXACT";
+        }
+        if (hostname === "sns-video-hw.xhscdn.com") {
+            return "XHS_TIANTIAN_HW_EXACT";
+        }
+        if (
+            hostname === "sns-video-bd.xhscdn.com"
+            || isXhsNativeVersionedHostname(hostname)
+        ) {
+            return "XHS_NATIVE_REVIEWED";
         }
         return "UNKNOWN";
     }
@@ -384,9 +407,25 @@
         let allowed = false;
         if (initialMediaFamily === "LOOPBACK_TEST") {
             allowed = finalInitialFamily === "LOOPBACK_TEST";
+        } else if (
+            initialMediaFamily === "XHS_TIANTIAN_HW_EXACT"
+            || initialMediaFamily === "XHS_NATIVE_REVIEWED"
+        ) {
+            allowed = finalInitialFamily === initialMediaFamily;
+            if (
+                allowed
+                && initialMediaFamily === "XHS_NATIVE_REVIEWED"
+            ) {
+                allowed = sanitizeMediaHost(initialUrl, {allowLoopback: false})
+                    === observedFinalHost;
+            }
         } else if (initialMediaFamily !== "UNKNOWN" && observed.secure) {
             // Existing reviewed Douyin byte-media hosts remain mutually compatible.
-            allowed = finalInitialFamily !== "UNKNOWN";
+            allowed = (
+                finalInitialFamily !== "UNKNOWN"
+                && finalInitialFamily !== "XHS_TIANTIAN_HW_EXACT"
+                && finalInitialFamily !== "XHS_NATIVE_REVIEWED"
+            );
             if (
                 !allowed
                 && initialMediaFamily === "DOUYIN_365YG"

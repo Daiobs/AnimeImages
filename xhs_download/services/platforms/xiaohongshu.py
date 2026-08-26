@@ -25,10 +25,15 @@ from .xhs_page_state import (
     normalize_xhs_state_text,
 )
 from .xhs_livephoto_staff_builder import build_xhs_livephoto_staff_result
+from .xhs_tiantian_hybrid import enhance_xhs_ordinary_video
 
 
 XHS_PAGE_HOST_SUFFIXES = ("xiaohongshu.com", "xhslink.com", "xhslink.cn")
 XHS_MEDIA_HOST_SUFFIXES = ("xiaohongshu.com", "xhscdn.com")
+XHS_NATIVE_BROWSER_VIDEO_HOSTS = frozenset({"sns-video-bd.xhscdn.com"})
+XHS_NATIVE_BROWSER_VIDEO_HOST_PATTERN = re.compile(
+    r"^sns-video-v[1-9][0-9]*\.xhscdn\.com$"
+)
 XHS_EMPTY_RESOURCE_VALUES = {"", ".", "..", "null", "none", "undefined"}
 XHS_NON_NOTE_IMAGE_HINTS = (
     "avatar",
@@ -150,16 +155,23 @@ def normalize_video_url(value):
     if value.startswith("//"):
         value = f"https:{value}"
     if value.startswith(("http://", "https://")):
-        parsed = urlparse(value)
+        try:
+            parsed = urlparse(value)
+            port = parsed.port
+        except (TypeError, ValueError):
+            return None
         hostname = (parsed.hostname or "").lower()
         if (
             parsed.scheme not in {"http", "https"}
+            or parsed.username
+            or parsed.password
+            or port not in (None, 80, 443)
             or not host_matches(hostname, XHS_MEDIA_HOST_SUFFIXES)
             or not parsed.path.strip("/")
             or parsed.path.lower().endswith(".m3u8")
         ):
             return None
-        return value
+        return parsed._replace(scheme="https", netloc=hostname).geturl()
 
     value = value.lstrip("/")
     if (
@@ -172,6 +184,28 @@ def normalize_video_url(value):
     ):
         return None
     return f"https://sns-video-bd.xhscdn.com/{value}"
+
+
+def xhs_native_video_url_is_browser_streaming_allowed(value):
+    try:
+        parsed = urlparse(str(value or "").strip())
+        port = parsed.port
+    except (TypeError, ValueError):
+        return False
+    hostname = str(parsed.hostname or "").lower()
+    return bool(
+        parsed.scheme == "https"
+        and not parsed.username
+        and not parsed.password
+        and port in (None, 443)
+        and (
+            hostname in XHS_NATIVE_BROWSER_VIDEO_HOSTS
+            or XHS_NATIVE_BROWSER_VIDEO_HOST_PATTERN.fullmatch(hostname)
+        )
+        and not hostname.endswith(".")
+        and parsed.path.strip("/")
+        and not parsed.path.lower().endswith(".m3u8")
+    )
 
 
 def extract_video_urls(html):
@@ -433,11 +467,19 @@ class XiaohongshuAdapter(BasePlatformAdapter):
         media_types=("image", "video"),
         batch_download=True,
         cover=True,
+        ultra_hd=True,
     )
-    provider_policy = ProviderPolicy(primary_provider="native")
+    provider_policy = ProviderPolicy(
+        primary_provider="native",
+        third_party_providers=("tiantianjiexi_generic",),
+        enhanced_provider_enabled_by="prefer_ultra_hd",
+    )
     parse_option_names = (
+        "prefer_ultra_hd",
         "timeout_seconds",
         "deadline_monotonic",
+        "stage_callback",
+        "ultra_attempt_controller",
         "enable_xhs_livephoto_staff_preview",
     )
 
@@ -708,8 +750,11 @@ class XiaohongshuAdapter(BasePlatformAdapter):
     def parse_url(
         self,
         url,
+        prefer_ultra_hd=False,
         timeout_seconds=None,
         deadline_monotonic=None,
+        stage_callback=None,
+        ultra_attempt_controller=None,
         enable_xhs_livephoto_staff_preview=False,
     ):
         parse_started_at = time.monotonic()
@@ -725,6 +770,11 @@ class XiaohongshuAdapter(BasePlatformAdapter):
                 request_timeout,
                 max(0.001, deadline - time.monotonic()),
             )
+        if callable(stage_callback):
+            try:
+                stage_callback("native", provider_attempt=True)
+            except TypeError:
+                stage_callback("native")
         response = request_get_with_retry(
             url,
             headers=self.headers,
@@ -745,27 +795,35 @@ class XiaohongshuAdapter(BasePlatformAdapter):
                 ),
                 deadline_monotonic=deadline or None,
             )
-            if not str(
+            if str(
                 (result.metadata or {}).get("xhs_livephoto_staff_preview_status")
                 or ""
             ):
-                return result
-            metadata = dict(result.metadata)
-            metadata.update(
-                {
-                    "xhs_livephoto_staff_page_fetch_duration_ms": page_fetch_duration_ms,
-                    "xhs_livephoto_staff_parse_total_duration_ms": round(
-                        (time.monotonic() - parse_started_at) * 1000
-                    ),
-                }
-            )
-            return ParseResult(
-                platform=result.platform,
-                post_type=result.post_type,
-                base_filename=result.base_filename,
-                assets=result.assets,
-                metadata=metadata,
-                rich_media=result.rich_media,
-            )
+                metadata = dict(result.metadata)
+                metadata.update(
+                    {
+                        "xhs_livephoto_staff_page_fetch_duration_ms": page_fetch_duration_ms,
+                        "xhs_livephoto_staff_parse_total_duration_ms": round(
+                            (time.monotonic() - parse_started_at) * 1000
+                        ),
+                    }
+                )
+                result = ParseResult(
+                    platform=result.platform,
+                    post_type=result.post_type,
+                    base_filename=result.base_filename,
+                    assets=result.assets,
+                    metadata=metadata,
+                    rich_media=result.rich_media,
+                )
         finally:
             response.close()
+
+        if not prefer_ultra_hd:
+            return result
+        return enhance_xhs_ordinary_video(
+            result,
+            deadline_monotonic=deadline or 0,
+            attempt_controller=ultra_attempt_controller,
+            stage_callback=stage_callback,
+        )

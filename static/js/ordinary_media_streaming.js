@@ -14,7 +14,9 @@
 }(typeof window !== "undefined" ? window : globalThis, function (protocol) {
     "use strict";
 
-    const DEFAULT_WORKER_URL = "/ordinary-media-download-sw.js";
+    const DEFAULT_WORKER_URL = (
+        `/ordinary-media-download-sw.js?v=${protocol && protocol.PROTOCOL_VERSION || 1}`
+    );
     const DEFAULT_WORKER_SCOPE = "/";
     const DEFAULT_START_TIMEOUT_MS = 8000;
     const DEFAULT_MESSAGE_TIMEOUT_MS = 4000;
