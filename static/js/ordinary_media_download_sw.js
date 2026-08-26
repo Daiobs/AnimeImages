@@ -1,6 +1,9 @@
 "use strict";
 
-importScripts("/static/js/ordinary_media_streaming_protocol.js");
+const STREAMING_PROTOCOL_ASSET_VERSION = "2";
+importScripts(
+    `/static/js/ordinary_media_streaming_protocol.js?v=${STREAMING_PROTOCOL_ASSET_VERSION}`,
+);
 
 const protocol = self.AnimeImagesOrdinaryMediaStreamingProtocol;
 const downloads = new Map();

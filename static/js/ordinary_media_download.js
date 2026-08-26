@@ -45,6 +45,7 @@
         "STREAMING_MESSAGE_TIMEOUT",
         "STREAMING_NAVIGATION_UNAVAILABLE",
         "STREAMING_START_TIMEOUT",
+        "STREAMING_URL_UNSUPPORTED",
     ]);
     const STAGE_MESSAGES = Object.freeze({
         preparing: "正在准备下载...",

@@ -105,6 +105,13 @@ function createClientHarness(options) {
             calls.push({type: "message", message});
             const reply = ports[0];
             if (message.type === "REGISTER_DOWNLOAD") {
+                if (settings.registerDownloadErrorCode) {
+                    reply.postMessage({
+                        ok: false,
+                        code: settings.registerDownloadErrorCode,
+                    });
+                    return;
+                }
                 const status = safeStatus({
                     downloadId: message.descriptor.downloadId,
                     filename: message.descriptor.filename,
@@ -248,7 +255,8 @@ function ordinaryItem(overrides) {
     };
 }
 
-function responseFor(body) {
+function responseFor(body, options) {
+    const settings = options || {};
     const response = new Response(body, {
         status: 200,
         headers: {
@@ -258,7 +266,7 @@ function responseFor(body) {
     });
     Object.defineProperty(response, "url", {
         configurable: true,
-        value: "https://v11-default.365yg.com/media/video.mp4",
+        value: settings.url || "https://v11-default.365yg.com/media/video.mp4",
     });
     return response;
 }
@@ -780,7 +788,7 @@ test("client registers the root-scoped worker and launches one opaque download p
     assert.equal(active.transport, "browser_streaming");
     assert.deepEqual(harness.calls[0], {
         type: "register",
-        url: "/ordinary-media-download-sw.js",
+        url: "/ordinary-media-download-sw.js?v=2",
         options: {scope: "/", updateViaCache: "none"},
     });
     assert.match(harness.clicked[0], /^\/__animeimages-stream-download\/[a-f0-9]{32}$/);
@@ -916,13 +924,74 @@ test("only explicit pre-start capability failures permit Blob fallback", async (
     )), true);
     assert.equal(ordinary.canFallbackToBlob(streaming.streamingError(
         "STREAMING_URL_UNSUPPORTED",
-        "unsafe URL",
-    )), false);
+        "stale worker protocol",
+    )), true);
     assert.equal(ordinary.canFallbackToBlob(streaming.streamingError(
         "STREAMING_START_STATE_UNKNOWN",
         "start state unknown",
         {streamingStarted: true},
     )), false);
+});
+
+test("a stale worker URL rejection falls back through the current page gate once", async () => {
+    const harness = createClientHarness({
+        registerDownloadErrorCode: "STREAMING_URL_UNSUPPORTED",
+    });
+    let mediaFetches = 0;
+    let blobHandoffs = 0;
+    let fallbacks = 0;
+    const result = await ordinary.download(ordinaryItem({
+        url: "https://sns-video-hw.xhscdn.com/media/video.mp4?fixture=fake",
+        provider: "tiantianjiexi_generic",
+        size_bytes: 5,
+    }), {
+        streamingClient: harness.client,
+        fetchImpl: async () => {
+            mediaFetches += 1;
+            return responseFor("12345", {
+                url: "https://sns-video-hw.xhscdn.com/media/video.mp4?fixture=fake",
+            });
+        },
+        async handoffBlob() { blobHandoffs += 1; },
+        onTransportFallback() { fallbacks += 1; },
+    });
+
+    assert.equal(result.transport, "browser_blob");
+    assert.equal(mediaFetches, 1);
+    assert.equal(blobHandoffs, 1);
+    assert.equal(fallbacks, 1);
+    assert.equal(harness.clicked.length, 0);
+});
+
+test("a page-rejected URL never fetches even when URL rejection is fallback-eligible", async () => {
+    let mediaFetches = 0;
+    await assert.rejects(ordinary.download(ordinaryItem({
+        url: "https://attacker.example/video.mp4",
+        size_bytes: 5,
+    }), {
+        fetchImpl: async () => {
+            mediaFetches += 1;
+            return responseFor("12345");
+        },
+        async handoffBlob() {},
+    }), (error) => error && error.errorCode === "UPSTREAM_MEDIA_INVALID");
+    assert.equal(mediaFetches, 0);
+});
+
+test("worker and registration URLs stay bound to the current protocol version", () => {
+    assert.equal(protocol.PROTOCOL_VERSION, 2);
+    assert.equal(
+        streaming.DEFAULT_WORKER_URL,
+        `/ordinary-media-download-sw.js?v=${protocol.PROTOCOL_VERSION}`,
+    );
+    assert.match(
+        workerSource,
+        new RegExp(`STREAMING_PROTOCOL_ASSET_VERSION = ["']${protocol.PROTOCOL_VERSION}["']`),
+    );
+    assert.match(
+        workerSource,
+        /ordinary_media_streaming_protocol\.js\?v=\$\{STREAMING_PROTOCOL_ASSET_VERSION\}/,
+    );
 });
 
 test("a confirmed unstarted descriptor timeout falls back to Blob once", async () => {

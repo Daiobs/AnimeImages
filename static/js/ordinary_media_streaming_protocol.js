@@ -9,7 +9,7 @@
 }(typeof self !== "undefined" ? self : globalThis, function () {
     "use strict";
 
-    const PROTOCOL_VERSION = 1;
+    const PROTOCOL_VERSION = 2;
     const DOWNLOAD_PATH_SEGMENT = "__animeimages-stream-download";
     const DEFAULT_STREAM_DESCRIPTOR_TTL_MS = 120000;
     const MAX_STREAM_BYTES = 2 * 1024 * 1024 * 1024;
