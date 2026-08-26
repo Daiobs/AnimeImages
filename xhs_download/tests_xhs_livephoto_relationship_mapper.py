@@ -466,7 +466,7 @@ class XhsLivePhotoRelationshipMapperTests(SimpleTestCase):
         ):
             self.assertNotIn(forbidden, source)
 
-    def test_current_xhs_adapter_and_registry_have_zero_mapper_consumers(self):
+    def test_runtime_mapper_consumption_is_confined_to_staff_builder(self):
         for relative_path in (
             "xhs_download/services/platforms/xiaohongshu.py",
             "xhs_download/services/registry.py",
@@ -474,7 +474,14 @@ class XhsLivePhotoRelationshipMapperTests(SimpleTestCase):
             source = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
             self.assertNotIn("xhs_livephoto_relationship_mapper", source)
             self.assertNotIn("map_xhs_livephoto_relationships", source)
-            self.assertNotIn("rich_media=", source)
+        staff_builder = (
+            PROJECT_ROOT
+            / "xhs_download"
+            / "services"
+            / "platforms"
+            / "xhs_livephoto_staff_builder.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("map_xhs_livephoto_relationships", staff_builder)
 
     def test_input_is_not_mutated(self):
         items = [livephoto_item("one"), regular_item("two")]

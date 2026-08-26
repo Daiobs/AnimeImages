@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..image_formats import resolve_image_format
+from ..rich_media import RICH_MEDIA_MAX_ASSETS, RICH_MEDIA_MAX_GROUPS
 from .xhs_livephoto_browser_admission import (
     XHS_LIVEPHOTO_BROWSER_ADMISSION_SCHEMA_VERSION,
     XHS_LIVEPHOTO_BROWSER_VERIFIED_HOST_CLASSES,
@@ -63,8 +64,10 @@ _ERROR_CODES = frozenset(
         "XHS_LIVEPHOTO_ASSET_SPEC_MEMBER_PROOF_INVALID",
         "XHS_LIVEPHOTO_ASSET_SPEC_MEMBER_PROOF_MISSING",
         "XHS_LIVEPHOTO_ASSET_SPEC_OUTPUT_INVALID",
+        "XHS_LIVEPHOTO_ASSET_SPEC_PHYSICAL_ASSET_LIMIT",
         "XHS_LIVEPHOTO_ASSET_SPEC_RELATIONSHIP_MISMATCH",
         "XHS_LIVEPHOTO_ASSET_SPEC_ROLE_MISMATCH",
+        "XHS_LIVEPHOTO_ASSET_SPEC_GROUP_LIMIT",
         "XHS_LIVEPHOTO_ASSET_SPEC_SOURCE_IDENTITY_INVALID",
         "XHS_LIVEPHOTO_ASSET_SPEC_SOURCE_IDENTITY_MISMATCH",
     }
@@ -346,6 +349,10 @@ class XhsLivePhotoAssetSpecMapV1:
     groups: tuple[XhsLivePhotoGroupSpecV1, ...]
 
     def __post_init__(self) -> None:
+        if type(self.assets) is tuple and len(self.assets) > RICH_MEDIA_MAX_ASSETS:
+            _reject("XHS_LIVEPHOTO_ASSET_SPEC_PHYSICAL_ASSET_LIMIT")
+        if type(self.groups) is tuple and len(self.groups) > RICH_MEDIA_MAX_GROUPS:
+            _reject("XHS_LIVEPHOTO_ASSET_SPEC_GROUP_LIMIT")
         if (
             self.schema_version != XHS_LIVEPHOTO_ASSET_SPEC_SCHEMA_VERSION
             or self.relationship_schema_version
@@ -609,6 +616,21 @@ def _regular_role(*, post_type: str) -> str:
     return "inline"
 
 
+def validate_xhs_livephoto_asset_spec_limits(
+    relationship_map: XhsLivePhotoRelationshipMapV1,
+) -> None:
+    if type(relationship_map) is not XhsLivePhotoRelationshipMapV1:
+        _reject("XHS_LIVEPHOTO_ASSET_SPEC_RELATIONSHIP_MISMATCH")
+    group_count = relationship_map.livephoto_count
+    physical_asset_count = (
+        relationship_map.regular_image_count + (group_count * 2)
+    )
+    if group_count > RICH_MEDIA_MAX_GROUPS:
+        _reject("XHS_LIVEPHOTO_ASSET_SPEC_GROUP_LIMIT")
+    if physical_asset_count > RICH_MEDIA_MAX_ASSETS:
+        _reject("XHS_LIVEPHOTO_ASSET_SPEC_PHYSICAL_ASSET_LIMIT")
+
+
 def build_xhs_livephoto_asset_specs(
     *,
     requested_note_id: str,
@@ -651,6 +673,8 @@ def build_xhs_livephoto_asset_specs(
         for proof in member_proofs
     ):
         _reject("XHS_LIVEPHOTO_ASSET_SPEC_MEMBER_PROOF_INVALID")
+
+    validate_xhs_livephoto_asset_spec_limits(relationship_map)
 
     proofs_by_locator: dict[
         XhsLivePhotoMemberLocatorV1,
@@ -792,4 +816,5 @@ __all__ = (
     "build_xhs_livephoto_asset_specs",
     "build_xhs_livephoto_member_proof",
     "build_xhs_livephoto_private_format_proof",
+    "validate_xhs_livephoto_asset_spec_limits",
 )

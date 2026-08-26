@@ -240,4 +240,3 @@ class XhsDormantRichMediaNormalizerTests(SimpleTestCase):
             source = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
             self.assertNotIn("xhs_rich_media", source)
             self.assertNotIn("normalize_xhs_rich_media_payload", source)
-            self.assertNotIn("rich_media=", source)

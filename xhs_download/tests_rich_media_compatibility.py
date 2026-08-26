@@ -232,9 +232,13 @@ class RichMediaLegacyCompatibilityTests(SimpleTestCase):
 
 
 class RichMediaCurrentProviderBoundaryTests(SimpleTestCase):
-    def test_current_production_parse_result_constructors_do_not_emit_rich_media(self):
+    def test_rich_media_emission_is_confined_to_the_staff_xhs_vertical_slice(self):
         production_files = sorted((PROJECT_ROOT / "xhs_download" / "services").rglob("*.py"))
         constructors = []
+        allowed_emitters = {
+            "xhs_download/services/platforms/xhs_livephoto_staff_builder.py",
+            "xhs_download/services/platforms/xiaohongshu.py",
+        }
         for path in production_files:
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
@@ -248,7 +252,10 @@ class RichMediaCurrentProviderBoundaryTests(SimpleTestCase):
                 if name != "ParseResult":
                     continue
                 constructors.append((path, node))
-                self.assertNotIn("rich_media", {keyword.arg for keyword in node.keywords})
+                keywords = {keyword.arg for keyword in node.keywords}
+                if "rich_media" in keywords:
+                    relative_path = path.relative_to(PROJECT_ROOT).as_posix()
+                    self.assertIn(relative_path, allowed_emitters)
         self.assertGreaterEqual(len(constructors), 20)
 
     def test_runtime_module_has_no_tools_parsehub_or_download_import(self):
