@@ -119,7 +119,7 @@ class GlobalSettingsPlacementTests(TestCase):
 
         self.assertIn("浏览器保存位置", source)
         self.assertIn("解析质量", source)
-        self.assertIn("抖音原画 / 超清", source)
+        self.assertIn("抖音 / 小红书原画与超清", source)
         self.assertIn("YouTube 最高画质合并", source)
         for forbidden in (
             "下载处理方式",

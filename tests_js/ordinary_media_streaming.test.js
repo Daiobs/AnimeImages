@@ -520,6 +520,92 @@ test("reviewed ixigua response keeps content and final-host gates", () => {
     );
 });
 
+test("reviewed XHS TianTian host is exact, HTTPS-only, and descriptor-safe", () => {
+    const exactUrl = "https://sns-video-hw.xhscdn.com/media/video.mp4?fixture=fake";
+    const descriptor = protocol.createDescriptor({
+        downloadId: "45454545454545454545454545454545",
+        url: exactUrl,
+        filename: "xhs-video.mp4",
+        provider: "tiantianjiexi_generic",
+        expectedBytes: 2048,
+    });
+
+    assert.equal(descriptor.initialMediaFamily, "XHS_TIANTIAN_HW_EXACT");
+    assert.equal(protocol.isAllowedStreamingUrl(exactUrl), true);
+    for (const rejected of [
+        "https://other.xhscdn.com/media/video.mp4",
+        "https://evil.sns-video-hw.xhscdn.com/media/video.mp4",
+        "https://sns-video-hw.xhscdn.com.evil.example/media/video.mp4",
+        "http://sns-video-hw.xhscdn.com/media/video.mp4",
+        "https://user@sns-video-hw.xhscdn.com/media/video.mp4",
+        "https://sns-video-hw.xhscdn.com:444/media/video.mp4",
+        "https://sns-video-hw.xhscdn.com./media/video.mp4",
+    ]) {
+        assert.equal(protocol.isAllowedStreamingUrl(rejected), false, rejected);
+        assert.equal(protocol.sanitizeMediaHost(rejected), "unknown", rejected);
+    }
+});
+
+test("XHS final-host policy cannot cross into Douyin or unreviewed XHS hosts", () => {
+    const source = "https://sns-video-hw.xhscdn.com/media/source.mp4";
+    assert.equal(protocol.isAllowedFinalMediaUrl({
+        initialUrl: source,
+        finalUrl: "https://sns-video-hw.xhscdn.com/media/final.mp4",
+        redirected: true,
+    }), true);
+    for (const finalUrl of [
+        "https://other.xhscdn.com/media/final.mp4",
+        "https://v11-default.365yg.com/media/final.mp4",
+        "https://v3-web.douyinvod.com/media/final.mp4",
+        "https://v3-dy-a-x.ixigua.com/media/final.mp4",
+        "https://attacker.example/media/final.mp4",
+    ]) {
+        assert.equal(protocol.isAllowedFinalMediaUrl({
+            initialUrl: source,
+            finalUrl,
+            redirected: true,
+        }), false, finalUrl);
+    }
+    assert.equal(protocol.isAllowedFinalMediaUrl({
+        initialUrl: "https://v11-default.365yg.com/media/source.mp4",
+        finalUrl: source,
+        redirected: true,
+    }), false);
+});
+
+test("reviewed XHS Native host is exact and isolated from TianTian", () => {
+    const source = "https://sns-video-v28.xhscdn.com/native/source.mp4";
+    const descriptor = protocol.createDescriptor({
+        downloadId: "67676767676767676767676767676767",
+        url: source,
+        filename: "xhs-native.mp4",
+        provider: "native",
+        expectedBytes: 1024,
+    });
+    assert.equal(descriptor.initialMediaFamily, "XHS_NATIVE_REVIEWED");
+    assert.equal(protocol.isAllowedStreamingUrl(source), true);
+    assert.equal(protocol.isAllowedFinalMediaUrl({
+        initialUrl: source,
+        finalUrl: "https://sns-video-v28.xhscdn.com/native/final.mp4",
+        redirected: true,
+    }), true);
+    for (const rejected of [
+        "https://sns-video-hw.xhscdn.com/media/final.mp4",
+        "https://sns-video-v27.xhscdn.com/native/final.mp4",
+        "https://sns-video-vx.xhscdn.com/native/final.mp4",
+        "https://evil-sns-video-v28.xhscdn.com/native/final.mp4",
+        "https://other.xhscdn.com/media/final.mp4",
+        "https://v11-default.365yg.com/media/final.mp4",
+        "https://evil.sns-video-bd.xhscdn.com/native/final.mp4",
+    ]) {
+        assert.equal(protocol.isAllowedFinalMediaUrl({
+            initialUrl: source,
+            finalUrl: rejected,
+            redirected: true,
+        }), false, rejected);
+    }
+});
+
 test("initial and source-bound final redirect policies reject bypasses", () => {
     const source365 = "https://v5-default.365yg.com/media/source.mp4";
     const sourceDouyinVod = "https://v3-web.douyinvod.com/media/source.mp4";
@@ -968,6 +1054,68 @@ test("worker streams a reviewed ixigua descriptor through the same zero-relay pa
     assert.equal(finalStatus.status.state, "completed");
     assert.equal(finalStatus.status.receivedBytes, 6);
     assert.equal(finalStatus.status.mediaHost, "v3-dy-a-x.ixigua.com");
+});
+
+test("worker streams reviewed XHS TianTian bytes without server relay", async () => {
+    const exactUrl = "https://sns-video-hw.xhscdn.com/media/video.mp4?fixture=fake";
+    const upstream = chunkedUpstream([[1, 2, 3], [4, 5, 6]], {url: exactUrl});
+    const runtime = createWorkerRuntime(async () => upstream.response);
+    const downloadId = "56565656565656565656565656565656";
+    const registered = await runtime.send({
+        type: "REGISTER_DOWNLOAD",
+        descriptor: {
+            downloadId,
+            url: exactUrl,
+            filename: "xhs-video.mp4",
+            provider: "tiantianjiexi_generic",
+            expectedBytes: 6,
+        },
+    });
+
+    assert.equal(registered.ok, true);
+    const response = await runtime.startFetch(downloadId).response;
+    assert.deepEqual(
+        [...new Uint8Array(await response.arrayBuffer())],
+        [1, 2, 3, 4, 5, 6],
+    );
+    const finalStatus = await runtime.send({
+        type: "GET_DOWNLOAD_STATUS",
+        downloadId,
+    });
+    assert.equal(finalStatus.status.state, "completed");
+    assert.equal(finalStatus.status.receivedBytes, 6);
+    assert.equal(finalStatus.status.mediaHost, "sns-video-hw.xhscdn.com");
+});
+
+test("worker streams reviewed XHS Native bytes without server relay", async () => {
+    const exactUrl = "https://sns-video-v28.xhscdn.com/native/video.mp4?fixture=fake";
+    const upstream = chunkedUpstream([[1, 2, 3], [4, 5, 6]], {url: exactUrl});
+    const runtime = createWorkerRuntime(async () => upstream.response);
+    const downloadId = "68686868686868686868686868686868";
+    const registered = await runtime.send({
+        type: "REGISTER_DOWNLOAD",
+        descriptor: {
+            downloadId,
+            url: exactUrl,
+            filename: "xhs-native.mp4",
+            provider: "native",
+            expectedBytes: 6,
+        },
+    });
+
+    assert.equal(registered.ok, true);
+    const response = await runtime.startFetch(downloadId).response;
+    assert.deepEqual(
+        [...new Uint8Array(await response.arrayBuffer())],
+        [1, 2, 3, 4, 5, 6],
+    );
+    const finalStatus = await runtime.send({
+        type: "GET_DOWNLOAD_STATUS",
+        downloadId,
+    });
+    assert.equal(finalStatus.status.state, "completed");
+    assert.equal(finalStatus.status.receivedBytes, 6);
+    assert.equal(finalStatus.status.mediaHost, "sns-video-v28.xhscdn.com");
 });
 
 test("worker admits a reviewed 365yg to bdcgslb final redirect and streams exact bytes", async () => {

@@ -1578,7 +1578,7 @@ class BatchParseViewTests(TestCase):
             content.index("js/project_settings.js?v="),
             content.index("js/batch_parse.js?v="),
         )
-        self.assertContains(response, "抖音原画 / 超清")
+        self.assertContains(response, "抖音 / 小红书原画与超清")
         self.assertContains(response, "YouTube 最高画质合并")
 
     def test_batch_progress_endpoints_are_post_only_and_use_batch_access_gate(self):
