@@ -2,7 +2,7 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const preview = require("../static/js/xhs_livephoto_staff_preview.js");
+const preview = require("../static/js/xhs_livephoto_preview.js");
 
 
 function fakeClassList() {

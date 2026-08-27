@@ -232,10 +232,11 @@ class RichMediaLegacyCompatibilityTests(SimpleTestCase):
 
 
 class RichMediaCurrentProviderBoundaryTests(SimpleTestCase):
-    def test_rich_media_emission_is_confined_to_the_staff_xhs_vertical_slice(self):
+    def test_rich_media_emission_is_confined_to_the_xhs_vertical_slice(self):
         production_files = sorted((PROJECT_ROOT / "xhs_download" / "services").rglob("*.py"))
         constructors = []
         allowed_emitters = {
+            "xhs_download/services/platforms/xhs_livephoto_builder.py",
             "xhs_download/services/platforms/xhs_livephoto_staff_builder.py",
             "xhs_download/services/platforms/xiaohongshu.py",
         }

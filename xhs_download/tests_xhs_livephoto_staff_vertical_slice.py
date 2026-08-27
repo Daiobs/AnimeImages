@@ -164,10 +164,16 @@ def enhanced_result(items, *, webp_ordinals=frozenset()):
     return outcome.result
 
 
-def result_region_context(result, *, staff_preview=False):
+def result_region_context(result, *, staff_preview=False, public_preview=False):
     display = build_result_display_context(
         result,
         probe_missing_video_sizes=False,
+    )
+    show_preview = bool(staff_preview or public_preview)
+    preview_context = (
+        build_xhs_livephoto_staff_preview_context(result)
+        if show_preview
+        else {}
     )
     return {
         "error_message": "",
@@ -182,12 +188,10 @@ def result_region_context(result, *, staff_preview=False):
         "display_author": "",
         "result_theme": "xiaohongshu",
         "show_internal_diagnostics": staff_preview,
+        "show_xhs_livephoto_preview": show_preview,
+        "xhs_livephoto_preview": preview_context,
         "show_xhs_livephoto_staff_preview": staff_preview,
-        "xhs_livephoto_staff_preview": (
-            build_xhs_livephoto_staff_preview_context(result)
-            if staff_preview
-            else {}
-        ),
+        "xhs_livephoto_staff_preview": preview_context if staff_preview else {},
         "is_mobile_request": False,
     }
 
@@ -495,7 +499,7 @@ class XhsLivePhotoStaffBuilderTests(SimpleTestCase):
         self.assertNotIn(still_url(0), logged)
         self.assertNotIn(motion_url(0), logged)
 
-    def test_public_adapter_path_never_runs_staff_builder(self):
+    def test_flat_adapter_path_does_not_enable_preview_without_explicit_option(self):
         adapter = XiaohongshuAdapter()
         with patch(
             "xhs_download.services.platforms.xiaohongshu.build_xhs_livephoto_staff_result"
@@ -508,6 +512,26 @@ class XhsLivePhotoStaffBuilderTests(SimpleTestCase):
         builder.assert_not_called()
         self.assertIsNone(result.rich_media)
         self.assertEqual(len(result.assets), 1)
+
+    def test_public_preview_option_uses_generic_builder_without_staff_builder(self):
+        adapter = XiaohongshuAdapter()
+        items = [livephoto_item(0)]
+        enhanced = enhanced_result(items)
+        with patch(
+            "xhs_download.services.platforms.xiaohongshu.build_xhs_livephoto_result",
+            return_value=Mock(result=enhanced),
+        ) as generic_builder, patch(
+            "xhs_download.services.platforms.xiaohongshu.build_xhs_livephoto_staff_result"
+        ) as staff_builder:
+            result = adapter.parse_html(
+                page_html(items),
+                source_url=NOTE_URL,
+                enable_xhs_livephoto_preview=True,
+            )
+
+        generic_builder.assert_called_once()
+        staff_builder.assert_not_called()
+        self.assertIsNotNone(result.rich_media)
 
 
 class XhsLivePhotoStaffGateTests(SimpleTestCase):
@@ -528,22 +552,24 @@ class XhsLivePhotoStaffGateTests(SimpleTestCase):
         self.assertEqual(status, 200)
         return parser.call_args.kwargs
 
-    def test_only_active_staff_request_enables_internal_parse_option(self):
+    def test_all_xhs_single_requests_enable_preview_but_only_staff_get_diagnostics(self):
         staff = User(username="staff", is_staff=True, is_active=True)
         public = AnonymousUser()
         inactive_staff = User(username="inactive", is_staff=True, is_active=False)
 
-        self.assertTrue(
-            self.parse_options_for(staff)["enable_xhs_livephoto_staff_preview"]
+        staff_options = self.parse_options_for(staff)
+        public_options = self.parse_options_for(public, "&xhs_livephoto=1")
+        inactive_options = self.parse_options_for(
+            inactive_staff,
+            "&xhs_livephoto=1",
         )
-        self.assertNotIn(
-            "enable_xhs_livephoto_staff_preview",
-            self.parse_options_for(public, "&xhs_livephoto=1"),
-        )
-        self.assertNotIn(
-            "enable_xhs_livephoto_staff_preview",
-            self.parse_options_for(inactive_staff, "&xhs_livephoto=1"),
-        )
+
+        self.assertTrue(staff_options["enable_xhs_livephoto_preview"])
+        self.assertTrue(staff_options["enable_xhs_livephoto_staff_preview"])
+        self.assertTrue(public_options["enable_xhs_livephoto_preview"])
+        self.assertNotIn("enable_xhs_livephoto_staff_preview", public_options)
+        self.assertTrue(inactive_options["enable_xhs_livephoto_preview"])
+        self.assertNotIn("enable_xhs_livephoto_staff_preview", inactive_options)
 
     def test_current_short_link_host_is_classified_as_xhs(self):
         adapter = get_adapter_for_url("https://xhslink.cn/o/synthetic")
@@ -573,6 +599,7 @@ class XhsLivePhotoStaffGateTests(SimpleTestCase):
         )
 
         self.assertEqual(row["status"], "success")
+        self.assertNotIn("enable_xhs_livephoto_preview", captured)
         self.assertNotIn("enable_xhs_livephoto_staff_preview", captured)
 
     def test_provider_health_parser_never_receives_staff_preview_option(self):
@@ -599,6 +626,10 @@ class XhsLivePhotoStaffGateTests(SimpleTestCase):
 
         self.assertNotIn(
             "enable_xhs_livephoto_staff_preview",
+            parser.call_args.kwargs,
+        )
+        self.assertNotIn(
+            "enable_xhs_livephoto_preview",
             parser.call_args.kwargs,
         )
 
@@ -642,9 +673,9 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
         preview_root = soup.select_one("[data-xhs-livephoto-staff-preview]")
         self.assertRegex(
             preview_root.get("data-preview-script-url", ""),
-            r"/static/js/xhs_livephoto_staff_preview\.js",
+            r"/static/js/xhs_livephoto_preview\.js",
         )
-        self.assertIn("不受项目设置控制", html)
+        self.assertIn("精确笔记身份", html)
         self.assertIsNone(soup.select_one("#download-btn"))
         self.assertIsNone(soup.select_one("#select-all-btn"))
         self.assertFalse(soup.select(".asset-card"))
@@ -657,22 +688,24 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
             self.assertEqual(video.get("crossorigin"), "anonymous")
             self.assertEqual(video.get("referrerpolicy"), "no-referrer")
 
-    def test_public_template_contains_no_livephoto_data_or_staff_diagnostic(self):
-        public_result = flat_result([regular_item(0), regular_item(1)])
+    def test_public_template_shows_livephoto_without_staff_diagnostics_or_download(self):
         public_request = RequestFactory().get("/")
         public_request.user = AnonymousUser()
         html = render_to_string(
             "partials/xhs_results_region.html",
-            result_region_context(public_result, staff_preview=False),
+            result_region_context(self.result, public_preview=True),
             request=public_request,
         )
+        soup = BeautifulSoup(html, "html.parser")
 
-        self.assertNotIn("实况", html)
-        self.assertNotIn("LivePhoto", html)
-        self.assertNotIn("data-motion-url", html)
-        self.assertNotIn("xhs_livephoto_staff_preview.js", html)
-        self.assertNotIn(motion_url(0), html)
-        self.assertIn('id="download-btn"', html)
+        self.assertEqual(len(soup.select("[data-livephoto-card]")), 2)
+        self.assertIn("当前支持实况预览，实况下载后续开放。", html)
+        self.assertIn("data-motion-url", html)
+        self.assertIn(motion_url(0), html)
+        self.assertNotIn("精确笔记身份", html)
+        self.assertIsNone(soup.select_one("[data-xhs-livephoto-staff-preview]"))
+        self.assertIsNone(soup.select_one("#download-btn"))
+        self.assertIsNone(soup.select_one("#select-all-btn"))
 
     def test_public_shell_does_not_load_staff_preview_javascript(self):
         public_request = RequestFactory().get("/xhs/")
@@ -690,8 +723,28 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
             request=public_request,
         )
 
-        self.assertNotIn("xhs_livephoto_staff_preview.js", html)
-        self.assertNotIn("data-livephoto-staff-loader", html)
+        self.assertNotIn("xhs_livephoto_preview.js", html)
+        self.assertNotIn("data-livephoto-loader", html)
+
+    def test_public_shell_loads_generic_preview_javascript_when_result_is_rich(self):
+        public_request = RequestFactory().get("/xhs/")
+        public_request.user = AnonymousUser()
+        html = render_to_string(
+            "xhs_download.html",
+            {
+                "static_asset_version": "test",
+                "image_items": [],
+                "video_items": [],
+                "error_message": "",
+                "platform_notice": "",
+                "provider_notice": "",
+                "show_xhs_livephoto_preview": True,
+            },
+            request=public_request,
+        )
+
+        self.assertIn("xhs_livephoto_preview.js?v=test", html)
+        self.assertIn("data-livephoto-loader", html)
 
     def test_staff_shell_loads_preview_javascript(self):
         html = render_to_string(
@@ -703,15 +756,16 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
                 "error_message": "",
                 "platform_notice": "",
                 "provider_notice": "",
+                "show_xhs_livephoto_preview": True,
             },
             request=self.request,
         )
 
-        self.assertIn("xhs_livephoto_staff_preview.js", html)
-        self.assertIn("data-livephoto-staff-loader", html)
+        self.assertIn("xhs_livephoto_preview.js", html)
+        self.assertIn("data-livephoto-loader", html)
 
         shell = BeautifulSoup(html, "html.parser")
-        shell_script = shell.select_one("script[data-livephoto-staff-loader]")
+        shell_script = shell.select_one("script[data-livephoto-loader]")
         preview_html = render_to_string(
             "partials/xhs_livephoto_staff_preview.html",
             {
@@ -723,7 +777,7 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
             request=self.request,
         )
         preview = BeautifulSoup(preview_html, "html.parser")
-        preview_root = preview.select_one("[data-xhs-livephoto-staff-preview]")
+        preview_root = preview.select_one("[data-xhs-livephoto-preview]")
 
         self.assertEqual(
             shell_script.get("src"),
@@ -745,12 +799,12 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
 class XhsLivePhotoStaffStaticBoundaryTests(SimpleTestCase):
     def test_staff_javascript_participates_in_static_cache_versioning(self):
         self.assertIn(
-            "static/js/xhs_livephoto_staff_preview.js",
+            "static/js/xhs_livephoto_preview.js",
             STATIC_VERSION_FILES,
         )
 
     def test_controller_only_source_change_updates_static_version(self):
-        relative_path = "static/js/xhs_livephoto_staff_preview.js"
+        relative_path = "static/js/xhs_livephoto_preview.js"
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             controller = root / relative_path
@@ -777,7 +831,7 @@ class XhsLivePhotoStaffStaticBoundaryTests(SimpleTestCase):
             Path(__file__).resolve().parents[1]
             / "static"
             / "js"
-            / "xhs_livephoto_staff_preview.js"
+            / "xhs_livephoto_preview.js"
         ).read_text(encoding="utf-8")
 
         for forbidden in (
@@ -800,7 +854,7 @@ class XhsLivePhotoStaffStaticBoundaryTests(SimpleTestCase):
             Path(__file__).resolve().parents[1]
             / "templates"
             / "partials"
-            / "xhs_livephoto_staff_preview.html"
+            / "xhs_livephoto_preview.html"
         ).read_text(encoding="utf-8")
 
         self.assertIn("repeat(auto-fit, minmax(280px, 380px))", css)
@@ -820,16 +874,16 @@ class XhsLivePhotoStaffStaticBoundaryTests(SimpleTestCase):
             / "xhs_download.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("ensureLivePhotoStaffPreview", source)
+        self.assertIn("ensureLivePhotoPreview", source)
         self.assertIn("scriptUrl.origin !== window.location.origin", source)
         self.assertIn(
-            'scriptUrl.pathname.endsWith("/js/xhs_livephoto_staff_preview.js")',
+            'scriptUrl.pathname.endsWith("/js/xhs_livephoto_preview.js")',
             source,
         )
         self.assertRegex(
             source,
             re.compile(
                 r"resultsRegion\.innerHTML = payload\.html \|\| \"\";\s+"
-                r"void ensureLivePhotoStaffPreview\(\);"
+                r"void ensureLivePhotoPreview\(\);"
             ),
         )

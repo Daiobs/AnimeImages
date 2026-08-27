@@ -27,6 +27,7 @@ class MediaAsset:
     provider_resource_id: str = ""
     provider_cache_key: str = ""
     provider_manifest_token: str = ""
+    source_platform: str = ""
 
     def to_download_item(self):
         item = {
@@ -41,6 +42,7 @@ class MediaAsset:
             "provider_resource_id",
             "provider_cache_key",
             "provider_manifest_token",
+            "source_platform",
         ):
             value = getattr(self, key, "")
             if value:

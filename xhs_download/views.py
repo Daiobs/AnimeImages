@@ -286,7 +286,7 @@ def paginate_admin_queryset(request, queryset, page_size=ADMIN_LOG_PAGE_SIZE):
     query_params.pop("page", None)
     return page_obj, query_params.urlencode()
 PREVIEW_MAX_IMAGE_BYTES = 8 * 1024 * 1024
-BATCH_CARD_PREVIEW_WIDTH = 960
+BATCH_CARD_PREVIEW_WIDTH = 1280
 BATCH_LIGHTBOX_PREVIEW_WIDTH = 1600
 SIGNED_THIRD_PARTY_VIDEO_PROVIDERS = {
     "kukutool_generic",
@@ -349,6 +349,8 @@ def get_video_size_details(asset, *, probe_missing=True):
 
 
 def build_provider_preview_query(asset, preview_url, asset_id_suffix=""):
+    if asset.provider == "parsehub_xhs_images":
+        return ""
     if not asset.provider or not preview_url:
         return ""
     if not asset.asset_id or not asset.provider_resource_id or not asset.provider_cache_key:
@@ -3863,6 +3865,8 @@ def image_download_extension(asset):
     supported = {
         "avif": "avif",
         "gif": "gif",
+        "heic": "heic",
+        "heif": "heic",
         "jpeg": "jpg",
         "jpg": "jpg",
         "png": "png",
@@ -3879,16 +3883,17 @@ def image_download_extension(asset):
 def build_image_item(asset, result):
     default_preview_url = asset.preview_url or asset.url
     if getattr(result, "platform", "") == "xiaohongshu":
+        preview_source_url = asset.preview_url or asset.url
         card_preview_url = (
             normalize_xhs_preview_image_url(
-                asset.url,
+                preview_source_url,
                 width=BATCH_CARD_PREVIEW_WIDTH,
             )
             or default_preview_url
         )
         lightbox_preview_url = (
             normalize_xhs_preview_image_url(
-                asset.url,
+                preview_source_url,
                 width=BATCH_LIGHTBOX_PREVIEW_WIDTH,
             )
             or card_preview_url
@@ -3901,6 +3906,7 @@ def build_image_item(asset, result):
         **asset.to_download_item(),
         **build_asset_strategy_fields(asset, result),
         "type": "image",
+        "source_platform": result.platform,
         "url": asset.url,
         "download_extension": image_download_extension(asset),
         "encoded_url": encode_url(asset.url),
@@ -4321,6 +4327,7 @@ def apply_search_result_to_context(
     platform_key,
     prefer_ultra_hd,
     provider_notice_override=None,
+    enable_xhs_livephoto_preview=False,
     enable_xhs_livephoto_staff_preview=False,
 ):
     result_metadata = result.metadata or {}
@@ -4466,24 +4473,26 @@ def apply_search_result_to_context(
     context["video_items"] = display_context["video_items"]
 
     if (
-        enable_xhs_livephoto_staff_preview
+        enable_xhs_livephoto_preview
         and result.platform == "xiaohongshu"
         and result.rich_media is not None
     ):
-        from .services.platforms.xhs_livephoto_staff_builder import (
-            build_xhs_livephoto_staff_preview_context,
+        from .services.platforms.xhs_livephoto_builder import (
+            build_xhs_livephoto_preview_context,
         )
 
-        context["xhs_livephoto_staff_preview"] = (
-            build_xhs_livephoto_staff_preview_context(result)
-        )
-        context["show_xhs_livephoto_staff_preview"] = True
+        preview_context = build_xhs_livephoto_preview_context(result)
+        context["xhs_livephoto_preview"] = preview_context
+        context["show_xhs_livephoto_preview"] = True
+        if enable_xhs_livephoto_staff_preview:
+            context["xhs_livephoto_staff_preview"] = preview_context
+            context["show_xhs_livephoto_staff_preview"] = True
     elif (
-        enable_xhs_livephoto_staff_preview
-        and result_metadata.get("xhs_livephoto_staff_preview_status") == "fallback"
+        enable_xhs_livephoto_preview
+        and result_metadata.get("xhs_livephoto_preview_status") == "fallback"
     ):
         error_code = str(
-            result_metadata.get("xhs_livephoto_staff_preview_error_code") or ""
+            result_metadata.get("xhs_livephoto_preview_error_code") or ""
         )
         context["provider_notice"] = (
             "该笔记包含尚未完成浏览器验证的实况媒体节点，已显示普通图片结果。"
@@ -4540,6 +4549,8 @@ def build_search_results_context(request, platform_key="home"):
         "metadata_source": "",
         "show_xhs_livephoto_staff_preview": False,
         "xhs_livephoto_staff_preview": {},
+        "show_xhs_livephoto_preview": False,
+        "xhs_livephoto_preview": {},
     }
 
     if not query:
@@ -4725,12 +4736,17 @@ def build_search_results_context(request, platform_key="home"):
         )
         client_identity = get_client_identity(request)
         parse_options = {"prefer_ultra_hd": prefer_ultra_hd}
+        enable_xhs_livephoto_preview = bool(
+            query_platform_id == "xiaohongshu"
+        )
         enable_xhs_livephoto_staff_preview = bool(
             query_platform_id == "xiaohongshu"
             and getattr(request.user, "is_authenticated", False)
             and getattr(request.user, "is_active", False)
             and getattr(request.user, "is_staff", False)
         )
+        if enable_xhs_livephoto_preview:
+            parse_options["enable_xhs_livephoto_preview"] = True
         if enable_xhs_livephoto_staff_preview:
             parse_options["enable_xhs_livephoto_staff_preview"] = True
         if prefer_youtube_merge:
@@ -4770,6 +4786,7 @@ def build_search_results_context(request, platform_key="home"):
             result,
             platform_key=platform_key,
             prefer_ultra_hd=prefer_ultra_hd,
+            enable_xhs_livephoto_preview=enable_xhs_livephoto_preview,
             enable_xhs_livephoto_staff_preview=enable_xhs_livephoto_staff_preview,
         )
         log_parse_request_event(

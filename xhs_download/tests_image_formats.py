@@ -28,6 +28,10 @@ AVIF = (
     b"\x00\x00\x00\x18ftypavif"
     b"\x00\x00\x00\x00avifmif1"
 )
+HEIC = (
+    b"\x00\x00\x00\x18ftypheic"
+    b"\x00\x00\x00\x00heicmif1"
+)
 
 
 class ImageFormatResolutionTests(SimpleTestCase):
@@ -38,6 +42,7 @@ class ImageFormatResolutionTests(SimpleTestCase):
             (GIF, "gif", "image/gif"),
             (WEBP, "webp", "image/webp"),
             (AVIF, "avif", "image/avif"),
+            (HEIC, "heic", "image/heic"),
         )
         for content, extension, mime_type in cases:
             with self.subTest(extension=extension):
@@ -147,7 +152,7 @@ class ServerArchiveImageFormatTests(SimpleTestCase):
                 Path(path).unlink(missing_ok=True)
 
     def test_mixed_suffixless_octet_stream_archive_uses_magic_extensions(self):
-        bodies = [PNG, JPEG, WEBP, GIF, AVIF]
+        bodies = [PNG, JPEG, WEBP, GIF, AVIF, HEIC]
         archive = self.build_archive(bodies)
         try:
             with ZipFile(archive["file"]) as bundle:
@@ -159,6 +164,7 @@ class ServerArchiveImageFormatTests(SimpleTestCase):
                         "mixed_03.webp",
                         "mixed_04.gif",
                         "mixed_05.avif",
+                        "mixed_06.heic",
                     ],
                 )
                 self.assertEqual(

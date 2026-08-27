@@ -341,11 +341,25 @@
         return {
             type: "image",
             url,
+            source_platform: String(node.dataset.sourcePlatform || ""),
+            provider: String(node.dataset.provider || ""),
             filenameStem: String(node.dataset.downloadFilenameStem || "image"),
             extensionHint: String(node.dataset.downloadExtensionHint || ""),
             requires_cookie: node.dataset.requiresCookie === "true",
             requires_merge: node.dataset.requiresMerge === "true",
         };
+    }
+
+    function batchPhotoItemsRequireZeroRelay(items) {
+        const sourceItems = Array.isArray(items) ? items : [];
+        return Boolean(
+            sourceItems.length
+            && sourceItems.every((item) => item && item.type === "image")
+            && sourceItems.some((item) => (
+                item.source_platform === "xiaohongshu"
+                || item.provider === "parsehub_xhs_images"
+            ))
+        );
     }
 
     async function downloadBatchImage(button, options) {
@@ -834,17 +848,20 @@
     async function downloadBatchPhotoArchive(batchPage, button) {
         const section = button ? button.closest("[data-batch-photo-section]") : null;
         const items = buildBatchBrowserPhotoItems(section);
+        const zeroRelay = batchPhotoItemsRequireZeroRelay(items);
         if (!section || items.length < 2) {
             throw new Error("当前图片列表无法由浏览器打包，请重新解析。");
         }
         if (!browserPhotoApi) {
             setBatchPhotoArchiveState(section, "error", {
-                message: batchPresentationText(
-                    section,
-                    "图片下载组件不可用，可选择“换一种方式打包”。",
-                    "浏览器图片下载组件不可用，可明确选择“使用服务器打包”。"
-                ),
-                showFallback: true,
+                message: zeroRelay
+                    ? "图片下载组件不可用，请刷新页面后重试。"
+                    : batchPresentationText(
+                        section,
+                        "图片下载组件不可用，可选择“换一种方式打包”。",
+                        "浏览器图片下载组件不可用，可明确选择“使用服务器打包”。"
+                    ),
+                showFallback: !zeroRelay,
             });
             return;
         }
@@ -880,12 +897,14 @@
                 return;
             }
             setBatchPhotoArchiveState(section, "error", {
-                message: `${browserPhotoApi.safeErrorMessage(error)} ${batchPresentationText(
-                    section,
-                    "可选择“换一种方式打包”。",
-                    "可明确选择“使用服务器打包”。"
-                )}`,
-                showFallback: true,
+                message: zeroRelay
+                    ? "原始图片资源已失效，请重新解析后再试。"
+                    : `${browserPhotoApi.safeErrorMessage(error)} ${batchPresentationText(
+                        section,
+                        "可选择“换一种方式打包”。",
+                        "可明确选择“使用服务器打包”。"
+                    )}`,
+                showFallback: !zeroRelay,
             });
         } finally {
             batchPhotoControllers.delete(section);

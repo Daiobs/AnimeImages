@@ -265,6 +265,8 @@ IMAGE_CONTENT_TYPE_EXTENSIONS = {
     "image/webp": "webp",
     "image/gif": "gif",
     "image/avif": "avif",
+    "image/heic": "heic",
+    "image/heif": "heic",
 }
 
 VIDEO_CONTENT_TYPE_EXTENSIONS = {
@@ -470,6 +472,7 @@ def provider_manifest_allows_public_download(item):
         "yt_dlp_generic",
         YOUTUBE_MERGE_PROVIDER_ID,
         YTDLP_MERGE_PROVIDER_ID,
+        "parsehub_xhs_images",
     }:
         return False
     if item.get("provider") == "kukutool":
@@ -480,6 +483,12 @@ def provider_manifest_allows_public_download(item):
         return provider_manifest_allows_youtube_merge(item)
     if item.get("provider") == YTDLP_MERGE_PROVIDER_ID:
         return provider_manifest_allows_ytdlp_merge(item)
+    if item.get("provider") == "parsehub_xhs_images":
+        from .platforms.xhs_parsehub_images import (
+            xhs_parsehub_manifest_item_is_allowed,
+        )
+
+        return xhs_parsehub_manifest_item_is_allowed(item)
     if not provider_manifest_is_valid(item):
         return False
     if xhs_tiantian_manifest_item_is_allowed(item):
@@ -588,6 +597,12 @@ def validate_provider_signed_download_url(provider_item, url, message):
         provider_item.get("asset_id") or ""
     ).startswith("xhs:"):
         allowed = xhs_tiantian_manifest_item_is_allowed(signed_url_item)
+    elif provider == "parsehub_xhs_images":
+        from .platforms.xhs_parsehub_images import (
+            xhs_parsehub_manifest_item_is_allowed,
+        )
+
+        allowed = xhs_parsehub_manifest_item_is_allowed(signed_url_item)
     else:
         allowed = third_party_manifest_item_is_allowed(signed_url_item)
     if not allowed:

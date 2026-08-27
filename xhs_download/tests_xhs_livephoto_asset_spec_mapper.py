@@ -1183,7 +1183,7 @@ class XhsLivePhotoAssetSpecBoundaryTests(SimpleTestCase):
             XHS_LIVEPHOTO_BROWSER_ADMISSION_SCHEMA_VERSION,
         )
 
-    def test_runtime_wiring_is_confined_to_the_staff_builder_boundary(self):
+    def test_runtime_wiring_is_confined_to_the_xhs_builder_boundary(self):
         adapter = (
             PROJECT_ROOT
             / "xhs_download"
@@ -1194,19 +1194,19 @@ class XhsLivePhotoAssetSpecBoundaryTests(SimpleTestCase):
         registry = (
             PROJECT_ROOT / "xhs_download" / "services" / "registry.py"
         ).read_text(encoding="utf-8")
-        staff_builder = (
+        builder = (
             PROJECT_ROOT
             / "xhs_download"
             / "services"
             / "platforms"
-            / "xhs_livephoto_staff_builder.py"
+            / "xhs_livephoto_builder.py"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("build_xhs_livephoto_staff_result", adapter)
-        self.assertIn("enable_xhs_livephoto_staff_preview", adapter)
-        self.assertIn("enable_xhs_livephoto_staff_preview", registry)
-        self.assertIn("build_xhs_livephoto_asset_specs", staff_builder)
-        self.assertIn("RichMediaContractV1", staff_builder)
+        self.assertIn("build_xhs_livephoto_result", adapter)
+        self.assertIn("enable_xhs_livephoto_preview", adapter)
+        self.assertIn("enable_xhs_livephoto_preview", registry)
+        self.assertIn("build_xhs_livephoto_asset_specs", builder)
+        self.assertIn("RichMediaContractV1", builder)
 
     def test_mapper_constructs_no_runtime_asset_manifest_or_provider_result(self):
         source = MAPPER_PATH.read_text(encoding="utf-8")

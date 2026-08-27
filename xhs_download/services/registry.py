@@ -49,6 +49,7 @@ class PlatformRegistry:
         allow_continuation=False,
         continuation_identity="",
         ultra_attempt_controller=None,
+        enable_xhs_livephoto_preview=False,
         enable_xhs_livephoto_staff_preview=False,
     ):
         url = extract_url_from_text(url)
@@ -65,6 +66,7 @@ class PlatformRegistry:
             allow_continuation=allow_continuation,
             continuation_identity=continuation_identity,
             ultra_attempt_controller=ultra_attempt_controller,
+            enable_xhs_livephoto_preview=enable_xhs_livephoto_preview,
             enable_xhs_livephoto_staff_preview=enable_xhs_livephoto_staff_preview,
         )
 
@@ -96,6 +98,7 @@ def parse_media_page(
     allow_continuation=False,
     continuation_identity="",
     ultra_attempt_controller=None,
+    enable_xhs_livephoto_preview=False,
     enable_xhs_livephoto_staff_preview=False,
 ):
     return default_registry.parse_url(
@@ -110,5 +113,6 @@ def parse_media_page(
         allow_continuation=allow_continuation,
         continuation_identity=continuation_identity,
         ultra_attempt_controller=ultra_attempt_controller,
+        enable_xhs_livephoto_preview=enable_xhs_livephoto_preview,
         enable_xhs_livephoto_staff_preview=enable_xhs_livephoto_staff_preview,
     )

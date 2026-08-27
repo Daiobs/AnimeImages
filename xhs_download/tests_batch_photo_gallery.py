@@ -113,7 +113,7 @@ class BatchPhotoGalleryRenderTests(SimpleTestCase):
         item = build_result_display_context(result)["image_items"][0]
 
         self.assertEqual(item["url"], download_url)
-        self.assertIn("/w/960/format/webp", item["card_preview_url"])
+        self.assertIn("/w/1280/format/webp", item["card_preview_url"])
         self.assertIn("/w/1600/format/webp", item["lightbox_preview_url"])
         self.assertEqual(decode_url(item["encoded_url"]), download_url)
         self.assertEqual(item["download_extension"], "png")

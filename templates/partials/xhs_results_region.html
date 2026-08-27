@@ -51,7 +51,7 @@
                 </div>
             </div>
 
-            {% if not show_xhs_livephoto_staff_preview %}
+            {% if not show_xhs_livephoto_preview %}
             <div class="download-actions d-flex flex-column align-items-start align-items-md-end gap-1">
                 <div class="d-flex flex-wrap justify-content-start justify-content-md-end gap-2">
                     <button type="button" class="btn btn-outline-secondary btn-sm" id="select-all-btn">
@@ -82,8 +82,8 @@
         </div>
 
         <div class="card-body note-preview-bg">
-            {% if show_xhs_livephoto_staff_preview %}
-                {% include "partials/xhs_livephoto_staff_preview.html" %}
+            {% if show_xhs_livephoto_preview %}
+                {% include "partials/xhs_livephoto_preview.html" %}
             {% else %}
             {% if is_mobile_request %}
                 <div class="alert alert-info small mb-3">
@@ -117,9 +117,7 @@
                              data-cors-expected="{{ item.cors_expected|yesno:'true,false' }}"
                              data-browser-direct-fetch-safe="{{ item.browser_direct_fetch_safe|yesno:'true,false' }}"
                              data-requires-merge="{{ item.requires_merge|yesno:'true,false' }}"
-                             data-requires-cookie="{{ item.requires_cookie|yesno:'true,false' }}"
-                             data-download-filename-stem="{{ base_filename|default:'image' }}_{{ forloop.counter|stringformat:'02d' }}"
-                             data-download-extension-hint="{{ item.download_extension|default:'' }}">
+                             data-requires-cookie="{{ item.requires_cookie|yesno:'true,false' }}">
                             <span class="asset-check">
                                 <i class="bi bi-check-lg"></i>
                             </span>
@@ -169,6 +167,7 @@
                     {% for item in image_items %}
                         <div class="asset-card"
                              data-type="image"
+                             data-source-platform="{{ item.source_platform|default:'' }}"
                              data-url="{{ item.url }}"
                              data-size-bytes="{{ item.size_bytes|default:0 }}"
                              data-size-is-estimate="{{ item.size_is_estimate|yesno:'true,false' }}"
@@ -182,7 +181,9 @@
                              data-cors-expected="{{ item.cors_expected|yesno:'true,false' }}"
                              data-browser-direct-fetch-safe="{{ item.browser_direct_fetch_safe|yesno:'true,false' }}"
                              data-requires-merge="{{ item.requires_merge|yesno:'true,false' }}"
-                             data-requires-cookie="{{ item.requires_cookie|yesno:'true,false' }}">
+                             data-requires-cookie="{{ item.requires_cookie|yesno:'true,false' }}"
+                             data-download-filename-stem="{{ base_filename|default:'image' }}_{{ forloop.counter|stringformat:'02d' }}"
+                             data-download-extension-hint="{{ item.download_extension|default:'' }}">
                             <span class="asset-check">
                                 <i class="bi bi-check-lg"></i>
                             </span>
@@ -201,7 +202,7 @@
             {% endif %}
         </div>
 
-        {% if not show_xhs_livephoto_staff_preview %}
+        {% if not show_xhs_livephoto_preview %}
         <div class="card-footer bg-white">
             <div class="download-progress-wrap mb-2" id="download-progress-wrap" hidden>
                 <div class="download-progress-main">

@@ -1733,15 +1733,15 @@ body {
     display: none;
 }
 
-.xhs-livephoto-staff-preview {
+.xhs-livephoto-preview {
     min-width: 0;
 }
 
-.xhs-livephoto-staff-notice {
+.xhs-livephoto-notice {
     border-radius: 8px;
 }
 
-.xhs-livephoto-staff-grid {
+.xhs-livephoto-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(280px, 380px));
     justify-content: center;
@@ -1893,7 +1893,7 @@ body {
         max-width: 520px;
     }
 
-    .xhs-livephoto-staff-grid {
+    .xhs-livephoto-grid {
         grid-template-columns: repeat(2, minmax(0, 380px));
     }
 }
@@ -1924,7 +1924,7 @@ body {
         max-height: 180px;
     }
 
-    .xhs-livephoto-staff-grid {
+    .xhs-livephoto-grid {
         grid-template-columns: minmax(0, 1fr);
     }
 

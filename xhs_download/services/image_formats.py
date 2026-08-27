@@ -9,6 +9,7 @@ IMAGE_FORMATS = {
     "gif": ("gif", "image/gif"),
     "webp": ("webp", "image/webp"),
     "avif": ("avif", "image/avif"),
+    "heic": ("heic", "image/heic"),
 }
 
 CONTENT_TYPE_FORMATS = {
@@ -18,6 +19,8 @@ CONTENT_TYPE_FORMATS = {
     "image/gif": "gif",
     "image/webp": "webp",
     "image/avif": "avif",
+    "image/heic": "heic",
+    "image/heif": "heic",
 }
 
 URL_EXTENSION_FORMATS = {
@@ -27,6 +30,8 @@ URL_EXTENSION_FORMATS = {
     "gif": "gif",
     "webp": "webp",
     "avif": "avif",
+    "heic": "heic",
+    "heif": "heic",
 }
 
 GENERIC_BINARY_CONTENT_TYPES = {
@@ -93,6 +98,22 @@ def detect_image_format_from_prefix(value):
             )
             if any(brand in {b"avif", b"avis"} for brand in brands):
                 return "avif"
+            if any(
+                brand
+                in {
+                    b"heic",
+                    b"heix",
+                    b"hevc",
+                    b"hevx",
+                    b"heim",
+                    b"heis",
+                    b"heif",
+                    b"mif1",
+                    b"msf1",
+                }
+                for brand in brands
+            ):
+                return "heic"
     return ""
 
 

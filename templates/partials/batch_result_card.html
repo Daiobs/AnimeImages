@@ -134,6 +134,7 @@
                                          data-batch-photo-index="{{ forloop.counter0 }}"
                                          data-batch-download-item
                                          data-type="image"
+                                         data-source-platform="{% firstof item.source_platform row.platform '' %}"
                                          data-url="{{ item.url }}"
                                          data-size-bytes="{{ item.size_bytes|default:0 }}"
                                          data-asset-id="{{ item.asset_id|default:'' }}"

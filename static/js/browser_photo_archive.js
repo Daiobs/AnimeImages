@@ -21,6 +21,7 @@
         gif: Object.freeze({format: "gif", extension: "gif", mimeType: "image/gif"}),
         webp: Object.freeze({format: "webp", extension: "webp", mimeType: "image/webp"}),
         avif: Object.freeze({format: "avif", extension: "avif", mimeType: "image/avif"}),
+        heic: Object.freeze({format: "heic", extension: "heic", mimeType: "image/heic"}),
     });
     const CONTENT_TYPE_FORMATS = Object.freeze({
         "image/jpeg": "jpeg",
@@ -29,6 +30,8 @@
         "image/gif": "gif",
         "image/webp": "webp",
         "image/avif": "avif",
+        "image/heic": "heic",
+        "image/heif": "heic",
     });
     const URL_EXTENSION_FORMATS = Object.freeze({
         jpeg: "jpeg",
@@ -37,6 +40,8 @@
         gif: "gif",
         webp: "webp",
         avif: "avif",
+        heic: "heic",
+        heif: "heic",
     });
     const textEncoder = new TextEncoder();
     let crcTable = null;
@@ -117,10 +122,16 @@
                 + bytes[3]
             ) >>> 0;
             const boxEnd = Math.min(bytes.length, boxSize);
+            const heicBrands = new Set([
+                "heic", "heix", "hevc", "hevx", "heim", "heis", "heif", "mif1", "msf1",
+            ]);
             for (let index = 8; index + 4 <= boxEnd; index += index === 8 ? 8 : 4) {
                 const brand = asciiPrefix(bytes.subarray(index, index + 4), 4);
                 if (brand === "avif" || brand === "avis") {
                     return "avif";
+                }
+                if (heicBrands.has(brand)) {
+                    return "heic";
                 }
             }
         }
@@ -201,7 +212,7 @@
 
     function filenameStem(value, fallback) {
         const sanitized = sanitizeFilename(value, fallback || "image");
-        return sanitized.replace(/\.(?:jpe?g|png|gif|webp|avif)$/i, "") || "image";
+        return sanitized.replace(/\.(?:jpe?g|png|gif|webp|avif|heic|heif)$/i, "") || "image";
     }
 
     function filenameWithSuffix(stem, suffix) {
@@ -596,8 +607,14 @@
             contentType: responseHeader(response, "Content-Type"),
             url: response.url || item.url,
         });
-        if (detected.errorCode) {
-            throw photoError(detected.errorCode);
+        const requiresMagic = Boolean(
+            item.require_magic === true
+            || item.requireMagic === true
+            || item.source_platform === "xiaohongshu"
+            || item.provider === "parsehub_xhs_images"
+        );
+        if (detected.errorCode || (requiresMagic && detected.confidence !== "magic")) {
+            throw photoError(detected.errorCode || "IMAGE_FORMAT_UNDETERMINED");
         }
         return {
             chunks,

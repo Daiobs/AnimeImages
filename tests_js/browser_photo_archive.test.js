@@ -20,6 +20,14 @@ const SIGNATURES = {
         0x61, 0x76, 0x69, 0x66,
         0x6d, 0x69, 0x66, 0x31,
     ]),
+    heic: Uint8Array.from([
+        0x00, 0x00, 0x00, 0x18,
+        0x66, 0x74, 0x79, 0x70,
+        0x68, 0x65, 0x69, 0x63,
+        0x00, 0x00, 0x00, 0x00,
+        0x68, 0x65, 0x69, 0x63,
+        0x6d, 0x69, 0x66, 0x31,
+    ]),
 };
 
 
@@ -100,7 +108,7 @@ async function parseStoreZip(blob) {
 }
 
 
-test("image format detection uses magic for JPEG PNG GIF WebP and AVIF", () => {
+test("image format detection uses magic for JPEG PNG GIF WebP AVIF and HEIC", () => {
     for (const [format, bytes] of Object.entries(SIGNATURES)) {
         const detected = photo.detectImageFormat(bytes, {contentType: "application/octet-stream"});
         assert.equal(detected.format, format);
@@ -206,6 +214,38 @@ test("single image download assigns the magic-derived extension and preserves ex
     assert.equal(result.filename, "作品_01.png");
     assert.equal(saved.filename, "作品_01.png");
     assert.deepEqual(new Uint8Array(await saved.blob.arrayBuffer()), SIGNATURES.png);
+});
+
+
+test("XHS and ParseHub images require magic instead of trusting MIME or suffix", async () => {
+    const baseItem = {
+        type: "image",
+        url: "https://sns-img-hw.xhscdn.com/resource.jpg",
+        source_platform: "xiaohongshu",
+        provider: "parsehub_xhs_images",
+    };
+    await assert.rejects(
+        () => photo.downloadImage(baseItem, {
+            fetchImpl: async () => fakeResponse([Uint8Array.from([1, 2, 3])], {
+                contentType: "image/jpeg",
+            }),
+            handoff: async () => assert.fail("handoff must not run"),
+        }),
+        (error) => error.errorCode === "IMAGE_FORMAT_UNDETERMINED",
+    );
+
+    let saved = null;
+    const result = await photo.downloadImage(baseItem, {
+        fetchImpl: async () => fakeResponse([SIGNATURES.heic], {
+            contentType: "image/jpeg",
+        }),
+        async handoff(blob, filename) {
+            saved = {blob, filename};
+        },
+    });
+    assert.equal(result.format, "heic");
+    assert.equal(saved.filename.endsWith(".heic"), true);
+    assert.deepEqual(new Uint8Array(await saved.blob.arrayBuffer()), SIGNATURES.heic);
 });
 
 

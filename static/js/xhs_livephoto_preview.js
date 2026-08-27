@@ -4,6 +4,7 @@
         module.exports = api;
     }
     if (root) {
+        root.AnimeImagesXhsLivePhotoPreview = api;
         root.AnimeImagesXhsLivePhotoStaffPreview = api;
         if (root.document) {
             api.ensureController(root.document);

@@ -319,7 +319,7 @@
         let ultraRetryDeadline = 0;
         let ultraRetryTimer = null;
         let ultraRetrySource = "";
-        let livePhotoStaffScriptPromise = null;
+        let livePhotoScriptPromise = null;
 
         function getBaseFilename() {
             return page.dataset.baseFilename || "xhs_image";
@@ -329,26 +329,26 @@
             return Array.from(resultsRegion ? resultsRegion.querySelectorAll(".asset-card") : []);
         }
 
-        function initializeLivePhotoStaffPreview() {
-            const api = window.AnimeImagesXhsLivePhotoStaffPreview;
+        function initializeLivePhotoPreview() {
+            const api = window.AnimeImagesXhsLivePhotoPreview;
             if (!api || typeof api.ensureController !== "function") {
                 return false;
             }
             return Boolean(api.ensureController(document));
         }
 
-        function ensureLivePhotoStaffPreview() {
+        function ensureLivePhotoPreview() {
             const previewRoot = resultsRegion
-                ? resultsRegion.querySelector("[data-xhs-livephoto-staff-preview]")
+                ? resultsRegion.querySelector("[data-xhs-livephoto-preview]")
                 : null;
             if (!previewRoot) {
                 return Promise.resolve(false);
             }
-            if (initializeLivePhotoStaffPreview()) {
+            if (initializeLivePhotoPreview()) {
                 return Promise.resolve(true);
             }
-            if (livePhotoStaffScriptPromise) {
-                return livePhotoStaffScriptPromise;
+            if (livePhotoScriptPromise) {
+                return livePhotoScriptPromise;
             }
 
             let scriptUrl;
@@ -359,31 +359,31 @@
             }
             if (
                 scriptUrl.origin !== window.location.origin
-                || !scriptUrl.pathname.endsWith("/js/xhs_livephoto_staff_preview.js")
+                || !scriptUrl.pathname.endsWith("/js/xhs_livephoto_preview.js")
             ) {
                 return Promise.resolve(false);
             }
 
-            const existingScript = document.querySelector("script[data-livephoto-staff-loader]");
+            const existingScript = document.querySelector("script[data-livephoto-loader]");
             if (existingScript) {
-                return Promise.resolve(initializeLivePhotoStaffPreview());
+                return Promise.resolve(initializeLivePhotoPreview());
             }
 
-            livePhotoStaffScriptPromise = new Promise((resolve) => {
+            livePhotoScriptPromise = new Promise((resolve) => {
                 const script = document.createElement("script");
                 script.src = scriptUrl.toString();
                 script.async = true;
-                script.dataset.livephotoStaffLoader = "true";
+                script.dataset.livephotoLoader = "true";
                 script.addEventListener("load", () => {
-                    resolve(initializeLivePhotoStaffPreview());
+                    resolve(initializeLivePhotoPreview());
                 }, {once: true});
                 script.addEventListener("error", () => {
-                    livePhotoStaffScriptPromise = null;
+                    livePhotoScriptPromise = null;
                     resolve(false);
                 }, {once: true});
                 document.head.appendChild(script);
             });
-            return livePhotoStaffScriptPromise;
+            return livePhotoScriptPromise;
         }
 
         function getStatusElement() {
@@ -745,6 +745,18 @@
             );
         }
 
+        function selectionRequiresZeroRelay(items) {
+            const sourceItems = Array.isArray(items) ? items : [];
+            return Boolean(
+                sourceItems.length
+                && sourceItems.every((item) => item && item.type === "image")
+                && sourceItems.some((item) => (
+                    item.source_platform === "xiaohongshu"
+                    || item.provider === "parsehub_xhs_images"
+                ))
+            );
+        }
+
         function applyPhotoDownloadProgress(event) {
             if (!browserPhotoApi || !event) {
                 return;
@@ -822,6 +834,7 @@
                 ...item,
                 filenameStem: item.filenameStem || `${getBaseFilename()}_${String(index + 1).padStart(2, "0")}`,
             }));
+            const zeroRelay = selectionRequiresZeroRelay(items);
             activePhotoController = new AbortController();
             clearPhotoServerFallback();
             setPhotoActionVisibility({cancel: true});
@@ -855,12 +868,20 @@
             } catch (error) {
                 const errorCode = browserPhotoApi.safeErrorCode(error);
                 const cancelled = errorCode === "BROWSER_PHOTO_CANCELLED";
-                if (!cancelled && items.length > 1) {
+                if (!cancelled && items.length > 1 && !zeroRelay) {
                     pendingPhotoServerFallback = true;
                     setPhotoActionVisibility({serverFallback: true});
                     setStatus(
                         getStatusElement(),
                         `${browserPhotoApi.safeErrorMessage(error)} 可明确选择“使用服务器打包”。`,
+                        "text-danger",
+                    );
+                    return;
+                }
+                if (!cancelled && zeroRelay) {
+                    setStatus(
+                        getStatusElement(),
+                        "原始图片资源已失效，请重新解析后再试。",
                         "text-danger",
                     );
                     return;
@@ -1047,7 +1068,7 @@
             selected = [];
             pendingPhotoServerFallback = false;
             resultsRegion.innerHTML = payload.html || "";
-            void ensureLivePhotoStaffPreview();
+            void ensureLivePhotoPreview();
             page.dataset.baseFilename = payload.base_filename || "xhs_image";
             setPageHasResults(Boolean(payload.has_content || payload.has_results));
             updateSelectAllButton();
@@ -1662,11 +1683,14 @@
                     && selectedSupportsBrowserPhoto(selected, payload.save_format)
                 ) {
                     if (!browserPhotoApi) {
-                        pendingPhotoServerFallback = selected.length > 1;
+                        const zeroRelay = selectionRequiresZeroRelay(selected);
+                        pendingPhotoServerFallback = !zeroRelay && selected.length > 1;
                         setPhotoActionVisibility({serverFallback: pendingPhotoServerFallback});
                         setStatus(
                             getStatusElement(),
-                            pendingPhotoServerFallback
+                            zeroRelay
+                                ? "图片下载组件不可用，请刷新页面后重试。"
+                                : pendingPhotoServerFallback
                                 ? presentationText(
                                     "图片下载组件不可用，可选择“换一种方式打包”。",
                                     "浏览器图片下载组件不可用，可明确选择“使用服务器打包”。"
@@ -2079,7 +2103,7 @@
         }
 
         updateSelectAllButton();
-        void ensureLivePhotoStaffPreview();
+        void ensureLivePhotoPreview();
         if (ordinaryMediaDownloadApi) {
             const interrupted = ordinaryMediaDownloadApi.consumeInterruptedDownloadMarker();
             const interruptionNotice = page.querySelector("[data-ordinary-download-interruption]");

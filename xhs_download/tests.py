@@ -1603,7 +1603,7 @@ class XhsParserTests(SimpleTestCase):
         self.assertEqual(result.image_assets[0].url, "https://ci.xiaohongshu.com/spectrum/abc123?imageView2/format/jpg")
         self.assertEqual(
             result.image_assets[0].preview_url,
-            "https://ci.xiaohongshu.com/spectrum/abc123?imageView2/2/w/640/format/webp",
+            "https://ci.xiaohongshu.com/spectrum/abc123?imageView2/2/w/1280/format/webp",
         )
 
     def test_xiaohongshu_adapter_ignores_static_og_image_assets(self):
