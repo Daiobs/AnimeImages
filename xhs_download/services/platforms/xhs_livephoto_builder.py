@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
+from threading import BoundedSemaphore
 from typing import Callable
 from urllib.parse import urljoin
 
@@ -12,6 +14,7 @@ import requests
 
 from ..assets import MediaAsset, ParseResult
 from ..common import HEADERS, clean_filename
+from ..provider_manifest import build_provider_manifest_token
 from ..rich_media import (
     RICH_MEDIA_SCHEMA_VERSION,
     RichMediaAssetDescriptorV1,
@@ -20,6 +23,7 @@ from ..rich_media import (
     RichMediaGroupV1,
 )
 from .xhs_livephoto_asset_spec_mapper import (
+    XhsLivePhotoAssetSpecMappingError,
     XhsLivePhotoAssetSpecMapV1,
     build_xhs_livephoto_asset_specs,
     build_xhs_livephoto_member_proof,
@@ -27,12 +31,15 @@ from .xhs_livephoto_asset_spec_mapper import (
     validate_xhs_livephoto_asset_spec_limits,
 )
 from .xhs_livephoto_browser_admission import (
+    XhsLivePhotoBrowserAdmissionError,
     XhsPrivateHttpsMediaCandidateV1,
     normalize_xhs_livephoto_candidate_https,
 )
 from .xhs_livephoto_candidate_locator import (
+    XhsLivePhotoCandidateMapV1,
     XhsLivePhotoMemberLocatorV1,
     XhsPrivateMediaCandidateV1,
+    list_xhs_livephoto_motion_candidate_locators,
     locate_xhs_livephoto_candidates,
     read_candidate_from_locator,
 )
@@ -47,6 +54,13 @@ XHS_LIVEPHOTO_MAX_PROBE_WORKERS = 6
 XHS_LIVEPHOTO_CANDIDATE_TIMEOUT_SECONDS = 5.0
 XHS_LIVEPHOTO_TOTAL_TIMEOUT_SECONDS = 20.0
 XHS_LIVEPHOTO_MAX_REDIRECTS = 2
+
+# A running Python thread cannot be force-killed safely. Keep uncooperative
+# upstream reads fail-closed and globally bounded instead of letting each
+# request create another set of blocked network probes.
+_XHS_LIVEPHOTO_PROBE_NETWORK_SLOTS = BoundedSemaphore(
+    XHS_LIVEPHOTO_MAX_PROBE_WORKERS
+)
 
 # Compatibility constants for the already-reviewed Staff-only vertical slice.
 XHS_LIVEPHOTO_STAFF_MAX_PROBE_BYTES = XHS_LIVEPHOTO_MAX_PROBE_BYTES
@@ -130,6 +144,28 @@ def _probe_key(record: _CandidateRecord) -> str:
     return record.https_candidate.value
 
 
+def _candidate_probe_is_delivery_ready(
+    record: _CandidateRecord,
+    evidence: XhsLivePhotoProbeEvidenceV1 | None,
+) -> bool:
+    if evidence is None:
+        return False
+    try:
+        format_proof = build_xhs_livephoto_private_format_proof(
+            private_https_candidate=record.https_candidate,
+            prefix=evidence.prefix,
+            content_type=evidence.content_type,
+        )
+        build_xhs_livephoto_member_proof(
+            locator=record.locator,
+            private_https_candidate=record.https_candidate,
+            private_format_proof=format_proof,
+        )
+    except XhsLivePhotoAssetSpecMappingError:
+        return False
+    return True
+
+
 def _probe_exact_candidate(
     record: _CandidateRecord,
     *,
@@ -144,6 +180,10 @@ def _probe_exact_candidate(
     if remaining <= 0:
         raise XhsLivePhotoPreviewError(
             "XHS_LIVEPHOTO_STAFF_PREVIEW_DEADLINE"
+        )
+    if not _XHS_LIVEPHOTO_PROBE_NETWORK_SLOTS.acquire(blocking=False):
+        raise XhsLivePhotoPreviewError(
+            "XHS_LIVEPHOTO_STAFF_PREVIEW_PROBE_FAILED"
         )
 
     headers = {
@@ -240,6 +280,7 @@ def _probe_exact_candidate(
     finally:
         if response is not None:
             response.close()
+        _XHS_LIVEPHOTO_PROBE_NETWORK_SLOTS.release()
 
 
 def probe_xhs_livephoto_candidates(
@@ -267,7 +308,7 @@ def probe_xhs_livephoto_candidates(
             _probe_exact_candidate,
             record,
             overall_deadline_monotonic=deadline_monotonic,
-        ): key
+        ): (key, record)
         for key, record in unique_records.items()
     }
     try:
@@ -281,7 +322,59 @@ def probe_xhs_livephoto_candidates(
             raise XhsLivePhotoPreviewError(
                 "XHS_LIVEPHOTO_STAFF_PREVIEW_DEADLINE"
             )
-        return {futures[future]: future.result() for future in completed}
+        return {
+            futures[future][0]: future.result()
+            for future in completed
+        }
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _probe_xhs_livephoto_candidates_partial(
+    records: tuple[_CandidateRecord, ...],
+    *,
+    deadline_monotonic: float,
+) -> dict[str, XhsLivePhotoProbeEvidenceV1]:
+    """Collect bounded evidence without promoting one delivery miss to structure."""
+
+    unique_records: dict[str, _CandidateRecord] = {}
+    for record in records:
+        unique_records.setdefault(_probe_key(record), record)
+    if not unique_records:
+        return {}
+    executor = ThreadPoolExecutor(
+        max_workers=min(XHS_LIVEPHOTO_MAX_PROBE_WORKERS, len(unique_records)),
+        thread_name_prefix="xhs-livephoto-probe",
+    )
+    futures = {
+        executor.submit(
+            _probe_exact_candidate,
+            record,
+            overall_deadline_monotonic=deadline_monotonic,
+        ): (key, record)
+        for key, record in unique_records.items()
+    }
+    evidence = {}
+    try:
+        completed, unresolved = wait(
+            tuple(futures),
+            timeout=_remaining_seconds(deadline_monotonic),
+        )
+        for future in unresolved:
+            future.cancel()
+        if any(
+            futures[future][1].locator.member_role == "still"
+            for future in unresolved
+        ):
+            raise XhsLivePhotoPreviewError(
+                "XHS_LIVEPHOTO_STAFF_PREVIEW_DEADLINE"
+            )
+        for future in completed:
+            try:
+                evidence[futures[future][0]] = future.result()
+            except Exception:
+                continue
+        return evidence
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
 
@@ -313,6 +406,107 @@ def _candidate_records(
                 )
             )
     return tuple(records)
+
+
+def _candidate_delivery_plan(
+    *,
+    image_list,
+    candidate_map: XhsLivePhotoCandidateMapV1,
+) -> tuple[
+    tuple[_CandidateRecord, ...],
+    dict[int, tuple[_CandidateRecord, ...]],
+]:
+    still_records = []
+    motion_records_by_ordinal = {}
+    for item in candidate_map.items:
+        private_still = read_candidate_from_locator(
+            image_list=image_list,
+            locator=item.still_locator,
+        )
+        still_records.append(
+            _CandidateRecord(
+                locator=item.still_locator,
+                private_candidate=private_still,
+                https_candidate=normalize_xhs_livephoto_candidate_https(
+                    private_still,
+                    member_role="still",
+                ),
+            )
+        )
+        if item.item_kind != "live_photo":
+            continue
+        options = []
+        for locator in list_xhs_livephoto_motion_candidate_locators(
+            image_list=image_list,
+            source_item_ordinal=item.source_item_ordinal,
+        ):
+            private_candidate = read_candidate_from_locator(
+                image_list=image_list,
+                locator=locator,
+            )
+            try:
+                https_candidate = normalize_xhs_livephoto_candidate_https(
+                    private_candidate,
+                    member_role="motion",
+                )
+            except XhsLivePhotoBrowserAdmissionError:
+                continue
+            options.append(
+                _CandidateRecord(
+                    locator=locator,
+                    private_candidate=private_candidate,
+                    https_candidate=https_candidate,
+                )
+            )
+        motion_records_by_ordinal[item.source_item_ordinal] = tuple(options)
+    return tuple(still_records), motion_records_by_ordinal
+
+
+def _probe_ordered_delivery_candidates(
+    *,
+    still_records: tuple[_CandidateRecord, ...],
+    motion_records_by_ordinal: dict[int, tuple[_CandidateRecord, ...]],
+    deadline_monotonic: float,
+) -> dict[str, XhsLivePhotoProbeEvidenceV1]:
+    """Probe one same-item preference wave at a time, parallel across items."""
+
+    first_wave = still_records + tuple(
+        records[0]
+        for records in motion_records_by_ordinal.values()
+        if records
+    )
+    evidence = _probe_xhs_livephoto_candidates_partial(
+        first_wave,
+        deadline_monotonic=deadline_monotonic,
+    )
+    max_options = max(
+        (len(records) for records in motion_records_by_ordinal.values()),
+        default=0,
+    )
+    for option_index in range(1, max_options):
+        if _remaining_seconds(deadline_monotonic) <= 0:
+            break
+        wave = tuple(
+            records[option_index]
+            for records in motion_records_by_ordinal.values()
+            if len(records) > option_index
+            and not any(
+                _candidate_probe_is_delivery_ready(
+                    record,
+                    evidence.get(_probe_key(record)),
+                )
+                for record in records[:option_index]
+            )
+        )
+        if not wave:
+            continue
+        evidence.update(
+            _probe_xhs_livephoto_candidates_partial(
+                wave,
+                deadline_monotonic=deadline_monotonic,
+            )
+        )
+    return evidence
 
 
 def _build_rich_media_contract(
@@ -385,6 +579,23 @@ def _build_media_assets(
         if binding.locator.member_role == "still":
             selected = selected_still_assets[binding.source_item_ordinal]
             selected_extension = selected.ext or binding.asset_spec.extension
+            provider = selected.provider or XHS_LIVEPHOTO_PROVIDER
+            provider_resource_id = (
+                selected.provider_resource_id or binding.asset_spec.asset_id
+            )
+            provider_cache_key = (
+                selected.provider_cache_key
+                or f"xiaohongshu:livephoto:{binding.source_item_ordinal}"
+            )
+            provider_manifest_token = build_provider_manifest_token(
+                asset_id=binding.asset_spec.asset_id,
+                provider=provider,
+                provider_resource_id=provider_resource_id,
+                provider_cache_key=provider_cache_key,
+                url=selected.url,
+                media_type="image",
+                source_platform="xiaohongshu",
+            )
             assets.append(
                 MediaAsset(
                     media_type="image",
@@ -397,11 +608,27 @@ def _build_media_assets(
                     headers={},
                     media_host_suffixes=selected.media_host_suffixes,
                     asset_id=binding.asset_spec.asset_id,
-                    provider=XHS_LIVEPHOTO_PROVIDER,
-                    provider_manifest_token="",
+                    provider=provider,
+                    provider_resource_id=provider_resource_id,
+                    provider_cache_key=provider_cache_key,
+                    provider_manifest_token=provider_manifest_token,
+                    source_platform="xiaohongshu",
                 )
             )
         else:
+            provider_resource_id = binding.asset_spec.asset_id
+            provider_cache_key = (
+                f"xiaohongshu:livephoto:{binding.source_item_ordinal}"
+            )
+            provider_manifest_token = build_provider_manifest_token(
+                asset_id=binding.asset_spec.asset_id,
+                provider=XHS_LIVEPHOTO_PROVIDER,
+                provider_resource_id=provider_resource_id,
+                provider_cache_key=provider_cache_key,
+                url=record.https_candidate.value,
+                media_type="video",
+                source_platform="xiaohongshu",
+            )
             assets.append(
                 MediaAsset(
                     media_type="video",
@@ -414,7 +641,10 @@ def _build_media_assets(
                     media_host_suffixes=("xhscdn.com",),
                     asset_id=binding.asset_spec.asset_id,
                     provider=XHS_LIVEPHOTO_PROVIDER,
-                    provider_manifest_token="",
+                    provider_resource_id=provider_resource_id,
+                    provider_cache_key=provider_cache_key,
+                    provider_manifest_token=provider_manifest_token,
+                    source_platform="xiaohongshu",
                 )
             )
     return tuple(assets)
@@ -446,7 +676,6 @@ def build_xhs_livephoto_result(
         )
 
     phase_timings_ms = {}
-    probe_candidates = probe_candidates or probe_xhs_livephoto_candidates
     phase_started = time.monotonic()
     relationship_map = map_xhs_livephoto_relationships(
         requested_note_id=snapshot.note_id,
@@ -469,19 +698,31 @@ def build_xhs_livephoto_result(
         relationship_map=relationship_map,
         image_list=snapshot.image_list,
     )
-    records = _candidate_records(
+    still_records, motion_records_by_ordinal = _candidate_delivery_plan(
         image_list=snapshot.image_list,
         candidate_map=candidate_map,
+    )
+    records = still_records + tuple(
+        record
+        for item_records in motion_records_by_ordinal.values()
+        for record in item_records
     )
     phase_timings_ms["candidate"] = round(
         (time.monotonic() - phase_started) * 1000
     )
 
     phase_started = time.monotonic()
-    probe_evidence = probe_candidates(
-        records,
-        deadline_monotonic=enhancement_deadline,
-    )
+    if probe_candidates is None:
+        probe_evidence = _probe_ordered_delivery_candidates(
+            still_records=still_records,
+            motion_records_by_ordinal=motion_records_by_ordinal,
+            deadline_monotonic=enhancement_deadline,
+        )
+    else:
+        probe_evidence = probe_candidates(
+            records,
+            deadline_monotonic=enhancement_deadline,
+        )
     phase_timings_ms["probe"] = round(
         (time.monotonic() - phase_started) * 1000
     )
@@ -491,7 +732,7 @@ def build_xhs_livephoto_result(
 
     member_proofs = []
     records_by_locator = {}
-    for record in records:
+    for record in still_records:
         evidence = probe_evidence.get(_probe_key(record))
         if evidence is None:
             raise XhsLivePhotoPreviewError(
@@ -511,14 +752,59 @@ def build_xhs_livephoto_result(
         )
         records_by_locator[record.locator] = record
 
+    selected_motion_records = {}
+    for item in candidate_map.items:
+        if item.item_kind != "live_photo":
+            continue
+        for record in motion_records_by_ordinal.get(item.source_item_ordinal, ()):
+            evidence = probe_evidence.get(_probe_key(record))
+            if evidence is None:
+                continue
+            try:
+                format_proof = build_xhs_livephoto_private_format_proof(
+                    private_https_candidate=record.https_candidate,
+                    prefix=evidence.prefix,
+                    content_type=evidence.content_type,
+                )
+                member_proof = build_xhs_livephoto_member_proof(
+                    locator=record.locator,
+                    private_https_candidate=record.https_candidate,
+                    private_format_proof=format_proof,
+                )
+            except XhsLivePhotoAssetSpecMappingError:
+                continue
+            selected_motion_records[item.source_item_ordinal] = record
+            member_proofs.append(member_proof)
+            records_by_locator[record.locator] = record
+            break
+
+    selected_candidate_items = tuple(
+        replace(
+            item,
+            motion_locator=(
+                selected_motion_records[item.source_item_ordinal].locator
+                if item.source_item_ordinal in selected_motion_records
+                else item.motion_locator
+            ),
+        )
+        for item in candidate_map.items
+    )
+    selected_candidate_map = XhsLivePhotoCandidateMapV1(
+        schema_version=candidate_map.schema_version,
+        relationship_schema_version=candidate_map.relationship_schema_version,
+        items=selected_candidate_items,
+    )
+    delivery_ready_ordinals = frozenset(selected_motion_records)
+
     phase_started = time.monotonic()
     asset_spec_map = build_xhs_livephoto_asset_specs(
         requested_note_id=snapshot.note_id,
         payload_note_id=snapshot.note_id,
         relationship_map=relationship_map,
-        candidate_map=candidate_map,
+        candidate_map=selected_candidate_map,
         image_list=snapshot.image_list,
         member_proofs=tuple(member_proofs),
+        delivery_ready_ordinals=delivery_ready_ordinals,
     )
     phase_timings_ms["asset_spec"] = round(
         (time.monotonic() - phase_started) * 1000
@@ -541,8 +827,64 @@ def build_xhs_livephoto_result(
             "xhs_livephoto_regular_count": relationship_map.regular_image_count,
             "xhs_livephoto_bounded_probe_bytes": bounded_probe_bytes,
             "xhs_livephoto_full_media_bytes": 0,
+            "xhs_livephoto_source_identity": hashlib.sha256(
+                snapshot.note_id.encode("utf-8")
+            ).hexdigest(),
+            "xhs_livephoto_delivery_ready_count": len(delivery_ready_ordinals),
+            "xhs_livephoto_delivery_unavailable_count": (
+                relationship_map.livephoto_count - len(delivery_ready_ordinals)
+            ),
         }
     )
+    group_by_ordinal = {
+        group.source_item_ordinal: group for group in asset_spec_map.groups
+    }
+    still_by_ordinal = {
+        binding.source_item_ordinal: binding
+        for binding in asset_spec_map.assets
+        if binding.locator.member_role == "still"
+    }
+    motion_by_ordinal = {
+        binding.source_item_ordinal: binding
+        for binding in asset_spec_map.assets
+        if binding.locator.member_role == "motion"
+    }
+    metadata["xhs_livephoto_items"] = [
+        {
+            "source_item_ordinal": item.source_item_ordinal,
+            "kind": item.item_kind,
+            "still_asset_id": still_by_ordinal[item.source_item_ordinal].asset_spec.asset_id,
+            "motion_asset_id": (
+                motion_by_ordinal[item.source_item_ordinal].asset_spec.asset_id
+                if item.source_item_ordinal in motion_by_ordinal
+                else ""
+            ),
+            "group_id": (
+                group_by_ordinal[item.source_item_ordinal].group_id
+                if item.source_item_ordinal in group_by_ordinal
+                else ""
+            ),
+            "delivery_status": (
+                "ready"
+                if item.source_item_ordinal in delivery_ready_ordinals
+                else "unavailable"
+                if item.item_kind == "live_photo"
+                else "not_applicable"
+            ),
+            "delivery_error_code": (
+                "XHS_LIVEPHOTO_MOTION_CANDIDATE_UNAVAILABLE"
+                if item.item_kind == "live_photo"
+                and item.source_item_ordinal not in delivery_ready_ordinals
+                else ""
+            ),
+            "motion_source_kind": (
+                selected_motion_records[item.source_item_ordinal].locator.source_kind
+                if item.source_item_ordinal in selected_motion_records
+                else ""
+            ),
+        }
+        for item in relationship_map.items
+    ]
     phase_timings_ms["result"] = round(
         (time.monotonic() - phase_started) * 1000
     )
@@ -602,6 +944,27 @@ def bind_xhs_livephoto_still_result(
             ext=extension,
             headers={},
             media_host_suffixes=selected.media_host_suffixes,
+            provider=selected.provider or XHS_LIVEPHOTO_PROVIDER,
+            provider_resource_id=(
+                selected.provider_resource_id or asset.asset_id
+            ),
+            provider_cache_key=(
+                selected.provider_cache_key
+                or f"xiaohongshu:livephoto:{asset.asset_id}"
+            ),
+            source_platform="xiaohongshu",
+        )
+        rebound = replace(
+            rebound,
+            provider_manifest_token=build_provider_manifest_token(
+                asset_id=rebound.asset_id,
+                provider=rebound.provider,
+                provider_resource_id=rebound.provider_resource_id,
+                provider_cache_key=rebound.provider_cache_key,
+                url=rebound.url,
+                media_type="image",
+                source_platform="xiaohongshu",
+            ),
         )
         assets.append(rebound)
         extensions_by_id[rebound.asset_id] = extension
@@ -631,7 +994,12 @@ def bind_xhs_livephoto_still_result(
     )
 
 
-def build_xhs_livephoto_preview_context(result: ParseResult) -> dict:
+def build_xhs_livephoto_preview_context(
+    result: ParseResult,
+    *,
+    client_identity: str = "",
+    issue_pair_token=None,
+) -> dict:
     if (
         type(result) is not ParseResult
         or result.platform != "xiaohongshu"
@@ -640,66 +1008,93 @@ def build_xhs_livephoto_preview_context(result: ParseResult) -> dict:
         return {}
 
     assets_by_id = {asset.asset_id: asset for asset in result.assets}
-    descriptor_by_id = {
-        descriptor.asset_id: descriptor for descriptor in result.rich_media.assets
-    }
-    group_by_asset_id = {
-        member.asset_id: group
-        for group in result.rich_media.groups
-        for member in group.members
-    }
-    consumed = set()
+    metadata = result.metadata or {}
+    item_records = metadata.get("xhs_livephoto_items")
+    if not isinstance(item_records, list):
+        raise XhsLivePhotoPreviewError(
+            "XHS_LIVEPHOTO_STAFF_PREVIEW_RESULT_INVALID"
+        )
+    if issue_pair_token is None:
+        from ..xhs_livephoto_pair_handoff import issue_xhs_livephoto_pair_token
+
+        issue_pair_token = issue_xhs_livephoto_pair_token
+
     items = []
-    for asset in result.assets:
-        if asset.asset_id in consumed:
-            continue
-        descriptor = descriptor_by_id[asset.asset_id]
-        group = group_by_asset_id.get(asset.asset_id)
-        if group is None:
-            if descriptor.media_type != "image":
+    for expected_ordinal, item_record in enumerate(item_records):
+        if (
+            not isinstance(item_record, dict)
+            or item_record.get("source_item_ordinal") != expected_ordinal
+            or item_record.get("kind") not in {"regular_image", "live_photo"}
+        ):
+            raise XhsLivePhotoPreviewError(
+                "XHS_LIVEPHOTO_STAFF_PREVIEW_RESULT_INVALID"
+            )
+        still_asset = assets_by_id.get(str(item_record.get("still_asset_id") or ""))
+        if still_asset is None or still_asset.media_type != "image":
+            raise XhsLivePhotoPreviewError(
+                "XHS_LIVEPHOTO_STAFF_PREVIEW_RESULT_INVALID"
+            )
+        item = {
+            "source_item_ordinal": expected_ordinal,
+            "display_ordinal": expected_ordinal + 1,
+            "kind": item_record["kind"],
+            "still_url": still_asset.preview_url or still_asset.url,
+            "still_original_url": still_asset.url,
+            "still_filename": still_asset.filename,
+            "still_extension": still_asset.ext or "jpg",
+            "delivery_status": str(
+                item_record.get("delivery_status") or "not_applicable"
+            ),
+            "delivery_error_code": str(
+                item_record.get("delivery_error_code") or ""
+            )[:96],
+            "pair_token": "",
+        }
+        if item_record["kind"] == "live_photo" and item["delivery_status"] == "ready":
+            motion_asset = assets_by_id.get(
+                str(item_record.get("motion_asset_id") or "")
+            )
+            group_id = str(item_record.get("group_id") or "")
+            if motion_asset is None or motion_asset.media_type != "video" or not group_id:
                 raise XhsLivePhotoPreviewError(
                     "XHS_LIVEPHOTO_STAFF_PREVIEW_RESULT_INVALID"
                 )
-            consumed.add(asset.asset_id)
-            items.append(
-                {
-                    "kind": "regular_image",
-                    "still_url": asset.preview_url or asset.url,
-                    "still_extension": descriptor.extension,
-                }
-            )
-            continue
-
-        members_by_role = {member.role: member for member in group.members}
-        still_member = members_by_role.get("still")
-        motion_member = members_by_role.get("motion")
-        if still_member is None or motion_member is None:
-            raise XhsLivePhotoPreviewError(
-                "XHS_LIVEPHOTO_STAFF_PREVIEW_RESULT_INVALID"
-            )
-        still_asset = assets_by_id[still_member.asset_id]
-        motion_asset = assets_by_id[motion_member.asset_id]
-        if asset.asset_id != still_asset.asset_id:
-            raise XhsLivePhotoPreviewError(
-                "XHS_LIVEPHOTO_STAFF_PREVIEW_RESULT_INVALID"
-            )
-        consumed.update((still_asset.asset_id, motion_asset.asset_id))
-        items.append(
-            {
-                "kind": "live_photo",
-                "group_id": group.group_id,
-                "still_url": still_asset.preview_url or still_asset.url,
-                "motion_url": motion_asset.url,
-                "still_extension": descriptor_by_id[still_asset.asset_id].extension,
-                "motion_extension": descriptor_by_id[motion_asset.asset_id].extension,
-            }
-        )
+            if client_identity:
+                try:
+                    item["pair_token"] = issue_pair_token(
+                        source_identity=str(
+                            metadata.get("xhs_livephoto_source_identity") or ""
+                        ),
+                        group_id=group_id,
+                        source_item_ordinal=expected_ordinal,
+                        still_asset=still_asset,
+                        motion_asset=motion_asset,
+                        base_filename=result.base_filename,
+                        client_identity=client_identity,
+                    ).token
+                except Exception:
+                    item["delivery_status"] = "unavailable"
+                    item["delivery_error_code"] = (
+                        "XHS_LIVEPHOTO_PAIR_AUTHORITY_UNAVAILABLE"
+                    )
+            else:
+                item["delivery_status"] = "unavailable"
+                item["delivery_error_code"] = (
+                    "XHS_LIVEPHOTO_PAIR_AUTHORITY_UNAVAILABLE"
+                )
+        items.append(item)
 
     return {
         "items": items,
         "source_item_count": len(items),
         "livephoto_count": sum(item["kind"] == "live_photo" for item in items),
         "regular_count": sum(item["kind"] == "regular_image" for item in items),
+        "delivery_ready_count": sum(
+            item["kind"] == "live_photo"
+            and item["delivery_status"] == "ready"
+            and bool(item["pair_token"])
+            for item in items
+        ),
     }
 
 

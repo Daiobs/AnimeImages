@@ -224,6 +224,11 @@ from .services.rate_limits import (
     has_daily_capacity,
     release_concurrency,
 )
+from .services.xhs_livephoto_pair_handoff import (
+    XhsLivePhotoPairHandoffError,
+    get_xhs_livephoto_pair_client_identity,
+    load_xhs_livephoto_pair_descriptor,
+)
 from .services.region_routing import get_request_country_code
 from .services.batch_parse import (
     batch_link_host,
@@ -4329,6 +4334,7 @@ def apply_search_result_to_context(
     provider_notice_override=None,
     enable_xhs_livephoto_preview=False,
     enable_xhs_livephoto_staff_preview=False,
+    client_identity="",
 ):
     result_metadata = result.metadata or {}
     display_context = build_result_display_context(
@@ -4481,7 +4487,10 @@ def apply_search_result_to_context(
             build_xhs_livephoto_preview_context,
         )
 
-        preview_context = build_xhs_livephoto_preview_context(result)
+        preview_context = build_xhs_livephoto_preview_context(
+            result,
+            client_identity=client_identity,
+        )
         context["xhs_livephoto_preview"] = preview_context
         context["show_xhs_livephoto_preview"] = True
         if enable_xhs_livephoto_staff_preview:
@@ -4735,6 +4744,11 @@ def build_search_results_context(request, platform_key="home"):
             else ""
         )
         client_identity = get_client_identity(request)
+        livephoto_pair_client_identity = (
+            get_xhs_livephoto_pair_client_identity(request)
+            if query_platform_id == "xiaohongshu"
+            else ""
+        )
         parse_options = {"prefer_ultra_hd": prefer_ultra_hd}
         enable_xhs_livephoto_preview = bool(
             query_platform_id == "xiaohongshu"
@@ -4788,6 +4802,7 @@ def build_search_results_context(request, platform_key="home"):
             prefer_ultra_hd=prefer_ultra_hd,
             enable_xhs_livephoto_preview=enable_xhs_livephoto_preview,
             enable_xhs_livephoto_staff_preview=enable_xhs_livephoto_staff_preview,
+            client_identity=livephoto_pair_client_identity,
         )
         log_parse_request_event(
             request,
@@ -5428,6 +5443,99 @@ def proxy_image_view(request):
             sanitize_observability_text(error),
         )
         return placeholder_image_response()
+
+
+@require_POST
+@csrf_protect
+def xhs_livephoto_pair_descriptor_view(request):
+    if len(request.body) > 8192:
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error_code": "XHS_LIVEPHOTO_PAIR_REQUEST_TOO_LARGE",
+                "message": "实况资源请求过大，请重新解析。",
+            },
+            status=413,
+        )
+        response["Cache-Control"] = "no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+    try:
+        data = json.loads(request.body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        data = None
+    token = data.get("pair_token") if isinstance(data, dict) else None
+    if (
+        not isinstance(token, str)
+        or not token
+        or len(token) > 4096
+        or set(data) != {"pair_token"}
+    ):
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error_code": "XHS_LIVEPHOTO_PAIR_INVALID",
+                "message": "实况资源信息无效，请重新解析。",
+            },
+            status=400,
+        )
+        response["Cache-Control"] = "no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    identity = get_xhs_livephoto_pair_client_identity(request)
+    try:
+        limit = consume_fixed_window(
+            "xhs-livephoto-pair-descriptor",
+            identity,
+            30,
+            60,
+        )
+    except Exception:
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error_code": "RATE_LIMIT_CACHE_ERROR",
+                "message": "实况资源服务暂时不可用，请稍后重试。",
+            },
+            status=503,
+        )
+        response["Cache-Control"] = "no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+    if not limit.allowed:
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error_code": "RATE_LIMITED",
+                "message": "实况资源请求过于频繁，请稍后再试。",
+            },
+            status=429,
+        )
+        response["Retry-After"] = str(limit.retry_after)
+        response["Cache-Control"] = "no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    try:
+        descriptor = load_xhs_livephoto_pair_descriptor(
+            token,
+            client_identity=identity,
+        )
+        response = JsonResponse(descriptor.as_public_dict())
+    except XhsLivePhotoPairHandoffError as error:
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error_code": error.error_code,
+                "message": str(error),
+            },
+            status=error.status_code,
+        )
+        response["X-Error-Code"] = error.error_code
+    response["Cache-Control"] = "no-store"
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @require_POST

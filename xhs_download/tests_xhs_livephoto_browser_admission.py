@@ -11,6 +11,7 @@ from .services.platforms.xhs_livephoto_browser_admission import (
     XhsPrivateHttpsMediaCandidateV1,
     classify_xhs_livephoto_discovered_host,
     normalize_xhs_livephoto_candidate_https,
+    validate_xhs_livephoto_browser_admitted_url,
 )
 from .services.platforms.xhs_livephoto_candidate_locator import (
     XhsLivePhotoMemberLocatorV1,
@@ -125,6 +126,38 @@ class XhsLivePhotoBrowserAdmissionTests(SimpleTestCase):
                 result = normalize(media_url("http", host), "motion")
                 self.assertEqual(result.host_class, host_class)
                 self.assertTrue(result.upgrade_applied)
+
+    def test_control_plane_revalidation_accepts_only_exact_https_role(self):
+        self.assertEqual(
+            validate_xhs_livephoto_browser_admitted_url(
+                media_url("https", "sns-webpic-qc.xhscdn.com"),
+                member_role="still",
+            ),
+            "still_exact",
+        )
+        self.assertEqual(
+            validate_xhs_livephoto_browser_admitted_url(
+                media_url("https", "sns-bak-v12.xhscdn.com"),
+                member_role="motion",
+            ),
+            "motion_backup",
+        )
+
+    def test_control_plane_revalidation_rejects_http_and_motion_zl(self):
+        self.assert_admission_error(
+            "XHS_LIVEPHOTO_BROWSER_ADMISSION_SCHEME_REJECTED",
+            lambda: validate_xhs_livephoto_browser_admitted_url(
+                media_url("http", "sns-video-v8.xhscdn.com"),
+                member_role="motion",
+            ),
+        )
+        self.assert_admission_error(
+            "XHS_LIVEPHOTO_BROWSER_HOST_CLASS_UNVERIFIED",
+            lambda: validate_xhs_livephoto_browser_admitted_url(
+                media_url("https", "sns-video-zl.xhscdn.com"),
+                member_role="motion",
+            ),
+        )
 
     def test_motion_zl_browser_admission_is_rejected(self):
         self.assert_admission_error(

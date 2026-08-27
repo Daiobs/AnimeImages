@@ -11,6 +11,7 @@
 
     const ITEM_MAX_BYTES = 50 * 1024 * 1024;
     const ARCHIVE_MAX_BYTES = 128 * 1024 * 1024;
+    const LIVEPHOTO_MOTION_MAX_BYTES = 1024 * 1024 * 1024;
     const FETCH_CONCURRENCY = 3;
     const FETCH_IDLE_TIMEOUT_MS = 30000;
     const SPEED_WINDOW_MS = 2500;
@@ -136,6 +137,30 @@
             }
         }
         return "";
+    }
+
+    function detectMp4Magic(value) {
+        const bytes = bytesView(value);
+        if (bytes.length < 12 || asciiPrefix(bytes.subarray(4, 8), 4) !== "ftyp") {
+            return false;
+        }
+        const acceptedBrands = new Set([
+            "avc1", "dash", "hev1", "hvc1", "iso2", "iso3", "iso4", "iso5",
+            "iso6", "isom", "m4v ", "mp41", "mp42", "msnv",
+        ]);
+        const boxSize = (
+            ((bytes[0] << 24) >>> 0)
+            + (bytes[1] << 16)
+            + (bytes[2] << 8)
+            + bytes[3]
+        ) >>> 0;
+        const boxEnd = Math.min(bytes.length, Math.max(12, boxSize));
+        for (let index = 8; index + 4 <= boxEnd; index += index === 8 ? 8 : 4) {
+            if (acceptedBrands.has(asciiPrefix(bytes.subarray(index, index + 4), 4))) {
+                return true;
+            }
+        }
+        return acceptedBrands.has(asciiPrefix(bytes.subarray(8, 12), 4));
     }
 
     function formatFromUrl(url) {
@@ -477,6 +502,10 @@
             IMAGE_CONTENT_INVALID: "上游返回的内容不是有效图片。",
             IMAGE_FORMAT_UNDETERMINED: "无法确认图片真实格式，已停止保存。",
             BROWSER_PHOTO_NO_SUCCESS: "没有图片下载成功。",
+            BROWSER_LIVEPHOTO_MOTION_INVALID: "实况视频获取失败。",
+            BROWSER_LIVEPHOTO_SIZE_MISMATCH: "实况素材内容不完整，请重新解析。",
+            BROWSER_LIVEPHOTO_PAIR_TOO_LARGE: "该实况素材过大，暂无法在浏览器中打包。",
+            BROWSER_LIVEPHOTO_PAIR_INVALID: "实况素材信息无效，请重新解析。",
         };
         return messages[code] || "图片下载失败，请稍后重试。";
     }
@@ -663,6 +692,158 @@
                 throw photoError("BROWSER_PHOTO_HTTP_FAILED", `图片资源返回 HTTP ${response.status || 0}。`);
             }
             return await readImageResponse(response, item, {
+                ...context,
+                itemController,
+                signal: itemController.signal,
+            });
+        } finally {
+            releaseSignal();
+        }
+    }
+
+    async function readMotionResponse(response, item, context) {
+        const contentLength = positiveInteger(responseHeader(response, "Content-Length"));
+        if (contentLength > context.itemMaxBytes) {
+            if (response.body && typeof response.body.cancel === "function") {
+                await response.body.cancel().catch(() => {});
+            }
+            throw photoError("BROWSER_LIVEPHOTO_PAIR_TOO_LARGE");
+        }
+        if (contentLength) {
+            context.aggregate.declaredBytes += contentLength;
+            if (context.aggregate.declaredBytes > context.archiveMaxBytes) {
+                if (response.body && typeof response.body.cancel === "function") {
+                    await response.body.cancel().catch(() => {});
+                }
+                context.controller.abort();
+                throw photoError("BROWSER_LIVEPHOTO_PAIR_TOO_LARGE");
+            }
+        }
+        context.meter.setItemTotal(context.index, contentLength);
+        if (!response.body || typeof response.body.getReader !== "function") {
+            throw photoError("BROWSER_PHOTO_CORS_UNAVAILABLE");
+        }
+        const reader = response.body.getReader();
+        const chunks = [];
+        const prefixParts = [];
+        let prefixLength = 0;
+        let itemBytes = 0;
+        let crcState = 0xffffffff;
+        while (true) {
+            const cancelled = abortError(context.signal);
+            if (cancelled) {
+                await Promise.resolve(reader.cancel()).catch(() => {});
+                throw cancelled;
+            }
+            let read;
+            try {
+                read = await withIdleTimeout(
+                    reader.read(),
+                    context.idleTimeoutMs,
+                    () => {
+                        context.itemController.abort();
+                        Promise.resolve(reader.cancel()).catch(() => {});
+                    },
+                );
+            } catch (error) {
+                if (safeErrorCode(error) === "BROWSER_PHOTO_FETCH_TIMEOUT") {
+                    throw error;
+                }
+                const cancelled = abortError(context.signal);
+                if (cancelled) {
+                    throw cancelled;
+                }
+                throw photoError("BROWSER_PHOTO_FETCH_FAILED");
+            }
+            if (read.done) {
+                break;
+            }
+            const chunk = bytesView(read.value);
+            if (!chunk.byteLength) {
+                continue;
+            }
+            itemBytes += chunk.byteLength;
+            context.aggregate.receivedBytes += chunk.byteLength;
+            if (
+                itemBytes > context.itemMaxBytes
+                || context.aggregate.receivedBytes > context.archiveMaxBytes
+            ) {
+                context.controller.abort();
+                throw photoError("BROWSER_LIVEPHOTO_PAIR_TOO_LARGE");
+            }
+            chunks.push(chunk);
+            crcState = crc32Update(crcState, chunk);
+            if (prefixLength < 4096) {
+                const part = chunk.subarray(0, Math.min(chunk.length, 4096 - prefixLength));
+                prefixParts.push(part);
+                prefixLength += part.length;
+            }
+            context.meter.addBytes(chunk.byteLength);
+            context.meter.emit("fetching_motion");
+        }
+        if (!itemBytes) {
+            throw photoError("BROWSER_LIVEPHOTO_MOTION_INVALID");
+        }
+        const prefix = new Uint8Array(prefixLength);
+        let offset = 0;
+        for (const part of prefixParts) {
+            prefix.set(part, offset);
+            offset += part.length;
+        }
+        if (!detectMp4Magic(prefix)) {
+            throw photoError("BROWSER_LIVEPHOTO_MOTION_INVALID");
+        }
+        const expectedSize = positiveInteger(item.expected_size_bytes || item.expectedSizeBytes);
+        if (expectedSize && expectedSize !== itemBytes) {
+            throw photoError("BROWSER_LIVEPHOTO_SIZE_MISMATCH");
+        }
+        return {
+            chunks,
+            size: itemBytes,
+            crc: (crcState ^ 0xffffffff) >>> 0,
+            format: "mp4",
+            mimeType: "video/mp4",
+        };
+    }
+
+    async function fetchMotion(item, context) {
+        const itemController = new AbortController();
+        const releaseSignal = bridgeAbortSignal(context.signal, itemController);
+        let response;
+        try {
+            response = await withIdleTimeout(
+                context.fetchImpl(item.url, {
+                    method: "GET",
+                    cache: "no-store",
+                    credentials: "omit",
+                    referrerPolicy: "no-referrer",
+                    signal: itemController.signal,
+                }),
+                context.idleTimeoutMs,
+                () => itemController.abort(),
+            );
+        } catch (error) {
+            const cancelled = abortError(context.signal);
+            if (cancelled) {
+                throw cancelled;
+            }
+            if (safeErrorCode(error) === "BROWSER_PHOTO_FETCH_TIMEOUT") {
+                throw error;
+            }
+            throw photoError("BROWSER_PHOTO_CORS_UNAVAILABLE");
+        } finally {
+            if (!response) {
+                releaseSignal();
+            }
+        }
+        try {
+            if (!response || response.type === "opaque" || !response.body) {
+                throw photoError("BROWSER_PHOTO_CORS_UNAVAILABLE");
+            }
+            if (!response.ok) {
+                throw photoError("BROWSER_PHOTO_HTTP_FAILED");
+            }
+            return await readMotionResponse(response, item, {
                 ...context,
                 itemController,
                 signal: itemController.signal,
@@ -939,15 +1120,157 @@
         }
     }
 
+    async function createLivePhotoPairArchive(pair, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        if (!pair || !pair.still || !pair.motion) {
+            throw photoError("BROWSER_LIVEPHOTO_PAIR_INVALID");
+        }
+        const still = normalizedPhotoItem({
+            ...pair.still,
+            require_magic: true,
+        }, 0, "livephoto_still");
+        const motion = {
+            ...pair.motion,
+            type: "video",
+            url: String(pair.motion.url || "").trim(),
+            filename: sanitizeFilename(pair.motion.filename, "livephoto_motion.mp4"),
+        };
+        assertPhotoItem(still);
+        if (
+            !motion.url
+            || String(motion.format_class || "").toLowerCase() !== "mp4"
+            || !/\.mp4$/i.test(motion.filename)
+        ) {
+            throw photoError("BROWSER_LIVEPHOTO_PAIR_INVALID");
+        }
+        const controller = new AbortController();
+        const releaseSignal = bridgeAbortSignal(settings.signal, controller);
+        const meter = createTransferMeter({
+            totalItems: 2,
+            onProgress: settings.onProgress,
+            now: settings.now,
+        });
+        const aggregate = {receivedBytes: 0, declaredBytes: 0};
+        const archiveMaxBytes = positiveInteger(settings.archiveMaxBytes) || ARCHIVE_MAX_BYTES;
+        const fetchImpl = runtimeFetch(settings);
+        meter.emit("connecting");
+        try {
+            let stillResult;
+            try {
+                stillResult = await fetchImage(still, {
+                    index: 0,
+                    fetchImpl,
+                    itemMaxBytes: positiveInteger(settings.stillMaxBytes) || ITEM_MAX_BYTES,
+                    archiveMaxBytes,
+                    aggregate,
+                    meter,
+                    controller,
+                    signal: controller.signal,
+                    idleTimeoutMs: positiveInteger(settings.idleTimeoutMs) || FETCH_IDLE_TIMEOUT_MS,
+                });
+            } catch (error) {
+                const code = safeErrorCode(error);
+                if (
+                    code === "BROWSER_PHOTO_CANCELLED"
+                    || code === "BROWSER_PHOTO_ITEM_TOO_LARGE"
+                    || code === "BROWSER_PHOTO_ARCHIVE_TOO_LARGE"
+                    || code === "BROWSER_LIVEPHOTO_PAIR_TOO_LARGE"
+                ) {
+                    throw error;
+                }
+                throw photoError("BROWSER_LIVEPHOTO_STILL_FETCH_FAILED");
+            }
+            const expectedStillSize = positiveInteger(
+                pair.still.expected_size_bytes || pair.still.expectedSizeBytes,
+            );
+            if (expectedStillSize && expectedStillSize !== stillResult.size) {
+                throw photoError("BROWSER_LIVEPHOTO_SIZE_MISMATCH");
+            }
+            meter.completeItem(true);
+            meter.emit("fetching_motion");
+            let motionResult;
+            try {
+                motionResult = await fetchMotion(motion, {
+                    index: 1,
+                    fetchImpl,
+                    itemMaxBytes: positiveInteger(settings.motionMaxBytes) || LIVEPHOTO_MOTION_MAX_BYTES,
+                    archiveMaxBytes,
+                    aggregate,
+                    meter,
+                    controller,
+                    signal: controller.signal,
+                    idleTimeoutMs: positiveInteger(settings.idleTimeoutMs) || FETCH_IDLE_TIMEOUT_MS,
+                });
+            } catch (error) {
+                const code = safeErrorCode(error);
+                if (
+                    code === "BROWSER_PHOTO_CANCELLED"
+                    || code === "BROWSER_LIVEPHOTO_PAIR_TOO_LARGE"
+                    || code === "BROWSER_LIVEPHOTO_SIZE_MISMATCH"
+                ) {
+                    throw error;
+                }
+                throw photoError("BROWSER_LIVEPHOTO_MOTION_FETCH_FAILED");
+            }
+            meter.completeItem(true);
+            meter.emit("assembling");
+            const stillFilename = filenameWithSuffix(
+                filenameStem(pair.still.filename, "livephoto_still"),
+                `.${stillResult.detected.extension}`,
+            );
+            const motionFilename = filenameWithSuffix(
+                filenameStem(
+                    String(motion.filename || "").replace(/\.mp4$/i, ""),
+                    "livephoto_motion",
+                ),
+                ".mp4",
+            );
+            const entries = [
+                {filename: stillFilename, chunks: stillResult.chunks, crc: stillResult.crc},
+                {filename: motionFilename, chunks: motionResult.chunks, crc: motionResult.crc},
+            ];
+            const blob = createStoreZip(entries);
+            if (blob.size > archiveMaxBytes + 1024) {
+                throw photoError("BROWSER_LIVEPHOTO_PAIR_TOO_LARGE");
+            }
+            const archiveFilename = sanitizeFilename(
+                pair.archive_filename || pair.archiveFilename,
+                "livephoto.zip",
+            );
+            if (!/\.zip$/i.test(archiveFilename)) {
+                throw photoError("BROWSER_LIVEPHOTO_PAIR_INVALID");
+            }
+            meter.emit("saving");
+            const handoff = typeof settings.handoff === "function" ? settings.handoff : defaultHandoff;
+            await handoff(blob, archiveFilename);
+            meter.emit("completed");
+            return Object.freeze({
+                filename: archiveFilename,
+                blob,
+                entryCount: 2,
+                entries: Object.freeze([stillFilename, motionFilename]),
+                receivedBytes: aggregate.receivedBytes,
+                stillBytes: stillResult.size,
+                motionBytes: motionResult.size,
+                transport: "browser_livephoto_pair_archive",
+                zipImplementation: "STORE_ONLY_INTERNAL",
+            });
+        } finally {
+            releaseSignal();
+        }
+    }
+
     return Object.freeze({
         ITEM_MAX_BYTES,
         ARCHIVE_MAX_BYTES,
+        LIVEPHOTO_MOTION_MAX_BYTES,
         FETCH_CONCURRENCY,
         FETCH_IDLE_TIMEOUT_MS,
         SPEED_WINDOW_MS,
         MIN_ETA_SAMPLE_MS,
         detectImageFormat,
         detectImageMagic,
+        detectMp4Magic,
         sanitizeFilename,
         filenameStem,
         filenameWithSuffix,
@@ -960,6 +1283,7 @@
         supportsSelection,
         downloadImage,
         createArchive,
+        createLivePhotoPairArchive,
         safeErrorCode,
         safeErrorMessage,
     });

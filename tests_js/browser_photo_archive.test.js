@@ -29,6 +29,16 @@ const SIGNATURES = {
         0x6d, 0x69, 0x66, 0x31,
     ]),
 };
+const MP4_BYTES = Uint8Array.from([
+    0x00, 0x00, 0x00, 0x18,
+    0x66, 0x74, 0x79, 0x70,
+    0x69, 0x73, 0x6f, 0x6d,
+    0x00, 0x00, 0x00, 0x00,
+    0x69, 0x73, 0x6f, 0x6d,
+    0x69, 0x73, 0x6f, 0x32,
+    0x6d, 0x64, 0x61, 0x74,
+    0x01, 0x02, 0x03, 0x04,
+]);
 
 
 function fakeResponse(chunks, options) {
@@ -439,4 +449,195 @@ test("transfer meter exposes real bytes, rolling speed and ETA only with known t
     assert.equal(indeterminate.totalKnown, false);
     assert.equal(indeterminate.percent, null);
     assert.equal(indeterminate.etaSeconds, null);
+});
+
+
+test("LivePhoto pair ZIP preserves original HEIC and MP4 bytes in exact order", async () => {
+    let saved = null;
+    const progressStages = [];
+    const pair = {
+        archive_filename: "作品_01_livephoto.zip",
+        still: {
+            type: "image",
+            url: "https://sns-img-hw.xhscdn.com/still",
+            filename: "作品_01_still.heic",
+            expected_size_bytes: SIGNATURES.heic.byteLength,
+            source_platform: "xiaohongshu",
+        },
+        motion: {
+            type: "video",
+            url: "https://sns-video-v7.xhscdn.com/motion.mp4",
+            filename: "作品_01_motion.mp4",
+            format_class: "mp4",
+            expected_size_bytes: MP4_BYTES.byteLength,
+        },
+    };
+    const result = await photo.createLivePhotoPairArchive(pair, {
+        fetchImpl: async (url) => url.includes("still")
+            ? fakeResponse([SIGNATURES.heic], {contentType: "image/jpeg"})
+            : fakeResponse([MP4_BYTES], {contentType: "video/mp4"}),
+        onProgress(snapshot) { progressStages.push(snapshot.stage); },
+        async handoff(blob, filename) { saved = {blob, filename}; },
+    });
+    const entries = await parseStoreZip(saved.blob);
+
+    assert.equal(result.entryCount, 2);
+    assert.equal(saved.filename, "作品_01_livephoto.zip");
+    assert.deepEqual(
+        entries.map((entry) => entry.name),
+        ["作品_01_still.heic", "作品_01_motion.mp4"],
+    );
+    assert.deepEqual(entries[0].data, SIGNATURES.heic);
+    assert.deepEqual(entries[1].data, MP4_BYTES);
+    assert.equal(entries[0].expectedCrc, photo.crc32(SIGNATURES.heic));
+    assert.equal(entries[1].expectedCrc, photo.crc32(MP4_BYTES));
+    assert.equal(entries.every((entry) => entry.method === 0), true);
+    assert.equal(entries.some((entry) => entry.name === "failed.txt"), false);
+    assert.equal(progressStages.includes("fetching_motion"), true);
+    assert.equal(progressStages.at(-1), "completed");
+});
+
+
+test("LivePhoto pair ZIP preserves PNG alpha bytes and magic-derived extension", async () => {
+    let saved = null;
+    await photo.createLivePhotoPairArchive({
+        archive_filename: "透明素材_livephoto.zip",
+        still: {
+            type: "image",
+            url: "https://ci.xiaohongshu.com/alpha",
+            filename: "透明素材_still.jpg",
+            source_platform: "xiaohongshu",
+        },
+        motion: {
+            type: "video",
+            url: "https://sns-bak-v3.xhscdn.com/motion.mp4",
+            filename: "透明素材_motion.mp4",
+            format_class: "mp4",
+        },
+    }, {
+        fetchImpl: async (url) => url.includes("alpha")
+            ? fakeResponse([SIGNATURES.png], {contentType: "image/jpeg"})
+            : fakeResponse([MP4_BYTES], {contentType: "video/mp4"}),
+        async handoff(blob) { saved = blob; },
+    });
+    const entries = await parseStoreZip(saved);
+    assert.equal(entries[0].name, "透明素材_still.png");
+    assert.deepEqual(entries[0].data, SIGNATURES.png);
+});
+
+
+test("LivePhoto pair rejects invalid motion or still without handing off a partial ZIP", async (t) => {
+    for (const failure of ["still", "motion"]) {
+        await t.test(failure, async () => {
+            let handoffCalls = 0;
+            await assert.rejects(
+                () => photo.createLivePhotoPairArchive({
+                    archive_filename: "fixture_livephoto.zip",
+                    still: {
+                        type: "image",
+                        url: "https://ci.xiaohongshu.com/still",
+                        filename: "fixture_still.jpg",
+                        source_platform: "xiaohongshu",
+                    },
+                    motion: {
+                        type: "video",
+                        url: "https://sns-video-v7.xhscdn.com/motion.mp4",
+                        filename: "fixture_motion.mp4",
+                        format_class: "mp4",
+                    },
+                }, {
+                    fetchImpl: async (url) => {
+                        if (url.includes("still")) {
+                            return fakeResponse([
+                                failure === "still" ? Uint8Array.from([1, 2, 3]) : SIGNATURES.jpeg,
+                            ]);
+                        }
+                        return fakeResponse([
+                            failure === "motion" ? Uint8Array.from([1, 2, 3]) : MP4_BYTES,
+                        ], {contentType: "video/mp4"});
+                    },
+                    async handoff() { handoffCalls += 1; },
+                }),
+                (error) => failure === "still"
+                    ? error.errorCode === "BROWSER_LIVEPHOTO_STILL_FETCH_FAILED"
+                    : error.errorCode === "BROWSER_LIVEPHOTO_MOTION_FETCH_FAILED",
+            );
+            assert.equal(handoffCalls, 0);
+        });
+    }
+});
+
+
+test("LivePhoto pair enforces aggregate size and expected byte equality", async (t) => {
+    const pair = {
+        archive_filename: "fixture_livephoto.zip",
+        still: {
+            type: "image",
+            url: "https://ci.xiaohongshu.com/still",
+            filename: "fixture_still.jpg",
+            source_platform: "xiaohongshu",
+        },
+        motion: {
+            type: "video",
+            url: "https://sns-video-v7.xhscdn.com/motion.mp4",
+            filename: "fixture_motion.mp4",
+            format_class: "mp4",
+        },
+    };
+    const fetchImpl = async (url) => url.includes("still")
+        ? fakeResponse([SIGNATURES.jpeg])
+        : fakeResponse([MP4_BYTES], {contentType: "video/mp4"});
+
+    await t.test("aggregate limit", async () => {
+        await assert.rejects(
+            () => photo.createLivePhotoPairArchive(pair, {
+                archiveMaxBytes: SIGNATURES.jpeg.byteLength + MP4_BYTES.byteLength - 1,
+                fetchImpl,
+                handoff: async () => assert.fail("handoff must not run"),
+            }),
+            (error) => error.errorCode === "BROWSER_LIVEPHOTO_PAIR_TOO_LARGE",
+        );
+    });
+    await t.test("expected motion size", async () => {
+        await assert.rejects(
+            () => photo.createLivePhotoPairArchive({
+                ...pair,
+                motion: {...pair.motion, expected_size_bytes: MP4_BYTES.byteLength + 1},
+            }, {
+                fetchImpl,
+                handoff: async () => assert.fail("handoff must not run"),
+            }),
+            (error) => error.errorCode === "BROWSER_LIVEPHOTO_SIZE_MISMATCH",
+        );
+    });
+});
+
+
+test("LivePhoto pair cancellation aborts both stages without browser handoff", async () => {
+    const controller = new AbortController();
+    let handoffCalls = 0;
+    const promise = photo.createLivePhotoPairArchive({
+        archive_filename: "fixture_livephoto.zip",
+        still: {
+            type: "image",
+            url: "https://ci.xiaohongshu.com/still",
+            filename: "fixture_still.jpg",
+            source_platform: "xiaohongshu",
+        },
+        motion: {
+            type: "video",
+            url: "https://sns-video-v7.xhscdn.com/motion.mp4",
+            filename: "fixture_motion.mp4",
+            format_class: "mp4",
+        },
+    }, {
+        signal: controller.signal,
+        fetchImpl: (_url, options) => new Promise((_resolve, reject) => {
+            options.signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+        }),
+        async handoff() { handoffCalls += 1; },
+    });
+    controller.abort();
+    await assert.rejects(promise, (error) => error.errorCode === "BROWSER_PHOTO_CANCELLED");
+    assert.equal(handoffCalls, 0);
 });

@@ -2,41 +2,51 @@
 <section
     class="xhs-livephoto-preview"
     data-xhs-livephoto-preview
-    {% if show_internal_diagnostics %}data-xhs-livephoto-staff-preview{% endif %}
-    data-preview-script-url="{% static 'js/xhs_livephoto_preview.js' %}?v={{ static_asset_version }}"
+    data-pair-script-url="{% static 'js/xhs_livephoto_pair_download.js' %}?v={{ static_asset_version }}"
+    {% if show_xhs_livephoto_staff_preview %}
+        data-xhs-livephoto-staff-preview
+        data-preview-script-url="{% static 'js/xhs_livephoto_preview.js' %}?v={{ static_asset_version }}"
+    {% endif %}
 >
-    <div class="alert alert-info xhs-livephoto-notice" role="status">
-        <i class="bi bi-play-circle me-1"></i>
-        当前支持实况预览，实况下载后续开放。
-    </div>
-
-    <div class="xhs-livephoto-summary small text-muted mb-3">
-        按原始顺序显示 {{ xhs_livephoto_preview.source_item_count }} 项：
-        {{ xhs_livephoto_preview.livephoto_count }} 项实况照片，
-        {{ xhs_livephoto_preview.regular_count }} 项普通图片。
-        {% if show_internal_diagnostics %}
-            已通过精确笔记身份、同项配对和媒体格式校验。
+    <div class="xhs-livephoto-summary">
+        <strong>{{ xhs_livephoto_preview.source_item_count }} 项素材</strong>
+        <span aria-hidden="true">·</span>
+        <span>{{ xhs_livephoto_preview.livephoto_count }} 项实况</span>
+        {% if xhs_livephoto_preview.regular_count %}
+            <span aria-hidden="true">·</span>
+            <span>{{ xhs_livephoto_preview.regular_count }} 项普通图片</span>
         {% endif %}
     </div>
+    {% if xhs_livephoto_preview.livephoto_count %}
+        <p class="xhs-livephoto-help">
+            下载实况将保存为原图与 MP4 实况视频的配对 ZIP；当前不会自动导入 iOS 照片 App。
+        </p>
+    {% endif %}
 
     <div class="xhs-livephoto-grid">
         {% for item in xhs_livephoto_preview.items %}
-            {% if item.kind == "live_photo" %}
-                <article
-                    class="xhs-livephoto-preview-card"
+            <article
+                class="xhs-livephoto-preview-card{% if item.kind == 'regular_image' %} xhs-livephoto-preview-card-regular{% endif %}"
+                data-livephoto-item
+                {% if show_xhs_livephoto_staff_preview and item.kind == 'live_photo' and item.delivery_status == 'ready' %}
                     data-livephoto-card
                     data-livephoto-state="idle"
-                >
-                    <div class="xhs-livephoto-preview-media">
-                        <img
-                            src="{{ item.still_url }}"
-                            alt="实况照片静态画面"
-                            loading="lazy"
-                            decoding="async"
-                            crossorigin="anonymous"
-                            referrerpolicy="no-referrer"
-                            data-livephoto-still
-                        >
+                {% endif %}
+            >
+                <div class="xhs-livephoto-preview-media">
+                    <img
+                        src="{{ item.still_url }}"
+                        alt="{% if item.kind == 'live_photo' %}实况照片静态画面{% else %}普通图片{% endif %}"
+                        loading="lazy"
+                        decoding="async"
+                        crossorigin="anonymous"
+                        referrerpolicy="no-referrer"
+                        {% if item.kind == 'live_photo' %}data-livephoto-still{% endif %}
+                    >
+                    {% if item.kind == "live_photo" %}
+                        <span class="xhs-livephoto-badge">实况</span>
+                    {% endif %}
+                    {% if show_xhs_livephoto_staff_preview and item.kind == "live_photo" and item.delivery_status == "ready" %}
                         <video
                             muted
                             playsinline
@@ -46,14 +56,14 @@
                             data-livephoto-motion
                             hidden
                         ></video>
-                        <span class="xhs-livephoto-badge">实况</span>
                         <button
                             type="button"
                             class="xhs-livephoto-overlay-control"
                             data-livephoto-toggle
-                            data-motion-url="{{ item.motion_url }}"
+                            data-livephoto-pair-token="{{ item.pair_token }}"
+                            data-livephoto-descriptor-url="{% url 'media_xhs_livephoto_pair_descriptor' %}"
                             aria-pressed="false"
-                            aria-label="播放第 {{ forloop.counter }} 项实况照片"
+                            aria-label="播放第 {{ item.display_ordinal }} 项实况照片"
                         >
                             <i class="bi bi-play-fill" data-livephoto-play-icon aria-hidden="true"></i>
                             <span
@@ -73,30 +83,58 @@
                             <i class="bi bi-exclamation-circle" aria-hidden="true"></i>
                             <span data-livephoto-error-text>实况预览加载失败，可重新解析后再试。</span>
                         </div>
+                    {% endif %}
+                </div>
+
+                <div class="xhs-livephoto-preview-footer">
+                    <div class="xhs-livephoto-card-heading">
+                        <span>第 {{ item.display_ordinal }} 项</span>
+                        <span class="text-muted small"{% if show_xhs_livephoto_staff_preview and item.kind == 'live_photo' and item.delivery_status == 'ready' %} data-livephoto-status{% endif %}>
+                            {% if item.kind == "live_photo" %}实况照片{% else %}普通图片{% endif %}
+                        </span>
                     </div>
-                    <div class="xhs-livephoto-preview-footer">
-                        <span>第 {{ forloop.counter }} 项</span>
-                        <span class="text-muted small" data-livephoto-status>实况照片</span>
-                    </div>
-                </article>
-            {% else %}
-                <article class="xhs-livephoto-preview-card xhs-livephoto-preview-card-regular">
-                    <div class="xhs-livephoto-preview-media">
-                        <img
-                            src="{{ item.still_url }}"
-                            alt="普通图片"
-                            loading="lazy"
-                            decoding="async"
-                            crossorigin="anonymous"
+                    <div class="xhs-livephoto-card-actions">
+                        <a
+                            class="btn btn-outline-secondary btn-sm"
+                            href="{{ item.still_original_url }}"
+                            target="_blank"
+                            rel="noopener noreferrer"
                             referrerpolicy="no-referrer"
-                        >
+                        >查看原图</a>
+                        <button
+                            type="button"
+                            class="btn btn-outline-primary btn-sm"
+                            data-livephoto-download-original
+                            data-original-url="{{ item.still_original_url }}"
+                            data-original-filename="{{ item.still_filename }}"
+                        >下载原图</button>
+                        {% if item.kind == "live_photo" %}
+                            <button
+                                type="button"
+                                class="btn btn-brand btn-sm"
+                                data-livephoto-download-pair
+                                {% if item.delivery_status == "ready" and item.pair_token %}
+                                    data-livephoto-pair-token="{{ item.pair_token }}"
+                                    data-livephoto-descriptor-url="{% url 'media_xhs_livephoto_pair_descriptor' %}"
+                                {% else %}
+                                    disabled
+                                    aria-disabled="true"
+                                {% endif %}
+                            >下载实况</button>
+                        {% endif %}
                     </div>
-                    <div class="xhs-livephoto-preview-footer">
-                        <span>第 {{ forloop.counter }} 项</span>
-                        <span class="text-muted small">普通图片</span>
+                    <div class="xhs-livephoto-card-status text-muted small" data-livephoto-download-status>
+                        {% if item.kind == "live_photo" and item.delivery_status != "ready" %}
+                            该项实况暂不可下载
+                        {% endif %}
                     </div>
-                </article>
-            {% endif %}
+                    {% if show_xhs_livephoto_staff_preview and item.kind == "live_photo" and item.delivery_status != "ready" %}
+                        <div class="xhs-livephoto-staff-diagnostic small">
+                            诊断：当前项 motion 候选未通过既定安全准入。
+                        </div>
+                    {% endif %}
+                </div>
+            </article>
         {% endfor %}
     </div>
 </section>

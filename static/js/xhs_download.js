@@ -319,6 +319,7 @@
         let ultraRetryDeadline = 0;
         let ultraRetryTimer = null;
         let ultraRetrySource = "";
+        let livePhotoPairScriptPromise = null;
         let livePhotoScriptPromise = null;
 
         function getBaseFilename() {
@@ -337,31 +338,99 @@
             return Boolean(api.ensureController(document));
         }
 
-        function ensureLivePhotoPreview() {
+        function initializeLivePhotoPair() {
+            const api = window.AnimeImagesXhsLivePhotoPair;
+            if (!api || typeof api.ensureController !== "function") {
+                return false;
+            }
+            return Boolean(api.ensureController(document));
+        }
+
+        function cancelLivePhotoActivity() {
+            const previewApi = window.AnimeImagesXhsLivePhotoPreview;
+            if (previewApi && typeof previewApi.cancelActive === "function") {
+                previewApi.cancelActive();
+            }
+            const pairApi = window.AnimeImagesXhsLivePhotoPair;
+            if (pairApi && typeof pairApi.cancelAll === "function") {
+                pairApi.cancelAll();
+            }
+        }
+
+        function safeLivePhotoScriptUrl(rawUrl, expectedPath) {
+            try {
+                const scriptUrl = new URL(rawUrl || "", window.location.origin);
+                return (
+                    scriptUrl.origin === window.location.origin
+                    && scriptUrl.pathname.endsWith(expectedPath)
+                ) ? scriptUrl : null;
+            } catch (error) {
+                return null;
+            }
+        }
+
+        function ensureLivePhotoPair(previewRoot) {
+            if (initializeLivePhotoPair()) {
+                return Promise.resolve(true);
+            }
+            if (livePhotoPairScriptPromise) {
+                return livePhotoPairScriptPromise;
+            }
+            const scriptUrl = safeLivePhotoScriptUrl(
+                previewRoot.dataset.pairScriptUrl,
+                "/js/xhs_livephoto_pair_download.js",
+            );
+            if (!scriptUrl) {
+                return Promise.resolve(false);
+            }
+            const existingScript = document.querySelector("script[data-livephoto-pair-loader]");
+            if (existingScript) {
+                return Promise.resolve(initializeLivePhotoPair());
+            }
+            livePhotoPairScriptPromise = new Promise((resolve) => {
+                const script = document.createElement("script");
+                script.src = scriptUrl.toString();
+                script.async = true;
+                script.dataset.livephotoPairLoader = "true";
+                script.addEventListener("load", () => {
+                    resolve(initializeLivePhotoPair());
+                }, {once: true});
+                script.addEventListener("error", () => {
+                    livePhotoPairScriptPromise = null;
+                    resolve(false);
+                }, {once: true});
+                document.head.appendChild(script);
+            });
+            return livePhotoPairScriptPromise;
+        }
+
+        async function ensureLivePhotoPreview() {
             const previewRoot = resultsRegion
                 ? resultsRegion.querySelector("[data-xhs-livephoto-preview]")
                 : null;
             if (!previewRoot) {
-                return Promise.resolve(false);
+                return false;
+            }
+            const pairReady = await ensureLivePhotoPair(previewRoot);
+            if (!pairReady) {
+                return false;
+            }
+            if (!previewRoot.dataset.previewScriptUrl) {
+                return true;
             }
             if (initializeLivePhotoPreview()) {
-                return Promise.resolve(true);
+                return true;
             }
             if (livePhotoScriptPromise) {
                 return livePhotoScriptPromise;
             }
 
-            let scriptUrl;
-            try {
-                scriptUrl = new URL(previewRoot.dataset.previewScriptUrl || "", window.location.origin);
-            } catch (error) {
-                return Promise.resolve(false);
-            }
-            if (
-                scriptUrl.origin !== window.location.origin
-                || !scriptUrl.pathname.endsWith("/js/xhs_livephoto_preview.js")
-            ) {
-                return Promise.resolve(false);
+            const scriptUrl = safeLivePhotoScriptUrl(
+                previewRoot.dataset.previewScriptUrl,
+                "/js/xhs_livephoto_preview.js",
+            );
+            if (!scriptUrl) {
+                return false;
             }
 
             const existingScript = document.querySelector("script[data-livephoto-loader]");
@@ -995,6 +1064,7 @@
             }
             selected = [];
             pendingPhotoServerFallback = false;
+            cancelLivePhotoActivity();
             setPageHasResults(true);
             resultsRegion.innerHTML = `
                 <div class="parse-loading-card">
@@ -1018,6 +1088,7 @@
                         : "正在等待已启动的解析完成"
                 )
                 : "正在获取高清资源";
+            cancelLivePhotoActivity();
             resultsRegion.innerHTML = `
                 <div class="parse-loading-card">
                     <div class="spinner-border" role="status" aria-hidden="true"></div>
@@ -1035,6 +1106,7 @@
             }
             selected = [];
             pendingPhotoServerFallback = false;
+            cancelLivePhotoActivity();
             setPageHasResults(true);
             page.dataset.baseFilename = "xhs_image";
             resultsRegion.innerHTML = `
@@ -1067,6 +1139,7 @@
             applyTargetPage(payload.target_page);
             selected = [];
             pendingPhotoServerFallback = false;
+            cancelLivePhotoActivity();
             resultsRegion.innerHTML = payload.html || "";
             void ensureLivePhotoPreview();
             page.dataset.baseFilename = payload.base_filename || "xhs_image";
@@ -1150,6 +1223,7 @@
             }
             selected = [];
             pendingPhotoServerFallback = false;
+            cancelLivePhotoActivity();
             parseRequestId += 1;
             setParseLoading(false);
             page.dataset.baseFilename = "xhs_image";

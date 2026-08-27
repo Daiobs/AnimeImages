@@ -13,6 +13,7 @@ STATIC_VERSION_FILES = (
     "static/js/user_feedback.js",
     "static/js/batch_parse.js",
     "static/js/xhs_download.js",
+    "static/js/xhs_livephoto_pair_download.js",
     "static/js/xhs_livephoto_preview.js",
     "static/js/ordinary_media_download.js",
     "static/js/ordinary_media_streaming.js",

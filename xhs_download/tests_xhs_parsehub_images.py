@@ -31,6 +31,9 @@ from .services.platforms.xhs_livephoto_builder import (
 from .services.platforms.xhs_page_state import extract_xhs_page_state
 from .services.platforms.xhs_tiantian_hybrid import enhance_xhs_ordinary_video
 from .services.platforms.xiaohongshu import XiaohongshuAdapter
+from .services.xhs_livephoto_pair_handoff import (
+    load_xhs_livephoto_pair_descriptor,
+)
 from .services.batch_parse.results import build_batch_result_row
 from .views import build_result_display_context
 
@@ -567,7 +570,7 @@ class ParseHubEnhancementTests(SimpleTestCase):
                 )
                 loader.assert_not_called()
 
-    def test_ordinary_heic_is_retained_but_livephoto_heic_uses_compatible_still(self):
+    def test_livephoto_heic_keeps_original_download_with_compatible_preview(self):
         ordinary = [native_item(0)]
         ordinary_outcome = parsehub_images.enhance_xhs_images_with_parsehub(
             native_result=native_result(ordinary),
@@ -587,8 +590,13 @@ class ParseHubEnhancementTests(SimpleTestCase):
 
         self.assertEqual(ordinary_outcome.result.assets[0].ext, "heic")
         self.assertEqual(ordinary_outcome.result.assets[0].provider, "parsehub_xhs_images")
-        self.assertEqual(live_outcome.result.assets[0].ext, "jpg")
-        self.assertEqual(live_outcome.result.assets[0].provider, "")
+        self.assertEqual(live_outcome.result.assets[0].ext, "heic")
+        self.assertEqual(live_outcome.result.assets[0].provider, "parsehub_xhs_images")
+        self.assertEqual(live_outcome.result.assets[0].url, raw_url(0))
+        self.assertNotEqual(
+            live_outcome.result.assets[0].preview_url,
+            live_outcome.result.assets[0].url,
+        )
 
     def test_internal_enhancement_deadline_is_bounded_to_eight_seconds(self):
         observed = []
@@ -751,7 +759,10 @@ class ParseHubRuntimeIntegrationTests(SimpleTestCase):
             probe_candidates=livephoto_probe,
         )
         result = outcome.result
-        context = build_xhs_livephoto_preview_context(result)
+        context = build_xhs_livephoto_preview_context(
+            result,
+            client_identity="parsehub-livephoto-fixture",
+        )
 
         self.assertIsNotNone(result)
         self.assertEqual(
@@ -770,9 +781,65 @@ class ParseHubRuntimeIntegrationTests(SimpleTestCase):
         self.assertFalse(
             any(key.startswith("xhs_livephoto_staff_") for key in result.metadata)
         )
-        self.assertTrue(
-            all(not asset.provider_manifest_token for asset in result.assets)
+        self.assertTrue(all(asset.provider_manifest_token for asset in result.assets))
+        self.assertTrue(context["items"][0]["pair_token"])
+        self.assertNotIn(
+            native_item(0, livephoto=True)["stream"]["h264"][0]["masterUrl"],
+            repr(context),
         )
+
+    def test_livephoto_pair_descriptor_preserves_parsehub_heic_original(self):
+        items = [native_item(0, livephoto=True)]
+        with patch.object(
+            parsehub_images,
+            "parsehub_provider_enabled",
+            return_value=True,
+        ):
+            enhanced = parsehub_images.enhance_xhs_images_with_parsehub(
+                native_result=native_result(items),
+                snapshot=snapshot_for(items),
+                source_url=NOTE_URL,
+                payload_loader=Mock(return_value=worker_payload(items)),
+                probe_candidate=lambda *_args, **_kwargs: probe_for(
+                    0,
+                    extension="heic",
+                ),
+            ).result
+
+        outcome = build_xhs_livephoto_result(
+            flat_result=enhanced,
+            snapshot=snapshot_for(items),
+            probe_candidates=lambda records, **_kwargs: {
+                record.https_candidate.value: XhsLivePhotoProbeEvidenceV1(
+                    content_type="application/octet-stream",
+                    prefix=(
+                        jpeg_prefix()
+                        if record.locator.member_role == "still"
+                        else MP4_PREFIX
+                    ),
+                    bytes_read=len(
+                        jpeg_prefix()
+                        if record.locator.member_role == "still"
+                        else MP4_PREFIX
+                    ),
+                )
+                for record in records
+            },
+        )
+        context = build_xhs_livephoto_preview_context(
+            outcome.result,
+            client_identity="parsehub-heic-fixture",
+        )
+        item = context["items"][0]
+        descriptor = load_xhs_livephoto_pair_descriptor(
+            item["pair_token"],
+            client_identity="parsehub-heic-fixture",
+        )
+
+        self.assertEqual(item["still_original_url"], raw_url(0))
+        self.assertNotEqual(item["still_url"], item["still_original_url"])
+        self.assertEqual(descriptor.still["format_class"], "heic")
+        self.assertTrue(descriptor.still["filename"].endswith(".heic"))
 
     def test_livephoto_parallelizes_parsehub_stills_and_native_motion_evidence(self):
         items = [native_item(0, livephoto=True), native_item(1)]

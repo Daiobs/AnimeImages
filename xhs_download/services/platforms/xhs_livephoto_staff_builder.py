@@ -20,8 +20,8 @@ def build_xhs_livephoto_staff_result(**kwargs):
     return _build_xhs_livephoto_staff_result(**kwargs)
 
 
-def build_xhs_livephoto_staff_preview_context(result):
-    return build_xhs_livephoto_preview_context(result)
+def build_xhs_livephoto_staff_preview_context(result, **kwargs):
+    return build_xhs_livephoto_preview_context(result, **kwargs)
 
 
 __all__ = (

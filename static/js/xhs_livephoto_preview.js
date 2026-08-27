@@ -1,5 +1,5 @@
 (function (root, factory) {
-    const api = factory();
+    const api = factory(root);
     if (typeof module === "object" && module.exports) {
         module.exports = api;
     }
@@ -10,7 +10,7 @@
             api.ensureController(root.document);
         }
     }
-}(typeof window !== "undefined" ? window : globalThis, function () {
+}(typeof window !== "undefined" ? window : globalThis, function (root) {
     "use strict";
 
     const SAFE_MOTION_HOST = /^(?:sns-video-v[0-9]+|sns-bak-v[0-9]+)\.xhscdn\.com$/;
@@ -117,6 +117,13 @@
         const startupTimeoutMs = Number.isFinite(settings.startupTimeoutMs)
             ? Math.max(1, settings.startupTimeoutMs)
             : STARTUP_TIMEOUT_MS;
+        const loadDescriptor = settings.requestPairDescriptor || ((token, endpoint, requestOptions) => {
+            const pairApi = root && root.AnimeImagesXhsLivePhotoPair;
+            if (!pairApi || typeof pairApi.requestPairDescriptor !== "function") {
+                return Promise.reject(new Error("pair descriptor unavailable"));
+            }
+            return pairApi.requestPairDescriptor(token, endpoint, requestOptions);
+        });
         let activeAttempt = null;
         let attemptSequence = 0;
 
@@ -196,6 +203,10 @@
                 attempt.parts.video.removeEventListener(name, handler);
             }
             attempt.listeners = [];
+            if (attempt.descriptorController) {
+                attempt.descriptorController.abort();
+                attempt.descriptorController = null;
+            }
         }
 
         function resetCard(card, state, labelText) {
@@ -276,12 +287,12 @@
             attempt.listeners.push([name, handler]);
         }
 
-        function playCard(card, motionUrl) {
+        function playCard(card, pairToken, descriptorUrl) {
             const parts = cardParts(card);
             if (!parts.video || !parts.still) {
                 return Promise.resolve(showStandaloneFailure(card, "source_not_supported"));
             }
-            if (!isSafeMotionUrl(motionUrl)) {
+            if (!pairToken || !descriptorUrl) {
                 return Promise.resolve(showStandaloneFailure(card, "policy_rejected"));
             }
             if (activeAttempt) {
@@ -295,6 +306,7 @@
                 listeners: [],
                 parts,
                 timeoutId: null,
+                descriptorController: new AbortController(),
             };
             activeAttempt = attempt;
             hideError(parts);
@@ -311,75 +323,88 @@
             }
             setCardState(card, "loading");
 
-            registerAttemptListener(attempt, "loadedmetadata", () => {
-                if (isCurrent(attempt)) {
-                    setCardState(card, "metadata");
-                }
-            });
-            registerAttemptListener(attempt, "canplay", () => {
-                if (isCurrent(attempt)) {
-                    setCardState(card, "canplay");
-                }
-            });
-            registerAttemptListener(attempt, "playing", () => {
-                if (!isCurrent(attempt)) {
-                    return;
-                }
-                if (attempt.timeoutId !== null) {
-                    clearTimer(attempt.timeoutId);
-                    attempt.timeoutId = null;
-                }
-                parts.video.hidden = false;
-                parts.still.hidden = true;
-                if (parts.button) {
-                    parts.button.setAttribute("aria-pressed", "true");
-                }
-                if (parts.label) {
-                    parts.label.textContent = "停止实况";
-                }
-                if (card.classList) {
-                    card.classList.add("is-active");
-                }
-                setCardState(card, "playing");
-            });
-            registerAttemptListener(attempt, "ended", () => {
-                finishAttempt(attempt);
-            });
-            registerAttemptListener(attempt, "error", () => {
-                failAttempt(
-                    attempt,
-                    classifyMediaError(parts.video.error && parts.video.error.code),
-                );
-            });
-            registerAttemptListener(attempt, "abort", () => {
-                failAttempt(attempt, "aborted");
-            });
-
-            parts.video.loop = false;
-            parts.video.src = motionUrl;
-            parts.video.load();
             attempt.timeoutId = setTimer(() => {
                 failAttempt(attempt, "startup_timeout");
             }, startupTimeoutMs);
-
-            let playResult;
-            try {
-                playResult = parts.video.play();
-            } catch (error) {
-                return Promise.resolve(
+            return Promise.resolve(loadDescriptor(pairToken, descriptorUrl, {
+                signal: attempt.descriptorController.signal,
+            })).then((descriptor) => {
+                if (!isCurrent(attempt)) {
+                    return false;
+                }
+                const motionUrl = String(
+                    descriptor && descriptor.motion && descriptor.motion.url || "",
+                );
+                if (!isSafeMotionUrl(motionUrl)) {
+                    return failAttempt(attempt, "policy_rejected");
+                }
+                attempt.descriptorController = null;
+                registerAttemptListener(attempt, "loadedmetadata", () => {
+                    if (isCurrent(attempt)) {
+                        setCardState(card, "metadata");
+                    }
+                });
+                registerAttemptListener(attempt, "canplay", () => {
+                    if (isCurrent(attempt)) {
+                        setCardState(card, "canplay");
+                    }
+                });
+                registerAttemptListener(attempt, "playing", () => {
+                    if (!isCurrent(attempt)) {
+                        return;
+                    }
+                    if (attempt.timeoutId !== null) {
+                        clearTimer(attempt.timeoutId);
+                        attempt.timeoutId = null;
+                    }
+                    parts.video.hidden = false;
+                    parts.still.hidden = true;
+                    if (parts.button) {
+                        parts.button.setAttribute("aria-pressed", "true");
+                    }
+                    if (parts.label) {
+                        parts.label.textContent = "停止实况";
+                    }
+                    if (card.classList) {
+                        card.classList.add("is-active");
+                    }
+                    setCardState(card, "playing");
+                });
+                registerAttemptListener(attempt, "ended", () => finishAttempt(attempt));
+                registerAttemptListener(attempt, "error", () => {
                     failAttempt(
+                        attempt,
+                        classifyMediaError(parts.video.error && parts.video.error.code),
+                    );
+                });
+                registerAttemptListener(attempt, "abort", () => {
+                    failAttempt(attempt, "aborted");
+                });
+                parts.video.loop = false;
+                parts.video.src = motionUrl;
+                parts.video.load();
+                let playResult;
+                try {
+                    playResult = parts.video.play();
+                } catch (error) {
+                    return failAttempt(
+                        attempt,
+                        classifyMediaError(parts.video.error && parts.video.error.code, error),
+                    );
+                }
+                return Promise.resolve(playResult).then(
+                    () => isCurrent(attempt),
+                    (error) => failAttempt(
                         attempt,
                         classifyMediaError(parts.video.error && parts.video.error.code, error),
                     ),
                 );
-            }
-            return Promise.resolve(playResult).then(
-                () => isCurrent(attempt),
-                (error) => failAttempt(
-                    attempt,
-                    classifyMediaError(parts.video.error && parts.video.error.code, error),
-                ),
-            );
+            }, () => {
+                if (!isCurrent(attempt)) {
+                    return false;
+                }
+                return failAttempt(attempt, "network_error");
+            });
         }
 
         function restoreCard(card) {
@@ -407,7 +432,11 @@
                 stopActiveAttempt("stopped");
                 return;
             }
-            void playCard(card, button.dataset.motionUrl || "");
+            void playCard(
+                card,
+                button.dataset.livephotoPairToken || "",
+                button.dataset.livephotoDescriptorUrl || "",
+            );
         }
 
         function destroy() {
@@ -416,7 +445,14 @@
         }
 
         documentObject.addEventListener("click", handleClick);
-        return Object.freeze({destroy, playCard, restoreCard});
+        return Object.freeze({
+            cancelActive() {
+                stopActiveAttempt("stopped");
+            },
+            destroy,
+            playCard,
+            restoreCard,
+        });
     }
 
     function ensureController(documentObject) {
@@ -438,6 +474,11 @@
         SAFE_STATES: SAFE_STATE_VALUES,
         STARTUP_TIMEOUT_MS,
         classifyMediaError,
+        cancelActive() {
+            if (browserController && typeof browserController.cancelActive === "function") {
+                browserController.cancelActive();
+            }
+        },
         createController,
         disableLooping,
         ensureController,

@@ -53,6 +53,9 @@ PARSEHUB_SUCCESS_TTL_SECONDS = 120
 PARSEHUB_FAILURE_TTL_SECONDS = 8
 PARSEHUB_SINGLE_FLIGHT_TTL_SECONDS = 10
 PARSEHUB_SINGLE_FLIGHT_POLL_SECONDS = 0.05
+PARSEHUB_XHS_IMAGE_EXTENSIONS = frozenset(
+    {"jpg", "png", "gif", "webp", "avif", "heic"}
+)
 
 _RESOURCE_KEY_RE = re.compile(r"^[A-Za-z0-9._/-]{1,512}$")
 _FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -118,7 +121,7 @@ class XhsParseHubProbeV1:
     def __post_init__(self):
         validate_xhs_parsehub_raw_url(self.final_url)
         if (
-            self.extension not in {"jpg", "png", "gif", "webp", "avif", "heic"}
+            self.extension not in PARSEHUB_XHS_IMAGE_EXTENSIONS
             or not self.mime_type.startswith("image/")
             or type(self.size_bytes) is not int
             or self.size_bytes < 0
@@ -817,13 +820,7 @@ def enhance_xhs_images_with_parsehub(
     selected_count = 0
     for ordinal, (native_asset, candidate) in enumerate(zip(fallback_assets, candidates)):
         probe = probes.get(ordinal)
-        native_item = snapshot.image_list[ordinal]
-        # Chromium cannot render HEIC as a LivePhoto still. Preserve original HEIC
-        # for ordinary downloads, but use the compatible Native still in rich media.
-        if probe is None or (
-            xhs_image_source_kind(native_item) == "livephoto_still"
-            and probe.extension == "heic"
-        ):
+        if probe is None:
             selected_assets.append(native_asset)
             continue
         selected_assets.append(
@@ -899,6 +896,7 @@ __all__ = (
     "PARSEHUB_PIN",
     "PARSEHUB_RAW_IMAGE_HOST",
     "PARSEHUB_XHS_PROVIDER_ID",
+    "PARSEHUB_XHS_IMAGE_EXTENSIONS",
     "XhsParseHubCandidateV1",
     "XhsParseHubEnhancementOutcome",
     "XhsParseHubImageError",
