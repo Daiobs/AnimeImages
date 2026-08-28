@@ -96,6 +96,59 @@
         return payload;
     }
 
+    async function requestMotionDescriptor(motionToken, endpoint, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        const fetchImpl = settings.fetchImpl || (root && root.fetch && root.fetch.bind(root));
+        if (!fetchImpl || !motionToken || !endpoint) {
+            const error = new Error("实况资源信息无效，请重新解析。");
+            error.errorCode = "XHS_LIVEPHOTO_PLAYBACK_INVALID";
+            throw error;
+        }
+        let response;
+        try {
+            response = await fetchImpl(endpoint, {
+                method: "POST",
+                credentials: "same-origin",
+                cache: "no-store",
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-CSRFToken": settings.csrfToken || csrfToken(root && root.document),
+                },
+                body: JSON.stringify({motion_token: motionToken}),
+                signal: settings.signal,
+            });
+        } catch (cause) {
+            const error = new Error("实况资源服务暂时不可用，请稍后重试。");
+            error.errorCode = cause && cause.name === "AbortError"
+                ? "BROWSER_PHOTO_CANCELLED"
+                : "XHS_LIVEPHOTO_PLAYBACK_NETWORK_ERROR";
+            throw error;
+        }
+        let payload;
+        try {
+            payload = await response.json();
+        } catch (cause) {
+            payload = null;
+        }
+        if (!response.ok || !payload || payload.ok !== true) {
+            const error = new Error("实况资源获取失败，请重新解析。");
+            error.errorCode = String(
+                payload && payload.error_code || "XHS_LIVEPHOTO_PLAYBACK_INVALID",
+            );
+            throw error;
+        }
+        if (
+            !payload.motion
+            || payload.motion.media_type !== "video"
+            || payload.motion.format_class !== "mp4"
+        ) {
+            const error = new Error("实况资源信息无效，请重新解析。");
+            error.errorCode = "XHS_LIVEPHOTO_PLAYBACK_INVALID";
+            throw error;
+        }
+        return payload;
+    }
+
     function safeErrorMessage(error, photoApi) {
         const code = String(error && error.errorCode || "XHS_LIVEPHOTO_PAIR_INVALID");
         if (SAFE_ERROR_TEXT[code]) {
@@ -137,6 +190,7 @@
         },
         createController,
         ensureController,
+        requestMotionDescriptor,
         requestPairDescriptor,
         safeErrorMessage,
     });

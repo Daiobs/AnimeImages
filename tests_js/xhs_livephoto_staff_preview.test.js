@@ -6,7 +6,7 @@ const preview = require("../static/js/xhs_livephoto_preview.js");
 
 
 const descriptorByToken = new Map();
-let nextPairToken = 1;
+let nextMotionToken = 1;
 
 
 function fakeClassList() {
@@ -121,13 +121,13 @@ function fakeCard(url, options) {
         },
     });
     let card;
-    const pairToken = `opaque-pair-${nextPairToken}`;
-    nextPairToken += 1;
-    descriptorByToken.set(pairToken, url);
+    const motionToken = `opaque-motion-${nextMotionToken}`;
+    nextMotionToken += 1;
+    descriptorByToken.set(motionToken, url);
     const button = {
         dataset: {
-            livephotoPairToken: pairToken,
-            livephotoDescriptorUrl: "/media/xhs-livephoto-pair-descriptor/",
+            livephotoMotionToken: motionToken,
+            livephotoMotionDescriptorUrl: "/media/xhs-livephoto-motion-descriptor/",
         },
         setAttribute(name, value) { attributes[name] = value; },
         closest(selector) {
@@ -211,9 +211,9 @@ function createHarness(options) {
         setTimeout: clock.setTimeout,
         clearTimeout: clock.clearTimeout,
         startupTimeoutMs: 8000,
-        requestPairDescriptor(pairToken) {
+        requestMotionDescriptor(motionToken) {
             return Promise.resolve({
-                motion: {url: descriptorByToken.get(pairToken) || ""},
+                motion: {url: descriptorByToken.get(motionToken) || ""},
             });
         },
         ...settings,

@@ -589,6 +589,11 @@ body {
     opacity: .82;
 }
 
+.xhs-livephoto-asset-card.is-download-unavailable {
+    cursor: default;
+    opacity: 1;
+}
+
 .xhs-livephoto-asset-media {
     position: relative;
     width: 100%;

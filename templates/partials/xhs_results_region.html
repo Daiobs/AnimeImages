@@ -169,11 +169,11 @@
                     {% endif %}
                 >
                     {% for item in image_items %}
-                        <div class="asset-card{% if item.asset_kind == 'livephoto' %} xhs-livephoto-asset-card{% endif %}{% if item.asset_kind == 'livephoto' and item.livephoto_delivery_status != 'ready' %} is-download-unavailable{% endif %}"
+                        <div class="asset-card{% if item.asset_kind == 'livephoto' %} xhs-livephoto-asset-card{% endif %}{% if item.asset_kind == 'livephoto' and item.livephoto_pair_download_status != 'ready' %} is-download-unavailable{% endif %}"
                              data-type="image"
                              data-logical-type="{{ item.asset_kind|default:'image' }}"
                              data-asset-kind="{{ item.asset_kind|default:'image' }}"
-                             data-download-selectable="{% if item.asset_kind == 'livephoto' and item.livephoto_delivery_status != 'ready' %}false{% else %}true{% endif %}"
+                             data-download-selectable="{% if item.asset_kind == 'livephoto' and item.livephoto_pair_download_status != 'ready' %}false{% else %}true{% endif %}"
                              data-source-platform="{{ item.source_platform|default:'' }}"
                              data-url="{{ item.url }}"
                              data-size-bytes="{{ item.size_bytes|default:0 }}"
@@ -195,9 +195,15 @@
                              {% if item.asset_kind == 'livephoto' %}
                                  data-livephoto-item
                                  data-livephoto-delivery-status="{{ item.livephoto_delivery_status }}"
-                                 {% if item.livephoto_delivery_status == 'ready' and item.livephoto_pair_token %}
+                                 data-livephoto-playback-status="{{ item.livephoto_playback_status }}"
+                                 data-livephoto-pair-download-status="{{ item.livephoto_pair_download_status }}"
+                                 {% if item.livephoto_playback_status == 'ready' and item.livephoto_motion_token %}
                                      data-livephoto-card
                                      data-livephoto-state="idle"
+                                     data-livephoto-motion-token="{{ item.livephoto_motion_token }}"
+                                     data-livephoto-motion-descriptor-url="{% url 'media_xhs_livephoto_motion_descriptor' %}"
+                                 {% endif %}
+                                 {% if item.livephoto_pair_download_status == 'ready' and item.livephoto_pair_token %}
                                      data-livephoto-pair-token="{{ item.livephoto_pair_token }}"
                                      data-livephoto-descriptor-url="{% url 'media_xhs_livephoto_pair_descriptor' %}"
                                  {% endif %}
@@ -232,7 +238,7 @@
                                 >
                                 {% if item.asset_kind == 'livephoto' %}
                                     <span class="xhs-livephoto-badge">实况</span>
-                                    {% if item.livephoto_delivery_status == 'ready' and item.livephoto_pair_token %}
+                                    {% if item.livephoto_playback_status == 'ready' and item.livephoto_motion_token %}
                                         <video
                                             muted
                                             playsinline
@@ -246,6 +252,8 @@
                                             type="button"
                                             class="xhs-livephoto-overlay-control"
                                             data-livephoto-toggle
+                                            data-livephoto-motion-token="{{ item.livephoto_motion_token }}"
+                                            data-livephoto-motion-descriptor-url="{% url 'media_xhs_livephoto_motion_descriptor' %}"
                                             aria-pressed="false"
                                             aria-label="播放第 {{ item.display_ordinal }} 项实况照片"
                                         >
@@ -257,17 +265,26 @@
                                             <i class="bi bi-exclamation-circle" aria-hidden="true"></i>
                                             <span data-livephoto-error-text>实况预览加载失败，可重新解析后再试。</span>
                                         </div>
-                                    {% else %}
+                                    {% endif %}
+                                    {% if item.livephoto_pair_download_status != 'ready' %}
                                         <div class="xhs-livephoto-unavailable" role="status">
-                                            <div>该项实况暂不可下载</div>
+                                            <div>
+                                                {% if item.livephoto_playback_status == 'ready' %}
+                                                    该项实况暂不可下载
+                                                {% else %}
+                                                    该项实况暂不可播放
+                                                {% endif %}
+                                            </div>
                                             {% if show_internal_diagnostics %}
                                                 <small>
-                                                    {% if item.livephoto_delivery_error_code == 'XHS_LIVEPHOTO_MOTION_CANDIDATE_UNAVAILABLE' %}
+                                                    {% if item.livephoto_playback_status != 'ready' and item.livephoto_playback_error_code == 'XHS_LIVEPHOTO_MOTION_CANDIDATE_UNAVAILABLE' %}
                                                         当前 motion 候选未通过既定安全准入。
-                                                    {% elif item.livephoto_delivery_error_code == 'XHS_LIVEPHOTO_PAIR_STILL_REJECTED' %}
+                                                    {% elif item.livephoto_pair_download_error_code == 'XHS_LIVEPHOTO_PAIR_STILL_REJECTED' %}
                                                         当前静态原图未通过浏览器配对下载准入。
-                                                    {% elif item.livephoto_delivery_error_code == 'XHS_LIVEPHOTO_PAIR_TOO_LARGE' or item.livephoto_delivery_error_code == 'XHS_LIVEPHOTO_PAIR_SIZE_REJECTED' %}
+                                                    {% elif item.livephoto_pair_download_error_code == 'XHS_LIVEPHOTO_PAIR_TOO_LARGE' or item.livephoto_pair_download_error_code == 'XHS_LIVEPHOTO_PAIR_SIZE_REJECTED' %}
                                                         当前配对素材超出浏览器打包限制。
+                                                    {% elif item.livephoto_playback_status != 'ready' %}
+                                                        当前实况播放授权暂不可用。
                                                     {% else %}
                                                         当前配对下载授权暂不可用。
                                                     {% endif %}

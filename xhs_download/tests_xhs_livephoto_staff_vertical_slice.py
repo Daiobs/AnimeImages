@@ -897,6 +897,12 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
         context = result_region_context(self.result, staff_preview=True)
         livephoto_item_context = context["image_items"][0]
         livephoto_item_context["livephoto_delivery_status"] = "unavailable"
+        livephoto_item_context["livephoto_playback_status"] = "unavailable"
+        livephoto_item_context["livephoto_playback_error_code"] = (
+            "XHS_LIVEPHOTO_MOTION_CANDIDATE_UNAVAILABLE"
+        )
+        livephoto_item_context["livephoto_motion_token"] = ""
+        livephoto_item_context["livephoto_pair_download_status"] = "unavailable"
         livephoto_item_context["livephoto_pair_token"] = ""
 
         html = render_to_string(
@@ -938,6 +944,10 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
         livephoto_item_context["livephoto_delivery_error_code"] = (
             "XHS_LIVEPHOTO_PAIR_STILL_REJECTED"
         )
+        livephoto_item_context["livephoto_pair_download_status"] = "unavailable"
+        livephoto_item_context["livephoto_pair_download_error_code"] = (
+            "XHS_LIVEPHOTO_PAIR_STILL_REJECTED"
+        )
         livephoto_item_context["livephoto_pair_token"] = ""
 
         html = render_to_string(
@@ -948,6 +958,12 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
 
         self.assertIn("当前静态原图未通过浏览器配对下载准入", html)
         self.assertNotIn("当前 motion 候选未通过", html)
+        soup = BeautifulSoup(html, "html.parser")
+        card = soup.select_one("[data-livephoto-item]")
+        self.assertEqual(card.get("data-download-selectable"), "false")
+        self.assertIsNotNone(card.select_one("[data-livephoto-toggle]"))
+        self.assertTrue(card.has_attr("data-livephoto-motion-token"))
+        self.assertFalse(card.has_attr("data-livephoto-pair-token"))
 
     def test_anonymous_template_uses_ordinary_flat_image_presentation(self):
         public_request = RequestFactory().get("/")

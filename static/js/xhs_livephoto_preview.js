@@ -117,12 +117,14 @@
         const startupTimeoutMs = Number.isFinite(settings.startupTimeoutMs)
             ? Math.max(1, settings.startupTimeoutMs)
             : STARTUP_TIMEOUT_MS;
-        const loadDescriptor = settings.requestPairDescriptor || ((token, endpoint, requestOptions) => {
+        const loadDescriptor = settings.requestMotionDescriptor
+            || settings.requestPairDescriptor
+            || ((token, endpoint, requestOptions) => {
             const pairApi = root && root.AnimeImagesXhsLivePhotoPair;
-            if (!pairApi || typeof pairApi.requestPairDescriptor !== "function") {
-                return Promise.reject(new Error("pair descriptor unavailable"));
+            if (!pairApi || typeof pairApi.requestMotionDescriptor !== "function") {
+                return Promise.reject(new Error("motion descriptor unavailable"));
             }
-            return pairApi.requestPairDescriptor(token, endpoint, requestOptions);
+            return pairApi.requestMotionDescriptor(token, endpoint, requestOptions);
         });
         let activeAttempt = null;
         let attemptSequence = 0;
@@ -287,12 +289,12 @@
             attempt.listeners.push([name, handler]);
         }
 
-        function playCard(card, pairToken, descriptorUrl) {
+        function playCard(card, motionToken, descriptorUrl) {
             const parts = cardParts(card);
             if (!parts.video || !parts.still) {
                 return Promise.resolve(showStandaloneFailure(card, "source_not_supported"));
             }
-            if (!pairToken || !descriptorUrl) {
+            if (!motionToken || !descriptorUrl) {
                 return Promise.resolve(showStandaloneFailure(card, "policy_rejected"));
             }
             if (activeAttempt) {
@@ -326,7 +328,7 @@
             attempt.timeoutId = setTimer(() => {
                 failAttempt(attempt, "startup_timeout");
             }, startupTimeoutMs);
-            return Promise.resolve(loadDescriptor(pairToken, descriptorUrl, {
+            return Promise.resolve(loadDescriptor(motionToken, descriptorUrl, {
                 signal: attempt.descriptorController.signal,
             })).then((descriptor) => {
                 if (!isCurrent(attempt)) {
@@ -435,8 +437,10 @@
             }
             void playCard(
                 card,
-                button.dataset.livephotoPairToken || card.dataset.livephotoPairToken || "",
-                button.dataset.livephotoDescriptorUrl || card.dataset.livephotoDescriptorUrl || "",
+                button.dataset.livephotoMotionToken || card.dataset.livephotoMotionToken || "",
+                button.dataset.livephotoMotionDescriptorUrl
+                    || card.dataset.livephotoMotionDescriptorUrl
+                    || "",
             );
         }
 

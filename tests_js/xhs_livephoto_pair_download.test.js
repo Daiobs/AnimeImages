@@ -45,6 +45,43 @@ test("pair descriptor request is POST-only control-plane JSON with CSRF", async 
 });
 
 
+test("motion descriptor uses an independent opaque POST token", async () => {
+    let observed = null;
+    const payload = await pair.requestMotionDescriptor(
+        "opaque-motion-ticket",
+        "/media/xhs-livephoto-motion-descriptor/",
+        {
+            csrfToken: "csrf-fixture",
+            async fetchImpl(url, options) {
+                observed = {url, options};
+                return {
+                    ok: true,
+                    async json() {
+                        return {
+                            ok: true,
+                            motion: {
+                                media_type: "video",
+                                format_class: "mp4",
+                                url: "https://motion.invalid/item.mp4",
+                            },
+                        };
+                    },
+                };
+            },
+        },
+    );
+
+    assert.equal(payload.ok, true);
+    assert.equal(observed.url, "/media/xhs-livephoto-motion-descriptor/");
+    assert.equal(observed.options.method, "POST");
+    assert.equal(observed.options.credentials, "same-origin");
+    assert.deepEqual(
+        JSON.parse(observed.options.body),
+        {motion_token: "opaque-motion-ticket"},
+    );
+});
+
+
 test("pair descriptor fails closed on malformed control-plane payload", async () => {
     await assert.rejects(
         pair.requestPairDescriptor("opaque-ticket", "/descriptor/", {

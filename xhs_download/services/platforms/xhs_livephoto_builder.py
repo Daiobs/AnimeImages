@@ -96,6 +96,17 @@ _PAIR_AUTHORITY_ERROR_CODES = frozenset(
     }
 )
 
+_PLAYBACK_AUTHORITY_ERROR_CODES = frozenset(
+    {
+        "XHS_LIVEPHOTO_PAIR_MOTION_REJECTED",
+        "XHS_LIVEPHOTO_PAIR_SIZE_REJECTED",
+        "XHS_LIVEPHOTO_PLAYBACK_SOURCE_REJECTED",
+        "XHS_LIVEPHOTO_PLAYBACK_RELATION_REJECTED",
+        "XHS_LIVEPHOTO_PLAYBACK_INVALID",
+        "XHS_LIVEPHOTO_PAIR_RECORD_TOO_LARGE",
+    }
+)
+
 
 class XhsLivePhotoPreviewError(ValueError):
     def __init__(self, code: str):
@@ -890,6 +901,32 @@ def build_xhs_livephoto_result(
                 and item.source_item_ordinal not in delivery_ready_ordinals
                 else ""
             ),
+            "playback_status": (
+                "ready"
+                if item.source_item_ordinal in delivery_ready_ordinals
+                else "unavailable"
+                if item.item_kind == "live_photo"
+                else "not_applicable"
+            ),
+            "playback_error_code": (
+                "XHS_LIVEPHOTO_MOTION_CANDIDATE_UNAVAILABLE"
+                if item.item_kind == "live_photo"
+                and item.source_item_ordinal not in delivery_ready_ordinals
+                else ""
+            ),
+            "pair_download_status": (
+                "ready"
+                if item.source_item_ordinal in delivery_ready_ordinals
+                else "unavailable"
+                if item.item_kind == "live_photo"
+                else "not_applicable"
+            ),
+            "pair_download_error_code": (
+                "XHS_LIVEPHOTO_MOTION_CANDIDATE_UNAVAILABLE"
+                if item.item_kind == "live_photo"
+                and item.source_item_ordinal not in delivery_ready_ordinals
+                else ""
+            ),
             "motion_source_kind": (
                 selected_motion_records[item.source_item_ordinal].locator.source_kind
                 if item.source_item_ordinal in selected_motion_records
@@ -1017,6 +1054,7 @@ def build_xhs_livephoto_preview_context(
     *,
     client_identity: str = "",
     issue_pair_token=None,
+    issue_motion_token=None,
 ) -> dict:
     if (
         type(result) is not ParseResult
@@ -1033,9 +1071,18 @@ def build_xhs_livephoto_preview_context(
             "XHS_LIVEPHOTO_STAFF_PREVIEW_RESULT_INVALID"
         )
     if issue_pair_token is None:
-        from ..xhs_livephoto_pair_handoff import issue_xhs_livephoto_pair_token
+        from ..xhs_livephoto_pair_handoff import (
+            issue_xhs_livephoto_motion_token,
+            issue_xhs_livephoto_pair_token,
+        )
 
         issue_pair_token = issue_xhs_livephoto_pair_token
+        if issue_motion_token is None:
+            issue_motion_token = issue_xhs_livephoto_motion_token
+    elif issue_motion_token is None:
+        from ..xhs_livephoto_pair_handoff import issue_xhs_livephoto_motion_token
+
+        issue_motion_token = issue_xhs_livephoto_motion_token
 
     items = []
     for expected_ordinal, item_record in enumerate(item_records):
@@ -1052,6 +1099,26 @@ def build_xhs_livephoto_preview_context(
             raise XhsLivePhotoPreviewError(
                 "XHS_LIVEPHOTO_STAFF_PREVIEW_RESULT_INVALID"
             )
+        playback_status = str(
+            item_record.get("playback_status")
+            or item_record.get("delivery_status")
+            or "not_applicable"
+        )
+        playback_error_code = str(
+            item_record.get("playback_error_code")
+            or item_record.get("delivery_error_code")
+            or ""
+        )[:96]
+        pair_download_status = str(
+            item_record.get("pair_download_status")
+            or item_record.get("delivery_status")
+            or "not_applicable"
+        )
+        pair_download_error_code = str(
+            item_record.get("pair_download_error_code")
+            or item_record.get("delivery_error_code")
+            or ""
+        )[:96]
         item = {
             "source_item_ordinal": expected_ordinal,
             "display_ordinal": expected_ordinal + 1,
@@ -1061,24 +1128,59 @@ def build_xhs_livephoto_preview_context(
             "still_original_url": still_asset.url,
             "still_filename": still_asset.filename,
             "still_extension": still_asset.ext or "jpg",
-            "delivery_status": str(
-                item_record.get("delivery_status") or "not_applicable"
-            ),
-            "delivery_error_code": str(
-                item_record.get("delivery_error_code") or ""
-            )[:96],
+            "playback_status": playback_status,
+            "playback_error_code": playback_error_code,
+            "motion_token": "",
+            "pair_download_status": pair_download_status,
+            "pair_download_error_code": pair_download_error_code,
             "pair_token": "",
         }
-        if item_record["kind"] == "live_photo" and item["delivery_status"] == "ready":
+        if item_record["kind"] == "live_photo":
             motion_asset = assets_by_id.get(
                 str(item_record.get("motion_asset_id") or "")
             )
             group_id = str(item_record.get("group_id") or "")
-            if motion_asset is None or motion_asset.media_type != "video" or not group_id:
+            if (
+                item["playback_status"] == "ready"
+                and (
+                    motion_asset is None
+                    or motion_asset.media_type != "video"
+                    or not group_id
+                )
+            ):
                 raise XhsLivePhotoPreviewError(
                     "XHS_LIVEPHOTO_STAFF_PREVIEW_RESULT_INVALID"
                 )
-            if client_identity:
+            if item["playback_status"] == "ready" and client_identity:
+                try:
+                    item["motion_token"] = issue_motion_token(
+                        source_identity=str(
+                            metadata.get("xhs_livephoto_source_identity") or ""
+                        ),
+                        group_id=group_id,
+                        source_item_ordinal=expected_ordinal,
+                        motion_asset=motion_asset,
+                        client_identity=client_identity,
+                    ).token
+                except Exception as error:
+                    error_code = str(getattr(error, "error_code", ""))
+                    if error_code not in _PLAYBACK_AUTHORITY_ERROR_CODES:
+                        error_code = "XHS_LIVEPHOTO_PLAYBACK_AUTHORITY_UNAVAILABLE"
+                    item["playback_status"] = "unavailable"
+                    item["playback_error_code"] = error_code
+            elif item["playback_status"] == "ready":
+                item["playback_status"] = "unavailable"
+                item["playback_error_code"] = (
+                    "XHS_LIVEPHOTO_PLAYBACK_AUTHORITY_UNAVAILABLE"
+                )
+
+            if item["playback_status"] != "ready" or not item["motion_token"]:
+                item["pair_download_status"] = "unavailable"
+                item["pair_download_error_code"] = (
+                    item["playback_error_code"]
+                    or "XHS_LIVEPHOTO_PLAYBACK_AUTHORITY_UNAVAILABLE"
+                )
+            elif item["pair_download_status"] == "ready" and client_identity:
                 try:
                     item["pair_token"] = issue_pair_token(
                         source_identity=str(
@@ -1095,13 +1197,18 @@ def build_xhs_livephoto_preview_context(
                     error_code = str(getattr(error, "error_code", ""))
                     if error_code not in _PAIR_AUTHORITY_ERROR_CODES:
                         error_code = "XHS_LIVEPHOTO_PAIR_AUTHORITY_UNAVAILABLE"
-                    item["delivery_status"] = "unavailable"
-                    item["delivery_error_code"] = error_code
-            else:
-                item["delivery_status"] = "unavailable"
-                item["delivery_error_code"] = (
+                    item["pair_download_status"] = "unavailable"
+                    item["pair_download_error_code"] = error_code
+            elif item["pair_download_status"] == "ready":
+                item["pair_download_status"] = "unavailable"
+                item["pair_download_error_code"] = (
                     "XHS_LIVEPHOTO_PAIR_AUTHORITY_UNAVAILABLE"
                 )
+
+        item["delivery_status"] = item["pair_download_status"]
+        item["delivery_error_code"] = (
+            item["pair_download_error_code"] or item["playback_error_code"]
+        )
         items.append(item)
 
     return {
@@ -1109,9 +1216,21 @@ def build_xhs_livephoto_preview_context(
         "source_item_count": len(items),
         "livephoto_count": sum(item["kind"] == "live_photo" for item in items),
         "regular_count": sum(item["kind"] == "regular_image" for item in items),
+        "playback_ready_count": sum(
+            item["kind"] == "live_photo"
+            and item["playback_status"] == "ready"
+            and bool(item["motion_token"])
+            for item in items
+        ),
+        "pair_download_ready_count": sum(
+            item["kind"] == "live_photo"
+            and item["pair_download_status"] == "ready"
+            and bool(item["pair_token"])
+            for item in items
+        ),
         "delivery_ready_count": sum(
             item["kind"] == "live_photo"
-            and item["delivery_status"] == "ready"
+            and item["pair_download_status"] == "ready"
             and bool(item["pair_token"])
             for item in items
         ),

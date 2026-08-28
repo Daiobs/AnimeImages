@@ -160,6 +160,49 @@ test("image format detection uses magic for JPEG PNG GIF WebP AVIF and HEIC", ()
 });
 
 
+test("XHS ordinary and LivePhoto still URLs share the bounded image policy", () => {
+    for (const accepted of [
+        "https://ci.xiaohongshu.com/notes_pre_post/resource",
+        "https://sns-webpic-qc.xhscdn.com/path/resource",
+        "https://sns-img-hw.xhscdn.com/resource-key",
+        "https://media-v1.xhscdn.com/spectrum/resource",
+    ]) {
+        assert.equal(photo.isSafeXhsImageUrl(accepted), true);
+    }
+    for (const rejected of [
+        "https://sns-webpic-qc.xhscdn.com/",
+        "https://unreviewed.xhscdn.com/random/resource",
+        "https://sns-img-qc.xhscdn.com.evil.example/path/resource",
+        "http://ci.xiaohongshu.com/notes_pre_post/resource",
+        "https://ci.xiaohongshu.com/avatar/resource",
+    ]) {
+        assert.equal(photo.isSafeXhsImageUrl(rejected), false);
+    }
+});
+
+
+test("XHS image fetch rejects an unsafe final redirect before reading media bytes", async () => {
+    await assert.rejects(
+        photo.downloadImage(
+            {
+                type: "image",
+                url: "https://ci.xiaohongshu.com/notes_pre_post/resource",
+                source_platform: "xiaohongshu",
+            },
+            {
+                async fetchImpl() {
+                    return fakeResponse([SIGNATURES.jpeg], {
+                        url: "https://unreviewed.xhscdn.com/random/resource",
+                    });
+                },
+                async handoff() {},
+            },
+        ),
+        (error) => error.errorCode === "IMAGE_CONTENT_INVALID",
+    );
+});
+
+
 test("magic overrides conflicting MIME while unknown and HTML remain failures", () => {
     const mismatch = photo.detectImageFormat(SIGNATURES.png, {contentType: "image/jpeg"});
     assert.equal(mismatch.extension, "png");

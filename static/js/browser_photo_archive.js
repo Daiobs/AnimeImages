@@ -56,6 +56,47 @@
         return String(value || "").split(";", 1)[0].trim().toLowerCase();
     }
 
+    function isSafeXhsImageUrl(value) {
+        try {
+            const parsed = new URL(String(value || ""));
+            const hostname = parsed.hostname.toLowerCase();
+            const pathParts = parsed.pathname.split("/").filter(Boolean);
+            const resourceKey = String(pathParts[pathParts.length - 1] || "").toLowerCase();
+            const suffixAllowed = (
+                hostname === "xhscdn.com"
+                || hostname.endsWith(".xhscdn.com")
+                || hostname === "xiaohongshu.com"
+                || hostname.endsWith(".xiaohongshu.com")
+            );
+            const hasKnownResourcePath = pathParts.some(
+                (part, index) => ["notes_pre_post", "spectrum"].includes(part)
+                    && index + 1 < pathParts.length,
+            );
+            const candidateClassAllowed = (
+                hostname === "ci.xiaohongshu.com"
+                || hostname.startsWith("sns-webpic")
+                || hostname.startsWith("sns-img")
+                || hasKnownResourcePath
+            );
+            return Boolean(
+                parsed.protocol === "https:"
+                && !parsed.username
+                && !parsed.password
+                && !parsed.port
+                && suffixAllowed
+                && pathParts.length
+                && !["", ".", "..", "null", "none", "undefined", "notes_pre_post", "spectrum"]
+                    .includes(resourceKey)
+                && !/(?:^|[/_.-])(?:avatar|favicon|logo|icon|sprite|emoji|qrcode)(?:[/_.-]|$)/i
+                    .test(parsed.pathname)
+                && !/\.(?:js|css|zip)$/i.test(parsed.pathname)
+                && candidateClassAllowed
+            );
+        } catch (error) {
+            return false;
+        }
+    }
+
     function bytesView(value) {
         if (value instanceof Uint8Array) {
             return value;
@@ -599,6 +640,15 @@
     }
 
     async function readImageResponse(response, item, context) {
+        if (
+            item.source_platform === "xiaohongshu"
+            && !isSafeXhsImageUrl(response.url || item.url)
+        ) {
+            if (response.body && typeof response.body.cancel === "function") {
+                await response.body.cancel().catch(() => {});
+            }
+            throw photoError("IMAGE_CONTENT_INVALID");
+        }
         const contentLength = positiveInteger(responseHeader(response, "Content-Length"));
         if (contentLength > context.itemMaxBytes) {
             if (response.body && typeof response.body.cancel === "function") {
@@ -973,6 +1023,12 @@
         }
         if (item.requires_merge === true || item.requiresMerge === true) {
             throw photoError("BROWSER_PHOTO_SERVER_REQUIRED", "当前图片需要服务器生成文件。");
+        }
+        if (
+            item.source_platform === "xiaohongshu"
+            && !isSafeXhsImageUrl(item.url)
+        ) {
+            throw photoError("BROWSER_PHOTO_INVALID_ITEM", "图片下载信息无效，请重新解析。");
         }
     }
 
@@ -1547,6 +1603,7 @@
         SPEED_WINDOW_MS,
         MIN_ETA_SAMPLE_MS,
         detectImageFormat,
+        isSafeXhsImageUrl,
         detectImageMagic,
         detectMp4Magic,
         sanitizeFilename,

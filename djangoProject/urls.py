@@ -88,6 +88,11 @@ urlpatterns = [
                   ),
                   path("media/proxy-image/", download_views.proxy_image_view, name="media_proxy_image"),
                   path(
+                      "media/xhs-livephoto-motion-descriptor/",
+                      download_views.xhs_livephoto_motion_descriptor_view,
+                      name="media_xhs_livephoto_motion_descriptor",
+                  ),
+                  path(
                       "media/xhs-livephoto-pair-descriptor/",
                       download_views.xhs_livephoto_pair_descriptor_view,
                       name="media_xhs_livephoto_pair_descriptor",

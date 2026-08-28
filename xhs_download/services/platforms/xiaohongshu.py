@@ -30,17 +30,23 @@ from .xhs_livephoto_builder import (
     build_xhs_livephoto_result,
 )
 from .xhs_livephoto_staff_builder import build_xhs_livephoto_staff_result
+from .xhs_image_download_authority import (
+    XHS_IMAGE_EMPTY_RESOURCE_VALUES,
+    XHS_IMAGE_MEDIA_HOST_SUFFIXES,
+    XHS_IMAGE_NON_NOTE_PATH_RE,
+    classify_xhs_image_candidate,
+)
 from .xhs_parsehub_images import enhance_xhs_images_with_parsehub
 from .xhs_tiantian_hybrid import enhance_xhs_ordinary_video
 
 
 XHS_PAGE_HOST_SUFFIXES = ("xiaohongshu.com", "xhslink.com", "xhslink.cn")
-XHS_MEDIA_HOST_SUFFIXES = ("xiaohongshu.com", "xhscdn.com")
+XHS_MEDIA_HOST_SUFFIXES = XHS_IMAGE_MEDIA_HOST_SUFFIXES
 XHS_NATIVE_BROWSER_VIDEO_HOSTS = frozenset({"sns-video-bd.xhscdn.com"})
 XHS_NATIVE_BROWSER_VIDEO_HOST_PATTERN = re.compile(
     r"^sns-video-v[1-9][0-9]*\.xhscdn\.com$"
 )
-XHS_EMPTY_RESOURCE_VALUES = {"", ".", "..", "null", "none", "undefined"}
+XHS_EMPTY_RESOURCE_VALUES = XHS_IMAGE_EMPTY_RESOURCE_VALUES
 XHS_NON_NOTE_IMAGE_HINTS = (
     "avatar",
     "favicon",
@@ -50,10 +56,7 @@ XHS_NON_NOTE_IMAGE_HINTS = (
     "emoji",
     "qrcode",
 )
-XHS_NON_NOTE_IMAGE_PATH_RE = re.compile(
-    r"(?:^|[/_.-])(?:avatar|favicon|logo|icon|sprite|emoji|qrcode)(?:[/_.-]|$)",
-    re.IGNORECASE,
-)
+XHS_NON_NOTE_IMAGE_PATH_RE = XHS_IMAGE_NON_NOTE_PATH_RE
 XHS_GENERIC_TITLES = {
     "小红书",
     "xiaohongshu",
@@ -72,48 +75,10 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_xhs_image_candidate(url):
-    value = normalize_text(url).strip()
-    if value.lower() in XHS_EMPTY_RESOURCE_VALUES:
+    candidate = classify_xhs_image_candidate(url)
+    if candidate is None:
         return None
-    if value.startswith("//"):
-        value = f"https:{value}"
-
-    parsed = urlparse(value)
-    hostname = (parsed.hostname or "").lower()
-    if parsed.scheme not in {"http", "https"} or not hostname:
-        return None
-    if not host_matches(hostname, XHS_MEDIA_HOST_SUFFIXES):
-        return None
-
-    path_parts = tuple(part.strip() for part in parsed.path.split("/") if part.strip())
-    if not path_parts:
-        return None
-    path_lower = parsed.path.lower()
-    if XHS_NON_NOTE_IMAGE_PATH_RE.search(path_lower):
-        return None
-    if path_lower.endswith((".js", ".css", ".zip")):
-        return None
-    resource_key = path_parts[-1]
-    if resource_key.lower() in XHS_EMPTY_RESOURCE_VALUES | {
-        "notes_pre_post",
-        "spectrum",
-    }:
-        return None
-
-    has_known_resource_path = any(
-        part in {"notes_pre_post", "spectrum"}
-        and index + 1 < len(path_parts)
-        for index, part in enumerate(path_parts)
-    )
-    is_ci_host = hostname == "ci.xiaohongshu.com"
-    is_sns_image_host = hostname.startswith(("sns-webpic", "sns-img"))
-    if not (
-        has_known_resource_path
-        or is_ci_host
-        or is_sns_image_host
-    ):
-        return None
-    return value, parsed
+    return candidate.value, urlparse(candidate.value)
 
 
 def normalize_xhs_image_url(url):
