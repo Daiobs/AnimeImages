@@ -1,4 +1,4 @@
-# XHS ParseHub Raw Image And Public LivePhoto v1
+# XHS ParseHub Raw Images And Staff LivePhoto v1
 
 ## Status
 
@@ -84,21 +84,30 @@ PARSEHUB_DOWNLOADER = DISABLED
 
 ## Live Photo Boundaries
 
-Anonymous Single XHS image pages may render complete, exact-note Live Photo
-groups. Motion URLs are assigned only after a user click. Playback is one-shot,
-restores the still image after `ended`, unloads the motion source, and allows at
-most one active card. Public presentation contains no Staff diagnostics.
+Anonymous Single XHS requests do not start the Live Photo delivery builder.
+They use the ordinary flat-image result, grid, preview, lightbox, selection, and
+original-image download behavior. They receive no Live Photo badge, motion URL,
+video element, pair token, pair descriptor, playback script, pair-download
+script, or Staff diagnostic. Batch follows the same flat-image boundary.
 
-Live Photo download authority remains disabled. Cards expose no still download,
-motion download, ZIP, manifest, or download token. If rich-media enhancement
-cannot produce all groups safely, the entire enhancement falls back to the
-ordered flat image result. Batch continues to render flat images while receiving
-the same raw-image fidelity route.
+Only an authenticated, active Staff request may build and render exact-note
+Live Photo groups. Staff uses the same ParseHub-enhanced still assets, source
+order, formats, and filenames as the flat route, then adds Native relationship
+and motion evidence, one-shot playback, URL-free diagnostics, original-image
+download, and a browser-generated pair ZIP. The pair descriptor is POST- and
+CSRF-protected, bound to the issuing Staff user and browser identity, and is not
+usable by anonymous, non-Staff, inactive, or different Staff sessions.
+
+The pair ZIP contains the original still in its admitted format plus one MP4
+motion item. Both bodies travel directly from their admitted CDN hosts to the
+browser; AnimeImages issues only the opaque control-plane descriptor and never
+relays the media or ZIP bytes.
 
 The discovered `motion_zl` candidate class remains outside the browser-verified
-subset. A payload that selects it is intentionally rendered as the complete
-ordered flat-image fallback; this implementation does not widen motion host or
-format admission to turn an intermittent upstream shape into a false success.
+subset. Current acceptance selected the already-reviewed `motion_versioned`
+master for every Primary item; same-item `motion_backup` candidates were also
+present and admitted. No wildcard XHS CDN rule or new motion host class was
+needed.
 
 ## Development Acceptance
 
@@ -110,25 +119,26 @@ the first ZIP entry was byte-identical to the separately downloaded image.
 These browser-owned transfers made no prepare, stream, or status request to
 AnimeImages.
 
-Anonymous Live Photo acceptance covered a complete fourteen-item note and a
-mixed seventeen-item note containing twelve Live Photos plus five regular
-images. Five sampled motions from each successful result played once, restored
-the still image after natural `ended`, unloaded the motion source, and remained
-replayable. No motion request was issued before click, regular images had no
-playback control, and Live Photo results exposed no download control. Staff
-used the same playback behavior with its additional safe validation summary.
+Anonymous acceptance of the Primary three-item Live Photo note produced three
+ordinary image cards in Native order with the normal image controls. It exposed
+no special Live Photo DOM, motion request, pair request, or Staff script. The
+flat layout had no horizontal overflow at the 390px, 820px, and 1440px gates.
 
-Batch kept the mixed note as seventeen flat images with no motion item or
-playback control. Thirteen admitted raw stills were selected and four items
-used the per-item Native fallback; observed original extensions included JPEG
-and PNG. The invalid control produced no image, video, or Live Photo result.
-The ordinary-video control retained the existing Ultra attempt and Native
-fallback route.
+With the exact ParseHub pin enabled in an isolated development environment,
+five consecutive Staff parses each produced three delivery-ready Live Photo
+cards. All three motions played once, restored the still after natural `ended`,
+unloaded their source, and remained replayable while keeping at most one active
+item. All three pair ZIP actions completed in the browser. Every archive had
+exactly two CRC-valid entries: one original JPEG or HEIC still and one MP4
+motion item. No prepare, stream, status, server ZIP, TianTian image, TianTian
+Live Photo, or ParseHub downloader path was used.
 
-The in-app browser stayed at a 1280 CSS-pixel viewport when asked to emulate
-390px and 820px widths. Responsive behavior remains covered by deterministic
-CSS/DOM tests and is listed for final human viewport confirmation rather than
-being reported as a completed real-device gate.
+The initial disabled Staff controls were not caused by rejected motion. Native
+motion selection had already admitted a reviewed master and same-item backups;
+the actual fixed reason was pair still authority rejection when the isolated
+ParseHub runtime was disabled. Staff diagnostics now preserve that fixed,
+URL-free stage distinction instead of reporting every pair-token failure as a
+motion-admission failure.
 
 ## Runtime Configuration
 

@@ -94,13 +94,6 @@
                         </span>
                     </div>
                     <div class="xhs-livephoto-card-actions">
-                        <a
-                            class="btn btn-outline-secondary btn-sm"
-                            href="{{ item.still_original_url }}"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            referrerpolicy="no-referrer"
-                        >查看原图</a>
                         <button
                             type="button"
                             class="btn btn-outline-primary btn-sm"
@@ -130,7 +123,15 @@
                     </div>
                     {% if show_xhs_livephoto_staff_preview and item.kind == "live_photo" and item.delivery_status != "ready" %}
                         <div class="xhs-livephoto-staff-diagnostic small">
-                            诊断：当前项 motion 候选未通过既定安全准入。
+                            {% if item.delivery_error_code == "XHS_LIVEPHOTO_MOTION_CANDIDATE_UNAVAILABLE" %}
+                                诊断：当前项 motion 候选未通过既定安全准入。
+                            {% elif item.delivery_error_code == "XHS_LIVEPHOTO_PAIR_STILL_REJECTED" %}
+                                诊断：当前静态原图未通过浏览器配对下载准入。
+                            {% elif item.delivery_error_code == "XHS_LIVEPHOTO_PAIR_TOO_LARGE" or item.delivery_error_code == "XHS_LIVEPHOTO_PAIR_SIZE_REJECTED" %}
+                                诊断：当前配对素材超出浏览器打包限制。
+                            {% else %}
+                                诊断：当前配对下载授权暂不可用。
+                            {% endif %}
                         </div>
                     {% endif %}
                 </div>

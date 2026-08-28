@@ -2,9 +2,10 @@ import time
 from copy import deepcopy
 from unittest.mock import patch
 
+from django.contrib.auth.models import User
 from django.core import signing
 from django.core.cache import cache
-from django.test import Client, RequestFactory, SimpleTestCase
+from django.test import Client, RequestFactory, SimpleTestCase, TestCase
 from django.urls import reverse
 
 from .services.platforms.xhs_livephoto_builder import (
@@ -76,6 +77,43 @@ class XhsLivePhotoPairHandoffTests(SimpleTestCase):
         self.assertRegex(descriptor.still["filename"], r"_01_still\.(?:jpg|webp)$")
         self.assertRegex(descriptor.motion["filename"], r"_01_motion\.mp4$")
         self.assertRegex(descriptor.archive_filename, r"_01_livephoto\.zip$")
+
+    def test_preview_context_preserves_safe_pair_authority_error_code(self):
+        def rejected_issuer(**_kwargs):
+            raise XhsLivePhotoPairHandoffError(
+                "rejected",
+                error_code="XHS_LIVEPHOTO_PAIR_STILL_REJECTED",
+                status_code=400,
+            )
+
+        context = build_xhs_livephoto_preview_context(
+            self.result,
+            client_identity=self.client_identity,
+            issue_pair_token=rejected_issuer,
+        )
+
+        item = context["items"][0]
+        self.assertEqual(item["delivery_status"], "unavailable")
+        self.assertEqual(
+            item["delivery_error_code"],
+            "XHS_LIVEPHOTO_PAIR_STILL_REJECTED",
+        )
+        self.assertEqual(item["pair_token"], "")
+
+    def test_preview_context_scrubs_unknown_pair_issuer_errors(self):
+        def broken_issuer(**_kwargs):
+            raise RuntimeError("private details")
+
+        context = build_xhs_livephoto_preview_context(
+            self.result,
+            client_identity=self.client_identity,
+            issue_pair_token=broken_issuer,
+        )
+
+        self.assertEqual(
+            context["items"][0]["delivery_error_code"],
+            "XHS_LIVEPHOTO_PAIR_AUTHORITY_UNAVAILABLE",
+        )
 
     def test_missing_cached_record_is_expired_fail_closed(self):
         payload, _record = self._payload_and_record()
@@ -200,20 +238,35 @@ class XhsLivePhotoPairHandoffTests(SimpleTestCase):
     def test_pair_identity_combines_network_and_browser_csrf_secret(self):
         factory = RequestFactory()
 
-        def identity(secret):
+        def identity(secret, user_id=1):
             request = factory.get("/", REMOTE_ADDR="192.0.2.1")
+            request.user = User(
+                pk=user_id,
+                username=f"staff-{user_id}",
+                is_staff=True,
+                is_active=True,
+            )
             request.META["CSRF_COOKIE"] = secret
             return get_xhs_livephoto_pair_client_identity(request)
 
         self.assertEqual(identity("a" * 32), identity("a" * 32))
         self.assertNotEqual(identity("a" * 32), identity("b" * 32))
+        self.assertNotEqual(identity("a" * 32, 1), identity("a" * 32, 2))
 
 
-class XhsLivePhotoPairDescriptorViewTests(SimpleTestCase):
+class XhsLivePhotoPairDescriptorViewTests(TestCase):
     def setUp(self):
         cache.clear()
         self.client = Client()
+        self.staff = User.objects.create_user(
+            username="pair-staff",
+            password="test-password",
+            is_staff=True,
+            is_active=True,
+        )
+        self.client.force_login(self.staff)
         request = RequestFactory().get("/", REMOTE_ADDR="127.0.0.1")
+        request.user = self.staff
         identity = get_xhs_livephoto_pair_client_identity(request)
         self.client.cookies["csrftoken"] = request.META["CSRF_COOKIE"]
         result = enhanced_result([livephoto_item(0)])
@@ -249,12 +302,72 @@ class XhsLivePhotoPairDescriptorViewTests(SimpleTestCase):
     def test_endpoint_is_post_only_and_csrf_protected(self):
         self.assertEqual(self.client.get(self.url).status_code, 405)
         csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client.force_login(self.staff)
         response = csrf_client.post(
             self.url,
             data={"pair_token": self.token},
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 403)
+
+    def test_anonymous_nonstaff_and_inactive_staff_cannot_use_stolen_token(self):
+        anonymous = Client()
+        anonymous.cookies["csrftoken"] = self.client.cookies["csrftoken"].value
+
+        nonstaff = User.objects.create_user(
+            username="pair-nonstaff",
+            password="test-password",
+            is_active=True,
+        )
+        nonstaff_client = Client()
+        nonstaff_client.force_login(nonstaff)
+        nonstaff_client.cookies["csrftoken"] = self.client.cookies["csrftoken"].value
+
+        inactive_staff = User.objects.create_user(
+            username="pair-inactive-staff",
+            password="test-password",
+            is_staff=True,
+            is_active=False,
+        )
+        inactive_client = Client()
+        inactive_client.force_login(inactive_staff)
+        inactive_client.cookies["csrftoken"] = self.client.cookies["csrftoken"].value
+
+        for client in (anonymous, nonstaff_client, inactive_client):
+            with self.subTest(client=client):
+                response = client.post(
+                    self.url,
+                    data={"pair_token": self.token},
+                    content_type="application/json",
+                )
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(
+                    response.json()["error_code"],
+                    "XHS_LIVEPHOTO_PAIR_STAFF_REQUIRED",
+                )
+
+    def test_token_is_bound_to_the_issuing_staff_user(self):
+        other_staff = User.objects.create_user(
+            username="pair-other-staff",
+            password="test-password",
+            is_staff=True,
+            is_active=True,
+        )
+        other_client = Client()
+        other_client.force_login(other_staff)
+        other_client.cookies["csrftoken"] = self.client.cookies["csrftoken"].value
+
+        response = other_client.post(
+            self.url,
+            data={"pair_token": self.token},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json()["error_code"],
+            "XHS_LIVEPHOTO_PAIR_CLIENT_MISMATCH",
+        )
 
     def test_endpoint_rejects_extra_fields(self):
         response = self.client.post(

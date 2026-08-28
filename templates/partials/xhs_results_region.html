@@ -51,7 +51,7 @@
                 </div>
             </div>
 
-            {% if not show_xhs_livephoto_preview %}
+            {% if not show_xhs_livephoto_staff_preview %}
             <div class="download-actions d-flex flex-column align-items-start align-items-md-end gap-1">
                 <div class="d-flex flex-wrap justify-content-start justify-content-md-end gap-2">
                     <button type="button" class="btn btn-outline-secondary btn-sm" id="select-all-btn">
@@ -82,7 +82,7 @@
         </div>
 
         <div class="card-body note-preview-bg">
-            {% if show_xhs_livephoto_preview %}
+            {% if show_xhs_livephoto_staff_preview %}
                 {% include "partials/xhs_livephoto_preview.html" %}
             {% else %}
             {% if is_mobile_request %}
@@ -202,7 +202,7 @@
             {% endif %}
         </div>
 
-        {% if not show_xhs_livephoto_preview %}
+        {% if not show_xhs_livephoto_staff_preview %}
         <div class="card-footer bg-white">
             <div class="download-progress-wrap mb-2" id="download-progress-wrap" hidden>
                 <div class="download-progress-main">

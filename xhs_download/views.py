@@ -4479,7 +4479,7 @@ def apply_search_result_to_context(
     context["video_items"] = display_context["video_items"]
 
     if (
-        enable_xhs_livephoto_preview
+        enable_xhs_livephoto_staff_preview
         and result.platform == "xiaohongshu"
         and result.rich_media is not None
     ):
@@ -4493,12 +4493,14 @@ def apply_search_result_to_context(
         )
         context["xhs_livephoto_preview"] = preview_context
         context["show_xhs_livephoto_preview"] = True
-        if enable_xhs_livephoto_staff_preview:
-            context["xhs_livephoto_staff_preview"] = preview_context
-            context["show_xhs_livephoto_staff_preview"] = True
+        context["xhs_livephoto_staff_preview"] = preview_context
+        context["show_xhs_livephoto_staff_preview"] = True
     elif (
-        enable_xhs_livephoto_preview
-        and result_metadata.get("xhs_livephoto_preview_status") == "fallback"
+        enable_xhs_livephoto_staff_preview
+        and (
+            result_metadata.get("xhs_livephoto_staff_preview_status") == "fallback"
+            or result_metadata.get("xhs_livephoto_preview_status") == "fallback"
+        )
     ):
         error_code = str(
             result_metadata.get("xhs_livephoto_preview_error_code") or ""
@@ -4744,23 +4746,13 @@ def build_search_results_context(request, platform_key="home"):
             else ""
         )
         client_identity = get_client_identity(request)
-        livephoto_pair_client_identity = (
-            get_xhs_livephoto_pair_client_identity(request)
-            if query_platform_id == "xiaohongshu"
-            else ""
-        )
-        parse_options = {"prefer_ultra_hd": prefer_ultra_hd}
-        enable_xhs_livephoto_preview = bool(
-            query_platform_id == "xiaohongshu"
-        )
         enable_xhs_livephoto_staff_preview = bool(
             query_platform_id == "xiaohongshu"
             and getattr(request.user, "is_authenticated", False)
             and getattr(request.user, "is_active", False)
             and getattr(request.user, "is_staff", False)
         )
-        if enable_xhs_livephoto_preview:
-            parse_options["enable_xhs_livephoto_preview"] = True
+        parse_options = {"prefer_ultra_hd": prefer_ultra_hd}
         if enable_xhs_livephoto_staff_preview:
             parse_options["enable_xhs_livephoto_staff_preview"] = True
         if prefer_youtube_merge:
@@ -4795,12 +4787,21 @@ def build_search_results_context(request, platform_key="home"):
                 consume=consume_fixed_window,
             )
         result = parse_media_page(query, **parse_options)
+        livephoto_pair_client_identity = ""
+        if (
+            enable_xhs_livephoto_staff_preview
+            and result.platform == "xiaohongshu"
+            and result.rich_media is not None
+        ):
+            livephoto_pair_client_identity = (
+                get_xhs_livephoto_pair_client_identity(request)
+            )
         apply_search_result_to_context(
             context,
             result,
             platform_key=platform_key,
             prefer_ultra_hd=prefer_ultra_hd,
-            enable_xhs_livephoto_preview=enable_xhs_livephoto_preview,
+            enable_xhs_livephoto_preview=False,
             enable_xhs_livephoto_staff_preview=enable_xhs_livephoto_staff_preview,
             client_identity=livephoto_pair_client_identity,
         )
@@ -5448,6 +5449,23 @@ def proxy_image_view(request):
 @require_POST
 @csrf_protect
 def xhs_livephoto_pair_descriptor_view(request):
+    user = request.user
+    if not (
+        getattr(user, "is_authenticated", False)
+        and getattr(user, "is_active", False)
+        and getattr(user, "is_staff", False)
+    ):
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error_code": "XHS_LIVEPHOTO_PAIR_STAFF_REQUIRED",
+                "message": "该实况资源仅向当前管理员会话开放。",
+            },
+            status=403,
+        )
+        response["Cache-Control"] = "no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
     if len(request.body) > 8192:
         response = JsonResponse(
             {

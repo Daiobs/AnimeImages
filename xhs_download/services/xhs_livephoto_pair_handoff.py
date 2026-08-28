@@ -111,15 +111,24 @@ def _safe_base_filename(value: str) -> str:
 
 
 def get_xhs_livephoto_pair_client_identity(request) -> str:
-    """Bind one handoff to a browser CSRF secret plus the shared network identity."""
+    """Bind a handoff to an active Staff user, browser, and network identity."""
 
+    user = getattr(request, "user", None)
+    user_id = getattr(user, "pk", None)
+    if not (
+        getattr(user, "is_authenticated", False)
+        and getattr(user, "is_active", False)
+        and getattr(user, "is_staff", False)
+        and user_id is not None
+    ):
+        raise _error(code="XHS_LIVEPHOTO_PAIR_CLIENT_MISMATCH", status=403)
     get_token(request)
     csrf_secret = str(request.META.get("CSRF_COOKIE") or "")
     network_identity = get_client_identity(request)
     if not csrf_secret:
         raise _error(code="XHS_LIVEPHOTO_PAIR_CLIENT_MISMATCH", status=403)
     return hashlib.sha256(
-        f"{network_identity}:{csrf_secret}".encode("utf-8")
+        f"{network_identity}:{csrf_secret}:{user_id}".encode("utf-8")
     ).hexdigest()
 
 

@@ -83,6 +83,19 @@ _ERROR_CODES = frozenset(
     }
 )
 
+_PAIR_AUTHORITY_ERROR_CODES = frozenset(
+    {
+        "XHS_LIVEPHOTO_PAIR_SOURCE_REJECTED",
+        "XHS_LIVEPHOTO_PAIR_MANIFEST_REJECTED",
+        "XHS_LIVEPHOTO_PAIR_STILL_REJECTED",
+        "XHS_LIVEPHOTO_PAIR_MOTION_REJECTED",
+        "XHS_LIVEPHOTO_PAIR_RELATION_REJECTED",
+        "XHS_LIVEPHOTO_PAIR_SIZE_REJECTED",
+        "XHS_LIVEPHOTO_PAIR_TOO_LARGE",
+        "XHS_LIVEPHOTO_PAIR_RECORD_TOO_LARGE",
+    }
+)
+
 
 class XhsLivePhotoPreviewError(ValueError):
     def __init__(self, code: str):
@@ -1072,11 +1085,12 @@ def build_xhs_livephoto_preview_context(
                         base_filename=result.base_filename,
                         client_identity=client_identity,
                     ).token
-                except Exception:
+                except Exception as error:
+                    error_code = str(getattr(error, "error_code", ""))
+                    if error_code not in _PAIR_AUTHORITY_ERROR_CODES:
+                        error_code = "XHS_LIVEPHOTO_PAIR_AUTHORITY_UNAVAILABLE"
                     item["delivery_status"] = "unavailable"
-                    item["delivery_error_code"] = (
-                        "XHS_LIVEPHOTO_PAIR_AUTHORITY_UNAVAILABLE"
-                    )
+                    item["delivery_error_code"] = error_code
             else:
                 item["delivery_status"] = "unavailable"
                 item["delivery_error_code"] = (
