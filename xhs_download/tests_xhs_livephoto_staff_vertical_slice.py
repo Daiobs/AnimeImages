@@ -914,6 +914,7 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
         self.assertEqual(len(soup.select("[data-livephoto-toggle]")), 0)
         self.assertEqual(len(soup.select("[data-livephoto-download-original]")), 0)
         self.assertEqual(len(soup.select("[data-livephoto-download-pair]")), 0)
+        self.assertEqual(len(soup.select("[data-livephoto-pair-token]")), 0)
         self.assertNotIn("下载实况", html)
         self.assertNotIn("实况照片", html)
         self.assertNotIn("查看原图", html)

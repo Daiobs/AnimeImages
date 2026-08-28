@@ -902,7 +902,7 @@ class ParseHubRuntimeIntegrationTests(SimpleTestCase):
         )
         self.assertEqual(len(result.rich_media.groups), 1)
 
-    def test_rebinding_updates_still_urls_and_rich_media_extensions(self):
+    def test_rebinding_preserves_flat_still_assets_and_rich_media_extensions(self):
         items = [native_item(0, livephoto=True), native_item(1)]
 
         def livephoto_probe(records, **_kwargs):
@@ -952,6 +952,33 @@ class ParseHubRuntimeIntegrationTests(SimpleTestCase):
         self.assertEqual(
             [asset.url for asset in rebound.image_assets],
             [raw_url(0), raw_url(1)],
+        )
+        parity_fields = (
+            "url",
+            "preview_url",
+            "cover_url",
+            "cover_preview_url",
+            "filename",
+            "ext",
+            "quality_label",
+            "size_bytes",
+            "size_is_estimate",
+            "headers",
+            "media_host_suffixes",
+            "provider",
+            "provider_resource_id",
+            "provider_cache_key",
+            "source_platform",
+        )
+        self.assertEqual(
+            [
+                tuple(getattr(asset, field) for field in parity_fields)
+                for asset in rebound.image_assets
+            ],
+            [
+                tuple(getattr(asset, field) for field in parity_fields)
+                for asset in selected_stills.image_assets
+            ],
         )
         self.assertEqual(
             [
