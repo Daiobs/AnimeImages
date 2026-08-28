@@ -628,7 +628,11 @@ def probe_xhs_parsehub_raw_image(
 def _native_fallback_asset(asset: MediaAsset) -> MediaAsset:
     from .xiaohongshu import normalize_xhs_preview_image_url
 
-    preview_url = normalize_xhs_preview_image_url(asset.url, width=1280) or asset.preview_url or asset.url
+    preview_url = (
+        asset.preview_url
+        or normalize_xhs_preview_image_url(asset.url, width=1280)
+        or asset.url
+    )
     return MediaAsset(
         media_type="image",
         url=asset.url,
@@ -679,8 +683,8 @@ def _parsehub_asset(
         url=probe.final_url,
         platform="xiaohongshu",
         preview_url=(
-            normalize_xhs_preview_image_url(native_asset.url, width=1280)
-            or native_asset.preview_url
+            native_asset.preview_url
+            or normalize_xhs_preview_image_url(native_asset.url, width=1280)
             or native_asset.url
         ),
         filename=clean_filename(f"{native_stem}.{probe.extension}"),

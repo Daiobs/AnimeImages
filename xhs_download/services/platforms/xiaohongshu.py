@@ -37,6 +37,10 @@ from .xhs_image_download_authority import (
     classify_xhs_image_candidate,
 )
 from .xhs_parsehub_images import enhance_xhs_images_with_parsehub
+from .xhs_preview import (
+    bind_xhs_preview_sources,
+    build_xhs_preview_source_sets,
+)
 from .xhs_tiantian_hybrid import enhance_xhs_ordinary_video
 
 
@@ -638,6 +642,14 @@ class XiaohongshuAdapter(BasePlatformAdapter):
                 structured_state=structured_state,
                 fallback_policy=fallback_policy,
             )
+            preview_source_sets = ()
+            private_snapshot = structured_state.private_selected_note_snapshot
+            if private_snapshot is not None:
+                preview_source_sets = build_xhs_preview_source_sets(
+                    private_snapshot.image_list
+                )
+                if len(preview_source_sets) != len(image_urls):
+                    preview_source_sets = ()
             flat_result = ParseResult(
                 platform=self.platform_id,
                 post_type="image",
@@ -648,7 +660,16 @@ class XiaohongshuAdapter(BasePlatformAdapter):
                         url=image_url,
                         platform=self.platform_id,
                         preview_url=(
-                            normalize_xhs_preview_image_url(image_url, width=1280)
+                            bind_xhs_preview_sources(
+                                preview_source_sets[index - 1][0].value,
+                                preview_source_sets[index - 1],
+                            )
+                            if preview_source_sets
+                            and preview_source_sets[index - 1]
+                            else normalize_xhs_preview_image_url(
+                                image_url,
+                                width=1280,
+                            )
                             or image_url
                         ),
                         filename=f"{base_filename}_{index:02d}.jpg",

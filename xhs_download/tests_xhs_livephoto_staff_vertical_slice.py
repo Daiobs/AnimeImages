@@ -880,7 +880,7 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
         self.assertNotIn("查看原图", html)
         self.assertTrue(
             all(
-                image.get("src", "").startswith("?u=")
+                image.get("src", "").startswith("?p=")
                 for image in soup.select(".asset-card > img, .asset-card .xhs-livephoto-asset-media > img")
             )
         )

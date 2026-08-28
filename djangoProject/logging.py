@@ -21,6 +21,27 @@ PROVIDER_TERMINAL_LOG_FIELDS = (
     "failure_class",
 )
 
+XHS_PREVIEW_EVENT_LOG_FIELDS = {
+    "xhs_preview_candidate_failed": (
+        "surface",
+        "source_ordinal",
+        "candidate_class",
+        "failure_code",
+    ),
+    "xhs_preview_fallback_succeeded": (
+        "surface",
+        "source_ordinal",
+        "candidate_class",
+        "attempt_count",
+    ),
+    "xhs_preview_candidates_exhausted": (
+        "surface",
+        "source_ordinal",
+        "candidate_count",
+        "attempted_count",
+    ),
+}
+
 
 class RequestContextFormatter(logging.Formatter):
     default_extra = {
@@ -42,10 +63,17 @@ class RequestContextFormatter(logging.Formatter):
         if not record.event:
             record.event = record.getMessage()
         rendered = super().format(record)
-        if record.event != PROVIDER_TERMINAL_EVENT:
-            return rendered
-        provider_fields = " ".join(
-            f"{field}={getattr(record, field, '')}"
-            for field in PROVIDER_TERMINAL_LOG_FIELDS
-        )
-        return f"{rendered} {provider_fields}"
+        if record.event == PROVIDER_TERMINAL_EVENT:
+            provider_fields = " ".join(
+                f"{field}={getattr(record, field, '')}"
+                for field in PROVIDER_TERMINAL_LOG_FIELDS
+            )
+            return f"{rendered} {provider_fields}"
+        preview_fields = XHS_PREVIEW_EVENT_LOG_FIELDS.get(record.event)
+        if preview_fields:
+            rendered_fields = " ".join(
+                f"{field}={getattr(record, field, '')}"
+                for field in preview_fields
+            )
+            return f"{rendered} {rendered_fields}"
+        return rendered

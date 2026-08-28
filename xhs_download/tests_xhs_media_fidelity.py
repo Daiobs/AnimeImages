@@ -424,9 +424,8 @@ class XhsMediaFidelityAdapterTests(SimpleTestCase):
         self.assertTrue(result.image_assets[0].url.startswith("https://"))
         self.assertEqual(
             result.image_assets[0].preview_url,
-            normalize_xhs_preview_image_url(raw_url, width=1280),
+            "https://sns-webpic-qc.xhscdn.com/notes_pre_post/protocol-image",
         )
-        self.assertIn("/w/1280/format/webp", result.image_assets[0].preview_url)
 
     def test_video_cover_priority_is_explicit_then_structured_image_then_meta(self):
         explicit = video_note()

@@ -127,8 +127,6 @@
                         </div>
                         <div class="batch-photo-gallery" data-batch-photo-gallery>
                             {% for item in row.image_items %}
-                                {% firstof item.encoded_card_preview_url item.encoded_preview_url item.encoded_url as card_preview_src %}
-                                {% firstof item.encoded_lightbox_preview_url item.encoded_card_preview_url item.encoded_preview_url item.encoded_url as lightbox_preview_src %}
                                 <article class="batch-photo-item"
                                          data-batch-photo-item
                                          data-batch-photo-index="{{ forloop.counter0 }}"
@@ -151,11 +149,11 @@
                                     <button type="button"
                                             class="batch-photo-preview"
                                             data-batch-lightbox-open
-                                            data-card-preview-src="{{ proxy_image_url }}?u={{ card_preview_src }}{% if item.card_preview_provider_query %}&{{ item.card_preview_provider_query }}{% elif item.preview_provider_query %}&{{ item.preview_provider_query }}{% endif %}"
-                                            data-lightbox-preview-src="{{ proxy_image_url }}?u={{ lightbox_preview_src }}{% if item.lightbox_preview_provider_query %}&{{ item.lightbox_preview_provider_query }}{% elif item.card_preview_provider_query %}&{{ item.card_preview_provider_query }}{% elif item.preview_provider_query %}&{{ item.preview_provider_query }}{% endif %}"
+                                            data-card-preview-src="{{ proxy_image_url }}?{{ item.card_preview_proxy_query }}"
+                                            data-lightbox-preview-src="{{ proxy_image_url }}?{{ item.lightbox_preview_proxy_query }}"
                                             aria-label="放大查看图片 {{ forloop.counter }}">
                                         <img
-                                                src="{{ proxy_image_url }}?u={{ card_preview_src }}{% if item.card_preview_provider_query %}&{{ item.card_preview_provider_query }}{% elif item.preview_provider_query %}&{{ item.preview_provider_query }}{% endif %}"
+                                                src="{{ proxy_image_url }}?{{ item.card_preview_proxy_query }}"
                                                 alt="图片 {{ forloop.counter }}"
                                                 {% if forloop.first %}loading="eager" fetchpriority="high"{% else %}loading="lazy"{% endif %}
                                                 decoding="async"

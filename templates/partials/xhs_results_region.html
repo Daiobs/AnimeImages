@@ -228,7 +228,7 @@
                                 <div class="xhs-livephoto-asset-media">
                             {% endif %}
                                 <img
-                                        src="{{ proxy_image_url }}?u={{ item.encoded_preview_url|default:item.encoded_url }}{% if item.preview_provider_query %}&{{ item.preview_provider_query }}{% endif %}"
+                                        src="{{ proxy_image_url }}?{{ item.preview_proxy_query }}"
                                         alt="{% if item.asset_kind == 'livephoto' %}实况照片静态画面{% else %}素材图片{% endif %}"
                                         loading="lazy"
                                         decoding="async"

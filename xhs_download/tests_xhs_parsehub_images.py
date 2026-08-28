@@ -511,7 +511,10 @@ class ParseHubEnhancementTests(SimpleTestCase):
             raw_url(0), raw_url(1), raw_url(2)
         ])
         self.assertTrue(all(asset.url != asset.preview_url for asset in outcome.result.assets))
-        self.assertTrue(all("/w/1280/" in asset.preview_url for asset in outcome.result.assets))
+        self.assertEqual(
+            [str(asset.preview_url) for asset in outcome.result.assets],
+            [native_source_url(0), native_source_url(1), native_source_url(2)],
+        )
         self.assertTrue(all(asset.ext == "jpg" for asset in outcome.result.assets))
         self.assertEqual(loader.call_count, 1)
 
@@ -695,8 +698,8 @@ class ParseHubRuntimeIntegrationTests(SimpleTestCase):
         self.assertTrue(
             all(
                 item["url"] != item["card_preview_url"]
-                and "/w/1280/" in item["card_preview_url"]
-                for item in single["image_items"]
+                and item["card_preview_url"] == native_source_url(index)
+                for index, item in enumerate(single["image_items"])
             )
         )
         self.assertTrue(
