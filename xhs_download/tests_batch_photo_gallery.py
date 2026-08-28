@@ -200,6 +200,12 @@ class BatchPhotoArchiveTests(SimpleTestCase):
                     [bundle.read(name) for name in bundle.namelist()],
                     bodies,
                 )
+                self.assertTrue(
+                    all(
+                        info.date_time != (1980, 1, 1, 0, 0, 0)
+                        for info in bundle.infolist()
+                    )
+                )
             self.assertEqual(archive["filename"], "post_images.zip")
             self.assertEqual(archive["saved_count"], 5)
             self.assertEqual(archive["failed_count"], 0)

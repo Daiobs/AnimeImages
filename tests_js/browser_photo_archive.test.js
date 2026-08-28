@@ -98,6 +98,8 @@ async function parseStoreZip(blob) {
     while (offset + 4 <= bytes.length && view.getUint32(offset, true) === 0x04034b50) {
         const flags = view.getUint16(offset + 6, true);
         const method = view.getUint16(offset + 8, true);
+        const modificationTime = view.getUint16(offset + 10, true);
+        const modificationDate = view.getUint16(offset + 12, true);
         const expectedCrc = view.getUint32(offset + 14, true);
         const size = view.getUint32(offset + 18, true);
         const nameLength = view.getUint16(offset + 26, true);
@@ -109,12 +111,43 @@ async function parseStoreZip(blob) {
             name: decoder.decode(bytes.slice(nameStart, nameStart + nameLength)),
             flags,
             method,
+            modificationTime,
+            modificationDate,
             expectedCrc,
             data,
         });
         offset = dataStart + size;
     }
+    const centralByName = new Map();
+    while (offset + 4 <= bytes.length && view.getUint32(offset, true) === 0x02014b50) {
+        const modificationTime = view.getUint16(offset + 12, true);
+        const modificationDate = view.getUint16(offset + 14, true);
+        const nameLength = view.getUint16(offset + 28, true);
+        const extraLength = view.getUint16(offset + 30, true);
+        const commentLength = view.getUint16(offset + 32, true);
+        const nameStart = offset + 46;
+        const name = decoder.decode(bytes.slice(nameStart, nameStart + nameLength));
+        centralByName.set(name, {modificationTime, modificationDate});
+        offset = nameStart + nameLength + extraLength + commentLength;
+    }
+    for (const entry of entries) {
+        const central = centralByName.get(entry.name) || {};
+        entry.centralModificationTime = central.modificationTime;
+        entry.centralModificationDate = central.modificationDate;
+    }
     return entries;
+}
+
+
+function decodeDosDateTime(time, date) {
+    return {
+        year: 1980 + ((date >> 9) & 0x7f),
+        month: (date >> 5) & 0x0f,
+        day: date & 0x1f,
+        hour: (time >> 11) & 0x1f,
+        minute: (time >> 5) & 0x3f,
+        second: (time & 0x1f) * 2,
+    };
 }
 
 
@@ -170,6 +203,15 @@ test("pure original images use Browser Photo while mixed or server-required sele
     assert.equal(photo.supportsSelection([...images, {type: "video", url: "https://video.test/a"}]), false);
     assert.equal(photo.supportsSelection([{...images[0], requires_cookie: true}]), false);
     assert.equal(photo.supportsSelection([{...images[0], requires_merge: true}]), false);
+    const livephoto = {
+        type: "livephoto",
+        logical_type: "livephoto",
+        asset_id: "opaque-asset",
+        pair_token: "opaque-ticket",
+        descriptor_url: "/media/xhs-livephoto-pair-descriptor/",
+    };
+    assert.equal(photo.supportsSelection([images[0], livephoto], "original"), true);
+    assert.equal(photo.supportsSelection([{...livephoto, pair_token: ""}], "original"), false);
 });
 
 
@@ -206,6 +248,78 @@ test("CRC32 and STORE ZIP preserve bytes, UTF-8 names, order and method", async 
     assert.equal(entries.every((entry) => (entry.flags & 0x0800) !== 0), true);
     assert.deepEqual(entries[0].data, SIGNATURES.png);
     assert.equal(entries[0].expectedCrc, photo.crc32(SIGNATURES.png));
+});
+
+
+test("DOS timestamp encoding clamps years and rounds seconds to two-second precision", () => {
+    const fixture = new Date(2026, 7, 28, 13, 44, 59);
+    const encoded = photo.encodeDosDateTime(fixture);
+    assert.deepEqual(decodeDosDateTime(encoded.time, encoded.date), {
+        year: 2026,
+        month: 8,
+        day: 28,
+        hour: 13,
+        minute: 44,
+        second: 58,
+    });
+    assert.equal(photo.normalizeZipModifiedAt(new Date(1970, 0, 2)).year, 1980);
+    assert.equal(photo.normalizeZipModifiedAt(new Date(2200, 0, 2)).year, 2107);
+    assert.deepEqual(
+        photo.normalizeZipModifiedAt(new Date("invalid"), fixture),
+        photo.normalizeZipModifiedAt(fixture),
+    );
+});
+
+
+test("STORE ZIP writes one archive timestamp to matching local and central headers", async () => {
+    const createdAt = new Date(2026, 7, 28, 13, 44, 58);
+    const zip = photo.createStoreZip([
+        {filename: "目录/原图.heic", chunks: [SIGNATURES.heic]},
+        {filename: "目录/实况.mp4", chunks: [MP4_BYTES]},
+    ], {createdAt});
+    const entries = await parseStoreZip(zip);
+    const expected = photo.encodeDosDateTime(createdAt);
+
+    assert.deepEqual(entries.map((entry) => entry.name), ["目录/原图.heic", "目录/实况.mp4"]);
+    for (const entry of entries) {
+        assert.equal(entry.modificationTime, expected.time);
+        assert.equal(entry.modificationDate, expected.date);
+        assert.equal(entry.centralModificationTime, expected.time);
+        assert.equal(entry.centralModificationDate, expected.date);
+        assert.notEqual(entry.modificationDate, 0x0021);
+    }
+    assert.deepEqual(entries[0].data, SIGNATURES.heic);
+    assert.deepEqual(entries[1].data, MP4_BYTES);
+    assert.equal(entries[0].expectedCrc, photo.crc32(SIGNATURES.heic));
+    assert.equal(entries[1].expectedCrc, photo.crc32(MP4_BYTES));
+});
+
+
+test("STORE ZIP defaults entry timestamps to the archive creation time, never 1980", async () => {
+    const before = new Date();
+    const zip = photo.createStoreZip([
+        {filename: "当前时间.png", chunks: [SIGNATURES.png]},
+    ]);
+    const after = new Date();
+    const [entry] = await parseStoreZip(zip);
+    const decoded = decodeDosDateTime(entry.modificationTime, entry.modificationDate);
+    const entryTime = new Date(
+        decoded.year,
+        decoded.month - 1,
+        decoded.day,
+        decoded.hour,
+        decoded.minute,
+        decoded.second,
+    );
+
+    assert.notDeepEqual(
+        [decoded.year, decoded.month, decoded.day, decoded.hour, decoded.minute, decoded.second],
+        [1980, 1, 1, 0, 0, 0],
+    );
+    assert.equal(entryTime.getTime() >= before.getTime() - 2000, true);
+    assert.equal(entryTime.getTime() <= after.getTime(), true);
+    assert.equal(entry.centralModificationTime, entry.modificationTime);
+    assert.equal(entry.centralModificationDate, entry.modificationDate);
 });
 
 
@@ -261,12 +375,14 @@ test("XHS and ParseHub images require magic instead of trusting MIME or suffix",
 
 test("mixed Browser archive keeps input order and reports unknown bytes without inventing jpg", async () => {
     const bodies = [SIGNATURES.png, Uint8Array.from([1, 2, 3]), SIGNATURES.webp];
+    const createdAt = new Date(2026, 7, 28, 18, 20, 22);
     let saved = null;
     const result = await photo.createArchive(bodies.map((_body, index) => ({
         type: "image",
         url: `https://ci.xiaohongshu.com/item-${index}`,
     })), {
         baseFilename: "图集",
+        createdAt,
         fetchImpl: async (url) => fakeResponse([bodies[Number(url.split("-").pop())]], {
             contentLength: "",
         }),
@@ -280,6 +396,9 @@ test("mixed Browser archive keeps input order and reports unknown bytes without 
     assert.deepEqual(entries.map((entry) => entry.name), ["图集_01.png", "图集_03.webp", "failed.txt"]);
     assert.match(new TextDecoder().decode(entries[2].data), /图片 02: IMAGE_FORMAT_UNDETERMINED/);
     assert.equal(entries.some((entry) => entry.name.endsWith(".jpg")), false);
+    const expectedTimestamp = photo.encodeDosDateTime(createdAt);
+    assert.equal(entries.every((entry) => entry.modificationDate === expectedTimestamp.date), true);
+    assert.equal(entries.every((entry) => entry.modificationTime === expectedTimestamp.time), true);
 });
 
 
@@ -455,6 +574,7 @@ test("transfer meter exposes real bytes, rolling speed and ETA only with known t
 test("LivePhoto pair ZIP preserves original HEIC and MP4 bytes in exact order", async () => {
     let saved = null;
     const progressStages = [];
+    const createdAt = new Date(2026, 7, 28, 19, 21, 24);
     const pair = {
         archive_filename: "作品_01_livephoto.zip",
         still: {
@@ -476,6 +596,7 @@ test("LivePhoto pair ZIP preserves original HEIC and MP4 bytes in exact order", 
         fetchImpl: async (url) => url.includes("still")
             ? fakeResponse([SIGNATURES.heic], {contentType: "image/jpeg"})
             : fakeResponse([MP4_BYTES], {contentType: "video/mp4"}),
+        createdAt,
         onProgress(snapshot) { progressStages.push(snapshot.stage); },
         async handoff(blob, filename) { saved = {blob, filename}; },
     });
@@ -493,8 +614,169 @@ test("LivePhoto pair ZIP preserves original HEIC and MP4 bytes in exact order", 
     assert.equal(entries[1].expectedCrc, photo.crc32(MP4_BYTES));
     assert.equal(entries.every((entry) => entry.method === 0), true);
     assert.equal(entries.some((entry) => entry.name === "failed.txt"), false);
+    const expectedTimestamp = photo.encodeDosDateTime(createdAt);
+    assert.equal(entries.every((entry) => entry.modificationDate === expectedTimestamp.date), true);
+    assert.equal(entries.every((entry) => entry.modificationTime === expectedTimestamp.time), true);
     assert.equal(progressStages.includes("fetching_motion"), true);
     assert.equal(progressStages.at(-1), "completed");
+});
+
+
+test("mixed logical archive expands LivePhoto pairs once in deterministic source order", async () => {
+    const createdAt = new Date(2026, 7, 28, 20, 30, 40);
+    const fetchOrder = [];
+    const descriptorOrder = [];
+    const progress = [];
+    let saved = null;
+    const items = [
+        {
+            type: "livephoto",
+            logical_type: "livephoto",
+            asset_id: "opaque-live-1",
+            pair_token: "ticket-1",
+            descriptor_url: "/descriptor/",
+            display_ordinal: 1,
+        },
+        {
+            type: "image",
+            logical_type: "image",
+            url: "https://ci.xiaohongshu.com/image-2",
+            display_ordinal: 2,
+            source_platform: "xiaohongshu",
+        },
+        {
+            type: "livephoto",
+            logical_type: "livephoto",
+            asset_id: "opaque-live-3",
+            pair_token: "ticket-3",
+            descriptor_url: "/descriptor/",
+            display_ordinal: 3,
+        },
+        {
+            type: "image",
+            logical_type: "image",
+            url: "https://ci.xiaohongshu.com/image-4",
+            display_ordinal: 4,
+            source_platform: "xiaohongshu",
+        },
+    ];
+    const pairs = {
+        "opaque-live-1": {
+            still: {
+                type: "image",
+                url: "https://ci.xiaohongshu.com/still-1",
+                filename: "first.heic",
+                source_platform: "xiaohongshu",
+            },
+            motion: {
+                type: "video",
+                url: "https://sns-video-v7.xhscdn.com/motion-1.mp4",
+                filename: "first.mp4",
+                format_class: "mp4",
+            },
+        },
+        "opaque-live-3": {
+            still: {
+                type: "image",
+                url: "https://ci.xiaohongshu.com/still-3",
+                filename: "third.jpg",
+                source_platform: "xiaohongshu",
+            },
+            motion: {
+                type: "video",
+                url: "https://sns-video-v7.xhscdn.com/motion-3.mp4",
+                filename: "third.mp4",
+                format_class: "mp4",
+            },
+        },
+    };
+    const bodies = new Map([
+        ["still-1", SIGNATURES.heic],
+        ["motion-1", MP4_BYTES],
+        ["image-2", SIGNATURES.png],
+        ["still-3", SIGNATURES.jpeg],
+        ["motion-3", MP4_BYTES],
+        ["image-4", SIGNATURES.webp],
+    ]);
+
+    const result = await photo.createLogicalSelectionArchive(items, {
+        baseFilename: "作品",
+        createdAt,
+        async resolveLivePhoto(item) {
+            descriptorOrder.push(item.asset_id);
+            return pairs[item.asset_id];
+        },
+        async fetchImpl(url) {
+            const key = Array.from(bodies.keys()).find((candidate) => url.includes(candidate));
+            fetchOrder.push(key);
+            return fakeResponse([bodies.get(key)], {
+                contentType: key.startsWith("motion") ? "video/mp4" : "application/octet-stream",
+            });
+        },
+        onProgress(snapshot) { progress.push(snapshot); },
+        async handoff(blob, filename) { saved = {blob, filename}; },
+    });
+    const entries = await parseStoreZip(saved.blob);
+    const expectedTimestamp = photo.encodeDosDateTime(createdAt);
+
+    assert.equal(saved.filename, "作品_selected.zip");
+    assert.equal(result.logicalItemCount, 4);
+    assert.equal(result.entryCount, 6);
+    assert.deepEqual(descriptorOrder, ["opaque-live-1", "opaque-live-3"]);
+    assert.deepEqual(fetchOrder, ["still-1", "motion-1", "image-2", "still-3", "motion-3", "image-4"]);
+    assert.deepEqual(entries.map((entry) => entry.name), [
+        "01_livephoto/01_still.heic",
+        "01_livephoto/01_motion.mp4",
+        "02.png",
+        "03_livephoto/03_still.jpg",
+        "03_livephoto/03_motion.mp4",
+        "04.webp",
+    ]);
+    assert.equal(entries.some((entry) => entry.name === "01.heic"), false);
+    assert.deepEqual(entries.map((entry) => entry.data), [
+        SIGNATURES.heic,
+        MP4_BYTES,
+        SIGNATURES.png,
+        SIGNATURES.jpeg,
+        MP4_BYTES,
+        SIGNATURES.webp,
+    ]);
+    assert.equal(entries.every((entry) => entry.expectedCrc === photo.crc32(entry.data)), true);
+    assert.equal(entries.every((entry) => entry.modificationDate === expectedTimestamp.date), true);
+    assert.equal(entries.every((entry) => entry.modificationTime === expectedTimestamp.time), true);
+    assert.equal(progress.at(-1).totalItems, 4);
+    assert.equal(progress.at(-1).completedItems, 4);
+});
+
+
+test("mixed logical archive cancellation prevents descriptor continuation and handoff", async () => {
+    const controller = new AbortController();
+    let descriptorCalls = 0;
+    let handoffCalls = 0;
+    const promise = photo.createLogicalSelectionArchive([
+        {type: "image", logical_type: "image", url: "https://ci.xiaohongshu.com/first"},
+        {
+            type: "livephoto",
+            logical_type: "livephoto",
+            asset_id: "opaque-live",
+            pair_token: "ticket",
+            descriptor_url: "/descriptor/",
+        },
+    ], {
+        signal: controller.signal,
+        fetchImpl: (_url, options) => new Promise((_resolve, reject) => {
+            options.signal.addEventListener("abort", () => {
+                reject(new DOMException("Aborted", "AbortError"));
+            }, {once: true});
+        }),
+        async resolveLivePhoto() { descriptorCalls += 1; },
+        async handoff() { handoffCalls += 1; },
+    });
+    controller.abort();
+
+    await assert.rejects(promise, (error) => error.errorCode === "BROWSER_PHOTO_CANCELLED");
+    assert.equal(descriptorCalls, 0);
+    assert.equal(handoffCalls, 0);
 });
 
 

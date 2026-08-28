@@ -247,6 +247,15 @@
         return sanitizeFilename(`${safeStem}${safeSuffix}`, `image${safeSuffix}`);
     }
 
+    function sanitizeZipEntryPath(value, fallback) {
+        const segments = String(value || "")
+            .replace(/\\/g, "/")
+            .split("/")
+            .filter((segment) => segment && segment !== "." && segment !== "..")
+            .map((segment) => sanitizeFilename(segment, "item"));
+        return segments.join("/") || sanitizeFilename(fallback, "item");
+    }
+
     function formatBytes(value) {
         const bytes = Math.max(0, Number(value || 0));
         if (bytes < 1024) {
@@ -403,7 +412,49 @@
         return {bytes, view: new DataView(bytes.buffer)};
     }
 
-    function normalizeZipEntry(entry) {
+    function validDate(value) {
+        if (value === undefined || value === null || value === "") {
+            return null;
+        }
+        const candidate = value instanceof Date
+            ? new Date(value.getTime())
+            : new Date(value);
+        return Number.isFinite(candidate.getTime()) ? candidate : null;
+    }
+
+    function normalizeZipModifiedAt(value, fallback) {
+        const date = validDate(value) || validDate(fallback) || new Date();
+        const year = Math.min(2107, Math.max(1980, date.getFullYear()));
+        const month = Math.min(12, Math.max(1, date.getMonth() + 1));
+        const lastDay = new Date(year, month, 0).getDate();
+        return Object.freeze({
+            year,
+            month,
+            day: Math.min(lastDay, Math.max(1, date.getDate())),
+            hour: Math.min(23, Math.max(0, date.getHours())),
+            minute: Math.min(59, Math.max(0, date.getMinutes())),
+            second: Math.min(59, Math.max(0, date.getSeconds())),
+        });
+    }
+
+    function encodeDosDateTime(value, fallback) {
+        const normalized = normalizeZipModifiedAt(value, fallback);
+        return Object.freeze({
+            time: (
+                (normalized.hour << 11)
+                | (normalized.minute << 5)
+                | Math.floor(normalized.second / 2)
+            ) & 0xffff,
+            date: (
+                ((normalized.year - 1980) << 9)
+                | (normalized.month << 5)
+                | normalized.day
+            ) & 0xffff,
+            normalized,
+        });
+    }
+
+    function normalizeZipEntry(entry, archiveCreatedAt) {
         const chunks = (entry.chunks || [entry.bytes || new Uint8Array()]).map(bytesView);
         const size = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
         let resolvedCrc = entry.crc;
@@ -414,16 +465,23 @@
             }
             resolvedCrc = (crcState ^ 0xffffffff) >>> 0;
         }
+        const modifiedAt = encodeDosDateTime(entry.modifiedAt, archiveCreatedAt);
         return {
-            filename: sanitizeFilename(entry.filename, "image"),
+            filename: sanitizeZipEntryPath(entry.filename, "image"),
             chunks,
             size,
             crc: resolvedCrc >>> 0,
+            modificationTime: modifiedAt.time,
+            modificationDate: modifiedAt.date,
         };
     }
 
-    function createStoreZip(entries) {
-        const normalized = (entries || []).map(normalizeZipEntry);
+    function createStoreZip(entries, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        const archiveCreatedAt = validDate(settings.createdAt) || new Date();
+        const normalized = (entries || []).map((entry) => (
+            normalizeZipEntry(entry, archiveCreatedAt)
+        ));
         const localParts = [];
         const centralParts = [];
         let offset = 0;
@@ -434,8 +492,8 @@
             writeUint16(local.view, 4, 20);
             writeUint16(local.view, 6, 0x0800);
             writeUint16(local.view, 8, 0);
-            writeUint16(local.view, 10, 0);
-            writeUint16(local.view, 12, 0x0021);
+            writeUint16(local.view, 10, entry.modificationTime);
+            writeUint16(local.view, 12, entry.modificationDate);
             writeUint32(local.view, 14, entry.crc);
             writeUint32(local.view, 18, entry.size);
             writeUint32(local.view, 22, entry.size);
@@ -450,8 +508,8 @@
             writeUint16(central.view, 6, 20);
             writeUint16(central.view, 8, 0x0800);
             writeUint16(central.view, 10, 0);
-            writeUint16(central.view, 12, 0);
-            writeUint16(central.view, 14, 0x0021);
+            writeUint16(central.view, 12, entry.modificationTime);
+            writeUint16(central.view, 14, entry.modificationDate);
             writeUint32(central.view, 16, entry.crc);
             writeUint32(central.view, 20, entry.size);
             writeUint32(central.view, 24, entry.size);
@@ -503,6 +561,8 @@
             IMAGE_FORMAT_UNDETERMINED: "无法确认图片真实格式，已停止保存。",
             BROWSER_PHOTO_NO_SUCCESS: "没有图片下载成功。",
             BROWSER_LIVEPHOTO_MOTION_INVALID: "实况视频获取失败。",
+            BROWSER_LIVEPHOTO_STILL_FETCH_FAILED: "原图获取失败。",
+            BROWSER_LIVEPHOTO_MOTION_FETCH_FAILED: "实况视频获取失败。",
             BROWSER_LIVEPHOTO_SIZE_MISMATCH: "实况素材内容不完整，请重新解析。",
             BROWSER_LIVEPHOTO_PAIR_TOO_LARGE: "该实况素材过大，暂无法在浏览器中打包。",
             BROWSER_LIVEPHOTO_PAIR_INVALID: "实况素材信息无效，请重新解析。",
@@ -556,7 +616,9 @@
                 throw photoError("BROWSER_PHOTO_ARCHIVE_TOO_LARGE");
             }
         }
-        context.meter.setItemTotal(context.index, contentLength);
+        if (!context.preserveItemTotal) {
+            context.meter.setItemTotal(context.index, contentLength);
+        }
         if (!response.body || typeof response.body.getReader !== "function") {
             throw photoError("BROWSER_PHOTO_CORS_UNAVAILABLE");
         }
@@ -719,7 +781,9 @@
                 throw photoError("BROWSER_LIVEPHOTO_PAIR_TOO_LARGE");
             }
         }
-        context.meter.setItemTotal(context.index, contentLength);
+        if (!context.preserveItemTotal) {
+            context.meter.setItemTotal(context.index, contentLength);
+        }
         if (!response.body || typeof response.body.getReader !== "function") {
             throw photoError("BROWSER_PHOTO_CORS_UNAVAILABLE");
         }
@@ -917,15 +981,23 @@
         return Boolean(
             sourceItems.length
             && String(saveFormat || "original") === "original"
-            && sourceItems.every((item) => (
-                item
-                && item.type === "image"
-                && String(item.url || "").trim()
-                && item.requires_cookie !== true
-                && item.requiresCookie !== true
-                && item.requires_merge !== true
-                && item.requiresMerge !== true
-            ))
+            && sourceItems.every((item) => {
+                const logicalType = logicalItemType(item);
+                if (!item || item.requires_cookie === true || item.requiresCookie === true) {
+                    return false;
+                }
+                if (item.requires_merge === true || item.requiresMerge === true) {
+                    return false;
+                }
+                if (logicalType === "livephoto") {
+                    return Boolean(
+                        String(item.asset_id || item.assetId || "").trim()
+                        && String(item.pair_token || item.pairToken || "").trim()
+                        && String(item.descriptor_url || item.descriptorUrl || "").trim()
+                    );
+                }
+                return logicalType === "image" && Boolean(String(item.url || "").trim());
+            })
         );
     }
 
@@ -983,6 +1055,7 @@
 
     async function createArchive(items, options) {
         const settings = options && typeof options === "object" ? options : {};
+        const archiveCreatedAt = validDate(settings.createdAt) || new Date();
         const sourceItems = Array.isArray(items) ? items : [];
         if (sourceItems.length < 2) {
             throw photoError("BROWSER_PHOTO_INVALID_ITEM", "至少选择两张图片才能打包。");
@@ -1097,7 +1170,7 @@
                 });
             }
             meter.emit("assembling");
-            const blob = createStoreZip(entries);
+            const blob = createStoreZip(entries, {createdAt: archiveCreatedAt});
             if (blob.size > archiveMaxBytes + (entries.length * 512)) {
                 throw photoError("BROWSER_PHOTO_ARCHIVE_TOO_LARGE");
             }
@@ -1122,6 +1195,7 @@
 
     async function createLivePhotoPairArchive(pair, options) {
         const settings = options && typeof options === "object" ? options : {};
+        const archiveCreatedAt = validDate(settings.createdAt) || new Date();
         if (!pair || !pair.still || !pair.motion) {
             throw photoError("BROWSER_LIVEPHOTO_PAIR_INVALID");
         }
@@ -1229,7 +1303,7 @@
                 {filename: stillFilename, chunks: stillResult.chunks, crc: stillResult.crc},
                 {filename: motionFilename, chunks: motionResult.chunks, crc: motionResult.crc},
             ];
-            const blob = createStoreZip(entries);
+            const blob = createStoreZip(entries, {createdAt: archiveCreatedAt});
             if (blob.size > archiveMaxBytes + 1024) {
                 throw photoError("BROWSER_LIVEPHOTO_PAIR_TOO_LARGE");
             }
@@ -1260,6 +1334,210 @@
         }
     }
 
+    function logicalItemType(item) {
+        return String(item && (item.logical_type || item.logicalType || item.type) || "");
+    }
+
+    function logicalDisplayOrdinal(item, index) {
+        return positiveInteger(item && (item.display_ordinal || item.displayOrdinal)) || index + 1;
+    }
+
+    function normalizeLivePhotoPair(pair) {
+        if (!pair || !pair.still || !pair.motion) {
+            throw photoError("BROWSER_LIVEPHOTO_PAIR_INVALID");
+        }
+        const still = normalizedPhotoItem({
+            ...pair.still,
+            require_magic: true,
+        }, 0, "livephoto_still");
+        const motion = {
+            ...pair.motion,
+            type: "video",
+            url: String(pair.motion.url || "").trim(),
+            filename: sanitizeFilename(pair.motion.filename, "livephoto_motion.mp4"),
+        };
+        assertPhotoItem(still);
+        if (
+            !motion.url
+            || String(motion.format_class || "").toLowerCase() !== "mp4"
+            || !/\.mp4$/i.test(motion.filename)
+        ) {
+            throw photoError("BROWSER_LIVEPHOTO_PAIR_INVALID");
+        }
+        return {still, motion};
+    }
+
+    async function createLogicalSelectionArchive(items, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        const sourceItems = Array.isArray(items) ? items : [];
+        if (sourceItems.length < 2) {
+            throw photoError("BROWSER_PHOTO_INVALID_ITEM", "至少选择两个素材才能打包。");
+        }
+        const resolveLivePhoto = settings.resolveLivePhoto;
+        const archiveCreatedAt = validDate(settings.createdAt) || new Date();
+        const baseStem = filenameStem(settings.baseFilename, "selected");
+        const controller = new AbortController();
+        const releaseSignal = bridgeAbortSignal(settings.signal, controller);
+        const meter = createTransferMeter({
+            totalItems: sourceItems.length,
+            onProgress: settings.onProgress,
+            now: settings.now,
+        });
+        const aggregate = {receivedBytes: 0, declaredBytes: 0};
+        const archiveMaxBytes = positiveInteger(settings.archiveMaxBytes) || ARCHIVE_MAX_BYTES;
+        const imageMaxBytes = positiveInteger(settings.itemMaxBytes) || ITEM_MAX_BYTES;
+        const motionMaxBytes = positiveInteger(settings.motionMaxBytes) || LIVEPHOTO_MOTION_MAX_BYTES;
+        const idleTimeoutMs = positiveInteger(settings.idleTimeoutMs) || FETCH_IDLE_TIMEOUT_MS;
+        const fetchImpl = runtimeFetch(settings);
+        const entries = [];
+        meter.emit("connecting");
+        try {
+            for (let index = 0; index < sourceItems.length; index += 1) {
+                const cancelled = abortError(controller.signal);
+                if (cancelled) {
+                    throw cancelled;
+                }
+                const item = sourceItems[index];
+                const logicalType = logicalItemType(item);
+                const ordinal = String(logicalDisplayOrdinal(item, index)).padStart(2, "0");
+                if (logicalType === "image") {
+                    const normalized = normalizedPhotoItem(item, index, baseStem);
+                    assertPhotoItem(normalized);
+                    const result = await fetchImage(normalized, {
+                        index,
+                        fetchImpl,
+                        itemMaxBytes: imageMaxBytes,
+                        archiveMaxBytes,
+                        aggregate,
+                        meter,
+                        controller,
+                        signal: controller.signal,
+                        idleTimeoutMs,
+                    });
+                    entries.push({
+                        filename: `${ordinal}.${result.detected.extension}`,
+                        chunks: result.chunks,
+                        crc: result.crc,
+                    });
+                    meter.completeItem(true);
+                    meter.emit("fetching");
+                    continue;
+                }
+                if (logicalType !== "livephoto" || typeof resolveLivePhoto !== "function") {
+                    throw photoError("BROWSER_LIVEPHOTO_PAIR_INVALID");
+                }
+
+                meter.emit("resolving_livephoto");
+                const pair = await resolveLivePhoto(item, {signal: controller.signal});
+                const {still, motion} = normalizeLivePhotoPair(pair);
+                const expectedStillSize = positiveInteger(
+                    pair.still.expected_size_bytes || pair.still.expectedSizeBytes,
+                );
+                const expectedMotionSize = positiveInteger(
+                    pair.motion.expected_size_bytes || pair.motion.expectedSizeBytes,
+                );
+                if (expectedStillSize && expectedMotionSize) {
+                    meter.setItemTotal(index, expectedStillSize + expectedMotionSize);
+                }
+                meter.emit("fetching_still");
+                let stillResult;
+                try {
+                    stillResult = await fetchImage(still, {
+                        index,
+                        fetchImpl,
+                        itemMaxBytes: imageMaxBytes,
+                        archiveMaxBytes,
+                        aggregate,
+                        meter,
+                        controller,
+                        signal: controller.signal,
+                        idleTimeoutMs,
+                        preserveItemTotal: true,
+                    });
+                } catch (error) {
+                    const code = safeErrorCode(error);
+                    if (
+                        code === "BROWSER_PHOTO_CANCELLED"
+                        || code === "BROWSER_PHOTO_ITEM_TOO_LARGE"
+                        || code === "BROWSER_PHOTO_ARCHIVE_TOO_LARGE"
+                    ) {
+                        throw error;
+                    }
+                    throw photoError("BROWSER_LIVEPHOTO_STILL_FETCH_FAILED");
+                }
+                if (expectedStillSize && expectedStillSize !== stillResult.size) {
+                    throw photoError("BROWSER_LIVEPHOTO_SIZE_MISMATCH");
+                }
+
+                meter.emit("fetching_motion");
+                let motionResult;
+                try {
+                    motionResult = await fetchMotion(motion, {
+                        index,
+                        fetchImpl,
+                        itemMaxBytes: motionMaxBytes,
+                        archiveMaxBytes,
+                        aggregate,
+                        meter,
+                        controller,
+                        signal: controller.signal,
+                        idleTimeoutMs,
+                        preserveItemTotal: true,
+                    });
+                } catch (error) {
+                    const code = safeErrorCode(error);
+                    if (
+                        code === "BROWSER_PHOTO_CANCELLED"
+                        || code === "BROWSER_LIVEPHOTO_PAIR_TOO_LARGE"
+                        || code === "BROWSER_LIVEPHOTO_SIZE_MISMATCH"
+                    ) {
+                        throw error;
+                    }
+                    throw photoError("BROWSER_LIVEPHOTO_MOTION_FETCH_FAILED");
+                }
+
+                const folder = `${ordinal}_livephoto`;
+                entries.push(
+                    {
+                        filename: `${folder}/${ordinal}_still.${stillResult.detected.extension}`,
+                        chunks: stillResult.chunks,
+                        crc: stillResult.crc,
+                    },
+                    {
+                        filename: `${folder}/${ordinal}_motion.mp4`,
+                        chunks: motionResult.chunks,
+                        crc: motionResult.crc,
+                    },
+                );
+                meter.completeItem(true);
+                meter.emit("fetching");
+            }
+
+            meter.emit("assembling");
+            const blob = createStoreZip(entries, {createdAt: archiveCreatedAt});
+            if (blob.size > archiveMaxBytes + (entries.length * 512)) {
+                throw photoError("BROWSER_PHOTO_ARCHIVE_TOO_LARGE");
+            }
+            const filename = filenameWithSuffix(baseStem, "_selected.zip");
+            meter.emit("saving");
+            const handoff = typeof settings.handoff === "function" ? settings.handoff : defaultHandoff;
+            await handoff(blob, filename);
+            meter.emit("completed");
+            return Object.freeze({
+                filename,
+                blob,
+                logicalItemCount: sourceItems.length,
+                entryCount: entries.length,
+                entries: Object.freeze(entries.map((entry) => entry.filename)),
+                receivedBytes: aggregate.receivedBytes,
+                transport: "browser_logical_media_archive",
+                zipImplementation: "STORE_ONLY_INTERNAL",
+            });
+        } finally {
+            releaseSignal();
+        }
+    }
+
     return Object.freeze({
         ITEM_MAX_BYTES,
         ARCHIVE_MAX_BYTES,
@@ -1272,6 +1550,7 @@
         detectImageMagic,
         detectMp4Magic,
         sanitizeFilename,
+        sanitizeZipEntryPath,
         filenameStem,
         filenameWithSuffix,
         formatBytes,
@@ -1279,11 +1558,14 @@
         formatEta,
         createTransferMeter,
         crc32,
+        normalizeZipModifiedAt,
+        encodeDosDateTime,
         createStoreZip,
         supportsSelection,
         downloadImage,
         createArchive,
         createLivePhotoPairArchive,
+        createLogicalSelectionArchive,
         safeErrorCode,
         safeErrorMessage,
     });
