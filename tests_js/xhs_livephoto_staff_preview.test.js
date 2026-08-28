@@ -189,6 +189,7 @@ function fakeDocument(items) {
 
 
 function clickEvent(button) {
+    let propagationStopped = false;
     return {
         target: {
             closest(selector) {
@@ -196,6 +197,8 @@ function clickEvent(button) {
             },
         },
         preventDefault() {},
+        stopPropagation() { propagationStopped = true; },
+        get propagationStopped() { return propagationStopped; },
     };
 }
 

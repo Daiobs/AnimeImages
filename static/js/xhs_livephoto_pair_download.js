@@ -27,7 +27,6 @@
     });
     let browserController = null;
     let browserDocument = null;
-    const buttonDisabledBeforeBusy = new WeakMap();
 
     function csrfToken(documentObject) {
         const input = documentObject && documentObject.querySelector
@@ -108,166 +107,13 @@
         return "实况素材下载失败，请稍后重试。";
     }
 
-    function setCardBusy(card, busy) {
-        if (!card || !card.querySelectorAll) {
-            return;
-        }
-        for (const button of card.querySelectorAll("[data-livephoto-download-original], [data-livephoto-download-pair]")) {
-            if (busy) {
-                if (!buttonDisabledBeforeBusy.has(button)) {
-                    buttonDisabledBeforeBusy.set(button, Boolean(button.disabled));
-                }
-                button.disabled = true;
-                continue;
-            }
-            if (buttonDisabledBeforeBusy.has(button)) {
-                button.disabled = buttonDisabledBeforeBusy.get(button);
-                buttonDisabledBeforeBusy.delete(button);
-            }
-        }
-    }
-
-    function setStatus(card, text, isError) {
-        const status = card && card.querySelector
-            ? card.querySelector("[data-livephoto-download-status]")
-            : null;
-        if (!status) {
-            return;
-        }
-        status.textContent = String(text || "");
-        status.classList.toggle("text-danger", Boolean(isError));
-        status.classList.toggle("text-muted", !isError);
-    }
-
-    function pairProgressText(snapshot) {
-        const stage = String(snapshot && snapshot.stage || "");
-        if (stage === "fetching_motion") {
-            return "正在下载实况视频";
-        }
-        if (stage === "assembling") {
-            return "正在生成压缩包";
-        }
-        if (stage === "saving" || stage === "completed") {
-            return "已交给浏览器保存";
-        }
-        return "正在下载原图";
-    }
-
-    function createController(documentObject, options) {
-        if (!documentObject || typeof documentObject.addEventListener !== "function") {
+    function createController(documentObject) {
+        if (!documentObject) {
             return null;
         }
-        const settings = options && typeof options === "object" ? options : {};
-        const photoApi = settings.photoApi || (root && root.AnimeImagesBrowserPhoto);
-        const loadDescriptor = settings.requestPairDescriptor || requestPairDescriptor;
-        const activeOperations = new Set();
-
-        async function downloadOriginal(button, card, signal) {
-            if (!photoApi || typeof photoApi.downloadImage !== "function") {
-                throw Object.assign(new Error(), {errorCode: "BROWSER_PHOTO_CORS_UNAVAILABLE"});
-            }
-            setStatus(card, "正在下载原图", false);
-            try {
-                await photoApi.downloadImage({
-                    type: "image",
-                    url: String(button.dataset.originalUrl || ""),
-                    filename: String(button.dataset.originalFilename || "image"),
-                    filenameStem: String(button.dataset.originalFilename || "image"),
-                    require_magic: true,
-                    source_platform: "xiaohongshu",
-                }, {
-                    signal,
-                    onProgress(snapshot) {
-                        setStatus(
-                            card,
-                            snapshot && snapshot.stage === "completed"
-                                ? "已交给浏览器保存"
-                                : "正在下载原图",
-                            false,
-                        );
-                    },
-                });
-            } catch (error) {
-                const code = String(error && error.errorCode || "");
-                if (
-                    code === "BROWSER_PHOTO_CANCELLED"
-                    || code === "BROWSER_PHOTO_ITEM_TOO_LARGE"
-                    || code === "BROWSER_PHOTO_ARCHIVE_TOO_LARGE"
-                ) {
-                    throw error;
-                }
-                throw Object.assign(new Error(), {
-                    errorCode: "BROWSER_LIVEPHOTO_STILL_FETCH_FAILED",
-                });
-            }
-        }
-
-        async function downloadPair(button, card, signal) {
-            if (!photoApi || typeof photoApi.createLivePhotoPairArchive !== "function") {
-                throw Object.assign(new Error(), {errorCode: "BROWSER_PHOTO_CORS_UNAVAILABLE"});
-            }
-            setStatus(card, "正在准备实况素材", false);
-            const descriptor = await loadDescriptor(
-                String(button.dataset.livephotoPairToken || ""),
-                String(button.dataset.livephotoDescriptorUrl || ""),
-                {
-                    fetchImpl: settings.fetchImpl,
-                    csrfToken: settings.csrfToken || csrfToken(documentObject),
-                    signal,
-                },
-            );
-            await photoApi.createLivePhotoPairArchive(descriptor, {
-                signal,
-                onProgress(snapshot) {
-                    setStatus(card, pairProgressText(snapshot), false);
-                },
-            });
-        }
-
-        async function handleClick(event) {
-            const target = event.target && event.target.closest
-                ? event.target.closest("[data-livephoto-download-original], [data-livephoto-download-pair]")
-                : null;
-            if (!target) {
-                return;
-            }
-            const card = target.closest("[data-livephoto-item]");
-            if (!card || target.disabled) {
-                return;
-            }
-            event.preventDefault();
-            const operationController = new AbortController();
-            activeOperations.add(operationController);
-            setCardBusy(card, true);
-            try {
-                if (target.hasAttribute("data-livephoto-download-pair")) {
-                    await downloadPair(target, card, operationController.signal);
-                } else {
-                    await downloadOriginal(target, card, operationController.signal);
-                }
-            } catch (error) {
-                setStatus(card, safeErrorMessage(error, photoApi), true);
-            } finally {
-                activeOperations.delete(operationController);
-                setCardBusy(card, false);
-            }
-        }
-
-        documentObject.addEventListener("click", handleClick);
         return Object.freeze({
-            cancelAll() {
-                for (const controller of activeOperations) {
-                    controller.abort();
-                }
-            },
-            destroy() {
-                for (const controller of activeOperations) {
-                    controller.abort();
-                }
-                documentObject.removeEventListener("click", handleClick);
-            },
-            downloadOriginal,
-            downloadPair,
+            cancelAll() {},
+            destroy() {},
         });
     }
 
@@ -291,9 +137,7 @@
         },
         createController,
         ensureController,
-        pairProgressText,
         requestPairDescriptor,
         safeErrorMessage,
-        setCardBusy,
     });
 }));

@@ -4325,6 +4325,42 @@ def set_result_error_message(context, public_message, diagnostic_message=None):
     )
 
 
+def merge_xhs_livephoto_items_into_image_cards(image_items, preview_context):
+    preview_items = preview_context.get("items") if isinstance(preview_context, dict) else None
+    if not isinstance(preview_items, list) or len(preview_items) != len(image_items):
+        raise ValueError("XHS_LIVEPHOTO_STAFF_PREVIEW_RESULT_INVALID")
+
+    merged = []
+    for expected_ordinal, (image_item, preview_item) in enumerate(
+        zip(image_items, preview_items, strict=True)
+    ):
+        if (
+            not isinstance(preview_item, dict)
+            or preview_item.get("source_item_ordinal") != expected_ordinal
+            or str(preview_item.get("still_asset_id") or "")
+            != str(image_item.get("asset_id") or "")
+        ):
+            raise ValueError("XHS_LIVEPHOTO_STAFF_PREVIEW_RESULT_INVALID")
+        item = dict(image_item)
+        item.update(
+            {
+                "asset_kind": (
+                    "livephoto"
+                    if preview_item.get("kind") == "live_photo"
+                    else "image"
+                ),
+                "display_ordinal": preview_item.get("display_ordinal"),
+                "livephoto_delivery_status": preview_item.get("delivery_status", ""),
+                "livephoto_delivery_error_code": preview_item.get(
+                    "delivery_error_code", ""
+                ),
+                "livephoto_pair_token": preview_item.get("pair_token", ""),
+            }
+        )
+        merged.append(item)
+    return merged
+
+
 def apply_search_result_to_context(
     context,
     result,
@@ -4491,6 +4527,12 @@ def apply_search_result_to_context(
             result,
             client_identity=client_identity,
         )
+        context["image_items"] = merge_xhs_livephoto_items_into_image_cards(
+            context["image_items"],
+            preview_context,
+        )
+        # Motion members remain descriptor-only for the Staff preview surface.
+        context["video_items"] = []
         context["xhs_livephoto_preview"] = preview_context
         context["show_xhs_livephoto_preview"] = True
         context["xhs_livephoto_staff_preview"] = preview_context

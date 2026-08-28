@@ -41,6 +41,7 @@ from .views import (
     build_result_display_context,
     build_search_results_context,
     download_items_have_invalid_provider_manifest,
+    merge_xhs_livephoto_items_into_image_cards,
     run_provider_health_test,
 )
 
@@ -181,12 +182,20 @@ def result_region_context(result, *, staff_preview=False, public_preview=False):
         if show_preview
         else {}
     )
+    image_items = display["image_items"]
+    video_items = display["video_items"]
+    if show_preview:
+        image_items = merge_xhs_livephoto_items_into_image_cards(
+            image_items,
+            preview_context,
+        )
+        video_items = []
     return {
         "error_message": "",
         "platform_notice": "",
         "provider_notice": "",
-        "image_items": display["image_items"],
-        "video_items": display["video_items"],
+        "image_items": image_items,
+        "video_items": video_items,
         "platform_name": display["platform_name"],
         "post_type": display["post_type"],
         "base_filename": display["base_filename"],
@@ -824,7 +833,7 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
             [livephoto_item(0), regular_item(1), livephoto_item(2)]
         )
 
-    def test_staff_template_groups_source_items_with_playback_and_pair_downloads(self):
+    def test_staff_template_unifies_gallery_selection_and_livephoto_playback(self):
         html = render_to_string(
             "partials/xhs_results_region.html",
             result_region_context(self.result, staff_preview=True),
@@ -832,18 +841,16 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
         )
         soup = BeautifulSoup(html, "html.parser")
 
+        self.assertEqual(len(soup.select(".asset-card[data-type='image']")), 3)
         self.assertEqual(len(soup.select("[data-livephoto-card]")), 2)
-        self.assertEqual(len(soup.select(".xhs-livephoto-preview-card")), 3)
+        self.assertEqual(len(soup.select(".asset-card[data-asset-kind='livephoto']")), 2)
         self.assertEqual(len(soup.select(".xhs-livephoto-badge")), 2)
         self.assertEqual(
-            len(soup.select(".xhs-livephoto-preview-media > [data-livephoto-toggle]")),
+            len(soup.select(".xhs-livephoto-asset-media > [data-livephoto-toggle]")),
             2,
         )
-        self.assertFalse(
-            soup.select(".xhs-livephoto-preview-footer [data-livephoto-toggle]")
-        )
         self.assertEqual(
-            len(soup.select(".xhs-livephoto-preview-media > [data-livephoto-error]")),
+            len(soup.select(".xhs-livephoto-asset-media > [data-livephoto-error]")),
             2,
         )
         self.assertTrue(
@@ -857,15 +864,28 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
             preview_root.get("data-preview-script-url", ""),
             r"/static/js/xhs_livephoto_preview\.js",
         )
-        self.assertIn("下载实况将保存为原图与 MP4", html)
-        self.assertIsNone(soup.select_one("#download-btn"))
-        self.assertIsNone(soup.select_one("#select-all-btn"))
-        self.assertEqual(len(soup.select("[data-livephoto-download-original]")), 3)
-        self.assertEqual(len(soup.select("[data-livephoto-download-pair]")), 2)
+        self.assertIsNotNone(soup.select_one("#download-btn"))
+        self.assertIsNotNone(soup.select_one("#select-all-btn"))
+        self.assertIsNotNone(soup.select_one("#download-progress-wrap"))
+        self.assertEqual(len(soup.select(".asset-check")), 3)
+        self.assertEqual(len(soup.select("button[data-asset-select-toggle]")), 3)
+        self.assertTrue(
+            all(
+                control.get("aria-pressed") == "false"
+                for control in soup.select("button[data-asset-select-toggle]")
+            )
+        )
+        self.assertEqual(len(soup.select("[data-livephoto-download-original]")), 0)
+        self.assertEqual(len(soup.select("[data-livephoto-download-pair]")), 0)
         self.assertNotIn("查看原图", html)
-        self.assertFalse(soup.select(".asset-card"))
-        self.assertNotIn("download-progress-wrap", html)
-        self.assertNotIn("proxy-image", html)
+        self.assertTrue(
+            all(
+                image.get("src", "").startswith("?u=")
+                for image in soup.select(".asset-card > img, .asset-card .xhs-livephoto-asset-media > img")
+            )
+        )
+        self.assertEqual(len(soup.select("[data-livephoto-pair-token]")), 2)
+        self.assertNotIn(motion_url(0), html)
         for video in soup.select("[data-livephoto-motion]"):
             self.assertFalse(video.has_attr("src"))
             self.assertFalse(video.has_attr("loop"))
@@ -873,14 +893,52 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
             self.assertEqual(video.get("crossorigin"), "anonymous")
             self.assertEqual(video.get("referrerpolicy"), "no-referrer")
 
+    def test_unavailable_livephoto_is_not_selectable_or_playable(self):
+        context = result_region_context(self.result, staff_preview=True)
+        livephoto_item_context = context["image_items"][0]
+        livephoto_item_context["livephoto_delivery_status"] = "unavailable"
+        livephoto_item_context["livephoto_pair_token"] = ""
+
+        html = render_to_string(
+            "partials/xhs_results_region.html",
+            context,
+            request=self.request,
+        )
+        soup = BeautifulSoup(html, "html.parser")
+        card = soup.select_one("[data-livephoto-item]")
+
+        self.assertEqual(card.get("data-download-selectable"), "false")
+        self.assertFalse(card.has_attr("data-livephoto-card"))
+        self.assertIsNone(card.select_one("[data-livephoto-toggle]"))
+
+    def test_preview_merge_fails_closed_when_still_identity_does_not_match(self):
+        display = build_result_display_context(
+            self.result,
+            probe_missing_video_sizes=False,
+        )
+        preview_context = build_xhs_livephoto_staff_preview_context(
+            self.result,
+            client_identity="test-client",
+        )
+        preview_context["items"][0]["still_asset_id"] = "different-asset"
+
+        with self.assertRaisesMessage(
+            ValueError,
+            "XHS_LIVEPHOTO_STAFF_PREVIEW_RESULT_INVALID",
+        ):
+            merge_xhs_livephoto_items_into_image_cards(
+                display["image_items"],
+                preview_context,
+            )
+
     def test_staff_diagnostic_distinguishes_still_pair_authority_from_motion(self):
         context = result_region_context(self.result, staff_preview=True)
-        livephoto_item_context = context["xhs_livephoto_preview"]["items"][0]
-        livephoto_item_context["delivery_status"] = "unavailable"
-        livephoto_item_context["delivery_error_code"] = (
+        livephoto_item_context = context["image_items"][0]
+        livephoto_item_context["livephoto_delivery_status"] = "unavailable"
+        livephoto_item_context["livephoto_delivery_error_code"] = (
             "XHS_LIVEPHOTO_PAIR_STILL_REJECTED"
         )
-        livephoto_item_context["pair_token"] = ""
+        livephoto_item_context["livephoto_pair_token"] = ""
 
         html = render_to_string(
             "partials/xhs_results_region.html",
@@ -889,7 +947,7 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
         )
 
         self.assertIn("当前静态原图未通过浏览器配对下载准入", html)
-        self.assertNotIn("当前项 motion 候选未通过", html)
+        self.assertNotIn("当前 motion 候选未通过", html)
 
     def test_anonymous_template_uses_ordinary_flat_image_presentation(self):
         public_request = RequestFactory().get("/")
@@ -915,6 +973,7 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
         self.assertEqual(len(soup.select("[data-livephoto-download-original]")), 0)
         self.assertEqual(len(soup.select("[data-livephoto-download-pair]")), 0)
         self.assertEqual(len(soup.select("[data-livephoto-pair-token]")), 0)
+        self.assertEqual(len(soup.select("[data-asset-select-toggle]")), 0)
         self.assertNotIn("下载实况", html)
         self.assertNotIn("实况照片", html)
         self.assertNotIn("查看原图", html)
@@ -987,17 +1046,9 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
         shell = BeautifulSoup(html, "html.parser")
         shell_script = shell.select_one("script[data-livephoto-loader]")
         preview_html = render_to_string(
-            "partials/xhs_livephoto_staff_preview.html",
-            {
-                "static_asset_version": "test",
-                "xhs_livephoto_staff_preview": (
-                    build_xhs_livephoto_staff_preview_context(
-                        self.result,
-                        client_identity="test-client",
-                    )
-                ),
-                "show_xhs_livephoto_staff_preview": True,
-            },
+            "partials/xhs_results_region.html",
+            result_region_context(self.result, staff_preview=True)
+            | {"static_asset_version": "test"},
             request=self.request,
         )
         preview = BeautifulSoup(preview_html, "html.parser")
@@ -1028,6 +1079,10 @@ class XhsLivePhotoStaffStaticBoundaryTests(SimpleTestCase):
         )
         self.assertIn(
             "static/js/xhs_livephoto_pair_download.js",
+            STATIC_VERSION_FILES,
+        )
+        self.assertIn(
+            "static/js/browser_photo_archive.js",
             STATIC_VERSION_FILES,
         )
 
@@ -1082,19 +1137,34 @@ class XhsLivePhotoStaffStaticBoundaryTests(SimpleTestCase):
             Path(__file__).resolve().parents[1]
             / "templates"
             / "partials"
-            / "xhs_livephoto_preview.html"
+            / "xhs_results_region.html"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("repeat(4, minmax(0, 292px))", css)
-        self.assertIn("repeat(3, minmax(0, 292px))", css)
-        self.assertIn("repeat(2, minmax(0, 292px))", css)
-        self.assertIn("aspect-ratio: 4 / 5", css)
-        self.assertIn("justify-content: start", css)
+        self.assertIn("repeat(auto-fill, minmax(180px, 1fr))", css)
+        self.assertIn(".xhs-livephoto-asset-media", css)
+        self.assertIn("height: 220px", css)
         self.assertIn("xhs-livephoto-overlay-control", css)
-        self.assertLess(
-            template.index("data-livephoto-toggle"),
-            template.index("xhs-livephoto-preview-footer"),
+        self.assertIn("class=\"asset-card", template)
+        self.assertIn("data-livephoto-toggle", template)
+        self.assertNotIn("data-livephoto-download-pair", template)
+
+    def test_unified_download_preserves_source_order_and_locks_playback(self):
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "js"
+            / "xhs_download.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            ".sort((left, right) => left.display_ordinal - right.display_ordinal)",
+            source,
         )
+        self.assertIn('card.querySelector("[data-livephoto-toggle]")', source)
+        self.assertIn('playbackButton.setAttribute("aria-disabled", "true")', source)
+        self.assertIn('event.target.closest("[data-livephoto-toggle]")', source)
+        self.assertIn('event.target.closest("[data-asset-select-toggle]")', source)
+        self.assertIn('selectionControl.setAttribute("aria-pressed"', source)
 
     def test_async_staff_result_has_same_origin_lazy_script_bootstrap(self):
         source = (

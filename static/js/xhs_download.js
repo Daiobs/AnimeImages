@@ -69,6 +69,7 @@
 
     function getCardItem(card) {
         const type = card.dataset.type || "image";
+        const logicalType = card.dataset.logicalType || card.dataset.assetKind || type;
         const sizeBytes = Number.parseInt(card.dataset.sizeBytes || "0", 10) || 0;
         const providerFields = {
             source_platform: card.dataset.sourcePlatform || "",
@@ -89,6 +90,7 @@
         if (type === "video") {
             return {
                 type: "video",
+                logical_type: "video",
                 url: card.dataset.url,
                 cover_url: card.dataset.coverUrl || "",
                 size_bytes: sizeBytes,
@@ -96,10 +98,27 @@
             };
         }
 
+        if (logicalType === "livephoto") {
+            return {
+                type: "livephoto",
+                logical_type: "livephoto",
+                asset_id: card.dataset.assetId || "",
+                pair_token: card.dataset.livephotoPairToken || "",
+                descriptor_url: card.dataset.livephotoDescriptorUrl || "",
+                display_ordinal: Number.parseInt(card.dataset.displayOrdinal || "0", 10) || 0,
+                filenameStem: card.dataset.downloadFilenameStem || "",
+                source_platform: card.dataset.sourcePlatform || "",
+                requires_merge: false,
+                requires_cookie: false,
+            };
+        }
+
         return {
             type: "image",
+            logical_type: "image",
             url: card.dataset.url,
             size_bytes: sizeBytes,
+            display_ordinal: Number.parseInt(card.dataset.displayOrdinal || "0", 10) || 0,
             filenameStem: card.dataset.downloadFilenameStem || "",
             extensionHint: card.dataset.downloadExtensionHint || "",
             ...providerFields,
@@ -107,6 +126,9 @@
     }
 
     function getItemKey(item) {
+        if (item && item.logical_type === "livephoto") {
+            return `livephoto:${item.asset_id || "invalid"}`;
+        }
         return `${item.type}:${item.url}`;
     }
 
@@ -330,6 +352,10 @@
             return Array.from(resultsRegion ? resultsRegion.querySelectorAll(".asset-card") : []);
         }
 
+        function getSelectableCards() {
+            return getCards().filter((card) => card.dataset.downloadSelectable !== "false");
+        }
+
         function initializeLivePhotoPreview() {
             const api = window.AnimeImagesXhsLivePhotoPreview;
             if (!api || typeof api.ensureController !== "function") {
@@ -354,6 +380,10 @@
             const pairApi = window.AnimeImagesXhsLivePhotoPair;
             if (pairApi && typeof pairApi.cancelAll === "function") {
                 pairApi.cancelAll();
+            }
+            if (activePhotoController) {
+                activePhotoController.abort();
+                activePhotoController = null;
             }
         }
 
@@ -621,7 +651,7 @@
 
         function updateSelectAllButton() {
             const selectAllBtn = getSelectAllButton();
-            const cards = getCards();
+            const cards = getSelectableCards();
             if (!selectAllBtn) {
                 return;
             }
@@ -648,6 +678,31 @@
                 } else if (!isBusy && button.dataset.originalHtml) {
                     button.innerHTML = button.dataset.originalHtml;
                     delete button.dataset.originalHtml;
+                }
+            });
+            getCards().forEach((card) => {
+                const playbackButton = card.querySelector("[data-livephoto-toggle]");
+                if (!playbackButton) {
+                    return;
+                }
+                if (isBusy) {
+                    if (!playbackButton.hasAttribute("data-download-busy-previous-disabled")) {
+                        playbackButton.dataset.downloadBusyPreviousDisabled = playbackButton.disabled
+                            ? "true"
+                            : "false";
+                    }
+                    playbackButton.disabled = true;
+                    playbackButton.setAttribute("aria-disabled", "true");
+                    return;
+                }
+                if (playbackButton.hasAttribute("data-download-busy-previous-disabled")) {
+                    playbackButton.disabled = (
+                        playbackButton.dataset.downloadBusyPreviousDisabled === "true"
+                    );
+                    delete playbackButton.dataset.downloadBusyPreviousDisabled;
+                }
+                if (!playbackButton.disabled) {
+                    playbackButton.removeAttribute("aria-disabled");
                 }
             });
         }
@@ -798,16 +853,26 @@
 
         function selectedSupportsBrowserPhoto(items, saveFormat) {
             const sourceItems = Array.isArray(items) ? items : [];
+            const effectiveSaveFormat = sourceItems.some(
+                (item) => item && item.logical_type === "livephoto",
+            ) ? "original" : saveFormat;
             if (browserPhotoApi && typeof browserPhotoApi.supportsSelection === "function") {
-                return browserPhotoApi.supportsSelection(sourceItems, saveFormat);
+                return browserPhotoApi.supportsSelection(sourceItems, effectiveSaveFormat);
             }
             return Boolean(
                 sourceItems.length
-                && String(saveFormat || "original") === "original"
+                && String(effectiveSaveFormat || "original") === "original"
                 && sourceItems.every((item) => (
                     item
-                    && item.type === "image"
-                    && item.url
+                    && (
+                        (item.logical_type === "image" && item.url)
+                        || (
+                            item.logical_type === "livephoto"
+                            && item.asset_id
+                            && item.pair_token
+                            && item.descriptor_url
+                        )
+                    )
                     && !item.requires_cookie
                     && !item.requires_merge
                 ))
@@ -818,9 +883,13 @@
             const sourceItems = Array.isArray(items) ? items : [];
             return Boolean(
                 sourceItems.length
-                && sourceItems.every((item) => item && item.type === "image")
+                && sourceItems.every((item) => (
+                    item && ["image", "livephoto"].includes(item.logical_type || item.type)
+                ))
                 && sourceItems.some((item) => (
-                    item.source_platform === "xiaohongshu"
+                    item.logical_type === "livephoto"
+                    || item.type === "livephoto"
+                    || item.source_platform === "xiaohongshu"
                     || item.provider === "parsehub_xhs_images"
                 ))
             );
@@ -885,11 +954,14 @@
                 blobWarning.innerText = "浏览器正在下载并打包图片，完成前请勿刷新或关闭本页。";
             }
             const stageMessages = {
-                connecting: "正在连接图片资源...",
+                connecting: "正在连接素材资源...",
+                resolving_livephoto: "正在准备实况素材...",
+                fetching_still: "正在获取实况原图...",
+                fetching_motion: "正在获取实况视频...",
                 fetching: event.totalItems > 1
-                    ? `浏览器正在下载并打包图片 ${event.completedItems} / ${event.totalItems}`
-                    : "浏览器正在下载图片...",
-                assembling: "图片已下载完成，正在生成 ZIP...",
+                    ? `浏览器正在处理素材 ${event.completedItems} / ${event.totalItems}`
+                    : "浏览器正在获取素材...",
+                assembling: "素材已获取完成，正在生成 ZIP...",
                 saving: "正在交给浏览器保存...",
                 completed: "已开始保存。",
             };
@@ -898,22 +970,85 @@
             }
         }
 
+        async function requestSelectedLivePhotoDescriptor(item, signal) {
+            await ensureLivePhotoPreview();
+            const pairApi = window.AnimeImagesXhsLivePhotoPair;
+            if (!pairApi || typeof pairApi.requestPairDescriptor !== "function") {
+                const error = new Error("实况资源服务暂时不可用，请刷新页面后重试。");
+                error.errorCode = "XHS_LIVEPHOTO_PAIR_UNAVAILABLE";
+                throw error;
+            }
+            return pairApi.requestPairDescriptor(
+                item.pair_token,
+                item.descriptor_url,
+                {
+                    csrfToken: getCookie("csrftoken"),
+                    signal,
+                },
+            );
+        }
+
+        function logicalDownloadErrorMessage(error, includesLivePhoto) {
+            const errorCode = browserPhotoApi.safeErrorCode(error);
+            if (
+                errorCode === "BROWSER_PHOTO_ARCHIVE_TOO_LARGE"
+                || errorCode === "BROWSER_PHOTO_ITEM_TOO_LARGE"
+                || errorCode === "BROWSER_LIVEPHOTO_PAIR_TOO_LARGE"
+            ) {
+                return "选中的素材总量过大，暂无法在浏览器中打包。";
+            }
+            if (includesLivePhoto) {
+                const pairApi = window.AnimeImagesXhsLivePhotoPair;
+                if (pairApi && typeof pairApi.safeErrorMessage === "function") {
+                    return pairApi.safeErrorMessage(error, browserPhotoApi);
+                }
+            }
+            return browserPhotoApi.safeErrorMessage(error);
+        }
+
         async function downloadSelectedPhotos(payload) {
-            const items = selected.map((item, index) => ({
-                ...item,
-                filenameStem: item.filenameStem || `${getBaseFilename()}_${String(index + 1).padStart(2, "0")}`,
-            }));
+            const items = selected
+                .map((item, index) => ({
+                    ...item,
+                    filenameStem: item.filenameStem || `${getBaseFilename()}_${String(index + 1).padStart(2, "0")}`,
+                    display_ordinal: item.display_ordinal || index + 1,
+                }))
+                .sort((left, right) => left.display_ordinal - right.display_ordinal);
+            const livePhotoItems = items.filter((item) => item.logical_type === "livephoto");
+            const includesLivePhoto = livePhotoItems.length > 0;
             const zeroRelay = selectionRequiresZeroRelay(items);
             activePhotoController = new AbortController();
+            const previewApi = window.AnimeImagesXhsLivePhotoPreview;
+            if (previewApi && typeof previewApi.cancelActive === "function") {
+                previewApi.cancelActive();
+            }
             clearPhotoServerFallback();
             setPhotoActionVisibility({cancel: true});
             try {
                 if (items.length === 1) {
-                    const result = await browserPhotoApi.downloadImage(items[0], {
-                        filenameStem: items[0].filenameStem,
-                        signal: activePhotoController.signal,
-                        onProgress: applyPhotoDownloadProgress,
-                    });
+                    let result;
+                    if (items[0].logical_type === "livephoto") {
+                        const descriptor = await requestSelectedLivePhotoDescriptor(
+                            items[0],
+                            activePhotoController.signal,
+                        );
+                        result = await browserPhotoApi.createLivePhotoPairArchive(descriptor, {
+                            signal: activePhotoController.signal,
+                            onProgress(snapshot) {
+                                applyPhotoDownloadProgress({
+                                    ...snapshot,
+                                    totalItems: 1,
+                                    completedItems: ["saving", "completed"].includes(snapshot.stage) ? 1 : 0,
+                                });
+                            },
+                        });
+                    } else {
+                        result = await browserPhotoApi.downloadImage(items[0], {
+                            filenameStem: items[0].filenameStem,
+                            signal: activePhotoController.signal,
+                            onProgress: applyPhotoDownloadProgress,
+                        });
+                    }
                     setStatus(
                         getStatusElement(),
                         `已交给浏览器保存：${result.filename}`,
@@ -921,11 +1056,20 @@
                     );
                     return;
                 }
-                const result = await browserPhotoApi.createArchive(items, {
-                    baseFilename: payload.base_filename,
-                    signal: activePhotoController.signal,
-                    onProgress: applyPhotoDownloadProgress,
-                });
+                const result = includesLivePhoto
+                    ? await browserPhotoApi.createLogicalSelectionArchive(items, {
+                        baseFilename: payload.base_filename,
+                        signal: activePhotoController.signal,
+                        onProgress: applyPhotoDownloadProgress,
+                        resolveLivePhoto: (item, options) => (
+                            requestSelectedLivePhotoDescriptor(item, options.signal)
+                        ),
+                    })
+                    : await browserPhotoApi.createArchive(items, {
+                        baseFilename: payload.base_filename,
+                        signal: activePhotoController.signal,
+                        onProgress: applyPhotoDownloadProgress,
+                    });
                 const failureNote = result.failureCount
                     ? `，${result.failureCount} 张未能加入，详情见 failed.txt`
                     : "";
@@ -950,7 +1094,7 @@
                 if (!cancelled && zeroRelay) {
                     setStatus(
                         getStatusElement(),
-                        "原始图片资源已失效，请重新解析后再试。",
+                        logicalDownloadErrorMessage(error, includesLivePhoto),
                         "text-danger",
                     );
                     return;
@@ -1930,36 +2074,52 @@
 
         function toggleAssetCard(card) {
             clearPhotoServerFallback();
+            if (card.dataset.downloadSelectable === "false") {
+                setStatus(
+                    getStatusElement(),
+                    "该项实况暂不可下载，请重新解析后再试。",
+                    "text-danger",
+                );
+                return;
+            }
             const item = getCardItem(card);
             const key = getItemKey(item);
             const exists = selected.some((selectedItem) => getItemKey(selectedItem) === key);
 
             if (exists) {
                 selected = selected.filter((selectedItem) => getItemKey(selectedItem) !== key);
-                card.classList.remove("selected");
+                setAssetCardSelected(card, false);
             } else {
                 selected.push(item);
-                card.classList.add("selected");
+                setAssetCardSelected(card, true);
             }
 
             updateSelectedStatus();
             updateSelectAllButton();
         }
 
+        function setAssetCardSelected(card, isSelected) {
+            card.classList.toggle("selected", Boolean(isSelected));
+            const selectionControl = card.querySelector("[data-asset-select-toggle]");
+            if (selectionControl) {
+                selectionControl.setAttribute("aria-pressed", isSelected ? "true" : "false");
+            }
+        }
+
         function toggleSelectAll() {
             clearPhotoServerFallback();
-            const cards = getCards();
+            const allCards = getCards();
+            const cards = getSelectableCards();
             const allSelected = selected.length === cards.length;
             selected = [];
 
-            cards.forEach((card) => {
-                if (allSelected) {
-                    card.classList.remove("selected");
-                } else {
-                    card.classList.add("selected");
+            allCards.forEach((card) => setAssetCardSelected(card, false));
+            if (!allSelected) {
+                cards.forEach((card) => {
+                    setAssetCardSelected(card, true);
                     selected.push(getCardItem(card));
-                }
-            });
+                });
+            }
 
             updateSelectedStatus();
             updateSelectAllButton();
@@ -2135,6 +2295,20 @@
                 const downloadBtn = event.target.closest("#download-btn");
                 if (downloadBtn && resultsRegion.contains(downloadBtn)) {
                     handleDownloadClick(downloadBtn, true);
+                    return;
+                }
+
+                if (event.target.closest("[data-livephoto-toggle]")) {
+                    return;
+                }
+
+                const selectionControl = event.target.closest("[data-asset-select-toggle]");
+                if (selectionControl && resultsRegion.contains(selectionControl)) {
+                    event.preventDefault();
+                    const selectionCard = selectionControl.closest(".asset-card");
+                    if (selectionCard) {
+                        toggleAssetCard(selectionCard);
+                    }
                     return;
                 }
 

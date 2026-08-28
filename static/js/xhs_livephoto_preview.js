@@ -428,14 +428,15 @@
                 return;
             }
             event.preventDefault();
+            event.stopPropagation();
             if (activeAttempt && activeAttempt.card === card) {
                 stopActiveAttempt("stopped");
                 return;
             }
             void playCard(
                 card,
-                button.dataset.livephotoPairToken || "",
-                button.dataset.livephotoDescriptorUrl || "",
+                button.dataset.livephotoPairToken || card.dataset.livephotoPairToken || "",
+                button.dataset.livephotoDescriptorUrl || card.dataset.livephotoDescriptorUrl || "",
             );
         }
 

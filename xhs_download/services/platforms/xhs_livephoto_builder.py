@@ -1056,6 +1056,7 @@ def build_xhs_livephoto_preview_context(
             "source_item_ordinal": expected_ordinal,
             "display_ordinal": expected_ordinal + 1,
             "kind": item_record["kind"],
+            "still_asset_id": still_asset.asset_id,
             "still_url": still_asset.preview_url or still_asset.url,
             "still_original_url": still_asset.url,
             "still_filename": still_asset.filename,

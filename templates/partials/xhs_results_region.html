@@ -1,3 +1,4 @@
+{% load static %}
 {% if error_message or platform_notice or provider_notice or image_items or video_items %}
 <div class="results-scroll-anchor">
     {% if error_message %}
@@ -51,7 +52,6 @@
                 </div>
             </div>
 
-            {% if not show_xhs_livephoto_staff_preview %}
             <div class="download-actions d-flex flex-column align-items-start align-items-md-end gap-1">
                 <div class="d-flex flex-wrap justify-content-start justify-content-md-end gap-2">
                     <button type="button" class="btn btn-outline-secondary btn-sm" id="select-all-btn">
@@ -78,13 +78,9 @@
                     {% endif %}
                 </div>
             </div>
-            {% endif %}
         </div>
 
         <div class="card-body note-preview-bg">
-            {% if show_xhs_livephoto_staff_preview %}
-                {% include "partials/xhs_livephoto_preview.html" %}
-            {% else %}
             {% if is_mobile_request %}
                 <div class="alert alert-info small mb-3">
                     <i class="bi bi-phone me-1"></i>
@@ -163,10 +159,21 @@
                     图片资源
                 </h5>
 
-                <div class="asset-grid">
+                <div
+                    class="asset-grid"
+                    {% if show_xhs_livephoto_staff_preview %}
+                        data-xhs-livephoto-preview
+                        data-xhs-livephoto-staff-preview
+                        data-pair-script-url="{% static 'js/xhs_livephoto_pair_download.js' %}?v={{ static_asset_version }}"
+                        data-preview-script-url="{% static 'js/xhs_livephoto_preview.js' %}?v={{ static_asset_version }}"
+                    {% endif %}
+                >
                     {% for item in image_items %}
-                        <div class="asset-card"
+                        <div class="asset-card{% if item.asset_kind == 'livephoto' %} xhs-livephoto-asset-card{% endif %}{% if item.asset_kind == 'livephoto' and item.livephoto_delivery_status != 'ready' %} is-download-unavailable{% endif %}"
                              data-type="image"
+                             data-logical-type="{{ item.asset_kind|default:'image' }}"
+                             data-asset-kind="{{ item.asset_kind|default:'image' }}"
+                             data-download-selectable="{% if item.asset_kind == 'livephoto' and item.livephoto_delivery_status != 'ready' %}false{% else %}true{% endif %}"
                              data-source-platform="{{ item.source_platform|default:'' }}"
                              data-url="{{ item.url }}"
                              data-size-bytes="{{ item.size_bytes|default:0 }}"
@@ -183,26 +190,100 @@
                              data-requires-merge="{{ item.requires_merge|yesno:'true,false' }}"
                              data-requires-cookie="{{ item.requires_cookie|yesno:'true,false' }}"
                              data-download-filename-stem="{{ base_filename|default:'image' }}_{{ forloop.counter|stringformat:'02d' }}"
-                             data-download-extension-hint="{{ item.download_extension|default:'' }}">
-                            <span class="asset-check">
-                                <i class="bi bi-check-lg"></i>
-                            </span>
-                            <img
-                                    src="{{ proxy_image_url }}?u={{ item.encoded_preview_url|default:item.encoded_url }}{% if item.preview_provider_query %}&{{ item.preview_provider_query }}{% endif %}"
-                                    alt="素材图片"
-                                    loading="lazy"
-                                    decoding="async"
-                                    data-retry="0"
-                                    onerror="retryImage(this)"
-                            >
+                             data-download-extension-hint="{{ item.download_extension|default:'' }}"
+                             data-display-ordinal="{{ item.display_ordinal|default:forloop.counter }}"
+                             {% if item.asset_kind == 'livephoto' %}
+                                 data-livephoto-item
+                                 data-livephoto-delivery-status="{{ item.livephoto_delivery_status }}"
+                                 {% if item.livephoto_delivery_status == 'ready' and item.livephoto_pair_token %}
+                                     data-livephoto-card
+                                     data-livephoto-state="idle"
+                                     data-livephoto-pair-token="{{ item.livephoto_pair_token }}"
+                                     data-livephoto-descriptor-url="{% url 'media_xhs_livephoto_pair_descriptor' %}"
+                                 {% endif %}
+                             {% endif %}
+                        >
+                            {% if show_xhs_livephoto_staff_preview %}
+                                <button
+                                    type="button"
+                                    class="asset-check asset-select-control"
+                                    data-asset-select-toggle
+                                    aria-pressed="false"
+                                    aria-label="选择第 {{ item.display_ordinal|default:forloop.counter }} 项素材"
+                                >
+                                    <i class="bi bi-check-lg" aria-hidden="true"></i>
+                                </button>
+                            {% else %}
+                                <span class="asset-check">
+                                    <i class="bi bi-check-lg"></i>
+                                </span>
+                            {% endif %}
+                            {% if item.asset_kind == 'livephoto' %}
+                                <div class="xhs-livephoto-asset-media">
+                            {% endif %}
+                                <img
+                                        src="{{ proxy_image_url }}?u={{ item.encoded_preview_url|default:item.encoded_url }}{% if item.preview_provider_query %}&{{ item.preview_provider_query }}{% endif %}"
+                                        alt="{% if item.asset_kind == 'livephoto' %}实况照片静态画面{% else %}素材图片{% endif %}"
+                                        loading="lazy"
+                                        decoding="async"
+                                        data-retry="0"
+                                        onerror="retryImage(this)"
+                                        {% if item.asset_kind == 'livephoto' %}data-livephoto-still{% endif %}
+                                >
+                                {% if item.asset_kind == 'livephoto' %}
+                                    <span class="xhs-livephoto-badge">实况</span>
+                                    {% if item.livephoto_delivery_status == 'ready' and item.livephoto_pair_token %}
+                                        <video
+                                            muted
+                                            playsinline
+                                            crossorigin="anonymous"
+                                            preload="none"
+                                            referrerpolicy="no-referrer"
+                                            data-livephoto-motion
+                                            hidden
+                                        ></video>
+                                        <button
+                                            type="button"
+                                            class="xhs-livephoto-overlay-control"
+                                            data-livephoto-toggle
+                                            aria-pressed="false"
+                                            aria-label="播放第 {{ item.display_ordinal }} 项实况照片"
+                                        >
+                                            <i class="bi bi-play-fill" data-livephoto-play-icon aria-hidden="true"></i>
+                                            <span class="spinner-border spinner-border-sm" data-livephoto-spinner aria-hidden="true" hidden></span>
+                                            <span data-livephoto-toggle-label>播放实况</span>
+                                        </button>
+                                        <div class="xhs-livephoto-preview-error" data-livephoto-error role="status" hidden>
+                                            <i class="bi bi-exclamation-circle" aria-hidden="true"></i>
+                                            <span data-livephoto-error-text>实况预览加载失败，可重新解析后再试。</span>
+                                        </div>
+                                    {% else %}
+                                        <div class="xhs-livephoto-unavailable" role="status">
+                                            <div>该项实况暂不可下载</div>
+                                            {% if show_internal_diagnostics %}
+                                                <small>
+                                                    {% if item.livephoto_delivery_error_code == 'XHS_LIVEPHOTO_MOTION_CANDIDATE_UNAVAILABLE' %}
+                                                        当前 motion 候选未通过既定安全准入。
+                                                    {% elif item.livephoto_delivery_error_code == 'XHS_LIVEPHOTO_PAIR_STILL_REJECTED' %}
+                                                        当前静态原图未通过浏览器配对下载准入。
+                                                    {% elif item.livephoto_delivery_error_code == 'XHS_LIVEPHOTO_PAIR_TOO_LARGE' or item.livephoto_delivery_error_code == 'XHS_LIVEPHOTO_PAIR_SIZE_REJECTED' %}
+                                                        当前配对素材超出浏览器打包限制。
+                                                    {% else %}
+                                                        当前配对下载授权暂不可用。
+                                                    {% endif %}
+                                                </small>
+                                            {% endif %}
+                                        </div>
+                                    {% endif %}
+                                </div>
+                                <span class="visually-hidden" data-livephoto-status>实况照片</span>
+                                {% endif %}
                         </div>
                     {% endfor %}
                 </div>
             {% endif %}
-            {% endif %}
         </div>
 
-        {% if not show_xhs_livephoto_staff_preview %}
         <div class="card-footer bg-white">
             <div class="download-progress-wrap mb-2" id="download-progress-wrap" hidden>
                 <div class="download-progress-main">
@@ -239,7 +320,6 @@
                 点击资源卡片可选择，支持批量保存。
             </div>
         </div>
-        {% endif %}
         </div>
     {% endif %}
 </div>

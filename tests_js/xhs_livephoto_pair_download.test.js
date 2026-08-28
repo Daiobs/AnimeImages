@@ -7,28 +7,16 @@ const test = require("node:test");
 const pair = require("../static/js/xhs_livephoto_pair_download.js");
 
 
-function fakeClassList() {
-    const values = new Set();
+function validPayload() {
     return {
-        toggle(value, enabled) {
-            if (enabled) values.add(value);
-            else values.delete(value);
+        ok: true,
+        archive_filename: "fixture_livephoto.zip",
+        still: {media_type: "image", url: "https://still.invalid/item"},
+        motion: {
+            media_type: "video",
+            format_class: "mp4",
+            url: "https://motion.invalid/item.mp4",
         },
-        contains(value) { return values.has(value); },
-    };
-}
-
-
-function fakeCard() {
-    const status = {textContent: "", classList: fakeClassList()};
-    const buttons = [{disabled: false}, {disabled: false}];
-    return {
-        status,
-        buttons,
-        querySelector(selector) {
-            return selector === "[data-livephoto-download-status]" ? status : null;
-        },
-        querySelectorAll() { return buttons; },
     };
 }
 
@@ -42,21 +30,7 @@ test("pair descriptor request is POST-only control-plane JSON with CSRF", async 
             csrfToken: "csrf-fixture",
             async fetchImpl(url, options) {
                 observed = {url, options};
-                return {
-                    ok: true,
-                    async json() {
-                        return {
-                            ok: true,
-                            archive_filename: "fixture_livephoto.zip",
-                            still: {media_type: "image", url: "https://still.invalid/item"},
-                            motion: {
-                                media_type: "video",
-                                format_class: "mp4",
-                                url: "https://motion.invalid/item.mp4",
-                            },
-                        };
-                    },
-                };
+                return {ok: true, async json() { return validPayload(); }};
             },
         },
     );
@@ -71,48 +45,37 @@ test("pair descriptor request is POST-only control-plane JSON with CSRF", async 
 });
 
 
-test("pair download resolves one descriptor then invokes one browser ZIP handoff", async () => {
-    const card = fakeCard();
-    const descriptor = {
-        archive_filename: "fixture_livephoto.zip",
-        still: {media_type: "image", url: "https://still.invalid/item"},
-        motion: {media_type: "video", format_class: "mp4", url: "https://motion.invalid/item.mp4"},
-    };
-    let descriptorCalls = 0;
-    let archiveCalls = 0;
-    const controller = pair.createController({
-        addEventListener() {},
-        removeEventListener() {},
-        querySelector() { return null; },
-    }, {
-        async requestPairDescriptor(token, endpoint) {
-            descriptorCalls += 1;
-            assert.equal(token, "opaque-ticket");
-            assert.equal(endpoint, "/media/xhs-livephoto-pair-descriptor/");
-            return descriptor;
-        },
-        photoApi: {
-            async createLivePhotoPairArchive(received, options) {
-                archiveCalls += 1;
-                assert.equal(received, descriptor);
-                for (const stage of ["fetching", "fetching_motion", "assembling", "completed"]) {
-                    options.onProgress({stage});
-                }
+test("pair descriptor fails closed on malformed control-plane payload", async () => {
+    await assert.rejects(
+        pair.requestPairDescriptor("opaque-ticket", "/descriptor/", {
+            async fetchImpl() {
+                return {
+                    ok: true,
+                    async json() {
+                        return {
+                            ok: true,
+                            archive_filename: "fixture.zip",
+                            still: {media_type: "image", url: "https://still.invalid/item"},
+                            motion: {media_type: "video", format_class: "webm", url: "https://motion.invalid/item"},
+                        };
+                    },
+                };
             },
-        },
-    });
-    const button = {
-        dataset: {
-            livephotoPairToken: "opaque-ticket",
-            livephotoDescriptorUrl: "/media/xhs-livephoto-pair-descriptor/",
-        },
-    };
+        }),
+        (error) => error.errorCode === "XHS_LIVEPHOTO_PAIR_INVALID",
+    );
+});
 
-    await controller.downloadPair(button, card);
-    assert.equal(descriptorCalls, 1);
-    assert.equal(archiveCalls, 1);
-    assert.equal(card.status.textContent, "已交给浏览器保存");
-    controller.destroy();
+
+test("aborted descriptor fetch maps to a fixed cancellation code", async () => {
+    await assert.rejects(
+        pair.requestPairDescriptor("opaque-ticket", "/descriptor/", {
+            async fetchImpl() {
+                throw Object.assign(new Error(), {name: "AbortError"});
+            },
+        }),
+        (error) => error.errorCode === "BROWSER_PHOTO_CANCELLED",
+    );
 });
 
 
@@ -130,95 +93,42 @@ test("pair errors remain safe and product copy exposes no transport internals", 
 });
 
 
-test("busy state preserves a permanently disabled pair action", () => {
-    const card = fakeCard();
-    card.buttons[1].disabled = true;
+test("pair helper has no card-level download listener or browser handoff", () => {
+    const source = fs.readFileSync(
+        path.join(__dirname, "../static/js/xhs_livephoto_pair_download.js"),
+        "utf8",
+    );
 
-    pair.setCardBusy(card, true);
-    assert.deepEqual(card.buttons.map((button) => button.disabled), [true, true]);
-
-    pair.setCardBusy(card, false);
-    assert.deepEqual(card.buttons.map((button) => button.disabled), [false, true]);
+    assert.doesNotMatch(source, /data-livephoto-download-(?:original|pair)/);
+    assert.doesNotMatch(source, /createLivePhotoPairArchive|downloadImage/);
+    assert.doesNotMatch(source, /addEventListener\("click"/);
 });
 
 
-test("result replacement cancellation aborts an active pair operation", async () => {
-    let clickHandler = null;
-    let archiveSignal = null;
-    let handoffCalls = 0;
-    const status = {textContent: "", classList: fakeClassList()};
-    let card;
-    const button = {
-        disabled: false,
-        dataset: {
-            livephotoPairToken: "opaque-ticket",
-            livephotoDescriptorUrl: "/media/xhs-livephoto-pair-descriptor/",
+test("pair helper controller is inert and reusable for async bootstrap", () => {
+    let clickListeners = 0;
+    const documentObject = {
+        addEventListener(name) {
+            if (name === "click") clickListeners += 1;
         },
-        hasAttribute(name) { return name === "data-livephoto-download-pair"; },
-        closest(selector) { return selector === "[data-livephoto-item]" ? card : null; },
     };
-    card = {
-        querySelector(selector) {
-            return selector === "[data-livephoto-download-status]" ? status : null;
-        },
-        querySelectorAll() { return [button]; },
-    };
-    const controller = pair.createController({
-        addEventListener(name, handler) {
-            if (name === "click") clickHandler = handler;
-        },
-        removeEventListener() {},
-        querySelector() { return null; },
-    }, {
-        async requestPairDescriptor() {
-            return {
-                archive_filename: "fixture_livephoto.zip",
-                still: {media_type: "image", url: "https://still.invalid/item"},
-                motion: {
-                    media_type: "video",
-                    format_class: "mp4",
-                    url: "https://motion.invalid/item.mp4",
-                },
-            };
-        },
-        photoApi: {
-            async createLivePhotoPairArchive(_descriptor, options) {
-                archiveSignal = options.signal;
-                await new Promise((resolve, reject) => {
-                    options.signal.addEventListener("abort", () => {
-                        reject(Object.assign(new Error(), {errorCode: "BROWSER_PHOTO_CANCELLED"}));
-                    }, {once: true});
-                });
-                handoffCalls += 1;
-            },
-            safeErrorMessage() { return "已取消"; },
-        },
-    });
+    const first = pair.ensureController(documentObject);
+    const second = pair.ensureController(documentObject);
 
-    clickHandler({
-        target: {closest() { return button; }},
-        preventDefault() {},
-    });
-    await Promise.resolve();
-    await Promise.resolve();
-    controller.cancelAll();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    assert.equal(archiveSignal.aborted, true);
-    assert.equal(handoffCalls, 0);
-    controller.destroy();
+    assert.equal(first, second);
+    assert.equal(clickListeners, 0);
+    assert.doesNotThrow(() => first.cancelAll());
 });
 
 
-test("result replacement paths cancel playback and pair downloads before DOM replacement", () => {
+test("result replacement paths cancel playback and active unified photo work", () => {
     const source = fs.readFileSync(
         path.join(__dirname, "../static/js/xhs_download.js"),
         "utf8",
     );
     assert.match(source, /function cancelLivePhotoActivity\(\)/);
     assert.match(source, /previewApi\.cancelActive\(\)/);
-    assert.match(source, /pairApi\.cancelAll\(\)/);
+    assert.match(source, /activePhotoController\.abort\(\)/);
     assert.equal((source.match(/cancelLivePhotoActivity\(\);/g) || []).length >= 5, true);
 });
 
@@ -232,34 +142,4 @@ test("pair stage failures use distinct safe product messages", () => {
         pair.safeErrorMessage({errorCode: "BROWSER_LIVEPHOTO_MOTION_FETCH_FAILED"}),
         "实况视频获取失败。",
     );
-});
-
-
-test("original download maps generic transport failures to the still stage", async () => {
-    const card = fakeCard();
-    const controller = pair.createController({
-        addEventListener() {},
-        removeEventListener() {},
-        querySelector() { return null; },
-    }, {
-        photoApi: {
-            async downloadImage() {
-                throw Object.assign(new Error(), {
-                    errorCode: "BROWSER_PHOTO_CORS_UNAVAILABLE",
-                });
-            },
-        },
-    });
-    const button = {
-        dataset: {
-            originalUrl: "https://still.invalid/item",
-            originalFilename: "still.jpg",
-        },
-    };
-
-    await assert.rejects(
-        controller.downloadOriginal(button, card),
-        (error) => error.errorCode === "BROWSER_LIVEPHOTO_STILL_FETCH_FAILED",
-    );
-    controller.destroy();
 });
