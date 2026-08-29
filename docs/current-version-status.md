@@ -21,10 +21,19 @@ This documentation task did not access production. It therefore uses **recorded 
 ## Development Repository
 
 ```text
-development main = 457139b98d67d6e5f79b099f9a4e91d60a26904f
+CURRENT_DEVELOPMENT_BASELINE = LATEST_FETCHED_ORIGIN_MAIN
+DOCUMENTED_APPLICATION_BASELINE = 457139b98d67d6e5f79b099f9a4e91d60a26904f
 ```
 
-This SHA includes the development application changes merged by PR #74, #75 and #76.
+This documentation was prepared against the application baseline above, which
+includes the development changes merged by PR #74, #75 and #76. Resolve the
+current Repository SHA instead of treating this snapshot as a permanent main
+pointer:
+
+```bash
+git fetch origin
+git rev-parse origin/main
+```
 
 ### PR #74
 
@@ -155,7 +164,7 @@ BILIBILI_CURRENT_SCOPE = VIDEO_ONLY
 BILIBILI_VIDEO_ROUTE = NATIVE
 ```
 
-Current development support includes BV, AV, `b23.tv`, `p=` part selection, title, author, cover and official DURL media.
+Current development support includes BV, AV, `b23.tv`, `p=` part selection and official DURL media. The adapter reads the title, UP owner name and cover from official View data. The title and owner name feed the current download filename semantics, while the cover enters the media result; an independent structured `ParseResult.metadata.author` value is not yet a stable contract.
 
 Three real Provider Lab samples established:
 
@@ -304,7 +313,8 @@ Canonical infrastructure files remain under `ops/`; merging repository files doe
 ## Current Summary
 
 ```text
-DEVELOPMENT_MAIN = 457139b98d67d6e5f79b099f9a4e91d60a26904f
+CURRENT_DEVELOPMENT_BASELINE = LATEST_FETCHED_ORIGIN_MAIN
+DOCUMENTED_APPLICATION_BASELINE = 457139b98d67d6e5f79b099f9a4e91d60a26904f
 LAST_RECORDED_PRODUCTION_RUNTIME = 38992e955f2f268c2a6d4ecd81d900feba83f048
 REPOSITORY_MAIN_AHEAD_OF_RECORDED_PRODUCTION = YES
 AHEAD_TYPE = APPLICATION_CODE_AND_DOCUMENTATION

@@ -7,14 +7,18 @@ This is the short handoff for a new AnimeImages Codex task. Read [Current Versio
 ## Baseline
 
 ```text
-origin/main = 457139b98d67d6e5f79b099f9a4e91d60a26904f
+current development baseline = LATEST_FETCHED_ORIGIN_MAIN
+documented application baseline = 457139b98d67d6e5f79b099f9a4e91d60a26904f
 last recorded production runtime = 38992e955f2f268c2a6d4ecd81d900feba83f048
 repository main ahead of recorded production = YES
 ahead type = APPLICATION_CODE_AND_DOCUMENTATION
 production reverified by documentation task = NO
 ```
 
-Do not infer deployment from `main`. PR #74, #75 and #76 are merged development capabilities and are not recorded as deployed by this documentation task.
+The hard-coded application SHA is a documentation snapshot, not a permanent
+`main` pointer. Every new task must fetch and resolve `origin/main` again. Do
+not infer deployment from `main`. PR #74, #75 and #76 are merged development
+capabilities and are not recorded as deployed by this documentation task.
 
 ## First Commands
 
@@ -23,7 +27,7 @@ Run these before editing:
 ```bash
 pwd
 git status --short --branch
-git fetch --prune origin
+git fetch origin --prune
 git rev-parse HEAD
 git rev-parse origin/main
 git worktree list
@@ -125,7 +129,7 @@ scope = VIDEO_ONLY
 formal route = NATIVE
 ```
 
-Supported current forms include BV, AV, `b23.tv` and `p=` part. Native uses official View/PlayURL and prioritizes complete DURL media.
+Supported current forms include BV, AV, `b23.tv` and `p=` part. Native uses official View/PlayURL and prioritizes complete DURL media. It reads the title, UP owner name and cover from official View data; title and owner name feed the download filename semantics, while the cover enters the media result. Independent structured `ParseResult.metadata.author` is not yet a stable contract.
 
 Provider Lab compared three real samples: Native, TianTian, videodl and official DURL bytes were equivalent; ParseHub added metadata only; yt-dlp failed as a known Provider-specific limitation. No quality improvement was proven, so do not start a Bilibili route change from PR #76.
 
@@ -232,7 +236,7 @@ Do not continue modifying PR #76. The next stage is documentation and separately
 - `/admin/provider-health-tests/`: Provider readiness/smoke.
 - `/admin/provider-audit-logs/`: runtime setting audit.
 - `/admin/ops-dashboard/`: observability.
-- `/admin/batch-runtime/`: Batch access and budgets.
+- `/admin/xhs_download/batchparseruntimesetting/`: Django Admin `BatchParseRuntimeSetting` access and budgets.
 - `/admin/provider-lab/`: isolated Staff comparison.
 
 Public pages must not expose Provider names, raw media URLs, strategy matrices, Staff diagnostics or Lab controls.

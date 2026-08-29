@@ -21,10 +21,11 @@ AnimeImages 不是：
 
 ## 当前状态
 
-> **Development main**：`457139b98d67d6e5f79b099f9a4e91d60a26904f`<br>
+> **Development branch**：latest fetched `origin/main`<br>
+> **Documented application baseline**：`457139b98d67d6e5f79b099f9a4e91d60a26904f`<br>
 > **Last recorded Production Runtime**：`38992e955f2f268c2a6d4ecd81d900feba83f048`
 
-Development main 已包含 PR #74、#75 和 #76 的应用能力；本次文档任务没有访问生产服务器，也没有证据表明这些 PR 已部署。合并进入 `main` 不等于已部署，详细状态见[当前版本状态](docs/current-version-status.md)。
+本文档以以上 application baseline 为事实快照。当前 Repository SHA 必须通过 `git fetch origin` 和 `git rev-parse origin/main` 实时取得。该基线已包含 PR #74、#75 和 #76 的应用能力；本次文档任务没有访问生产服务器，也没有证据表明这些 PR 已部署。合并进入 `main` 不等于已部署，详细状态见[当前版本状态](docs/current-version-status.md)。
 
 当前关系：
 
@@ -157,7 +158,9 @@ Single 与 Batch 的 Provider 顺序并不完全相同，不能用其中一个�
 
 - 接受 BV、AV 和 `b23.tv` 链接；
 - 支持 `p=` 分 P；
-- 解析标题、作者和封面；
+- 从官方 View 读取标题、UP 主名称和封面；
+- 标题与 UP 主名称进入当前下载文件名语义，封面进入媒体结果；
+- 独立结构化 `author` metadata 尚未形成稳定契约；
 - 使用官方 View/PlayURL 数据；
 - 优先完整 DURL 媒体。
 
@@ -287,7 +290,7 @@ git diff --check
 - `/admin/provider-health-tests/`：Provider 健康检查；
 - `/admin/provider-audit-logs/`：Provider 设置审计；
 - `/admin/ops-dashboard/`：运行观测；
-- `/admin/batch-runtime/`：Batch 运行参数；
+- `/admin/xhs_download/batchparseruntimesetting/`：Django Admin 中的 `BatchParseRuntimeSetting` 批量解析配置；
 - `/admin/provider-lab/`：独立的 Provider 对比实验室。
 
 Provider Lab 不能通过 Admin Provider Settings 开放给匿名用户；它没有 `public_gray` 或 `public` 发布模式。

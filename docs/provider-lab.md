@@ -28,8 +28,18 @@ PROVIDER_LAB_PRODUCTION_STATUS=NOT_DEPLOYED
 
 - 用户已认证；
 - 用户为 active Staff；
-- `UPSTREAM_PROVIDER_LAB_ENABLED=True`；
-- 对应 Provider 的附加开关和运行时已就绪。
+- `UPSTREAM_PROVIDER_LAB_ENABLED=True`。
+
+页面访问与单个 Provider 可用性彼此独立。即使 ParseHub、videodl、
+yt-dlp 或 TianTian 尚未配置，满足以上页面 Gate 的 Staff 仍可进入
+Provider Lab；对应卡片显示 `unavailable` 或 `not configured`。
+
+单个 Provider 是否可运行取决于各自的：
+
+- Provider-specific flag；
+- venv、Python binary 或外部工具 binary；
+- API configuration；
+- license boundary。
 
 所有 Provider POST 都使用 CSRF、请求限流和 single-flight 约束。匿名和普通登录用户得到 fail-closed 响应。
 
@@ -178,11 +188,16 @@ python manage.py runserver
 
 1. 使用 active Staff 账号登录。
 2. 打开 `/admin/provider-lab/`。
-3. 输入一个当前 Registry 可识别的平台 URL。
+3. 输入任意待研究的公开 HTTP/HTTPS URL，或包含该 URL 的分享文案。
 4. 只选择本次需要比较的 Provider。
 5. 提交后分别观察每张 Provider 结果卡片。
 6. 使用受限资源检查确认浏览器可读性、响应类型和小范围字节信号。
 7. 刷新页面清理当前结果。
+
+Lab 先把输入约束为公开 HTTP/HTTPS source，再由每个选中的 Provider
+独立判断是否支持。`unsupported` 是有效结果。输入不要求已被正式
+Platform Registry 识别；研究尚未进入正式 Registry 的平台正是
+whole-repository Provider 的用途之一。
 
 不要为了让结果“都变绿”而修改正式路线。Provider failure 是 Lab 的有效输出。
 

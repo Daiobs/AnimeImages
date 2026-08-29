@@ -1,6 +1,6 @@
 # Architecture
 
-本文描述 development main `457139b98d67d6e5f79b099f9a4e91d60a26904f` 的稳定结构。它不是生产部署证明；last recorded Production Runtime 仍为 `38992e955f2f268c2a6d4ecd81d900feba83f048`。
+本文描述 documented application baseline `457139b98d67d6e5f79b099f9a4e91d60a26904f` 的稳定结构。该 SHA 是文档快照，不是永久的 `main` 指针；当前 development baseline 必须从 latest fetched `origin/main` 解析。它也不是生产部署证明；last recorded Production Runtime 仍为 `38992e955f2f268c2a6d4ecd81d900feba83f048`。
 
 ## 系统定位
 
@@ -188,7 +188,9 @@ Ultra Provider 工作有独立 foreground deadline、短期 payload/failure cach
 - 识别 BV、AV 和 `b23.tv`；
 - 支持 `p=` part；
 - 使用官方 View/PlayURL；
-- 归一标题、作者、封面；
+- 从官方 View 读取标题、UP 主名称和封面；
+- 标题与 UP 主名称进入当前下载文件名语义，封面进入媒体结果；
+- 独立结构化 `ParseResult.metadata.author` 尚未形成稳定契约；
 - 优先完整 DURL 媒体；
 - 在没有 DURL 时才保留受限 DASH video candidate，不承诺音视频 merge 升级。
 
@@ -349,7 +351,8 @@ Lab 没有 public rollout，也不能通过正式 Provider Settings 开放匿名
 开发仓库和运行中的生产 checkout 是两个事实源：
 
 ```text
-development main = 457139b98d67d6e5f79b099f9a4e91d60a26904f
+current development baseline = latest fetched origin/main
+documented application baseline = 457139b98d67d6e5f79b099f9a4e91d60a26904f
 recorded production runtime = 38992e955f2f268c2a6d4ecd81d900feba83f048
 ```
 
