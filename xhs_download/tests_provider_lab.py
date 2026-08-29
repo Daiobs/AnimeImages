@@ -502,6 +502,7 @@ class ProviderLabWorkerProtocolTests(SimpleTestCase):
         with tempfile.TemporaryDirectory() as directory:
             python_link = Path(directory) / "venv-python"
             python_link.symlink_to(Path(sys.executable))
+            resolved_python = python_link.resolve()
             script = self._script("pass\n")
             execute_provider_worker(
                 python=str(python_link),
@@ -512,7 +513,7 @@ class ProviderLabWorkerProtocolTests(SimpleTestCase):
             )
         command = execute_process.call_args.args[0]
         self.assertEqual(command[0], str(python_link.absolute()))
-        self.assertNotEqual(command[0], str(python_link.resolve()))
+        self.assertNotEqual(command[0], str(resolved_python))
 
     def test_43_parsehub_worker_never_calls_download(self):
         tree = ast.parse(PARSEHUB_WORKER.read_text())
