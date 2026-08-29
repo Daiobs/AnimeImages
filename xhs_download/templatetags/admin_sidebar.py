@@ -1,6 +1,8 @@
 from django import template
 from django.urls import NoReverseMatch, reverse
 
+from xhs_download.services.env_config import runtime_bool
+
 register = template.Library()
 
 
@@ -22,6 +24,7 @@ SIDEBAR_GROUPS = (
         "Provider",
         (
             ("Provider 管理", "provider_settings", "P"),
+            ("上游测试工作台", "provider_lab", "验"),
             ("Provider 健康测试", "provider_health_tests", "测"),
             ("Provider 审计日志", "provider_audit_logs", "审"),
         ),
@@ -110,6 +113,12 @@ def item_is_visible(request, permissions=()):
     )
 
 
+def item_feature_is_visible(url_name):
+    if url_name == "provider_lab":
+        return runtime_bool("UPSTREAM_PROVIDER_LAB_ENABLED", False)
+    return True
+
+
 @register.inclusion_tag("admin/sidebar_menu.html", takes_context=True)
 def admin_sidebar_menu(context):
     request = context.get("request")
@@ -122,7 +131,10 @@ def admin_sidebar_menu(context):
         for item in items:
             label, url_name, short_label = item[:3]
             permissions = item[3] if len(item) > 3 else ()
-            if not item_is_visible(request, permissions):
+            if (
+                not item_feature_is_visible(url_name)
+                or not item_is_visible(request, permissions)
+            ):
                 continue
             url = reverse_optional(url_name)
             if not url:

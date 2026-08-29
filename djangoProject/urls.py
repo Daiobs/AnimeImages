@@ -22,6 +22,7 @@ from django.views.generic import RedirectView
 
 from djangoProject import health
 from xhs_download import views as download_views
+from xhs_download import provider_lab_views
 from xhs_download import user_feedback_views
 
 urlpatterns = [
@@ -47,6 +48,9 @@ urlpatterns = [
                   ),
                   path("admin/control-plane/", download_views.control_plane_view, name="control_plane"),
                   path("admin/provider-settings/", download_views.provider_settings_view, name="provider_settings"),
+                  path("admin/provider-lab/", provider_lab_views.provider_lab_view, name="provider_lab"),
+                  path("admin/provider-lab/run/", provider_lab_views.provider_lab_run_view, name="provider_lab_run"),
+                  path("admin/provider-lab/resource/", provider_lab_views.provider_lab_resource_view, name="provider_lab_resource"),
                   path("admin/policy-engine/", download_views.policy_engine_view, name="policy_engine"),
                   path("admin/policy-control/", download_views.policy_control_view, name="policy_control"),
                   path("admin/control-convergence/", download_views.control_convergence_view, name="control_convergence"),
