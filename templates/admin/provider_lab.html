@@ -1,0 +1,143 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block content_title %}{% endblock %}
+{% block nav-breadcrumbs %}{% endblock %}
+
+{% block extrastyle %}
+    {{ block.super }}
+    <link rel="stylesheet" href="{% static 'css/provider_lab.css' %}?v={{ static_asset_version }}">
+{% endblock %}
+
+{% block extrahead %}
+    {{ block.super }}
+    <script src="{% static 'js/provider_lab.js' %}?v={{ static_asset_version }}" defer></script>
+{% endblock %}
+
+{% block content %}
+<main
+    class="provider-lab"
+    data-provider-lab
+    data-run-url="{{ provider_lab_run_url }}"
+    data-resource-url="{{ provider_lab_resource_url }}"
+    data-max-concurrency="{{ provider_lab_max_concurrency }}"
+    data-max-providers="{{ provider_lab_max_providers }}"
+>
+    <div class="provider-lab-shell">
+        <header class="provider-lab-header">
+            <div>
+                <span class="provider-lab-eyebrow">Staff Research Surface</span>
+                <h1>上游 Provider 测试工作台</h1>
+                <p>手动并排比较整仓库上游与当前解析结果。每个 Provider 独立执行；结果仅保留在当前页面。</p>
+            </div>
+            <a class="provider-lab-secondary" href="{% url 'provider_settings' %}">Provider 设置</a>
+        </header>
+
+        <section class="provider-lab-input-band" aria-labelledby="provider-lab-input-title">
+            <div class="provider-lab-section-heading">
+                <div>
+                    <h2 id="provider-lab-input-title">测试输入</h2>
+                    <p>支持网页 URL 或包含 URL 的完整分享文案，最长 4096 字符。</p>
+                </div>
+                <span>最多并发 {{ provider_lab_max_concurrency }} 项</span>
+            </div>
+            <form class="provider-lab-form" data-provider-lab-form method="post" novalidate>
+                {% csrf_token %}
+                <label class="provider-lab-source-field">
+                    <span>URL 或分享文案</span>
+                    <textarea
+                        name="source"
+                        maxlength="4096"
+                        rows="3"
+                        required
+                        autocomplete="off"
+                        placeholder="粘贴需要比较的公开网页链接或分享文案"
+                    ></textarea>
+                </label>
+
+                <fieldset class="provider-lab-provider-grid">
+                    <legend>选择上游</legend>
+                    {% for provider in provider_lab_providers %}
+                        <label class="provider-lab-provider-option{% if not provider.available %} is-unavailable{% endif %}">
+                            <input
+                                type="checkbox"
+                                name="providers"
+                                value="{{ provider.provider_id }}"
+                                {% if provider.default_selected and provider.available %}checked{% endif %}
+                                {% if not provider.available %}disabled{% endif %}
+                            >
+                            <span class="provider-lab-provider-copy">
+                                <strong>{{ provider.label }}</strong>
+                                <small>{{ provider.provider_version }}</small>
+                                <small>{{ provider.provider_scope }}</small>
+                                {% if provider.license_scope == "noncommercial_lab_only" %}
+                                    <em>仅限非商业本地研究测试</em>
+                                {% elif not provider.available %}
+                                    <em>{{ provider.not_configured_hint|default:"当前环境未配置" }}</em>
+                                {% endif %}
+                            </span>
+                        </label>
+                    {% endfor %}
+                </fieldset>
+
+                <div class="provider-lab-form-actions">
+                    <button class="provider-lab-primary" type="submit">运行上游测试</button>
+                    <span class="provider-lab-form-message" data-provider-lab-form-message aria-live="polite"></span>
+                </div>
+            </form>
+        </section>
+
+        <section class="provider-lab-results" aria-labelledby="provider-lab-results-title">
+            <div class="provider-lab-section-heading">
+                <div>
+                    <h2 id="provider-lab-results-title">独立结果</h2>
+                    <p>较快的 Provider 会先显示；单项失败不会影响其它结果。</p>
+                </div>
+            </div>
+            <div class="provider-lab-result-grid">
+                {% for provider in provider_lab_providers %}
+                    <article
+                        class="provider-lab-card"
+                        data-provider-card="{{ provider.provider_id }}"
+                        data-provider-status="waiting"
+                    >
+                        <header class="provider-lab-card-header">
+                            <div>
+                                <h3>{{ provider.label }}</h3>
+                                <p>{{ provider.provider_version }}</p>
+                            </div>
+                            <span class="provider-lab-status" data-provider-status-label>WAITING</span>
+                        </header>
+                        <div class="provider-lab-license">
+                            <span>{{ provider.license_name }}</span>
+                            <strong>{{ provider.license_scope }}</strong>
+                        </div>
+                        <dl class="provider-lab-summary" data-provider-summary>
+                            <div><dt>平台</dt><dd data-field="claimed_platform">-</dd></div>
+                            <div><dt>Backend</dt><dd data-field="selected_backend">-</dd></div>
+                            <div><dt>结果类型</dt><dd data-field="result_kind">-</dd></div>
+                            <div><dt>耗时</dt><dd data-field="elapsed_ms">-</dd></div>
+                            <div><dt>标题</dt><dd data-field="title">-</dd></div>
+                            <div><dt>作者</dt><dd data-field="author">-</dd></div>
+                            <div><dt>资源</dt><dd data-field="asset_count">0</dd></div>
+                            <div><dt>关系</dt><dd data-field="relationship_count">0</dd></div>
+                        </dl>
+                        <p class="provider-lab-content" data-provider-content hidden></p>
+                        <p class="provider-lab-error" data-provider-error hidden></p>
+                        <div class="provider-lab-assets" data-provider-assets></div>
+                        <details class="provider-lab-raw" data-provider-raw hidden>
+                            <summary>查看脱敏结构</summary>
+                            <pre data-provider-raw-output></pre>
+                        </details>
+                        <footer class="provider-lab-card-actions">
+                            <button type="button" data-copy-json disabled>复制脱敏 JSON</button>
+                            <button type="button" data-download-json disabled>下载脱敏 JSON</button>
+                        </footer>
+                    </article>
+                {% endfor %}
+            </div>
+        </section>
+    </div>
+</main>
+{{ provider_lab_providers|json_script:"provider-lab-config" }}
+{% endblock %}

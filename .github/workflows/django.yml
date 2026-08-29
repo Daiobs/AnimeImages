@@ -117,6 +117,7 @@ jobs:
           node --check static/js/ordinary_media_streaming.js
           node --check static/js/ordinary_media_streaming_protocol.js
           node --check static/js/parse_preferences.js
+          node --check static/js/provider_lab.js
           node --check static/js/project_settings.js
           node --check static/js/result_url_safety.js
           node --check static/js/user_feedback.js
@@ -131,6 +132,7 @@ jobs:
           node --test tests_js/ordinary_media_download.test.js
           node --test tests_js/ordinary_media_streaming.test.js
           node --test tests_js/parse_preferences.test.js
+          node --test tests_js/provider_lab.test.js
           node --test tests_js/result_url_safety.test.js
           node --test tests_js/user_feedback.test.js
           node --test tests_js/xhs_livephoto_staff_preview.test.js
