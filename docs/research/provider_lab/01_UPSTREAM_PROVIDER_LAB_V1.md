@@ -11,7 +11,8 @@ AUTO_ROUTING = NO
 RESULT_PERSISTENCE = NONE
 PROVIDER_DOWNLOADERS = DISABLED
 PRODUCTION_DEPLOYMENT = NO
-FIRST_BILIBILI_REAL_COMPARISON = PENDING_USER_INPUT
+FIRST_BILIBILI_REAL_COMPARISON_AT_INITIAL_V1 = PENDING_USER_INPUT
+FIRST_BILIBILI_REAL_COMPARISON_FINAL = COMPLETE_3_SAMPLES
 ```
 
 Provider Lab is an explicit comparison surface for Staff research. A Staff
@@ -207,16 +208,30 @@ sessionStorage, or IndexedDB persistence. Refreshing the page clears results.
 Provider Lab does not change XHS, Bilibili, Douyin, YouTube, Batch, public
 download, provider order, provider timeout, manifest, or browser handoff
 behavior. It does not expose a public route and does not transfer full media
-through AnimeImages. Existing production ParseHub XHS isolation is not
+through AnimeImages. The separate formal ParseHub XHS Runtime isolation is not
 refactored by this work.
 
-Bilibili is the intended first manual comparison platform, but no Bilibili-
-specific provider route is part of v1. Until a user supplies a transient test
-sample, the real comparison status remains:
+Bilibili was the intended first manual comparison platform, but no Bilibili-
+specific provider route is part of v1. The initial research snapshot was
+pending user-supplied transient samples; the final PR #76 comparison completed
+three real video samples:
 
 ```text
-FIRST_BILIBILI_REAL_COMPARISON = PENDING_USER_INPUT
+FIRST_BILIBILI_REAL_COMPARISON = COMPLETE_3_SAMPLES
+ANIMEIMAGES_NATIVE_BYTES = OFFICIAL_DURL_BYTES
+TIANTIAN_QUALITY_DELTA = NONE_PROVEN
+VIDEODL_QUALITY_DELTA = NONE_PROVEN
+PARSEHUB_DELIVERABLE_MEDIA_DELTA = NONE_PROVEN
+YT_DLP_STATUS = PROVIDER_PROCESS_FAILED
+BILIBILI_ROUTE_DECISION = KEEP_CURRENT_NATIVE
 ```
+
+Native, TianTian, videodl, and official DURL produced byte-equivalent complete
+media for all three samples. ParseHub exposed additional format metadata but
+did not yield an admitted deliverable media candidate. The yt-dlp failure was
+isolated and recorded as a Provider-specific nonblocking limitation. The Lab
+therefore supported a fixed-route decision without changing the formal
+Bilibili adapter.
 
 ## Adding Another Whole-Repository Provider
 

@@ -126,6 +126,48 @@ Recommended public rollout:
 6. Move to `public`.
 7. If anything looks wrong, switch the Provider back to `disabled` in admin immediately.
 
+## Provider Lab Gate
+
+Provider Lab uses a separate Staff-only gate. It does not participate in
+`ProviderRuntimeSetting`, `public_gray`, anonymous rollout, or the generic
+platform allowlists described above.
+
+The base Lab gate is:
+
+```text
+UPSTREAM_PROVIDER_LAB_ENABLED=True
+active authenticated Staff user
+valid CSRF token
+Lab request rate limit
+per-Provider single-flight
+```
+
+The whole-repository videodl Worker has an additional capability gate:
+
+```text
+VIDEODL_PROVIDER_LAB_ENABLED=True
+```
+
+When either required flag is `False`, the corresponding Lab surface fails
+closed. The Lab cannot be exposed to anonymous users through
+`/admin/provider-settings/`, and it has no `disabled / staff / public_gray /
+public` release sequence. The browser sends one POST per selected Provider,
+with at most three Provider requests in flight; Django does not automatically
+fan out to every Lab Provider.
+
+ParseHub XHS Runtime and the ParseHub Provider Lab Worker are different
+capabilities. The former supplies candidates inside the fixed XHS image route;
+the latter compares a whole-repository parser in an isolated Staff Lab. Their
+flags and Runtime paths are not interchangeable.
+
+videodl is licensed under PolyForm Noncommercial 1.0.0 and is limited to a
+noncommercial local Staff Lab. It must not enter `public_gray`, `public`, or a
+production platform route unless a future task completes a new license and
+authorization review.
+
+Provider Lab operations, exact repository pins, bootstrap commands, result
+governance, and cleanup are documented in [Provider Lab](provider-lab.md).
+
 ## KuKuTool Strategy
 
 Douyin KuKuTool ultra-HD is riskier than the regular yt-dlp/gallery-dl capability because it depends on a third-party upstream, dynamic profile behavior, and anti-abuse conditions.
