@@ -639,6 +639,7 @@ def build_xhs_livephoto_asset_specs(
     candidate_map: XhsLivePhotoCandidateMapV1,
     image_list: Any,
     member_proofs: tuple[XhsLivePhotoPrivateMemberProofV1, ...],
+    delivery_ready_ordinals: frozenset[int] | None = None,
 ) -> XhsLivePhotoAssetSpecMapV1:
     """Build deterministic, URL-free specs from one exact selected snapshot."""
 
@@ -676,6 +677,20 @@ def build_xhs_livephoto_asset_specs(
 
     validate_xhs_livephoto_asset_spec_limits(relationship_map)
 
+    livephoto_ordinals = frozenset(
+        item.source_item_ordinal
+        for item in relationship_map.items
+        if item.item_kind == "live_photo"
+    )
+    if delivery_ready_ordinals is None:
+        delivery_ready_ordinals = livephoto_ordinals
+    if (
+        type(delivery_ready_ordinals) is not frozenset
+        or not delivery_ready_ordinals.issubset(livephoto_ordinals)
+        or any(type(ordinal) is not int for ordinal in delivery_ready_ordinals)
+    ):
+        _reject("XHS_LIVEPHOTO_ASSET_SPEC_INPUT_INVALID")
+
     proofs_by_locator: dict[
         XhsLivePhotoMemberLocatorV1,
         XhsLivePhotoPrivateMemberProofV1,
@@ -685,18 +700,17 @@ def build_xhs_livephoto_asset_specs(
             _reject("XHS_LIVEPHOTO_ASSET_SPEC_MEMBER_PROOF_DUPLICATE")
         proofs_by_locator[proof.locator] = proof
 
-    all_live = all(item.item_kind == "live_photo" for item in relationship_map.items)
-    all_regular = all(
-        item.item_kind == "regular_image" for item in relationship_map.items
-    )
+    all_items_grouped = bool(delivery_ready_ordinals) and len(
+        delivery_ready_ordinals
+    ) == len(relationship_map.items)
     post_type = (
         "live_photo"
-        if all_live
-        else "image"
-        if all_regular and len(relationship_map.items) == 1
-        else "gallery"
-        if all_regular
+        if all_items_grouped
         else "multimedia"
+        if delivery_ready_ordinals
+        else "image"
+        if len(relationship_map.items) == 1
+        else "gallery"
     )
     scope_key = _scope_key(payload_note_id)
     assets: list[XhsLivePhotoAssetBindingV1] = []
@@ -715,7 +729,7 @@ def build_xhs_livephoto_asset_specs(
             _reject("XHS_LIVEPHOTO_ASSET_SPEC_CANDIDATE_MAP_MISMATCH")
 
         locators = [candidate_item.still_locator]
-        if candidate_item.motion_locator is not None:
+        if ordinal in delivery_ready_ordinals and candidate_item.motion_locator is not None:
             locators.append(candidate_item.motion_locator)
         for locator in locators:
             expected_locators.add(locator)
@@ -724,7 +738,10 @@ def build_xhs_livephoto_asset_specs(
                 _reject("XHS_LIVEPHOTO_ASSET_SPEC_MEMBER_PROOF_MISSING")
             _validate_current_candidate(image_list=image_list, proof=proof)
 
-        if relationship_item.item_kind == "regular_image":
+        if (
+            relationship_item.item_kind == "regular_image"
+            or ordinal not in delivery_ready_ordinals
+        ):
             proof = proofs_by_locator[candidate_item.still_locator]
             asset = XhsRichMediaAssetSpec(
                 asset_id=_asset_id(scope_key, ordinal, "still"),

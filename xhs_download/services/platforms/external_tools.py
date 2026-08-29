@@ -110,13 +110,19 @@ def _sanitized_external_executable_name(args):
     return sanitized[:80] or "external-tool"
 
 
-def _enforce_external_output_limit(stdout_file, stderr_file, *, max_bytes):
+def _enforce_external_output_limit(
+    stdout_file,
+    stderr_file,
+    *,
+    max_stdout_bytes,
+    max_stderr_bytes,
+):
     if (
-        _external_output_size(stdout_file) > max_bytes
-        or _external_output_size(stderr_file) > max_bytes
+        _external_output_size(stdout_file) > max_stdout_bytes
+        or _external_output_size(stderr_file) > max_stderr_bytes
     ):
         raise ExternalCommandOutputTooLarge(
-            f"external command output exceeded {max_bytes} bytes"
+            "external command output exceeded its configured byte limit"
         )
 
 
@@ -246,10 +252,12 @@ def _execute_external_process(
     *,
     stdout,
     stderr,
+    stdin,
     cwd,
     env,
     timeout_seconds,
-    max_bytes,
+    max_stdout_bytes,
+    max_stderr_bytes,
     progress_callback=None,
     progress_path=None,
     estimated_size=0,
@@ -258,6 +266,7 @@ def _execute_external_process(
     popen_kwargs = {
         "stdout": stdout,
         "stderr": stderr,
+        "stdin": stdin,
         "cwd": cwd,
         "env": env,
     }
@@ -279,7 +288,12 @@ def _execute_external_process(
         )
 
         while process.poll() is None:
-            _enforce_external_output_limit(stdout, stderr, max_bytes=max_bytes)
+            _enforce_external_output_limit(
+                stdout,
+                stderr,
+                max_stdout_bytes=max_stdout_bytes,
+                max_stderr_bytes=max_stderr_bytes,
+            )
             now = time.monotonic()
             elapsed = now - started_at
             if elapsed >= timeout_seconds:
@@ -306,7 +320,12 @@ def _execute_external_process(
             except subprocess.TimeoutExpired:
                 pass
 
-        _enforce_external_output_limit(stdout, stderr, max_bytes=max_bytes)
+        _enforce_external_output_limit(
+            stdout,
+            stderr,
+            max_stdout_bytes=max_stdout_bytes,
+            max_stderr_bytes=max_stderr_bytes,
+        )
         if progress_callback and progress_path and estimated_size:
             emit_external_progress(progress_callback, progress_path, estimated_size)
         completed = subprocess.CompletedProcess(args, process.returncode)
@@ -331,6 +350,9 @@ def run_external_command(
     args,
     *,
     timeout_seconds,
+    input_text=None,
+    max_stdout_bytes=None,
+    max_stderr_bytes=None,
     progress_callback=None,
     progress_path=None,
     estimated_size=0,
@@ -339,28 +361,48 @@ def run_external_command(
     args = resolve_external_command_for_cwd(args)
     with (
         tempfile.TemporaryDirectory(prefix="xhs_external_tool_") as work_dir,
+        tempfile.TemporaryFile() as stdin_file,
         tempfile.TemporaryFile() as stdout_file,
         tempfile.TemporaryFile() as stderr_file,
     ):
         env = safe_subprocess_env()
         env["HOME"] = work_dir
         timeout_seconds = max(0.1, float(timeout_seconds or 15.0))
-        max_bytes = external_command_output_max_bytes()
+        default_max_bytes = external_command_output_max_bytes()
+        max_stdout_bytes = max(
+            1024,
+            int(max_stdout_bytes or default_max_bytes),
+        )
+        max_stderr_bytes = max(
+            1024,
+            int(max_stderr_bytes or default_max_bytes),
+        )
+        if input_text is not None:
+            stdin_file.write(str(input_text).encode("utf-8"))
+            stdin_file.seek(0)
         completed = _execute_external_process(
             args,
             stdout=stdout_file,
             stderr=stderr_file,
+            stdin=stdin_file,
             cwd=work_dir,
             env=env,
             timeout_seconds=timeout_seconds,
-            max_bytes=max_bytes,
+            max_stdout_bytes=max_stdout_bytes,
+            max_stderr_bytes=max_stderr_bytes,
             progress_callback=progress_callback,
             progress_path=progress_path,
             estimated_size=estimated_size,
             progress_interval_seconds=progress_interval_seconds,
         )
-        completed.stdout = read_external_output(stdout_file, max_bytes=max_bytes)
-        completed.stderr = read_external_output(stderr_file, max_bytes=max_bytes)
+        completed.stdout = read_external_output(
+            stdout_file,
+            max_bytes=max_stdout_bytes,
+        )
+        completed.stderr = read_external_output(
+            stderr_file,
+            max_bytes=max_stderr_bytes,
+        )
         return completed
 
 

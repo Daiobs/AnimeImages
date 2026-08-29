@@ -113,7 +113,7 @@ class BatchPhotoGalleryRenderTests(SimpleTestCase):
         item = build_result_display_context(result)["image_items"][0]
 
         self.assertEqual(item["url"], download_url)
-        self.assertIn("/w/960/format/webp", item["card_preview_url"])
+        self.assertIn("/w/1280/format/webp", item["card_preview_url"])
         self.assertIn("/w/1600/format/webp", item["lightbox_preview_url"])
         self.assertEqual(decode_url(item["encoded_url"]), download_url)
         self.assertEqual(item["download_extension"], "png")
@@ -199,6 +199,12 @@ class BatchPhotoArchiveTests(SimpleTestCase):
                 self.assertEqual(
                     [bundle.read(name) for name in bundle.namelist()],
                     bodies,
+                )
+                self.assertTrue(
+                    all(
+                        info.date_time != (1980, 1, 1, 0, 0, 0)
+                        for info in bundle.infolist()
+                    )
                 )
             self.assertEqual(archive["filename"], "post_images.zip")
             self.assertEqual(archive["saved_count"], 5)

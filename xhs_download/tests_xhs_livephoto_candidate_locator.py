@@ -535,19 +535,18 @@ class XhsLivePhotoCandidateReadSafetyTests(SimpleTestCase):
             "XHS_LIVEPHOTO_CANDIDATE_LOCATOR_INVALID",
         )
 
-    def test_backup_locator_is_invalid_after_master_field_appears(self):
+    def test_same_variant_backup_locator_remains_valid_after_master_appears(self):
         items = [livephoto_item("one")]
         del items[0]["stream"]["h264"][0]["masterUrl"]
         locator = candidate_map(items).items[0].motion_locator
         items[0]["stream"]["h264"][0]["masterUrl"] = "private-new-master"
 
-        with self.assertRaises(XhsLivePhotoCandidateError) as raised:
-            read_candidate_from_locator(image_list=items, locator=locator)
-
-        self.assertEqual(
-            raised.exception.code,
-            "XHS_LIVEPHOTO_CANDIDATE_LOCATOR_INVALID",
+        candidate = read_candidate_from_locator(
+            image_list=items,
+            locator=locator,
         )
+
+        self.assertEqual(candidate.value, "private-backup-a-one")
 
     def test_locator_out_of_range_fails_without_candidate_value(self):
         locator = XhsLivePhotoMemberLocatorV1(

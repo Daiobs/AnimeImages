@@ -11,6 +11,7 @@
 
     const ITEM_MAX_BYTES = 50 * 1024 * 1024;
     const ARCHIVE_MAX_BYTES = 128 * 1024 * 1024;
+    const LIVEPHOTO_MOTION_MAX_BYTES = 1024 * 1024 * 1024;
     const FETCH_CONCURRENCY = 3;
     const FETCH_IDLE_TIMEOUT_MS = 30000;
     const SPEED_WINDOW_MS = 2500;
@@ -21,6 +22,7 @@
         gif: Object.freeze({format: "gif", extension: "gif", mimeType: "image/gif"}),
         webp: Object.freeze({format: "webp", extension: "webp", mimeType: "image/webp"}),
         avif: Object.freeze({format: "avif", extension: "avif", mimeType: "image/avif"}),
+        heic: Object.freeze({format: "heic", extension: "heic", mimeType: "image/heic"}),
     });
     const CONTENT_TYPE_FORMATS = Object.freeze({
         "image/jpeg": "jpeg",
@@ -29,6 +31,8 @@
         "image/gif": "gif",
         "image/webp": "webp",
         "image/avif": "avif",
+        "image/heic": "heic",
+        "image/heif": "heic",
     });
     const URL_EXTENSION_FORMATS = Object.freeze({
         jpeg: "jpeg",
@@ -37,6 +41,8 @@
         gif: "gif",
         webp: "webp",
         avif: "avif",
+        heic: "heic",
+        heif: "heic",
     });
     const textEncoder = new TextEncoder();
     let crcTable = null;
@@ -48,6 +54,47 @@
 
     function normalizeContentType(value) {
         return String(value || "").split(";", 1)[0].trim().toLowerCase();
+    }
+
+    function isSafeXhsImageUrl(value) {
+        try {
+            const parsed = new URL(String(value || ""));
+            const hostname = parsed.hostname.toLowerCase();
+            const pathParts = parsed.pathname.split("/").filter(Boolean);
+            const resourceKey = String(pathParts[pathParts.length - 1] || "").toLowerCase();
+            const suffixAllowed = (
+                hostname === "xhscdn.com"
+                || hostname.endsWith(".xhscdn.com")
+                || hostname === "xiaohongshu.com"
+                || hostname.endsWith(".xiaohongshu.com")
+            );
+            const hasKnownResourcePath = pathParts.some(
+                (part, index) => ["notes_pre_post", "spectrum"].includes(part)
+                    && index + 1 < pathParts.length,
+            );
+            const candidateClassAllowed = (
+                hostname === "ci.xiaohongshu.com"
+                || hostname.startsWith("sns-webpic")
+                || hostname.startsWith("sns-img")
+                || hasKnownResourcePath
+            );
+            return Boolean(
+                parsed.protocol === "https:"
+                && !parsed.username
+                && !parsed.password
+                && !parsed.port
+                && suffixAllowed
+                && pathParts.length
+                && !["", ".", "..", "null", "none", "undefined", "notes_pre_post", "spectrum"]
+                    .includes(resourceKey)
+                && !/(?:^|[/_.-])(?:avatar|favicon|logo|icon|sprite|emoji|qrcode)(?:[/_.-]|$)/i
+                    .test(parsed.pathname)
+                && !/\.(?:js|css|zip)$/i.test(parsed.pathname)
+                && candidateClassAllowed
+            );
+        } catch (error) {
+            return false;
+        }
     }
 
     function bytesView(value) {
@@ -117,14 +164,44 @@
                 + bytes[3]
             ) >>> 0;
             const boxEnd = Math.min(bytes.length, boxSize);
+            const heicBrands = new Set([
+                "heic", "heix", "hevc", "hevx", "heim", "heis", "heif", "mif1", "msf1",
+            ]);
             for (let index = 8; index + 4 <= boxEnd; index += index === 8 ? 8 : 4) {
                 const brand = asciiPrefix(bytes.subarray(index, index + 4), 4);
                 if (brand === "avif" || brand === "avis") {
                     return "avif";
                 }
+                if (heicBrands.has(brand)) {
+                    return "heic";
+                }
             }
         }
         return "";
+    }
+
+    function detectMp4Magic(value) {
+        const bytes = bytesView(value);
+        if (bytes.length < 12 || asciiPrefix(bytes.subarray(4, 8), 4) !== "ftyp") {
+            return false;
+        }
+        const acceptedBrands = new Set([
+            "avc1", "dash", "hev1", "hvc1", "iso2", "iso3", "iso4", "iso5",
+            "iso6", "isom", "m4v ", "mp41", "mp42", "msnv",
+        ]);
+        const boxSize = (
+            ((bytes[0] << 24) >>> 0)
+            + (bytes[1] << 16)
+            + (bytes[2] << 8)
+            + bytes[3]
+        ) >>> 0;
+        const boxEnd = Math.min(bytes.length, Math.max(12, boxSize));
+        for (let index = 8; index + 4 <= boxEnd; index += index === 8 ? 8 : 4) {
+            if (acceptedBrands.has(asciiPrefix(bytes.subarray(index, index + 4), 4))) {
+                return true;
+            }
+        }
+        return acceptedBrands.has(asciiPrefix(bytes.subarray(8, 12), 4));
     }
 
     function formatFromUrl(url) {
@@ -201,7 +278,7 @@
 
     function filenameStem(value, fallback) {
         const sanitized = sanitizeFilename(value, fallback || "image");
-        return sanitized.replace(/\.(?:jpe?g|png|gif|webp|avif)$/i, "") || "image";
+        return sanitized.replace(/\.(?:jpe?g|png|gif|webp|avif|heic|heif)$/i, "") || "image";
     }
 
     function filenameWithSuffix(stem, suffix) {
@@ -209,6 +286,15 @@
         const maxStemLength = Math.max(1, 160 - safeSuffix.length);
         const safeStem = filenameStem(stem, "image").slice(0, maxStemLength);
         return sanitizeFilename(`${safeStem}${safeSuffix}`, `image${safeSuffix}`);
+    }
+
+    function sanitizeZipEntryPath(value, fallback) {
+        const segments = String(value || "")
+            .replace(/\\/g, "/")
+            .split("/")
+            .filter((segment) => segment && segment !== "." && segment !== "..")
+            .map((segment) => sanitizeFilename(segment, "item"));
+        return segments.join("/") || sanitizeFilename(fallback, "item");
     }
 
     function formatBytes(value) {
@@ -367,7 +453,49 @@
         return {bytes, view: new DataView(bytes.buffer)};
     }
 
-    function normalizeZipEntry(entry) {
+    function validDate(value) {
+        if (value === undefined || value === null || value === "") {
+            return null;
+        }
+        const candidate = value instanceof Date
+            ? new Date(value.getTime())
+            : new Date(value);
+        return Number.isFinite(candidate.getTime()) ? candidate : null;
+    }
+
+    function normalizeZipModifiedAt(value, fallback) {
+        const date = validDate(value) || validDate(fallback) || new Date();
+        const year = Math.min(2107, Math.max(1980, date.getFullYear()));
+        const month = Math.min(12, Math.max(1, date.getMonth() + 1));
+        const lastDay = new Date(year, month, 0).getDate();
+        return Object.freeze({
+            year,
+            month,
+            day: Math.min(lastDay, Math.max(1, date.getDate())),
+            hour: Math.min(23, Math.max(0, date.getHours())),
+            minute: Math.min(59, Math.max(0, date.getMinutes())),
+            second: Math.min(59, Math.max(0, date.getSeconds())),
+        });
+    }
+
+    function encodeDosDateTime(value, fallback) {
+        const normalized = normalizeZipModifiedAt(value, fallback);
+        return Object.freeze({
+            time: (
+                (normalized.hour << 11)
+                | (normalized.minute << 5)
+                | Math.floor(normalized.second / 2)
+            ) & 0xffff,
+            date: (
+                ((normalized.year - 1980) << 9)
+                | (normalized.month << 5)
+                | normalized.day
+            ) & 0xffff,
+            normalized,
+        });
+    }
+
+    function normalizeZipEntry(entry, archiveCreatedAt) {
         const chunks = (entry.chunks || [entry.bytes || new Uint8Array()]).map(bytesView);
         const size = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
         let resolvedCrc = entry.crc;
@@ -378,16 +506,23 @@
             }
             resolvedCrc = (crcState ^ 0xffffffff) >>> 0;
         }
+        const modifiedAt = encodeDosDateTime(entry.modifiedAt, archiveCreatedAt);
         return {
-            filename: sanitizeFilename(entry.filename, "image"),
+            filename: sanitizeZipEntryPath(entry.filename, "image"),
             chunks,
             size,
             crc: resolvedCrc >>> 0,
+            modificationTime: modifiedAt.time,
+            modificationDate: modifiedAt.date,
         };
     }
 
-    function createStoreZip(entries) {
-        const normalized = (entries || []).map(normalizeZipEntry);
+    function createStoreZip(entries, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        const archiveCreatedAt = validDate(settings.createdAt) || new Date();
+        const normalized = (entries || []).map((entry) => (
+            normalizeZipEntry(entry, archiveCreatedAt)
+        ));
         const localParts = [];
         const centralParts = [];
         let offset = 0;
@@ -398,8 +533,8 @@
             writeUint16(local.view, 4, 20);
             writeUint16(local.view, 6, 0x0800);
             writeUint16(local.view, 8, 0);
-            writeUint16(local.view, 10, 0);
-            writeUint16(local.view, 12, 0x0021);
+            writeUint16(local.view, 10, entry.modificationTime);
+            writeUint16(local.view, 12, entry.modificationDate);
             writeUint32(local.view, 14, entry.crc);
             writeUint32(local.view, 18, entry.size);
             writeUint32(local.view, 22, entry.size);
@@ -414,8 +549,8 @@
             writeUint16(central.view, 6, 20);
             writeUint16(central.view, 8, 0x0800);
             writeUint16(central.view, 10, 0);
-            writeUint16(central.view, 12, 0);
-            writeUint16(central.view, 14, 0x0021);
+            writeUint16(central.view, 12, entry.modificationTime);
+            writeUint16(central.view, 14, entry.modificationDate);
             writeUint32(central.view, 16, entry.crc);
             writeUint32(central.view, 20, entry.size);
             writeUint32(central.view, 24, entry.size);
@@ -466,6 +601,12 @@
             IMAGE_CONTENT_INVALID: "上游返回的内容不是有效图片。",
             IMAGE_FORMAT_UNDETERMINED: "无法确认图片真实格式，已停止保存。",
             BROWSER_PHOTO_NO_SUCCESS: "没有图片下载成功。",
+            BROWSER_LIVEPHOTO_MOTION_INVALID: "实况视频获取失败。",
+            BROWSER_LIVEPHOTO_STILL_FETCH_FAILED: "原图获取失败。",
+            BROWSER_LIVEPHOTO_MOTION_FETCH_FAILED: "实况视频获取失败。",
+            BROWSER_LIVEPHOTO_SIZE_MISMATCH: "实况素材内容不完整，请重新解析。",
+            BROWSER_LIVEPHOTO_PAIR_TOO_LARGE: "该实况素材过大，暂无法在浏览器中打包。",
+            BROWSER_LIVEPHOTO_PAIR_INVALID: "实况素材信息无效，请重新解析。",
         };
         return messages[code] || "图片下载失败，请稍后重试。";
     }
@@ -499,6 +640,15 @@
     }
 
     async function readImageResponse(response, item, context) {
+        if (
+            item.source_platform === "xiaohongshu"
+            && !isSafeXhsImageUrl(response.url || item.url)
+        ) {
+            if (response.body && typeof response.body.cancel === "function") {
+                await response.body.cancel().catch(() => {});
+            }
+            throw photoError("IMAGE_CONTENT_INVALID");
+        }
         const contentLength = positiveInteger(responseHeader(response, "Content-Length"));
         if (contentLength > context.itemMaxBytes) {
             if (response.body && typeof response.body.cancel === "function") {
@@ -516,7 +666,9 @@
                 throw photoError("BROWSER_PHOTO_ARCHIVE_TOO_LARGE");
             }
         }
-        context.meter.setItemTotal(context.index, contentLength);
+        if (!context.preserveItemTotal) {
+            context.meter.setItemTotal(context.index, contentLength);
+        }
         if (!response.body || typeof response.body.getReader !== "function") {
             throw photoError("BROWSER_PHOTO_CORS_UNAVAILABLE");
         }
@@ -596,8 +748,14 @@
             contentType: responseHeader(response, "Content-Type"),
             url: response.url || item.url,
         });
-        if (detected.errorCode) {
-            throw photoError(detected.errorCode);
+        const requiresMagic = Boolean(
+            item.require_magic === true
+            || item.requireMagic === true
+            || item.source_platform === "xiaohongshu"
+            || item.provider === "parsehub_xhs_images"
+        );
+        if (detected.errorCode || (requiresMagic && detected.confidence !== "magic")) {
+            throw photoError(detected.errorCode || "IMAGE_FORMAT_UNDETERMINED");
         }
         return {
             chunks,
@@ -646,6 +804,160 @@
                 throw photoError("BROWSER_PHOTO_HTTP_FAILED", `图片资源返回 HTTP ${response.status || 0}。`);
             }
             return await readImageResponse(response, item, {
+                ...context,
+                itemController,
+                signal: itemController.signal,
+            });
+        } finally {
+            releaseSignal();
+        }
+    }
+
+    async function readMotionResponse(response, item, context) {
+        const contentLength = positiveInteger(responseHeader(response, "Content-Length"));
+        if (contentLength > context.itemMaxBytes) {
+            if (response.body && typeof response.body.cancel === "function") {
+                await response.body.cancel().catch(() => {});
+            }
+            throw photoError("BROWSER_LIVEPHOTO_PAIR_TOO_LARGE");
+        }
+        if (contentLength) {
+            context.aggregate.declaredBytes += contentLength;
+            if (context.aggregate.declaredBytes > context.archiveMaxBytes) {
+                if (response.body && typeof response.body.cancel === "function") {
+                    await response.body.cancel().catch(() => {});
+                }
+                context.controller.abort();
+                throw photoError("BROWSER_LIVEPHOTO_PAIR_TOO_LARGE");
+            }
+        }
+        if (!context.preserveItemTotal) {
+            context.meter.setItemTotal(context.index, contentLength);
+        }
+        if (!response.body || typeof response.body.getReader !== "function") {
+            throw photoError("BROWSER_PHOTO_CORS_UNAVAILABLE");
+        }
+        const reader = response.body.getReader();
+        const chunks = [];
+        const prefixParts = [];
+        let prefixLength = 0;
+        let itemBytes = 0;
+        let crcState = 0xffffffff;
+        while (true) {
+            const cancelled = abortError(context.signal);
+            if (cancelled) {
+                await Promise.resolve(reader.cancel()).catch(() => {});
+                throw cancelled;
+            }
+            let read;
+            try {
+                read = await withIdleTimeout(
+                    reader.read(),
+                    context.idleTimeoutMs,
+                    () => {
+                        context.itemController.abort();
+                        Promise.resolve(reader.cancel()).catch(() => {});
+                    },
+                );
+            } catch (error) {
+                if (safeErrorCode(error) === "BROWSER_PHOTO_FETCH_TIMEOUT") {
+                    throw error;
+                }
+                const cancelled = abortError(context.signal);
+                if (cancelled) {
+                    throw cancelled;
+                }
+                throw photoError("BROWSER_PHOTO_FETCH_FAILED");
+            }
+            if (read.done) {
+                break;
+            }
+            const chunk = bytesView(read.value);
+            if (!chunk.byteLength) {
+                continue;
+            }
+            itemBytes += chunk.byteLength;
+            context.aggregate.receivedBytes += chunk.byteLength;
+            if (
+                itemBytes > context.itemMaxBytes
+                || context.aggregate.receivedBytes > context.archiveMaxBytes
+            ) {
+                context.controller.abort();
+                throw photoError("BROWSER_LIVEPHOTO_PAIR_TOO_LARGE");
+            }
+            chunks.push(chunk);
+            crcState = crc32Update(crcState, chunk);
+            if (prefixLength < 4096) {
+                const part = chunk.subarray(0, Math.min(chunk.length, 4096 - prefixLength));
+                prefixParts.push(part);
+                prefixLength += part.length;
+            }
+            context.meter.addBytes(chunk.byteLength);
+            context.meter.emit("fetching_motion");
+        }
+        if (!itemBytes) {
+            throw photoError("BROWSER_LIVEPHOTO_MOTION_INVALID");
+        }
+        const prefix = new Uint8Array(prefixLength);
+        let offset = 0;
+        for (const part of prefixParts) {
+            prefix.set(part, offset);
+            offset += part.length;
+        }
+        if (!detectMp4Magic(prefix)) {
+            throw photoError("BROWSER_LIVEPHOTO_MOTION_INVALID");
+        }
+        const expectedSize = positiveInteger(item.expected_size_bytes || item.expectedSizeBytes);
+        if (expectedSize && expectedSize !== itemBytes) {
+            throw photoError("BROWSER_LIVEPHOTO_SIZE_MISMATCH");
+        }
+        return {
+            chunks,
+            size: itemBytes,
+            crc: (crcState ^ 0xffffffff) >>> 0,
+            format: "mp4",
+            mimeType: "video/mp4",
+        };
+    }
+
+    async function fetchMotion(item, context) {
+        const itemController = new AbortController();
+        const releaseSignal = bridgeAbortSignal(context.signal, itemController);
+        let response;
+        try {
+            response = await withIdleTimeout(
+                context.fetchImpl(item.url, {
+                    method: "GET",
+                    cache: "no-store",
+                    credentials: "omit",
+                    referrerPolicy: "no-referrer",
+                    signal: itemController.signal,
+                }),
+                context.idleTimeoutMs,
+                () => itemController.abort(),
+            );
+        } catch (error) {
+            const cancelled = abortError(context.signal);
+            if (cancelled) {
+                throw cancelled;
+            }
+            if (safeErrorCode(error) === "BROWSER_PHOTO_FETCH_TIMEOUT") {
+                throw error;
+            }
+            throw photoError("BROWSER_PHOTO_CORS_UNAVAILABLE");
+        } finally {
+            if (!response) {
+                releaseSignal();
+            }
+        }
+        try {
+            if (!response || response.type === "opaque" || !response.body) {
+                throw photoError("BROWSER_PHOTO_CORS_UNAVAILABLE");
+            }
+            if (!response.ok) {
+                throw photoError("BROWSER_PHOTO_HTTP_FAILED");
+            }
+            return await readMotionResponse(response, item, {
                 ...context,
                 itemController,
                 signal: itemController.signal,
@@ -712,6 +1024,12 @@
         if (item.requires_merge === true || item.requiresMerge === true) {
             throw photoError("BROWSER_PHOTO_SERVER_REQUIRED", "当前图片需要服务器生成文件。");
         }
+        if (
+            item.source_platform === "xiaohongshu"
+            && !isSafeXhsImageUrl(item.url)
+        ) {
+            throw photoError("BROWSER_PHOTO_INVALID_ITEM", "图片下载信息无效，请重新解析。");
+        }
     }
 
     function supportsSelection(items, saveFormat) {
@@ -719,15 +1037,23 @@
         return Boolean(
             sourceItems.length
             && String(saveFormat || "original") === "original"
-            && sourceItems.every((item) => (
-                item
-                && item.type === "image"
-                && String(item.url || "").trim()
-                && item.requires_cookie !== true
-                && item.requiresCookie !== true
-                && item.requires_merge !== true
-                && item.requiresMerge !== true
-            ))
+            && sourceItems.every((item) => {
+                const logicalType = logicalItemType(item);
+                if (!item || item.requires_cookie === true || item.requiresCookie === true) {
+                    return false;
+                }
+                if (item.requires_merge === true || item.requiresMerge === true) {
+                    return false;
+                }
+                if (logicalType === "livephoto") {
+                    return Boolean(
+                        String(item.asset_id || item.assetId || "").trim()
+                        && String(item.pair_token || item.pairToken || "").trim()
+                        && String(item.descriptor_url || item.descriptorUrl || "").trim()
+                    );
+                }
+                return logicalType === "image" && Boolean(String(item.url || "").trim());
+            })
         );
     }
 
@@ -785,6 +1111,7 @@
 
     async function createArchive(items, options) {
         const settings = options && typeof options === "object" ? options : {};
+        const archiveCreatedAt = validDate(settings.createdAt) || new Date();
         const sourceItems = Array.isArray(items) ? items : [];
         if (sourceItems.length < 2) {
             throw photoError("BROWSER_PHOTO_INVALID_ITEM", "至少选择两张图片才能打包。");
@@ -899,7 +1226,7 @@
                 });
             }
             meter.emit("assembling");
-            const blob = createStoreZip(entries);
+            const blob = createStoreZip(entries, {createdAt: archiveCreatedAt});
             if (blob.size > archiveMaxBytes + (entries.length * 512)) {
                 throw photoError("BROWSER_PHOTO_ARCHIVE_TOO_LARGE");
             }
@@ -922,16 +1249,365 @@
         }
     }
 
+    async function createLivePhotoPairArchive(pair, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        const archiveCreatedAt = validDate(settings.createdAt) || new Date();
+        if (!pair || !pair.still || !pair.motion) {
+            throw photoError("BROWSER_LIVEPHOTO_PAIR_INVALID");
+        }
+        const still = normalizedPhotoItem({
+            ...pair.still,
+            require_magic: true,
+        }, 0, "livephoto_still");
+        const motion = {
+            ...pair.motion,
+            type: "video",
+            url: String(pair.motion.url || "").trim(),
+            filename: sanitizeFilename(pair.motion.filename, "livephoto_motion.mp4"),
+        };
+        assertPhotoItem(still);
+        if (
+            !motion.url
+            || String(motion.format_class || "").toLowerCase() !== "mp4"
+            || !/\.mp4$/i.test(motion.filename)
+        ) {
+            throw photoError("BROWSER_LIVEPHOTO_PAIR_INVALID");
+        }
+        const controller = new AbortController();
+        const releaseSignal = bridgeAbortSignal(settings.signal, controller);
+        const meter = createTransferMeter({
+            totalItems: 2,
+            onProgress: settings.onProgress,
+            now: settings.now,
+        });
+        const aggregate = {receivedBytes: 0, declaredBytes: 0};
+        const archiveMaxBytes = positiveInteger(settings.archiveMaxBytes) || ARCHIVE_MAX_BYTES;
+        const fetchImpl = runtimeFetch(settings);
+        meter.emit("connecting");
+        try {
+            let stillResult;
+            try {
+                stillResult = await fetchImage(still, {
+                    index: 0,
+                    fetchImpl,
+                    itemMaxBytes: positiveInteger(settings.stillMaxBytes) || ITEM_MAX_BYTES,
+                    archiveMaxBytes,
+                    aggregate,
+                    meter,
+                    controller,
+                    signal: controller.signal,
+                    idleTimeoutMs: positiveInteger(settings.idleTimeoutMs) || FETCH_IDLE_TIMEOUT_MS,
+                });
+            } catch (error) {
+                const code = safeErrorCode(error);
+                if (
+                    code === "BROWSER_PHOTO_CANCELLED"
+                    || code === "BROWSER_PHOTO_ITEM_TOO_LARGE"
+                    || code === "BROWSER_PHOTO_ARCHIVE_TOO_LARGE"
+                    || code === "BROWSER_LIVEPHOTO_PAIR_TOO_LARGE"
+                ) {
+                    throw error;
+                }
+                throw photoError("BROWSER_LIVEPHOTO_STILL_FETCH_FAILED");
+            }
+            const expectedStillSize = positiveInteger(
+                pair.still.expected_size_bytes || pair.still.expectedSizeBytes,
+            );
+            if (expectedStillSize && expectedStillSize !== stillResult.size) {
+                throw photoError("BROWSER_LIVEPHOTO_SIZE_MISMATCH");
+            }
+            meter.completeItem(true);
+            meter.emit("fetching_motion");
+            let motionResult;
+            try {
+                motionResult = await fetchMotion(motion, {
+                    index: 1,
+                    fetchImpl,
+                    itemMaxBytes: positiveInteger(settings.motionMaxBytes) || LIVEPHOTO_MOTION_MAX_BYTES,
+                    archiveMaxBytes,
+                    aggregate,
+                    meter,
+                    controller,
+                    signal: controller.signal,
+                    idleTimeoutMs: positiveInteger(settings.idleTimeoutMs) || FETCH_IDLE_TIMEOUT_MS,
+                });
+            } catch (error) {
+                const code = safeErrorCode(error);
+                if (
+                    code === "BROWSER_PHOTO_CANCELLED"
+                    || code === "BROWSER_LIVEPHOTO_PAIR_TOO_LARGE"
+                    || code === "BROWSER_LIVEPHOTO_SIZE_MISMATCH"
+                ) {
+                    throw error;
+                }
+                throw photoError("BROWSER_LIVEPHOTO_MOTION_FETCH_FAILED");
+            }
+            meter.completeItem(true);
+            meter.emit("assembling");
+            const stillFilename = filenameWithSuffix(
+                filenameStem(pair.still.filename, "livephoto_still"),
+                `.${stillResult.detected.extension}`,
+            );
+            const motionFilename = filenameWithSuffix(
+                filenameStem(
+                    String(motion.filename || "").replace(/\.mp4$/i, ""),
+                    "livephoto_motion",
+                ),
+                ".mp4",
+            );
+            const entries = [
+                {filename: stillFilename, chunks: stillResult.chunks, crc: stillResult.crc},
+                {filename: motionFilename, chunks: motionResult.chunks, crc: motionResult.crc},
+            ];
+            const blob = createStoreZip(entries, {createdAt: archiveCreatedAt});
+            if (blob.size > archiveMaxBytes + 1024) {
+                throw photoError("BROWSER_LIVEPHOTO_PAIR_TOO_LARGE");
+            }
+            const archiveFilename = sanitizeFilename(
+                pair.archive_filename || pair.archiveFilename,
+                "livephoto.zip",
+            );
+            if (!/\.zip$/i.test(archiveFilename)) {
+                throw photoError("BROWSER_LIVEPHOTO_PAIR_INVALID");
+            }
+            meter.emit("saving");
+            const handoff = typeof settings.handoff === "function" ? settings.handoff : defaultHandoff;
+            await handoff(blob, archiveFilename);
+            meter.emit("completed");
+            return Object.freeze({
+                filename: archiveFilename,
+                blob,
+                entryCount: 2,
+                entries: Object.freeze([stillFilename, motionFilename]),
+                receivedBytes: aggregate.receivedBytes,
+                stillBytes: stillResult.size,
+                motionBytes: motionResult.size,
+                transport: "browser_livephoto_pair_archive",
+                zipImplementation: "STORE_ONLY_INTERNAL",
+            });
+        } finally {
+            releaseSignal();
+        }
+    }
+
+    function logicalItemType(item) {
+        return String(item && (item.logical_type || item.logicalType || item.type) || "");
+    }
+
+    function logicalDisplayOrdinal(item, index) {
+        return positiveInteger(item && (item.display_ordinal || item.displayOrdinal)) || index + 1;
+    }
+
+    function normalizeLivePhotoPair(pair) {
+        if (!pair || !pair.still || !pair.motion) {
+            throw photoError("BROWSER_LIVEPHOTO_PAIR_INVALID");
+        }
+        const still = normalizedPhotoItem({
+            ...pair.still,
+            require_magic: true,
+        }, 0, "livephoto_still");
+        const motion = {
+            ...pair.motion,
+            type: "video",
+            url: String(pair.motion.url || "").trim(),
+            filename: sanitizeFilename(pair.motion.filename, "livephoto_motion.mp4"),
+        };
+        assertPhotoItem(still);
+        if (
+            !motion.url
+            || String(motion.format_class || "").toLowerCase() !== "mp4"
+            || !/\.mp4$/i.test(motion.filename)
+        ) {
+            throw photoError("BROWSER_LIVEPHOTO_PAIR_INVALID");
+        }
+        return {still, motion};
+    }
+
+    async function createLogicalSelectionArchive(items, options) {
+        const settings = options && typeof options === "object" ? options : {};
+        const sourceItems = Array.isArray(items) ? items : [];
+        if (sourceItems.length < 2) {
+            throw photoError("BROWSER_PHOTO_INVALID_ITEM", "至少选择两个素材才能打包。");
+        }
+        const resolveLivePhoto = settings.resolveLivePhoto;
+        const archiveCreatedAt = validDate(settings.createdAt) || new Date();
+        const baseStem = filenameStem(settings.baseFilename, "selected");
+        const controller = new AbortController();
+        const releaseSignal = bridgeAbortSignal(settings.signal, controller);
+        const meter = createTransferMeter({
+            totalItems: sourceItems.length,
+            onProgress: settings.onProgress,
+            now: settings.now,
+        });
+        const aggregate = {receivedBytes: 0, declaredBytes: 0};
+        const archiveMaxBytes = positiveInteger(settings.archiveMaxBytes) || ARCHIVE_MAX_BYTES;
+        const imageMaxBytes = positiveInteger(settings.itemMaxBytes) || ITEM_MAX_BYTES;
+        const motionMaxBytes = positiveInteger(settings.motionMaxBytes) || LIVEPHOTO_MOTION_MAX_BYTES;
+        const idleTimeoutMs = positiveInteger(settings.idleTimeoutMs) || FETCH_IDLE_TIMEOUT_MS;
+        const fetchImpl = runtimeFetch(settings);
+        const entries = [];
+        meter.emit("connecting");
+        try {
+            for (let index = 0; index < sourceItems.length; index += 1) {
+                const cancelled = abortError(controller.signal);
+                if (cancelled) {
+                    throw cancelled;
+                }
+                const item = sourceItems[index];
+                const logicalType = logicalItemType(item);
+                const ordinal = String(logicalDisplayOrdinal(item, index)).padStart(2, "0");
+                if (logicalType === "image") {
+                    const normalized = normalizedPhotoItem(item, index, baseStem);
+                    assertPhotoItem(normalized);
+                    const result = await fetchImage(normalized, {
+                        index,
+                        fetchImpl,
+                        itemMaxBytes: imageMaxBytes,
+                        archiveMaxBytes,
+                        aggregate,
+                        meter,
+                        controller,
+                        signal: controller.signal,
+                        idleTimeoutMs,
+                    });
+                    entries.push({
+                        filename: `${ordinal}.${result.detected.extension}`,
+                        chunks: result.chunks,
+                        crc: result.crc,
+                    });
+                    meter.completeItem(true);
+                    meter.emit("fetching");
+                    continue;
+                }
+                if (logicalType !== "livephoto" || typeof resolveLivePhoto !== "function") {
+                    throw photoError("BROWSER_LIVEPHOTO_PAIR_INVALID");
+                }
+
+                meter.emit("resolving_livephoto");
+                const pair = await resolveLivePhoto(item, {signal: controller.signal});
+                const {still, motion} = normalizeLivePhotoPair(pair);
+                const expectedStillSize = positiveInteger(
+                    pair.still.expected_size_bytes || pair.still.expectedSizeBytes,
+                );
+                const expectedMotionSize = positiveInteger(
+                    pair.motion.expected_size_bytes || pair.motion.expectedSizeBytes,
+                );
+                if (expectedStillSize && expectedMotionSize) {
+                    meter.setItemTotal(index, expectedStillSize + expectedMotionSize);
+                }
+                meter.emit("fetching_still");
+                let stillResult;
+                try {
+                    stillResult = await fetchImage(still, {
+                        index,
+                        fetchImpl,
+                        itemMaxBytes: imageMaxBytes,
+                        archiveMaxBytes,
+                        aggregate,
+                        meter,
+                        controller,
+                        signal: controller.signal,
+                        idleTimeoutMs,
+                        preserveItemTotal: true,
+                    });
+                } catch (error) {
+                    const code = safeErrorCode(error);
+                    if (
+                        code === "BROWSER_PHOTO_CANCELLED"
+                        || code === "BROWSER_PHOTO_ITEM_TOO_LARGE"
+                        || code === "BROWSER_PHOTO_ARCHIVE_TOO_LARGE"
+                    ) {
+                        throw error;
+                    }
+                    throw photoError("BROWSER_LIVEPHOTO_STILL_FETCH_FAILED");
+                }
+                if (expectedStillSize && expectedStillSize !== stillResult.size) {
+                    throw photoError("BROWSER_LIVEPHOTO_SIZE_MISMATCH");
+                }
+
+                meter.emit("fetching_motion");
+                let motionResult;
+                try {
+                    motionResult = await fetchMotion(motion, {
+                        index,
+                        fetchImpl,
+                        itemMaxBytes: motionMaxBytes,
+                        archiveMaxBytes,
+                        aggregate,
+                        meter,
+                        controller,
+                        signal: controller.signal,
+                        idleTimeoutMs,
+                        preserveItemTotal: true,
+                    });
+                } catch (error) {
+                    const code = safeErrorCode(error);
+                    if (
+                        code === "BROWSER_PHOTO_CANCELLED"
+                        || code === "BROWSER_LIVEPHOTO_PAIR_TOO_LARGE"
+                        || code === "BROWSER_LIVEPHOTO_SIZE_MISMATCH"
+                    ) {
+                        throw error;
+                    }
+                    throw photoError("BROWSER_LIVEPHOTO_MOTION_FETCH_FAILED");
+                }
+
+                const folder = `${ordinal}_livephoto`;
+                entries.push(
+                    {
+                        filename: `${folder}/${ordinal}_still.${stillResult.detected.extension}`,
+                        chunks: stillResult.chunks,
+                        crc: stillResult.crc,
+                    },
+                    {
+                        filename: `${folder}/${ordinal}_motion.mp4`,
+                        chunks: motionResult.chunks,
+                        crc: motionResult.crc,
+                    },
+                );
+                meter.completeItem(true);
+                meter.emit("fetching");
+            }
+
+            meter.emit("assembling");
+            const blob = createStoreZip(entries, {createdAt: archiveCreatedAt});
+            if (blob.size > archiveMaxBytes + (entries.length * 512)) {
+                throw photoError("BROWSER_PHOTO_ARCHIVE_TOO_LARGE");
+            }
+            const filename = filenameWithSuffix(baseStem, "_selected.zip");
+            meter.emit("saving");
+            const handoff = typeof settings.handoff === "function" ? settings.handoff : defaultHandoff;
+            await handoff(blob, filename);
+            meter.emit("completed");
+            return Object.freeze({
+                filename,
+                blob,
+                logicalItemCount: sourceItems.length,
+                entryCount: entries.length,
+                entries: Object.freeze(entries.map((entry) => entry.filename)),
+                receivedBytes: aggregate.receivedBytes,
+                transport: "browser_logical_media_archive",
+                zipImplementation: "STORE_ONLY_INTERNAL",
+            });
+        } finally {
+            releaseSignal();
+        }
+    }
+
     return Object.freeze({
         ITEM_MAX_BYTES,
         ARCHIVE_MAX_BYTES,
+        LIVEPHOTO_MOTION_MAX_BYTES,
         FETCH_CONCURRENCY,
         FETCH_IDLE_TIMEOUT_MS,
         SPEED_WINDOW_MS,
         MIN_ETA_SAMPLE_MS,
         detectImageFormat,
+        isSafeXhsImageUrl,
         detectImageMagic,
+        detectMp4Magic,
         sanitizeFilename,
+        sanitizeZipEntryPath,
         filenameStem,
         filenameWithSuffix,
         formatBytes,
@@ -939,10 +1615,14 @@
         formatEta,
         createTransferMeter,
         crc32,
+        normalizeZipModifiedAt,
+        encodeDosDateTime,
         createStoreZip,
         supportsSelection,
         downloadImage,
         createArchive,
+        createLivePhotoPairArchive,
+        createLogicalSelectionArchive,
         safeErrorCode,
         safeErrorMessage,
     });

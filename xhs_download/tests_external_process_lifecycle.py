@@ -277,6 +277,21 @@ class ExternalProcessLifecycleTests(SimpleTestCase):
         result = self.run_tool(markers={"stderr_text": "stderr value"})
         self.assertEqual(result.stderr, "stderr value")
 
+    def test_stdin_text_is_supplied_without_command_line_exposure(self):
+        secret_marker = "opaque-worker-request"
+        result = run_external_command(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.write(sys.stdin.read())",
+            ],
+            timeout_seconds=self.timeout_seconds,
+            input_text=secret_marker,
+        )
+
+        self.assertEqual(result.stdout, secret_marker)
+        self.assertNotIn(secret_marker, " ".join(result.args))
+
     @unittest.skipUnless(os.name == "posix", "process groups require POSIX")
     def test_timeout_kills_direct_child(self):
         pid_file = self.marker("direct.pid")
@@ -569,7 +584,7 @@ class ExternalProcessLifecycleTests(SimpleTestCase):
         ):
             with self.assertRaises(ExternalCommandOutputTooLarge):
                 self.run_tool("write-stdout", markers={"byte_count": 4096})
-        self.assertEqual(len(streams), 2)
+        self.assertEqual(len(streams), 3)
         self.assertTrue(all(stream.closed for stream in streams))
 
     def test_version_probe_still_works(self):

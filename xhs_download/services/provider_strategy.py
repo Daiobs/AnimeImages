@@ -47,11 +47,19 @@ def build_download_strategy(asset, *, result_platform="", result_metadata=None):
     )
 
     if media_type == "image":
+        is_parsehub_xhs_image = effective_provider == "parsehub_xhs_images"
+        is_xhs_image = result_platform == "xiaohongshu"
         return {
             "download_strategy": DOWNLOAD_STRATEGY_BROWSER_DIRECT,
-            "fallback_strategy": FALLBACK_SERVER_ZIP,
-            "cors_expected": False,
-            "browser_direct_fetch_safe": not bool(effective_provider),
+            "fallback_strategy": (
+                FALLBACK_NONE
+                if is_xhs_image or is_parsehub_xhs_image
+                else FALLBACK_SERVER_ZIP
+            ),
+            "cors_expected": is_xhs_image or is_parsehub_xhs_image,
+            "browser_direct_fetch_safe": (
+                is_xhs_image or is_parsehub_xhs_image or not bool(effective_provider)
+            ),
             "requires_merge": False,
             "requires_cookie": False,
             "strategy_label": "图片直链优先",
@@ -155,8 +163,8 @@ def build_download_strategy_matrix():
         {
             "source": "小红书图片",
             "strategy": DOWNLOAD_STRATEGY_BROWSER_DIRECT,
-            "fallback": FALLBACK_SERVER_ZIP,
-            "note": "单图直链优先，多图仍建议 ZIP。",
+            "fallback": FALLBACK_NONE,
+            "note": "单图由浏览器保存，多图由浏览器打包；服务器不传输图片正文。",
         },
         {
             "source": "YouTube 高清合并",

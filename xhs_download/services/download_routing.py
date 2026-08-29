@@ -94,6 +94,23 @@ def item_is_video(item):
     return item_type(item) == "video"
 
 
+def item_is_xhs_zero_relay_image(item):
+    return bool(
+        isinstance(item, dict)
+        and item_is_image(item)
+        and (
+            str(item.get("source_platform") or "").strip().lower()
+            == "xiaohongshu"
+            or item_provider(item) == "parsehub_xhs_images"
+        )
+    )
+
+
+def selection_has_xhs_zero_relay_image(items):
+    normalized = [item for item in items or () if isinstance(item, dict)]
+    return any(item_is_xhs_zero_relay_image(item) for item in normalized)
+
+
 def item_is_xhs_native_browser_video(item):
     return bool(
         isinstance(item, dict)
@@ -377,6 +394,16 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
         )
 
     if requested_mode in {"proxy", "server_single"}:
+        if selection_has_xhs_zero_relay_image(normalized_items):
+            return route_payload(
+                route_type=ROUTE_BLOCKED,
+                route_reason="小红书图片必须由浏览器直接保存；资源失效时请重新解析。",
+                download_strategy="browser_image_download_required",
+                media_items=normalized_items,
+                estimated_bytes=estimated_bytes,
+                error_code="XHS_IMAGE_BROWSER_DOWNLOAD_REQUIRED",
+                warnings=warnings,
+            )
         if (
             len(normalized_items) == 1
             and item_can_browser_direct_video(normalized_items[0])
@@ -411,6 +438,35 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
         )
 
     if requested_mode in {"zip", "browser"}:
+        if selection_has_xhs_zero_relay_image(normalized_items):
+            if requested_mode == "zip":
+                return route_payload(
+                    route_type=ROUTE_BLOCKED,
+                    route_reason="小红书图片不使用服务器 ZIP；请使用浏览器下载。",
+                    download_strategy="browser_image_download_required",
+                    media_items=normalized_items,
+                    estimated_bytes=estimated_bytes,
+                    error_code="XHS_IMAGE_BROWSER_DOWNLOAD_REQUIRED",
+                    warnings=warnings,
+                )
+            if not all(item_is_image(item) for item in normalized_items):
+                return route_payload(
+                    route_type=ROUTE_BLOCKED,
+                    route_reason="小红书图片不能与需服务端处理的资源混合下载。",
+                    download_strategy="browser_image_download_required",
+                    media_items=normalized_items,
+                    estimated_bytes=estimated_bytes,
+                    error_code="XHS_IMAGE_BROWSER_DOWNLOAD_REQUIRED",
+                    warnings=warnings,
+                )
+            return route_payload(
+                route_type=ROUTE_DIRECT,
+                route_reason="小红书图片由浏览器获取并保存",
+                download_strategy="browser_direct_images",
+                media_items=normalized_items,
+                estimated_bytes=estimated_bytes,
+                warnings=warnings,
+            )
         if (
             len(normalized_items) == 1
             and single_video_prefers_browser_direct(normalized_items[0])
@@ -452,6 +508,26 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
     all_videos = all(item_is_video(item) for item in normalized_items)
     has_server_provider = any(provider_item_requires_server(item) for item in normalized_items)
     has_non_http = any(not is_http_url(item_url(item)) for item in normalized_items)
+
+    if selection_has_xhs_zero_relay_image(normalized_items):
+        if not all_images:
+            return route_payload(
+                route_type=ROUTE_BLOCKED,
+                route_reason="小红书图片不能与需服务端处理的资源混合下载。",
+                download_strategy="browser_image_download_required",
+                media_items=normalized_items,
+                estimated_bytes=estimated_bytes,
+                error_code="XHS_IMAGE_BROWSER_DOWNLOAD_REQUIRED",
+                warnings=warnings,
+            )
+        return route_payload(
+            route_type=ROUTE_DIRECT,
+            route_reason="小红书图片由浏览器获取并保存",
+            download_strategy="browser_direct_images",
+            media_items=normalized_items,
+            estimated_bytes=estimated_bytes,
+            warnings=warnings,
+        )
 
     if (
         all_images

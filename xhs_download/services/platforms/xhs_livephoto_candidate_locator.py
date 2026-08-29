@@ -380,11 +380,11 @@ def _master_candidate_value(
     return True, value.strip()
 
 
-def _motion_locator(
+def _motion_locators(
     item: Mapping[str, Any],
     *,
     source_item_ordinal: int,
-) -> tuple[int, XhsLivePhotoMemberLocatorV1 | None]:
+) -> tuple[int, tuple[XhsLivePhotoMemberLocatorV1, ...]]:
     path = f"image_list[{source_item_ordinal}]"
     stream = item.get("stream", {})
     if stream is None:
@@ -452,7 +452,7 @@ def _motion_locator(
     if unsupported_candidates:
         _reject("XHS_LIVEPHOTO_CANDIDATE_UNSUPPORTED_CODEC", f"{path}.stream")
     if not viable_h264:
-        return count, None
+        return count, ()
     if len(viable_h264) != 1:
         _reject(
             "XHS_LIVEPHOTO_CANDIDATE_MOTION_POLICY_AMBIGUOUS",
@@ -460,26 +460,65 @@ def _motion_locator(
         )
 
     codec_ordinal, variant_index, has_master, backup_indexes = viable_h264[0]
+    locators = []
     if has_master:
-        return count, XhsLivePhotoMemberLocatorV1(
-            source_item_ordinal=source_item_ordinal,
-            member_role="motion",
-            source_kind="master_url",
-            codec_family_ordinal=codec_ordinal,
-            codec_family_class=_REVIEWED_MOTION_CODEC_CLASS,
-            stream_variant_index=variant_index,
+        locators.append(
+            XhsLivePhotoMemberLocatorV1(
+                source_item_ordinal=source_item_ordinal,
+                member_role="motion",
+                source_kind="master_url",
+                codec_family_ordinal=codec_ordinal,
+                codec_family_class=_REVIEWED_MOTION_CODEC_CLASS,
+                stream_variant_index=variant_index,
+            )
         )
-    if backup_indexes:
-        return count, XhsLivePhotoMemberLocatorV1(
+    locators.extend(
+        XhsLivePhotoMemberLocatorV1(
             source_item_ordinal=source_item_ordinal,
             member_role="motion",
             source_kind="backup_url",
             codec_family_ordinal=codec_ordinal,
             codec_family_class=_REVIEWED_MOTION_CODEC_CLASS,
             stream_variant_index=variant_index,
-            backup_index=backup_indexes[0],
+            backup_index=backup_index,
         )
-    return count, None
+        for backup_index in backup_indexes
+    )
+    return count, tuple(locators)
+
+
+def _motion_locator(
+    item: Mapping[str, Any],
+    *,
+    source_item_ordinal: int,
+) -> tuple[int, XhsLivePhotoMemberLocatorV1 | None]:
+    count, locators = _motion_locators(
+        item,
+        source_item_ordinal=source_item_ordinal,
+    )
+    return count, locators[0] if locators else None
+
+
+def list_xhs_livephoto_motion_candidate_locators(
+    *,
+    image_list: Any,
+    source_item_ordinal: int,
+) -> tuple[XhsLivePhotoMemberLocatorV1, ...]:
+    """Return same-item candidates in reviewed master/backup preference order."""
+
+    if not isinstance(image_list, (list, tuple)) or not _valid_index(
+        source_item_ordinal,
+        len(image_list),
+    ):
+        _reject("XHS_LIVEPHOTO_CANDIDATE_LOCATOR_INVALID", "locator")
+    item = image_list[source_item_ordinal]
+    if not isinstance(item, Mapping):
+        _reject("XHS_LIVEPHOTO_CANDIDATE_ITEM_INVALID", "locator")
+    _, locators = _motion_locators(
+        item,
+        source_item_ordinal=source_item_ordinal,
+    )
+    return locators
 
 
 def locate_xhs_livephoto_candidates(
@@ -577,10 +616,11 @@ def read_candidate_from_locator(
             source_item_ordinal=locator.source_item_ordinal,
         )
     else:
-        _, current_locator = _motion_locator(
+        _, current_locators = _motion_locators(
             item,
             source_item_ordinal=locator.source_item_ordinal,
         )
+        current_locator = locator if locator in current_locators else None
     if current_locator != locator:
         _reject("XHS_LIVEPHOTO_CANDIDATE_LOCATOR_INVALID", "locator")
 
@@ -621,8 +661,6 @@ def read_candidate_from_locator(
                 _reject("XHS_LIVEPHOTO_CANDIDATE_LOCATOR_INVALID", "locator")
             value = variant["masterUrl"]
         else:
-            if "masterUrl" in variant:
-                _reject("XHS_LIVEPHOTO_CANDIDATE_LOCATOR_INVALID", "locator")
             backups = variant.get("backupUrls")
             if not isinstance(backups, (list, tuple)) or not _valid_index(
                 locator.backup_index,
@@ -727,6 +765,7 @@ __all__ = (
     "XhsPrivateMediaCandidateV1",
     "classify_xhs_livephoto_host_for_research",
     "locate_xhs_livephoto_candidates",
+    "list_xhs_livephoto_motion_candidate_locators",
     "read_candidate_from_locator",
     "resolve_xhs_motion_format_for_research",
 )

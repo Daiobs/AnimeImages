@@ -7,6 +7,7 @@ from django.test import SimpleTestCase
 
 from djangoProject.logging import (
     PROVIDER_TERMINAL_LOG_FIELDS,
+    XHS_PREVIEW_EVENT_LOG_FIELDS,
     RequestContextFormatter,
 )
 from xhs_download.services import provider_reliability
@@ -201,3 +202,95 @@ class ProviderTerminalLoggingOutputTests(SimpleTestCase):
             formatter_config["()"],
             "djangoProject.logging.RequestContextFormatter",
         )
+
+
+class XhsPreviewLoggingOutputTests(SimpleTestCase):
+    def build_output_logger(self):
+        formatter_config = settings.LOGGING["formatters"]["request_context"]
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(RequestContextFormatter(formatter_config["format"]))
+        logger = logging.Logger("tests.xhs_preview_output", logging.INFO)
+        logger.addHandler(handler)
+        logger.propagate = False
+        return logger, stream
+
+    def test_candidate_failure_safe_fields_reach_final_console_line(self):
+        logger, stream = self.build_output_logger()
+
+        logger.warning(
+            "xhs_preview_candidate_failed",
+            extra={
+                "surface": "batch",
+                "source_ordinal": 4,
+                "candidate_class": "item_local_preview",
+                "failure_code": "upstream_or_body_rejected",
+                "url": "https://example.invalid/private.jpg?token=secret",
+            },
+        )
+        rendered = stream.getvalue()
+
+        self.assertIn("event=xhs_preview_candidate_failed", rendered)
+        self.assertIn("surface=batch", rendered)
+        self.assertIn("source_ordinal=4", rendered)
+        self.assertIn("candidate_class=item_local_preview", rendered)
+        self.assertIn("failure_code=upstream_or_body_rejected", rendered)
+        self.assertNotIn("example.invalid", rendered)
+        self.assertNotIn("private.jpg", rendered)
+        self.assertNotIn("token", rendered)
+        self.assertNotIn("secret", rendered)
+
+    def test_preview_events_have_fixed_field_contracts(self):
+        self.assertEqual(
+            XHS_PREVIEW_EVENT_LOG_FIELDS,
+            {
+                "xhs_preview_candidate_failed": (
+                    "surface",
+                    "source_ordinal",
+                    "candidate_class",
+                    "failure_code",
+                ),
+                "xhs_preview_fallback_succeeded": (
+                    "surface",
+                    "source_ordinal",
+                    "candidate_class",
+                    "attempt_count",
+                ),
+                "xhs_preview_candidates_exhausted": (
+                    "surface",
+                    "source_ordinal",
+                    "candidate_count",
+                    "attempted_count",
+                ),
+            },
+        )
+
+    def test_fallback_and_exhausted_events_render_only_their_safe_fields(self):
+        logger, stream = self.build_output_logger()
+
+        logger.info(
+            "xhs_preview_fallback_succeeded",
+            extra={
+                "surface": "single",
+                "source_ordinal": 2,
+                "candidate_class": "parsehub_raw_raster",
+                "attempt_count": 2,
+            },
+        )
+        logger.warning(
+            "xhs_preview_candidates_exhausted",
+            extra={
+                "surface": "staff_single",
+                "source_ordinal": 5,
+                "candidate_count": 3,
+                "attempted_count": 3,
+            },
+        )
+        rendered = stream.getvalue()
+
+        self.assertIn("event=xhs_preview_fallback_succeeded", rendered)
+        self.assertIn("candidate_class=parsehub_raw_raster", rendered)
+        self.assertIn("attempt_count=2", rendered)
+        self.assertIn("event=xhs_preview_candidates_exhausted", rendered)
+        self.assertIn("candidate_count=3", rendered)
+        self.assertIn("attempted_count=3", rendered)

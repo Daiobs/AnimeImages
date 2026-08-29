@@ -276,6 +276,31 @@ def normalize_xhs_livephoto_candidate_https(
     )
 
 
+def validate_xhs_livephoto_browser_admitted_url(
+    value: Any,
+    *,
+    member_role: str,
+) -> str:
+    """Revalidate one exact HTTPS URL at a control-plane handoff boundary."""
+
+    _parsed, scheme, host_class = _validated_candidate_parts(
+        value,
+        member_role=member_role,
+    )
+    _require_browser_verified_host_class(host_class)
+    if scheme != "https":
+        _reject("XHS_LIVEPHOTO_BROWSER_ADMISSION_SCHEME_REJECTED")
+    if (
+        member_role == "still"
+        and host_class != "still_exact"
+    ) or (
+        member_role == "motion"
+        and host_class not in _VERIFIED_MOTION_HOST_CLASSES
+    ):
+        _reject("XHS_LIVEPHOTO_BROWSER_ADMISSION_ROLE_MISMATCH")
+    return host_class
+
+
 __all__ = (
     "XHS_LIVEPHOTO_BROWSER_ADMISSION_SCHEMA_VERSION",
     "XHS_LIVEPHOTO_BROWSER_VERIFIED_HOST_CLASSES",
@@ -285,4 +310,5 @@ __all__ = (
     "XhsPrivateHttpsMediaCandidateV1",
     "classify_xhs_livephoto_discovered_host",
     "normalize_xhs_livephoto_candidate_https",
+    "validate_xhs_livephoto_browser_admitted_url",
 )

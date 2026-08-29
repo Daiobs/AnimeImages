@@ -1,6 +1,7 @@
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
@@ -24,17 +25,33 @@ from .xhs_page_state import (
     normalize_xhs_note_id,
     normalize_xhs_state_text,
 )
+from .xhs_livephoto_builder import (
+    bind_xhs_livephoto_still_result,
+    build_xhs_livephoto_result,
+)
 from .xhs_livephoto_staff_builder import build_xhs_livephoto_staff_result
+from .xhs_image_download_authority import (
+    XHS_IMAGE_EMPTY_RESOURCE_VALUES,
+    XHS_IMAGE_MEDIA_HOST_SUFFIXES,
+    XHS_IMAGE_NON_NOTE_PATH_RE,
+    classify_xhs_image_candidate,
+)
+from .xhs_parsehub_images import enhance_xhs_images_with_parsehub
+from .xhs_preview import (
+    bind_xhs_preview_sources,
+    build_xhs_preview_source_sets,
+    select_xhs_item_download_url,
+)
 from .xhs_tiantian_hybrid import enhance_xhs_ordinary_video
 
 
 XHS_PAGE_HOST_SUFFIXES = ("xiaohongshu.com", "xhslink.com", "xhslink.cn")
-XHS_MEDIA_HOST_SUFFIXES = ("xiaohongshu.com", "xhscdn.com")
+XHS_MEDIA_HOST_SUFFIXES = XHS_IMAGE_MEDIA_HOST_SUFFIXES
 XHS_NATIVE_BROWSER_VIDEO_HOSTS = frozenset({"sns-video-bd.xhscdn.com"})
 XHS_NATIVE_BROWSER_VIDEO_HOST_PATTERN = re.compile(
     r"^sns-video-v[1-9][0-9]*\.xhscdn\.com$"
 )
-XHS_EMPTY_RESOURCE_VALUES = {"", ".", "..", "null", "none", "undefined"}
+XHS_EMPTY_RESOURCE_VALUES = XHS_IMAGE_EMPTY_RESOURCE_VALUES
 XHS_NON_NOTE_IMAGE_HINTS = (
     "avatar",
     "favicon",
@@ -44,10 +61,7 @@ XHS_NON_NOTE_IMAGE_HINTS = (
     "emoji",
     "qrcode",
 )
-XHS_NON_NOTE_IMAGE_PATH_RE = re.compile(
-    r"(?:^|[/_.-])(?:avatar|favicon|logo|icon|sprite|emoji|qrcode)(?:[/_.-]|$)",
-    re.IGNORECASE,
-)
+XHS_NON_NOTE_IMAGE_PATH_RE = XHS_IMAGE_NON_NOTE_PATH_RE
 XHS_GENERIC_TITLES = {
     "小红书",
     "xiaohongshu",
@@ -66,48 +80,10 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_xhs_image_candidate(url):
-    value = normalize_text(url).strip()
-    if value.lower() in XHS_EMPTY_RESOURCE_VALUES:
+    candidate = classify_xhs_image_candidate(url)
+    if candidate is None:
         return None
-    if value.startswith("//"):
-        value = f"https:{value}"
-
-    parsed = urlparse(value)
-    hostname = (parsed.hostname or "").lower()
-    if parsed.scheme not in {"http", "https"} or not hostname:
-        return None
-    if not host_matches(hostname, XHS_MEDIA_HOST_SUFFIXES):
-        return None
-
-    path_parts = tuple(part.strip() for part in parsed.path.split("/") if part.strip())
-    if not path_parts:
-        return None
-    path_lower = parsed.path.lower()
-    if XHS_NON_NOTE_IMAGE_PATH_RE.search(path_lower):
-        return None
-    if path_lower.endswith((".js", ".css", ".zip")):
-        return None
-    resource_key = path_parts[-1]
-    if resource_key.lower() in XHS_EMPTY_RESOURCE_VALUES | {
-        "notes_pre_post",
-        "spectrum",
-    }:
-        return None
-
-    has_known_resource_path = any(
-        part in {"notes_pre_post", "spectrum"}
-        and index + 1 < len(path_parts)
-        for index, part in enumerate(path_parts)
-    )
-    is_ci_host = hostname == "ci.xiaohongshu.com"
-    is_sns_image_host = hostname.startswith(("sns-webpic", "sns-img"))
-    if not (
-        has_known_resource_path
-        or is_ci_host
-        or is_sns_image_host
-    ):
-        return None
-    return value, parsed
+    return candidate.value, urlparse(candidate.value)
 
 
 def normalize_xhs_image_url(url):
@@ -480,6 +456,7 @@ class XiaohongshuAdapter(BasePlatformAdapter):
         "deadline_monotonic",
         "stage_callback",
         "ultra_attempt_controller",
+        "enable_xhs_livephoto_preview",
         "enable_xhs_livephoto_staff_preview",
     )
 
@@ -488,6 +465,7 @@ class XiaohongshuAdapter(BasePlatformAdapter):
         html,
         source_url=None,
         *,
+        enable_xhs_livephoto_preview=False,
         enable_xhs_livephoto_staff_preview=False,
         deadline_monotonic=None,
     ):
@@ -665,55 +643,147 @@ class XiaohongshuAdapter(BasePlatformAdapter):
                 structured_state=structured_state,
                 fallback_policy=fallback_policy,
             )
+            preview_source_sets = ()
+            private_snapshot = structured_state.private_selected_note_snapshot
+            if private_snapshot is not None:
+                preview_source_sets = build_xhs_preview_source_sets(
+                    private_snapshot.image_list
+                )
+                if len(preview_source_sets) != len(image_urls):
+                    preview_source_sets = ()
+            native_assets = []
+            for index, image_url in enumerate(image_urls, start=1):
+                item_sources = (
+                    preview_source_sets[index - 1]
+                    if preview_source_sets
+                    else ()
+                )
+                download_url = select_xhs_item_download_url(
+                    image_url,
+                    item_sources,
+                )
+                preview_url = (
+                    bind_xhs_preview_sources(
+                        item_sources[0].value,
+                        item_sources,
+                    )
+                    if item_sources
+                    else normalize_xhs_preview_image_url(
+                        image_url,
+                        width=1280,
+                    )
+                    or image_url
+                )
+                native_assets.append(
+                    MediaAsset(
+                        media_type="image",
+                        url=download_url,
+                        platform=self.platform_id,
+                        preview_url=preview_url,
+                        filename=f"{base_filename}_{index:02d}.jpg",
+                        ext="jpg",
+                    )
+                )
             flat_result = ParseResult(
                 platform=self.platform_id,
                 post_type="image",
                 base_filename=base_filename,
-                assets=tuple(
-                    MediaAsset(
-                        media_type="image",
-                        url=image_url,
-                        platform=self.platform_id,
-                        preview_url=normalize_xhs_preview_image_url(image_url) or image_url,
-                    )
-                    for image_url in image_urls
-                ),
+                assets=tuple(native_assets),
                 metadata=metadata,
             )
+            livephoto_preview_enabled = bool(
+                enable_xhs_livephoto_preview
+                or enable_xhs_livephoto_staff_preview
+            )
             if (
-                not enable_xhs_livephoto_staff_preview
+                not livephoto_preview_enabled
                 or structured_state.private_selected_note_snapshot is None
             ):
+                return enhance_xhs_images_with_parsehub(
+                    native_result=flat_result,
+                    snapshot=structured_state.private_selected_note_snapshot,
+                    source_url=source_url or "",
+                    deadline_monotonic=float(deadline_monotonic or 0),
+                ).result
+
+            parsehub_executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="xhs-parsehub-livephoto",
+            )
+            parsehub_future = parsehub_executor.submit(
+                enhance_xhs_images_with_parsehub,
+                native_result=flat_result,
+                snapshot=structured_state.private_selected_note_snapshot,
+                source_url=source_url or "",
+                deadline_monotonic=float(deadline_monotonic or 0),
+            )
+
+            def resolved_still_result():
+                timeout = None
+                if deadline_monotonic:
+                    timeout = max(
+                        0.001,
+                        float(deadline_monotonic) - time.monotonic(),
+                    )
+                try:
+                    return parsehub_future.result(timeout=timeout).result
+                except FutureTimeoutError:
+                    parsehub_future.cancel()
+                    logger.warning("xhs_parsehub_livephoto_deadline_fallback")
+                except Exception:
+                    logger.warning("xhs_parsehub_livephoto_worker_fallback")
                 return flat_result
+
             try:
-                outcome = build_xhs_livephoto_staff_result(
+                builder = (
+                    build_xhs_livephoto_staff_result
+                    if enable_xhs_livephoto_staff_preview
+                    else build_xhs_livephoto_result
+                )
+                outcome = builder(
                     flat_result=flat_result,
                     snapshot=structured_state.private_selected_note_snapshot,
                     deadline_monotonic=float(deadline_monotonic or 0),
                 )
-                return outcome.result or flat_result
+                selected_still_result = resolved_still_result()
+                if outcome.result is None:
+                    return selected_still_result
+                return bind_xhs_livephoto_still_result(
+                    outcome.result,
+                    selected_still_result,
+                )
             except Exception as error:
+                selected_still_result = resolved_still_result()
                 error_code = str(getattr(error, "code", "") or "")
                 if not error_code.startswith("XHS_LIVEPHOTO_"):
                     error_code = "XHS_LIVEPHOTO_STAFF_PREVIEW_FAILED"
                 logger.warning(
-                    "xhs_livephoto_staff_preview_fallback",
+                    "xhs_livephoto_preview_fallback",
                     extra={"error_code": error_code[:96]},
                 )
-                fallback_metadata = dict(flat_result.metadata)
+                fallback_metadata = dict(selected_still_result.metadata)
                 fallback_metadata.update(
                     {
-                        "xhs_livephoto_staff_preview_status": "fallback",
-                        "xhs_livephoto_staff_preview_error_code": error_code[:96],
+                        "xhs_livephoto_preview_status": "fallback",
+                        "xhs_livephoto_preview_error_code": error_code[:96],
                     }
                 )
+                if enable_xhs_livephoto_staff_preview:
+                    fallback_metadata.update(
+                        {
+                            "xhs_livephoto_staff_preview_status": "fallback",
+                            "xhs_livephoto_staff_preview_error_code": error_code[:96],
+                        }
+                    )
                 return ParseResult(
-                    platform=flat_result.platform,
-                    post_type=flat_result.post_type,
-                    base_filename=flat_result.base_filename,
-                    assets=flat_result.assets,
+                    platform=selected_still_result.platform,
+                    post_type=selected_still_result.post_type,
+                    base_filename=selected_still_result.base_filename,
+                    assets=selected_still_result.assets,
                     metadata=fallback_metadata,
                 )
+            finally:
+                parsehub_executor.shutdown(wait=False, cancel_futures=True)
 
         return ParseResult(
             platform=self.platform_id,
@@ -755,6 +825,7 @@ class XiaohongshuAdapter(BasePlatformAdapter):
         deadline_monotonic=None,
         stage_callback=None,
         ultra_attempt_controller=None,
+        enable_xhs_livephoto_preview=False,
         enable_xhs_livephoto_staff_preview=False,
     ):
         parse_started_at = time.monotonic()
@@ -762,8 +833,11 @@ class XiaohongshuAdapter(BasePlatformAdapter):
         deadline = float(deadline_monotonic or 0)
         if not deadline and timeout_seconds is not None:
             deadline = time.monotonic() + max(0.001, float(timeout_seconds or 0))
-        if enable_xhs_livephoto_staff_preview and not deadline:
-            deadline = parse_started_at + 20.0
+        if (
+            enable_xhs_livephoto_preview
+            or enable_xhs_livephoto_staff_preview
+        ) and not deadline:
+            deadline = parse_started_at + 12.0
         request_timeout = 15.0
         if deadline:
             request_timeout = min(
@@ -790,24 +864,37 @@ class XiaohongshuAdapter(BasePlatformAdapter):
             result = self.parse_html(
                 response.text,
                 source_url=identity_url,
+                enable_xhs_livephoto_preview=bool(
+                    enable_xhs_livephoto_preview
+                ),
                 enable_xhs_livephoto_staff_preview=bool(
                     enable_xhs_livephoto_staff_preview
                 ),
                 deadline_monotonic=deadline or None,
             )
             if str(
-                (result.metadata or {}).get("xhs_livephoto_staff_preview_status")
+                (result.metadata or {}).get("xhs_livephoto_preview_status")
+                or (result.metadata or {}).get("xhs_livephoto_staff_preview_status")
                 or ""
             ):
                 metadata = dict(result.metadata)
                 metadata.update(
                     {
-                        "xhs_livephoto_staff_page_fetch_duration_ms": page_fetch_duration_ms,
-                        "xhs_livephoto_staff_parse_total_duration_ms": round(
+                        "xhs_livephoto_page_fetch_duration_ms": page_fetch_duration_ms,
+                        "xhs_livephoto_parse_total_duration_ms": round(
                             (time.monotonic() - parse_started_at) * 1000
                         ),
                     }
                 )
+                if enable_xhs_livephoto_staff_preview:
+                    metadata.update(
+                        {
+                            "xhs_livephoto_staff_page_fetch_duration_ms": page_fetch_duration_ms,
+                            "xhs_livephoto_staff_parse_total_duration_ms": round(
+                                (time.monotonic() - parse_started_at) * 1000
+                            ),
+                        }
+                    )
                 result = ParseResult(
                     platform=result.platform,
                     post_type=result.post_type,

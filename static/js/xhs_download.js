@@ -69,6 +69,7 @@
 
     function getCardItem(card) {
         const type = card.dataset.type || "image";
+        const logicalType = card.dataset.logicalType || card.dataset.assetKind || type;
         const sizeBytes = Number.parseInt(card.dataset.sizeBytes || "0", 10) || 0;
         const providerFields = {
             source_platform: card.dataset.sourcePlatform || "",
@@ -89,6 +90,7 @@
         if (type === "video") {
             return {
                 type: "video",
+                logical_type: "video",
                 url: card.dataset.url,
                 cover_url: card.dataset.coverUrl || "",
                 size_bytes: sizeBytes,
@@ -96,10 +98,27 @@
             };
         }
 
+        if (logicalType === "livephoto") {
+            return {
+                type: "livephoto",
+                logical_type: "livephoto",
+                asset_id: card.dataset.assetId || "",
+                pair_token: card.dataset.livephotoPairToken || "",
+                descriptor_url: card.dataset.livephotoDescriptorUrl || "",
+                display_ordinal: Number.parseInt(card.dataset.displayOrdinal || "0", 10) || 0,
+                filenameStem: card.dataset.downloadFilenameStem || "",
+                source_platform: card.dataset.sourcePlatform || "",
+                requires_merge: false,
+                requires_cookie: false,
+            };
+        }
+
         return {
             type: "image",
+            logical_type: "image",
             url: card.dataset.url,
             size_bytes: sizeBytes,
+            display_ordinal: Number.parseInt(card.dataset.displayOrdinal || "0", 10) || 0,
             filenameStem: card.dataset.downloadFilenameStem || "",
             extensionHint: card.dataset.downloadExtensionHint || "",
             ...providerFields,
@@ -107,6 +126,9 @@
     }
 
     function getItemKey(item) {
+        if (item && item.logical_type === "livephoto") {
+            return `livephoto:${item.asset_id || "invalid"}`;
+        }
         return `${item.type}:${item.url}`;
     }
 
@@ -319,7 +341,8 @@
         let ultraRetryDeadline = 0;
         let ultraRetryTimer = null;
         let ultraRetrySource = "";
-        let livePhotoStaffScriptPromise = null;
+        let livePhotoPairScriptPromise = null;
+        let livePhotoScriptPromise = null;
 
         function getBaseFilename() {
             return page.dataset.baseFilename || "xhs_image";
@@ -329,61 +352,137 @@
             return Array.from(resultsRegion ? resultsRegion.querySelectorAll(".asset-card") : []);
         }
 
-        function initializeLivePhotoStaffPreview() {
-            const api = window.AnimeImagesXhsLivePhotoStaffPreview;
+        function getSelectableCards() {
+            return getCards().filter((card) => card.dataset.downloadSelectable !== "false");
+        }
+
+        function initializeLivePhotoPreview() {
+            const api = window.AnimeImagesXhsLivePhotoPreview;
             if (!api || typeof api.ensureController !== "function") {
                 return false;
             }
             return Boolean(api.ensureController(document));
         }
 
-        function ensureLivePhotoStaffPreview() {
-            const previewRoot = resultsRegion
-                ? resultsRegion.querySelector("[data-xhs-livephoto-staff-preview]")
-                : null;
-            if (!previewRoot) {
-                return Promise.resolve(false);
+        function initializeLivePhotoPair() {
+            const api = window.AnimeImagesXhsLivePhotoPair;
+            if (!api || typeof api.ensureController !== "function") {
+                return false;
             }
-            if (initializeLivePhotoStaffPreview()) {
+            return Boolean(api.ensureController(document));
+        }
+
+        function cancelLivePhotoActivity() {
+            const previewApi = window.AnimeImagesXhsLivePhotoPreview;
+            if (previewApi && typeof previewApi.cancelActive === "function") {
+                previewApi.cancelActive();
+            }
+            const pairApi = window.AnimeImagesXhsLivePhotoPair;
+            if (pairApi && typeof pairApi.cancelAll === "function") {
+                pairApi.cancelAll();
+            }
+            if (activePhotoController) {
+                activePhotoController.abort();
+                activePhotoController = null;
+            }
+        }
+
+        function safeLivePhotoScriptUrl(rawUrl, expectedPath) {
+            try {
+                const scriptUrl = new URL(rawUrl || "", window.location.origin);
+                return (
+                    scriptUrl.origin === window.location.origin
+                    && scriptUrl.pathname.endsWith(expectedPath)
+                ) ? scriptUrl : null;
+            } catch (error) {
+                return null;
+            }
+        }
+
+        function ensureLivePhotoPair(previewRoot) {
+            if (initializeLivePhotoPair()) {
                 return Promise.resolve(true);
             }
-            if (livePhotoStaffScriptPromise) {
-                return livePhotoStaffScriptPromise;
+            if (livePhotoPairScriptPromise) {
+                return livePhotoPairScriptPromise;
             }
-
-            let scriptUrl;
-            try {
-                scriptUrl = new URL(previewRoot.dataset.previewScriptUrl || "", window.location.origin);
-            } catch (error) {
+            const scriptUrl = safeLivePhotoScriptUrl(
+                previewRoot.dataset.pairScriptUrl,
+                "/js/xhs_livephoto_pair_download.js",
+            );
+            if (!scriptUrl) {
                 return Promise.resolve(false);
             }
-            if (
-                scriptUrl.origin !== window.location.origin
-                || !scriptUrl.pathname.endsWith("/js/xhs_livephoto_staff_preview.js")
-            ) {
-                return Promise.resolve(false);
-            }
-
-            const existingScript = document.querySelector("script[data-livephoto-staff-loader]");
+            const existingScript = document.querySelector("script[data-livephoto-pair-loader]");
             if (existingScript) {
-                return Promise.resolve(initializeLivePhotoStaffPreview());
+                return Promise.resolve(initializeLivePhotoPair());
             }
-
-            livePhotoStaffScriptPromise = new Promise((resolve) => {
+            livePhotoPairScriptPromise = new Promise((resolve) => {
                 const script = document.createElement("script");
                 script.src = scriptUrl.toString();
                 script.async = true;
-                script.dataset.livephotoStaffLoader = "true";
+                script.dataset.livephotoPairLoader = "true";
                 script.addEventListener("load", () => {
-                    resolve(initializeLivePhotoStaffPreview());
+                    resolve(initializeLivePhotoPair());
                 }, {once: true});
                 script.addEventListener("error", () => {
-                    livePhotoStaffScriptPromise = null;
+                    livePhotoPairScriptPromise = null;
                     resolve(false);
                 }, {once: true});
                 document.head.appendChild(script);
             });
-            return livePhotoStaffScriptPromise;
+            return livePhotoPairScriptPromise;
+        }
+
+        async function ensureLivePhotoPreview() {
+            const previewRoot = resultsRegion
+                ? resultsRegion.querySelector("[data-xhs-livephoto-preview]")
+                : null;
+            if (!previewRoot) {
+                return false;
+            }
+            const pairReady = await ensureLivePhotoPair(previewRoot);
+            if (!pairReady) {
+                return false;
+            }
+            if (!previewRoot.dataset.previewScriptUrl) {
+                return true;
+            }
+            if (initializeLivePhotoPreview()) {
+                return true;
+            }
+            if (livePhotoScriptPromise) {
+                return livePhotoScriptPromise;
+            }
+
+            const scriptUrl = safeLivePhotoScriptUrl(
+                previewRoot.dataset.previewScriptUrl,
+                "/js/xhs_livephoto_preview.js",
+            );
+            if (!scriptUrl) {
+                return false;
+            }
+
+            const existingScript = document.querySelector("script[data-livephoto-loader]");
+            if (existingScript) {
+                return Promise.resolve(initializeLivePhotoPreview());
+            }
+
+            livePhotoScriptPromise = new Promise((resolve) => {
+                const script = document.createElement("script");
+                script.src = scriptUrl.toString();
+                script.async = true;
+                script.dataset.livephotoLoader = "true";
+                script.addEventListener("load", () => {
+                    resolve(initializeLivePhotoPreview());
+                }, {once: true});
+                script.addEventListener("error", () => {
+                    livePhotoScriptPromise = null;
+                    resolve(false);
+                }, {once: true});
+                document.head.appendChild(script);
+            });
+            return livePhotoScriptPromise;
         }
 
         function getStatusElement() {
@@ -552,7 +651,7 @@
 
         function updateSelectAllButton() {
             const selectAllBtn = getSelectAllButton();
-            const cards = getCards();
+            const cards = getSelectableCards();
             if (!selectAllBtn) {
                 return;
             }
@@ -579,6 +678,31 @@
                 } else if (!isBusy && button.dataset.originalHtml) {
                     button.innerHTML = button.dataset.originalHtml;
                     delete button.dataset.originalHtml;
+                }
+            });
+            getCards().forEach((card) => {
+                const playbackButton = card.querySelector("[data-livephoto-toggle]");
+                if (!playbackButton) {
+                    return;
+                }
+                if (isBusy) {
+                    if (!playbackButton.hasAttribute("data-download-busy-previous-disabled")) {
+                        playbackButton.dataset.downloadBusyPreviousDisabled = playbackButton.disabled
+                            ? "true"
+                            : "false";
+                    }
+                    playbackButton.disabled = true;
+                    playbackButton.setAttribute("aria-disabled", "true");
+                    return;
+                }
+                if (playbackButton.hasAttribute("data-download-busy-previous-disabled")) {
+                    playbackButton.disabled = (
+                        playbackButton.dataset.downloadBusyPreviousDisabled === "true"
+                    );
+                    delete playbackButton.dataset.downloadBusyPreviousDisabled;
+                }
+                if (!playbackButton.disabled) {
+                    playbackButton.removeAttribute("aria-disabled");
                 }
             });
         }
@@ -729,18 +853,44 @@
 
         function selectedSupportsBrowserPhoto(items, saveFormat) {
             const sourceItems = Array.isArray(items) ? items : [];
+            const effectiveSaveFormat = sourceItems.some(
+                (item) => item && item.logical_type === "livephoto",
+            ) ? "original" : saveFormat;
             if (browserPhotoApi && typeof browserPhotoApi.supportsSelection === "function") {
-                return browserPhotoApi.supportsSelection(sourceItems, saveFormat);
+                return browserPhotoApi.supportsSelection(sourceItems, effectiveSaveFormat);
             }
             return Boolean(
                 sourceItems.length
-                && String(saveFormat || "original") === "original"
+                && String(effectiveSaveFormat || "original") === "original"
                 && sourceItems.every((item) => (
                     item
-                    && item.type === "image"
-                    && item.url
+                    && (
+                        (item.logical_type === "image" && item.url)
+                        || (
+                            item.logical_type === "livephoto"
+                            && item.asset_id
+                            && item.pair_token
+                            && item.descriptor_url
+                        )
+                    )
                     && !item.requires_cookie
                     && !item.requires_merge
+                ))
+            );
+        }
+
+        function selectionRequiresZeroRelay(items) {
+            const sourceItems = Array.isArray(items) ? items : [];
+            return Boolean(
+                sourceItems.length
+                && sourceItems.every((item) => (
+                    item && ["image", "livephoto"].includes(item.logical_type || item.type)
+                ))
+                && sourceItems.some((item) => (
+                    item.logical_type === "livephoto"
+                    || item.type === "livephoto"
+                    || item.source_platform === "xiaohongshu"
+                    || item.provider === "parsehub_xhs_images"
                 ))
             );
         }
@@ -804,11 +954,14 @@
                 blobWarning.innerText = "浏览器正在下载并打包图片，完成前请勿刷新或关闭本页。";
             }
             const stageMessages = {
-                connecting: "正在连接图片资源...",
+                connecting: "正在连接素材资源...",
+                resolving_livephoto: "正在准备实况素材...",
+                fetching_still: "正在获取实况原图...",
+                fetching_motion: "正在获取实况视频...",
                 fetching: event.totalItems > 1
-                    ? `浏览器正在下载并打包图片 ${event.completedItems} / ${event.totalItems}`
-                    : "浏览器正在下载图片...",
-                assembling: "图片已下载完成，正在生成 ZIP...",
+                    ? `浏览器正在处理素材 ${event.completedItems} / ${event.totalItems}`
+                    : "浏览器正在获取素材...",
+                assembling: "素材已获取完成，正在生成 ZIP...",
                 saving: "正在交给浏览器保存...",
                 completed: "已开始保存。",
             };
@@ -817,21 +970,85 @@
             }
         }
 
+        async function requestSelectedLivePhotoDescriptor(item, signal) {
+            await ensureLivePhotoPreview();
+            const pairApi = window.AnimeImagesXhsLivePhotoPair;
+            if (!pairApi || typeof pairApi.requestPairDescriptor !== "function") {
+                const error = new Error("实况资源服务暂时不可用，请刷新页面后重试。");
+                error.errorCode = "XHS_LIVEPHOTO_PAIR_UNAVAILABLE";
+                throw error;
+            }
+            return pairApi.requestPairDescriptor(
+                item.pair_token,
+                item.descriptor_url,
+                {
+                    csrfToken: getCookie("csrftoken"),
+                    signal,
+                },
+            );
+        }
+
+        function logicalDownloadErrorMessage(error, includesLivePhoto) {
+            const errorCode = browserPhotoApi.safeErrorCode(error);
+            if (
+                errorCode === "BROWSER_PHOTO_ARCHIVE_TOO_LARGE"
+                || errorCode === "BROWSER_PHOTO_ITEM_TOO_LARGE"
+                || errorCode === "BROWSER_LIVEPHOTO_PAIR_TOO_LARGE"
+            ) {
+                return "选中的素材总量过大，暂无法在浏览器中打包。";
+            }
+            if (includesLivePhoto) {
+                const pairApi = window.AnimeImagesXhsLivePhotoPair;
+                if (pairApi && typeof pairApi.safeErrorMessage === "function") {
+                    return pairApi.safeErrorMessage(error, browserPhotoApi);
+                }
+            }
+            return browserPhotoApi.safeErrorMessage(error);
+        }
+
         async function downloadSelectedPhotos(payload) {
-            const items = selected.map((item, index) => ({
-                ...item,
-                filenameStem: item.filenameStem || `${getBaseFilename()}_${String(index + 1).padStart(2, "0")}`,
-            }));
+            const items = selected
+                .map((item, index) => ({
+                    ...item,
+                    filenameStem: item.filenameStem || `${getBaseFilename()}_${String(index + 1).padStart(2, "0")}`,
+                    display_ordinal: item.display_ordinal || index + 1,
+                }))
+                .sort((left, right) => left.display_ordinal - right.display_ordinal);
+            const livePhotoItems = items.filter((item) => item.logical_type === "livephoto");
+            const includesLivePhoto = livePhotoItems.length > 0;
+            const zeroRelay = selectionRequiresZeroRelay(items);
             activePhotoController = new AbortController();
+            const previewApi = window.AnimeImagesXhsLivePhotoPreview;
+            if (previewApi && typeof previewApi.cancelActive === "function") {
+                previewApi.cancelActive();
+            }
             clearPhotoServerFallback();
             setPhotoActionVisibility({cancel: true});
             try {
                 if (items.length === 1) {
-                    const result = await browserPhotoApi.downloadImage(items[0], {
-                        filenameStem: items[0].filenameStem,
-                        signal: activePhotoController.signal,
-                        onProgress: applyPhotoDownloadProgress,
-                    });
+                    let result;
+                    if (items[0].logical_type === "livephoto") {
+                        const descriptor = await requestSelectedLivePhotoDescriptor(
+                            items[0],
+                            activePhotoController.signal,
+                        );
+                        result = await browserPhotoApi.createLivePhotoPairArchive(descriptor, {
+                            signal: activePhotoController.signal,
+                            onProgress(snapshot) {
+                                applyPhotoDownloadProgress({
+                                    ...snapshot,
+                                    totalItems: 1,
+                                    completedItems: ["saving", "completed"].includes(snapshot.stage) ? 1 : 0,
+                                });
+                            },
+                        });
+                    } else {
+                        result = await browserPhotoApi.downloadImage(items[0], {
+                            filenameStem: items[0].filenameStem,
+                            signal: activePhotoController.signal,
+                            onProgress: applyPhotoDownloadProgress,
+                        });
+                    }
                     setStatus(
                         getStatusElement(),
                         `已交给浏览器保存：${result.filename}`,
@@ -839,11 +1056,20 @@
                     );
                     return;
                 }
-                const result = await browserPhotoApi.createArchive(items, {
-                    baseFilename: payload.base_filename,
-                    signal: activePhotoController.signal,
-                    onProgress: applyPhotoDownloadProgress,
-                });
+                const result = includesLivePhoto
+                    ? await browserPhotoApi.createLogicalSelectionArchive(items, {
+                        baseFilename: payload.base_filename,
+                        signal: activePhotoController.signal,
+                        onProgress: applyPhotoDownloadProgress,
+                        resolveLivePhoto: (item, options) => (
+                            requestSelectedLivePhotoDescriptor(item, options.signal)
+                        ),
+                    })
+                    : await browserPhotoApi.createArchive(items, {
+                        baseFilename: payload.base_filename,
+                        signal: activePhotoController.signal,
+                        onProgress: applyPhotoDownloadProgress,
+                    });
                 const failureNote = result.failureCount
                     ? `，${result.failureCount} 张未能加入，详情见 failed.txt`
                     : "";
@@ -855,12 +1081,20 @@
             } catch (error) {
                 const errorCode = browserPhotoApi.safeErrorCode(error);
                 const cancelled = errorCode === "BROWSER_PHOTO_CANCELLED";
-                if (!cancelled && items.length > 1) {
+                if (!cancelled && items.length > 1 && !zeroRelay) {
                     pendingPhotoServerFallback = true;
                     setPhotoActionVisibility({serverFallback: true});
                     setStatus(
                         getStatusElement(),
                         `${browserPhotoApi.safeErrorMessage(error)} 可明确选择“使用服务器打包”。`,
+                        "text-danger",
+                    );
+                    return;
+                }
+                if (!cancelled && zeroRelay) {
+                    setStatus(
+                        getStatusElement(),
+                        logicalDownloadErrorMessage(error, includesLivePhoto),
                         "text-danger",
                     );
                     return;
@@ -974,6 +1208,7 @@
             }
             selected = [];
             pendingPhotoServerFallback = false;
+            cancelLivePhotoActivity();
             setPageHasResults(true);
             resultsRegion.innerHTML = `
                 <div class="parse-loading-card">
@@ -997,6 +1232,7 @@
                         : "正在等待已启动的解析完成"
                 )
                 : "正在获取高清资源";
+            cancelLivePhotoActivity();
             resultsRegion.innerHTML = `
                 <div class="parse-loading-card">
                     <div class="spinner-border" role="status" aria-hidden="true"></div>
@@ -1014,6 +1250,7 @@
             }
             selected = [];
             pendingPhotoServerFallback = false;
+            cancelLivePhotoActivity();
             setPageHasResults(true);
             page.dataset.baseFilename = "xhs_image";
             resultsRegion.innerHTML = `
@@ -1046,8 +1283,9 @@
             applyTargetPage(payload.target_page);
             selected = [];
             pendingPhotoServerFallback = false;
+            cancelLivePhotoActivity();
             resultsRegion.innerHTML = payload.html || "";
-            void ensureLivePhotoStaffPreview();
+            void ensureLivePhotoPreview();
             page.dataset.baseFilename = payload.base_filename || "xhs_image";
             setPageHasResults(Boolean(payload.has_content || payload.has_results));
             updateSelectAllButton();
@@ -1129,6 +1367,7 @@
             }
             selected = [];
             pendingPhotoServerFallback = false;
+            cancelLivePhotoActivity();
             parseRequestId += 1;
             setParseLoading(false);
             page.dataset.baseFilename = "xhs_image";
@@ -1662,11 +1901,14 @@
                     && selectedSupportsBrowserPhoto(selected, payload.save_format)
                 ) {
                     if (!browserPhotoApi) {
-                        pendingPhotoServerFallback = selected.length > 1;
+                        const zeroRelay = selectionRequiresZeroRelay(selected);
+                        pendingPhotoServerFallback = !zeroRelay && selected.length > 1;
                         setPhotoActionVisibility({serverFallback: pendingPhotoServerFallback});
                         setStatus(
                             getStatusElement(),
-                            pendingPhotoServerFallback
+                            zeroRelay
+                                ? "图片下载组件不可用，请刷新页面后重试。"
+                                : pendingPhotoServerFallback
                                 ? presentationText(
                                     "图片下载组件不可用，可选择“换一种方式打包”。",
                                     "浏览器图片下载组件不可用，可明确选择“使用服务器打包”。"
@@ -1832,36 +2074,52 @@
 
         function toggleAssetCard(card) {
             clearPhotoServerFallback();
+            if (card.dataset.downloadSelectable === "false") {
+                setStatus(
+                    getStatusElement(),
+                    "该项实况暂不可下载，请重新解析后再试。",
+                    "text-danger",
+                );
+                return;
+            }
             const item = getCardItem(card);
             const key = getItemKey(item);
             const exists = selected.some((selectedItem) => getItemKey(selectedItem) === key);
 
             if (exists) {
                 selected = selected.filter((selectedItem) => getItemKey(selectedItem) !== key);
-                card.classList.remove("selected");
+                setAssetCardSelected(card, false);
             } else {
                 selected.push(item);
-                card.classList.add("selected");
+                setAssetCardSelected(card, true);
             }
 
             updateSelectedStatus();
             updateSelectAllButton();
         }
 
+        function setAssetCardSelected(card, isSelected) {
+            card.classList.toggle("selected", Boolean(isSelected));
+            const selectionControl = card.querySelector("[data-asset-select-toggle]");
+            if (selectionControl) {
+                selectionControl.setAttribute("aria-pressed", isSelected ? "true" : "false");
+            }
+        }
+
         function toggleSelectAll() {
             clearPhotoServerFallback();
-            const cards = getCards();
+            const allCards = getCards();
+            const cards = getSelectableCards();
             const allSelected = selected.length === cards.length;
             selected = [];
 
-            cards.forEach((card) => {
-                if (allSelected) {
-                    card.classList.remove("selected");
-                } else {
-                    card.classList.add("selected");
+            allCards.forEach((card) => setAssetCardSelected(card, false));
+            if (!allSelected) {
+                cards.forEach((card) => {
+                    setAssetCardSelected(card, true);
                     selected.push(getCardItem(card));
-                }
-            });
+                });
+            }
 
             updateSelectedStatus();
             updateSelectAllButton();
@@ -2040,6 +2298,20 @@
                     return;
                 }
 
+                if (event.target.closest("[data-livephoto-toggle]")) {
+                    return;
+                }
+
+                const selectionControl = event.target.closest("[data-asset-select-toggle]");
+                if (selectionControl && resultsRegion.contains(selectionControl)) {
+                    event.preventDefault();
+                    const selectionCard = selectionControl.closest(".asset-card");
+                    if (selectionCard) {
+                        toggleAssetCard(selectionCard);
+                    }
+                    return;
+                }
+
                 const card = event.target.closest(".asset-card");
                 if (card && resultsRegion.contains(card)) {
                     toggleAssetCard(card);
@@ -2079,7 +2351,7 @@
         }
 
         updateSelectAllButton();
-        void ensureLivePhotoStaffPreview();
+        void ensureLivePhotoPreview();
         if (ordinaryMediaDownloadApi) {
             const interrupted = ordinaryMediaDownloadApi.consumeInterruptedDownloadMarker();
             const interruptionNotice = page.querySelector("[data-ordinary-download-interruption]");

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Added an optional, exact-pin ParseHub subprocess for anonymous, parse-only XHS
+  image candidates. Native parsing remains authoritative for exact note
+  identity, item order, and Live Photo relationships; ParseHub raw stills are
+  accepted only after whole-note fingerprint correspondence plus strict HTTPS
+  host, redirect, magic, and dimension gates. Ordinary Single and Batch image
+  downloads now preserve magic-proven JPEG, PNG, GIF, WebP, AVIF, or HEIC bytes
+  while retaining separate 1280px-compatible previews and per-item Native JPEG
+  fallback. Anonymous Single and Batch pages keep the ordinary flat-image
+  presentation and download contract without Live Photo DOM, motion work, pair
+  tokens, or special scripts. Authenticated active Staff may additionally use
+  exact-note, one-shot Native motion playback and a browser-generated pair ZIP
+  containing the admitted original still plus MP4 motion. Pair descriptors are
+  Staff- and browser-bound; media and ZIP bytes remain browser-owned with no
+  server relay. XHS ordinary-video TianTian routing is unchanged. Live Photo
+  Native motion evidence and ParseHub still evidence share one bounded deadline
+  without admitting the unverified `motion_zl` class. This change has not been
+  deployed.
 - Added a dormant, URL-free XHS LivePhoto asset identity and Asset Spec mapper
   on top of the browser-verified host-class subset merged in PR #71. The
   class-level transport policy is separate from factory-only format proof,

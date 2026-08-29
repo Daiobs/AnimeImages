@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -131,6 +132,7 @@ from .services.downloads import (
     save_media_items_to_server,
     validate_download_media_items,
     validate_response_content_type,
+    write_limited_response,
 )
 from .services.image_formats import resolve_image_format
 from .services.platforms.douyin_kukutool import (
@@ -145,7 +147,13 @@ from .services.platforms.douyin_providers import (
     DouyinTianTianJieXiProvider,
     normalize_douyin_display_title,
 )
-from .services.platforms.xiaohongshu import normalize_xhs_preview_image_url
+from .services.platforms.xhs_preview import (
+    XHS_PREVIEW_TOTAL_TIMEOUT_SECONDS,
+    issue_xhs_preview_descriptor,
+    load_xhs_preview_descriptor,
+    resolve_xhs_preview_candidates,
+    xhs_preview_final_url_is_allowed,
+)
 from .services.platforms.xhs_tiantian_hybrid import (
     XhsUltraAttemptController,
     xhs_tiantian_provider_is_available,
@@ -224,6 +232,12 @@ from .services.rate_limits import (
     has_daily_capacity,
     release_concurrency,
 )
+from .services.xhs_livephoto_pair_handoff import (
+    XhsLivePhotoPairHandoffError,
+    get_xhs_livephoto_pair_client_identity,
+    load_xhs_livephoto_motion_descriptor,
+    load_xhs_livephoto_pair_descriptor,
+)
 from .services.region_routing import get_request_country_code
 from .services.batch_parse import (
     batch_link_host,
@@ -286,7 +300,7 @@ def paginate_admin_queryset(request, queryset, page_size=ADMIN_LOG_PAGE_SIZE):
     query_params.pop("page", None)
     return page_obj, query_params.urlencode()
 PREVIEW_MAX_IMAGE_BYTES = 8 * 1024 * 1024
-BATCH_CARD_PREVIEW_WIDTH = 960
+BATCH_CARD_PREVIEW_WIDTH = 1280
 BATCH_LIGHTBOX_PREVIEW_WIDTH = 1600
 SIGNED_THIRD_PARTY_VIDEO_PROVIDERS = {
     "kukutool_generic",
@@ -349,6 +363,8 @@ def get_video_size_details(asset, *, probe_missing=True):
 
 
 def build_provider_preview_query(asset, preview_url, asset_id_suffix=""):
+    if asset.provider == "parsehub_xhs_images":
+        return ""
     if not asset.provider or not preview_url:
         return ""
     if not asset.asset_id or not asset.provider_resource_id or not asset.provider_cache_key:
@@ -3863,6 +3879,8 @@ def image_download_extension(asset):
     supported = {
         "avif": "avif",
         "gif": "gif",
+        "heic": "heic",
+        "heif": "heic",
         "jpeg": "jpg",
         "jpg": "jpg",
         "png": "png",
@@ -3876,50 +3894,116 @@ def image_download_extension(asset):
     return supported.get(inferred, "")
 
 
-def build_image_item(asset, result):
+def _preview_proxy_query(*, encoded_url, provider_query="", descriptor_token=""):
+    if descriptor_token:
+        return urlencode({"p": descriptor_token})
+    query = f"u={encoded_url}"
+    return f"{query}&{provider_query}" if provider_query else query
+
+
+def build_image_item(
+    asset,
+    result,
+    *,
+    source_ordinal=0,
+    preview_surface="single",
+    item_sources=(),
+):
     default_preview_url = asset.preview_url or asset.url
+    card_preview_candidates = ()
+    lightbox_preview_candidates = ()
+    preview_descriptor_token = ""
+    card_preview_descriptor_token = ""
+    lightbox_preview_descriptor_token = ""
     if getattr(result, "platform", "") == "xiaohongshu":
+        card_preview_candidates = resolve_xhs_preview_candidates(
+            asset,
+            item_sources=item_sources,
+            width=BATCH_CARD_PREVIEW_WIDTH,
+        )
+        lightbox_preview_candidates = resolve_xhs_preview_candidates(
+            asset,
+            item_sources=item_sources,
+            width=BATCH_LIGHTBOX_PREVIEW_WIDTH,
+        )
         card_preview_url = (
-            normalize_xhs_preview_image_url(
-                asset.url,
-                width=BATCH_CARD_PREVIEW_WIDTH,
-            )
-            or default_preview_url
+            card_preview_candidates[0].value
+            if card_preview_candidates
+            else default_preview_url
         )
         lightbox_preview_url = (
-            normalize_xhs_preview_image_url(
-                asset.url,
-                width=BATCH_LIGHTBOX_PREVIEW_WIDTH,
-            )
-            or card_preview_url
+            lightbox_preview_candidates[0].value
+            if lightbox_preview_candidates
+            else card_preview_url
+        )
+        default_preview_url = card_preview_url
+        preview_descriptor_token = issue_xhs_preview_descriptor(
+            card_preview_candidates,
+            surface=preview_surface,
+            source_ordinal=source_ordinal,
+        )
+        card_preview_descriptor_token = preview_descriptor_token
+        lightbox_preview_descriptor_token = issue_xhs_preview_descriptor(
+            lightbox_preview_candidates,
+            surface=preview_surface,
+            source_ordinal=source_ordinal,
         )
     else:
         card_preview_url = default_preview_url
         lightbox_preview_url = default_preview_url
 
+    preview_provider_query = build_provider_preview_query(
+        asset,
+        default_preview_url,
+    )
+    card_preview_provider_query = build_provider_preview_query(
+        asset,
+        card_preview_url,
+    )
+    lightbox_preview_provider_query = build_provider_preview_query(
+        asset,
+        lightbox_preview_url,
+    )
+    encoded_preview_url = encode_url(default_preview_url)
+    encoded_card_preview_url = encode_url(card_preview_url)
+    encoded_lightbox_preview_url = encode_url(lightbox_preview_url)
+
     return {
         **asset.to_download_item(),
         **build_asset_strategy_fields(asset, result),
         "type": "image",
+        "source_platform": result.platform,
         "url": asset.url,
         "download_extension": image_download_extension(asset),
         "encoded_url": encode_url(asset.url),
-        "encoded_preview_url": encode_url(default_preview_url),
-        "preview_provider_query": build_provider_preview_query(
-            asset,
-            default_preview_url,
+        "encoded_preview_url": encoded_preview_url,
+        "preview_provider_query": preview_provider_query,
+        "preview_descriptor_token": preview_descriptor_token,
+        "preview_proxy_query": _preview_proxy_query(
+            encoded_url=encoded_preview_url,
+            provider_query=preview_provider_query,
+            descriptor_token=preview_descriptor_token,
         ),
         "card_preview_url": card_preview_url,
-        "encoded_card_preview_url": encode_url(card_preview_url),
-        "card_preview_provider_query": build_provider_preview_query(
-            asset,
-            card_preview_url,
+        "encoded_card_preview_url": encoded_card_preview_url,
+        "card_preview_provider_query": card_preview_provider_query,
+        "card_preview_descriptor_token": card_preview_descriptor_token,
+        "card_preview_proxy_query": _preview_proxy_query(
+            encoded_url=encoded_card_preview_url,
+            provider_query=card_preview_provider_query,
+            descriptor_token=card_preview_descriptor_token,
         ),
         "lightbox_preview_url": lightbox_preview_url,
-        "encoded_lightbox_preview_url": encode_url(lightbox_preview_url),
-        "lightbox_preview_provider_query": build_provider_preview_query(
-            asset,
-            lightbox_preview_url,
+        "encoded_lightbox_preview_url": encoded_lightbox_preview_url,
+        "lightbox_preview_provider_query": lightbox_preview_provider_query,
+        "lightbox_preview_descriptor_token": lightbox_preview_descriptor_token,
+        "lightbox_preview_proxy_query": _preview_proxy_query(
+            encoded_url=encoded_lightbox_preview_url,
+            provider_query=lightbox_preview_provider_query,
+            descriptor_token=lightbox_preview_descriptor_token,
+        ),
+        "xhs_preview_candidate_classes": tuple(
+            candidate.candidate_class for candidate in card_preview_candidates
         ),
     }
 
@@ -3962,6 +4046,7 @@ def build_result_display_context(
     *,
     platform_key="home",
     probe_missing_video_sizes=True,
+    preview_surface="single",
 ):
     result_metadata = result.metadata or {}
     is_xhs_result = result.platform == "xiaohongshu"
@@ -4012,7 +4097,15 @@ def build_result_display_context(
         "display_author": display_author,
         "note_id": note_id,
         "metadata_source": metadata_source,
-        "image_items": [build_image_item(asset, result) for asset in result.image_assets],
+        "image_items": [
+            build_image_item(
+                asset,
+                result,
+                source_ordinal=index,
+                preview_surface=preview_surface,
+            )
+            for index, asset in enumerate(result.image_assets)
+        ],
         "video_items": [
             build_video_item(
                 asset,
@@ -4314,6 +4407,55 @@ def set_result_error_message(context, public_message, diagnostic_message=None):
     )
 
 
+def merge_xhs_livephoto_items_into_image_cards(image_items, preview_context):
+    preview_items = preview_context.get("items") if isinstance(preview_context, dict) else None
+    if not isinstance(preview_items, list) or len(preview_items) != len(image_items):
+        raise ValueError("XHS_LIVEPHOTO_STAFF_PREVIEW_RESULT_INVALID")
+
+    merged = []
+    for expected_ordinal, (image_item, preview_item) in enumerate(
+        zip(image_items, preview_items, strict=True)
+    ):
+        if (
+            not isinstance(preview_item, dict)
+            or preview_item.get("source_item_ordinal") != expected_ordinal
+            or str(preview_item.get("still_asset_id") or "")
+            != str(image_item.get("asset_id") or "")
+        ):
+            raise ValueError("XHS_LIVEPHOTO_STAFF_PREVIEW_RESULT_INVALID")
+        item = dict(image_item)
+        item.update(
+            {
+                "asset_kind": (
+                    "livephoto"
+                    if preview_item.get("kind") == "live_photo"
+                    else "image"
+                ),
+                "display_ordinal": preview_item.get("display_ordinal"),
+                "livephoto_delivery_status": preview_item.get("delivery_status", ""),
+                "livephoto_delivery_error_code": preview_item.get(
+                    "delivery_error_code", ""
+                ),
+                "livephoto_pair_token": preview_item.get("pair_token", ""),
+                "livephoto_playback_status": preview_item.get(
+                    "playback_status", ""
+                ),
+                "livephoto_playback_error_code": preview_item.get(
+                    "playback_error_code", ""
+                ),
+                "livephoto_motion_token": preview_item.get("motion_token", ""),
+                "livephoto_pair_download_status": preview_item.get(
+                    "pair_download_status", ""
+                ),
+                "livephoto_pair_download_error_code": preview_item.get(
+                    "pair_download_error_code", ""
+                ),
+            }
+        )
+        merged.append(item)
+    return merged
+
+
 def apply_search_result_to_context(
     context,
     result,
@@ -4321,7 +4463,9 @@ def apply_search_result_to_context(
     platform_key,
     prefer_ultra_hd,
     provider_notice_override=None,
+    enable_xhs_livephoto_preview=False,
     enable_xhs_livephoto_staff_preview=False,
+    client_identity="",
 ):
     result_metadata = result.metadata or {}
     display_context = build_result_display_context(
@@ -4330,6 +4474,11 @@ def apply_search_result_to_context(
         probe_missing_video_sizes=(
             getattr(result, "rich_media", None) is None
             and not (prefer_ultra_hd and result.platform == "douyin")
+        ),
+        preview_surface=(
+            "staff_single"
+            if enable_xhs_livephoto_staff_preview
+            else "single"
         ),
     )
     context["platform"] = result.platform
@@ -4470,20 +4619,33 @@ def apply_search_result_to_context(
         and result.platform == "xiaohongshu"
         and result.rich_media is not None
     ):
-        from .services.platforms.xhs_livephoto_staff_builder import (
-            build_xhs_livephoto_staff_preview_context,
+        from .services.platforms.xhs_livephoto_builder import (
+            build_xhs_livephoto_preview_context,
         )
 
-        context["xhs_livephoto_staff_preview"] = (
-            build_xhs_livephoto_staff_preview_context(result)
+        preview_context = build_xhs_livephoto_preview_context(
+            result,
+            client_identity=client_identity,
         )
+        context["image_items"] = merge_xhs_livephoto_items_into_image_cards(
+            context["image_items"],
+            preview_context,
+        )
+        # Motion members remain descriptor-only for the Staff preview surface.
+        context["video_items"] = []
+        context["xhs_livephoto_preview"] = preview_context
+        context["show_xhs_livephoto_preview"] = True
+        context["xhs_livephoto_staff_preview"] = preview_context
         context["show_xhs_livephoto_staff_preview"] = True
     elif (
         enable_xhs_livephoto_staff_preview
-        and result_metadata.get("xhs_livephoto_staff_preview_status") == "fallback"
+        and (
+            result_metadata.get("xhs_livephoto_staff_preview_status") == "fallback"
+            or result_metadata.get("xhs_livephoto_preview_status") == "fallback"
+        )
     ):
         error_code = str(
-            result_metadata.get("xhs_livephoto_staff_preview_error_code") or ""
+            result_metadata.get("xhs_livephoto_preview_error_code") or ""
         )
         context["provider_notice"] = (
             "该笔记包含尚未完成浏览器验证的实况媒体节点，已显示普通图片结果。"
@@ -4540,6 +4702,8 @@ def build_search_results_context(request, platform_key="home"):
         "metadata_source": "",
         "show_xhs_livephoto_staff_preview": False,
         "xhs_livephoto_staff_preview": {},
+        "show_xhs_livephoto_preview": False,
+        "xhs_livephoto_preview": {},
     }
 
     if not query:
@@ -4724,13 +4888,13 @@ def build_search_results_context(request, platform_key="home"):
             else ""
         )
         client_identity = get_client_identity(request)
-        parse_options = {"prefer_ultra_hd": prefer_ultra_hd}
         enable_xhs_livephoto_staff_preview = bool(
             query_platform_id == "xiaohongshu"
             and getattr(request.user, "is_authenticated", False)
             and getattr(request.user, "is_active", False)
             and getattr(request.user, "is_staff", False)
         )
+        parse_options = {"prefer_ultra_hd": prefer_ultra_hd}
         if enable_xhs_livephoto_staff_preview:
             parse_options["enable_xhs_livephoto_staff_preview"] = True
         if prefer_youtube_merge:
@@ -4765,12 +4929,23 @@ def build_search_results_context(request, platform_key="home"):
                 consume=consume_fixed_window,
             )
         result = parse_media_page(query, **parse_options)
+        livephoto_pair_client_identity = ""
+        if (
+            enable_xhs_livephoto_staff_preview
+            and result.platform == "xiaohongshu"
+            and result.rich_media is not None
+        ):
+            livephoto_pair_client_identity = (
+                get_xhs_livephoto_pair_client_identity(request)
+            )
         apply_search_result_to_context(
             context,
             result,
             platform_key=platform_key,
             prefer_ultra_hd=prefer_ultra_hd,
+            enable_xhs_livephoto_preview=False,
             enable_xhs_livephoto_staff_preview=enable_xhs_livephoto_staff_preview,
+            client_identity=livephoto_pair_client_identity,
         )
         log_parse_request_event(
             request,
@@ -5123,6 +5298,7 @@ def build_batch_result_row(
             result,
             platform_key=platform_key,
             probe_missing_video_sizes=False,
+            preview_surface="batch",
         )
 
     return service_build_batch_result_row(
@@ -5353,6 +5529,130 @@ def detect_raster_image_content_type(content):
     return resolution.mime_type if resolution.confidence == "magic" else ""
 
 
+def _preview_candidate_failure_code(error):
+    if isinstance(error, requests.Timeout):
+        return "deadline_or_timeout"
+    if isinstance(error, XhsDownloadError):
+        return "upstream_or_body_rejected"
+    return "request_rejected"
+
+
+def _preview_content_response(identity, content, detected_content_type):
+    try:
+        within_limit = record_preview_bytes(identity, len(content))
+    except Exception:
+        logger.exception("Preview byte-limit cache failed")
+        return placeholder_image_response(status=503)
+    if not within_limit:
+        return placeholder_image_response(status=429)
+
+    result = HttpResponse(content, content_type=detected_content_type)
+    result["Cache-Control"] = "private, max-age=300"
+    result["X-Content-Type-Options"] = "nosniff"
+    return result
+
+
+def _read_xhs_preview_content(response, *, deadline_monotonic):
+    if time.monotonic() >= deadline_monotonic:
+        raise requests.Timeout("XHS preview response deadline exhausted")
+    content = BytesIO()
+
+    def enforce_deadline(_total, _content_length):
+        if time.monotonic() >= deadline_monotonic:
+            raise requests.Timeout("XHS preview response deadline exhausted")
+
+    write_limited_response(
+        response,
+        content,
+        max_bytes=PREVIEW_MAX_IMAGE_BYTES,
+        progress_callback=enforce_deadline,
+    )
+    enforce_deadline(0, 0)
+    return content.getvalue()
+
+
+def _proxy_xhs_preview_descriptor(identity, descriptor):
+    deadline_monotonic = time.monotonic() + XHS_PREVIEW_TOTAL_TIMEOUT_SECONDS
+    attempted_count = 0
+    for candidate_index, candidate in enumerate(descriptor.candidates):
+        remaining = deadline_monotonic - time.monotonic()
+        if remaining <= 0:
+            logger.warning(
+                "xhs_preview_candidate_failed",
+                extra={
+                    "surface": descriptor.surface,
+                    "source_ordinal": descriptor.source_ordinal,
+                    "candidate_class": candidate.candidate_class,
+                    "failure_code": "preview_deadline_exhausted",
+                },
+            )
+            break
+        attempted_count += 1
+        failure_code = "request_rejected"
+        try:
+            response = fetch_media_response(
+                candidate.value,
+                timeout=max(0.1, min(4.0, remaining)),
+                retries=1,
+                deadline_monotonic=deadline_monotonic,
+            )
+            with response:
+                if not xhs_preview_final_url_is_allowed(
+                    candidate,
+                    getattr(response, "url", candidate.value),
+                ):
+                    failure_code = "final_host_rejected"
+                    raise XhsDownloadError("XHS preview final host rejected")
+                content = _read_xhs_preview_content(
+                    response,
+                    deadline_monotonic=deadline_monotonic,
+                )
+                detected_content_type = detect_raster_image_content_type(content)
+                if not detected_content_type:
+                    failure_code = "raster_magic_rejected"
+                    raise XhsDownloadError("XHS preview raster magic rejected")
+        except Exception as error:
+            if failure_code == "request_rejected":
+                failure_code = _preview_candidate_failure_code(error)
+            logger.warning(
+                "xhs_preview_candidate_failed",
+                extra={
+                    "surface": descriptor.surface,
+                    "source_ordinal": descriptor.source_ordinal,
+                    "candidate_class": candidate.candidate_class,
+                    "failure_code": failure_code,
+                },
+            )
+            continue
+
+        if candidate_index:
+            logger.info(
+                "xhs_preview_fallback_succeeded",
+                extra={
+                    "surface": descriptor.surface,
+                    "source_ordinal": descriptor.source_ordinal,
+                    "candidate_class": candidate.candidate_class,
+                    "attempt_count": attempted_count,
+                },
+            )
+        return _preview_content_response(
+            identity,
+            content,
+            detected_content_type,
+        )
+
+    logger.warning(
+        "xhs_preview_candidates_exhausted",
+        extra={
+            "surface": descriptor.surface,
+            "source_ordinal": descriptor.source_ordinal,
+            "candidate_count": len(descriptor.candidates),
+            "attempted_count": attempted_count,
+        },
+    )
+    return placeholder_image_response()
+
+
 @require_GET
 def proxy_image_view(request):
     try:
@@ -5365,6 +5665,17 @@ def proxy_image_view(request):
             status=429,
             retry_after=limit.retry_after,
         )
+
+    preview_descriptor_token = request.GET.get("p")
+    if preview_descriptor_token:
+        try:
+            descriptor = load_xhs_preview_descriptor(preview_descriptor_token)
+        except Exception:
+            logger.exception("XHS preview descriptor cache failed")
+            return placeholder_image_response(status=503)
+        if descriptor is None:
+            return placeholder_image_response()
+        return _proxy_xhs_preview_descriptor(identity, descriptor)
 
     encoded_url = request.GET.get("u")
 
@@ -5390,18 +5701,11 @@ def proxy_image_view(request):
                 invalidate_external_provider_caches(provider_item)
                 return placeholder_image_response()
 
-        try:
-            within_limit = record_preview_bytes(identity, len(content))
-        except Exception:
-            logger.exception("Preview byte-limit cache failed")
-            return placeholder_image_response(status=503)
-        if not within_limit:
-            return placeholder_image_response(status=429)
-
-        result = HttpResponse(content, content_type=detected_content_type)
-        result["Cache-Control"] = "private, max-age=300"
-        result["X-Content-Type-Options"] = "nosniff"
-        return result
+        return _preview_content_response(
+            identity,
+            content,
+            detected_content_type,
+        )
 
     except Exception as error:
         if provider_item and is_recoverable_provider_download_error(error):
@@ -5411,6 +5715,226 @@ def proxy_image_view(request):
             sanitize_observability_text(error),
         )
         return placeholder_image_response()
+
+
+@require_POST
+@csrf_protect
+def xhs_livephoto_motion_descriptor_view(request):
+    user = request.user
+    if not (
+        getattr(user, "is_authenticated", False)
+        and getattr(user, "is_active", False)
+        and getattr(user, "is_staff", False)
+    ):
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error_code": "XHS_LIVEPHOTO_PLAYBACK_STAFF_REQUIRED",
+                "message": "该实况资源仅向当前管理员会话开放。",
+            },
+            status=403,
+        )
+        response["Cache-Control"] = "no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+    if len(request.body) > 8192:
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error_code": "XHS_LIVEPHOTO_PLAYBACK_REQUEST_TOO_LARGE",
+                "message": "实况资源请求过大，请重新解析。",
+            },
+            status=413,
+        )
+        response["Cache-Control"] = "no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+    try:
+        data = json.loads(request.body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        data = None
+    token = data.get("motion_token") if isinstance(data, dict) else None
+    if (
+        not isinstance(token, str)
+        or not token
+        or len(token) > 4096
+        or set(data) != {"motion_token"}
+    ):
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error_code": "XHS_LIVEPHOTO_PLAYBACK_INVALID",
+                "message": "实况资源信息无效，请重新解析。",
+            },
+            status=400,
+        )
+        response["Cache-Control"] = "no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    identity = get_xhs_livephoto_pair_client_identity(request)
+    try:
+        limit = consume_fixed_window(
+            "xhs-livephoto-motion-descriptor",
+            identity,
+            30,
+            60,
+        )
+    except Exception:
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error_code": "RATE_LIMIT_CACHE_ERROR",
+                "message": "实况资源服务暂时不可用，请稍后重试。",
+            },
+            status=503,
+        )
+        response["Cache-Control"] = "no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+    if not limit.allowed:
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error_code": "RATE_LIMITED",
+                "message": "实况资源请求过于频繁，请稍后再试。",
+            },
+            status=429,
+        )
+        response["Retry-After"] = str(limit.retry_after)
+        response["Cache-Control"] = "no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    try:
+        descriptor = load_xhs_livephoto_motion_descriptor(
+            token,
+            client_identity=identity,
+        )
+        response = JsonResponse(descriptor.as_public_dict())
+    except XhsLivePhotoPairHandoffError as error:
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error_code": error.error_code,
+                "message": str(error),
+            },
+            status=error.status_code,
+        )
+        response["X-Error-Code"] = error.error_code
+    response["Cache-Control"] = "no-store"
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@require_POST
+@csrf_protect
+def xhs_livephoto_pair_descriptor_view(request):
+    user = request.user
+    if not (
+        getattr(user, "is_authenticated", False)
+        and getattr(user, "is_active", False)
+        and getattr(user, "is_staff", False)
+    ):
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error_code": "XHS_LIVEPHOTO_PAIR_STAFF_REQUIRED",
+                "message": "该实况资源仅向当前管理员会话开放。",
+            },
+            status=403,
+        )
+        response["Cache-Control"] = "no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+    if len(request.body) > 8192:
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error_code": "XHS_LIVEPHOTO_PAIR_REQUEST_TOO_LARGE",
+                "message": "实况资源请求过大，请重新解析。",
+            },
+            status=413,
+        )
+        response["Cache-Control"] = "no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+    try:
+        data = json.loads(request.body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        data = None
+    token = data.get("pair_token") if isinstance(data, dict) else None
+    if (
+        not isinstance(token, str)
+        or not token
+        or len(token) > 4096
+        or set(data) != {"pair_token"}
+    ):
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error_code": "XHS_LIVEPHOTO_PAIR_INVALID",
+                "message": "实况资源信息无效，请重新解析。",
+            },
+            status=400,
+        )
+        response["Cache-Control"] = "no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    identity = get_xhs_livephoto_pair_client_identity(request)
+    try:
+        limit = consume_fixed_window(
+            "xhs-livephoto-pair-descriptor",
+            identity,
+            30,
+            60,
+        )
+    except Exception:
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error_code": "RATE_LIMIT_CACHE_ERROR",
+                "message": "实况资源服务暂时不可用，请稍后重试。",
+            },
+            status=503,
+        )
+        response["Cache-Control"] = "no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+    if not limit.allowed:
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error_code": "RATE_LIMITED",
+                "message": "实况资源请求过于频繁，请稍后再试。",
+            },
+            status=429,
+        )
+        response["Retry-After"] = str(limit.retry_after)
+        response["Cache-Control"] = "no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    try:
+        descriptor = load_xhs_livephoto_pair_descriptor(
+            token,
+            client_identity=identity,
+        )
+        response = JsonResponse(descriptor.as_public_dict())
+    except XhsLivePhotoPairHandoffError as error:
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error_code": error.error_code,
+                "message": str(error),
+            },
+            status=error.status_code,
+        )
+        response["X-Error-Code"] = error.error_code
+    response["Cache-Control"] = "no-store"
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @require_POST

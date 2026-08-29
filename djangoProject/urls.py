@@ -87,6 +87,16 @@ urlpatterns = [
                       name="media_browser_download_telemetry",
                   ),
                   path("media/proxy-image/", download_views.proxy_image_view, name="media_proxy_image"),
+                  path(
+                      "media/xhs-livephoto-motion-descriptor/",
+                      download_views.xhs_livephoto_motion_descriptor_view,
+                      name="media_xhs_livephoto_motion_descriptor",
+                  ),
+                  path(
+                      "media/xhs-livephoto-pair-descriptor/",
+                      download_views.xhs_livephoto_pair_descriptor_view,
+                      name="media_xhs_livephoto_pair_descriptor",
+                  ),
                   path("media/download-prepare/", download_views.download_prepare_api, name="media_download_prepare"),
                   path("media/download-stream/<str:token>/", download_views.download_stream_view, name="media_download_stream"),
                   path("media/download-status/<str:token>/", download_views.download_status_view, name="media_download_status"),

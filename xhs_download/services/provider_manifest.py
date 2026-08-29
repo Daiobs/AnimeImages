@@ -16,6 +16,7 @@ def build_provider_manifest_token(
     provider_cache_key,
     url,
     media_type="",
+    source_platform="",
 ):
     payload = {
         "asset_id": str(asset_id or ""),
@@ -26,6 +27,8 @@ def build_provider_manifest_token(
     }
     if media_type:
         payload["type"] = str(media_type or "")
+    if source_platform:
+        payload["source_platform"] = str(source_platform or "")
     return signing.dumps(payload, salt=PROVIDER_MANIFEST_SALT, compress=True)
 
 
@@ -62,4 +65,6 @@ def provider_manifest_is_valid(item):
     }
     if "type" in payload:
         expected["type"] = str(item.get("type") or "")
+    if "source_platform" in payload:
+        expected["source_platform"] = str(item.get("source_platform") or "")
     return payload == expected

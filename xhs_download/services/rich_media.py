@@ -28,7 +28,15 @@ RICH_MEDIA_ASSET_ROLES = {
 }
 RICH_MEDIA_IMAGE_ROLES = {"primary", "gallery", "inline", "still", "animation"}
 RICH_MEDIA_VIDEO_ROLES = {"primary", "inline", "motion", "animation"}
-RICH_MEDIA_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp", "avif"}
+RICH_MEDIA_IMAGE_EXTENSIONS = {
+    "jpg",
+    "jpeg",
+    "png",
+    "gif",
+    "webp",
+    "avif",
+    "heic",
+}
 RICH_MEDIA_VIDEO_EXTENSIONS = {"mp4", "mov", "m3u8"}
 RICH_MEDIA_ANIMATION_IMAGE_EXTENSIONS = {"gif", "webp", "avif"}
 RICH_MEDIA_ANIMATION_VIDEO_EXTENSIONS = {"mp4"}

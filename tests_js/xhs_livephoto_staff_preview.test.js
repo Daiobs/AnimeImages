@@ -2,7 +2,11 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const preview = require("../static/js/xhs_livephoto_staff_preview.js");
+const preview = require("../static/js/xhs_livephoto_preview.js");
+
+
+const descriptorByToken = new Map();
+let nextMotionToken = 1;
 
 
 function fakeClassList() {
@@ -117,8 +121,14 @@ function fakeCard(url, options) {
         },
     });
     let card;
+    const motionToken = `opaque-motion-${nextMotionToken}`;
+    nextMotionToken += 1;
+    descriptorByToken.set(motionToken, url);
     const button = {
-        dataset: {motionUrl: url},
+        dataset: {
+            livephotoMotionToken: motionToken,
+            livephotoMotionDescriptorUrl: "/media/xhs-livephoto-motion-descriptor/",
+        },
         setAttribute(name, value) { attributes[name] = value; },
         closest(selector) {
             return selector === "[data-livephoto-card]" ? card : null;
@@ -154,6 +164,7 @@ function fakeCard(url, options) {
         status,
         still,
         video,
+        motionUrl: url,
     };
 }
 
@@ -178,6 +189,7 @@ function fakeDocument(items) {
 
 
 function clickEvent(button) {
+    let propagationStopped = false;
     return {
         target: {
             closest(selector) {
@@ -185,6 +197,8 @@ function clickEvent(button) {
             },
         },
         preventDefault() {},
+        stopPropagation() { propagationStopped = true; },
+        get propagationStopped() { return propagationStopped; },
     };
 }
 
@@ -197,6 +211,11 @@ function createHarness(options) {
         setTimeout: clock.setTimeout,
         clearTimeout: clock.clearTimeout,
         startupTimeoutMs: 8000,
+        requestMotionDescriptor(motionToken) {
+            return Promise.resolve({
+                motion: {url: descriptorByToken.get(motionToken) || ""},
+            });
+        },
         ...settings,
     });
     return {clock, controller, documentObject};
@@ -253,7 +272,7 @@ test("click starts loading, assigns the source, and calls load before playback",
     await settle();
 
     assert.equal(item.card.dataset.livephotoState, "loading");
-    assert.equal(item.video.src, item.button.dataset.motionUrl);
+    assert.equal(item.video.src, item.motionUrl);
     assert.equal(item.video.loadCount, 1);
     assert.equal(item.video.hidden, true);
     assert.equal(item.still.hidden, false);
@@ -303,6 +322,25 @@ test("a second click stops and unloads the active card", async () => {
     assert.equal(item.video.hidden, true);
     assert.equal(item.still.hidden, false);
     assert.equal(item.label.textContent, "播放实况");
+    assert.equal(item.video.listenerCount(), 0);
+    assert.equal(harness.clock.pendingCount(), 0);
+    harness.controller.destroy();
+});
+
+
+test("result replacement cancellation stops and unloads the active card", async () => {
+    const harness = createHarness();
+    const item = fakeCard("https://sns-video-v7.xhscdn.com/path/replaced.mp4");
+    harness.documentObject.listeners.get("click")(clickEvent(item.button));
+    await settle();
+    item.video.dispatch("playing");
+
+    harness.controller.cancelActive();
+
+    assert.equal(item.card.dataset.livephotoState, "stopped");
+    assert.equal(item.video.src, "");
+    assert.equal(item.video.hidden, true);
+    assert.equal(item.still.hidden, false);
     assert.equal(item.video.listenerCount(), 0);
     assert.equal(harness.clock.pendingCount(), 0);
     harness.controller.destroy();
@@ -375,7 +413,7 @@ test("a stale ended event cannot stop the current card", async () => {
 
     assert.equal(first.card.dataset.livephotoState, "stopped");
     assert.equal(second.card.dataset.livephotoState, "playing");
-    assert.equal(second.video.src, second.button.dataset.motionUrl);
+    assert.equal(second.video.src, second.motionUrl);
     assert.equal(second.still.hidden, true);
     harness.controller.destroy();
 });
@@ -458,7 +496,7 @@ test("starting a second card pauses, unloads, and detaches the first card", asyn
     assert.equal(first.still.hidden, false);
     assert.equal(first.video.listenerCount(), 0);
     assert.ok(first.video.pauseCount >= 1);
-    assert.equal(second.video.src, second.button.dataset.motionUrl);
+    assert.equal(second.video.src, second.motionUrl);
     assert.equal(second.card.dataset.livephotoState, "loading");
     harness.controller.destroy();
 });
@@ -498,6 +536,7 @@ test("a delayed old play promise cannot reactivate a previous card", async () =>
     const second = fakeCard("https://sns-bak-v3.xhscdn.com/path/two.mp4");
 
     harness.documentObject.listeners.get("click")(clickEvent(first.button));
+    await settle();
     harness.documentObject.listeners.get("click")(clickEvent(second.button));
     await settle();
     resolveFirstPlay();
