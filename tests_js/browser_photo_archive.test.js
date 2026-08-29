@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
@@ -381,6 +382,58 @@ test("single image download assigns the magic-derived extension and preserves ex
     assert.equal(result.filename, "作品_01.png");
     assert.equal(saved.filename, "作品_01.png");
     assert.deepEqual(new Uint8Array(await saved.blob.arrayBuffer()), SIGNATURES.png);
+});
+
+
+test("14-item XHS archive preserves candidate order and exact original bytes", async () => {
+    const bodies = Array.from({length: 14}, (_value, index) => Uint8Array.from([
+        ...SIGNATURES.jpeg,
+        index + 1,
+    ]));
+    const items = bodies.map((_body, index) => ({
+        type: "image",
+        url: `https://sns-img-hw.xhscdn.com/original-${index + 1}`,
+        source_platform: "xiaohongshu",
+        provider: index < 4 ? "parsehub_xhs_images" : "",
+    }));
+    let saved = null;
+
+    const result = await photo.createArchive(items, {
+        baseFilename: "originals",
+        fetchImpl: async (url) => {
+            const index = Number(url.split("-").pop()) - 1;
+            return fakeResponse([bodies[index]], {contentType: "application/octet-stream"});
+        },
+        async handoff(blob, filename) {
+            saved = {blob, filename};
+        },
+    });
+    const entries = await parseStoreZip(saved.blob);
+
+    assert.equal(result.successCount, 14);
+    assert.equal(result.failureCount, 0);
+    assert.equal(entries.length, 14);
+    assert.deepEqual(
+        entries.map((entry) => entry.name),
+        Array.from({length: 14}, (_value, index) => (
+            `originals_${String(index + 1).padStart(2, "0")}.jpg`
+        )),
+    );
+    entries.forEach((entry, index) => {
+        assert.deepEqual(entry.data, bodies[index]);
+        assert.equal(
+            crypto.createHash("sha256").update(entry.data).digest("hex"),
+            crypto.createHash("sha256").update(bodies[index]).digest("hex"),
+        );
+        assert.equal(entry.expectedCrc, photo.crc32(bodies[index]));
+        assert.notDeepEqual(
+            [entry.modificationDate, entry.modificationTime],
+            [0x21, 0],
+        );
+    });
+    assert.equal(entries.some((entry) => entry.name === "failed.txt"), false);
+    assert.equal(entries.some((entry) => entry.name.endsWith(".svg")), false);
+    assert.equal(entries.some((entry) => entry.name.endsWith(".mp4")), false);
 });
 
 
