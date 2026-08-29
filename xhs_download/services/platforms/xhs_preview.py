@@ -14,6 +14,7 @@ from django.core.cache import cache
 
 from ..assets import MediaAsset
 from ..common import normalize_text
+from .xhs_image_download_authority import classify_xhs_image_candidate
 
 
 XHS_PREVIEW_DESCRIPTOR_SCHEMA_VERSION = 1
@@ -252,6 +253,30 @@ def bind_xhs_preview_sources(
 ) -> str:
     item_sources = tuple(item_sources)
     return XhsBoundPreviewUrl(value, item_sources) if value and item_sources else value
+
+
+def select_xhs_item_download_url(
+    fallback_url: str,
+    item_sources: Iterable[XhsPreviewSourceV1],
+) -> str:
+    """Prefer an exact same-item urlDefault over a synthesized CI alias."""
+
+    for source in tuple(item_sources):
+        if (
+            not isinstance(source, XhsPreviewSourceV1)
+            or source.source_kind != "url_default"
+        ):
+            continue
+        preview_candidate = classify_xhs_preview_url(source.value)
+        if (
+            preview_candidate is None
+            or preview_candidate[1] != source.authority_class
+        ):
+            continue
+        download_candidate = classify_xhs_image_candidate(preview_candidate[0])
+        if download_candidate is not None and download_candidate.scheme == "https":
+            return download_candidate.value
+    return str(fallback_url or "")
 
 
 def _derived_preview(value: Any, *, width: int) -> XhsPreviewCandidateV1 | None:
@@ -509,5 +534,6 @@ __all__ = (
     "issue_xhs_preview_descriptor",
     "load_xhs_preview_descriptor",
     "resolve_xhs_preview_candidates",
+    "select_xhs_item_download_url",
     "xhs_preview_final_url_is_allowed",
 )

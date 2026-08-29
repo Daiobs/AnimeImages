@@ -14,6 +14,7 @@ from .services.platforms.xhs_preview import (
     issue_xhs_preview_descriptor,
     load_xhs_preview_descriptor,
     resolve_xhs_preview_candidates,
+    select_xhs_item_download_url,
     xhs_preview_final_url_is_allowed,
 )
 from .views import _read_xhs_preview_content, build_result_display_context
@@ -118,6 +119,34 @@ class XhsPreviewResolverTests(SimpleTestCase):
             [candidate.value for candidate in candidates],
             [NATIVE_DEFAULT, NATIVE_PREVIEW, NATIVE_FALLBACK],
         )
+
+    def test_download_prefers_exact_same_item_url_default(self):
+        sources = build_xhs_item_preview_sources(snapshot_item())
+
+        selected = select_xhs_item_download_url(CI_UNKNOWN, sources)
+
+        self.assertEqual(selected, NATIVE_DEFAULT)
+
+    def test_download_does_not_promote_preview_only_source(self):
+        item = snapshot_item()
+        del item["urlDefault"]
+        sources = build_xhs_item_preview_sources(item)
+
+        selected = select_xhs_item_download_url(CI_UNKNOWN, sources)
+
+        self.assertEqual(selected, CI_UNKNOWN)
+
+    def test_download_revalidates_source_authority(self):
+        source = build_xhs_item_preview_sources(snapshot_item())[0]
+        forged = type(source)(
+            value=source.value,
+            source_kind=source.source_kind,
+            authority_class="parsehub_raw",
+        )
+
+        selected = select_xhs_item_download_url(CI_UNKNOWN, (forged,))
+
+        self.assertEqual(selected, CI_UNKNOWN)
 
     def test_existing_compatible_preview_is_not_double_normalized(self):
         candidates = resolve_xhs_preview_candidates(

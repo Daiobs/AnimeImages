@@ -849,7 +849,7 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
 
         self.assertEqual(
             [asset.url for asset in result.image_assets],
-            [normalize_xhs_image_url(IMAGE_ONE)],
+            [IMAGE_ONE],
         )
 
     def test_valid_structured_gallery_does_not_append_dom_image(self):
@@ -860,7 +860,7 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
 
         self.assertEqual(
             [asset.url for asset in result.image_assets],
-            [normalize_xhs_image_url(IMAGE_ONE)],
+            [IMAGE_ONE],
         )
 
     def test_valid_structured_gallery_does_not_append_broad_noise(self):
@@ -871,7 +871,7 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
 
         self.assertEqual(
             [asset.url for asset in result.image_assets],
-            [normalize_xhs_image_url(IMAGE_ONE)],
+            [IMAGE_ONE],
         )
         self.assertTrue(result.metadata["structured_image_authoritative"])
 
@@ -1075,7 +1075,7 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
 
         self.assertEqual(
             [asset.url for asset in result.image_assets],
-            [normalize_xhs_image_url(IMAGE_ONE)],
+            [IMAGE_ONE],
         )
         self.assertEqual(
             result.metadata["fallback_policy"],
