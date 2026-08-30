@@ -13,6 +13,8 @@ SCHEMA_VERSION = "1.0"
 MAX_SOURCE_LENGTH = 4096
 MAX_ASSETS = 64
 MAX_RELATIONSHIPS = 64
+MAX_ATTEMPTS = 12
+MAX_ATTEMPT_ELAPSED_MS = 60_000
 MAX_RAW_DEPTH = 6
 MAX_RAW_MAPPING_KEYS = 128
 MAX_RAW_LIST_ITEMS = 64
@@ -29,6 +31,20 @@ MEDIA_TYPES = frozenset({"image", "video", "audio", "unknown"})
 ASSET_ROLES = frozenset(
     {"primary", "cover", "gallery", "still", "motion", "audio", "unknown"}
 )
+ATTEMPT_OUTCOMES = frozenset(
+    {"success", "failed", "timeout", "unsupported", "empty", "policy_rejected", "skipped"}
+)
+ATTEMPT_FAILURE_CODES = frozenset(
+    {
+        "",
+        "BACKEND_UNSUPPORTED",
+        "BACKEND_EMPTY",
+        "BACKEND_TIMEOUT",
+        "BACKEND_PROCESS_FAILED",
+        "BACKEND_SCHEMA_INVALID",
+        "BACKEND_POLICY_REJECTED",
+    }
+)
 ERROR_CODES = frozenset(
     {
         "PROVIDER_LAB_DISABLED",
@@ -43,6 +59,7 @@ ERROR_CODES = frozenset(
         "PROVIDER_RESULT_EMPTY",
         "PROVIDER_LICENSE_RESTRICTED",
         "PROVIDER_RATE_LIMITED",
+        "PROVIDER_POLICY_REJECTED",
     }
 )
 
@@ -260,6 +277,43 @@ class LabRelationshipV1:
 
 
 @dataclass(frozen=True)
+class LabProviderAttemptV1:
+    ordinal: int
+    backend_id: str
+    backend_category: str
+    outcome: str
+    elapsed_ms: int = 0
+    candidate_count: int = 0
+    selected: bool = False
+    safe_failure_code: str = ""
+    external_sharing: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        outcome = self.outcome if self.outcome in ATTEMPT_OUTCOMES else "failed"
+        failure_code = (
+            self.safe_failure_code
+            if self.safe_failure_code in ATTEMPT_FAILURE_CODES
+            else "BACKEND_PROCESS_FAILED"
+        )
+        selected = bool(self.selected and outcome == "success")
+        return {
+            "ordinal": min(MAX_ATTEMPTS, max(1, safe_int(self.ordinal))),
+            "backend_id": safe_public_text(self.backend_id, 80),
+            "backend_category": (
+                self.backend_category
+                if self.backend_category in {"dedicated", "common", "legacy"}
+                else "unknown"
+            ),
+            "outcome": outcome,
+            "elapsed_ms": min(MAX_ATTEMPT_ELAPSED_MS, safe_int(self.elapsed_ms)),
+            "candidate_count": min(MAX_ASSETS, safe_int(self.candidate_count)),
+            "selected": selected,
+            "safe_failure_code": "" if selected else failure_code,
+            "external_sharing": bool(self.external_sharing),
+        }
+
+
+@dataclass(frozen=True)
 class LabProviderResultV1:
     request_id: str
     provider_id: str
@@ -273,6 +327,7 @@ class LabProviderResultV1:
     metadata: Mapping[str, Any] = field(default_factory=dict)
     assets: Sequence[LabAssetV1] = field(default_factory=tuple)
     relationships: Sequence[LabRelationshipV1] = field(default_factory=tuple)
+    attempts: Sequence[LabProviderAttemptV1] = field(default_factory=tuple)
     warnings: Sequence[str] = field(default_factory=tuple)
     error_code: str = ""
     raw_shape: Mapping[str, Any] = field(default_factory=dict)
@@ -287,6 +342,17 @@ class LabProviderResultV1:
             "author": safe_public_text(self.metadata.get("author"), 200),
             "content_summary": safe_public_text(self.metadata.get("content_summary"), 512),
         }
+        attempts = []
+        selected_seen = False
+        for attempt in tuple(self.attempts)[:MAX_ATTEMPTS]:
+            item = attempt.as_dict()
+            if item["selected"]:
+                if selected_seen:
+                    item["selected"] = False
+                    item["safe_failure_code"] = "BACKEND_SCHEMA_INVALID"
+                else:
+                    selected_seen = True
+            attempts.append(item)
         return {
             "schema_version": SCHEMA_VERSION,
             "request_id": safe_text(self.request_id, 80),
@@ -304,6 +370,7 @@ class LabProviderResultV1:
                 relationship.as_dict()
                 for relationship in tuple(self.relationships)[:MAX_RELATIONSHIPS]
             ],
+            "attempts": attempts,
             "warnings": [safe_public_text(item, 240) for item in tuple(self.warnings)[:32]],
             "error_code": error_code,
             "raw_shape": sanitize_raw_shape(dict(self.raw_shape or {})),
