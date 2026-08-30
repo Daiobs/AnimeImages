@@ -42,16 +42,32 @@ Companion documents:
 
 ## Reuse Matrix
 
+```text
+MATRIX_STATUS = HISTORICAL_RESEARCH_CLASSIFICATION
+DECISION_VOCABULARY = HISTORICAL_RESEARCH_CLASSIFICATION
+CURRENT_BACKLOG_AUTHORITY = NONE
+CURRENT_IMPLEMENTATION_AUTHORITY = NONE
+NEAR_TERM_IMPLEMENTATION = NOT_SELECTED
+```
+
+The Recommendation column records PR #78 research classifications, the
+AnimeImages target column records historical proposed targets, and the
+Required adaptation column records historical proposed conditions. They are
+not a current backlog and do not automatically authorize copying, importing,
+reimplementation, Backend Catalog, or Worker V2. Adopting any item requires a
+new review that proves a real producer, real consumer, product value, security
+boundary, and license boundary.
+
 | Component | Primary value | Recommendation | AnimeImages target | Required adaptation | Security/operational risk | External dependency | Provenance requirement | Future replacement cost |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Whole repository | Broad real-world parser/backend catalog and delivery cases | `WHOLE_REPOSITORY_UPSTREAM`; a specific reviewed backend may later be `ISOLATED_FORMAL_UPSTREAM` | Experimental Staff Lab today; fixed platform route only after explicit review | Add modes and observation evidence in later PRs; keep exact pin, parse-only boundary, and explicit backend gate | Large transitive surface; opaque nested services; process/network cost; bounded subprocess is not a sandbox | Entire videodl environment | Record pin, license, bounded lifecycle and no copied code | Medium: replace worker/provider evidence adapter or one fixed formal upstream |
-| `VideoClient` orchestration | Ordered direct/dedicated/common/grabber fallback | `CLEAN_REIMPLEMENTATION` | Future Lab resolution runner | Strict modes, per-attempt deadlines, typed catalog, trace every failure/skip, no implicit fallback | Bare exceptions, erased attempts, non-empty invalid result can suppress grabber | Registered clients and grabber | Cite fixed-pin behavior as design evidence | Medium |
-| `BaseModuleBuilder` | Simple registry/build interface | `CLEAN_REIMPLEMENTATION` | Immutable backend catalog | Frozen descriptors, explicit validation, no global mutation or assertions as policy | Test bleed, thread unsafety, import-time side effects | Python imports | Preserve audit provenance only | Low |
+| Whole repository | Broad real-world parser/backend catalog and delivery cases | `WHOLE_REPOSITORY_UPSTREAM`; a specific reviewed backend may later be `ISOLATED_FORMAL_UPSTREAM` | Experimental Staff Lab today; fixed platform route only after explicit review | Historical proposal: add modes and observation evidence in later PRs; not currently authorized. Keep exact pin, parse-only boundary, and explicit backend gate. | Large transitive surface; opaque nested services; process/network cost; bounded subprocess is not a sandbox | Entire videodl environment | Record pin, license, bounded lifecycle and no copied code | Medium: replace worker/provider evidence adapter or one fixed formal upstream |
+| `VideoClient` orchestration | Ordered direct/dedicated/common/grabber fallback | `CLEAN_REIMPLEMENTATION` | Historical proposed Lab resolution runner; no current backlog authority | Strict modes, per-attempt deadlines, typed catalog, trace every failure/skip, no implicit fallback | Bare exceptions, erased attempts, non-empty invalid result can suppress grabber | Registered clients and grabber | Cite fixed-pin behavior as design evidence | Medium |
+| `BaseModuleBuilder` | Simple registry/build interface | `CLEAN_REIMPLEMENTATION` | Historical proposed immutable backend catalog; Backend Catalog is paused | Frozen descriptors, explicit validation, no global mutation or assertions as policy | Test bleed, thread unsafety, import-time side effects | Python imports | Preserve audit provenance only | Low |
 | `VideoClientBuilder` | Ordered dedicated registry | `CLEAN_REIMPLEMENTATION` | Dedicated backend catalog data | Add type/trust/identity/browser/data-sharing/timeouts and exact pin | Order drift changes behavior; eager imports | All dedicated client modules | Catalog generated/reviewed from fixed pin | Medium |
 | `CommonVideoClientBuilder` | Ordered aggregator registry | `CLEAN_REIMPLEMENTATION` | Aggregator backend catalog data | Declare external services and source-reference sharing | Third-party privacy/quota/protocol drift hidden by class name | External parsing services | Record service lineage and fixed-pin class | Medium to high |
-| `VideoInfo` | Compact final parser/downloader exchange object | `CLEAN_REIMPLEMENTATION` | `UpstreamObservationV1` plus `PrivateResourceChannelV1` | Split evidence, relationships, acquisition/assembly facts, private values and admission decisions | Mixes raw data, credentials, paths and arbitrary executor settings | Parser and downloader layers | Field mapping retained in audit | Medium |
+| `VideoInfo` | Compact final parser/downloader exchange object | `CLEAN_REIMPLEMENTATION` | Historical proposed `UpstreamObservationV1` and `PrivateResourceChannelV1`; neither is a current Runtime contract | Split evidence, relationships, acquisition/assembly facts, private values and admission decisions | Mixes raw data, credentials, paths and arbitrary executor settings | Parser and downloader layers | Field mapping retained in audit | Medium |
 | `BaseVideoClient` | Comprehensive HTTP, parse and delivery case library | `REJECT` | None as a whole | Extract only reviewed concepts into separate pure modules | Giant trust boundary; URL logging; TLS-disable fallback; provider command settings; server media transfer | requests, FFmpeg, external tools, filesystem | Do not copy class | High |
-| Dedicated clients | Platform-specific identity/request knowledge | `WHOLE_REPOSITORY_UPSTREAM`; selected future `CLEAN_REIMPLEMENTATION` or `ISOLATED_FORMAL_UPSTREAM` | Staff Lab evidence first; later platform-scoped native adapter or fixed isolated backend | Independent real-sample, identity, host, format, deadline, error, delivery, stability, security and license review; no registry traversal | Highly variable quality; raw errors; browser use; nested aggregators | Platform APIs/pages and optional browsers | Per-client pin/path, fixed version and behavior evidence | High per client |
+| Dedicated clients | Platform-specific identity/request knowledge | `WHOLE_REPOSITORY_UPSTREAM`; selected future `CLEAN_REIMPLEMENTATION` or `ISOLATED_FORMAL_UPSTREAM` | Historical proposed sequencing: Staff Lab evidence first; not currently selected | Independent real-sample, identity, host, format, deadline, error, delivery, stability, security and license review; no registry traversal | Highly variable quality; raw errors; browser use; nested aggregators | Platform APIs/pages and optional browsers | Per-client pin/path, fixed version and behavior evidence | High per client |
 | Common clients | External multi-platform parsing coverage | `WHOLE_REPOSITORY_UPSTREAM` | Staff Lab explicit aggregator attempts | Privacy/terms/quota review, typed lineage, strict limit and timeout | Target URL sent externally; opaque protocol/service; rate and availability drift | KuKuTool, AnyFetcher, SnapAny and other services | Name external service and source sharing | High |
 | WebMediaGrabber direct probe | Fast media-like resource detection | `CLEAN_REIMPLEMENTATION` | Safe internal resource observation | AnimeImages SSRF/TLS/host/byte/time policy; separate detection from identity/admission | Extension false positives, redirect/address changes, unrestricted hosts | HTTP client | Cite fixed-pin concept, write independent tests | Low to medium |
 | WebMediaGrabber static extraction | Broad media candidate discovery | `CLEAN_REIMPLEMENTATION` only for bounded cases | Platform-scoped static extractor | Exact container/state identity, candidate cap, safe parser, host admission | Ads/recommendations/preloads and full-page noise | HTML parser and HTTP | Fixed-pin extraction list as reference | Medium |
@@ -109,10 +125,18 @@ asset/audio completeness, acquisition/assembly facts, failure class, and
 lineage. Route admission, deployment, license, scheduling, timers, email, UI,
 and persistence remain separate and are outside this audit.
 
-## Matrix Decision
+## Historical Matrix Decision
 
 `ASSET_2_REUSE_MATRIX = COMPLETE`
 
-The near-term reusable asset is the evidence taxonomy and test cases. The
-whole repository remains an isolated upstream; safe components are absorbed
-only through small, explicit, independently reviewable implementations.
+PR #78 classified the evidence taxonomy and test cases as potential research
+assets. No near-term implementation is currently selected or authorized. The
+whole repository remains an isolated upstream; any future component adoption
+requires a small, explicit, independently reviewed vertical slice.
+
+```text
+PR78_REUSE_RESEARCH = RETAINED
+NEAR_TERM_IMPLEMENTATION = NOT_SELECTED
+BACKEND_CATALOG = PAUSED
+VIDEODL_WORKER_V2 = PAUSED
+```

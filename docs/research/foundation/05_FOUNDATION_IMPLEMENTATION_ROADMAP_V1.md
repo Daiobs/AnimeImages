@@ -31,8 +31,39 @@ BACKEND_CATALOG = PAUSED
 VIDEODL_WORKER_V2 = PAUSED
 PROVIDER_LAB_PROJECTION = NOT_AUTHORIZED
 NEXT_CODE_PR = NOT_SELECTED
+CONTRACT_FIRST_FOUNDATION_WORK = NOT_AUTHORIZED
 PRODUCTION_CHANGE = NONE
 ```
+
+## Current Active Principle
+
+```text
+STRICT_ON_DANGEROUS_BEHAVIOR = YES
+THIN_ON_GLOBAL_DOMAIN_ONTOLOGY = YES
+PLATFORM_RULES_STAY_LOCAL = YES
+EXISTING_RUNTIME_CONTRACTS_REMAIN_AUTHORITATIVE = YES
+OPTIONAL_DIAGNOSTICS_EVOLVE_WITH_REAL_USE = YES
+PRODUCER_AND_CONSUMER_SHIP_TOGETHER = YES
+```
+
+AnimeImages remains strict about:
+
+- isolating secrets, Cookie and Authorization material, header values, and
+  signed URLs;
+- SSRF, host, redirect, and private-network controls;
+- process, network, payload, and timeout bounds;
+- identity, format, and relationship admission;
+- explicit authorization for formal routes and deployment.
+
+The project no longer pre-freezes:
+
+- a global Provider ontology;
+- a mandatory Lineage tree;
+- a mandatory Attempt state machine;
+- a global Evidence ladder;
+- a Backend Catalog without a real consumer;
+- a Worker mode model without Staff-visible use;
+- duplicate serialized fields that can be derived from authoritative facts.
 
 ## Scope
 
@@ -65,6 +96,19 @@ future implementation work.
 7. Continuous provider health is not a prerequisite for Assets 1 or 2.
 
 ## Historical Proposal PR 1: Minimal Upstream Observation Kernel
+
+```text
+ACTUAL_PR79_STATUS = CLOSED_WITHOUT_MERGE
+PR79_MERGED = NO
+RUNTIME_PRODUCERS = 0
+RUNTIME_CONSUMERS = 0
+STAFF_LAB_CONSUMERS = 0
+PROPOSAL_ADOPTED = NO
+```
+
+PR #79 implemented this historical proposal, but the Contract Necessity Audit
+found no real Runtime or Staff Lab producer or consumer and found overlap with
+existing Runtime contracts. AnimeImages therefore did not adopt the proposal.
 
 **Title:** Add minimal upstream observation kernel v1
 
@@ -481,7 +525,7 @@ Historical exit criteria:
 
 ## Formal Route Freeze
 
-The roadmap's first foundation PRs must not alter:
+The historical PR #78 proposals assumed no changes to:
 
 - XHS video, image, or LivePhoto routes;
 - Douyin route or Provider order;
@@ -491,9 +535,13 @@ The roadmap's first foundation PRs must not alter:
 - browser direct, Service Worker, archive, manifest, merge, or recovery
   delivery behavior.
 
-Any eventual formal route use requires a separate platform-specific evidence,
-admission, security, operational, license, and Human Gate after the foundation
-work. A reviewed specific backend may remain behind an
+Existing formal platform routes remain governed by current Runtime contracts
+and separate Human Gates. Their safety does not depend on the superseded
+Foundation sequence.
+
+Any eventual formal route use still requires separate platform-specific
+evidence, admission, security, operational, license, and Human Gate review. A
+reviewed specific backend may remain behind an
 `ISOLATED_FORMAL_UPSTREAM`; a clean reimplementation is not mandatory, but
 automatic backend traversal and first-success product routing remain banned.
 
@@ -501,13 +549,17 @@ automatic backend traversal and first-success product routing remain banned.
 
 `CONTINUOUS_PROVIDER_HEALTH_MONITOR = DEFERRED`
 
-A future health consumer may read only standardized provider/backend,
-resolution stage, evidence stage, relationship evidence, elapsed time, asset
-count, audio completeness, acquisition/assembly facts, failure class, and
-lineage fields. Route admission, deployment, and license remain independent
-project-owned dimensions.
+The historical proposal allowed a future health consumer to read standardized
+provider/backend, resolution stage, evidence stage, relationship evidence,
+elapsed time, asset count, audio completeness, acquisition/assembly facts,
+failure class, and lineage fields. Route admission, deployment, and license
+remain independent project-owned dimensions.
 
-`CURRENT_PROVIDER_HEALTH_TEST = FUTURE_CONSUMER_OF_OBSERVATION_AND_ATTEMPT_EVIDENCE`
+`HISTORICAL_PROVIDER_HEALTH_CONSUMER_PROPOSAL = OBSERVATION_AND_ATTEMPT_EVIDENCE`
+
+`CURRENT_PROVIDER_HEALTH_IMPLEMENTATION_AUTHORITY = NONE`
+
+`PROVIDER_HEALTH_NEXT_STEP = NOT_SELECTED`
 
 No schedule model, timer, email, report UI, or database change is designed in
 this audit.
@@ -525,6 +577,8 @@ attempt, and evidence concepts may be reconsidered only when a reviewed
 vertical slice contains both a real producer and a real consumer.
 
 ```text
-WORKER_V2_INSTRUMENTATION = ANIMEIMAGES_OWNED_VIDEODL_ORCHESTRATOR
+HISTORICAL_WORKER_V2_INSTRUMENTATION_PROPOSAL = ANIMEIMAGES_OWNED_VIDEODL_ORCHESTRATOR
+VIDEODL_WORKER_V2 = PAUSED
+WORKER_V2_IMPLEMENTATION_AUTHORITY = NONE
 GRABBER_ONLY = BLOCKED_UNTIL_SANDBOX_GATE
 ```

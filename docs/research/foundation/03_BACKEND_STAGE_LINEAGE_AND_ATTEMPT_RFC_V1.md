@@ -33,16 +33,22 @@
 ```text
 READY_VALUES = HISTORICAL_RESEARCH_COMPLETENESS_ONLY
 CURRENT_IMPLEMENTATION_AUTHORITY = NONE
+GLOBAL_RUNTIME_CONTRACT = NOT_ADOPTED
 ```
+
+Within this document, words such as "must", "should", and "required" describe
+constraints inside the historical PR #78 research model. They are not current
+implementation commands.
 
 Navigation:
 
 - [Whole-repository audit](01_VIDEODL_WHOLE_REPOSITORY_UPSTREAM_AUDIT_V1.md)
   supplies the fixed-pin evidence for this model.
 - [Architecture absorption](02_VIDEODL_ARCHITECTURE_AND_CODE_ABSORPTION_V1.md)
-  explains why AnimeImages should own these contracts.
+  records PR #78's rationale for the proposed AnimeImages-owned contracts.
 - [Observation and delivery RFC](04_UPSTREAM_OBSERVATION_AND_DELIVERY_RFC_V1.md)
-  embeds these records in `UpstreamObservationV1`.
+  preserves the historical proposal to embed these records in
+  `UpstreamObservationV1`.
 - [Roadmap](05_FOUNDATION_IMPLEMENTATION_ROADMAP_V1.md) preserves the
   superseded historical implementation proposal.
 - [Reuse matrix](06_COMPONENT_REUSE_AND_PROVENANCE_MATRIX_V1.md) records source
@@ -96,8 +102,9 @@ It does not claim success or trust.
 | `browser_observer` | Observe rendered DOM or browser network behavior. | `BROWSER_NETWORK_OBSERVER` |
 
 The fixed videodl pin exposes the first three stages at the top level and
-collapses the last two under `WebMediaGrabber`. In the historical Worker V2
-proposal, the two grabber substages would be emitted separately.
+collapses the last two under `WebMediaGrabber`. The historical PR #78 proposal
+expected a future Worker V2 to emit the two grabber substages separately. No
+Worker V2 implementation is currently authorized.
 
 ## BackendLineageV1
 
@@ -293,8 +300,10 @@ derived from evidence stage.
 | `SPECIFIC_BACKEND` | Record exactly one permitted backend attempt plus its internal lineage; no implicit fallback, and browser observer remains sandbox-gated. |
 
 The current videodl API cannot provide these strict semantics for every mode.
-The historical Worker V2 proposal therefore required stage instrumentation or
-wrapping instead of inferring a trace from the final `VideoInfo`.
+Under the historical PR #78 proposal, such a worker would have needed to
+instrument or wrap stage entry instead of inferring a trace from the final
+`VideoInfo`. This is retained as research context and is not current
+implementation authority.
 
 ## Security And Privacy Rules
 
@@ -353,6 +362,21 @@ adopt a Runtime contract or authorize implementation.
 
 `LINEAR_SUPPORT_LADDER = REMOVED`
 
-The superseded sequence proposed beginning with internal URL-free dataclasses
+The original PR #78 proposal was to begin with internal URL-free dataclasses
 and validation tests, followed by Worker instrumentation and Provider Lab
-projection. No implementation sequence is currently authorized.
+projection.
+
+PR #79 was closed without merge after the Contract Necessity Audit found no
+current Runtime producer, Runtime consumer, or Staff Lab consumer. That
+contract-first sequence was not adopted.
+
+Any future attempt or lineage diagnostics must be introduced with their real
+producer and consumer in the same reviewed vertical slice.
+
+```text
+RFC_RESEARCH_MODEL = RETAINED
+READY_VALUES = HISTORICAL_RESEARCH_COMPLETENESS_ONLY
+GLOBAL_RUNTIME_CONTRACT = NOT_ADOPTED
+IMPLEMENTATION_AUTHORIZED = NO
+VIDEODL_WORKER_V2 = PAUSED
+```

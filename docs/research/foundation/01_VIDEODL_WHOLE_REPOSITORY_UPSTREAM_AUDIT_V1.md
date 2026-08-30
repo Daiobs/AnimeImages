@@ -49,11 +49,12 @@ a complete filesystem or network sandbox.
 - [Architecture and code absorption](02_VIDEODL_ARCHITECTURE_AND_CODE_ABSORPTION_V1.md)
   covers component-level reuse decisions and AnimeImages gaps.
 - [Stage, lineage, and attempt RFC](03_BACKEND_STAGE_LINEAGE_AND_ATTEMPT_RFC_V1.md)
-  defines the backend taxonomy and evidence vocabulary.
+  records the historical backend taxonomy and evidence vocabulary proposal.
 - [Observation and delivery RFC](04_UPSTREAM_OBSERVATION_AND_DELIVERY_RFC_V1.md)
-  defines the private cross-upstream contract and projections.
-- [Foundation roadmap](05_FOUNDATION_IMPLEMENTATION_ROADMAP_V1.md) sequences
-  small code PRs while formal routes remain frozen.
+  records the historical private cross-upstream contract and projections.
+- [Foundation roadmap](05_FOUNDATION_IMPLEMENTATION_ROADMAP_V1.md) preserves
+  the superseded historical PR sequence while existing formal-route safeguards
+  remain independently governed by the current Runtime.
 - [Reuse and provenance matrix](06_COMPONENT_REUSE_AND_PROVENANCE_MATRIX_V1.md)
   records the detailed component disposition.
 
@@ -264,8 +265,8 @@ ISOLATED_FORMAL_UPSTREAM = DEFINED
 
 None of these samples is a pure local generic extraction algorithm. Account,
 quota, anti-abuse, and service-policy behavior is not represented in
-`VideoInfo`, so a future observation must declare the backend type and nested
-service lineage explicitly.
+`VideoInfo`. Under the historical PR #78 proposal, an observation would have
+needed to declare the backend type and nested service lineage explicitly.
 
 `COMMON_CLIENT_BACKEND_MATRIX = DOCUMENTED`
 
@@ -310,40 +311,43 @@ browser observations must not enter a formal or public route without exact
 identity binding, SSRF controls, TLS verification, bounded candidate counts,
 host/format admission, and explicit policy review.
 
-## Target Whole-Repository Modes
+## Historical Proposed Whole-Repository Modes
 
-These are proposed Lab research modes, not implemented settings. The timeout
-values are outer policy ceilings; a later code PR must make each attempt
-strictly smaller than the total envelope.
+These were proposed PR #78 Lab research modes, not implemented settings or a
+current backlog. Their timeout values were outer policy ceilings; the former
+proposal expected each attempt to remain strictly smaller than the total
+envelope.
 
 | Mode | Allowed stages | Proposed max backend attempts | Browser | External aggregator | Security level | Current API support |
 | --- | --- | ---: | --- | --- | --- | --- |
-| `AUTO` | direct, dedicated, common; grabber blocked pending sandbox | 8 | Blocked pending sandbox | Explicit Staff opt-in | Restricted Lab | Current worker uses effectively unbounded registry order inside a 25-second parent timeout; Worker V2 must stop before grabber until its gate passes. |
+| `AUTO` | direct, dedicated, common; grabber blocked pending sandbox | 8 | Blocked pending sandbox | Explicit Staff opt-in | Restricted Lab | Current worker uses effectively unbounded registry order inside a 25-second parent timeout; the historical Worker V2 proposal would have stopped before grabber until its gate passed. |
 | `DEDICATED_ONLY` | direct plus dedicated | 4 | No | No, unless a dedicated client has hidden nested lineage | Preferred Lab comparison | Not strict: a selected dedicated set can still fall through to grabber. |
 | `COMMON_ONLY` | selected common aggregators | 4 | No | Yes | Sensitive Lab | Partially exposed by `apply_common_video_clients_only`, but grabber fallback remains. |
 | `GRABBER_ONLY` | direct, static, optional browser | 2 substages | Blocked | No | Blocked until sandbox gate | The fixed-pin grabber exists, but Staff opt-in alone cannot authorize it. |
 | `SPECIFIC_BACKEND` | one declared backend | 1 | Browser observer blocked pending sandbox | Only when selected | Most deterministic | Backend allowlisting exists, but implicit grabber fallback prevents strict isolation. |
 
-Every permitted mode should accept a source reference plus fixed policy,
-return `UpstreamObservationV1` and a request-bound private resource sidecar,
-and emit no media body. The mode must declare its stage allowlist,
-browser/aggregator permission, attempt ceiling, per-attempt timeout, and total
-deadline. `GRABBER_ONLY` remains blocked until a separate sandbox gate proves
-filesystem, network, metadata-address, and resource-limit controls.
+Under the historical proposal, each permitted mode would have accepted a
+source reference plus fixed policy, returned `UpstreamObservationV1` and a
+request-bound private resource sidecar, and emitted no media body. Each mode
+would have declared its stage allowlist, browser/aggregator permission,
+attempt ceiling, per-attempt timeout, and total deadline. `GRABBER_ONLY`
+remains blocked unless a separate sandbox gate proves filesystem, network,
+metadata-address, and resource-limit controls.
 
 ```text
 GRABBER_ONLY = BLOCKED_UNTIL_SANDBOX_GATE
 ```
 
-## ParseHub Control Conclusion
+## Historical ParseHub Control Conclusion
 
-The proposed model is not video-specific. ParseHub supplies typed image,
+The historical proposed model was not video-specific. ParseHub supplies typed image,
 video, multimedia, rich-text, and item-local LivePhoto references. Those map
 cleanly into observation candidates and relationships. ParseHub is weaker in
 independent audio, delivery flags, and format inventory; videodl is weaker in
 gallery, rich text, and relationship preservation. The shared contract is
-therefore useful precisely because neither upstream model is sufficient by
-itself. The full mapping is in the
+retained as a research proposal because neither upstream model is sufficient
+by itself; it is not an adopted Runtime contract. The full historical mapping
+is in the
 [Observation and delivery RFC](04_UPSTREAM_OBSERVATION_AND_DELIVERY_RFC_V1.md).
 
 `PARSEHUB_CONTROL_COMPATIBILITY = PASS`
@@ -359,9 +363,9 @@ This audit does not change or recommend immediate migration of:
 - Batch behavior;
 - browser, Service Worker, archive, manifest, or server-generated delivery.
 
-The first foundation work belongs in internal contracts and Provider Lab.
-Formal admission remains platform-specific and fail-closed. This current
-Staff access scope is not a permanent architectural ceiling: a specifically
-reviewed backend may later become an `ISOLATED_FORMAL_UPSTREAM`, while
-automatic registry traversal, first-success product routing, and unreviewed
-common/grabber use remain forbidden.
+PR #78 proposed beginning with internal contracts and Provider Lab; that
+sequence was not adopted. Formal admission remains platform-specific and
+fail-closed. Any specifically reviewed backend still requires a separate
+Human Gate before it can become an `ISOLATED_FORMAL_UPSTREAM`, while automatic
+registry traversal, first-success product routing, and unreviewed common or
+grabber use remain forbidden.

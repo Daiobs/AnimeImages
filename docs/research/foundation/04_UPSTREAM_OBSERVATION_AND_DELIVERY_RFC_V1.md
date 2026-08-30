@@ -21,13 +21,52 @@
 
 ## Status And Ownership
 
-`UpstreamObservationV1` is a private, request-scoped evidence contract. It is
-not a Public API, database model, `MediaAsset`, `ParseResult`, routing score,
-or provider winner declaration.
+PR #78 proposed `UpstreamObservationV1` as a private, request-scoped evidence
+contract. In that historical model it was not a Public API, database model,
+`MediaAsset`, `ParseResult`, routing score, or provider winner declaration.
 
-`AcquisitionRequirementV1` and `AssemblyRequirementV1` describe observed
-facts. `DeliveryDispositionV1` is a separate AnimeImages admission decision;
-an upstream cannot select product transport or execute a downloader.
+The historical proposal used `AcquisitionRequirementV1` and
+`AssemblyRequirementV1` for observed facts, while `DeliveryDispositionV1`
+remained a separate AnimeImages admission decision. An upstream still cannot
+select product transport or execute a downloader.
+
+```text
+MODEL_STATUS = HISTORICAL_PROPOSAL
+UPSTREAM_OBSERVATION_V1_CURRENT_RUNTIME_CONTRACT = NO
+GLOBAL_UPSTREAM_OBSERVATION_KERNEL = NOT_ADOPTED
+CURRENT_MIGRATION_PLAN = NONE
+PRIVATE_RESOURCE_CHANNEL_V1_IMPLEMENTATION_AUTHORITY = NONE
+PROVIDER_LAB_PROJECTION = NOT_AUTHORIZED
+```
+
+This RFC is not the current Runtime contract and does not define an active
+migration plan.
+
+Within this RFC, normative terms describe constraints inside the historical
+proposal only; they are not current implementation commands.
+
+Current Provider Lab authority:
+
+- `LabProviderResultV1`;
+- existing Provider Lab runtime services;
+- existing short-lived resource-token services.
+
+Current formal result authority:
+
+- `MediaAsset`;
+- `ParseResult`;
+- existing Rich Media contracts.
+
+Current security and delivery authority:
+
+- platform-specific admission;
+- manifest governance;
+- download routing;
+- existing host, redirect, MIME, signature, identity, and relationship checks.
+
+This historical RFC does not replace those contracts. It does not authorize
+migration from those contracts or implementation of
+`PrivateResourceChannelV1`.
 
 Related documents:
 
@@ -39,13 +78,14 @@ Related documents:
 
 ## Contract Boundaries
 
-The private exchange has two channels:
+The historical PR #78 proposal described a private exchange with two channels:
 
 1. a URL-free, bounded observation that may be projected to Staff Lab;
 2. a request-bound `PrivateResourceChannelV1` keyed by opaque resource
    references.
 
-The private channel is not confined to Worker memory. The current protocol is:
+The proposed private-resource concept was intended to align with, rather than
+replace, the existing Provider Lab protocol:
 
 ```text
 Worker
@@ -441,9 +481,14 @@ note IDs, and provider response data.
 }
 ```
 
-## Projection 1: Provider Lab
+```text
+PROJECTION_STATUS = HISTORICAL_PROPOSAL
+CURRENT_IMPLEMENTATION_AUTHORITY = NONE
+```
 
-`UpstreamObservationV1 -> LabProviderResultV1` should:
+## Historical Proposed Projection 1: Provider Lab
+
+PR #78 proposed that `UpstreamObservationV1 -> LabProviderResultV1` would:
 
 1. retain top-level provider/version/status and bounded metadata;
 2. map selected backend to the existing field and add a sanitized stage/type
@@ -456,10 +501,10 @@ note IDs, and provider response data.
    URLs;
 7. keep result persistence disabled.
 
-The Lab projection can show evidence. It must not choose a formal winner or
-modify platform Registry state.
+The historical Lab projection would have shown evidence without choosing a
+formal winner or modifying platform Registry state.
 
-## Projection 2: Platform Admission
+## Historical Proposed Projection 2: Platform Admission
 
 ```text
 UpstreamObservationV1
@@ -470,7 +515,8 @@ UpstreamObservationV1
   -> MediaAsset / RichMediaContractV1 / ParseResult
 ```
 
-Only admitted final facts cross this projection:
+Under the historical proposal, only admitted final facts would have crossed
+this projection:
 
 - final provider/source IDs;
 - platform and post type;
@@ -483,20 +529,25 @@ Only admitted final facts cross this projection:
 - an approved private resource capability/token.
 
 Attempt trace, backend lineage, format alternatives, source URLs, private
-resource values, failure history, and executor suggestions remain internal.
+resource values, failure history, and executor suggestions would have remained
+internal under that proposal.
 
-## Current Contract Relationships
+## Current Runtime Authorities And Historical Proposed Relationships
+
+The Runtime contracts named below remain authoritative in their existing
+roles. The relationship-to-observation descriptions are retained only as the
+historical PR #78 proposal.
 
 | AnimeImages contract | Relationship to observation |
 | --- | --- |
-| `MediaCandidate` | A platform policy may derive candidates from one or more observations for local selection. It remains compact. |
-| `MediaAsset` | Final admitted runtime/download asset. It must not become the observation envelope. |
-| `ParseResult` | Final product parse result assembled after admission. |
-| `RichMediaContractV1` | URL-free item-local relationship projection. It complements, rather than duplicates, observation. |
-| `LabProviderResultV1` | Staff-safe projection of observation and tokenized resources. |
+| `MediaCandidate` | Existing compact selection candidate; PR #78 proposed deriving it from one or more observations. |
+| `MediaAsset` | Existing final admitted runtime/download asset; the historical proposal did not replace it with an observation envelope. |
+| `ParseResult` | Existing final platform result assembled after admission. |
+| `RichMediaContractV1` | Existing URL-free item-local relationship contract; PR #78 proposed keeping it separate from observation. |
+| `LabProviderResultV1` | Existing bounded Staff result; PR #78 proposed projecting historical observation fields into it. |
 | Provider Lab private resources | Existing bounded Worker sidecar, Django short-lived Cache, and scoped Staff token exchange. |
 
-## ParseHub Control Mapping
+## Historical ParseHub Control Mapping
 
 At pin `144260f4349c5bb57415f7555a572fcd48c3b8ba`:
 
@@ -525,7 +576,7 @@ videodl gaps relative to ParseHub:
 
 `PARSEHUB_CONTROL_COMPATIBILITY = PASS`
 
-## Validation Rules
+## Historical Validation Rules
 
 1. Observation and request-bound private channel resource references are
    one-to-one.
@@ -544,20 +595,28 @@ videodl gaps relative to ParseHub:
 10. Projection to `MediaAsset` is fail-closed if identity, host, format, or
     acquisition/assembly facts are unsupported.
 
-## RFC Decision
+## Historical RFC Decision
 
-`UPSTREAM_OBSERVATION_RFC = READY`
+`UPSTREAM_OBSERVATION_RFC_RESEARCH_MODEL = RETAINED`
 
-`ACQUISITION_REQUIREMENT_MODEL = READY`
+`ACQUISITION_REQUIREMENT_RESEARCH_MODEL = RETAINED`
 
-`ASSEMBLY_REQUIREMENT_MODEL = READY`
+`ASSEMBLY_REQUIREMENT_RESEARCH_MODEL = RETAINED`
 
 `DELIVERY_DISPOSITION_MODEL = ANIMEIMAGES_ADMISSION_OWNED`
 
 `DELIVERY_FACTS_AND_DECISIONS = SEPARATED`
 
-`PRIVATE_RESOURCE_BOUNDARY = ALIGNED_WITH_CURRENT_PROTOCOL`
+`HISTORICAL_PRIVATE_RESOURCE_BOUNDARY_PROPOSAL = ALIGNED_WITH_EXISTING_LAB_PROTOCOL`
 
-The first implementation should define URL-free immutable contracts and pure
-validation only. It should not wire videodl, ParseHub, Provider Lab views,
-formal routes, downloads, or persistence.
+PR #78 proposed beginning with URL-free immutable contracts and pure
+validation. PR #79 closed without merge, so this sequence was not adopted and
+does not authorize wiring videodl, ParseHub, Provider Lab views, formal routes,
+downloads, or persistence.
+
+```text
+GLOBAL_UPSTREAM_OBSERVATION_KERNEL = NOT_ADOPTED
+PRIVATE_RESOURCE_CHANNEL_V1_IMPLEMENTATION_AUTHORITY = NONE
+PROVIDER_LAB_PROJECTION = NOT_AUTHORIZED
+CURRENT_MIGRATION_PLAN = NONE
+```
