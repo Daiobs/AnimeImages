@@ -1,10 +1,29 @@
 # videodl Architecture And Code Absorption v1
 
+> **Current status — historical research reference**
+>
+> This document records the research conclusions accepted in PR #78.
+> Its former contract-first implementation sequence was superseded after
+> PR #79 was closed without merge by Human Architecture Decision.
+>
+> Nothing in this document currently authorizes a global
+> `UpstreamObservationV1`, Backend Catalog, videodl Worker V2,
+> Provider Lab projection, formal provider route, or production deployment.
+> Any future diagnostic contract must be introduced with a real producer
+> and a real consumer in the same reviewed vertical slice.
+>
+> `HISTORICAL_RESEARCH = YES`; `CURRENT_IMPLEMENTATION_AUTHORITY = NONE`;
+> `CONTRACT_FIRST_SEQUENCE = SUPERSEDED`; `PR79 = CLOSED_WITHOUT_MERGE`;
+> `REAL_PRODUCER_AND_CONSUMER_REQUIRED = YES`.
+>
+> See:
+> [PR #79 Human Architecture Decision](https://github.com/Daiobs/AnimeImages/pull/79#issuecomment-5468104417)
+
 ## Purpose
 
-This document decides how AnimeImages should treat each major capability in
-videodl at pin `6cd1de0fe1209380b183b654c65e98a629637873`.
-It is an architecture decision, not permission to copy code or alter a formal
+This document records how PR #78 classified each major capability in videodl
+at pin `6cd1de0fe1209380b183b654c65e98a629637873`. It is historical research,
+not a current backlog, permission to copy code, or authority to alter a formal
 route.
 
 Use these companion documents for non-duplicated detail:
@@ -15,8 +34,8 @@ Use these companion documents for non-duplicated detail:
   owns backend semantics.
 - [Observation and delivery RFC](04_UPSTREAM_OBSERVATION_AND_DELIVERY_RFC_V1.md)
   owns target fields and projections.
-- [Foundation roadmap](05_FOUNDATION_IMPLEMENTATION_ROADMAP_V1.md) converts
-  these decisions into small future PRs.
+- [Foundation roadmap](05_FOUNDATION_IMPLEMENTATION_ROADMAP_V1.md) preserves
+  the superseded historical implementation proposal.
 - [Reuse and provenance matrix](06_COMPONENT_REUSE_AND_PROVENANCE_MATRIX_V1.md)
   is the row-by-row decision record.
 
@@ -30,6 +49,17 @@ Use these companion documents for non-duplicated detail:
 | `ADAPTED_REUSE` | Reuse a bounded component with explicit security and contract changes. |
 | `CLEAN_REIMPLEMENTATION` | Preserve proven concepts and tests while writing an AnimeImages-native implementation against its own contracts. |
 | `REJECT` | Do not absorb the implementation into product runtime. It may remain historical or Lab evidence. |
+
+```text
+DECISION_VOCABULARY = HISTORICAL_RESEARCH_CLASSIFICATION
+CURRENT_BACKLOG_AUTHORITY = NONE
+CURRENT_IMPLEMENTATION_AUTHORITY = NONE
+```
+
+`WHOLE_REPOSITORY_UPSTREAM`, `CLEAN_REIMPLEMENTATION`,
+`ISOLATED_FORMAL_UPSTREAM`, and the other values above are PR #78 research
+classifications. They are not a current backlog or automatic implementation
+authorization.
 
 The current AnimeImages use is recorded as noncommercial. videodl remains
 PolyForm Noncommercial 1.0.0. Any future direct or adapted reuse must preserve
@@ -86,11 +116,13 @@ can narrow behavior.
 
 ### Decision
 
-`BaseModuleBuilder`, `VideoClientBuilder`, and `CommonVideoClientBuilder` are
-`CLEAN_REIMPLEMENTATION` candidates. The target is an immutable explicit
-catalog of frozen backend descriptors, separated from process-local backend
-instances. Catalog validation must use normal exceptions, preserve order as
-reviewed data, and make mode/stage eligibility explicit.
+`BaseModuleBuilder`, `VideoClientBuilder`, and `CommonVideoClientBuilder` were
+classified as `CLEAN_REIMPLEMENTATION` candidates. The historical PR #78
+proposal described an immutable explicit catalog of frozen backend descriptors
+as a possible target, separated from process-local backend instances. Backend
+Catalog is currently paused. The historical design expected catalog validation
+to use normal exceptions, preserve reviewed order, and expose mode/stage
+eligibility.
 
 ## VideoInfo Mapping
 
@@ -329,20 +361,25 @@ DELIVERY_COMPONENT_REUSE_MATRIX = DOCUMENTED
 
 ## AnimeImages Gap Matrix
 
+This matrix records the historical PR #78 gap analysis. Its Decision column
+does not create current backlog authority.
+
 | Current area | Existing strength | Missing foundation | Decision |
 | --- | --- | --- | --- |
 | Platform Adapter | Explicit platform identity and capabilities | Cross-upstream attempt evidence | Keep; do not generalize into a planner. |
 | Formal Provider routes | Platform-specific policy and ordering | No gap required for this audit | Freeze. |
 | `GenericThirdPartyAdapter` | Host/risk/provider admission | Nested backend lineage and observation stages | Do not route videodl through it automatically. |
-| Provider Lab | Bounded subprocess lifecycle, tokens, independent cards | Worker collapses all attempts to one final result; current execution is not a sandbox | Add observation contracts in Lab first. |
+| Provider Lab | Bounded subprocess lifecycle, tokens, independent cards | Worker collapses all attempts to one final result; current execution is not a sandbox | Historical proposal: add optional observation diagnostics in Lab first; not currently authorized. |
 | `MediaCandidate` | Compact selection candidate | Track/relationship/delivery/attempt model | Keep compact; observation precedes it. |
 | `MediaAsset` | Final runtime/download asset | Not intended for attempts or lineage | Do not expand with trace data. |
 | `ParseResult` | Final platform result | Not a multi-backend evidence envelope | Project admitted observation into it. |
 | `RichMediaContractV1` | URL-free item-local relationships | Upstream attempt context | Keep relationships separate from trace. |
 | `LabProviderResultV1` | Bounded Staff result | Stage, lineage, attempts, format inventory | Projection target, not source of truth. |
-| External process lifecycle | Bounded env/output/time/process group | Backend-internal attempt deadlines | Reuse parent boundary; add worker evidence later. |
+| External process lifecycle | Bounded env/output/time/process group | Backend-internal attempt deadlines | Historical proposal: reuse the parent boundary and add worker evidence later; not currently authorized. |
 
-Answers to the required design questions:
+PR #78 recorded the following historical answers to its design questions.
+They are retained as research classification and are not adopted Runtime
+contracts or current implementation instructions:
 
 1. `UpstreamObservationV1`: **yes**, as an internal private evidence envelope.
 2. `AcquisitionRequirementV1` and `AssemblyRequirementV1`: **yes**, as
@@ -385,9 +422,8 @@ Answers to the required design questions:
 
 `ASSET_2_REUSE_MATRIX = COMPLETE`
 
-The strongest near-term asset is not a directly reusable downloader. It is a
-catalog of real resolution and delivery cases that can drive AnimeImages-owned
-contracts and tests. Keep whole-repository execution isolated, preserve its
-backend evidence, and either reimplement a small safe concept or explicitly
-review one fixed backend for `ISOLATED_FORMAL_UPSTREAM`; neither path permits
-automatic registry traversal.
+PR #78 classified the catalog of real resolution and delivery cases as its
+strongest potential research asset rather than a directly reusable downloader.
+No near-term implementation is currently selected. Any future use must retain
+whole-repository isolation or pass a separate explicit fixed-backend review;
+neither path permits automatic registry traversal.

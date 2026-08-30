@@ -1,30 +1,60 @@
 # Backend Stage, Lineage, And Attempt RFC v1
 
+> **Current status — historical research reference**
+>
+> This document records the research conclusions accepted in PR #78.
+> Its former contract-first implementation sequence was superseded after
+> PR #79 was closed without merge by Human Architecture Decision.
+>
+> Nothing in this document currently authorizes a global
+> `UpstreamObservationV1`, Backend Catalog, videodl Worker V2,
+> Provider Lab projection, formal provider route, or production deployment.
+> Any future diagnostic contract must be introduced with a real producer
+> and a real consumer in the same reviewed vertical slice.
+>
+> `HISTORICAL_RESEARCH = YES`; `CURRENT_IMPLEMENTATION_AUTHORITY = NONE`;
+> `CONTRACT_FIRST_SEQUENCE = SUPERSEDED`; `PR79 = CLOSED_WITHOUT_MERGE`;
+> `REAL_PRODUCER_AND_CONSUMER_REQUIRED = YES`.
+>
+> See:
+> [PR #79 Human Architecture Decision](https://github.com/Daiobs/AnimeImages/pull/79#issuecomment-5468104417)
+
 ## RFC Status
 
 | Field | Value |
 | --- | --- |
-| Status | Research-ready, not implemented |
-| Intended first scope | Internal contracts and Staff Provider Lab |
+| Status | Historical research model, not adopted as a current contract |
+| Former proposed scope | Internal contracts and Staff Provider Lab |
 | Public API | No |
 | Persistence | No |
 | Automatic scoring or routing | No |
 | Formal route change | No |
+
+```text
+READY_VALUES = HISTORICAL_RESEARCH_COMPLETENESS_ONLY
+CURRENT_IMPLEMENTATION_AUTHORITY = NONE
+GLOBAL_RUNTIME_CONTRACT = NOT_ADOPTED
+```
+
+Within this document, words such as "must", "should", and "required" describe
+constraints inside the historical PR #78 research model. They are not current
+implementation commands.
 
 Navigation:
 
 - [Whole-repository audit](01_VIDEODL_WHOLE_REPOSITORY_UPSTREAM_AUDIT_V1.md)
   supplies the fixed-pin evidence for this model.
 - [Architecture absorption](02_VIDEODL_ARCHITECTURE_AND_CODE_ABSORPTION_V1.md)
-  explains why AnimeImages should own these contracts.
+  records PR #78's rationale for the proposed AnimeImages-owned contracts.
 - [Observation and delivery RFC](04_UPSTREAM_OBSERVATION_AND_DELIVERY_RFC_V1.md)
-  embeds these records in `UpstreamObservationV1`.
-- [Roadmap](05_FOUNDATION_IMPLEMENTATION_ROADMAP_V1.md) defines the staged
-  implementation order.
+  preserves the historical proposal to embed these records in
+  `UpstreamObservationV1`.
+- [Roadmap](05_FOUNDATION_IMPLEMENTATION_ROADMAP_V1.md) preserves the
+  superseded historical implementation proposal.
 - [Reuse matrix](06_COMPONENT_REUSE_AND_PROVENANCE_MATRIX_V1.md) records source
   provenance and replacement cost.
 
-## Design Goals
+## Historical Design Goals
 
 1. Explain every selected result without retaining sensitive URL or credential
    values.
@@ -72,8 +102,9 @@ It does not claim success or trust.
 | `browser_observer` | Observe rendered DOM or browser network behavior. | `BROWSER_NETWORK_OBSERVER` |
 
 The fixed videodl pin exposes the first three stages at the top level and
-collapses the last two under `WebMediaGrabber`. A future Worker V2 should emit
-the two grabber substages separately.
+collapses the last two under `WebMediaGrabber`. The historical PR #78 proposal
+expected a future Worker V2 to emit the two grabber substages separately. No
+Worker V2 implementation is currently authorized.
 
 ## BackendLineageV1
 
@@ -184,7 +215,8 @@ missing relationship or format evidence. This is not automatic scoring.
 
 ### Bounds
 
-A contract implementation should enforce at least:
+The historical contract proposal expected an implementation to enforce at
+least:
 
 - a mode-specific maximum attempt count;
 - bounded ID and enum values;
@@ -267,9 +299,11 @@ derived from evidence stage.
 | `GRABBER_ONLY` | Blocked until a separate sandbox gate proves filesystem, private-network, loopback, cloud-metadata, and resource-limit controls. Staff opt-in alone is insufficient. |
 | `SPECIFIC_BACKEND` | Record exactly one permitted backend attempt plus its internal lineage; no implicit fallback, and browser observer remains sandbox-gated. |
 
-The current videodl API cannot provide these strict semantics for every mode,
-so the future worker must instrument or wrap stage entry rather than infer a
-trace from the final `VideoInfo`.
+The current videodl API cannot provide these strict semantics for every mode.
+Under the historical PR #78 proposal, such a worker would have needed to
+instrument or wrap stage entry instead of inferring a trace from the final
+`VideoInfo`. This is retained as research context and is not current
+implementation authority.
 
 ## Security And Privacy Rules
 
@@ -307,7 +341,10 @@ opaque request identifier.
    URL.
 11. Projection to public/runtime assets discards attempt trace and lineage.
 
-## RFC Decision
+## Historical RFC Decision
+
+The `READY` values below record research-model completeness only. They do not
+adopt a Runtime contract or authorize implementation.
 
 `VIDEODL_RESOLUTION_STAGE_MODEL = READY`
 
@@ -325,5 +362,21 @@ opaque request identifier.
 
 `LINEAR_SUPPORT_LADDER = REMOVED`
 
-Implementation must begin as internal URL-free dataclasses and validation
-tests. Worker instrumentation and Provider Lab projection are later PRs.
+The original PR #78 proposal was to begin with internal URL-free dataclasses
+and validation tests, followed by Worker instrumentation and Provider Lab
+projection.
+
+PR #79 was closed without merge after the Contract Necessity Audit found no
+current Runtime producer, Runtime consumer, or Staff Lab consumer. That
+contract-first sequence was not adopted.
+
+Any future attempt or lineage diagnostics must be introduced with their real
+producer and consumer in the same reviewed vertical slice.
+
+```text
+RFC_RESEARCH_MODEL = RETAINED
+READY_VALUES = HISTORICAL_RESEARCH_COMPLETENESS_ONLY
+GLOBAL_RUNTIME_CONTRACT = NOT_ADOPTED
+IMPLEMENTATION_AUTHORIZED = NO
+VIDEODL_WORKER_V2 = PAUSED
+```
