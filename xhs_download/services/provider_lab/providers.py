@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
+import threading
 import time
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 from uuid import uuid4
 
 from django.conf import settings
+from django.core.cache import cache
 
 from xhs_download.services.assets import MediaAsset, ParseResult
 from xhs_download.services.common import (
@@ -47,11 +51,16 @@ from .videodl_control import (
     load_videodl_inventory,
     public_inventory,
 )
+from .videodl_policy import VIDEODL_POLICY_PIN
 
 
 PARSEHUB_PIN = "144260f4349c5bb57415f7555a572fcd48c3b8ba"
-VIDEODL_PIN = "6cd1de0fe1209380b183b654c65e98a629637873"
+VIDEODL_PIN = VIDEODL_POLICY_PIN
 WORKER_ROOT = Path(settings.BASE_DIR) / "tools" / "provider_lab" / "runtime" / "workers"
+VIDEODL_INVENTORY_SUCCESS_TTL_SECONDS = 600
+VIDEODL_INVENTORY_FAILURE_TTL_SECONDS = 30
+VIDEODL_INVENTORY_SINGLE_FLIGHT_SECONDS = 10
+_VIDEODL_INVENTORY_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -447,21 +456,70 @@ def run_videodl_repo(
     return controlled.result, controlled.resources, controlled.attempts
 
 
+def _runtime_file_identity(path: str | Path) -> str:
+    candidate = Path(path).resolve()
+    try:
+        stat = candidate.stat()
+    except OSError:
+        return f"{candidate}:missing"
+    return f"{candidate}:{stat.st_size}:{stat.st_mtime_ns}"
+
+
+def videodl_inventory_cache_key(*, python: str, worker: str | Path) -> str:
+    identity = "|".join(
+        (
+            VIDEODL_PIN,
+            _runtime_file_identity(python),
+            _runtime_file_identity(worker),
+        )
+    )
+    digest = sha256(identity.encode("utf-8")).hexdigest()
+    return f"provider-lab:videodl-inventory:v2:{digest}"
+
+
 def list_videodl_backend_inventory() -> dict[str, Any]:
     if not runtime_bool("VIDEODL_PROVIDER_LAB_ENABLED", False):
         return {"status": "disabled", "items": []}
     python = _external_python("videodl")
     if not Path(python).is_file():
         return {"status": "not_configured", "items": []}
-    try:
-        items = load_videodl_inventory(
-            python=python,
-            worker=WORKER_ROOT / "videodl_worker.py",
-            request_id=request_id_value(),
-        )
-    except ProviderLabError:
-        return {"status": "unavailable", "items": []}
-    return {"status": "ready", "items": public_inventory(items)}
+    worker = WORKER_ROOT / "videodl_worker.py"
+    cache_key = videodl_inventory_cache_key(python=python, worker=worker)
+    cached = cache.get(cache_key)
+    if isinstance(cached, dict):
+        return copy.deepcopy(cached)
+    with _VIDEODL_INVENTORY_LOCK:
+        cached = cache.get(cache_key)
+        if isinstance(cached, dict):
+            return copy.deepcopy(cached)
+        lock_key = f"{cache_key}:load"
+        if not cache.add(
+            lock_key,
+            1,
+            timeout=VIDEODL_INVENTORY_SINGLE_FLIGHT_SECONDS,
+        ):
+            cached = cache.get(cache_key)
+            return (
+                copy.deepcopy(cached)
+                if isinstance(cached, dict)
+                else {"status": "loading", "items": []}
+            )
+        try:
+            try:
+                items = load_videodl_inventory(
+                    python=python,
+                    worker=worker,
+                    request_id=request_id_value(),
+                )
+                payload = {"status": "ready", "items": public_inventory(items)}
+                timeout = VIDEODL_INVENTORY_SUCCESS_TTL_SECONDS
+            except ProviderLabError:
+                payload = {"status": "unavailable", "items": []}
+                timeout = VIDEODL_INVENTORY_FAILURE_TTL_SECONDS
+            cache.set(cache_key, payload, timeout=timeout)
+            return copy.deepcopy(payload)
+        finally:
+            cache.delete(lock_key)
 
 
 def _always_available() -> bool:

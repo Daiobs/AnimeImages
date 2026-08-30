@@ -84,7 +84,7 @@
                     <div class="provider-lab-videodl-heading">
                         <div>
                             <h3>videodl 受控执行</h3>
-                            <p>由 AnimeImages 固定顺序和边界，不启用 WebMediaGrabber 或浏览器观察器。</p>
+                            <p>由 AnimeImages exact-pin policy 限定；已注册不等于可受控执行。受控模式不启用 WebMediaGrabber、DrissionPage / Chromium 或 browser observer。</p>
                         </div>
                         <span data-videodl-inventory-status>
                             Inventory: {{ videodl_backend_inventory.status|upper }}
@@ -117,9 +117,11 @@
                                     <option
                                         value="{{ backend.backend_id }}"
                                         data-backend-category="{{ backend.backend_category }}"
-                                        data-backend-available="{% if backend.available %}true{% else %}false{% endif %}"
-                                        {% if not backend.available %}disabled{% endif %}
-                                    >{{ backend.display_label }} · {{ backend.backend_category }}</option>
+                                        data-backend-available="{% if backend.controlled_available %}true{% else %}false{% endif %}"
+                                        data-external-sharing-required="{% if backend.external_sharing_required %}true{% else %}false{% endif %}"
+                                        data-controlled-state="{{ backend.controlled_state }}"
+                                        {% if not backend.controlled_available %}disabled{% endif %}
+                                    >{{ backend.display_label }} · {{ backend.backend_category }}{% if not backend.controlled_available %} · {{ backend.policy_reason }}{% endif %}</option>
                                 {% endfor %}
                             </select>
                         </label>
@@ -130,7 +132,7 @@
                         <p>默认不选择。仅 `Common Only` 或 `Reviewed Auto` 在 dedicated 无有效结果后使用。</p>
                         <div>
                             {% for backend in videodl_backend_inventory.items %}
-                                {% if backend.backend_category == "common" and backend.available %}
+                                {% if backend.backend_category == "common" and backend.controlled_available %}
                                     <label>
                                         <input
                                             type="checkbox"
@@ -146,8 +148,9 @@
 
                     <label class="provider-lab-sharing-confirmation" data-videodl-sharing-confirmation hidden>
                         <input type="checkbox" name="videodl_external_sharing_confirmed">
-                        <span>我确认本次 source reference 可能发送给所选外部 aggregator。</span>
+                        <span>我确认本次 source reference 可能发送给所选外部服务。</span>
                     </label>
+                    <p>Legacy Auto 仅用于显式不透明对照，可能执行上游内部行为，且永远不是默认模式。</p>
                 </section>
 
                 <div class="provider-lab-form-actions">

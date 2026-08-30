@@ -161,9 +161,36 @@ function controlledForm(overrides = {}) {
 const inventory = {
     status: "ready",
     items: [
-        {backend_id: "DedicatedA", backend_category: "dedicated", available: true},
-        {backend_id: "CommonA", backend_category: "common", available: true},
-        {backend_id: "CommonB", backend_category: "common", available: true},
+        {
+            backend_id: "DedicatedA",
+            backend_category: "dedicated",
+            controlled_available: true,
+            external_sharing_required: false,
+        },
+        {
+            backend_id: "NestedDedicated",
+            backend_category: "dedicated",
+            controlled_available: true,
+            external_sharing_required: true,
+        },
+        {
+            backend_id: "BlockedDedicated",
+            backend_category: "dedicated",
+            controlled_available: false,
+            external_sharing_required: false,
+        },
+        {
+            backend_id: "CommonA",
+            backend_category: "common",
+            controlled_available: true,
+            external_sharing_required: true,
+        },
+        {
+            backend_id: "CommonB",
+            backend_category: "common",
+            controlled_available: true,
+            external_sharing_required: true,
+        },
     ],
 };
 
@@ -216,6 +243,41 @@ test("specific backend selection preserves exact category", () => {
         backend_category: "dedicated",
         external_sharing_confirmed: false,
     });
+});
+
+
+test("specific dedicated sharing backend requires explicit confirmation", () => {
+    assert.throws(
+        () => lab.videodlOptions(controlledForm({
+            mode: "specific_backend",
+            category: "dedicated",
+            exact: "NestedDedicated",
+        }), inventory),
+        /videodl_options_invalid/,
+    );
+    assert.deepEqual(lab.videodlOptions(controlledForm({
+        mode: "specific_backend",
+        category: "dedicated",
+        exact: "NestedDedicated",
+        confirmed: true,
+    }), inventory), {
+        mode: "specific_backend",
+        backend_ids: ["NestedDedicated"],
+        backend_category: "dedicated",
+        external_sharing_confirmed: true,
+    });
+});
+
+
+test("blocked registry backend is not a controlled option", () => {
+    assert.throws(
+        () => lab.videodlOptions(controlledForm({
+            mode: "specific_backend",
+            category: "dedicated",
+            exact: "BlockedDedicated",
+        }), inventory),
+        /videodl_options_invalid/,
+    );
 });
 
 

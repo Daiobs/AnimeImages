@@ -19,6 +19,13 @@ from xhs_download.services.provider_lab.contracts import (
     ProviderLabError,
 )
 from xhs_download.services.provider_lab.providers import run_provider
+from xhs_download.services.provider_lab.providers import (
+    VIDEODL_INVENTORY_FAILURE_TTL_SECONDS,
+    VIDEODL_INVENTORY_SINGLE_FLIGHT_SECONDS,
+    VIDEODL_INVENTORY_SUCCESS_TTL_SECONDS,
+    VIDEODL_PIN,
+    list_videodl_backend_inventory,
+)
 from xhs_download.services.provider_lab.runtime import parse_worker_stdout
 from xhs_download.services.provider_lab.videodl_control import (
     MAX_BACKEND_IDS,
@@ -26,6 +33,12 @@ from xhs_download.services.provider_lab.videodl_control import (
     execute_controlled_videodl,
     normalize_inventory,
     parse_videodl_options,
+)
+from xhs_download.services.provider_lab.videodl_policy import (
+    DEDICATED_BACKEND_POLICIES,
+    REVIEWED_DEDICATED_BACKEND_IDS,
+    VIDEODL_POLICY_PIN,
+    backend_policy,
 )
 
 
@@ -62,8 +75,9 @@ class VideodlWorkerProtocolTests(SimpleTestCase):
                 ("CommonVideoClient", "common"),
             ],
         )
-        self.assertFalse(inventory[0]["external_sharing_required"])
-        self.assertTrue(inventory[-1]["external_sharing_required"])
+        self.assertTrue(inventory[0]["registry_available"])
+        self.assertTrue(inventory[-1]["registry_available"])
+        self.assertNotIn("external_sharing_required", inventory[0])
 
     def test_inventory_does_not_expose_module_paths_or_class_reprs(self):
         with self._videodl_modules(dedicated={"AlphaVideoClient": object}):
@@ -125,8 +139,7 @@ class VideodlControlledOrchestrationTests(SimpleTestCase):
             {
                 "backend_id": backend_id,
                 "backend_category": category,
-                "available": True,
-                "external_sharing_required": category == "common",
+                "registry_available": True,
                 "display_label": backend_id,
             }
             for category, backend_id in items
@@ -216,16 +229,195 @@ class VideodlControlledOrchestrationTests(SimpleTestCase):
         )
         with self.assertRaises(ProviderLabError):
             normalize_inventory(duplicate)
-        mismatched = self._inventory(("dedicated", "ExactBackend"))
-        mismatched[0]["external_sharing_required"] = True
+        mismatched = self._inventory(("dedicated", "BilibiliVideoClient"))
+        mismatched[0]["registry_available"] = "yes"
         with self.assertRaises(ProviderLabError):
             normalize_inventory(mismatched)
+
+    def test_exact_pin_policy_covers_all_reviewed_dedicated_backends(self):
+        self.assertEqual(
+            VIDEODL_POLICY_PIN,
+            "6cd1de0fe1209380b183b654c65e98a629637873",
+        )
+        self.assertEqual(VIDEODL_POLICY_PIN, VIDEODL_PIN)
+        self.assertEqual(VIDEODL_POLICY_PIN, videodl_worker.VIDEODL_PIN)
+        self.assertEqual(len(REVIEWED_DEDICATED_BACKEND_IDS), 70)
+        self.assertEqual(
+            set(REVIEWED_DEDICATED_BACKEND_IDS),
+            set(DEDICATED_BACKEND_POLICIES),
+        )
+
+    def test_unknown_dedicated_backend_defaults_blocked(self):
+        policy = backend_policy(
+            "FutureUnreviewedVideoClient",
+            "dedicated",
+            registry_present=True,
+        )
+        self.assertEqual(policy.controlled_state, "blocked")
+        self.assertEqual(policy.policy_reason, "UNREVIEWED_BACKEND_BLOCKED")
+
+    def test_dedicated_external_sharing_policy_is_not_category_derived(self):
+        nested = DEDICATED_BACKEND_POLICIES["C56VideoClient"]
+        youtube = DEDICATED_BACKEND_POLICIES["YouTubeVideoClient"]
+        ordinary = DEDICATED_BACKEND_POLICIES["BilibiliVideoClient"]
+        self.assertEqual(nested.controlled_state, "requires_sharing_confirmation")
+        self.assertTrue(nested.external_sharing_required)
+        self.assertEqual(youtube.controlled_state, "blocked")
+        self.assertTrue(youtube.external_sharing_required)
+        self.assertFalse(ordinary.external_sharing_required)
+
+        inventory = normalize_inventory(
+            self._inventory(
+                ("dedicated", "C56VideoClient"),
+                ("dedicated", "KuaishouVideoClient"),
+            )
+        )
+        self.assertTrue(inventory[0].registry_available)
+        self.assertTrue(inventory[0].controlled_available)
+        self.assertFalse(inventory[1].controlled_available)
+        self.assertEqual(inventory[1].controlled_state, "blocked")
+
+    def test_embedded_provider_credential_backend_is_blocked(self):
+        policy = DEDICATED_BACKEND_POLICIES["DailyMotionVideoClient"]
+        self.assertEqual(policy.controlled_state, "blocked")
+        self.assertEqual(
+            policy.policy_reason,
+            "EMBEDDED_PROVIDER_CREDENTIAL_BLOCKED",
+        )
+
+    def test_all_browser_capable_dedicated_backends_are_blocked(self):
+        browser_backends = {
+            item.backend_id
+            for item in DEDICATED_BACKEND_POLICIES.values()
+            if item.browser_execution
+        }
+        self.assertEqual(
+            browser_backends,
+            {
+                "KuaishouVideoClient",
+                "MGTVVideoClient",
+                "XinpianchangVideoClient",
+            },
+        )
+        self.assertTrue(
+            all(
+                DEDICATED_BACKEND_POLICIES[backend_id].controlled_state == "blocked"
+                for backend_id in browser_backends
+            )
+        )
+
+    def test_dedicated_nested_backend_requires_explicit_sharing_confirmation(self):
+        calls = []
+        invoke = self._invoke(
+            inventory=self._inventory(("dedicated", "C56VideoClient")),
+            calls=calls,
+        )
+        with self.assertRaises(VideodlControlledError) as context:
+            execute_controlled_videodl(
+                python="python",
+                worker="worker.py",
+                request_id="request_nested_unconfirmed",
+                source="https://example.com/watch",
+                options=self._options(
+                    "specific_backend",
+                    ids=("C56VideoClient",),
+                    category="dedicated",
+                ),
+                invoke=invoke,
+            )
+        self.assertEqual(context.exception.code, "PROVIDER_POLICY_REJECTED")
+        self.assertEqual(calls, [])
+
+        confirmed = execute_controlled_videodl(
+            python="python",
+            worker="worker.py",
+            request_id="request_nested_confirmed",
+            source="https://example.com/watch",
+            options=self._options(
+                "specific_backend",
+                ids=("C56VideoClient",),
+                category="dedicated",
+                confirmed=True,
+            ),
+            invoke=self._invoke(
+                inventory=self._inventory(("dedicated", "C56VideoClient")),
+            ),
+        )
+        self.assertTrue(confirmed.attempts[0].external_sharing)
+
+    def test_blocked_browser_backend_is_rejected_before_backend_worker(self):
+        calls = []
+        invoke = self._invoke(
+            inventory=self._inventory(("dedicated", "KuaishouVideoClient")),
+            calls=calls,
+        )
+        with self.assertRaises(VideodlControlledError) as context:
+            execute_controlled_videodl(
+                python="python",
+                worker="worker.py",
+                request_id="request_browser_blocked",
+                source="https://example.com/watch",
+                options=self._options(
+                    "specific_backend",
+                    ids=("KuaishouVideoClient",),
+                    category="dedicated",
+                ),
+                invoke=invoke,
+            )
+        self.assertEqual(context.exception.code, "PROVIDER_POLICY_REJECTED")
+        self.assertEqual(calls, [])
+
+    def test_reviewed_auto_skips_blocked_dedicated_backend(self):
+        calls = []
+        result = execute_controlled_videodl(
+            python="python",
+            worker="worker.py",
+            request_id="request_reviewed_browser_skip",
+            source="https://example.com/watch",
+            options=self._options("reviewed_auto", category="common"),
+            invoke=self._invoke(
+                inventory=self._inventory(
+                    ("dedicated", "KuaishouVideoClient"),
+                    ("dedicated", "BilibiliVideoClient"),
+                ),
+                matches=("KuaishouVideoClient", "BilibiliVideoClient"),
+                calls=calls,
+            ),
+        )
+        backend_calls = [item for item in calls if item.get("operation") == "backend"]
+        self.assertEqual(
+            [item["backend_id"] for item in backend_calls],
+            ["BilibiliVideoClient"],
+        )
+        self.assertIn("policy_skipped_dedicated_backends", result.result["warnings"])
+
+    def test_dedicated_only_policy_skips_non_allowed_matches(self):
+        calls = []
+        with self.assertRaises(VideodlControlledError) as context:
+            execute_controlled_videodl(
+                python="python",
+                worker="worker.py",
+                request_id="request_policy_skip_only",
+                source="https://example.com/watch",
+                options=self._options("dedicated_only", category="dedicated"),
+                invoke=self._invoke(
+                    inventory=self._inventory(
+                        ("dedicated", "C56VideoClient"),
+                        ("dedicated", "KuaishouVideoClient"),
+                    ),
+                    matches=("C56VideoClient", "KuaishouVideoClient"),
+                    calls=calls,
+                ),
+            )
+        self.assertEqual(context.exception.code, "PROVIDER_POLICY_REJECTED")
+        self.assertEqual(context.exception.attempts, ())
+        self.assertFalse(any(item.get("operation") == "backend" for item in calls))
 
     def test_specific_backend_runs_exactly_one_backend_without_fallback(self):
         calls = []
         invoke = self._invoke(
             inventory=self._inventory(
-                ("dedicated", "ExactBackend"),
+                ("dedicated", "BilibiliVideoClient"),
                 ("common", "CommonBackend"),
             ),
             calls=calls,
@@ -237,20 +429,41 @@ class VideodlControlledOrchestrationTests(SimpleTestCase):
             source="https://example.com/watch",
             options=self._options(
                 "specific_backend",
-                ids=("ExactBackend",),
+                ids=("BilibiliVideoClient",),
                 category="dedicated",
             ),
             invoke=invoke,
         )
         backend_calls = [item for item in calls if item.get("operation") == "backend"]
-        self.assertEqual([item["backend_id"] for item in backend_calls], ["ExactBackend"])
-        self.assertEqual(result.result["selected_backend"], "ExactBackend")
+        self.assertEqual(
+            [item["backend_id"] for item in backend_calls],
+            ["BilibiliVideoClient"],
+        )
+        self.assertEqual(result.result["selected_backend"], "BilibiliVideoClient")
         self.assertEqual(len(result.attempts), 1)
         self.assertTrue(result.attempts[0].selected)
+        self.assertFalse(result.attempts[0].external_sharing)
+
+    def test_legacy_auto_remains_explicit_opaque_execution(self):
+        calls = []
+        result = execute_controlled_videodl(
+            python="python",
+            worker="worker.py",
+            request_id="request_legacy_opaque",
+            source="https://example.com/watch",
+            options=self._options("legacy_auto"),
+            invoke=self._invoke(inventory=[], calls=calls),
+        )
+        self.assertEqual(
+            [item.get("operation") for item in calls],
+            ["legacy_auto"],
+        )
+        self.assertIn("control_level_opaque_legacy", result.result["warnings"])
+        self.assertEqual(result.attempts, ())
 
     def test_specific_unknown_or_category_mismatched_backend_fails_closed(self):
         invoke = self._invoke(
-            inventory=self._inventory(("dedicated", "ExactBackend")),
+            inventory=self._inventory(("dedicated", "BilibiliVideoClient")),
         )
         with self.assertRaises(VideodlControlledError) as context:
             execute_controlled_videodl(
@@ -271,14 +484,14 @@ class VideodlControlledOrchestrationTests(SimpleTestCase):
         calls = []
         invoke = self._invoke(
             inventory=self._inventory(
-                ("dedicated", "FirstDedicated"),
-                ("dedicated", "SecondDedicated"),
+                ("dedicated", "BilibiliVideoClient"),
+                ("dedicated", "DouyinVideoClient"),
                 ("common", "CommonBackend"),
             ),
-            matches=("FirstDedicated", "SecondDedicated"),
+            matches=("BilibiliVideoClient", "DouyinVideoClient"),
             backend_results={
-                "FirstDedicated": ProviderLabError("PROVIDER_RESULT_EMPTY"),
-                "SecondDedicated": self._success("SecondDedicated"),
+                "BilibiliVideoClient": ProviderLabError("PROVIDER_RESULT_EMPTY"),
+                "DouyinVideoClient": self._success("DouyinVideoClient"),
             },
             calls=calls,
         )
@@ -292,14 +505,14 @@ class VideodlControlledOrchestrationTests(SimpleTestCase):
         )
         self.assertEqual(
             [(item.backend_id, item.outcome) for item in result.attempts],
-            [("FirstDedicated", "empty"), ("SecondDedicated", "success")],
+            [("BilibiliVideoClient", "empty"), ("DouyinVideoClient", "success")],
         )
         self.assertFalse(any(item.get("backend_category") == "common" for item in calls))
         self.assertFalse(any(item.get("operation") == "grabber" for item in calls))
 
     def test_dedicated_match_rejects_unknown_worker_backend(self):
         invoke = self._invoke(
-            inventory=self._inventory(("dedicated", "KnownDedicated")),
+            inventory=self._inventory(("dedicated", "BilibiliVideoClient")),
             matches=("UnknownDedicated",),
         )
         with self.assertRaises(VideodlControlledError) as context:
@@ -317,8 +530,8 @@ class VideodlControlledOrchestrationTests(SimpleTestCase):
     def test_expired_total_deadline_does_not_invent_an_attempt(self):
         calls = []
         invoke = self._invoke(
-            inventory=self._inventory(("dedicated", "ExactBackend")),
-            matches=("ExactBackend",),
+            inventory=self._inventory(("dedicated", "BilibiliVideoClient")),
+            matches=("BilibiliVideoClient",),
             calls=calls,
         )
         clock_values = iter((0.0, 0.0, 0.0, 2.0))
@@ -336,6 +549,59 @@ class VideodlControlledOrchestrationTests(SimpleTestCase):
         self.assertEqual(context.exception.code, "PROVIDER_TIMEOUT")
         self.assertEqual(context.exception.attempts, ())
         self.assertFalse(any(item.get("operation") == "backend" for item in calls))
+
+    def test_total_deadline_retains_completed_attempt_before_next_backend(self):
+        calls = []
+        current_time = [0.0]
+
+        def invoke(**kwargs):
+            calls.append(dict(kwargs))
+            operation = kwargs.get("operation")
+            if operation == "inventory":
+                return {
+                    "operation": operation,
+                    "inventory": self._inventory(
+                        ("dedicated", "BilibiliVideoClient"),
+                        ("dedicated", "DouyinVideoClient"),
+                    ),
+                }
+            if operation == "match_dedicated":
+                return {
+                    "operation": operation,
+                    "backend_ids": [
+                        "BilibiliVideoClient",
+                        "DouyinVideoClient",
+                    ],
+                }
+            if kwargs.get("backend_id") == "BilibiliVideoClient":
+                current_time[0] = 0.9
+                raise ProviderLabError("PROVIDER_RESULT_EMPTY")
+            raise AssertionError("the next backend must not be started")
+
+        with self.assertRaises(VideodlControlledError) as context:
+            execute_controlled_videodl(
+                python="python",
+                worker="worker.py",
+                request_id="request_retained_deadline",
+                source="https://example.com/watch",
+                options=self._options("dedicated_only", category="dedicated"),
+                total_timeout_seconds=1.0,
+                invoke=invoke,
+                clock=lambda: current_time[0],
+            )
+        self.assertEqual(context.exception.code, "PROVIDER_TIMEOUT")
+        self.assertEqual(
+            [(item.backend_id, item.outcome) for item in context.exception.attempts],
+            [("BilibiliVideoClient", "empty")],
+        )
+        self.assertEqual(
+            [
+                item.get("backend_id")
+                for item in calls
+                if item.get("operation") == "backend"
+            ],
+            ["BilibiliVideoClient"],
+        )
 
     def test_common_only_runs_only_selected_ids_and_marks_external_sharing(self):
         calls = []
@@ -366,12 +632,12 @@ class VideodlControlledOrchestrationTests(SimpleTestCase):
     def test_reviewed_auto_runs_dedicated_then_selected_common(self):
         invoke = self._invoke(
             inventory=self._inventory(
-                ("dedicated", "DedicatedBackend"),
+                ("dedicated", "BilibiliVideoClient"),
                 ("common", "ReviewedCommon"),
             ),
-            matches=("DedicatedBackend",),
+            matches=("BilibiliVideoClient",),
             backend_results={
-                "DedicatedBackend": ProviderLabError("PROVIDER_PROCESS_FAILED"),
+                "BilibiliVideoClient": ProviderLabError("PROVIDER_PROCESS_FAILED"),
                 "ReviewedCommon": self._success("ReviewedCommon"),
             },
         )
@@ -390,15 +656,15 @@ class VideodlControlledOrchestrationTests(SimpleTestCase):
         )
         self.assertEqual(
             [(item.backend_id, item.outcome) for item in result.attempts],
-            [("DedicatedBackend", "failed"), ("ReviewedCommon", "success")],
+            [("BilibiliVideoClient", "failed"), ("ReviewedCommon", "success")],
         )
         self.assertTrue(result.attempts[-1].selected)
 
     def test_failure_retains_bounded_safe_attempts(self):
         invoke = self._invoke(
-            inventory=self._inventory(("dedicated", "ExactBackend")),
+            inventory=self._inventory(("dedicated", "BilibiliVideoClient")),
             backend_results={
-                "ExactBackend": ProviderLabError("PROVIDER_TIMEOUT"),
+                "BilibiliVideoClient": ProviderLabError("PROVIDER_TIMEOUT"),
             },
         )
         with self.assertRaises(VideodlControlledError) as context:
@@ -409,7 +675,7 @@ class VideodlControlledOrchestrationTests(SimpleTestCase):
                 source="https://example.com/watch?token=private",
                 options=self._options(
                     "specific_backend",
-                    ids=("ExactBackend",),
+                    ids=("BilibiliVideoClient",),
                     category="dedicated",
                 ),
                 invoke=invoke,
@@ -534,17 +800,25 @@ class VideodlProviderLabIntegrationTests(TestCase):
             "status": "ready",
             "items": [
                 {
-                    "backend_id": "DedicatedBackend",
+                    "backend_id": "BilibiliVideoClient",
                     "backend_category": "dedicated",
-                    "available": True,
+                    "registry_available": True,
+                    "controlled_state": "allowed",
+                    "controlled_available": True,
                     "external_sharing_required": False,
-                    "display_label": "Dedicated Backend",
+                    "browser_execution": False,
+                    "policy_reason": "EXACT_PIN_REVIEWED",
+                    "display_label": "Bilibili Video Client",
                 },
                 {
                     "backend_id": "CommonBackend",
                     "backend_category": "common",
-                    "available": True,
+                    "registry_available": True,
+                    "controlled_state": "requires_sharing_confirmation",
+                    "controlled_available": True,
                     "external_sharing_required": True,
+                    "browser_execution": False,
+                    "policy_reason": "COMMON_EXTERNAL_SHARING_CONFIRMATION_REQUIRED",
                     "display_label": "Common Backend",
                 },
             ],
@@ -554,9 +828,94 @@ class VideodlProviderLabIntegrationTests(TestCase):
         content = response.content.decode()
         self.assertIn("videodl 受控执行", content)
         self.assertIn("CommonBackend", content)
-        self.assertIn("外部 aggregator", content)
+        self.assertIn("外部服务", content)
         self.assertNotIn("https://", content)
         self.assertNotIn("module path", content)
+
+    @mock.patch("xhs_download.services.provider_lab.providers.load_videodl_inventory")
+    @mock.patch("xhs_download.services.provider_lab.providers._external_python")
+    def test_two_staff_page_loads_share_one_inventory_worker(
+        self,
+        python_mock,
+        load_mock,
+    ):
+        python_mock.return_value = sys.executable
+        load_mock.return_value = normalize_inventory(
+            VideodlControlledOrchestrationTests._inventory(
+                ("dedicated", "BilibiliVideoClient"),
+            )
+        )
+        first = self.client.get(reverse("provider_lab"))
+        second = self.client.get(reverse("provider_lab"))
+        self.assertEqual((first.status_code, second.status_code), (200, 200))
+        load_mock.assert_called_once()
+        inventory_payload = first.context["videodl_backend_inventory"]
+        self.assertNotIn("http", json.dumps(inventory_payload).lower())
+
+    @mock.patch("xhs_download.services.provider_lab.providers.load_videodl_inventory")
+    @mock.patch("xhs_download.services.provider_lab.providers._external_python")
+    def test_inventory_cache_expiry_allows_reload(self, python_mock, load_mock):
+        python_mock.return_value = sys.executable
+        load_mock.return_value = normalize_inventory(
+            VideodlControlledOrchestrationTests._inventory(
+                ("dedicated", "BilibiliVideoClient"),
+            )
+        )
+        first = list_videodl_backend_inventory()
+        self.assertEqual(first["status"], "ready")
+        cache.clear()
+        second = list_videodl_backend_inventory()
+        self.assertEqual(second["status"], "ready")
+        self.assertEqual(load_mock.call_count, 2)
+        self.assertEqual(VIDEODL_INVENTORY_SUCCESS_TTL_SECONDS, 600)
+
+    @mock.patch("xhs_download.services.provider_lab.providers.cache.set")
+    @mock.patch("xhs_download.services.provider_lab.providers.load_videodl_inventory")
+    @mock.patch("xhs_download.services.provider_lab.providers._external_python")
+    def test_inventory_failure_uses_short_safe_cache_entry(
+        self,
+        python_mock,
+        load_mock,
+        cache_set_mock,
+    ):
+        python_mock.return_value = sys.executable
+        load_mock.side_effect = ProviderLabError("PROVIDER_PROCESS_FAILED")
+        result = list_videodl_backend_inventory()
+        self.assertEqual(result, {"status": "unavailable", "items": []})
+        self.assertEqual(VIDEODL_INVENTORY_FAILURE_TTL_SECONDS, 30)
+        self.assertEqual(cache_set_mock.call_args.kwargs["timeout"], 30)
+        self.assertNotIn("http", json.dumps(cache_set_mock.call_args.args[1]).lower())
+
+    @mock.patch("xhs_download.services.provider_lab.providers.cache.add")
+    @mock.patch("xhs_download.services.provider_lab.providers.load_videodl_inventory")
+    @mock.patch("xhs_download.services.provider_lab.providers._external_python")
+    def test_inventory_single_flight_does_not_start_a_second_worker(
+        self,
+        python_mock,
+        load_mock,
+        cache_add_mock,
+    ):
+        python_mock.return_value = sys.executable
+        cache_add_mock.return_value = False
+        result = list_videodl_backend_inventory()
+        self.assertEqual(result, {"status": "loading", "items": []})
+        self.assertEqual(VIDEODL_INVENTORY_SINGLE_FLIGHT_SECONDS, 10)
+        load_mock.assert_not_called()
+
+    @mock.patch("xhs_download.services.provider_lab.providers.load_videodl_inventory")
+    def test_anonymous_and_non_staff_page_loads_do_not_start_inventory_worker(
+        self,
+        load_mock,
+    ):
+        self.client.logout()
+        self.assertEqual(self.client.get(reverse("provider_lab")).status_code, 404)
+        non_staff = get_user_model().objects.create_user(
+            username="videodl-lab-non-staff",
+            password="secret",
+        )
+        self.client.force_login(non_staff)
+        self.assertEqual(self.client.get(reverse("provider_lab")).status_code, 404)
+        load_mock.assert_not_called()
 
     @mock.patch("xhs_download.provider_lab_views.run_provider")
     def test_view_passes_closed_videodl_options_to_runtime(self, run_mock):

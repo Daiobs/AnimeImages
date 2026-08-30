@@ -15,6 +15,7 @@ from .contracts import (
     safe_public_text,
 )
 from .runtime import execute_provider_worker
+from .videodl_policy import backend_policy
 
 
 VIDEODL_MODES = frozenset(
@@ -51,16 +52,24 @@ class VideodlExecutionOptions:
 class VideodlBackendDescriptor:
     backend_id: str
     backend_category: str
-    available: bool
+    registry_available: bool
+    controlled_state: str
+    controlled_available: bool
     external_sharing_required: bool
+    browser_execution: bool
+    policy_reason: str
     display_label: str
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "backend_id": self.backend_id,
             "backend_category": self.backend_category,
-            "available": self.available,
+            "registry_available": self.registry_available,
+            "controlled_state": self.controlled_state,
+            "controlled_available": self.controlled_available,
             "external_sharing_required": self.external_sharing_required,
+            "browser_execution": self.browser_execution,
+            "policy_reason": self.policy_reason,
             "display_label": self.display_label,
         }
 
@@ -114,7 +123,7 @@ def parse_videodl_options(value: Any) -> VideodlExecutionOptions:
         valid = (
             len(backend_ids) == 1
             and category in BACKEND_CATEGORIES
-            and confirmation == (category == "common")
+            and (category != "common" or confirmation)
         )
     elif mode == "dedicated_only":
         valid = not backend_ids and category == "dedicated" and not confirmation
@@ -151,32 +160,39 @@ def normalize_inventory(value: Any) -> tuple[VideodlBackendDescriptor, ...]:
         if not isinstance(item, Mapping) or set(item) != {
             "backend_id",
             "backend_category",
-            "available",
-            "external_sharing_required",
+            "registry_available",
             "display_label",
         }:
             raise ProviderLabError("PROVIDER_SCHEMA_INVALID")
         backend_id = str(item.get("backend_id") or "")
         category = str(item.get("backend_category") or "")
-        available = item.get("available")
-        sharing = item.get("external_sharing_required")
+        registry_available = item.get("registry_available")
         identity = (category, backend_id)
         if (
             not BACKEND_ID_RE.fullmatch(backend_id)
             or category not in BACKEND_CATEGORIES
-            or type(available) is not bool
-            or type(sharing) is not bool
-            or sharing != (category == "common")
+            or type(registry_available) is not bool
             or identity in seen
         ):
             raise ProviderLabError("PROVIDER_SCHEMA_INVALID")
         seen.add(identity)
+        policy = backend_policy(
+            backend_id,
+            category,
+            registry_present=True,
+        )
         inventory.append(
             VideodlBackendDescriptor(
                 backend_id=backend_id,
                 backend_category=category,
-                available=available,
-                external_sharing_required=sharing,
+                registry_available=registry_available,
+                controlled_state=policy.controlled_state,
+                controlled_available=(
+                    registry_available and policy.controlled_state != "blocked"
+                ),
+                external_sharing_required=policy.external_sharing_required,
+                browser_execution=policy.browser_execution,
+                policy_reason=policy.policy_reason,
                 display_label=safe_public_text(item.get("display_label"), 80) or backend_id,
             )
         )
@@ -266,6 +282,18 @@ def execute_controlled_videodl(
         ]
         return VideodlControlledResult(result=result, resources=resources, attempts=())
 
+    for backend_id in options.backend_ids:
+        policy = backend_policy(
+            backend_id,
+            options.backend_category,
+            registry_present=True,
+        )
+        if policy.controlled_state == "blocked" or (
+            policy.external_sharing_required
+            and not options.external_sharing_confirmed
+        ):
+            raise VideodlControlledError("PROVIDER_POLICY_REJECTED")
+
     inventory = load_videodl_inventory(
         python=python,
         worker=worker,
@@ -273,17 +301,23 @@ def execute_controlled_videodl(
         timeout_seconds=_remaining_timeout(deadline, DEFAULT_DESCRIBE_TIMEOUT_SECONDS, clock),
         invoke=invoke,
     )
-    available = {
+    inventory_by_id = {
         (item.backend_category, item.backend_id): item
         for item in inventory
-        if item.available
     }
     for backend_id in options.backend_ids:
-        if (options.backend_category, backend_id) not in available:
+        descriptor = inventory_by_id.get((options.backend_category, backend_id))
+        if descriptor is None or not descriptor.controlled_available:
+            raise VideodlControlledError("PROVIDER_POLICY_REJECTED")
+        if (
+            descriptor.external_sharing_required
+            and not options.external_sharing_confirmed
+        ):
             raise VideodlControlledError("PROVIDER_POLICY_REJECTED")
 
     dedicated_ids: list[str] = []
     common_ids: list[str] = []
+    policy_skipped = 0
     if options.mode == "specific_backend":
         if options.backend_category == "dedicated":
             dedicated_ids = list(options.backend_ids)
@@ -302,13 +336,15 @@ def execute_controlled_videodl(
         if not isinstance(matched, list):
             raise VideodlControlledError("PROVIDER_SCHEMA_INVALID")
         for backend_id in matched[:MAX_MATCHED_DEDICATED]:
-            if not isinstance(backend_id, str) or (
-                "dedicated",
-                backend_id,
-            ) not in available:
+            if not isinstance(backend_id, str):
                 raise VideodlControlledError("PROVIDER_SCHEMA_INVALID")
-            if backend_id not in dedicated_ids:
+            descriptor = inventory_by_id.get(("dedicated", backend_id))
+            if descriptor is None or not descriptor.registry_available:
+                raise VideodlControlledError("PROVIDER_SCHEMA_INVALID")
+            if descriptor.controlled_state == "allowed" and backend_id not in dedicated_ids:
                 dedicated_ids.append(backend_id)
+            elif descriptor.controlled_state != "allowed":
+                policy_skipped += 1
     if options.mode in {"common_only", "reviewed_auto"}:
         common_ids = list(options.backend_ids)
 
@@ -317,7 +353,15 @@ def execute_controlled_videodl(
     def run_attempt(backend_id: str, category: str) -> VideodlControlledResult | None:
         if len(attempts) >= MAX_ATTEMPTS:
             return None
-        timeout_seconds = _remaining_timeout(deadline, attempt_timeout_seconds, clock)
+        descriptor = inventory_by_id[(category, backend_id)]
+        try:
+            timeout_seconds = _remaining_timeout(
+                deadline,
+                attempt_timeout_seconds,
+                clock,
+            )
+        except VideodlControlledError as error:
+            raise VideodlControlledError(error.code, attempts) from error
         attempt_started = clock()
         try:
             payload = invoke(
@@ -354,7 +398,7 @@ def execute_controlled_videodl(
                     outcome=outcome,
                     elapsed_ms=int((clock() - attempt_started) * 1000),
                     safe_failure_code=failure_code,
-                    external_sharing=category == "common",
+                    external_sharing=descriptor.external_sharing_required,
                 )
             )
             return None
@@ -367,13 +411,15 @@ def execute_controlled_videodl(
                 elapsed_ms=int((clock() - attempt_started) * 1000),
                 candidate_count=candidate_count,
                 selected=True,
-                external_sharing=category == "common",
+                external_sharing=descriptor.external_sharing_required,
             )
         )
         result["selected_backend"] = backend_id
         result["warnings"] = list(result.get("warnings") or ()) + [
             f"controlled_mode_{options.mode}"
         ]
+        if policy_skipped:
+            result["warnings"].append("policy_skipped_dedicated_backends")
         return VideodlControlledResult(
             result=result,
             resources=resources,
@@ -390,11 +436,12 @@ def execute_controlled_videodl(
             return result
 
     if not attempts:
-        code = (
-            "PROVIDER_UNSUPPORTED"
-            if options.mode in {"dedicated_only", "reviewed_auto"}
-            else "PROVIDER_POLICY_REJECTED"
-        )
+        if policy_skipped:
+            code = "PROVIDER_POLICY_REJECTED"
+        elif options.mode in {"dedicated_only", "reviewed_auto"}:
+            code = "PROVIDER_UNSUPPORTED"
+        else:
+            code = "PROVIDER_POLICY_REJECTED"
         raise VideodlControlledError(code)
     raise VideodlControlledError(_final_error_code(attempts), attempts)
 

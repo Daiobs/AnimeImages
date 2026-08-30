@@ -111,8 +111,7 @@ def backend_inventory() -> list[dict]:
                 {
                     "backend_id": backend_id,
                     "backend_category": category,
-                    "available": callable(backend_class),
-                    "external_sharing_required": category == "common",
+                    "registry_available": callable(backend_class),
                     "display_label": safe_text(backend_id, 80),
                 }
             )

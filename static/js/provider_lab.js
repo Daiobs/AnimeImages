@@ -90,8 +90,14 @@
         ).map((item) => String(item.value || "")).filter(Boolean);
         const available = new Set(
             (inventory?.items || [])
-                .filter((item) => Boolean(item && item.available))
+                .filter((item) => Boolean(item && item.controlled_available))
                 .map((item) => `${item.backend_category}:${item.backend_id}`),
+        );
+        const inventoryById = new Map(
+            (inventory?.items || []).map((item) => [
+                `${item.backend_category}:${item.backend_id}`,
+                item,
+            ]),
         );
         let backendIds = [];
         let backendCategory = "";
@@ -103,9 +109,11 @@
             if (!backendIds.length || !available.has(`${backendCategory}:${exactBackend}`)) {
                 throw videodlOptionError("请选择可用的固定 Backend。");
             }
-            externalSharingConfirmed = backendCategory === "common" && confirmed;
-            if (backendCategory === "common" && !externalSharingConfirmed) {
-                throw videodlOptionError("使用 Common Backend 前必须确认外部共享。");
+            const descriptor = inventoryById.get(`${backendCategory}:${exactBackend}`) || {};
+            const requiresSharing = Boolean(descriptor.external_sharing_required);
+            externalSharingConfirmed = requiresSharing && confirmed;
+            if (requiresSharing && !externalSharingConfirmed) {
+                throw videodlOptionError("使用该 Backend 前必须确认外部共享。");
             }
         } else if (mode === "dedicated_only") {
             backendCategory = "dedicated";
@@ -518,8 +526,10 @@
             commonField.hidden = !["common_only", "reviewed_auto"].includes(mode);
         }
         if (sharingField) {
+            const selectedOption = form.elements.videodl_specific_backend?.selectedOptions?.[0];
+            const specificRequiresSharing = selectedOption?.dataset.externalSharingRequired === "true";
             sharingField.hidden = !(
-                (specific && category === "common")
+                (specific && specificRequiresSharing)
                 || (["common_only", "reviewed_auto"].includes(mode) && selectedCommon > 0)
             );
         }

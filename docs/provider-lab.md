@@ -302,14 +302,29 @@ Provider Lab 不保存结果历史：
 
 videodl Staff Lab 支持 `specific_backend`、`dedicated_only`、
 `common_only`、`reviewed_auto` 和显式的 `legacy_auto` 对照。默认使用
-`reviewed_auto`；common backend 默认不选择，且必须由 Staff 明确确认
-source reference 的外部共享。受控模式不会进入 direct、未选择的
-common、WebMediaGrabber 或 browser observer fallback。
+`reviewed_auto`。backend category 只描述 registry，不代表内部执行或共享
+行为。exact pin 的 70 个 dedicated backend 逐项审核为 60 个 `allowed`、
+1 个 `requires_sharing_confirmation` 和 9 个 `blocked`；未知 dedicated
+backend 默认阻止。common backend 默认不选择，且必须由 Staff 明确确认
+source reference 的外部共享。
+
+受控模式只运行本地 exact-pin policy 明确允许的 backend。嵌套外部服务的
+dedicated backend 必须确认共享或被阻止；需要 DrissionPage / Chromium、
+内置 Cookie/Provider credential、TLS 校验绕过或未获准子进程的 backend
+在启动 backend Worker 前阻止。受控模式不会进入未选择的 common、
+WebMediaGrabber、Chromium 或 browser observer fallback。`legacy_auto` 仍可
+用于显式不透明对照，但不是默认模式，也不作为受控执行完成证据。
 
 AnimeImages 父进程拥有 backend 顺序、单次和总 deadline、selected
 backend、固定安全错误及最多 12 条 attempt。失败结果也可显示已经真实
-运行的 attempts；表格和脱敏 JSON 不包含 URL、Header/Cookie 值、异常、
+运行的 attempts；总 deadline 在下一 backend 启动前耗尽时保留已有
+attempts，且不伪造下一条。表格和脱敏 JSON 不包含 URL、Header/Cookie 值、异常、
 本地路径或外部 API 数据。
+
+页面 inventory 区分 registry presence 与 controlled eligibility。成功结果按
+videodl pin 和 runtime identity 缓存 10 分钟，安全失败缓存 30 秒；并发冷加载
+由短期 single-flight 锁合并。匿名或非 Staff 请求在 inventory Worker 前返回
+404，缓存内容只含固定 backend 元数据，不含 source 或 media URL。
 
 完整实现与 26 项组件处置见
 [videodl Asset 1/2 outcome](research/videodl/ASSET_1_2_IMPLEMENTATION_OUTCOME_V1.md)。

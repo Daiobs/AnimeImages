@@ -41,18 +41,46 @@ Staff presentation.
 | Mode | Controlled behavior |
 | --- | --- |
 | `specific_backend` | Runs exactly one fixed-registry backend. No direct, dedicated, common or grabber fallback. |
-| `dedicated_only` | Runs matching dedicated backends in fixed registry order. No common or grabber stage. |
+| `dedicated_only` | Runs matching `allowed` dedicated backends in fixed registry order. Sharing-required and blocked matches are policy-skipped; no common or grabber stage. |
 | `common_only` | Runs only explicitly selected common IDs after an explicit external-sharing confirmation. |
-| `reviewed_auto` | Runs matching dedicated backends, then only confirmed and selected common IDs. |
+| `reviewed_auto` | Runs matching `allowed` dedicated backends, then only confirmed and selected common IDs. |
 | `legacy_auto` | Preserves the old opaque `VideoClient.parsefromurl()` path for comparison; it is not the default and is not completion evidence. |
 
-`WebMediaGrabber`, static grabber fallback and browser observation are not
-available in controlled modes.
+The backend category is registry metadata, not an execution or sharing policy.
+The exact-pin local policy reviewed all 70 dedicated backends: 60 are
+`allowed`, `C56VideoClient` requires explicit sharing confirmation because it
+delegates to a nested platform parser, and 8 are blocked. The blocked set covers
+DrissionPage/Chromium execution, embedded Cookie or Provider credential
+material, TLS-verification bypass, nested third-party aggregation and an
+unapproved child process.
+`YouTubeVideoClient` is blocked because its first paths send the source to
+external aggregators and its reachability probes disable TLS verification.
+`KuaishouVideoClient`, `MGTVVideoClient` and `XinpianchangVideoClient` are
+browser-capable and blocked before backend build/parse. Unknown dedicated IDs
+default to blocked.
+
+| Policy result | Dedicated backends |
+| --- | --- |
+| sharing confirmation | `C56VideoClient` |
+| browser execution blocked | `KuaishouVideoClient`, `MGTVVideoClient`, `XinpianchangVideoClient` |
+| embedded Cookie blocked | `HaokanVideoClient`, `KakaoVideoClient` |
+| embedded Provider credential blocked | `DailyMotionVideoClient` |
+| TLS verification disabled blocked | `YinyuetaiVideoClient` |
+| nested aggregator plus TLS bypass blocked | `YouTubeVideoClient` |
+| child-process execution blocked | `TencentVideoClient` |
+| exact-pin reviewed allowed | the remaining 60 explicitly enumerated IDs in the local policy |
+
+`WebMediaGrabber`, static grabber fallback, DrissionPage/Chromium and browser
+observation are not available in controlled modes.
 
 AnimeImages parent orchestration creates one bounded child process per actual
 backend attempt. Each attempt has an eight-second ceiling, the reviewed run has
 a 25-second total ceiling, and at most 12 attempts can be recorded. The exact
 backend inventory and dedicated match operations are separately bounded.
+Inventory output distinguishes callable registry presence from controlled
+eligibility. It is cached for 10 minutes on success and 30 seconds on safe
+failure with a key bound to the pin and runtime identity; concurrent cold loads
+are serialized. The cache contains no source or media URL.
 
 ## Attempt Contract
 
@@ -75,6 +103,10 @@ Allowed outcomes are `success`, `failed`, `timeout`, `unsupported`, `empty`,
 `policy_rejected` and `skipped`. At most one successful attempt is selected.
 An attempt is created only after its backend child process is started; a total
 deadline exhausted before launch does not invent an attempt.
+If an earlier attempt completed and the total deadline expires before the next
+backend starts, the timeout retains every completed attempt and still does not
+invent the next one. `external_sharing` comes from the exact backend policy,
+never from the registry category.
 
 Safe backend failures are `BACKEND_UNSUPPORTED`, `BACKEND_EMPTY`,
 `BACKEND_TIMEOUT`, `BACKEND_PROCESS_FAILED`, `BACKEND_SCHEMA_INVALID` and
@@ -123,7 +155,7 @@ an explicit trigger; they are not an active backlog.
 | `CommonVideoClientBuilder` | `KEEP_AS_ISOLATED_UPSTREAM` | Used only for explicitly selected common IDs after the sharing gate. |
 | `VideoInfo` | `KEEP_AS_ISOLATED_UPSTREAM` | Worker converts it to existing `LabProviderResultV1`; it never crosses as an object. |
 | `BaseVideoClient` | `REJECT` | Giant HTTP/download/filesystem/command boundary, TLS fallback and unsafe diagnostic surface. |
-| Dedicated clients | `KEEP_AS_ISOLATED_UPSTREAM` | Exact execution is allowed only in the local Staff Lab; no formal route authority. |
+| Dedicated clients | `KEEP_AS_ISOLATED_UPSTREAM` | Exact execution is allowed only when the pin-bound local policy says `allowed`, or after explicit confirmation for the one sharing-required backend; blocked/browser-capable clients never reach build/parse. |
 | Common clients | `KEEP_AS_ISOLATED_UPSTREAM` | External aggregators remain explicit, confirmed, selected and Lab-only. |
 | WebMediaGrabber direct probe | `DEFER_WITH_EXPLICIT_TRIGGER` | Reconsider only for a platform-scoped need with SSRF, redirect, TLS, host, byte and identity gates. |
 | WebMediaGrabber static extraction | `DEFER_WITH_EXPLICIT_TRIGGER` | Reconsider only with exact item binding and bounded candidate evidence. |
@@ -175,6 +207,13 @@ ASSET_1_REVIEWED_AUTO_CONTROL = PASS
 ASSET_1_HIDDEN_COMMON_FALLBACK = NO
 ASSET_1_HIDDEN_GRABBER_FALLBACK = NO
 ASSET_1_ATTEMPT_OBSERVABILITY = PASS
+ASSET_1_DEDICATED_POLICY_REVIEWED = 70
+ASSET_1_CONTROLLED_ALLOWED = 60
+ASSET_1_CONTROLLED_REQUIRES_SHARING = 1
+ASSET_1_CONTROLLED_BLOCKED = 9
+ASSET_1_CONTROLLED_BROWSER_EXECUTION = NO
+ASSET_1_ATTEMPT_RETENTION_AT_TOTAL_DEADLINE = PASS
+ASSET_1_INVENTORY_PAGE_LOAD = CACHED_AND_BOUNDED
 ASSET_1_STAFF_LAB_CONTROLS = PASS
 ASSET_1_STAFF_LAB_DIAGNOSTICS = PASS
 ASSET_1_RESOURCE_TOKEN_FLOW = PRESERVED

@@ -309,8 +309,13 @@ Lab 不自动 fan out、不选赢家、不修改平台路线、不做完整媒�
 videodl 是一个局部例外：浏览器仍然只对显式 Provider 并发，Django
 只在单个 `videodl_repo` 请求内部执行 AnimeImages-owned、顺序且有界的
 exact-backend orchestration。每个 backend attempt 使用独立子进程；
-`reviewed_auto` 只允许匹配的 dedicated 以及 Staff 明确选择并确认共享的
-common IDs。该局部 attempt contract 不扩展为全局 Observation Kernel 或
+backend category 不作为共享或安全判定。与 exact pin 绑定的局部 policy
+逐项审核 dedicated backend，并仅让 `allowed` 项进入 `reviewed_auto`；
+requires-sharing 项只有显式选择和确认后才能执行，browser-capable、TLS
+bypass、embedded-cookie/provider-credential 和未获准 child-process 项在 backend Worker 前
+阻止。common IDs 仍须 Staff 明确选择并确认共享。inventory 的 registry
+presence 与 controlled eligibility 分开，并按 pin/runtime identity 有界缓存。
+该局部 policy 和 attempt contract 不扩展为全局 Observation Kernel 或
 Backend Catalog。见
 [Asset 1/2 outcome](research/videodl/ASSET_1_2_IMPLEMENTATION_OUTCOME_V1.md)。
 
