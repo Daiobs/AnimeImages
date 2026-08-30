@@ -1,9 +1,45 @@
-# Foundation Implementation Roadmap v1
+# Foundation Implementation Roadmap v1 (Superseded Contract-First Sequence)
+
+> **Current status — historical research reference**
+>
+> This document records the research conclusions accepted in PR #78.
+> Its former contract-first implementation sequence was superseded after
+> PR #79 was closed without merge by Human Architecture Decision.
+>
+> Nothing in this document currently authorizes a global
+> `UpstreamObservationV1`, Backend Catalog, videodl Worker V2,
+> Provider Lab projection, formal provider route, or production deployment.
+> Any future diagnostic contract must be introduced with a real producer
+> and a real consumer in the same reviewed vertical slice.
+>
+> `HISTORICAL_RESEARCH = YES`; `CURRENT_IMPLEMENTATION_AUTHORITY = NONE`;
+> `CONTRACT_FIRST_SEQUENCE = SUPERSEDED`; `PR79 = CLOSED_WITHOUT_MERGE`;
+> `REAL_PRODUCER_AND_CONSUMER_REQUIRED = YES`.
+>
+> See:
+> [PR #79 Human Architecture Decision](https://github.com/Daiobs/AnimeImages/pull/79#issuecomment-5468104417)
+
+## Current Implementation Decision
+
+```text
+ROADMAP_STATUS = SUPERSEDED
+PR79_STATUS = CLOSED_WITHOUT_MERGE
+PR79_MERGED = NO
+CONTRACT_FIRST_SEQUENCE = SUPERSEDED
+GLOBAL_UPSTREAM_OBSERVATION_KERNEL = NOT_ADOPTED
+BACKEND_CATALOG = PAUSED
+VIDEODL_WORKER_V2 = PAUSED
+PROVIDER_LAB_PROJECTION = NOT_AUTHORIZED
+NEXT_CODE_PR = NOT_SELECTED
+PRODUCTION_CHANGE = NONE
+```
 
 ## Scope
 
-This roadmap turns the read-only videodl audit into independently reviewable
-foundation PRs. It does not authorize implementation in this research PR.
+This roadmap preserves the implementation sequence proposed by the read-only
+videodl audit as historical research. The sequence is no longer an authorized
+set of foundation PRs. A future diagnostic contract requires a real producer
+and a real consumer in the same reviewed vertical slice.
 
 Reference set:
 
@@ -13,7 +49,11 @@ Reference set:
 - [Observation and delivery RFC](04_UPSTREAM_OBSERVATION_AND_DELIVERY_RFC_V1.md)
 - [Reuse and provenance matrix](06_COMPONENT_REUSE_AND_PROVENANCE_MATRIX_V1.md)
 
-## Sequencing Principles
+## Former Sequencing Principles (Superseded)
+
+The following principles and PR 1-PR 6 slices record the sequence proposed in
+PR #78. They are retained for research context and do not select or authorize
+future implementation work.
 
 1. Contracts precede worker instrumentation.
 2. Worker evidence precedes UI projection.
@@ -24,7 +64,7 @@ Reference set:
 6. XHS, Douyin, Bilibili, YouTube, Batch, and download delivery stay frozen.
 7. Continuous provider health is not a prerequisite for Assets 1 or 2.
 
-## PR 1: Minimal Upstream Observation Kernel
+## Historical Proposal PR 1: Minimal Upstream Observation Kernel
 
 **Title:** Add minimal upstream observation kernel v1
 
@@ -101,7 +141,7 @@ The minimal contracts validate URL-free complete MP4, separate video/audio,
 and LivePhoto still/motion fixtures; all negative security fixtures fail
 closed; full existing tests remain unchanged.
 
-## PR 2: Explicit Upstream Backend Catalog
+## Historical Proposal PR 2: Explicit Upstream Backend Catalog
 
 **Title:** Add immutable Provider Lab upstream backend catalog v1
 
@@ -154,7 +194,7 @@ eligible by default.
 
 Revert catalog and tests; no runtime state.
 
-## PR 3: videodl Worker V2 Evidence And Modes
+## Historical Proposal PR 3: videodl Worker V2 Evidence And Modes
 
 **Title:** Emit bounded videodl resolution attempts in Provider Lab
 
@@ -240,7 +280,7 @@ attempt order without real media downloading.
 
 Disable V2 path and revert worker changes; V1 final-result worker remains.
 
-## PR 4: Provider Lab Observation Projection
+## Historical Proposal PR 4: Provider Lab Observation Projection
 
 **Title:** Project upstream observation evidence into Staff Provider Lab
 
@@ -295,7 +335,7 @@ and no product-route controls.
 
 Revert projection; worker evidence can remain unused.
 
-## PR 5: ParseHub Observation Adapter
+## Historical Proposal PR 5: ParseHub Observation Adapter
 
 **Title:** Normalize ParseHub Lab results through UpstreamObservationV1
 
@@ -350,7 +390,7 @@ video, galleries, and LivePhoto without route changes.
 
 Restore the existing direct `LabProviderResultV1` normalizer.
 
-## PR 6: Selected Safe Helper Reimplementation
+## Historical Proposal PR 6: Selected Safe Helper Reimplementation
 
 **Title:** Add pure media observation helpers for admitted upstream resources
 
@@ -401,13 +441,16 @@ Security review verifies no network, process, or filesystem side effects.
 
 Revert unused helpers.
 
-## Recommended Next Code PR
+## Former Recommended Next Code PR (Superseded)
 
 ```text
-NEXT_CODE_PR = ADD_MINIMAL_UPSTREAM_OBSERVATION_KERNEL_V1
+NEXT_CODE_PR = NOT_SELECTED
+FORMER_NEXT_CODE_PR = ADD_MINIMAL_UPSTREAM_OBSERVATION_KERNEL_V1
+FORMER_RECOMMENDATION_STATUS = SUPERSEDED
 ```
 
-Precise slice:
+The following precise slice is retained only as the former PR #78 proposal. It
+is not current implementation authorization:
 
 > Add immutable, pure `ResolutionStageV1`, `BackendCapabilityTypeV1`,
 > `BackendLineageNodeV1`, `AttemptTraceV1`, `EvidenceStageV1`,
@@ -418,7 +461,7 @@ Precise slice:
 > transport, Worker wiring, Provider Lab UI, routes, downloads, settings,
 > persistence, database logic, deployment-state logic, or migrations.
 
-Why this is first:
+Historical rationale for placing this first:
 
 - it directly improves both whole-repository integration and architecture
   absorption;
@@ -427,7 +470,7 @@ Why this is first:
 - it gives Worker V2 and ParseHub one reviewed target;
 - it can be reverted without state or operational cleanup.
 
-Exit criteria:
+Historical exit criteria:
 
 - the three examples in the
   [Observation RFC](04_UPSTREAM_OBSERVATION_AND_DELIVERY_RFC_V1.md) validate;
@@ -454,7 +497,7 @@ work. A reviewed specific backend may remain behind an
 `ISOLATED_FORMAL_UPSTREAM`; a clean reimplementation is not mandatory, but
 automatic backend traversal and first-success product routing remain banned.
 
-## Asset 3 Deferred Interface
+## Historical Asset 3 Deferred Interface
 
 `CONTINUOUS_PROVIDER_HEALTH_MONITOR = DEFERRED`
 
@@ -469,17 +512,17 @@ project-owned dimensions.
 No schedule model, timer, email, report UI, or database change is designed in
 this audit.
 
-## Roadmap Decision
+## Historical Roadmap Decision (Superseded)
 
-`ASSET_1_TARGET_MODEL = READY`
+`ASSET_1_TARGET_MODEL = RESEARCH_REFERENCE_ONLY`
 
-`VIDEODL_MODE_MODEL = READY`
+`VIDEODL_MODE_MODEL = RESEARCH_REFERENCE_ONLY`
 
-The sequence is deliberately contract-first and Lab-first. It converts
-videodl from an opaque final-result supplier into an explainable upstream
-without turning Provider Lab into an automatic production router. Current
-Staff access is experimental, not a permanent architectural ceiling for a
-separately reviewed fixed backend.
+The former sequence was deliberately contract-first and Lab-first. It is
+preserved to explain the PR #78 research conclusions, but PR #79 closed
+without merge and the sequence no longer selects a next code PR. Lineage,
+attempt, and evidence concepts may be reconsidered only when a reviewed
+vertical slice contains both a real producer and a real consumer.
 
 ```text
 WORKER_V2_INSTRUMENTATION = ANIMEIMAGES_OWNED_VIDEODL_ORCHESTRATOR

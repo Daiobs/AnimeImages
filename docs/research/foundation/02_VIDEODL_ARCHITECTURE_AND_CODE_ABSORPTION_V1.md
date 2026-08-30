@@ -1,5 +1,24 @@
 # videodl Architecture And Code Absorption v1
 
+> **Current status — historical research reference**
+>
+> This document records the research conclusions accepted in PR #78.
+> Its former contract-first implementation sequence was superseded after
+> PR #79 was closed without merge by Human Architecture Decision.
+>
+> Nothing in this document currently authorizes a global
+> `UpstreamObservationV1`, Backend Catalog, videodl Worker V2,
+> Provider Lab projection, formal provider route, or production deployment.
+> Any future diagnostic contract must be introduced with a real producer
+> and a real consumer in the same reviewed vertical slice.
+>
+> `HISTORICAL_RESEARCH = YES`; `CURRENT_IMPLEMENTATION_AUTHORITY = NONE`;
+> `CONTRACT_FIRST_SEQUENCE = SUPERSEDED`; `PR79 = CLOSED_WITHOUT_MERGE`;
+> `REAL_PRODUCER_AND_CONSUMER_REQUIRED = YES`.
+>
+> See:
+> [PR #79 Human Architecture Decision](https://github.com/Daiobs/AnimeImages/pull/79#issuecomment-5468104417)
+
 ## Purpose
 
 This document decides how AnimeImages should treat each major capability in
