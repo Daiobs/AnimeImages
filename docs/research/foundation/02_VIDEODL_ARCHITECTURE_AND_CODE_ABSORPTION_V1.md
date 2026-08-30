@@ -25,6 +25,7 @@ Use these companion documents for non-duplicated detail:
 | Decision | Meaning |
 | --- | --- |
 | `WHOLE_REPOSITORY_UPSTREAM` | Execute the exact repository in its isolated process boundary; do not import the component into AnimeImages. |
+| `ISOLATED_FORMAL_UPSTREAM` | Keep one explicitly reviewed, fixed-pin backend behind an AnimeImages-owned isolated Worker in one fixed formal route. This never permits registry traversal or first-success routing. |
 | `DIRECT_REUSE` | Copy or import with minimal semantic change, preserving license notices and provenance. No component currently earns this recommendation. |
 | `ADAPTED_REUSE` | Reuse a bounded component with explicit security and contract changes. |
 | `CLEAN_REIMPLEMENTATION` | Preserve proven concepts and tests while writing an AnimeImages-native implementation against its own contracts. |
@@ -35,6 +36,21 @@ PolyForm Noncommercial 1.0.0. Any future direct or adapted reuse must preserve
 source provenance, provide the license/required notices, track modifications,
 and maintain a replacement plan before commercialization. No source code is
 copied by this research change.
+
+Access and architecture are separate decisions:
+
+```text
+CURRENT_ACCESS_SCOPE = STAFF
+CURRENT_LIFECYCLE_STAGE = EXPERIMENTAL
+ARCHITECTURAL_ELIGIBILITY = MAY_BECOME_FIXED_FORMAL_UPSTREAM_AFTER_EXPLICIT_REVIEW
+```
+
+The current Staff Lab is the experimental access surface, not a permanent
+architectural ceiling. A specific backend can become an
+`ISOLATED_FORMAL_UPSTREAM` only after real-sample, identity, host, format,
+delivery, security, stability, and license review. The whole registry,
+automatic traversal, first-success product routing, and unreviewed common or
+grabber backends remain ineligible.
 
 ## Registry And Builder Audit
 
@@ -90,7 +106,7 @@ AnimeImages cross-upstream contract.
 | `title` | `UPSTREAM_OBSERVATION` | Bounded metadata claim; admission decides whether to expose it. |
 | `cover_url` | `UPSTREAM_OBSERVATION` | Private candidate reference until host/format admission. |
 | `err_msg` | `REJECT` | Raw URL and exception text may be embedded; map to fixed failure class/code. |
-| `download_url` | `UPSTREAM_OBSERVATION` | Store only in a private resource sidecar; candidate carries an opaque ref. |
+| `download_url` | `UPSTREAM_OBSERVATION` | Transfer only through the bounded private Worker sidecar; the observation carries an opaque ref. |
 | `audio_download_url` | `UPSTREAM_OBSERVATION` | Separate audio track and merge-group evidence. |
 | video/audio headers | `PRIVATE_RUNTIME_ONLY` | Preserve names/required booleans; values stay in private delivery context. |
 | video/audio cookies | `PRIVATE_RUNTIME_ONLY` | Values never enter observation, Lab JSON, logs, or public contracts. |
@@ -135,9 +151,10 @@ AnimeImages-owned services.
 
 ## Dedicated Clients
 
-Dedicated clients are best retained as `WHOLE_REPOSITORY_UPSTREAM` evidence in
-the Staff Lab. They do not share a strong enough identity, transport, error,
-or delivery contract for direct registration in formal routes.
+Dedicated clients are best retained initially as `WHOLE_REPOSITORY_UPSTREAM`
+evidence in the Staff Lab. They do not share a strong enough identity,
+transport, error, or delivery contract for direct registration in formal
+routes as a group.
 
 The sampled clients demonstrate key variation:
 
@@ -149,11 +166,16 @@ The sampled clients demonstrate key variation:
 - browser process usage and cleanup quality;
 - raw exception messages that may include source URLs.
 
-If a future audit proves one client adds value, the preferred path is a
-platform-scoped `CLEAN_REIMPLEMENTATION` with AnimeImages identity authority,
-host admission, error classes, deadlines, and tests. Directly importing the
-class would also import unrelated BaseVideoClient behavior and licensing
-replacement cost.
+If a future audit proves one client adds value, two reviewed paths exist:
+
+- a platform-scoped `CLEAN_REIMPLEMENTATION` with AnimeImages identity
+  authority, host admission, error classes, deadlines, and tests; or
+- an `ISOLATED_FORMAL_UPSTREAM` that invokes only that fixed backend through
+  an AnimeImages-owned Worker and preserves the same admission controls.
+
+The second path does not directly import the client into the application and
+does not expose the rest of `BaseVideoClient`, the registry, common clients,
+or grabber fallback to the formal route.
 
 ## Common Clients
 
@@ -167,9 +189,9 @@ Decision:
 
 - current role: `WHOLE_REPOSITORY_UPSTREAM`, Staff Lab only;
 - formal auto-routing: rejected;
-- selected future integration: a separate explicit provider integration only
-  after privacy, terms, quota, host, identity, delivery, and reliability
-  review;
+- selected future integration: a separate explicit provider integration or
+  `ISOLATED_FORMAL_UPSTREAM` only after privacy, terms, quota, host, identity,
+  delivery, reliability, and license review;
 - attribution: nested service lineage is mandatory.
 
 ## WebMediaGrabber
@@ -292,11 +314,11 @@ AnimeImages already separates product delivery paths:
 
 The durable principle is:
 
-> A provider reports media facts and delivery requirements. AnimeImages owns
-> admission and selects the product delivery implementation.
+> A provider reports acquisition and assembly facts. AnimeImages admission
+> alone selects the product delivery disposition.
 
 The mapping is defined in the
-[Delivery Requirement RFC](04_UPSTREAM_OBSERVATION_AND_DELIVERY_RFC_V1.md).
+[Observation and delivery RFC](04_UPSTREAM_OBSERVATION_AND_DELIVERY_RFC_V1.md).
 Do not import videodl's downloader dispatcher or let a provider select a
 formal user route.
 
@@ -312,7 +334,7 @@ DELIVERY_COMPONENT_REUSE_MATRIX = DOCUMENTED
 | Platform Adapter | Explicit platform identity and capabilities | Cross-upstream attempt evidence | Keep; do not generalize into a planner. |
 | Formal Provider routes | Platform-specific policy and ordering | No gap required for this audit | Freeze. |
 | `GenericThirdPartyAdapter` | Host/risk/provider admission | Nested backend lineage and observation stages | Do not route videodl through it automatically. |
-| Provider Lab | Strong isolation, tokens, independent cards | Worker collapses all attempts to one final result | Add observation contracts in Lab first. |
+| Provider Lab | Bounded subprocess lifecycle, tokens, independent cards | Worker collapses all attempts to one final result; current execution is not a sandbox | Add observation contracts in Lab first. |
 | `MediaCandidate` | Compact selection candidate | Track/relationship/delivery/attempt model | Keep compact; observation precedes it. |
 | `MediaAsset` | Final runtime/download asset | Not intended for attempts or lineage | Do not expand with trace data. |
 | `ParseResult` | Final platform result | Not a multi-backend evidence envelope | Project admitted observation into it. |
@@ -323,8 +345,9 @@ DELIVERY_COMPONENT_REUSE_MATRIX = DOCUMENTED
 Answers to the required design questions:
 
 1. `UpstreamObservationV1`: **yes**, as an internal private evidence envelope.
-2. `DeliveryRequirementV1`: **yes**, to separate media facts from executor
-   choice.
+2. `AcquisitionRequirementV1` and `AssemblyRequirementV1`: **yes**, as
+   observed facts; `DeliveryDispositionV1` remains an AnimeImages admission
+   decision.
 3. `BackendLineageV1`: **yes**, because class names hide external services.
 4. `AttemptTraceV1`: **yes**, because fallback currently erases failures.
 5. Expand `MediaAsset`: **no** for attempts, lineage, raw formats, or private
@@ -333,9 +356,10 @@ Answers to the required design questions:
 6. Always private: source/media URLs, signed queries, header/Cookie values,
    raw payloads, exception strings, local paths, third-party request bodies,
    and provider executor arguments.
-7. Lab-only: sanitized backend/stage/lineage, attempt outcomes and timings,
-   support stage, format inventory, warning/error codes, and tokenized resource
-   inspection.
+7. Lab-only today: sanitized backend/stage/lineage, attempt outcomes and
+   timings, evidence and relationship dimensions, format inventory,
+   warning/error codes, and tokenized resource inspection. A future fixed
+   formal upstream requires a separate explicit review and route PR.
 8. Routes not to migrate: XHS, Douyin, Bilibili, YouTube, Batch, and all
    current download delivery behavior.
 
@@ -364,5 +388,6 @@ Answers to the required design questions:
 The strongest near-term asset is not a directly reusable downloader. It is a
 catalog of real resolution and delivery cases that can drive AnimeImages-owned
 contracts and tests. Keep whole-repository execution isolated, preserve its
-backend evidence, and selectively reimplement small safe concepts only after
-the contracts exist.
+backend evidence, and either reimplement a small safe concept or explicitly
+review one fixed backend for `ISOLATED_FORMAL_UPSTREAM`; neither path permits
+automatic registry traversal.

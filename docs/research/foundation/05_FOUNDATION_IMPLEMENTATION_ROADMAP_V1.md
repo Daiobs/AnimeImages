@@ -18,27 +18,35 @@ Reference set:
 1. Contracts precede worker instrumentation.
 2. Worker evidence precedes UI projection.
 3. Lab evidence never auto-promotes a formal provider.
-4. Private resources remain sidecar-only and tokenized.
+4. Private resources use a request-bound Worker sidecar, short-lived Django
+   Cache, and opaque token; they never enter the normal observation.
 5. Every PR is migration-free and reversible by code revert.
 6. XHS, Douyin, Bilibili, YouTube, Batch, and download delivery stay frozen.
 7. Continuous provider health is not a prerequisite for Assets 1 or 2.
 
-## PR 1: Internal Observation Contracts
+## PR 1: Minimal Upstream Observation Kernel
 
-**Title:** Add URL-free upstream observation foundation contracts
+**Title:** Add minimal upstream observation kernel v1
 
 **Goal**
 
-Implement immutable, pure contracts and validation for:
+Implement only the immutable, pure kernel contracts and validation for:
 
 - `ResolutionStageV1`;
-- backend capability taxonomy IDs;
-- `BackendLineageV1`;
+- `BackendCapabilityTypeV1`;
+- `BackendLineageNodeV1`;
 - `AttemptTraceV1`;
-- `SupportStageV1`;
-- `UpstreamObservationV1`;
-- `DeliveryRequirementV1`;
-- private resource references without resource values.
+- `EvidenceStageV1`;
+- `RelationshipEvidenceV1`;
+- `AcquisitionRequirementV1`;
+- `AssemblyRequirementV1`;
+- minimal `UpstreamObservationV1` containing only those records and bounded
+  metadata/counts needed by the URL-free fixtures.
+
+Explicitly defer the full format-variant graph, full track graph,
+`DeliveryDispositionV1` runtime, Private Resource Channel implementation,
+Worker wiring, Provider Lab UI, persistence, database, settings, formal route,
+and deployment-state logic.
 
 **Allowed files**
 
@@ -51,7 +59,7 @@ Implement immutable, pure contracts and validation for:
 - provider workers and Provider Lab views/templates;
 - platform adapters and provider order;
 - settings, models, migrations, dependencies, workflows;
-- resource-token behavior;
+- Private Resource Channel or resource-token behavior;
 - download or Batch behavior.
 
 **Runtime behavior**
@@ -71,9 +79,10 @@ and accepting provider-owned admission state.
 
 - fixed enum and bound validation;
 - URL/header/Cookie/path rejection;
-- lineage graph integrity;
+- lineage-node integrity;
 - attempt ordering and selected-winner invariants;
-- support-stage derivation;
+- evidence-stage and relationship-evidence derivation;
+- no route, deployment, license, or delivery-disposition authority;
 - complete MP4, separate A/V, and LivePhoto URL-free fixtures;
 - deterministic serialization and size bounds.
 
@@ -88,8 +97,9 @@ Revert the isolated contract/test commit. No data or runtime cleanup.
 
 **Exit criteria**
 
-All contracts validate the three RFC examples; all negative security fixtures
-fail closed; full existing tests remain unchanged.
+The minimal contracts validate URL-free complete MP4, separate video/audio,
+and LivePhoto still/motion fixtures; all negative security fixtures fail
+closed; full existing tests remain unchanged.
 
 ## PR 2: Explicit Upstream Backend Catalog
 
@@ -150,9 +160,27 @@ Revert catalog and tests; no runtime state.
 
 **Goal**
 
-Add explicit `AUTO`, `DEDICATED_ONLY`, `COMMON_ONLY`, `GRABBER_ONLY`, and
-`SPECIFIC_BACKEND` worker modes and emit observation, lineage, and attempt
-evidence from the exact-pin whole-repository subprocess.
+Add explicit `AUTO`, `DEDICATED_ONLY`, `COMMON_ONLY`, and `SPECIFIC_BACKEND`
+worker modes and emit observation, lineage, and attempt evidence from the
+exact-pin whole-repository subprocess. `GRABBER_ONLY` remains a catalogued but
+blocked mode until the separate sandbox gate passes.
+
+The mechanism is an `ANIMEIMAGES_OWNED_VIDEODL_ORCHESTRATOR`. Strict modes
+must not call `VideoClient.parsefromurl()`. The Worker uses the pinned
+`VideoClientBuilder`, `CommonVideoClientBuilder`, and `WebMediaGrabber`
+components directly while AnimeImages owns:
+
+- mode gates and reviewed backend order;
+- lazy backend construction;
+- per-attempt timing and fixed failure classes;
+- fallback/continuation decisions;
+- attempt limits and total deadline;
+- selected backend and lineage emission.
+
+It must not modify the upstream checkout or use global Registry monkeypatching
+as a long-term control mechanism. `WebMediaGrabber` remains unreachable in
+every mode until the sandbox gate passes; its fixed-pin component is named here
+to define future instrumentation ownership, not to authorize execution.
 
 **Allowed files**
 
@@ -167,12 +195,19 @@ evidence from the exact-pin whole-repository subprocess.
 - formal provider routes or automatic selection;
 - public UI;
 - arbitrary backend IDs or command arguments.
+- enabling `GRABBER_ONLY` before the sandbox gate.
 
 **Runtime behavior**
 
 Only an explicitly enabled Staff Lab request changes. Default-off behavior,
-one-request/one-process isolation, output limits, no Cookie/proxy, and parent
-process cleanup remain.
+one-request/one-process bounded lifecycle, output limits, no Cookie/proxy, and
+parent process cleanup remain. This is not a full filesystem/network sandbox
+and does not provide private-network, loopback, cloud-metadata, or CPU/memory/
+process-count rlimit enforcement.
+
+```text
+CURRENT_EXECUTION_ISOLATION = BOUNDED_SUBPROCESS_NOT_SANDBOX
+```
 
 **Migration / dependency**
 
@@ -190,7 +225,7 @@ infer it from final `VideoInfo`.
 - per-attempt and total deadlines;
 - first-success and continuation semantics;
 - common backend external-service lineage;
-- static/browser grabber split;
+- deterministic blocking of `GRABBER_ONLY` until the sandbox gate;
 - timeout/process-tree cleanup;
 - no sensitive URL/header/Cookie/error/path leakage;
 - current final assets remain byte-for-byte contract-compatible where
@@ -211,9 +246,9 @@ Disable V2 path and revert worker changes; V1 final-result worker remains.
 
 **Goal**
 
-Render sanitized stage, backend type, support stage, lineage, attempt outcomes,
-delivery requirements, and tokenized candidates while keeping independent
-provider cards and failure isolation.
+Render sanitized stage, backend type, evidence stage, relationship evidence,
+lineage, attempt outcomes, acquisition/assembly facts, and tokenized
+candidates while keeping independent provider cards and failure isolation.
 
 **Allowed files**
 
@@ -323,7 +358,7 @@ Restore the existing direct `LabProviderResultV1` normalizer.
 
 Only after contracts and evidence are stable, cleanly reimplement selected
 pure concepts: MIME/signature normalization, HLS master parsing, and structured
-delivery planning. Reuse existing AnimeImages security helpers first.
+assembly-fact handling. Reuse existing AnimeImages security helpers first.
 
 **Allowed files**
 
@@ -369,16 +404,19 @@ Revert unused helpers.
 ## Recommended Next Code PR
 
 ```text
-NEXT_CODE_PR = Add URL-free upstream observation foundation contracts
+NEXT_CODE_PR = ADD_MINIMAL_UPSTREAM_OBSERVATION_KERNEL_V1
 ```
 
 Precise slice:
 
-> Add immutable, pure `ResolutionStageV1`, `BackendLineageV1`,
-> `AttemptTraceV1`, `SupportStageV1`, `UpstreamObservationV1`, and
-> `DeliveryRequirementV1` contracts with bounded URL-free fixtures and
-> validation tests. Do not wire videodl, ParseHub, Provider Lab views,
-> platform routes, downloads, settings, persistence, or migrations.
+> Add immutable, pure `ResolutionStageV1`, `BackendCapabilityTypeV1`,
+> `BackendLineageNodeV1`, `AttemptTraceV1`, `EvidenceStageV1`,
+> `RelationshipEvidenceV1`, `AcquisitionRequirementV1`,
+> `AssemblyRequirementV1`, and minimal `UpstreamObservationV1` contracts with
+> bounded URL-free complete-MP4, separate-A/V, and LivePhoto fixtures. Do not
+> add full format/track graphs, delivery-disposition runtime, private resource
+> transport, Worker wiring, Provider Lab UI, routes, downloads, settings,
+> persistence, database logic, deployment-state logic, or migrations.
 
 Why this is first:
 
@@ -411,15 +449,20 @@ The roadmap's first foundation PRs must not alter:
   delivery behavior.
 
 Any eventual formal route use requires a separate platform-specific evidence,
-admission, security, operational, and Human Gate after the foundation work.
+admission, security, operational, license, and Human Gate after the foundation
+work. A reviewed specific backend may remain behind an
+`ISOLATED_FORMAL_UPSTREAM`; a clean reimplementation is not mandatory, but
+automatic backend traversal and first-success product routing remain banned.
 
 ## Asset 3 Deferred Interface
 
 `CONTINUOUS_PROVIDER_HEALTH_MONITOR = DEFERRED`
 
 A future health consumer may read only standardized provider/backend,
-resolution stage, support stage, elapsed time, asset count, audio completeness,
-delivery requirement, failure class, and lineage fields.
+resolution stage, evidence stage, relationship evidence, elapsed time, asset
+count, audio completeness, acquisition/assembly facts, failure class, and
+lineage fields. Route admission, deployment, and license remain independent
+project-owned dimensions.
 
 `CURRENT_PROVIDER_HEALTH_TEST = FUTURE_CONSUMER_OF_OBSERVATION_AND_ATTEMPT_EVIDENCE`
 
@@ -434,4 +477,11 @@ this audit.
 
 The sequence is deliberately contract-first and Lab-first. It converts
 videodl from an opaque final-result supplier into an explainable upstream
-without turning Provider Lab into a production router.
+without turning Provider Lab into an automatic production router. Current
+Staff access is experimental, not a permanent architectural ceiling for a
+separately reviewed fixed backend.
+
+```text
+WORKER_V2_INSTRUMENTATION = ANIMEIMAGES_OWNED_VIDEODL_ORCHESTRATOR
+GRABBER_ONLY = BLOCKED_UNTIL_SANDBOX_GATE
+```

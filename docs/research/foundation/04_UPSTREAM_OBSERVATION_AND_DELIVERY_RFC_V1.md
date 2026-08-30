@@ -6,8 +6,9 @@
 not a Public API, database model, `MediaAsset`, `ParseResult`, routing score,
 or provider winner declaration.
 
-`DeliveryRequirementV1` describes what an observed resource requires. It does
-not let the provider select the product transport or execute a downloader.
+`AcquisitionRequirementV1` and `AssemblyRequirementV1` describe observed
+facts. `DeliveryDispositionV1` is a separate AnimeImages admission decision;
+an upstream cannot select product transport or execute a downloader.
 
 Related documents:
 
@@ -19,16 +20,26 @@ Related documents:
 
 ## Contract Boundaries
 
-The contract has two outputs:
+The private exchange has two channels:
 
 1. a URL-free, bounded observation that may be projected to Staff Lab;
-2. a process-private resource sidecar keyed by opaque resource references.
+2. a request-bound `PrivateResourceChannelV1` keyed by opaque resource
+   references.
 
-The sidecar may contain a private source/media URL and credential context only
-inside the isolated request. It is never serialized into logs, initial HTML,
-ordinary JSON, persistence, or public contracts. Existing Provider Lab
-resource-token issuance is the pattern for exposing a bounded Staff inspection
-capability without exposing the sidecar itself.
+The private channel is not confined to Worker memory. The current protocol is:
+
+```text
+Worker
+  -> bounded stdout JSON resources sidecar
+  -> Django parent
+  -> short-lived Cache
+  -> opaque Staff token
+```
+
+This restricted private Worker Protocol may cross the subprocess boundary,
+but it is request-bound and TTL-limited. Values never enter the normal
+observation, initial HTML, sanitized result JSON, ordinary logs, or database.
+Current Provider Lab output does not carry Cookie or header values.
 
 ## UpstreamObservationV1
 
@@ -48,7 +59,11 @@ UpstreamObservationV1
   backend_type: BackendCapabilityType or null
   backend_lineage: BackendLineageV1
   attempt_trace: AttemptTraceV1[]
-  support_stage: SupportStageV1
+  evidence_stage: EvidenceStageV1
+  relationship_evidence: RelationshipEvidenceV1
+  route_admission_state: RouteAdmissionStateV1
+  deployment_state: DeploymentStateV1
+  license_scope: fixed project-owned scope
   claimed_platform: bounded platform ID or unknown
   claimed_identity: ClaimedIdentityV1 or null
   metadata: ObservationMetadataV1
@@ -57,12 +72,16 @@ UpstreamObservationV1
   video_tracks: TrackObservationV1[]
   audio_tracks: TrackObservationV1[]
   relationships: RelationshipObservationV1[]
-  request_requirements: RequestRequirementV1[]
-  delivery_requirements: DeliveryRequirementV1[]
+  acquisition_requirements: AcquisitionRequirementV1[]
+  assembly_requirements: AssemblyRequirementV1[]
+  delivery_disposition: DeliveryDispositionV1 or null
   warnings: fixed warning code[]
   error_code: fixed safe code or null
   raw_shape: bounded URL-free structural summary
 ```
+
+`GRABBER_ONLY` is represented for schema completeness but remains
+`BLOCKED_UNTIL_SANDBOX_GATE`; Staff opt-in alone cannot activate it.
 
 ### Claimed Identity
 
@@ -96,7 +115,7 @@ Metadata does not establish source identity or admission.
 ```text
 MediaCandidateObservationV1
   candidate_id: request-local stable ID
-  private_resource_ref: opaque key into process-private sidecar
+  private_resource_ref: opaque key into PrivateResourceChannelV1
   media_type: image | video | audio | animation | playlist | unknown
   role: primary | cover | gallery | still | motion | video_track |
         audio_track | attachment | unknown
@@ -113,22 +132,19 @@ MediaCandidateObservationV1
   size_bytes: non-negative integer or null
   size_provenance: content_length | exact_payload | manifest |
                    provider_exact | provider_approx | derived_sum | unknown
-  headers_required: boolean
-  referer_required: boolean
-  cookie_required: boolean
   merge_group: request-local ID or null
   resource_identity: ResourceIdentityObservationV1
 ```
 
 The URL required by the task is represented safely: the candidate holds
-`private_resource_ref`; `PrivateResourceEnvelopeV1` holds the actual private
-URL in the isolated process. This avoids making a URL-bearing DTO the default
-value passed through the application.
+`private_resource_ref`; `PrivateResourceSidecarV1` carries the actual private
+value through the restricted Worker Protocol and short-lived parent cache.
+This avoids making a URL-bearing DTO the default application contract.
 
-### Private Resource Sidecar
+### PrivateResourceChannelV1
 
 ```text
-PrivateResourceEnvelopeV1
+PrivateResourceSidecarV1
   resource_ref: opaque request-local ID
   url: private http(s) resource URL
   header_names: bounded allowlisted names
@@ -138,9 +154,13 @@ PrivateResourceEnvelopeV1
   expires_at_hint: private, optional
 ```
 
-The sidecar is neither logged nor persisted. Before a candidate leaves the
-isolated provider boundary, existing host/address policy validates it and a
-scoped token replaces the private reference when Staff inspection is allowed.
+The Worker emits this sidecar only through bounded stdout JSON. The Django
+parent validates the resource under existing host/address policy, stores the
+private envelope in short-lived Cache, and issues an opaque request/Staff
+scoped token when inspection is allowed. It is not database persistence.
+Normal observations, initial HTML, sanitized JSON, and ordinary logs receive
+only `resource_ref` or the scoped token. Cookie and header values do not enter
+the current Lab output.
 
 ### Format Variants And Tracks
 
@@ -180,22 +200,27 @@ Independent audio is explicit rather than inferred from a generic
 
 Array-position or URL-similarity guesses cannot claim `item_local` evidence.
 
-### Request Requirements
+## AcquisitionRequirementV1
 
-`RequestRequirementV1` describes acquisition context without values:
+This enum records what is required to acquire an observed resource. It carries
+no private values and makes no product transport decision.
 
-- `SPECIAL_HEADERS_REQUIRED` plus allowlisted header names;
-- `REFERER_REQUIRED`;
-- `COOKIE_REQUIRED`;
-- `BROWSER_CONTEXT_REQUIRED`;
-- `RANGE_SUPPORTED` or `RANGE_REQUIRED` when observed;
-- `EXPIRING_RESOURCE` as a non-authoritative hint.
+| Requirement | Meaning |
+| --- | --- |
+| `SPECIAL_HEADERS_REQUIRED` | Acquisition requires one or more allowlisted request header names. |
+| `REFERER_REQUIRED` | Acquisition requires a Referer context. |
+| `COOKIE_REQUIRED` | Acquisition requires private Cookie context. |
+| `BROWSER_CONTEXT_REQUIRED` | Acquisition requires browser-managed state or execution. |
+| `RANGE_REQUIRED` | Successful or complete acquisition requires byte-range behavior. |
+| `EXPIRING_RESOURCE` | Evidence indicates that the resource is time-limited. |
 
-Cookie/header/referer values stay in the private sidecar.
+Cookie, header, and Referer values remain in `PrivateResourceChannelV1` and do
+not enter current Lab output.
 
-## DeliveryRequirementV1
+## AssemblyRequirementV1
 
-### Enum
+This enum records media structure and assembly facts. It does not choose an
+executor or user-facing route.
 
 | Requirement | Meaning |
 | --- | --- |
@@ -205,30 +230,36 @@ Cookie/header/referer values stay in the private sidecar.
 | `DASH_MANIFEST` | Candidate is a DASH manifest/track graph. |
 | `REQUIRES_REMUX` | Container-only transformation is required for the intended output. |
 | `REQUIRES_TRANSCODE` | Codec transformation is required. |
-| `SPECIAL_HEADERS_REQUIRED` | Acquisition requires allowlisted request headers. |
-| `REFERER_REQUIRED` | Acquisition requires a Referer context. |
-| `COOKIE_REQUIRED` | Acquisition requires private Cookie context. |
-| `BROWSER_DIRECT_ELIGIBLE` | Admission evidence indicates the browser may acquire the ordinary resource without AnimeImages media relay. |
-| `SERVER_GENERATED_REQUIRED` | The final artifact must be generated server-side, such as a merge, remux, or archive not available in-browser. |
-| `UNDELIVERABLE` | Current product and policy cannot safely deliver the observation. |
 
-### Requirement Record
+Both fact families use bounded records:
 
 ```text
-DeliveryRequirementRecordV1
-  requirement: DeliveryRequirementV1
+RequirementRecordV1
+  requirement: AcquisitionRequirementV1 | AssemblyRequirementV1
   candidate_ids: request-local ID[]
   merge_group: request-local ID or null
-  evidence: provider_declared | structure_derived | inspection_verified |
-            admission_decided
+  header_names: bounded allowlisted name[] or empty
+  evidence: provider_declared | structure_derived | inspection_verified
   confidence: exact | corroborated | claimed
   reason_code: fixed safe enum
 ```
 
-The provider may declare or structurally imply a requirement. Only
-AnimeImages admission may add `admission_decided`,
-`BROWSER_DIRECT_ELIGIBLE`, `SERVER_GENERATED_REQUIRED`, or final
-`UNDELIVERABLE` product semantics.
+## DeliveryDispositionV1
+
+Delivery disposition is a product decision owned only by AnimeImages
+admission:
+
+| Disposition | Meaning |
+| --- | --- |
+| `BROWSER_DIRECT` | The admitted ordinary resource can be acquired directly by the browser. |
+| `SERVICE_WORKER_DIRECT` | The admitted resource can use the approved zero-relay Service Worker path. |
+| `BROWSER_ARCHIVE` | The browser can generate the admitted multi-resource archive. |
+| `SERVER_GENERATED` | The final artifact must be generated by an approved server job, such as a merge/remux/transcode. |
+| `REJECTED_UNDELIVERABLE` | Current product and policy cannot safely deliver the observation. |
+
+No worker or provider may set this field. It is null until platform admission
+evaluates identity, host, format, relationships, private request context, and
+available delivery capabilities.
 
 ### Delivery Ownership
 
@@ -256,7 +287,11 @@ note IDs, and provider response data.
   "resolution_stage": "dedicated_source",
   "selected_backend": "example_video_adapter",
   "backend_type": "DEDICATED_SOURCE_ADAPTER",
-  "support_stage": "MEDIA_CANDIDATES",
+  "evidence_stage": "MEDIA_CANDIDATES",
+  "relationship_evidence": "NOT_APPLICABLE",
+  "route_admission_state": "UNREVIEWED",
+  "deployment_state": "NOT_DEPLOYED",
+  "license_scope": "research_only",
   "media_candidates": [
     {
       "candidate_id": "candidate-1",
@@ -267,20 +302,19 @@ note IDs, and provider response data.
       "declared_extension": "mp4",
       "size_bytes": 125000000,
       "size_provenance": "content_length",
-      "headers_required": false,
-      "referer_required": false,
-      "cookie_required": false,
       "merge_group": null
     }
   ],
-  "delivery_requirements": [
+  "acquisition_requirements": [],
+  "assembly_requirements": [
     {
       "requirement": "DIRECT_SINGLE_FILE",
       "candidate_ids": ["candidate-1"],
       "evidence": "structure_derived",
       "confidence": "exact"
     }
-  ]
+  ],
+  "delivery_disposition": null
 }
 ```
 
@@ -294,7 +328,11 @@ note IDs, and provider response data.
   "resolution_stage": "dedicated_source",
   "selected_backend": "example_track_adapter",
   "backend_type": "DEDICATED_SOURCE_ADAPTER",
-  "support_stage": "MEDIA_CANDIDATES",
+  "evidence_stage": "MEDIA_CANDIDATES",
+  "relationship_evidence": "PRESERVED",
+  "route_admission_state": "UNREVIEWED",
+  "deployment_state": "NOT_DEPLOYED",
+  "license_scope": "research_only",
   "video_tracks": [
     {
       "track_id": "video-1",
@@ -320,22 +358,17 @@ note IDs, and provider response data.
       "evidence_type": "payload_explicit"
     }
   ],
-  "delivery_requirements": [
+  "acquisition_requirements": [],
+  "assembly_requirements": [
     {
       "requirement": "SEPARATE_VIDEO_AUDIO",
       "candidate_ids": ["candidate-1", "candidate-2"],
       "merge_group": "merge-1",
       "evidence": "structure_derived",
       "confidence": "exact"
-    },
-    {
-      "requirement": "SERVER_GENERATED_REQUIRED",
-      "candidate_ids": ["candidate-1", "candidate-2"],
-      "merge_group": "merge-1",
-      "evidence": "admission_decided",
-      "confidence": "exact"
     }
-  ]
+  ],
+  "delivery_disposition": null
 }
 ```
 
@@ -349,7 +382,11 @@ note IDs, and provider response data.
   "resolution_stage": "dedicated_source",
   "selected_backend": "example_relationship_adapter",
   "backend_type": "RICH_MEDIA_RELATIONSHIP_PROVIDER",
-  "support_stage": "RELATIONSHIPS_PRESERVED",
+  "evidence_stage": "MEDIA_CANDIDATES",
+  "relationship_evidence": "PRESERVED",
+  "route_admission_state": "UNREVIEWED",
+  "deployment_state": "NOT_DEPLOYED",
+  "license_scope": "research_only",
   "media_candidates": [
     {
       "candidate_id": "still-1",
@@ -379,7 +416,9 @@ note IDs, and provider response data.
       "authority": "authoritative"
     }
   ],
-  "delivery_requirements": []
+  "acquisition_requirements": [],
+  "assembly_requirements": [],
+  "delivery_disposition": null
 }
 ```
 
@@ -392,9 +431,9 @@ note IDs, and provider response data.
    section only in a later schema-compatible Lab extension;
 3. issue existing opaque Staff-bound tokens for admitted inspection candidates;
 4. project URL-free assets and relationships;
-5. include bounded attempt counts, outcomes, timings, support stage, and fixed
-   warning/error codes;
-6. never include private sidecar values, raw exception text, or source/media
+5. include bounded attempt counts, outcomes, timings, evidence stage,
+   relationship evidence, and fixed warning/error codes;
+6. never include private channel values, raw exception text, or source/media
    URLs;
 7. keep result persistence disabled.
 
@@ -420,7 +459,8 @@ Only admitted final facts cross this projection:
 - safe host suffix policy outcome;
 - verified extension/container and size provenance;
 - dimensions, duration, codec facts when reliable;
-- boolean request requirements that the delivery path supports;
+- admitted acquisition and assembly facts that the selected delivery path
+  supports;
 - an approved private resource capability/token.
 
 Attempt trace, backend lineage, format alternatives, source URLs, private
@@ -435,7 +475,7 @@ resource values, failure history, and executor suggestions remain internal.
 | `ParseResult` | Final product parse result assembled after admission. |
 | `RichMediaContractV1` | URL-free item-local relationship projection. It complements, rather than duplicates, observation. |
 | `LabProviderResultV1` | Staff-safe projection of observation and tokenized resources. |
-| Provider Lab private resources | Existing pattern for the resource sidecar and scoped token exchange. |
+| Provider Lab private resources | Existing bounded Worker sidecar, Django short-lived Cache, and scoped Staff token exchange. |
 
 ## ParseHub Control Mapping
 
@@ -468,27 +508,36 @@ videodl gaps relative to ParseHub:
 
 ## Validation Rules
 
-1. Observation and sidecar resource references are one-to-one.
+1. Observation and request-bound private channel resource references are
+   one-to-one.
 2. Every candidate/track/relationship ID is request-local and unique.
 3. Unknown enums, negative values, excessive arrays, and oversized strings are
    rejected.
 4. A relationship cannot reference a missing candidate/track.
 5. A still/motion relation requires explicit item-local or payload evidence;
    URL similarity and array position are insufficient.
-6. `cookie_required=true` never serializes Cookie values.
-7. `headers_required=true` exposes at most allowlisted header names.
-8. A provider cannot self-assert `PRODUCT_ADMISSIBLE` or
-   `PRODUCTION_ELIGIBLE`; AnimeImages derives support stage.
-9. `BROWSER_DIRECT_ELIGIBLE`, `SERVER_GENERATED_REQUIRED`, and
-   `UNDELIVERABLE` require AnimeImages admission evidence.
+6. `COOKIE_REQUIRED` never serializes Cookie values.
+7. `SPECIAL_HEADERS_REQUIRED` exposes at most allowlisted header names and
+   never header values.
+8. A provider cannot self-assert route admission, deployment state, license
+   scope, or delivery disposition; AnimeImages owns those decisions.
+9. Every `DeliveryDispositionV1` value requires AnimeImages admission evidence.
 10. Projection to `MediaAsset` is fail-closed if identity, host, format, or
-    delivery requirements are unsupported.
+    acquisition/assembly facts are unsupported.
 
 ## RFC Decision
 
 `UPSTREAM_OBSERVATION_RFC = READY`
 
-`DELIVERY_REQUIREMENT_RFC = READY`
+`ACQUISITION_REQUIREMENT_MODEL = READY`
+
+`ASSEMBLY_REQUIREMENT_MODEL = READY`
+
+`DELIVERY_DISPOSITION_MODEL = ANIMEIMAGES_ADMISSION_OWNED`
+
+`DELIVERY_FACTS_AND_DECISIONS = SEPARATED`
+
+`PRIVATE_RESOURCE_BOUNDARY = ALIGNED_WITH_CURRENT_PROTOCOL`
 
 The first implementation should define URL-free immutable contracts and pure
 validation only. It should not wire videodl, ParseHub, Provider Lab views,

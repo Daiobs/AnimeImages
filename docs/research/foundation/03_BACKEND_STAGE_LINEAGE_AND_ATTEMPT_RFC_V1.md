@@ -48,7 +48,7 @@ single process and must not itself be treated as one atomic backend.
 | `DEDICATED_SOURCE_ADAPTER` | Parse one declared platform/source shape. | Metadata, candidates, tracks, relationships. | Potentially high only when exact identity is proven. | Isolated external runtime or reviewed native adapter. | Candidate after platform-specific review. | videodl Bilibili/Douyin clients; AnimeImages native adapters. |
 | `AGGREGATOR_API` | Send a source reference to an external multi-platform service. | Service-selected media and metadata. | Indirect; must disclose nested service lineage. | Sensitive external data-sharing boundary and strict timeout. | Explicit provider only, never silently treated as native. | KuKuTool, AnyFetcher, SnapAny. |
 | `GENERIC_STATIC_EXTRACTOR` | Inspect fetched HTML or structured page state. | Candidate references and metadata claims. | Low unless bounded to an exact item container/state. | SSRF/TLS/byte bounds and parser sandbox. | Candidate only with platform identity admission. | Static part of WebMediaGrabber. |
-| `BROWSER_NETWORK_OBSERVER` | Observe browser DOM/network behavior for one page. | Observed media-like requests and page facts. | Very low without current-item binding. | Dedicated browser subprocess, network sandbox, CPU/memory/deadline limits. | Workbench only by default. | WebMediaGrabber Chromium listener. |
+| `BROWSER_NETWORK_OBSERVER` | Observe browser DOM/network behavior for one page. | Observed media-like requests and page facts. | Very low without current-item binding. | Requires a dedicated browser subprocess, network sandbox, CPU/memory/deadline limits. | Blocked until the sandbox gate passes. | WebMediaGrabber Chromium listener. |
 | `DIRECT_MEDIA_PROBE` | Inspect an already supplied resource reference. | MIME/signature/range/length observations. | None for post identity; only resource evidence. | Strict host/address/TLS/byte/time policy. | Supports admission but cannot establish ownership. | HEAD/Range probe. |
 | `FORMAT_INVENTORY_EXTRACTOR` | Read one upstream's available formats/tracks. | URL-free variant/track inventory plus private resource refs. | Depends on parent parser. | Bounded structures; no automatic quality winner. | Useful evidence, not route authority. | ParseHub format metadata; DASH inventory. |
 | `RICH_MEDIA_RELATIONSHIP_PROVIDER` | Preserve item-local media relations. | Gallery order, still/motion, content blocks. | High only with item-local evidence. | Fail-closed relationship validation. | Candidate for RichMedia admission. | ParseHub `LivePhotoRef`; XHS relationship mapper. |
@@ -133,7 +133,8 @@ AttemptTraceV1
   asset_count: non-negative bounded integer
   format_count: non-negative bounded integer
   relationship_count: non-negative bounded integer
-  support_stage: SupportStageV1
+  evidence_stage: EvidenceStageV1
+  relationship_evidence: RelationshipEvidenceV1
   fallback_reason: fixed enum or null
   lineage_leaf_ordinal: positive integer or null
 ```
@@ -193,44 +194,78 @@ A contract implementation should enforce at least:
 - no duplicate successful winner within one resolution branch;
 - a total serialized observation limit enforced by the parent process.
 
-## SupportStageV1
+## Independent Evidence And Admission Dimensions
 
-Support stage is a discrete evidence ladder, not a provider score. A result
-may claim the highest stage only when all prior minimum evidence is present.
+Evidence, relationships, route admission, deployment, and license scope are
+independent. They must not be compressed into a single monotonic support
+ladder. A provider can have complete media evidence while remaining
+route-rejected, or preserve a relationship while full-media verification is
+not applicable.
 
-| Stage | Minimum evidence |
+### EvidenceStageV1
+
+This dimension reports the strongest media evidence established for the
+observation. It does not grant route or deployment authority.
+
+| Stage | Evidence |
 | --- | --- |
 | `DETECTED` | Platform/backend family recognized; no useful metadata or media required. |
-| `METADATA_ONLY` | Bounded metadata or format labels exist, but no admissible private candidate exists. |
-| `MEDIA_CANDIDATES` | At least one structurally valid private resource reference with media type and role. |
-| `RELATIONSHIPS_PRESERVED` | Item-local order/group/still-motion/content-block relationships validate without heuristics. |
+| `METADATA_ONLY` | Bounded metadata or format labels exist, but no structurally valid private candidate exists. |
+| `MEDIA_CANDIDATES` | At least one structurally valid private resource reference has media type and role. |
 | `BROWSER_INSPECTABLE` | A tokenized candidate passed bounded browser/request inspection; full file is not implied. |
 | `FULL_MEDIA_VERIFIED` | Complete bytes or another platform-appropriate completeness proof matched expected evidence in an authorized test. |
-| `PRODUCT_ADMISSIBLE` | Platform identity, host, format, relationship, safety, and delivery admission all pass. |
-| `PRODUCTION_ELIGIBLE` | Product admission plus operational reliability, license, runtime, observability, security, and release gates pass. |
+
+### RelationshipEvidenceV1
+
+| Value | Meaning |
+| --- | --- |
+| `NOT_APPLICABLE` | The result has no relationship claim that requires validation. |
+| `CLAIMED` | A provider claims order/group/still-motion/content-block relationships, but direct evidence is insufficient. |
+| `PRESERVED` | Item-local or explicit payload relationships validate without URL-similarity or array-position inference. |
+| `FAILED` | A required relationship is malformed, mismatched, or cannot be preserved fail-closed. |
+
+### RouteAdmissionStateV1
+
+| Value | Meaning |
+| --- | --- |
+| `UNREVIEWED` | No platform-specific route decision has been made. This is the default for upstream evidence. |
+| `REJECTED` | Platform identity, host, format, relationship, safety, license, delivery, or reliability review rejected formal use. |
+| `ROUTE_CANDIDATE` | Evidence is sufficient to enter an explicit platform route review; no formal route exists yet. |
+| `FORMAL_ROUTE_ADMITTED` | A separate reviewed route decision admits the fixed upstream/backend under explicit policy. |
+
+Only AnimeImages admission can set this dimension. An upstream worker cannot
+self-assert it.
+
+### DeploymentStateV1 And License Scope
+
+`DeploymentStateV1` is either `NOT_DEPLOYED` or `DEPLOYED`. It records release
+state only and does not imply media quality or route admission. License scope
+is a separate reviewed field, such as `noncommercial_lab`,
+`formal_use_reviewed`, or another fixed project-owned value. Neither field is
+derived from evidence stage.
 
 ### Existing Case Calibration
 
-| Case | Demonstrated stage | Why it stops there |
-| --- | --- | --- |
-| ParseHub Bilibili format metadata | `METADATA_ONLY` | It added format metadata but no deliverable media candidate in the recorded comparison. |
-| videodl Bilibili complete media | `FULL_MEDIA_VERIFIED` in the specific Staff Lab evidence | Three authorized samples matched official DURL bytes, but this does not change the formal route or make videodl production-eligible. |
-| TianTian XHS Ultra | `PRODUCT_ADMISSIBLE` only through the existing XHS route's separate policy | Provider output alone does not earn this stage; AnimeImages admission does. |
-| ParseHub XHS raw image | `PRODUCT_ADMISSIBLE` for the verified subset | Exact candidate/host/format/download authority and false-positive gates are required. |
-| XHS Staff LivePhoto | `RELATIONSHIPS_PRESERVED` at upstream evidence; Staff preview is admitted separately | Item-local still/motion evidence is preserved, while download authority remains a distinct decision. |
+| Case | Evidence | Relationships | Route admission | Deployment / license note |
+| --- | --- | --- | --- | --- |
+| ParseHub Bilibili format metadata | `METADATA_ONLY` | `NOT_APPLICABLE` | `UNREVIEWED` for any new route | No route or deployment change. |
+| videodl Bilibili complete media | `FULL_MEDIA_VERIFIED` for the specific Staff Lab evidence | `NOT_APPLICABLE` | `REJECTED` as a replacement because no quality gain was proven | Current use remains noncommercial Lab evidence and not deployed as a formal upstream. |
+| TianTian XHS Ultra | Route-specific evidence, recorded separately from this Lab model | `NOT_APPLICABLE` | `FORMAL_ROUTE_ADMITTED` only through the existing XHS policy | Deployment is an independent release fact. |
+| ParseHub XHS raw image | Verified-subset evidence under its route-specific tests | `NOT_APPLICABLE` | `FORMAL_ROUTE_ADMITTED` only for the reviewed subset | Exact host/format/download gates remain independent. |
+| XHS Staff LivePhoto | At least `MEDIA_CANDIDATES` | `PRESERVED` | `UNREVIEWED` for download and Public LivePhoto route expansion | Staff preview admission does not grant download authority. |
 
-`FULL_MEDIA_VERIFIED` does not imply `PRODUCT_ADMISSIBLE`, and
-`PRODUCT_ADMISSIBLE` does not imply `PRODUCTION_ELIGIBLE`.
+`FULL_MEDIA_VERIFIED` does not imply `FORMAL_ROUTE_ADMITTED`, and
+`FORMAL_ROUTE_ADMITTED` does not imply `DEPLOYED`.
 
 ## Attempt State In Each Mode
 
 | Mode | Trace requirements |
 | --- | --- |
-| `AUTO` | Record direct probe, every entered dedicated/common backend, policy-significant skips, and static/browser grabber substage. |
+| `AUTO` | Record direct probe, every entered dedicated/common backend, policy-significant skips, and the grabber stages as blocked until the sandbox gate. |
 | `DEDICATED_ONLY` | Record direct probe and selected dedicated backends; common/static/browser stages are skipped with fixed policy reason. |
 | `COMMON_ONLY` | Record each selected aggregator and its nested external-service lineage; dedicated and grabber stages are policy-skipped. |
-| `GRABBER_ONLY` | Record direct probe, static extraction, and browser observation only when explicitly enabled. |
-| `SPECIFIC_BACKEND` | Record exactly one backend attempt plus its internal lineage; no implicit fallback. |
+| `GRABBER_ONLY` | Blocked until a separate sandbox gate proves filesystem, private-network, loopback, cloud-metadata, and resource-limit controls. Staff opt-in alone is insufficient. |
+| `SPECIFIC_BACKEND` | Record exactly one permitted backend attempt plus its internal lineage; no implicit fallback, and browser observer remains sandbox-gated. |
 
 The current videodl API cannot provide these strict semantics for every mode,
 so the future worker must instrument or wrap stage entry rather than infer a
@@ -264,11 +299,13 @@ opaque request identifier.
 6. A nested external service must appear as a lineage node whenever the target
    source reference is shared externally.
 7. Browser observations never claim identity authority by themselves.
-8. Support stage is derived from validated evidence, not accepted from an
-   untrusted worker field.
-9. Traces are request-scoped and never stored in global state keyed by source
+8. Evidence stage and relationship evidence are derived from validated facts,
+   not accepted from an untrusted worker field.
+9. Route admission, deployment state, and license scope are independent
+   project-owned decisions and are never inferred from evidence stage.
+10. Traces are request-scoped and never stored in global state keyed by source
    URL.
-10. Projection to public/runtime assets discards attempt trace and lineage.
+11. Projection to public/runtime assets discards attempt trace and lineage.
 
 ## RFC Decision
 
@@ -280,7 +317,13 @@ opaque request identifier.
 
 `ATTEMPT_TRACE_RFC = READY`
 
-`SUPPORT_STAGE_MODEL = READY`
+`EVIDENCE_STAGE_MODEL = READY`
+
+`RELATIONSHIP_EVIDENCE_MODEL = READY`
+
+`ROUTE_ADMISSION_MODEL = READY`
+
+`LINEAR_SUPPORT_LADDER = REMOVED`
 
 Implementation must begin as internal URL-free dataclasses and validation
 tests. Worker instrumentation and Provider Lab projection are later PRs.

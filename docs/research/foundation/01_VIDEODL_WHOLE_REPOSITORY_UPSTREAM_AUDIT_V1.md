@@ -10,13 +10,18 @@
 | Scope | Read-only architecture audit |
 | Runtime or route change | None |
 | `CURRENT_VIDEODL_INTEGRATION_LEVEL` | Isolated whole-repository Staff Lab worker |
+| `CURRENT_ACCESS_SCOPE` | `STAFF` |
+| `CURRENT_LIFECYCLE_STAGE` | `EXPERIMENTAL` |
+| `ARCHITECTURAL_ELIGIBILITY` | `MAY_BECOME_FIXED_FORMAL_UPSTREAM_AFTER_EXPLICIT_REVIEW` |
+| `CURRENT_EXECUTION_ISOLATION` | `BOUNDED_SUBPROCESS_NOT_SANDBOX` |
 | `ASSET_1_COMPLETENESS` | `MINIMAL` |
 
 `MINIMAL` does not mean the current integration is unsafe or useless. The
-worker has strong process isolation and safely exposes final resources. It
-means that the integration retains too little resolution evidence to explain
-how videodl obtained a result, which backends were tried, or why fallback
-occurred.
+worker has a bounded subprocess lifecycle and exposes final resources through
+a restricted private protocol. It means that the integration retains too
+little resolution evidence to explain how videodl obtained a result, which
+backends were tried, or why fallback occurred. The lifecycle boundary is not
+a complete filesystem or network sandbox.
 
 ## Document Set
 
@@ -58,16 +63,25 @@ The current `videodl_repo` path has these useful safeguards:
 
 1. The repository is installed at an exact commit in a separate virtual
    environment.
-2. Every parse request runs in a separate subprocess.
+2. Every parse request runs in a separate subprocess with a bounded parent
+   lifecycle.
 3. The parent passes bounded JSON over stdin/stdout, supplies a temporary
    `HOME`, XDG directories and working directory, and filters inherited
    environment variables.
 4. Parent timeouts terminate and reap the subprocess group.
 5. The worker configures no proxy, no Cookie, no automatic proxy discovery,
    one request retry, and disables videodl's provider downloaders.
-6. Private resource URLs leave the worker in a sidecar, become short-lived
-   Staff-bound resource tokens, and are absent from initial HTML.
+6. Private resource URLs leave the worker only through bounded stdout JSON in
+   the resources sidecar, enter the Django parent's short-lived cache, become
+   opaque Staff-bound resource tokens, and are absent from initial HTML and
+   sanitized result JSON.
 7. The normalized result is bounded and sanitized before it reaches the Lab.
+
+This is not a security sandbox. The current boundary does not provide a full
+filesystem sandbox, private-network or loopback blocking inside the child,
+cloud-metadata blocking, or CPU, memory, and process-count rlimits. Those gaps
+matter most for browser/grabber execution and cannot be waived by Staff
+opt-in.
 
 The worker calls videodl `VideoClient.parsefromurl()` in automatic mode and
 projects only the final `VideoInfo` list. It currently preserves:
@@ -99,7 +113,7 @@ projects only the final `VideoInfo` list. It currently preserves:
 | Nested lineage | No | A dedicated client may itself call a third-party aggregator. |
 | Skipped stages | No | Policy decisions cannot be audited. |
 | Format inventory | No | The worker emits the selected output, not all observed variants/tracks. |
-| Detailed delivery requirements | Partial | Three booleans cannot express HLS, DASH, remux, transcode, or browser eligibility. |
+| Detailed acquisition/assembly facts | Partial | Three booleans cannot express HLS, DASH, remux, transcode, or request-context requirements; browser delivery remains a separate admission decision. |
 
 ## Fixed-Pin Resolution Chain
 
@@ -204,14 +218,20 @@ error handling. The important variations are larger than that common shell.
   Lab boundary for comparison.
 - Treat a selected client as an observed backend, not an admitted product
   provider.
-- Cleanly reimplement only a narrowly selected platform capability after
-  independent identity, quality, delivery, security, and license review.
+- After independent real-sample, identity, host, format, delivery, security,
+  stability, and license review, either cleanly reimplement a narrow
+  capability or retain one specifically named backend behind an isolated
+  fixed formal upstream Worker.
+- A formal isolated backend must have a fixed backend ID and pin, explicit
+  platform route, fail-closed admission, bounded lifecycle, and no implicit
+  traversal into other dedicated, common, or grabber backends.
 - Do not migrate XHS, Douyin, Bilibili, or YouTube routes from this audit.
 
 ```text
 DEDICATED_CLIENT_COMMON_PATTERN = DOMAIN_GATE_THEN_PLATFORM_PARSE_TO_VIDEOINFO
 DEDICATED_CLIENT_VARIATION_POINTS = IDENTITY_REQUEST_TRACK_HEADER_COOKIE_BROWSER_AND_DELIVERY
-DEDICATED_CLIENT_REUSE_STRATEGY = ISOLATED_UPSTREAM_THEN_SELECTED_CLEAN_REIMPLEMENTATION
+DEDICATED_CLIENT_REUSE_STRATEGY = ISOLATED_UPSTREAM_THEN_EXPLICIT_REVIEW
+ISOLATED_FORMAL_UPSTREAM = DEFINED
 ```
 
 ## Common Client Backend Matrix
@@ -258,7 +278,7 @@ service lineage explicitly.
 - parent process-group cleanup is helpful, but not a substitute for admission
   controls and per-substage evidence.
 
-`WEB_MEDIA_GRABBER_RECOMMENDED_SCOPE = UPSTREAM_WORKBENCH_ONLY`
+`WEB_MEDIA_GRABBER_RECOMMENDED_SCOPE = UPSTREAM_WORKBENCH_ONLY_AFTER_SANDBOX_GATE`
 
 ```text
 WEB_MEDIA_GRABBER_CAPABILITY = DOCUMENTED
@@ -279,16 +299,22 @@ strictly smaller than the total envelope.
 
 | Mode | Allowed stages | Proposed max backend attempts | Browser | External aggregator | Security level | Current API support |
 | --- | --- | ---: | --- | --- | --- | --- |
-| `AUTO` | direct, dedicated, common, static, optional browser | 8 | Off by default; explicit Staff opt-in | Explicit Staff opt-in | Restricted Lab | Current worker uses effectively unbounded registry order inside a 25-second parent timeout. |
+| `AUTO` | direct, dedicated, common; grabber blocked pending sandbox | 8 | Blocked pending sandbox | Explicit Staff opt-in | Restricted Lab | Current worker uses effectively unbounded registry order inside a 25-second parent timeout; Worker V2 must stop before grabber until its gate passes. |
 | `DEDICATED_ONLY` | direct plus dedicated | 4 | No | No, unless a dedicated client has hidden nested lineage | Preferred Lab comparison | Not strict: a selected dedicated set can still fall through to grabber. |
 | `COMMON_ONLY` | selected common aggregators | 4 | No | Yes | Sensitive Lab | Partially exposed by `apply_common_video_clients_only`, but grabber fallback remains. |
-| `GRABBER_ONLY` | direct, static, optional browser | 2 substages | Explicit | No | Restricted workbench | Indirectly possible by allowing only the grabber sentinel; not a first-class contract. |
-| `SPECIFIC_BACKEND` | one declared backend | 1 | Only when that backend is the browser observer | Only when selected | Most deterministic | Backend allowlisting exists, but implicit grabber fallback prevents strict isolation. |
+| `GRABBER_ONLY` | direct, static, optional browser | 2 substages | Blocked | No | Blocked until sandbox gate | The fixed-pin grabber exists, but Staff opt-in alone cannot authorize it. |
+| `SPECIFIC_BACKEND` | one declared backend | 1 | Browser observer blocked pending sandbox | Only when selected | Most deterministic | Backend allowlisting exists, but implicit grabber fallback prevents strict isolation. |
 
-Every mode should accept a source reference plus fixed policy, return
-`UpstreamObservationV1` and a private resource sidecar, and emit no media body.
-The mode must declare its stage allowlist, browser/aggregator permission,
-attempt ceiling, per-attempt timeout, and total deadline.
+Every permitted mode should accept a source reference plus fixed policy,
+return `UpstreamObservationV1` and a request-bound private resource sidecar,
+and emit no media body. The mode must declare its stage allowlist,
+browser/aggregator permission, attempt ceiling, per-attempt timeout, and total
+deadline. `GRABBER_ONLY` remains blocked until a separate sandbox gate proves
+filesystem, network, metadata-address, and resource-limit controls.
+
+```text
+GRABBER_ONLY = BLOCKED_UNTIL_SANDBOX_GATE
+```
 
 ## ParseHub Control Conclusion
 
@@ -315,4 +341,8 @@ This audit does not change or recommend immediate migration of:
 - browser, Service Worker, archive, manifest, or server-generated delivery.
 
 The first foundation work belongs in internal contracts and Provider Lab.
-Formal admission remains platform-specific and fail-closed.
+Formal admission remains platform-specific and fail-closed. This current
+Staff access scope is not a permanent architectural ceiling: a specifically
+reviewed backend may later become an `ISOLATED_FORMAL_UPSTREAM`, while
+automatic registry traversal, first-success product routing, and unreviewed
+common/grabber use remain forbidden.
