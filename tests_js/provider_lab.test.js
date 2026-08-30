@@ -134,6 +134,131 @@ test("requestJson sends one provider request with CSRF and no-store", async () =
 });
 
 
+function controlledForm(overrides = {}) {
+    const values = {
+        mode: "reviewed_auto",
+        category: "dedicated",
+        exact: "",
+        confirmed: false,
+        common: [],
+        ...overrides,
+    };
+    return {
+        elements: {
+            videodl_mode: {value: values.mode},
+            videodl_backend_category: {value: values.category},
+            videodl_specific_backend: {value: values.exact},
+            videodl_external_sharing_confirmed: {checked: values.confirmed},
+        },
+        querySelectorAll(selector) {
+            assert.equal(selector, 'input[name="videodl_common_backends"]:checked');
+            return values.common.map((value) => ({value}));
+        },
+    };
+}
+
+
+const inventory = {
+    status: "ready",
+    items: [
+        {backend_id: "DedicatedA", backend_category: "dedicated", available: true},
+        {backend_id: "CommonA", backend_category: "common", available: true},
+        {backend_id: "CommonB", backend_category: "common", available: true},
+    ],
+};
+
+
+test("reviewed auto defaults to dedicated execution without common sharing", () => {
+    assert.deepEqual(lab.videodlOptions(controlledForm(), inventory), {
+        mode: "reviewed_auto",
+        backend_ids: [],
+        backend_category: "common",
+        external_sharing_confirmed: false,
+    });
+});
+
+
+test("common execution requires explicit external-sharing confirmation", () => {
+    assert.throws(
+        () => lab.videodlOptions(controlledForm({
+            mode: "common_only",
+            category: "common",
+            common: ["CommonA"],
+        }), inventory),
+        /videodl_options_invalid/,
+    );
+});
+
+
+test("common execution submits only explicitly selected fixed backend ids", () => {
+    assert.deepEqual(lab.videodlOptions(controlledForm({
+        mode: "common_only",
+        category: "common",
+        common: ["CommonB"],
+        confirmed: true,
+    }), inventory), {
+        mode: "common_only",
+        backend_ids: ["CommonB"],
+        backend_category: "common",
+        external_sharing_confirmed: true,
+    });
+});
+
+
+test("specific backend selection preserves exact category", () => {
+    assert.deepEqual(lab.videodlOptions(controlledForm({
+        mode: "specific_backend",
+        category: "dedicated",
+        exact: "DedicatedA",
+    }), inventory), {
+        mode: "specific_backend",
+        backend_ids: ["DedicatedA"],
+        backend_category: "dedicated",
+        external_sharing_confirmed: false,
+    });
+});
+
+
+test("attempt rows expose only bounded safe diagnostics", () => {
+    const rows = lab.attemptDisplayRows([{
+        ordinal: 1,
+        backend_id: "DedicatedA",
+        backend_category: "dedicated",
+        outcome: "timeout",
+        elapsed_ms: 8000,
+        candidate_count: 0,
+        selected: false,
+        safe_failure_code: "BACKEND_TIMEOUT",
+        external_sharing: false,
+        url: "https://private.example/video?token=secret",
+    }]);
+    assert.deepEqual(rows, [{
+        ordinal: 1,
+        backend: "DedicatedA",
+        category: "dedicated",
+        outcome: "超时",
+        elapsed: "8000 ms",
+        candidates: 0,
+        selected: "-",
+        failure: "BACKEND_TIMEOUT",
+        externalSharing: false,
+    }]);
+    assert.equal(JSON.stringify(rows).includes("private.example"), false);
+});
+
+
+test("Provider Lab template contains controlled videodl and attempt surfaces", () => {
+    const template = fs.readFileSync(
+        path.join(__dirname, "../templates/admin/provider_lab.html"),
+        "utf8",
+    );
+    assert.equal(template.includes("data-videodl-controls"), true);
+    assert.equal(template.includes("data-videodl-sharing-confirmation"), true);
+    assert.equal(template.includes("data-provider-attempt-rows"), true);
+    assert.equal(template.includes("WebMediaGrabber"), true);
+});
+
+
 test("Provider Lab frontend never persists result data", () => {
     const source = fs.readFileSync(path.join(__dirname, "../static/js/provider_lab.js"), "utf8");
     assert.equal(source.includes("localStorage"), false);

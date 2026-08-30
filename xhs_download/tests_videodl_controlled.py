@@ -297,6 +297,46 @@ class VideodlControlledOrchestrationTests(SimpleTestCase):
         self.assertFalse(any(item.get("backend_category") == "common" for item in calls))
         self.assertFalse(any(item.get("operation") == "grabber" for item in calls))
 
+    def test_dedicated_match_rejects_unknown_worker_backend(self):
+        invoke = self._invoke(
+            inventory=self._inventory(("dedicated", "KnownDedicated")),
+            matches=("UnknownDedicated",),
+        )
+        with self.assertRaises(VideodlControlledError) as context:
+            execute_controlled_videodl(
+                python="python",
+                worker="worker.py",
+                request_id="request_unknown_match",
+                source="https://example.com/watch",
+                options=self._options("dedicated_only", category="dedicated"),
+                invoke=invoke,
+            )
+        self.assertEqual(context.exception.code, "PROVIDER_SCHEMA_INVALID")
+        self.assertEqual(context.exception.attempts, ())
+
+    def test_expired_total_deadline_does_not_invent_an_attempt(self):
+        calls = []
+        invoke = self._invoke(
+            inventory=self._inventory(("dedicated", "ExactBackend")),
+            matches=("ExactBackend",),
+            calls=calls,
+        )
+        clock_values = iter((0.0, 0.0, 0.0, 2.0))
+        with self.assertRaises(VideodlControlledError) as context:
+            execute_controlled_videodl(
+                python="python",
+                worker="worker.py",
+                request_id="request_deadline",
+                source="https://example.com/watch",
+                options=self._options("dedicated_only", category="dedicated"),
+                total_timeout_seconds=1.0,
+                invoke=invoke,
+                clock=lambda: next(clock_values),
+            )
+        self.assertEqual(context.exception.code, "PROVIDER_TIMEOUT")
+        self.assertEqual(context.exception.attempts, ())
+        self.assertFalse(any(item.get("operation") == "backend" for item in calls))
+
     def test_common_only_runs_only_selected_ids_and_marks_external_sharing(self):
         calls = []
         invoke = self._invoke(
@@ -487,6 +527,36 @@ class VideodlProviderLabIntegrationTests(TestCase):
             is_staff=True,
         )
         self.client.force_login(self.user)
+
+    @mock.patch("xhs_download.provider_lab_views.list_videodl_backend_inventory")
+    def test_staff_page_renders_bounded_inventory_controls_without_urls(self, inventory_mock):
+        inventory_mock.return_value = {
+            "status": "ready",
+            "items": [
+                {
+                    "backend_id": "DedicatedBackend",
+                    "backend_category": "dedicated",
+                    "available": True,
+                    "external_sharing_required": False,
+                    "display_label": "Dedicated Backend",
+                },
+                {
+                    "backend_id": "CommonBackend",
+                    "backend_category": "common",
+                    "available": True,
+                    "external_sharing_required": True,
+                    "display_label": "Common Backend",
+                },
+            ],
+        }
+        response = self.client.get(reverse("provider_lab"))
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("videodl 受控执行", content)
+        self.assertIn("CommonBackend", content)
+        self.assertIn("外部 aggregator", content)
+        self.assertNotIn("https://", content)
+        self.assertNotIn("module path", content)
 
     @mock.patch("xhs_download.provider_lab_views.run_provider")
     def test_view_passes_closed_videodl_options_to_runtime(self, run_mock):

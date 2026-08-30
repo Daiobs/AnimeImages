@@ -302,11 +302,12 @@ def execute_controlled_videodl(
         if not isinstance(matched, list):
             raise VideodlControlledError("PROVIDER_SCHEMA_INVALID")
         for backend_id in matched[:MAX_MATCHED_DEDICATED]:
-            if (
-                isinstance(backend_id, str)
-                and ("dedicated", backend_id) in available
-                and backend_id not in dedicated_ids
-            ):
+            if not isinstance(backend_id, str) or (
+                "dedicated",
+                backend_id,
+            ) not in available:
+                raise VideodlControlledError("PROVIDER_SCHEMA_INVALID")
+            if backend_id not in dedicated_ids:
                 dedicated_ids.append(backend_id)
     if options.mode in {"common_only", "reviewed_auto"}:
         common_ids = list(options.backend_ids)
@@ -316,6 +317,7 @@ def execute_controlled_videodl(
     def run_attempt(backend_id: str, category: str) -> VideodlControlledResult | None:
         if len(attempts) >= MAX_ATTEMPTS:
             return None
+        timeout_seconds = _remaining_timeout(deadline, attempt_timeout_seconds, clock)
         attempt_started = clock()
         try:
             payload = invoke(
@@ -323,7 +325,7 @@ def execute_controlled_videodl(
                 worker=worker,
                 request_id=request_id,
                 source=source,
-                timeout_seconds=_remaining_timeout(deadline, attempt_timeout_seconds, clock),
+                timeout_seconds=timeout_seconds,
                 operation="backend",
                 backend_id=backend_id,
                 backend_category=category,
