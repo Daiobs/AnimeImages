@@ -5,14 +5,15 @@ import argparse
 from importlib import metadata
 import json
 from pathlib import Path
+import re
 
 try:
     from .worker_common import (
         WorkerError,
         asset,
-        emit,
         emit_check,
         emit_error,
+        emit_message,
         parse_request,
         raw_shape,
         safe_text,
@@ -21,9 +22,9 @@ except ImportError:  # Direct execution inside the isolated venv.
     from worker_common import (
         WorkerError,
         asset,
-        emit,
         emit_check,
         emit_error,
+        emit_message,
         parse_request,
         raw_shape,
         safe_text,
@@ -33,6 +34,12 @@ except ImportError:  # Direct execution inside the isolated venv.
 VIDEODL_PIN = "6cd1de0fe1209380b183b654c65e98a629637873"
 PROVIDER_ID = "videodl_repo"
 PROVIDER_VERSION = f"videodl@{VIDEODL_PIN}"
+OPTIONAL_REQUEST_FIELDS = frozenset(
+    {"operation", "backend_id", "backend_category"}
+)
+BACKEND_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,79}$")
+BACKEND_CATEGORIES = frozenset({"dedicated", "common"})
+OPERATIONS = frozenset({"inventory", "match_dedicated", "backend", "legacy_auto"})
 
 
 def installed_commit() -> str:
@@ -87,6 +94,133 @@ def build_client(work_dir: str):
         requests_overrides={},
         apply_common_video_clients_only=False,
     )
+
+
+def backend_inventory() -> list[dict]:
+    from videodl.modules import CommonVideoClientBuilder, VideoClientBuilder
+
+    inventory = []
+    for category, registry in (
+        ("dedicated", VideoClientBuilder.REGISTERED_MODULES),
+        ("common", CommonVideoClientBuilder.REGISTERED_MODULES),
+    ):
+        for backend_id, backend_class in registry.items():
+            if not BACKEND_ID_RE.fullmatch(str(backend_id or "")):
+                continue
+            inventory.append(
+                {
+                    "backend_id": backend_id,
+                    "backend_category": category,
+                    "available": callable(backend_class),
+                    "external_sharing_required": category == "common",
+                    "display_label": safe_text(backend_id, 80),
+                }
+            )
+    return inventory
+
+
+def validate_operation_request(request: dict) -> str:
+    allowed_fields = {
+        "request_id",
+        "source",
+        "max_assets",
+        "max_output_bytes",
+    } | OPTIONAL_REQUEST_FIELDS
+    if not set(request).issubset(allowed_fields):
+        raise WorkerError("PROVIDER_INVALID_JSON")
+    present_optional = OPTIONAL_REQUEST_FIELDS.intersection(request)
+    operation = request.get("operation")
+    if operation is None:
+        if present_optional:
+            raise WorkerError("PROVIDER_INVALID_JSON")
+        return "legacy_auto"
+    if operation not in OPERATIONS:
+        raise WorkerError("PROVIDER_INVALID_JSON")
+    if operation in {"inventory", "match_dedicated", "legacy_auto"}:
+        if present_optional != {"operation"}:
+            raise WorkerError("PROVIDER_INVALID_JSON")
+        if operation == "inventory" and request["source"]:
+            raise WorkerError("PROVIDER_INVALID_JSON")
+        if operation != "inventory" and not request["source"]:
+            raise WorkerError("PROVIDER_INVALID_JSON")
+        return operation
+    if present_optional != OPTIONAL_REQUEST_FIELDS or not request["source"]:
+        raise WorkerError("PROVIDER_INVALID_JSON")
+    if (
+        request.get("backend_category") not in BACKEND_CATEGORIES
+        or not BACKEND_ID_RE.fullmatch(str(request.get("backend_id") or ""))
+    ):
+        raise WorkerError("PROVIDER_INVALID_JSON")
+    return operation
+
+
+def matching_dedicated_backends(source: str) -> list[str]:
+    from videodl.modules import VideoClientBuilder
+
+    matches = []
+    for backend_id, backend_class in VideoClientBuilder.REGISTERED_MODULES.items():
+        try:
+            matched = backend_class.belongto(source)
+        except Exception:
+            matched = False
+        if matched:
+            matches.append(backend_id)
+    return matches[:16]
+
+
+def backend_config(backend_id: str, work_dir: str) -> dict:
+    return {
+        "type": backend_id,
+        "auto_set_proxies": False,
+        "random_update_ua": False,
+        "max_retries": 1,
+        "maintain_session": False,
+        "disable_print": True,
+        "work_dir": work_dir,
+        "freeproxy_settings": None,
+        "default_search_cookies": None,
+        "default_download_cookies": None,
+        "default_parse_cookies": None,
+    }
+
+
+def run_exact_backend(source: str, backend_id: str, backend_category: str, work_dir: str):
+    from videodl.modules import (
+        BuildCommonVideoClient,
+        BuildVideoClient,
+        CommonVideoClientBuilder,
+        VideoClientBuilder,
+    )
+
+    registry = (
+        VideoClientBuilder.REGISTERED_MODULES
+        if backend_category == "dedicated"
+        else CommonVideoClientBuilder.REGISTERED_MODULES
+    )
+    if backend_id not in registry:
+        raise WorkerError("PROVIDER_SCHEMA_INVALID")
+    if backend_category == "dedicated":
+        try:
+            matched = bool(registry[backend_id].belongto(source))
+        except Exception as error:
+            raise WorkerError("PROVIDER_PROCESS_FAILED") from error
+        if not matched:
+            raise WorkerError("PROVIDER_UNSUPPORTED")
+    builder = BuildVideoClient if backend_category == "dedicated" else BuildCommonVideoClient
+    try:
+        client = builder(backend_config(backend_id, work_dir))
+        infos = client.parsefromurl(source, request_overrides={})
+    except Exception as error:
+        raise WorkerError("PROVIDER_PROCESS_FAILED") from error
+    valid_infos = [
+        info
+        for info in list(infos or ())
+        if bool(getattr(info, "with_valid_download_url", False))
+        or bool(getattr(info, "with_valid_audio_download_url", False))
+    ]
+    if not valid_infos:
+        raise WorkerError("PROVIDER_RESULT_EMPTY")
+    return valid_infos
 
 
 def normalize_result(video_infos: object, request: dict) -> tuple[dict, list[dict]]:
@@ -189,10 +323,45 @@ def main() -> int:
         if args.check_only:
             emit_check(PROVIDER_ID, PROVIDER_VERSION)
             return 0
-        request = parse_request()
-        client = build_client(str(Path.cwd() / "provider-work"))
-        result, resources = normalize_result(client.parsefromurl(request["source"]), request)
-        emit(result, resources, max_output_bytes=request["max_output_bytes"])
+        request = parse_request(
+            optional_fields=OPTIONAL_REQUEST_FIELDS,
+            allow_empty_source=True,
+        )
+        operation = validate_operation_request(request)
+        if operation == "inventory":
+            emit_message(
+                {"operation": operation, "inventory": backend_inventory()},
+                max_output_bytes=request["max_output_bytes"],
+            )
+            return 0
+        if operation == "match_dedicated":
+            emit_message(
+                {
+                    "operation": operation,
+                    "backend_ids": matching_dedicated_backends(request["source"]),
+                },
+                max_output_bytes=request["max_output_bytes"],
+            )
+            return 0
+        if operation == "backend":
+            video_infos = run_exact_backend(
+                request["source"],
+                request["backend_id"],
+                request["backend_category"],
+                str(Path.cwd() / "provider-work"),
+            )
+        else:
+            client = build_client(str(Path.cwd() / "provider-work"))
+            video_infos = client.parsefromurl(request["source"])
+        result, resources = normalize_result(video_infos, request)
+        emit_message(
+            {
+                "result": result,
+                "resources": resources,
+                "metrics": {"candidate_count": len(video_infos)},
+            },
+            max_output_bytes=request["max_output_bytes"],
+        )
         return 0
     except WorkerError as error:
         emit_error(error.code)

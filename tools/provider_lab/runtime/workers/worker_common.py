@@ -98,7 +98,11 @@ def string_requires_redaction(value: Any) -> bool:
     return False
 
 
-def parse_request() -> dict[str, Any]:
+def parse_request(
+    *,
+    optional_fields: set[str] | frozenset[str] = frozenset(),
+    allow_empty_source: bool = False,
+) -> dict[str, Any]:
     raw = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
     if not raw or len(raw) > MAX_INPUT_BYTES:
         raise WorkerError("PROVIDER_INVALID_JSON")
@@ -106,7 +110,12 @@ def parse_request() -> dict[str, Any]:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise WorkerError("PROVIDER_INVALID_JSON") from error
-    if not isinstance(payload, dict) or set(payload) != REQUEST_FIELDS:
+    allowed_fields = REQUEST_FIELDS | set(optional_fields)
+    if (
+        not isinstance(payload, dict)
+        or not REQUEST_FIELDS.issubset(payload)
+        or not set(payload).issubset(allowed_fields)
+    ):
         raise WorkerError("PROVIDER_INVALID_JSON")
     source = str(payload.get("source") or "")
     request_id = str(payload.get("request_id") or "")
@@ -115,7 +124,7 @@ def parse_request() -> dict[str, Any]:
     if (
         payload.get("schema_version") != SCHEMA_VERSION
         or not REQUEST_ID_RE.fullmatch(request_id)
-        or not source
+        or (not source and not allow_empty_source)
         or source != source.strip()
         or len(source) > MAX_SOURCE_LENGTH
         or type(max_assets) is not int
@@ -124,12 +133,14 @@ def parse_request() -> dict[str, Any]:
         or not 1024 <= max_output_bytes <= 1024 * 1024
     ):
         raise WorkerError("PROVIDER_INVALID_JSON")
-    return {
+    parsed = {
         "request_id": request_id,
         "source": source,
         "max_assets": max_assets,
         "max_output_bytes": max_output_bytes,
     }
+    parsed.update({key: payload[key] for key in optional_fields if key in payload})
+    return parsed
 
 
 def validated_url(value: Any) -> tuple[str, str]:
@@ -292,6 +303,14 @@ def emit(result: dict[str, Any], resources: list[dict[str, Any]], *, max_output_
         "resources": resources,
     }
     encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > max_output_bytes:
+        raise WorkerError("PROVIDER_OUTPUT_TOO_LARGE")
+    sys.stdout.buffer.write(encoded + b"\n")
+
+
+def emit_message(payload: dict[str, Any], *, max_output_bytes: int) -> None:
+    message = {"schema_version": SCHEMA_VERSION, **payload}
+    encoded = json.dumps(message, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
     if len(encoded) > max_output_bytes:
         raise WorkerError("PROVIDER_OUTPUT_TOO_LARGE")
     sys.stdout.buffer.write(encoded + b"\n")
