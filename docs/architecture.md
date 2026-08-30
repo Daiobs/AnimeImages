@@ -306,6 +306,14 @@ Whole-repository Workers：
 
 Lab 不自动 fan out、不选赢家、不修改平台路线、不做完整媒体 Relay。操作和许可证边界见 [Provider Lab](provider-lab.md)。
 
+videodl 是一个局部例外：浏览器仍然只对显式 Provider 并发，Django
+只在单个 `videodl_repo` 请求内部执行 AnimeImages-owned、顺序且有界的
+exact-backend orchestration。每个 backend attempt 使用独立子进程；
+`reviewed_auto` 只允许匹配的 dedicated 以及 Staff 明确选择并确认共享的
+common IDs。该局部 attempt contract 不扩展为全局 Observation Kernel 或
+Backend Catalog。见
+[Asset 1/2 outcome](research/videodl/ASSET_1_2_IMPLEMENTATION_OUTCOME_V1.md)。
+
 ## Runtime Gate 分层
 
 正式 Provider 使用：

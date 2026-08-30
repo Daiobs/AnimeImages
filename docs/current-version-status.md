@@ -199,6 +199,15 @@ videodl is PolyForm Noncommercial 1.0.0 and is restricted to a noncommercial loc
 
 See [Provider Lab](provider-lab.md) for stable operations and [Provider Lab research](research/provider_lab/01_UPSTREAM_PROVIDER_LAB_V1.md) for historical design evidence.
 
+The videodl Asset 1/2 development branch adds controlled, observable execution
+inside this same default-off Staff Lab: exact backend, dedicated-only,
+explicitly confirmed common-only, reviewed-auto, and an opaque legacy
+comparison. AnimeImages owns bounded attempt ordering and safe diagnostics;
+videodl remains the exact-pin isolated noncommercial upstream. This changes no
+formal platform route and authorizes no Production deployment. See the
+[implementation outcome](research/videodl/ASSET_1_2_IMPLEMENTATION_OUTCOME_V1.md)
+for the 26 component dispositions.
+
 ## Download Data Plane
 
 Ordinary Provider video:

@@ -298,6 +298,23 @@ Provider Lab 不保存结果历史：
 - videodl 受 noncommercial license boundary 限制。
 - Provider Lab 未被本任务记录为已部署生产。
 
+## videodl 受控执行
+
+videodl Staff Lab 支持 `specific_backend`、`dedicated_only`、
+`common_only`、`reviewed_auto` 和显式的 `legacy_auto` 对照。默认使用
+`reviewed_auto`；common backend 默认不选择，且必须由 Staff 明确确认
+source reference 的外部共享。受控模式不会进入 direct、未选择的
+common、WebMediaGrabber 或 browser observer fallback。
+
+AnimeImages 父进程拥有 backend 顺序、单次和总 deadline、selected
+backend、固定安全错误及最多 12 条 attempt。失败结果也可显示已经真实
+运行的 attempts；表格和脱敏 JSON 不包含 URL、Header/Cookie 值、异常、
+本地路径或外部 API 数据。
+
+完整实现与 26 项组件处置见
+[videodl Asset 1/2 outcome](research/videodl/ASSET_1_2_IMPLEMENTATION_OUTCOME_V1.md)。
+这不会授权正式平台路线、公开访问、grabber 或生产部署。
+
 ## 添加 Whole-Repository Provider
 
 新增 Provider 至少需要：
