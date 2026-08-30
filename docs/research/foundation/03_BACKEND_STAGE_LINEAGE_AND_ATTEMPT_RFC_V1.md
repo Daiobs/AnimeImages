@@ -23,12 +23,17 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Research-ready, not implemented |
-| Intended first scope | Internal contracts and Staff Provider Lab |
+| Status | Historical research model, not adopted as a current contract |
+| Former proposed scope | Internal contracts and Staff Provider Lab |
 | Public API | No |
 | Persistence | No |
 | Automatic scoring or routing | No |
 | Formal route change | No |
+
+```text
+READY_VALUES = HISTORICAL_RESEARCH_COMPLETENESS_ONLY
+CURRENT_IMPLEMENTATION_AUTHORITY = NONE
+```
 
 Navigation:
 
@@ -38,12 +43,12 @@ Navigation:
   explains why AnimeImages should own these contracts.
 - [Observation and delivery RFC](04_UPSTREAM_OBSERVATION_AND_DELIVERY_RFC_V1.md)
   embeds these records in `UpstreamObservationV1`.
-- [Roadmap](05_FOUNDATION_IMPLEMENTATION_ROADMAP_V1.md) defines the staged
-  implementation order.
+- [Roadmap](05_FOUNDATION_IMPLEMENTATION_ROADMAP_V1.md) preserves the
+  superseded historical implementation proposal.
 - [Reuse matrix](06_COMPONENT_REUSE_AND_PROVENANCE_MATRIX_V1.md) records source
   provenance and replacement cost.
 
-## Design Goals
+## Historical Design Goals
 
 1. Explain every selected result without retaining sensitive URL or credential
    values.
@@ -91,8 +96,8 @@ It does not claim success or trust.
 | `browser_observer` | Observe rendered DOM or browser network behavior. | `BROWSER_NETWORK_OBSERVER` |
 
 The fixed videodl pin exposes the first three stages at the top level and
-collapses the last two under `WebMediaGrabber`. A future Worker V2 should emit
-the two grabber substages separately.
+collapses the last two under `WebMediaGrabber`. In the historical Worker V2
+proposal, the two grabber substages would be emitted separately.
 
 ## BackendLineageV1
 
@@ -203,7 +208,8 @@ missing relationship or format evidence. This is not automatic scoring.
 
 ### Bounds
 
-A contract implementation should enforce at least:
+The historical contract proposal expected an implementation to enforce at
+least:
 
 - a mode-specific maximum attempt count;
 - bounded ID and enum values;
@@ -286,9 +292,9 @@ derived from evidence stage.
 | `GRABBER_ONLY` | Blocked until a separate sandbox gate proves filesystem, private-network, loopback, cloud-metadata, and resource-limit controls. Staff opt-in alone is insufficient. |
 | `SPECIFIC_BACKEND` | Record exactly one permitted backend attempt plus its internal lineage; no implicit fallback, and browser observer remains sandbox-gated. |
 
-The current videodl API cannot provide these strict semantics for every mode,
-so the future worker must instrument or wrap stage entry rather than infer a
-trace from the final `VideoInfo`.
+The current videodl API cannot provide these strict semantics for every mode.
+The historical Worker V2 proposal therefore required stage instrumentation or
+wrapping instead of inferring a trace from the final `VideoInfo`.
 
 ## Security And Privacy Rules
 
@@ -326,7 +332,10 @@ opaque request identifier.
    URL.
 11. Projection to public/runtime assets discards attempt trace and lineage.
 
-## RFC Decision
+## Historical RFC Decision
+
+The `READY` values below record research-model completeness only. They do not
+adopt a Runtime contract or authorize implementation.
 
 `VIDEODL_RESOLUTION_STAGE_MODEL = READY`
 
@@ -344,5 +353,6 @@ opaque request identifier.
 
 `LINEAR_SUPPORT_LADDER = REMOVED`
 
-Implementation must begin as internal URL-free dataclasses and validation
-tests. Worker instrumentation and Provider Lab projection are later PRs.
+The superseded sequence proposed beginning with internal URL-free dataclasses
+and validation tests, followed by Worker instrumentation and Provider Lab
+projection. No implementation sequence is currently authorized.
