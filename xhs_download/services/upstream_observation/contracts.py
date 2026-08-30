@@ -158,6 +158,9 @@ _ERROR_MESSAGES = {
     "INVALID_EVIDENCE": "upstream observation evidence is invalid",
     "INVALID_RELATIONSHIP_EVIDENCE": "relationship evidence is invalid",
     "INVALID_REQUIREMENT": "upstream observation requirement is invalid",
+    "NON_CANONICAL_ORDER": (
+        "upstream observation collection order is not canonical"
+    ),
     "BOUND_EXCEEDED": "upstream observation bound is exceeded",
     "SENSITIVE_VALUE_REJECTED": "sensitive upstream observation value is rejected",
     "UNKNOWN_FIELD": "unknown upstream observation field is rejected",
@@ -355,8 +358,8 @@ class AttemptTraceV1:
     relationship_count: int
     evidence_stage: EvidenceStageV1
     relationship_evidence: RelationshipEvidenceV1
-    fallback_reason: AttemptFallbackReasonV1 | None
-    lineage_leaf_ordinal: int | None
+    fallback_reason: AttemptFallbackReasonV1
+    lineage_leaf_ordinal: int
 
     def __post_init__(self) -> None:
         _require_int(self.ordinal, "attempt.ordinal", minimum=1)
@@ -388,18 +391,16 @@ class AttemptTraceV1:
             RelationshipEvidenceV1,
             "attempt.relationship_evidence",
         )
-        if self.fallback_reason is not None:
-            _require_enum(
-                self.fallback_reason,
-                AttemptFallbackReasonV1,
-                "attempt.fallback_reason",
-            )
-        if self.lineage_leaf_ordinal is not None:
-            _require_int(
-                self.lineage_leaf_ordinal,
-                "attempt.lineage_leaf_ordinal",
-                minimum=1,
-            )
+        _require_enum(
+            self.fallback_reason,
+            AttemptFallbackReasonV1,
+            "attempt.fallback_reason",
+        )
+        _require_int(
+            self.lineage_leaf_ordinal,
+            "attempt.lineage_leaf_ordinal",
+            minimum=1,
+        )
         self._validate_outcome()
         _validate_evidence_counts(
             self.evidence_stage,
@@ -529,9 +530,6 @@ class UpstreamObservationV1:
         ordinals = tuple(node.ordinal for node in self.lineage)
         if len(ordinals) != len(set(ordinals)) or ordinals != tuple(sorted(ordinals)):
             _reject("INVALID_LINEAGE", "lineage.ordinal")
-        actor_ids = tuple(node.actor_id for node in self.lineage)
-        if len(actor_ids) != len(set(actor_ids)):
-            _reject("INVALID_LINEAGE", "lineage.actor_id")
         roots = tuple(node for node in self.lineage if node.parent_ordinal is None)
         if len(roots) != 1:
             _reject("INVALID_LINEAGE", "lineage.parent_ordinal")
@@ -561,11 +559,21 @@ class UpstreamObservationV1:
         for attempt in self.attempts:
             if attempt.lineage_leaf_ordinal not in leaf_ordinals:
                 _reject("INVALID_ATTEMPT", "attempt.lineage_leaf_ordinal")
-            node = nodes[attempt.lineage_leaf_ordinal]
-            if (
-                node.actor_id != attempt.backend_id
-                or node.backend_type is not attempt.backend_type
-            ):
+
+            # The attempt names the adapter AnimeImages invoked, while the leaf
+            # records the terminal actor reached through that adapter. Only the
+            # selected leaf's ancestor path is authoritative for this mapping.
+            matching_backend_nodes = 0
+            current_ordinal: int | None = attempt.lineage_leaf_ordinal
+            while current_ordinal is not None:
+                node = nodes[current_ordinal]
+                if (
+                    node.actor_id == attempt.backend_id
+                    and node.backend_type is attempt.backend_type
+                ):
+                    matching_backend_nodes += 1
+                current_ordinal = node.parent_ordinal
+            if matching_backend_nodes != 1:
                 _reject("INVALID_ATTEMPT", "attempt.backend_id")
 
     def _validate_requirements(self) -> None:
@@ -585,6 +593,16 @@ class UpstreamObservationV1:
             _reject("INVALID_REQUIREMENT", "acquisition_requirements")
         if len(set(self.assembly_requirements)) != len(self.assembly_requirements):
             _reject("INVALID_REQUIREMENT", "assembly_requirements")
+        acquisition_values = tuple(
+            requirement.value for requirement in self.acquisition_requirements
+        )
+        if acquisition_values != tuple(sorted(acquisition_values)):
+            _reject("NON_CANONICAL_ORDER", "acquisition_requirements")
+        assembly_values = tuple(
+            requirement.value for requirement in self.assembly_requirements
+        )
+        if assembly_values != tuple(sorted(assembly_values)):
+            _reject("NON_CANONICAL_ORDER", "assembly_requirements")
         if (
             AssemblyRequirementV1.DIRECT_SINGLE_FILE in self.assembly_requirements
             and AssemblyRequirementV1.SEPARATE_VIDEO_AUDIO
@@ -627,10 +645,12 @@ class UpstreamObservationV1:
             self.video_track_count or self.audio_track_count
         ):
             _reject("INVALID_EVIDENCE", "candidate_count")
-        if len(set(self.warning_codes)) != len(self.warning_codes):
-            _reject("INVALID_IDENTIFIER", "warning_codes")
         for warning_code in self.warning_codes:
             _require_code(warning_code, "warning_codes")
+        if len(set(self.warning_codes)) != len(self.warning_codes):
+            _reject("INVALID_IDENTIFIER", "warning_codes")
+        if self.warning_codes != tuple(sorted(self.warning_codes)):
+            _reject("NON_CANONICAL_ORDER", "warning_codes")
 
     def _validate_selection(self) -> None:
         if self.selected_attempt_ordinal is None:

@@ -125,7 +125,7 @@ def to_primitive(observation: UpstreamObservationV1) -> dict[str, Any]:
                 "relationship_count": attempt.relationship_count,
                 "evidence_stage": attempt.evidence_stage.value,
                 "relationship_evidence": attempt.relationship_evidence.value,
-                "fallback_reason": _enum_value(attempt.fallback_reason),
+                "fallback_reason": attempt.fallback_reason.value,
                 "lineage_leaf_ordinal": attempt.lineage_leaf_ordinal,
             }
             for attempt in observation.attempts
@@ -283,12 +283,12 @@ def _attempt_from_primitive(value: Any) -> AttemptTraceV1:
             RelationshipEvidenceV1,
             "attempt.relationship_evidence",
         ),
-        fallback_reason=_expect_optional_enum(
+        fallback_reason=_expect_enum(
             item["fallback_reason"],
             AttemptFallbackReasonV1,
             "attempt.fallback_reason",
         ),
-        lineage_leaf_ordinal=_expect_optional_int(
+        lineage_leaf_ordinal=_expect_int(
             item["lineage_leaf_ordinal"], "attempt.lineage_leaf_ordinal"
         ),
     )

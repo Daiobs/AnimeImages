@@ -241,6 +241,56 @@ def livephoto_fixture() -> UpstreamObservationV1:
     )
 
 
+def nested_aggregator_lineage_fixture() -> UpstreamObservationV1:
+    backend_id = "videodl.KuKuToolVideoClient"
+    backend_type = BackendCapabilityTypeV1.AGGREGATOR_API
+    lineage = (
+        make_lineage()[0],
+        BackendLineageNodeV1(
+            ordinal=2,
+            parent_ordinal=1,
+            actor_id="videodl_repo",
+            actor_type=BackendActorTypeV1.CONTAINER,
+            backend_type=None,
+            provider_version="commit123",
+            trust_scope=LineageTrustScopeV1.STAFF_LAB,
+            data_shared=LineageDataSharedV1.SOURCE_REFERENCE,
+        ),
+        BackendLineageNodeV1(
+            ordinal=3,
+            parent_ordinal=2,
+            actor_id=backend_id,
+            actor_type=BackendActorTypeV1.ADAPTER,
+            backend_type=backend_type,
+            provider_version="commit123",
+            trust_scope=LineageTrustScopeV1.STAFF_LAB,
+            data_shared=LineageDataSharedV1.SOURCE_REFERENCE,
+        ),
+        BackendLineageNodeV1(
+            ordinal=4,
+            parent_ordinal=3,
+            actor_id="kukutool.service",
+            actor_type=BackendActorTypeV1.EXTERNAL_SERVICE,
+            backend_type=backend_type,
+            provider_version="1.0",
+            trust_scope=LineageTrustScopeV1.EXTERNAL,
+            data_shared=LineageDataSharedV1.SOURCE_REFERENCE,
+        ),
+    )
+    attempt = make_attempt(
+        stage=ResolutionStageV1.COMMON_AGGREGATOR,
+        backend_id=backend_id,
+        backend_type=backend_type,
+        lineage_leaf_ordinal=4,
+    )
+    return make_observation(
+        top_level_provider="videodl_repo",
+        resolution_stage=ResolutionStageV1.COMMON_AGGREGATOR,
+        lineage=lineage,
+        attempts=(attempt,),
+    )
+
+
 class ValidationTestCase(unittest.TestCase):
     def assert_invalid(self, code: str, callback) -> UpstreamObservationValidationError:
         with self.assertRaises(UpstreamObservationValidationError) as raised:
@@ -458,11 +508,115 @@ class LineageTests(ValidationTestCase):
             ),
         )
 
-    def test_duplicate_actor_id_is_rejected(self):
-        duplicate = replace(make_lineage()[1], actor_id="animeimages")
+    def test_repeated_actor_ids_across_branches_are_valid(self):
+        root = make_lineage()[0]
+        dedicated_adapter = replace(
+            make_lineage()[1],
+            actor_id="dedicated.adapter",
+        )
+        dedicated_service = BackendLineageNodeV1(
+            ordinal=3,
+            parent_ordinal=2,
+            actor_id="anyfetcher.service",
+            actor_type=BackendActorTypeV1.EXTERNAL_SERVICE,
+            backend_type=BackendCapabilityTypeV1.AGGREGATOR_API,
+            provider_version="1.0",
+            trust_scope=LineageTrustScopeV1.EXTERNAL,
+            data_shared=LineageDataSharedV1.SOURCE_REFERENCE,
+        )
+        common_adapter = BackendLineageNodeV1(
+            ordinal=4,
+            parent_ordinal=1,
+            actor_id="common.adapter",
+            actor_type=BackendActorTypeV1.ADAPTER,
+            backend_type=BackendCapabilityTypeV1.AGGREGATOR_API,
+            provider_version="1.0",
+            trust_scope=LineageTrustScopeV1.STAFF_LAB,
+            data_shared=LineageDataSharedV1.SOURCE_REFERENCE,
+        )
+        common_service = replace(
+            dedicated_service,
+            ordinal=5,
+            parent_ordinal=4,
+        )
+        attempt = make_attempt(
+            backend_id="dedicated.adapter",
+            lineage_leaf_ordinal=3,
+        )
+        observation = make_observation(
+            lineage=(
+                root,
+                dedicated_adapter,
+                dedicated_service,
+                common_adapter,
+                common_service,
+            ),
+            attempts=(attempt,),
+        )
+        repeated = [
+            node
+            for node in observation.lineage
+            if node.actor_id == "anyfetcher.service"
+        ]
+        self.assertEqual([node.ordinal for node in repeated], [3, 5])
+
+    def test_nested_adapter_backend_maps_to_terminal_service_leaf(self):
+        observation = nested_aggregator_lineage_fixture()
+        attempt = observation.attempts[0]
+        self.assertEqual(attempt.backend_id, "videodl.KuKuToolVideoClient")
+        self.assertEqual(attempt.lineage_leaf_ordinal, 4)
+        self.assertEqual(observation.lineage[-1].actor_id, "kukutool.service")
+
+    def test_backend_outside_selected_leaf_ancestor_path_is_rejected(self):
+        observation = nested_aggregator_lineage_fixture()
+        sibling = BackendLineageNodeV1(
+            ordinal=5,
+            parent_ordinal=1,
+            actor_id="sibling.adapter",
+            actor_type=BackendActorTypeV1.ADAPTER,
+            backend_type=BackendCapabilityTypeV1.AGGREGATOR_API,
+            provider_version="1.0",
+            trust_scope=LineageTrustScopeV1.STAFF_LAB,
+            data_shared=LineageDataSharedV1.SOURCE_REFERENCE,
+        )
+        attempt = replace(observation.attempts[0], backend_id="sibling.adapter")
         self.assert_invalid(
-            "INVALID_LINEAGE",
-            lambda: make_observation(lineage=(make_lineage()[0], duplicate)),
+            "INVALID_ATTEMPT",
+            lambda: make_observation(
+                resolution_stage=ResolutionStageV1.COMMON_AGGREGATOR,
+                lineage=observation.lineage + (sibling,),
+                attempts=(attempt,),
+            ),
+        )
+
+    def test_backend_type_must_match_selected_ancestor(self):
+        observation = nested_aggregator_lineage_fixture()
+        attempt = replace(
+            observation.attempts[0],
+            backend_type=BackendCapabilityTypeV1.DEDICATED_SOURCE_ADAPTER,
+        )
+        self.assert_invalid(
+            "INVALID_ATTEMPT",
+            lambda: make_observation(
+                resolution_stage=ResolutionStageV1.COMMON_AGGREGATOR,
+                lineage=observation.lineage,
+                attempts=(attempt,),
+            ),
+        )
+
+    def test_duplicate_backend_on_selected_ancestor_path_is_ambiguous(self):
+        observation = nested_aggregator_lineage_fixture()
+        duplicate_backend_leaf = replace(
+            observation.lineage[-1],
+            actor_id=observation.attempts[0].backend_id,
+        )
+        self.assert_invalid(
+            "INVALID_ATTEMPT",
+            lambda: make_observation(
+                resolution_stage=ResolutionStageV1.COMMON_AGGREGATOR,
+                lineage=observation.lineage[:-1] + (duplicate_backend_leaf,),
+                attempts=observation.attempts,
+            ),
         )
 
     def test_missing_selected_leaf_is_rejected(self):
@@ -488,14 +642,14 @@ class LineageTests(ValidationTestCase):
             lambda: make_observation(lineage=make_lineage() + (external,)),
         )
 
-    def test_attempt_backend_id_must_match_lineage_leaf(self):
+    def test_attempt_backend_id_must_match_selected_lineage_path(self):
         attempt = replace(make_attempt(), backend_id="other.adapter")
         self.assert_invalid(
             "INVALID_ATTEMPT",
             lambda: make_observation(attempts=(attempt,)),
         )
 
-    def test_attempt_backend_type_must_match_lineage_leaf(self):
+    def test_attempt_backend_type_must_match_selected_lineage_path(self):
         attempt = replace(
             make_attempt(),
             backend_type=BackendCapabilityTypeV1.AGGREGATOR_API,
@@ -540,6 +694,37 @@ class LineageTests(ValidationTestCase):
 class AttemptTests(ValidationTestCase):
     def test_success_attempt_is_valid(self):
         self.assertEqual(make_attempt().outcome, AttemptOutcomeV1.SUCCESS)
+
+    def test_fallback_reason_is_always_a_non_null_enum(self):
+        attempts = (
+            make_attempt(),
+            make_failed_attempt(),
+            replace(
+                make_failed_attempt(),
+                outcome=AttemptOutcomeV1.TIMEOUT,
+                failure_class=AttemptFailureClassV1.TIMEOUT,
+                fallback_reason=AttemptFallbackReasonV1.BACKEND_TIMED_OUT,
+            ),
+            make_skipped_attempt(),
+            replace(
+                make_failed_attempt(),
+                outcome=AttemptOutcomeV1.POLICY_REJECTED,
+                failure_class=AttemptFailureClassV1.POLICY_REJECTED,
+                fallback_reason=AttemptFallbackReasonV1.RESULT_REJECTED,
+            ),
+        )
+        self.assertTrue(
+            all(
+                type(attempt.fallback_reason) is AttemptFallbackReasonV1
+                for attempt in attempts
+            )
+        )
+
+    def test_null_fallback_reason_is_rejected(self):
+        self.assert_invalid(
+            "INVALID_ENUM",
+            lambda: replace(make_attempt(), fallback_reason=None),
+        )
 
     def test_negative_elapsed_is_rejected(self):
         self.assert_invalid(
@@ -640,10 +825,9 @@ class AttemptTests(ValidationTestCase):
         )
 
     def test_attempt_requires_existing_lineage_leaf(self):
-        attempt = replace(make_attempt(), lineage_leaf_ordinal=None)
         self.assert_invalid(
-            "INVALID_ATTEMPT",
-            lambda: make_observation(attempts=(attempt,)),
+            "INVALID_TYPE",
+            lambda: replace(make_attempt(), lineage_leaf_ordinal=None),
         )
 
     def test_attempt_bound_is_enforced(self):
@@ -840,6 +1024,61 @@ class ObservationAndFixtureTests(ValidationTestCase):
             lambda: make_observation(assembly_requirements=(requirement, requirement)),
         )
 
+    def test_reversed_acquisition_requirements_are_rejected(self):
+        self.assert_invalid(
+            "NON_CANONICAL_ORDER",
+            lambda: make_observation(
+                acquisition_requirements=(
+                    AcquisitionRequirementV1.RANGE_REQUIRED,
+                    AcquisitionRequirementV1.COOKIE_REQUIRED,
+                )
+            ),
+        )
+
+    def test_reversed_assembly_requirements_are_rejected(self):
+        self.assert_invalid(
+            "NON_CANONICAL_ORDER",
+            lambda: make_observation(
+                assembly_requirements=(
+                    AssemblyRequirementV1.REQUIRES_REMUX,
+                    AssemblyRequirementV1.DASH_MANIFEST,
+                )
+            ),
+        )
+
+    def test_reversed_warning_codes_are_rejected(self):
+        error = self.assert_invalid(
+            "NON_CANONICAL_ORDER",
+            lambda: make_observation(
+                warning_codes=("PARTIAL_METADATA", "FORMAT_UNKNOWN")
+            ),
+        )
+        self.assertNotIn("PARTIAL_METADATA", str(error))
+
+    def test_canonical_collections_round_trip_unchanged(self):
+        observation = make_observation(
+            acquisition_requirements=(
+                AcquisitionRequirementV1.COOKIE_REQUIRED,
+                AcquisitionRequirementV1.RANGE_REQUIRED,
+            ),
+            assembly_requirements=(
+                AssemblyRequirementV1.DASH_MANIFEST,
+                AssemblyRequirementV1.REQUIRES_REMUX,
+            ),
+            warning_codes=("FORMAT_UNKNOWN", "PARTIAL_METADATA"),
+        )
+        restored = UpstreamObservationV1.from_json(observation.to_json())
+        self.assertEqual(
+            restored.acquisition_requirements,
+            observation.acquisition_requirements,
+        )
+        self.assertEqual(
+            restored.assembly_requirements,
+            observation.assembly_requirements,
+        )
+        self.assertEqual(restored.warning_codes, observation.warning_codes)
+        self.assertEqual(restored.to_json(), observation.to_json())
+
     def test_separate_av_requires_audio_track(self):
         self.assert_invalid(
             "INVALID_REQUIREMENT",
@@ -950,6 +1189,7 @@ class SerializationTests(ValidationTestCase):
             complete_mp4_fixture(),
             separate_av_fixture(),
             livephoto_fixture(),
+            nested_aggregator_lineage_fixture(),
             make_failure_observation(),
         ):
             with self.subTest(request_id=fixture.request_id):
@@ -994,6 +1234,47 @@ class SerializationTests(ValidationTestCase):
         primitive = make_observation().to_primitive()
         primitive["warning_codes"] = "NOT_A_LIST"
         self.assert_invalid("INVALID_TYPE", lambda: from_primitive(primitive))
+
+    def test_attempt_fallback_and_leaf_are_always_serialized(self):
+        attempt = make_observation().to_primitive()["attempts"][0]
+        self.assertEqual(attempt["fallback_reason"], "NONE")
+        self.assertEqual(attempt["lineage_leaf_ordinal"], 2)
+        self.assertIs(type(attempt["lineage_leaf_ordinal"]), int)
+
+    def test_null_attempt_fallback_reason_is_rejected(self):
+        primitive = make_observation().to_primitive()
+        primitive["attempts"][0]["fallback_reason"] = None
+        self.assert_invalid("INVALID_TYPE", lambda: from_primitive(primitive))
+
+    def test_null_attempt_lineage_leaf_is_rejected(self):
+        primitive = make_observation().to_primitive()
+        primitive["attempts"][0]["lineage_leaf_ordinal"] = None
+        self.assert_invalid("INVALID_TYPE", lambda: from_primitive(primitive))
+
+    def test_deserializer_does_not_sort_non_canonical_collections(self):
+        observation = make_observation(
+            acquisition_requirements=(
+                AcquisitionRequirementV1.COOKIE_REQUIRED,
+                AcquisitionRequirementV1.RANGE_REQUIRED,
+            ),
+            assembly_requirements=(
+                AssemblyRequirementV1.DASH_MANIFEST,
+                AssemblyRequirementV1.REQUIRES_REMUX,
+            ),
+            warning_codes=("FORMAT_UNKNOWN", "PARTIAL_METADATA"),
+        )
+        for field_name in (
+            "acquisition_requirements",
+            "assembly_requirements",
+            "warning_codes",
+        ):
+            with self.subTest(field_name=field_name):
+                primitive = observation.to_primitive()
+                primitive[field_name].reverse()
+                self.assert_invalid(
+                    "NON_CANONICAL_ORDER",
+                    lambda primitive=primitive: from_primitive(primitive),
+                )
 
     def test_top_level_provider_version_is_required_text(self):
         primitive = make_observation().to_primitive()
@@ -1142,6 +1423,7 @@ class SecurityAndPurityTests(ValidationTestCase):
             complete_mp4_fixture(),
             separate_av_fixture(),
             livephoto_fixture(),
+            nested_aggregator_lineage_fixture(),
         ):
             walk(fixture.to_primitive())
 
