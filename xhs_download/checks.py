@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 from django.conf import settings
 from django.core.checks import Error, Warning as CheckWarning, register
 
+from .services.env_config import runtime_bool, runtime_list, runtime_str
 from .services.platforms.douyin_kukutool import (
     get_kukutool_runtime_status,
     get_kukutool_sidecar_status,
@@ -16,18 +17,19 @@ from .services.youtube_merge import get_youtube_merge_health
 @register()
 def check_provider_validation_email_configuration(app_configs, **kwargs):
     del app_configs, kwargs
-    if not getattr(settings, "PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED", False):
+    if not runtime_bool("PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED", False):
         return []
 
     issues = []
     recipients = tuple(
         str(value or "").strip()
-        for value in (
-            getattr(settings, "PROVIDER_VALIDATION_EMAIL_RECIPIENTS", ()) or ()
-        )
+        for value in runtime_list("PROVIDER_VALIDATION_EMAIL_RECIPIENTS", ())
         if str(value or "").strip()
     )
-    backend = str(getattr(settings, "EMAIL_BACKEND", "") or "")
+    backend = runtime_str(
+        "DJANGO_EMAIL_BACKEND",
+        "django.core.mail.backends.console.EmailBackend",
+    )
     if not recipients:
         issues.append(
             Error(
@@ -35,15 +37,15 @@ def check_provider_validation_email_configuration(app_configs, **kwargs):
                 id="xhs_download.E013",
             )
         )
-    if not str(getattr(settings, "DEFAULT_FROM_EMAIL", "") or "").strip():
+    if not runtime_str("DJANGO_DEFAULT_FROM_EMAIL", ""):
         issues.append(
             Error(
-                "Provider validation email delivery requires DEFAULT_FROM_EMAIL.",
+                "Provider validation email delivery requires DJANGO_DEFAULT_FROM_EMAIL.",
                 id="xhs_download.E014",
             )
         )
-    if getattr(settings, "EMAIL_USE_TLS", False) and getattr(
-        settings, "EMAIL_USE_SSL", False
+    if runtime_bool("DJANGO_EMAIL_USE_TLS", False) and runtime_bool(
+        "DJANGO_EMAIL_USE_SSL", False
     ):
         issues.append(
             Error(
@@ -51,12 +53,12 @@ def check_provider_validation_email_configuration(app_configs, **kwargs):
                 id="xhs_download.E015",
             )
         )
-    if backend.endswith("smtp.EmailBackend") and not str(
-        getattr(settings, "EMAIL_HOST", "") or ""
-    ).strip():
+    if backend.endswith("smtp.EmailBackend") and not runtime_str(
+        "DJANGO_EMAIL_HOST", ""
+    ):
         issues.append(
             Error(
-                "Provider validation SMTP delivery requires EMAIL_HOST.",
+                "Provider validation SMTP delivery requires DJANGO_EMAIL_HOST.",
                 id="xhs_download.E016",
             )
         )
@@ -70,9 +72,7 @@ def check_provider_validation_email_configuration(app_configs, **kwargs):
                 id="xhs_download.E017",
             )
         )
-    report_url = str(
-        getattr(settings, "PROVIDER_VALIDATION_ADMIN_REPORT_URL", "") or ""
-    ).strip()
+    report_url = runtime_str("PROVIDER_VALIDATION_ADMIN_REPORT_URL", "")
     if report_url:
         parsed = urlparse(report_url)
         if (

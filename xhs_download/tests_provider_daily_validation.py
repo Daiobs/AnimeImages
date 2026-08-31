@@ -241,8 +241,8 @@ class ProviderHealthRegistryV1Tests(TestCase):
 
 
 @override_settings(
-    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
-    DEFAULT_FROM_EMAIL="noreply@example.test",
+    DJANGO_EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+    DJANGO_DEFAULT_FROM_EMAIL="noreply@example.test",
     PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED=True,
     PROVIDER_VALIDATION_EMAIL_RECIPIENTS=("maintainer@example.test",),
 )
@@ -419,8 +419,8 @@ class DailyValidationOrchestrationTests(TestCase):
 
 
 @override_settings(
-    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
-    DEFAULT_FROM_EMAIL="noreply@example.test",
+    DJANGO_EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+    DJANGO_DEFAULT_FROM_EMAIL="noreply@example.test",
     PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED=True,
     PROVIDER_VALIDATION_EMAIL_RECIPIENTS=("maintainer@example.test",),
 )
@@ -560,7 +560,7 @@ class DailyValidationNotificationTests(TestCase):
         self.assertEqual(len(mail.outbox), 0)
 
     @override_settings(
-        EMAIL_BACKEND="django.core.mail.backends.console.EmailBackend",
+        DJANGO_EMAIL_BACKEND="django.core.mail.backends.console.EmailBackend",
         REQUIRE_PRODUCTION_CONFIG=True,
     )
     def test_production_console_backend_disables_runtime_delivery(self):
@@ -626,9 +626,9 @@ class ProviderValidationSystemCheckTests(TestCase):
     @override_settings(
         PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED=True,
         PROVIDER_VALIDATION_EMAIL_RECIPIENTS=(),
-        DEFAULT_FROM_EMAIL="",
-        EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend",
-        EMAIL_HOST="",
+        DJANGO_DEFAULT_FROM_EMAIL="",
+        DJANGO_EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend",
+        DJANGO_EMAIL_HOST="",
     )
     def test_missing_recipient_from_and_smtp_host_are_reported(self):
         self.assertTrue({"xhs_download.E013", "xhs_download.E014", "xhs_download.E016"} <= self.check_ids())
@@ -636,8 +636,8 @@ class ProviderValidationSystemCheckTests(TestCase):
     @override_settings(
         PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED=True,
         PROVIDER_VALIDATION_EMAIL_RECIPIENTS=("   ",),
-        DEFAULT_FROM_EMAIL="sender@example.test",
-        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        DJANGO_DEFAULT_FROM_EMAIL="sender@example.test",
+        DJANGO_EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
     )
     def test_blank_recipient_values_are_treated_as_unconfigured(self):
         self.assertIn("xhs_download.E013", self.check_ids())
@@ -645,11 +645,11 @@ class ProviderValidationSystemCheckTests(TestCase):
     @override_settings(
         PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED=True,
         PROVIDER_VALIDATION_EMAIL_RECIPIENTS=("secret-recipient@example.test",),
-        DEFAULT_FROM_EMAIL="sender@example.test",
-        EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend",
-        EMAIL_HOST="smtp.example.test",
-        EMAIL_USE_TLS=True,
-        EMAIL_USE_SSL=True,
+        DJANGO_DEFAULT_FROM_EMAIL="sender@example.test",
+        DJANGO_EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend",
+        DJANGO_EMAIL_HOST="smtp.example.test",
+        DJANGO_EMAIL_USE_TLS=True,
+        DJANGO_EMAIL_USE_SSL=True,
     )
     def test_tls_ssl_conflict_is_safe(self):
         issues = check_provider_validation_email_configuration(None)
@@ -660,8 +660,8 @@ class ProviderValidationSystemCheckTests(TestCase):
     @override_settings(
         PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED=True,
         PROVIDER_VALIDATION_EMAIL_RECIPIENTS=("maintainer@example.test",),
-        DEFAULT_FROM_EMAIL="sender@example.test",
-        EMAIL_BACKEND="django.core.mail.backends.console.EmailBackend",
+        DJANGO_DEFAULT_FROM_EMAIL="sender@example.test",
+        DJANGO_EMAIL_BACKEND="django.core.mail.backends.console.EmailBackend",
         REQUIRE_PRODUCTION_CONFIG=True,
     )
     def test_production_console_backend_is_rejected(self):
@@ -670,11 +670,11 @@ class ProviderValidationSystemCheckTests(TestCase):
     @override_settings(
         PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED=True,
         PROVIDER_VALIDATION_EMAIL_RECIPIENTS=("maintainer@example.test",),
-        DEFAULT_FROM_EMAIL="sender@example.test",
-        EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend",
-        EMAIL_HOST="smtp.example.test",
-        EMAIL_USE_TLS=True,
-        EMAIL_USE_SSL=False,
+        DJANGO_DEFAULT_FROM_EMAIL="sender@example.test",
+        DJANGO_EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend",
+        DJANGO_EMAIL_HOST="smtp.example.test",
+        DJANGO_EMAIL_USE_TLS=True,
+        DJANGO_EMAIL_USE_SSL=False,
         REQUIRE_PRODUCTION_CONFIG=True,
         PROVIDER_VALIDATION_ADMIN_REPORT_URL="https://admin.example.test/report",
     )
@@ -684,9 +684,9 @@ class ProviderValidationSystemCheckTests(TestCase):
     @override_settings(
         PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED=True,
         PROVIDER_VALIDATION_EMAIL_RECIPIENTS=("maintainer@example.test",),
-        DEFAULT_FROM_EMAIL="sender@example.test",
-        EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend",
-        EMAIL_HOST="smtp.example.test",
+        DJANGO_DEFAULT_FROM_EMAIL="sender@example.test",
+        DJANGO_EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend",
+        DJANGO_EMAIL_HOST="smtp.example.test",
         PROVIDER_VALIDATION_ADMIN_REPORT_URL="file:///private/report",
     )
     def test_unsafe_report_url_is_rejected_without_echo(self):
@@ -697,9 +697,9 @@ class ProviderValidationSystemCheckTests(TestCase):
     @override_settings(
         PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED=True,
         PROVIDER_VALIDATION_EMAIL_RECIPIENTS=("maintainer@example.test",),
-        DEFAULT_FROM_EMAIL="sender@example.test",
-        EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend",
-        EMAIL_HOST="smtp.example.test",
+        DJANGO_DEFAULT_FROM_EMAIL="sender@example.test",
+        DJANGO_EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend",
+        DJANGO_EMAIL_HOST="smtp.example.test",
         PROVIDER_VALIDATION_ADMIN_REPORT_URL="https://admin.example.test/report?token=private",
     )
     def test_report_url_with_query_is_rejected_without_echo(self):
@@ -709,8 +709,8 @@ class ProviderValidationSystemCheckTests(TestCase):
 
 
 @override_settings(
-    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
-    DEFAULT_FROM_EMAIL="noreply@example.test",
+    DJANGO_EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+    DJANGO_DEFAULT_FROM_EMAIL="noreply@example.test",
     PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED=False,
 )
 class ProviderValidationCommandTests(TestCase):
@@ -827,7 +827,7 @@ class ProviderValidationAdminTests(TestCase):
 
     @override_settings(
         PROVIDER_VALIDATION_EMAIL_RECIPIENTS=("private-recipient@example.test",),
-        EMAIL_HOST_PASSWORD="private-password",
+        DJANGO_EMAIL_HOST_PASSWORD="private-password",
     )
     def test_report_renders_daily_controls_warnings_and_no_email_secrets(self):
         self.grant("view_providerhealthtestrun")
@@ -935,8 +935,8 @@ class ProviderValidationAdminTests(TestCase):
         self.assertEqual(response.context["suite_runs_page"].number, 2)
 
     @override_settings(
-        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
-        DEFAULT_FROM_EMAIL="noreply@example.test",
+        DJANGO_EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        DJANGO_DEFAULT_FROM_EMAIL="noreply@example.test",
         PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED=True,
         PROVIDER_VALIDATION_EMAIL_RECIPIENTS=("maintainer@example.test",),
     )

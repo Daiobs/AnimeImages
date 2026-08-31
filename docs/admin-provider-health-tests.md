@@ -170,7 +170,9 @@ test runs。未关联 Suite 的既有手动 `ProviderHealthTestRun` 不会自动
 1. 确认生产 checkout exact SHA，并备份数据库。
 2. 执行 migrate，确认 Admin 页面与权限。
 3. 在 Admin 录入 Human-approved 稳定公开样本并选择 daily keys，同时保持 `daily_enabled=false`。
-4. 从环境配置 SMTP Secret、发件人和收件人；使用 Django `sendtestemail` 验证。
+4. 从环境配置 SMTP Secret、发件人和收件人；使用与每日验证相同的 Django
+   `get_connection` 受控 canary 验证。该局部 env adapter 不修改全局
+   `settings.py`，因此不要用通用 `sendtestemail` 代替此链路验证。
 5. 配置邮件 delivery env Gate，先运行 `--dry-run`。
 6. 运行 `--force --no-email`，人工检查 Suite、逐项状态、host-only 记录和日志。
 7. 运行一次受控带邮件 canary，确认正文不含完整 URL 或 Secret。

@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from django.conf import settings
 from django.core.cache import cache
-from django.core.mail import EmailMessage
+from django.core.mail import EmailMessage, get_connection
 from django.db.models import Count
 from django.utils import timezone
 
@@ -23,12 +23,18 @@ from ..models import (
     ProviderValidationSuiteStatus,
     ProviderValidationSuiteTrigger,
 )
+from .env_config import (
+    runtime_bool,
+    runtime_float,
+    runtime_int,
+    runtime_list,
+    runtime_str,
+)
 from .provider_health_tests import (
     ProviderHealthExecutionContext,
     execute_provider_health_test,
     provider_health_test_by_key,
     provider_health_test_keys,
-    provider_test_url_for,
     record_unexecuted_test,
     validate_daily_test_keys,
     validate_daily_videodl_backend_id,
@@ -86,7 +92,7 @@ class DailyValidationOutcome:
 
 
 def total_timeout_seconds() -> int:
-    value = int(getattr(settings, "PROVIDER_DAILY_VALIDATION_TOTAL_TIMEOUT_SECONDS", 300))
+    value = runtime_int("PROVIDER_DAILY_VALIDATION_TOTAL_TIMEOUT_SECONDS", 300)
     if not 30 <= value <= 900:
         raise DailyValidationConfigurationError("INVALID_TOTAL_TIMEOUT")
     return value
@@ -95,18 +101,19 @@ def total_timeout_seconds() -> int:
 def email_delivery_configuration() -> dict[str, Any]:
     recipients = tuple(
         str(value or "").strip()
-        for value in getattr(settings, "PROVIDER_VALIDATION_EMAIL_RECIPIENTS", ())
+        for value in runtime_list("PROVIDER_VALIDATION_EMAIL_RECIPIENTS", ())
         if str(value or "").strip()
     )
-    env_enabled = bool(
-        getattr(settings, "PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED", False)
+    env_enabled = runtime_bool("PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED", False)
+    backend = runtime_str(
+        "DJANGO_EMAIL_BACKEND",
+        "django.core.mail.backends.console.EmailBackend",
     )
-    backend = str(getattr(settings, "EMAIL_BACKEND", "") or "")
-    from_email = str(getattr(settings, "DEFAULT_FROM_EMAIL", "") or "").strip()
-    use_tls = bool(getattr(settings, "EMAIL_USE_TLS", False))
-    use_ssl = bool(getattr(settings, "EMAIL_USE_SSL", False))
+    from_email = runtime_str("DJANGO_DEFAULT_FROM_EMAIL", "")
+    use_tls = runtime_bool("DJANGO_EMAIL_USE_TLS", False)
+    use_ssl = runtime_bool("DJANGO_EMAIL_USE_SSL", False)
     smtp_host_ready = not backend.endswith("smtp.EmailBackend") or bool(
-        str(getattr(settings, "EMAIL_HOST", "") or "").strip()
+        runtime_str("DJANGO_EMAIL_HOST", "")
     )
     production_backend_ready = not (
         getattr(settings, "REQUIRE_PRODUCTION_CONFIG", not settings.DEBUG)
@@ -129,6 +136,25 @@ def email_delivery_configuration() -> dict[str, Any]:
         "backend": backend,
         "configured": bool(env_enabled and recipients and backend_valid),
     }
+
+
+def _provider_validation_email_connection(backend):
+    options = {}
+    if str(backend or "").endswith("smtp.EmailBackend"):
+        options = {
+            "host": runtime_str("DJANGO_EMAIL_HOST", ""),
+            "port": runtime_int("DJANGO_EMAIL_PORT", 25),
+            "username": runtime_str("DJANGO_EMAIL_HOST_USER", ""),
+            "password": runtime_str("DJANGO_EMAIL_HOST_PASSWORD", ""),
+            "use_tls": runtime_bool("DJANGO_EMAIL_USE_TLS", False),
+            "use_ssl": runtime_bool("DJANGO_EMAIL_USE_SSL", False),
+            "timeout": runtime_float("DJANGO_EMAIL_TIMEOUT_SECONDS", 10.0),
+        }
+    return get_connection(
+        backend=backend,
+        fail_silently=False,
+        **options,
+    )
 
 
 def selected_test_keys(setting, override=None) -> tuple[str, ...]:
@@ -339,9 +365,7 @@ def _notification_body(suite, events) -> str:
                 "",
             )
         )
-    report_url = str(
-        getattr(settings, "PROVIDER_VALIDATION_ADMIN_REPORT_URL", "") or ""
-    ).strip()
+    report_url = runtime_str("PROVIDER_VALIDATION_ADMIN_REPORT_URL", "")
     parsed_report_url = urlparse(report_url) if report_url else None
     if (
         parsed_report_url
@@ -375,8 +399,9 @@ def deliver_notifications(suite, events, setting, *, no_email=False, now=None) -
         sent_count = EmailMessage(
             subject=_notification_subject(events),
             body=_notification_body(suite, events),
-            from_email=str(getattr(settings, "DEFAULT_FROM_EMAIL", "") or ""),
+            from_email=runtime_str("DJANGO_DEFAULT_FROM_EMAIL", ""),
             to=list(config["recipients"]),
+            connection=_provider_validation_email_connection(config["backend"]),
         ).send(fail_silently=False)
         if sent_count != 1:
             raise RuntimeError("EMAIL_DELIVERY_NOT_CONFIRMED")
