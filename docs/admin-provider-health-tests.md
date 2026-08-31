@@ -44,7 +44,9 @@ Provider 设置页和运营看板也保留了入口。
 
 页面中的“测试 URL 配置”会保存到数据库 `ProviderHealthTestSetting`。保存后立即生效，不需要重启服务。
 
-URL 为空时，对应测试会显示“未配置测试 URL”，执行结果为 `skipped`，不算失败。保存配置时，明显无效的 URL，例如没有 host、不是 `http/https` 协议，会被清空并显示提示。
+URL 为空时，对应测试会显示“未配置测试 URL”，执行结果为 `skipped`，不算失败。Admin 保存是第一道结构校验：只接受 `http/https`、无 username/password、端口为 80/443、literal host 非本机或特殊用途地址，并要求平台字段命中对应的现有公开页面 host。无效值会被清空并显示不含原 URL 的固定提示，其它有效字段仍按原行为保存。
+
+每次手动或 scheduled execution 都会在调用 Provider、Worker、yt-dlp、gallery-dl、TianTian 或 videodl 之前重新执行结构校验和 DNS 解析。所有 DNS 结果都必须是公网地址；任一结果为 loopback、private、link-local、multicast、reserved 或 unspecified 时，测试以 `SAMPLE_URL_POLICY_REJECTED` fail closed，记录只保留安全 host。Staff 权限不授权访问私网或 metadata endpoint。该局部门禁不是完整 egress sandbox；各 Provider 仍必须对后续 redirect 和媒体 admission 执行自身现有策略。
 
 只要数据库不被重建或清空，更新代码、执行 `migrate`、重启 Gunicorn、重新拉取分支都不会覆盖这些 URL。生产环境应使用持久化 PostgreSQL，并把数据库备份纳入上线流程；不要依赖临时 SQLite 文件或容器内非持久卷保存这类运行期配置。
 
@@ -125,6 +127,11 @@ registry 顺序串行运行，single-flight 使用共享 Django cache，总预�
 `SUITE_DEADLINE_EXCEEDED` skipped 记录，不会伪装成已执行。过期 running 批次
 会以 `STALE_SUITE_RECOVERED` 安全关闭。
 
+`videodl_backend_id` 在 Admin 保存时始终严格校验；运行 daily suite 时仅当
+`videodl_specific_backend` 被选中才作为启动门禁。未选择该测试时，数据库中
+遗留的无效 Backend ID 不会阻断 `health_ready`、XHS 或 Bilibili 等其它测试，
+也不会启动 videodl Worker。
+
 命令入口：
 
 ```bash
@@ -153,6 +160,13 @@ python manage.py run_daily_provider_validation --force --no-email --test-key hea
 Backend。密码、用户名和收件人只来自环境；后台只显示 Gate、收件人数和
 Backend 类，不显示地址或 SMTP Secret。邮件只包含 test key、公开名称、
 provider、status、固定 error code、连续次数、事件和 host。
+
+生产配置中 console、dummy、locmem 和 filebased Backend 均不构成真实投递，
+系统检查会固定报错且运行时 `configured=false`；不可导入的 Backend 同样
+fail closed。开发和自动测试仍可使用 locmem。`SENT` 与 `notified_at` 仅在允许
+的 Backend 完成发送且 `send()` 明确返回 1 后写入，配置被拒绝时不会调用
+`EmailMessage.send()`。明确配置且可导入的 SMTP 或自定义真实投递 Backend
+不受此禁用清单影响。
 
 后台同一页面展示最新 scheduled Suite、计数、逐项最近状态、连续不健康、
 7/30 天批次趋势以及可分页/筛选的 Suite 历史。手动逐项和“一键测试”仍然

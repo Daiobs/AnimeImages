@@ -9,8 +9,10 @@ from uuid import uuid4
 from django.conf import settings
 from django.core.cache import cache
 from django.core.mail import EmailMessage, get_connection
+from django.core.mail.backends.base import BaseEmailBackend
 from django.db.models import Count
 from django.utils import timezone
+from django.utils.module_loading import import_string
 
 from ..models import (
     ProviderHealthNotificationDeliveryStatus,
@@ -45,6 +47,14 @@ LOCK_KEY = "provider-health:daily-validation:v1:lock"
 LOCK_GRACE_SECONDS = 60
 UNHEALTHY_STATUSES = frozenset(
     {ProviderHealthTestStatus.FAILED, ProviderHealthTestStatus.UNAVAILABLE}
+)
+NON_DELIVERY_EMAIL_BACKENDS = frozenset(
+    {
+        "django.core.mail.backends.console.EmailBackend",
+        "django.core.mail.backends.dummy.EmailBackend",
+        "django.core.mail.backends.locmem.EmailBackend",
+        "django.core.mail.backends.filebased.EmailBackend",
+    }
 )
 
 
@@ -98,6 +108,25 @@ def total_timeout_seconds() -> int:
     return value
 
 
+def provider_validation_email_backend_is_importable(backend) -> bool:
+    backend_path = str(backend or "").strip()
+    if not backend_path:
+        return False
+    try:
+        backend_class = import_string(backend_path)
+    except (ImportError, AttributeError, ValueError):
+        return False
+    return isinstance(backend_class, type) and issubclass(backend_class, BaseEmailBackend)
+
+
+def provider_validation_email_backend_is_delivering(backend) -> bool:
+    backend_path = str(backend or "").strip()
+    return bool(
+        provider_validation_email_backend_is_importable(backend_path)
+        and backend_path not in NON_DELIVERY_EMAIL_BACKENDS
+    )
+
+
 def email_delivery_configuration() -> dict[str, Any]:
     recipients = tuple(
         str(value or "").strip()
@@ -112,18 +141,17 @@ def email_delivery_configuration() -> dict[str, Any]:
     from_email = runtime_str("DJANGO_DEFAULT_FROM_EMAIL", "")
     use_tls = runtime_bool("DJANGO_EMAIL_USE_TLS", False)
     use_ssl = runtime_bool("DJANGO_EMAIL_USE_SSL", False)
+    backend_importable = provider_validation_email_backend_is_importable(backend)
     smtp_host_ready = not backend.endswith("smtp.EmailBackend") or bool(
         runtime_str("DJANGO_EMAIL_HOST", "")
     )
     production_backend_ready = not (
         getattr(settings, "REQUIRE_PRODUCTION_CONFIG", not settings.DEBUG)
-        and (
-            backend.endswith("console.EmailBackend")
-            or backend.endswith("dummy.EmailBackend")
-        )
+        and env_enabled
+        and not provider_validation_email_backend_is_delivering(backend)
     )
     backend_valid = bool(
-        backend
+        backend_importable
         and from_email
         and not (use_tls and use_ssl)
         and smtp_host_ready
@@ -165,7 +193,7 @@ def selected_test_keys(setting, override=None) -> tuple[str, ...]:
         raise DailyValidationConfigurationError(str(error)) from error
 
 
-def validate_daily_setting(setting) -> None:
+def validate_daily_setting(setting, selected=()) -> None:
     bounded_values = (
         (setting.failure_threshold, 1, 10, "INVALID_FAILURE_THRESHOLD"),
         (
@@ -183,7 +211,10 @@ def validate_daily_setting(setting) -> None:
             raise DailyValidationConfigurationError(error_code) from None
         if not minimum <= numeric <= maximum:
             raise DailyValidationConfigurationError(error_code)
-    if not validate_daily_videodl_backend_id(setting.videodl_backend_id):
+    if (
+        "videodl_specific_backend" in set(selected or ())
+        and not validate_daily_videodl_backend_id(setting.videodl_backend_id)
+    ):
         raise DailyValidationConfigurationError("INVALID_VIDEODL_BACKEND")
 
 
@@ -496,7 +527,7 @@ def run_daily_provider_validation(
     else:
         setting = ProviderHealthTestSetting.load()
     selected = selected_test_keys(setting, test_keys_override)
-    validate_daily_setting(setting)
+    validate_daily_setting(setting, selected)
     email_delivery_configuration()
     total_timeout = total_timeout_seconds()
     if dry_run:
@@ -711,6 +742,9 @@ __all__ = [
     "build_daily_validation_report",
     "deliver_notifications",
     "email_delivery_configuration",
+    "NON_DELIVERY_EMAIL_BACKENDS",
+    "provider_validation_email_backend_is_delivering",
+    "provider_validation_email_backend_is_importable",
     "plan_notification_events",
     "prune_validation_history",
     "recover_stale_suites",

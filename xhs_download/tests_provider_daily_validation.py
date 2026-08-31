@@ -34,8 +34,10 @@ from .models import (
 from .services.provider_daily_validation import (
     DailyValidationConfigurationError,
     LOCK_KEY,
+    NON_DELIVERY_EMAIL_BACKENDS,
     build_daily_validation_report,
     deliver_notifications,
+    email_delivery_configuration,
     plan_notification_events,
     prune_validation_history,
     recover_stale_suites,
@@ -51,7 +53,9 @@ from .services.provider_health_tests import (
     provider_result_fingerprint,
     validate_daily_test_keys,
     validate_daily_videodl_backend_id,
+    validate_provider_health_sample_url,
 )
+from .services.common import XhsSecurityError
 from .services.provider_lab.videodl_policy import (
     REVIEWED_COMMON_BACKEND_IDS,
     REVIEWED_DEDICATED_BACKEND_IDS,
@@ -75,6 +79,9 @@ NEW_HEALTH_TEST_KEYS = (
     "bilibili_native_parse",
     "videodl_policy_inventory",
     "videodl_specific_backend",
+)
+PUBLIC_DNS_RESULT = (
+    (2, 1, 6, "", ("93.184.216.34", 443)),
 )
 
 
@@ -105,10 +112,14 @@ class ProviderHealthRegistryV1Tests(TestCase):
         )
 
     def execute(self, key):
-        return execute_provider_health_test(
-            self.context(),
-            provider_health_test_by_key(key),
-        )
+        with patch(
+            "xhs_download.services.common.socket.getaddrinfo",
+            return_value=PUBLIC_DNS_RESULT,
+        ):
+            return execute_provider_health_test(
+                self.context(),
+                provider_health_test_by_key(key),
+            )
 
     def test_registry_preserves_nine_checks_and_adds_five(self):
         self.assertEqual(len(PROVIDER_HEALTH_TESTS), 14)
@@ -240,6 +251,124 @@ class ProviderHealthRegistryV1Tests(TestCase):
         execute.assert_not_called()
 
 
+class ProviderHealthSampleUrlPolicyTests(TestCase):
+    def setUp(self):
+        self.setting = ProviderHealthTestSetting.load()
+
+    def context(self, request_id="sample-url-policy"):
+        return ProviderHealthExecutionContext(
+            request_id=request_id,
+            is_staff=True,
+            test_setting=self.setting,
+        )
+
+    def test_structural_policy_rejects_private_credentials_and_nonstandard_ports(self):
+        rejected = (
+            ("videodl_url", "https://localhost/sample"),
+            ("videodl_url", "https://127.0.0.1/sample"),
+            ("videodl_url", "https://[::1]/sample"),
+            ("videodl_url", "https://10.1.2.3/sample"),
+            ("videodl_url", "https://169.254.169.254/latest/meta-data"),
+            ("videodl_url", "https://user:password@example.com/sample"),
+            ("videodl_url", "https://example.com:8080/sample"),
+        )
+        for field_name, value in rejected:
+            with self.subTest(value=value), self.assertRaises(XhsSecurityError):
+                validate_provider_health_sample_url(value, field_name)
+
+    def test_platform_field_binding_accepts_expected_hosts_and_rejects_cross_platform(self):
+        accepted = (
+            ("douyin_url", "https://www.douyin.com/video/1"),
+            ("youtube_url", "https://youtu.be/example"),
+            ("xhs_video_url", "https://www.xiaohongshu.com/explore/example"),
+            ("xhs_gallery_url", "https://xhslink.com/example"),
+            ("bilibili_url", "https://www.bilibili.com/video/example"),
+            ("third_party_url", "https://www.youtube.com/watch?v=example"),
+            ("gallerydl_url", "https://imgur.com/a/example"),
+            ("videodl_url", "https://public.example/sample"),
+        )
+        for field_name, value in accepted:
+            with self.subTest(field_name=field_name):
+                self.assertEqual(validate_provider_health_sample_url(value, field_name), value)
+        for field_name, value in (
+            ("bilibili_url", "https://www.xiaohongshu.com/explore/example"),
+            ("xhs_video_url", "https://www.bilibili.com/video/example"),
+        ):
+            with self.subTest(field_name=field_name), self.assertRaises(XhsSecurityError):
+                validate_provider_health_sample_url(value, field_name)
+
+    def test_execution_dns_policy_rejects_private_and_mixed_results(self):
+        self.setting.xhs_video_url = "https://www.xiaohongshu.com/explore/example?token=hidden"
+        self.setting.save()
+        dns_results = (
+            ((2, 1, 6, "", ("127.0.0.1", 443)),),
+            ((2, 1, 6, "", ("10.0.0.8", 443)),),
+            (
+                (2, 1, 6, "", ("93.184.216.34", 443)),
+                (2, 1, 6, "", ("192.168.1.8", 443)),
+            ),
+        )
+        with patch("xhs_download.services.provider_health_tests.parse_media_page") as parse:
+            for index, results in enumerate(dns_results):
+                with self.subTest(results=results), patch(
+                    "xhs_download.services.common.socket.getaddrinfo",
+                    return_value=results,
+                ):
+                    run = execute_provider_health_test(
+                        self.context(f"sample-url-policy-{index}"),
+                        provider_health_test_by_key("xhs_video_current"),
+                    )
+                    self.assertEqual(run.status, ProviderHealthTestStatus.UNAVAILABLE)
+                    self.assertEqual(run.error_code, "SAMPLE_URL_POLICY_REJECTED")
+                    self.assertEqual(run.test_url_host, "www.xiaohongshu.com")
+                    self.assertNotIn("token=hidden", run.error_message_short)
+                    self.assertNotIn("127.0.0.1", run.error_message_short)
+            parse.assert_not_called()
+
+    @patch("xhs_download.services.provider_health_tests.parse_media_page")
+    def test_public_dns_result_is_accepted(self, parse):
+        self.setting.bilibili_url = "https://www.bilibili.com/video/example"
+        self.setting.save()
+        parse.return_value = result("bilibili", "video")
+        with patch(
+            "xhs_download.services.common.socket.getaddrinfo",
+            return_value=PUBLIC_DNS_RESULT,
+        ):
+            run = execute_provider_health_test(
+                self.context(),
+                provider_health_test_by_key("bilibili_native_parse"),
+            )
+        self.assertEqual(run.status, ProviderHealthTestStatus.SUCCESS)
+        parse.assert_called_once()
+
+    @override_settings(
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        GALLERYDL_PROVIDER_ENABLED=True,
+        VIDEODL_PROVIDER_LAB_ENABLED=True,
+    )
+    def test_policy_rejection_precedes_provider_and_worker_invocation(self):
+        cases = (
+            ("douyin_native_parse", "douyin_url", "https://www.douyin.com/video/1", "xhs_download.services.provider_health_tests.parse_media_page"),
+            ("third_party_ytdlp", "third_party_url", "https://www.youtube.com/watch?v=1", "xhs_download.services.provider_health_tests.YtDlpGenericProvider.health"),
+            ("gallery_dl", "gallerydl_url", "https://imgur.com/a/example", "xhs_download.services.provider_health_tests.GalleryDlGenericProvider.health"),
+            ("videodl_specific_backend", "videodl_url", "https://public.example/sample", "xhs_download.services.provider_health_tests._videodl_runtime_ready"),
+        )
+        self.setting.videodl_backend_id = allowed_dedicated_backend()
+        for index, (key, field_name, value, target) in enumerate(cases):
+            setattr(self.setting, field_name, value)
+            self.setting.save()
+            with self.subTest(key=key), patch(
+                "xhs_download.services.common.socket.getaddrinfo",
+                return_value=((2, 1, 6, "", ("10.0.0.9", 443)),),
+            ), patch(target) as external_call:
+                run = execute_provider_health_test(
+                    self.context(f"provider-policy-order-{index}"),
+                    provider_health_test_by_key(key),
+                )
+                self.assertEqual(run.error_code, "SAMPLE_URL_POLICY_REJECTED")
+                external_call.assert_not_called()
+
+
 @override_settings(
     DJANGO_EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
     DJANGO_DEFAULT_FROM_EMAIL="noreply@example.test",
@@ -281,6 +410,30 @@ class DailyValidationOrchestrationTests(TestCase):
         self.assertEqual(outcome.suite.status, ProviderValidationSuiteStatus.SKIPPED)
         self.assertEqual(outcome.suite.error_code, "DAILY_VALIDATION_DISABLED")
         execute.assert_not_called()
+
+    @patch(
+        "xhs_download.services.provider_health_tests.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    @patch("xhs_download.services.provider_health_tests.execute_controlled_videodl")
+    def test_unselected_invalid_videodl_backend_does_not_block_suite(self, worker, _readiness):
+        self.setting.daily_test_keys = ["health_ready"]
+        self.setting.videodl_backend_id = "UnknownBackend"
+        self.setting.save()
+        outcome = run_daily_provider_validation(no_email=True)
+        self.assertEqual(outcome.suite.status, ProviderValidationSuiteStatus.SUCCESS)
+        self.assertEqual(outcome.suite.success_count, 1)
+        worker.assert_not_called()
+
+    @patch("xhs_download.services.provider_health_tests.execute_controlled_videodl")
+    def test_selected_invalid_videodl_backend_fails_closed_before_worker(self, worker):
+        self.setting.daily_test_keys = ["videodl_specific_backend"]
+        self.setting.videodl_backend_id = "UnknownBackend"
+        self.setting.save()
+        with self.assertRaises(DailyValidationConfigurationError) as captured:
+            run_daily_provider_validation(no_email=True)
+        self.assertEqual(str(captured.exception), "INVALID_VIDEODL_BACKEND")
+        worker.assert_not_called()
 
     def test_daily_disabled_still_recovers_old_stale_suite(self):
         stale = ProviderValidationSuiteRun.objects.create(
@@ -573,6 +726,35 @@ class DailyValidationNotificationTests(TestCase):
         )
         self.assertEqual(len(mail.outbox), 0)
 
+    def test_production_non_delivery_backends_never_send_or_mark_sent(self):
+        keys = (
+            "health_ready",
+            "xhs_video_current",
+            "xhs_gallery_current",
+            "bilibili_native_parse",
+        )
+        for backend, key in zip(sorted(NON_DELIVERY_EMAIL_BACKENDS), keys):
+            self.make_run(key=key)
+            suite, run = self.make_run(key=key)
+            events = plan_notification_events(suite, [run], self.setting)
+            self.assertEqual(len(events), 1)
+            with self.subTest(backend=backend), self.settings(
+                DJANGO_EMAIL_BACKEND=backend,
+                REQUIRE_PRODUCTION_CONFIG=True,
+            ), patch(
+                "xhs_download.services.provider_daily_validation.EmailMessage.send"
+            ) as send:
+                self.assertFalse(email_delivery_configuration()["configured"])
+                status = deliver_notifications(suite, events, self.setting)
+                self.assertEqual(status, ProviderValidationNotificationStatus.DISABLED)
+                send.assert_not_called()
+            run.refresh_from_db()
+            self.assertEqual(
+                run.notification_delivery_status,
+                ProviderHealthNotificationDeliveryStatus.DISABLED,
+            )
+            self.assertIsNone(run.notified_at)
+
     @patch("xhs_download.services.provider_daily_validation.EmailMessage.send", side_effect=RuntimeError("SMTP secret leak"))
     def test_mail_failure_is_safe_and_retryable(self, _send):
         self.make_run()
@@ -666,6 +848,43 @@ class ProviderValidationSystemCheckTests(TestCase):
     )
     def test_production_console_backend_is_rejected(self):
         self.assertIn("xhs_download.E017", self.check_ids())
+
+    def test_all_production_non_delivery_backends_are_rejected(self):
+        for backend in NON_DELIVERY_EMAIL_BACKENDS:
+            with self.subTest(backend=backend), self.settings(
+                PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED=True,
+                PROVIDER_VALIDATION_EMAIL_RECIPIENTS=("maintainer@example.test",),
+                DJANGO_DEFAULT_FROM_EMAIL="sender@example.test",
+                DJANGO_EMAIL_BACKEND=backend,
+                REQUIRE_PRODUCTION_CONFIG=True,
+            ):
+                self.assertIn("xhs_download.E017", self.check_ids())
+
+    @override_settings(
+        PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED=True,
+        PROVIDER_VALIDATION_EMAIL_RECIPIENTS=("secret-recipient@example.test",),
+        DJANGO_DEFAULT_FROM_EMAIL="sender@example.test",
+        DJANGO_EMAIL_BACKEND="invalid.private.Backend",
+        DJANGO_EMAIL_HOST_PASSWORD="smtp-secret",
+    )
+    def test_unimportable_backend_is_rejected_without_sensitive_output(self):
+        issues = check_provider_validation_email_configuration(None)
+        self.assertIn("xhs_download.E019", {issue.id for issue in issues})
+        self.assertFalse(email_delivery_configuration()["configured"])
+        rendered = " ".join(issue.msg for issue in issues)
+        self.assertNotIn("secret-recipient", rendered)
+        self.assertNotIn("smtp-secret", rendered)
+
+    @override_settings(
+        PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED=True,
+        PROVIDER_VALIDATION_EMAIL_RECIPIENTS=("maintainer@example.test",),
+        DJANGO_DEFAULT_FROM_EMAIL="sender@example.test",
+        DJANGO_EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        REQUIRE_PRODUCTION_CONFIG=False,
+    )
+    def test_nonproduction_locmem_backend_remains_allowed(self):
+        self.assertEqual(self.check_ids(), set())
+        self.assertTrue(email_delivery_configuration()["configured"])
 
     @override_settings(
         PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED=True,
@@ -868,6 +1087,38 @@ class ProviderValidationAdminTests(TestCase):
         self.assertEqual(setting.daily_test_keys, ["health_ready", "xhs_video_current"])
         self.assertEqual(setting.failure_threshold, 3)
         self.assertEqual(setting.xhs_video_url, "https://www.xiaohongshu.com/explore/safe-id")
+
+    def test_sample_url_save_rejects_unsafe_values_without_echoing_them(self):
+        self.grant("view_providerhealthtestrun")
+        self.grant("change_providerhealthtestsetting")
+        secret_url = "https://private-user:private-password@www.douyin.com/video/1"
+        response = self.client.post(
+            "/admin/provider-health-tests/",
+            data={
+                "action": "save_test_urls",
+                "douyin_url": secret_url,
+                "youtube_url": "https://127.0.0.1/watch?v=1",
+                "xhs_video_url": "https://www.bilibili.com/video/example",
+                "bilibili_url": "https://www.xiaohongshu.com/explore/example",
+                "videodl_url": "https://public.example:8080/sample",
+                "third_party_url": "https://www.youtube.com/watch?v=valid",
+            },
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        setting = ProviderHealthTestSetting.load()
+        self.assertEqual(setting.douyin_url, "")
+        self.assertEqual(setting.youtube_url, "")
+        self.assertEqual(setting.xhs_video_url, "")
+        self.assertEqual(setting.bilibili_url, "")
+        self.assertEqual(setting.videodl_url, "")
+        self.assertEqual(
+            setting.third_party_url,
+            "https://www.youtube.com/watch?v=valid",
+        )
+        self.assertNotContains(response, secret_url)
+        self.assertNotContains(response, "private-password")
+        self.assertContains(response, "未通过公网与平台准入校验")
 
     def test_invalid_key_and_backend_are_rejected(self):
         self.grant("view_providerhealthtestrun")

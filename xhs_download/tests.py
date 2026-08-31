@@ -11415,6 +11415,12 @@ class ProviderHealthTestPanelTests(TestCase):
             username="health-root",
             password="test-password",
         )
+        public_url = patch(
+            "xhs_download.services.provider_health_tests.validate_provider_health_sample_url",
+            side_effect=lambda value, _field_name, **_kwargs: str(value or "").strip(),
+        )
+        public_url.start()
+        self.addCleanup(public_url.stop)
 
     def grant_health_permission(self, user, codename):
         permission = Permission.objects.get(

@@ -196,6 +196,7 @@ from .services.provider_health_tests import (
     run_provider_health_test,
     validate_daily_test_keys,
     validate_daily_videodl_backend_id,
+    validate_provider_health_sample_url,
 )
 from .services.provider_daily_validation import build_daily_validation_report
 from .services.provider_recovery import (
@@ -1586,8 +1587,9 @@ def update_provider_health_test_setting(request):
     for field_name in url_fields:
         value = str(request.POST.get(field_name, "") or "").strip()
         if value:
-            parsed = urlparse(value)
-            if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            try:
+                value = validate_provider_health_sample_url(value, field_name)
+            except ValueError:
                 invalid_labels.append(labels[field_name])
                 value = ""
         setattr(setting, field_name, value)
@@ -1741,7 +1743,7 @@ def provider_health_tests_view(request):
             elif invalid_labels:
                 messages.warning(
                     request,
-                    f"Provider 测试与每日验证配置已保存；以下输入不是有效 http/https URL，已清空：{'、'.join(invalid_labels)}。",
+                    f"Provider 测试与每日验证配置已保存；以下输入未通过公网与平台准入校验，已清空：{'、'.join(invalid_labels)}。",
                 )
             else:
                 messages.info(request, "Provider 测试与每日验证配置已保存。")

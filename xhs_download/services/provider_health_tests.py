@@ -21,7 +21,14 @@ from ..models import (
 )
 from .downloads import provider_manifest_allows_public_download
 from .env_config import runtime_bool as env_runtime_bool, runtime_str
+from .common import (
+    XhsSecurityError,
+    host_matches,
+    is_blocked_hostname,
+    validate_public_download_url,
+)
 from .observability import sanitize_observability_text
+from .platforms.bilibili import BILIBILI_PAGE_HOST_SUFFIXES
 from .platforms.douyin import DouyinAdapter
 from .platforms.douyin_kukutool import get_kukutool_provider_health
 from .platforms.douyin_providers import DouyinTianTianJieXiProvider
@@ -52,6 +59,7 @@ from .provider_lab.videodl_policy import (
 )
 from .registry import parse_media_page
 from .youtube_merge import build_youtube_merge_plan, get_youtube_merge_health
+from .youtube_merge import YOUTUBE_PAGE_HOST_SUFFIXES
 
 
 VIDEODL_WORKER = (
@@ -66,6 +74,19 @@ SENSITIVE_ERROR_VALUE_RE = re.compile(
 LOCAL_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9_])/(?:Users|home|srv|tmp|var|private|etc|opt)/[^\s,;\"']+"
 )
+SAMPLE_URL_POLICY_ERROR_CODE = "SAMPLE_URL_POLICY_REJECTED"
+SAMPLE_URL_POLICY_MESSAGE = "测试 URL 未通过公网与平台准入校验。"
+_XHS_SAMPLE_HOST_SUFFIXES = ("xiaohongshu.com", "xhslink.com")
+_SAMPLE_URL_FIELD_HOST_SUFFIXES = {
+    "douyin_url": DouyinAdapter.page_host_suffixes,
+    "youtube_url": YOUTUBE_PAGE_HOST_SUFFIXES,
+    "third_party_url": GenericThirdPartyAdapter.page_host_suffixes,
+    "gallerydl_url": GenericThirdPartyAdapter.page_host_suffixes,
+    "xhs_video_url": _XHS_SAMPLE_HOST_SUFFIXES,
+    "xhs_gallery_url": _XHS_SAMPLE_HOST_SUFFIXES,
+    "bilibili_url": BILIBILI_PAGE_HOST_SUFFIXES,
+    "videodl_url": (),
+}
 
 
 PROVIDER_HEALTH_TESTS = (
@@ -253,6 +274,36 @@ def validate_daily_videodl_backend_id(value) -> bool:
         and not policy.external_sharing_required
         and not policy.browser_execution
     )
+
+
+def validate_provider_health_sample_url(value, field_name, *, resolve_dns=False) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    if field_name not in _SAMPLE_URL_FIELD_HOST_SUFFIXES:
+        raise XhsSecurityError(SAMPLE_URL_POLICY_MESSAGE)
+    try:
+        parsed = urlparse(candidate)
+        hostname = str(parsed.hostname or "").strip().lower()
+        port = parsed.port
+    except (TypeError, ValueError) as error:
+        raise XhsSecurityError(SAMPLE_URL_POLICY_MESSAGE) from error
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not hostname
+        or hostname.endswith(".")
+        or parsed.username is not None
+        or parsed.password is not None
+        or (port is not None and port not in {80, 443})
+        or is_blocked_hostname(hostname)
+    ):
+        raise XhsSecurityError(SAMPLE_URL_POLICY_MESSAGE)
+    allowed_suffixes = _SAMPLE_URL_FIELD_HOST_SUFFIXES[field_name]
+    if allowed_suffixes and not host_matches(hostname, allowed_suffixes):
+        raise XhsSecurityError(SAMPLE_URL_POLICY_MESSAGE)
+    if resolve_dns:
+        validate_public_download_url(candidate, SAMPLE_URL_POLICY_MESSAGE)
+    return candidate
 
 
 def provider_test_url_host(test_url):
@@ -524,6 +575,20 @@ def execute_provider_health_test(context, item):
         if not test_url:
             return record(ProviderHealthTestStatus.SKIPPED, "TestUrlMissing", "TEST_URL_MISSING", "未配置测试 URL")
 
+        try:
+            validate_provider_health_sample_url(
+                test_url,
+                item.get("url_field") or "",
+                resolve_dns=True,
+            )
+        except XhsSecurityError:
+            return record(
+                ProviderHealthTestStatus.UNAVAILABLE,
+                "SampleUrlPolicyRejected",
+                SAMPLE_URL_POLICY_ERROR_CODE,
+                SAMPLE_URL_POLICY_MESSAGE,
+            )
+
         if key == "douyin_native_parse":
             result = parse_media_page(test_url, prefer_ultra_hd=False)
             return record(ProviderHealthTestStatus.SUCCESS) if result.assets else record(
@@ -684,4 +749,5 @@ __all__ = [
     "run_provider_health_test",
     "validate_daily_test_keys",
     "validate_daily_videodl_backend_id",
+    "validate_provider_health_sample_url",
 ]

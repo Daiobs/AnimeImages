@@ -794,7 +794,11 @@ class XhsLivePhotoStaffGateTests(SimpleTestCase):
         self.assertNotIn("enable_xhs_livephoto_staff_preview", captured)
 
     def test_provider_health_parser_never_receives_staff_preview_option(self):
-        item = {"key": "douyin_native_parse", "provider": "native"}
+        item = {
+            "key": "douyin_native_parse",
+            "provider": "native",
+            "url_field": "douyin_url",
+        }
         request = self.factory.post("/admin/provider-health-tests/")
         request.user = User(username="staff", is_staff=True, is_active=True)
 
@@ -812,7 +816,10 @@ class XhsLivePhotoStaffGateTests(SimpleTestCase):
         ), patch(
             "xhs_download.services.provider_health_tests.parse_media_page",
             return_value=self.result,
-        ) as parser:
+        ) as parser, patch(
+            "xhs_download.services.common.socket.getaddrinfo",
+            return_value=((2, 1, 6, "", ("93.184.216.34", 443)),),
+        ):
             run_provider_health_test(request, item)
 
         self.assertNotIn(

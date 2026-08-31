@@ -5,6 +5,10 @@ from django.conf import settings
 from django.core.checks import Error, Warning as CheckWarning, register
 
 from .services.env_config import runtime_bool, runtime_list, runtime_str
+from .services.provider_daily_validation import (
+    NON_DELIVERY_EMAIL_BACKENDS,
+    provider_validation_email_backend_is_importable,
+)
 from .services.platforms.douyin_kukutool import (
     get_kukutool_runtime_status,
     get_kukutool_sidecar_status,
@@ -30,6 +34,13 @@ def check_provider_validation_email_configuration(app_configs, **kwargs):
         "DJANGO_EMAIL_BACKEND",
         "django.core.mail.backends.console.EmailBackend",
     )
+    if not provider_validation_email_backend_is_importable(backend):
+        issues.append(
+            Error(
+                "Provider validation email delivery requires an importable Django email backend.",
+                id="xhs_download.E019",
+            )
+        )
     if not recipients:
         issues.append(
             Error(
@@ -63,8 +74,7 @@ def check_provider_validation_email_configuration(app_configs, **kwargs):
             )
         )
     if getattr(settings, "REQUIRE_PRODUCTION_CONFIG", not settings.DEBUG) and (
-        backend.endswith("console.EmailBackend")
-        or backend.endswith("dummy.EmailBackend")
+        backend in NON_DELIVERY_EMAIL_BACKENDS
     ):
         issues.append(
             Error(

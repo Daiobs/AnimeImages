@@ -308,6 +308,14 @@ safe-defaulted by database `daily_enabled=false`, selected keys
 real recipients and approved public sample URLs must be configured only in a
 separately authorized production activation.
 
+Admin save-time validation is only the first gate. Every scheduled sample is
+revalidated before external execution, including DNS resolution where every
+resolved address must remain public; Staff access never authorizes private or
+metadata endpoints. Production email delivery also rejects console, dummy,
+locmem, and filebased backends, and an unimportable backend is never considered
+configured. A notification is marked sent only after an allowed backend
+confirms one delivery.
+
 Before installation, follow the ordered activation checklist in
 `docs/admin-provider-health-tests.md`. In particular: back up and migrate the
 database, retain the disabled DB gate while samples are entered, validate
