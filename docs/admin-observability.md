@@ -67,6 +67,12 @@ Django 会读取 `X-Request-ID`，并在响应头再次返回 `X-Request-ID`。�
 
 修改 Provider 测试 URL 需要 superuser 或 `xhs_download.change_providerhealthtestsetting` 权限。测试 URL 保存在数据库配置中，不放入 `.env`。
 
+Asset 3 在同一页面增加每日 Suite 汇总、逐项状态、7/30 天趋势和分页历史。
+每日命令与后台手动按钮共用同一个健康执行服务和 host-only 脱敏记录；手动
+运行不会发送每日告警。通知只表达 failure/reminder/recovery 状态变化，每个
+Suite 最多一封，不保存收件人或 SMTP Secret。候选代码和 unit 文件尚未在
+生产激活，详见 `docs/admin-provider-health-tests.md`。
+
 ## 落库日志
 
 `ParseRequestLog` 记录解析请求的 request_id、host、平台、Provider、状态、失败原因、耗时、素材数量和 runtime/rollout 信息。

@@ -249,6 +249,13 @@ Do not continue modifying PR #76. The next stage is documentation and separately
 
 Public pages must not expose Provider names, raw media URLs, strategy matrices, Staff diagnostics or Lab controls.
 
+The Provider Health page now has an Asset 3 candidate section for daily Suite
+configuration and reporting. Its command, migration, email logic and inactive
+systemd units are development-only until a separate production task supplies
+approved samples, SMTP configuration and explicit timer activation. Do not
+infer deployment from merge, or install the tracked units during an ordinary
+development task. PR #62 remains deferred and untouched.
+
 ## Local Verification
 
 Use the project virtualenv selected for the worktree. Unset production database variables for local SQLite gates when the task requires it.

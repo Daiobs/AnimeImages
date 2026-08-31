@@ -357,10 +357,18 @@ Lab 没有 public rollout，也不能通过正式 Provider Settings 开放匿名
 - Liveness：证明 Django 进程能够应答。
 - Readiness：执行 cache/database round trip。
 - Provider Health：依赖、配置和受控 Provider readiness。
+- Daily Provider Validation：复用 Provider Health registry，以一个局部 Suite
+  聚合顺序执行、single-flight、总预算、状态变化通知和 retention；它不是
+  Provider score、planner、自动 route switch 或全局 Observation Kernel。
 - Provider Audit Log：记录正式 Runtime Setting 变更。
 - Structured logs：只包含固定状态、阶段、耗时和非敏感 host facts。
 
 日志不得包含用户输入、Cookie、token、Provider body 或 signed media URL。
+
+Asset 3 仅增加一个 Suite 模型并扩展现有 Setting/Run。daily producer 是固定
+management command，consumer 是同一 Admin 报告和聚合邮件。videodl 每日
+边界只包含 exact-pin inventory 与一个显式 allowed Dedicated backend；Common、
+legacy/reviewed auto、grabber、browser 和正式平台路线均不在该能力中。
 
 ## 开发与生产
 

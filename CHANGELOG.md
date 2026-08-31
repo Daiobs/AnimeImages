@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added Asset 3 as a default-off extension of the existing Provider Health
+  Tests: five XHS/Bilibili/videodl checks, one bounded sequential daily Suite,
+  failure/reminder/recovery email deduplication, Admin reporting, retention,
+  and inactive systemd candidates. Records and emails remain host-only and
+  secret-free; Common videodl, formal routes, downloads and production
+  activation are unchanged.
+
 - Added controlled and observable videodl execution to the default-off,
   noncommercial Staff Provider Lab. AnimeImages now owns exact-backend,
   dedicated-only, explicitly confirmed common-only and reviewed-auto
