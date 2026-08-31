@@ -1,4 +1,5 @@
 import importlib.util
+from urllib.parse import urlparse
 
 from django.conf import settings
 from django.core.checks import Error, Warning as CheckWarning, register
@@ -10,6 +11,85 @@ from .services.platforms.douyin_kukutool import (
 from .services.platforms.gallerydl_generic import GalleryDlGenericProvider
 from .services.platforms.ytdlp_generic import YtDlpGenericProvider
 from .services.youtube_merge import get_youtube_merge_health
+
+
+@register()
+def check_provider_validation_email_configuration(app_configs, **kwargs):
+    del app_configs, kwargs
+    if not getattr(settings, "PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED", False):
+        return []
+
+    issues = []
+    recipients = tuple(
+        str(value or "").strip()
+        for value in (
+            getattr(settings, "PROVIDER_VALIDATION_EMAIL_RECIPIENTS", ()) or ()
+        )
+        if str(value or "").strip()
+    )
+    backend = str(getattr(settings, "EMAIL_BACKEND", "") or "")
+    if not recipients:
+        issues.append(
+            Error(
+                "Provider validation email delivery requires at least one configured recipient.",
+                id="xhs_download.E013",
+            )
+        )
+    if not str(getattr(settings, "DEFAULT_FROM_EMAIL", "") or "").strip():
+        issues.append(
+            Error(
+                "Provider validation email delivery requires DEFAULT_FROM_EMAIL.",
+                id="xhs_download.E014",
+            )
+        )
+    if getattr(settings, "EMAIL_USE_TLS", False) and getattr(
+        settings, "EMAIL_USE_SSL", False
+    ):
+        issues.append(
+            Error(
+                "Provider validation email delivery cannot enable TLS and SSL together.",
+                id="xhs_download.E015",
+            )
+        )
+    if backend.endswith("smtp.EmailBackend") and not str(
+        getattr(settings, "EMAIL_HOST", "") or ""
+    ).strip():
+        issues.append(
+            Error(
+                "Provider validation SMTP delivery requires EMAIL_HOST.",
+                id="xhs_download.E016",
+            )
+        )
+    if getattr(settings, "REQUIRE_PRODUCTION_CONFIG", not settings.DEBUG) and (
+        backend.endswith("console.EmailBackend")
+        or backend.endswith("dummy.EmailBackend")
+    ):
+        issues.append(
+            Error(
+                "Production Provider validation delivery requires a real email backend.",
+                id="xhs_download.E017",
+            )
+        )
+    report_url = str(
+        getattr(settings, "PROVIDER_VALIDATION_ADMIN_REPORT_URL", "") or ""
+    ).strip()
+    if report_url:
+        parsed = urlparse(report_url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            issues.append(
+                Error(
+                    "Provider validation Admin report URL must be an http/https URL without credentials, query, or fragment.",
+                    id="xhs_download.E018",
+                )
+            )
+    return issues
 
 
 def third_party_specific_provider_enabled():
