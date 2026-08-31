@@ -3,6 +3,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.utils import timezone
@@ -386,6 +387,58 @@ class ProviderHealthTestStatus(models.TextChoices):
     UNAVAILABLE = "unavailable", "不可用"
 
 
+class ProviderValidationSuiteTrigger(models.TextChoices):
+    SCHEDULED = "scheduled", "定时任务"
+    ADMIN = "admin", "后台手动"
+    COMMAND = "command", "命令行"
+
+
+class ProviderValidationSuiteStatus(models.TextChoices):
+    RUNNING = "running", "运行中"
+    SUCCESS = "success", "成功"
+    DEGRADED = "degraded", "部分异常"
+    FAILED = "failed", "执行失败"
+    SKIPPED = "skipped", "跳过"
+
+
+class ProviderValidationNotificationStatus(models.TextChoices):
+    DISABLED = "disabled", "未启用"
+    NOT_NEEDED = "not_needed", "无需通知"
+    SENT = "sent", "已发送"
+    FAILED = "failed", "发送失败"
+
+
+class ProviderHealthNotificationEvent(models.TextChoices):
+    NONE = "none", "无"
+    FAILURE = "failure", "失败告警"
+    REMINDER = "reminder", "持续失败提醒"
+    RECOVERY = "recovery", "恢复通知"
+
+
+class ProviderHealthNotificationDeliveryStatus(models.TextChoices):
+    NONE = "none", "无"
+    DISABLED = "disabled", "未启用"
+    SENT = "sent", "已发送"
+    FAILED = "failed", "发送失败"
+
+
+def default_provider_daily_test_keys():
+    return ["health_ready"]
+
+
+def validate_provider_daily_test_keys(value):
+    if not isinstance(value, list) or len(value) > 14:
+        raise ValidationError("每日测试项必须是有界列表。")
+    normalized = [str(item or "") for item in value]
+    if len(set(normalized)) != len(normalized):
+        raise ValidationError("每日测试项不能重复。")
+    from .services.provider_health_tests import provider_health_test_keys
+
+    allowed = set(provider_health_test_keys())
+    if any(item not in allowed for item in normalized):
+        raise ValidationError("每日测试项包含未知 key。")
+
+
 class PolicyOptimizationStatus(models.TextChoices):
     QUEUED = "queued", "已入队"
     NEEDS_APPROVAL = "needs_approval", "等待审批"
@@ -756,6 +809,53 @@ class ProviderAdminAuditLog(models.Model):
         return f"{local_datetime_label(self.created_at)} {self.actor_username} {self.action}"
 
 
+class ProviderValidationSuiteRun(models.Model):
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    started_at = models.DateTimeField(default=timezone.now, db_index=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    request_id = models.CharField(max_length=128, unique=True)
+    trigger = models.CharField(
+        max_length=16,
+        choices=ProviderValidationSuiteTrigger.choices,
+        db_index=True,
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=ProviderValidationSuiteStatus.choices,
+        default=ProviderValidationSuiteStatus.RUNNING,
+        db_index=True,
+    )
+    selected_test_keys = models.JSONField(default=list, blank=True)
+    total_count = models.PositiveSmallIntegerField(default=0)
+    success_count = models.PositiveSmallIntegerField(default=0)
+    failed_count = models.PositiveSmallIntegerField(default=0)
+    skipped_count = models.PositiveSmallIntegerField(default=0)
+    unavailable_count = models.PositiveSmallIntegerField(default=0)
+    duration_ms = models.PositiveIntegerField(default=0)
+    error_code = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    notification_status = models.CharField(
+        max_length=16,
+        choices=ProviderValidationNotificationStatus.choices,
+        default=ProviderValidationNotificationStatus.NOT_NEEDED,
+        db_index=True,
+    )
+    notification_event_count = models.PositiveSmallIntegerField(default=0)
+    actor_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    actor_username = models.CharField(max_length=150, blank=True, default="", db_index=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = (
+            models.Index(fields=("trigger", "created_at")),
+            models.Index(fields=("status", "created_at")),
+        )
+        verbose_name = "Provider 每日验证批次"
+        verbose_name_plural = "Provider 每日验证批次"
+
+    def __str__(self):
+        return f"{local_datetime_label(self.created_at)} {self.trigger} {self.status}"
+
+
 class ProviderHealthTestRun(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     request_id = models.CharField(max_length=128, db_index=True)
@@ -776,6 +876,28 @@ class ProviderHealthTestRun(models.Model):
     actor_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
     actor_username = models.CharField(max_length=150, blank=True, default="", db_index=True)
     test_url_host = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    suite_run = models.ForeignKey(
+        ProviderValidationSuiteRun,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="test_runs",
+    )
+    error_code = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    result_fingerprint = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    notification_event = models.CharField(
+        max_length=16,
+        choices=ProviderHealthNotificationEvent.choices,
+        default=ProviderHealthNotificationEvent.NONE,
+        db_index=True,
+    )
+    notification_delivery_status = models.CharField(
+        max_length=16,
+        choices=ProviderHealthNotificationDeliveryStatus.choices,
+        default=ProviderHealthNotificationDeliveryStatus.NONE,
+        db_index=True,
+    )
+    notified_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ("-created_at",)
@@ -783,6 +905,7 @@ class ProviderHealthTestRun(models.Model):
             models.Index(fields=("created_at", "test_key")),
             models.Index(fields=("test_key", "status")),
             models.Index(fields=("provider", "created_at")),
+            models.Index(fields=("test_key", "notification_event", "created_at")),
         )
         verbose_name = "Provider 健康测试记录"
         verbose_name_plural = "Provider 健康测试记录"
@@ -797,6 +920,30 @@ class ProviderHealthTestSetting(models.Model):
     youtube_url = models.TextField(blank=True, default="")
     third_party_url = models.TextField(blank=True, default="")
     gallerydl_url = models.TextField(blank=True, default="")
+    xhs_video_url = models.TextField(blank=True, default="")
+    xhs_gallery_url = models.TextField(blank=True, default="")
+    bilibili_url = models.TextField(blank=True, default="")
+    videodl_url = models.TextField(blank=True, default="")
+    videodl_backend_id = models.CharField(max_length=80, blank=True, default="")
+    daily_enabled = models.BooleanField(default=False)
+    daily_test_keys = models.JSONField(
+        default=default_provider_daily_test_keys,
+        validators=(validate_provider_daily_test_keys,),
+    )
+    email_notifications_enabled = models.BooleanField(default=False)
+    failure_threshold = models.PositiveSmallIntegerField(
+        default=2,
+        validators=(MinValueValidator(1), MaxValueValidator(10)),
+    )
+    notification_cooldown_hours = models.PositiveSmallIntegerField(
+        default=24,
+        validators=(MinValueValidator(1), MaxValueValidator(168)),
+    )
+    notify_recovery = models.BooleanField(default=True)
+    retention_days = models.PositiveSmallIntegerField(
+        default=90,
+        validators=(MinValueValidator(7), MaxValueValidator(365)),
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -810,6 +957,19 @@ class ProviderHealthTestSetting(models.Model):
 
     def __str__(self):
         return "Provider 健康测试配置"
+
+    def clean(self):
+        super().clean()
+        validate_provider_daily_test_keys(self.daily_test_keys)
+        backend_id = str(self.videodl_backend_id or "").strip()
+        if not backend_id:
+            return
+        from .services.provider_health_tests import validate_daily_videodl_backend_id
+
+        if not validate_daily_videodl_backend_id(backend_id):
+            raise ValidationError(
+                {"videodl_backend_id": "只允许 exact-pin policy 中明确 allowed 的 Dedicated backend。"}
+            )
 
 
 class UserFeedbackStatus(models.TextChoices):
