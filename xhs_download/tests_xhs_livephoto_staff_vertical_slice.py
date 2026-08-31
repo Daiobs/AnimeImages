@@ -798,19 +798,19 @@ class XhsLivePhotoStaffGateTests(SimpleTestCase):
         request = self.factory.post("/admin/provider-health-tests/")
         request.user = User(username="staff", is_staff=True, is_active=True)
 
-        with patch("xhs_download.views.ProviderRuntimeSetting.load"), patch(
-            "xhs_download.views.ProviderHealthTestSetting.load"
+        with patch("xhs_download.services.provider_health_tests.ProviderRuntimeSetting.load"), patch(
+            "xhs_download.services.provider_health_tests.ProviderHealthTestSetting.load"
         ), patch(
-            "xhs_download.views.provider_test_runtime_info",
+            "xhs_download.services.provider_health_tests.provider_test_runtime_info",
             return_value={"runtime_mode": "staff", "hard_enabled": True},
         ), patch(
-            "xhs_download.views.provider_test_url_for",
+            "xhs_download.services.provider_health_tests.provider_test_url_for",
             return_value="https://www.douyin.com/video/synthetic",
         ), patch(
-            "xhs_download.views.provider_health_test_record",
+            "xhs_download.services.provider_health_tests.provider_health_test_record",
             return_value=Mock(),
         ), patch(
-            "xhs_download.views.parse_media_page",
+            "xhs_download.services.provider_health_tests.parse_media_page",
             return_value=self.result,
         ) as parser:
             run_provider_health_test(request, item)

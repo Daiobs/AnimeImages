@@ -11439,7 +11439,7 @@ class ProviderHealthTestPanelTests(TestCase):
         self.grant_health_permission(self.staff, "view_providerhealthtestrun")
         self.assertContains(staff_client.get("/admin/provider-health-tests/"), "下载限流配置")
 
-    @patch("xhs_download.views.get_runtime_readiness", return_value={"ready": True, "components": {"database": True, "cache": True}})
+    @patch("xhs_download.services.provider_health_tests.get_runtime_readiness", return_value={"ready": True, "components": {"database": True, "cache": True}})
     def test_provider_health_tests_execute_permissions(self, _mock_readiness):
         staff_client = Client()
         staff_client.force_login(self.staff)
@@ -11459,7 +11459,7 @@ class ProviderHealthTestPanelTests(TestCase):
         self.assertEqual(permitted.status_code, 302)
         self.assertEqual(ProviderHealthTestRun.objects.get().actor_username, "health-staff")
 
-    @patch("xhs_download.views.get_runtime_readiness", return_value={"ready": True, "components": {"database": True, "cache": True}})
+    @patch("xhs_download.services.provider_health_tests.get_runtime_readiness", return_value={"ready": True, "components": {"database": True, "cache": True}})
     def test_provider_health_tests_run_all_records_each_test(self, _mock_readiness):
         staff_client = Client()
         staff_client.force_login(self.staff)
@@ -11473,7 +11473,7 @@ class ProviderHealthTestPanelTests(TestCase):
         response = client.post("/admin/provider-health-tests/", data={"action": "run_all_tests"})
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(ProviderHealthTestRun.objects.count(), 9)
+        self.assertEqual(ProviderHealthTestRun.objects.count(), 14)
         statuses = dict(
             ProviderHealthTestRun.objects.values_list("test_key", "status")
         )
@@ -11486,8 +11486,13 @@ class ProviderHealthTestPanelTests(TestCase):
         self.assertEqual(statuses["third_party_ytdlp"], ProviderHealthTestStatus.SKIPPED)
         self.assertEqual(statuses["third_party_tiantianjiexi"], ProviderHealthTestStatus.SKIPPED)
         self.assertEqual(statuses["gallery_dl"], ProviderHealthTestStatus.SKIPPED)
+        self.assertEqual(statuses["xhs_video_current"], ProviderHealthTestStatus.SKIPPED)
+        self.assertEqual(statuses["xhs_gallery_current"], ProviderHealthTestStatus.SKIPPED)
+        self.assertEqual(statuses["bilibili_native_parse"], ProviderHealthTestStatus.SKIPPED)
+        self.assertEqual(statuses["videodl_policy_inventory"], ProviderHealthTestStatus.UNAVAILABLE)
+        self.assertEqual(statuses["videodl_specific_backend"], ProviderHealthTestStatus.SKIPPED)
 
-    @patch("xhs_download.views.get_runtime_readiness", return_value={"ready": True, "components": {"database": True, "cache": True}})
+    @patch("xhs_download.services.provider_health_tests.get_runtime_readiness", return_value={"ready": True, "components": {"database": True, "cache": True}})
     def test_provider_health_tests_ajax_post_renders_panel_without_redirect(self, _mock_readiness):
         client = Client()
         client.force_login(self.superuser)
@@ -11504,7 +11509,7 @@ class ProviderHealthTestPanelTests(TestCase):
         self.assertContains(response, "health_ready")
         self.assertEqual(ProviderHealthTestRun.objects.get().status, ProviderHealthTestStatus.SUCCESS)
 
-    @patch("xhs_download.views.get_runtime_readiness", return_value={"ready": True, "components": {"database": True, "cache": True}})
+    @patch("xhs_download.services.provider_health_tests.get_runtime_readiness", return_value={"ready": True, "components": {"database": True, "cache": True}})
     def test_provider_health_tests_ajax_run_all_renders_panel_without_redirect(self, _mock_readiness):
         client = Client()
         client.force_login(self.superuser)
@@ -11518,7 +11523,7 @@ class ProviderHealthTestPanelTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("Location", response)
         self.assertContains(response, "Provider 一键测试完成")
-        self.assertEqual(ProviderHealthTestRun.objects.count(), 9)
+        self.assertEqual(ProviderHealthTestRun.objects.count(), 14)
 
     def test_provider_health_test_empty_url_returns_skipped(self):
         client = Client()
@@ -11535,10 +11540,10 @@ class ProviderHealthTestPanelTests(TestCase):
         self.assertEqual(run.error_type, "TestUrlMissing")
 
     @override_settings(YTDLP_MERGE_DEFAULT_MAX_HEIGHT=1080)
-    @patch("xhs_download.views.build_youtube_merge_plan", return_value={"available": True})
-    @patch("xhs_download.views.YtDlpGenericProvider.parse", return_value={"title": "Demo"})
+    @patch("xhs_download.services.provider_health_tests.build_youtube_merge_plan", return_value={"available": True})
+    @patch("xhs_download.services.provider_health_tests.YtDlpGenericProvider.parse", return_value={"title": "Demo"})
     @patch(
-        "xhs_download.views.get_youtube_merge_health",
+        "xhs_download.services.provider_health_tests.get_youtube_merge_health",
         return_value={"implemented": True, "ready": True, "timeout_seconds": 10},
     )
     def test_youtube_health_test_uses_default_1080p_merge_target(
@@ -11584,7 +11589,7 @@ class ProviderHealthTestPanelTests(TestCase):
         self.assertEqual(run.error_type, "CapabilityDisabled")
 
     @patch(
-        "xhs_download.views.parse_media_page",
+        "xhs_download.services.provider_health_tests.parse_media_page",
         side_effect=XhsParseError(
             "失败 https://cdn.example.com/a.mp4?token=secret provider_manifest_token=abc"
         ),
@@ -11681,7 +11686,7 @@ class ProviderHealthTestPanelTests(TestCase):
         self.assertEqual(permitted.status_code, 302)
         self.assertEqual(ProviderHealthTestSetting.load().douyin_url, "https://www.douyin.com/video/123")
 
-    @patch("xhs_download.views.get_runtime_readiness", return_value={"ready": True, "components": {"database": True, "cache": True}})
+    @patch("xhs_download.services.provider_health_tests.get_runtime_readiness", return_value={"ready": True, "components": {"database": True, "cache": True}})
     def test_provider_health_test_records_request_id(self, _mock_readiness):
         client = Client()
         client.force_login(self.superuser)

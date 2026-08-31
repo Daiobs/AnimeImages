@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import requests
 from django.conf import settings
 from django.contrib import messages
+from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
 from django.db.models import Avg, Count, Q, Sum
 from django.db.models.functions import TruncHour
@@ -41,6 +42,9 @@ from .models import (
     ProviderHealthTestRun,
     ProviderHealthTestStatus,
     ProviderRuntimeSetting,
+    ProviderValidationSuiteRun,
+    ProviderValidationSuiteStatus,
+    ProviderValidationSuiteTrigger,
     ReleaseDeployJob,
     ReleaseDeployJobStatus,
     ReleaseDeployTargetType,
@@ -182,6 +186,18 @@ from .services.provider_strategy import (
     build_download_strategy_matrix,
 )
 from .services.provider_runtime_config import runtime_float
+from .services.provider_health_tests import (
+    PROVIDER_HEALTH_TESTS,
+    provider_health_context_from_request,
+    provider_health_test_by_key,
+    provider_test_runtime_info,
+    provider_test_url_for,
+    provider_test_url_host,
+    run_provider_health_test,
+    validate_daily_test_keys,
+    validate_daily_videodl_backend_id,
+)
+from .services.provider_daily_validation import build_daily_validation_report
 from .services.provider_recovery import (
     get_kukutool_manifest_identity,
     get_tiantianjiexi_manifest_identity,
@@ -1546,107 +1562,11 @@ def provider_health_tests_execute_allowed(request):
     )
 
 
-PROVIDER_HEALTH_TESTS = (
-    {
-        "key": "health_ready",
-        "name": "Runtime Readiness",
-        "description": "验证 database/cache 是否可用。",
-        "provider": "runtime",
-        "provider_access_id": "",
-        "url_field": "",
-    },
-    {
-        "key": "douyin_native_parse",
-        "name": "抖音普通解析",
-        "description": "使用普通抖音 adapter 解析测试 URL，不强制 KuKuTool。",
-        "provider": "native",
-        "provider_access_id": "",
-        "url_field": "douyin_url",
-    },
-    {
-        "key": "douyin_kukutool_ultra",
-        "name": "抖音 KuKuTool 超清",
-        "description": "开启 prefer_ultra_hd=True 测试抖音超清链路。",
-        "provider": "kukutool",
-        "provider_access_id": PROVIDER_DOUYIN_ULTRA,
-        "url_field": "douyin_url",
-    },
-    {
-        "key": "tiantianjiexi_account_status",
-        "name": "天天解析账号状态",
-        "description": "只查询天天解析账号状态，不解析真实视频，不消耗解析额度。",
-        "provider": "tiantianjiexi_generic",
-        "provider_access_id": PROVIDER_THIRD_PARTY,
-        "url_field": "",
-    },
-    {
-        "key": "douyin_tiantianjiexi_ultra",
-        "name": "抖音天天解析超清",
-        "description": "手动调用天天解析解析抖音测试 URL，用于超清链路 smoke。",
-        "provider": "tiantianjiexi",
-        "provider_access_id": PROVIDER_DOUYIN_ULTRA,
-        "url_field": "douyin_url",
-    },
-    {
-        "key": "youtube_merge",
-        "name": "YouTube 高清合并",
-        "description": "验证 yt-dlp + ffmpeg health，并只做候选规划，不下载大文件。",
-        "provider": "youtube_merge",
-        "provider_access_id": PROVIDER_YOUTUBE_MERGE,
-        "url_field": "youtube_url",
-    },
-    {
-        "key": "third_party_ytdlp",
-        "name": "第三方 yt-dlp",
-        "description": "验证通用 yt-dlp provider health，并轻量解析测试 URL。",
-        "provider": "yt_dlp_generic",
-        "provider_access_id": PROVIDER_THIRD_PARTY,
-        "url_field": "third_party_url",
-    },
-    {
-        "key": "third_party_tiantianjiexi",
-        "name": "第三方天天解析",
-        "description": "手动调用天天解析解析第三方测试 URL。",
-        "provider": "tiantianjiexi_generic",
-        "provider_access_id": PROVIDER_THIRD_PARTY,
-        "url_field": "third_party_url",
-    },
-    {
-        "key": "gallery_dl",
-        "name": "gallery-dl",
-        "description": "验证 gallery-dl provider health，并轻量解析测试 URL。",
-        "provider": "gallery_dl_generic",
-        "provider_access_id": PROVIDER_THIRD_PARTY,
-        "url_field": "gallerydl_url",
-    },
-)
-
-
-def provider_health_test_by_key(test_key):
-    for item in PROVIDER_HEALTH_TESTS:
-        if item["key"] == test_key:
-            return item
-    return None
-
-
-def provider_test_url_host(test_url):
-    parsed = urlparse(str(test_url or ""))
-    return (parsed.hostname or "").strip().lower()
-
-
 def provider_health_tests_manage_config_allowed(request):
     return observability_access_allowed(
         request,
         "xhs_download.change_providerhealthtestsetting",
     )
-
-
-def provider_test_url_for(item, test_setting=None):
-    field_name = item.get("url_field") or ""
-    if not field_name:
-        return ""
-    test_setting = test_setting or ProviderHealthTestSetting.load()
-    return str(getattr(test_setting, field_name, "") or "").strip()
 
 
 def update_provider_health_test_setting(request):
@@ -1657,8 +1577,13 @@ def update_provider_health_test_setting(request):
         "youtube_url": "YouTube 测试 URL",
         "third_party_url": "第三方 yt-dlp 测试 URL",
         "gallerydl_url": "gallery-dl 测试 URL",
+        "xhs_video_url": "小红书视频测试 URL",
+        "xhs_gallery_url": "小红书图集测试 URL",
+        "bilibili_url": "哔哩哔哩测试 URL",
+        "videodl_url": "videodl 测试 URL",
     }
-    for field_name in ("douyin_url", "youtube_url", "third_party_url", "gallerydl_url"):
+    url_fields = tuple(labels)
+    for field_name in url_fields:
         value = str(request.POST.get(field_name, "") or "").strip()
         if value:
             parsed = urlparse(value)
@@ -1666,8 +1591,45 @@ def update_provider_health_test_setting(request):
                 invalid_labels.append(labels[field_name])
                 value = ""
         setattr(setting, field_name, value)
-    setting.save(update_fields=("douyin_url", "youtube_url", "third_party_url", "gallerydl_url", "updated_at"))
-    return setting, invalid_labels
+
+    config_fields = ()
+    if request.POST.get("daily_configuration_present") == "1":
+        selected_keys = list(request.POST.getlist("daily_test_keys"))
+        try:
+            setting.daily_test_keys = list(validate_daily_test_keys(selected_keys))
+        except ValueError:
+            return setting, invalid_labels, ["每日测试项配置无效。"]
+        setting.daily_enabled = request.POST.get("daily_enabled") == "1"
+        setting.email_notifications_enabled = (
+            request.POST.get("email_notifications_enabled") == "1"
+        )
+        setting.notify_recovery = request.POST.get("notify_recovery") == "1"
+        setting.videodl_backend_id = str(
+            request.POST.get("videodl_backend_id", "") or ""
+        ).strip()
+        if not validate_daily_videodl_backend_id(setting.videodl_backend_id):
+            return setting, invalid_labels, ["videodl Backend 必须是明确 allowed 的 Dedicated backend。"]
+        try:
+            setting.failure_threshold = int(request.POST.get("failure_threshold", 2))
+            setting.notification_cooldown_hours = int(
+                request.POST.get("notification_cooldown_hours", 24)
+            )
+            setting.retention_days = int(request.POST.get("retention_days", 90))
+            setting.full_clean()
+        except (TypeError, ValueError, ValidationError):
+            return setting, invalid_labels, ["每日验证数值或策略配置无效。"]
+        config_fields = (
+            "videodl_backend_id",
+            "daily_enabled",
+            "daily_test_keys",
+            "email_notifications_enabled",
+            "failure_threshold",
+            "notification_cooldown_hours",
+            "notify_recovery",
+            "retention_days",
+        )
+    setting.save(update_fields=(*url_fields, *config_fields, "updated_at"))
+    return setting, invalid_labels, []
 
 
 def download_runtime_summary(setting):
@@ -1681,345 +1643,17 @@ def download_runtime_summary(setting):
     )
 
 
-def provider_test_runtime_info(item, request, runtime_setting):
-    provider_id = item.get("provider_access_id") or ""
-    if not provider_id:
-        return {
-            "runtime_mode": "",
-            "runtime_label": "不适用",
-            "hard_enabled": True,
-            "access_reason": "",
-        }
-    access = provider_access_summary(provider_id, request, runtime_setting)
-    return {
-        "runtime_mode": access["effective_mode"],
-        "runtime_label": access["effective_label"],
-        "hard_enabled": bool(access["hard_enabled"]),
-        "access_reason": access["access_reason"],
-    }
-
-
-def provider_health_test_record(
-    request,
-    item,
-    *,
-    status,
-    started_at,
-    provider="",
-    error_type="",
-    error_message="",
-    test_url="",
-    runtime_mode="",
-    hard_enabled=False,
-):
-    user = getattr(request, "user", None)
-    return ProviderHealthTestRun.objects.create(
-        request_id=str(getattr(request, "request_id", "") or ""),
-        test_key=item["key"],
-        status=status,
-        provider=provider or item.get("provider", ""),
-        duration_ms=elapsed_ms(started_at),
-        error_type=str(error_type or "")[:120],
-        error_message_short=sanitize_observability_text(error_message),
-        runtime_mode=str(runtime_mode or "")[:32],
-        hard_enabled=bool(hard_enabled),
-        is_staff=bool(getattr(user, "is_active", False) and getattr(user, "is_staff", False)),
-        actor_id=getattr(user, "id", None),
-        actor_username=str(getattr(user, "get_username", lambda: "")() or "")[:150],
-        test_url_host=provider_test_url_host(test_url)[:255],
-    )
-
-
-def provider_asset_manifest_validation_error(result, allowed_providers, *, require_video=True):
-    if not result or not getattr(result, "assets", ()):
-        return "未生成 ParseResult 资源"
-    assets = tuple(result.assets or ())
-    if require_video:
-        assets = tuple(asset for asset in assets if asset.media_type == "video")
-        if not assets:
-            return "未生成视频资源"
-    matching_assets = tuple(
-        asset for asset in assets if str(asset.provider or "") in allowed_providers
-    )
-    if not matching_assets:
-        return "资源 provider 与预期不一致"
-    asset = matching_assets[0]
-    if not asset.provider_manifest_token:
-        return "资源缺少 provider_manifest_token"
-    if not asset.provider_resource_id:
-        return "资源缺少 provider_resource_id"
-    if not asset.provider_cache_key:
-        return "资源缺少 provider_cache_key"
-    item = asset.to_download_item()
-    if not provider_manifest_allows_public_download(item):
-        return "Provider manifest 未通过下载校验"
-    return ""
-
-
-def build_tiantianjiexi_third_party_parse_result(test_url, timeout_seconds=10.0):
-    adapter = GenericThirdPartyAdapter()
-    rule = adapter.get_rule_for_url(test_url)
-    if not rule:
-        raise XhsParseError("第三方测试 URL 不在支持的平台规则内")
-    payload = TianTianJieXiGenericProvider().parse(
-        test_url,
-        timeout_seconds=timeout_seconds,
-    )
-    normalizer = TianTianJieXiResultNormalizer(platform_id=adapter.platform_id)
-    return normalizer.normalize(
-        rule=rule,
-        platform_name=rule.display_name,
-        source_url=test_url,
-        payload=payload,
-    )
-
-
-def run_provider_health_test(request, item):
-    started_at = time.monotonic()
-    runtime_setting = ProviderRuntimeSetting.load()
-    test_setting = ProviderHealthTestSetting.load()
-    runtime_info = provider_test_runtime_info(item, request, runtime_setting)
-    test_url = provider_test_url_for(item, test_setting)
-    provider = item.get("provider", "")
-
-    def record(status, error_type="", error_message=""):
-        return provider_health_test_record(
-            request,
-            item,
-            status=status,
-            started_at=started_at,
-            provider=provider,
-            error_type=error_type,
-            error_message=error_message,
-            test_url=test_url,
-            runtime_mode=runtime_info["runtime_mode"],
-            hard_enabled=runtime_info["hard_enabled"],
-        )
-
-    try:
-        if item["key"] == "health_ready":
-            readiness = get_runtime_readiness()
-            if readiness["ready"]:
-                return record(ProviderHealthTestStatus.SUCCESS)
-            return record(
-                ProviderHealthTestStatus.UNAVAILABLE,
-                error_type="RuntimeUnavailable",
-                error_message=json.dumps(readiness.get("components", {}), ensure_ascii=False),
-            )
-
-        if item["key"] == "tiantianjiexi_account_status":
-            if not env_runtime_bool("TIANTIANJIEXI_PROVIDER_ENABLED", False):
-                return record(
-                    ProviderHealthTestStatus.UNAVAILABLE,
-                    error_type="CapabilityDisabled",
-                    error_message="TIANTIANJIEXI_PROVIDER_ENABLED 未启用",
-                )
-            health = TianTianJieXiGenericProvider().health()
-            if health.get("account_status_available"):
-                return record(ProviderHealthTestStatus.SUCCESS)
-            return record(
-                ProviderHealthTestStatus.UNAVAILABLE,
-                error_type="AccountStatusUnavailable",
-                error_message=json.dumps(health, ensure_ascii=False),
-            )
-
-        if not test_url:
-            return record(
-                ProviderHealthTestStatus.SKIPPED,
-                error_type="TestUrlMissing",
-                error_message="未配置测试 URL",
-            )
-
-        if item["key"] == "douyin_native_parse":
-            result = parse_media_page(test_url, prefer_ultra_hd=False)
-            if result.assets:
-                return record(ProviderHealthTestStatus.SUCCESS)
-            return record(
-                ProviderHealthTestStatus.UNAVAILABLE,
-                error_type="NoAssets",
-                error_message="未解析到资源",
-            )
-
-        if item["key"] == "douyin_kukutool_ultra":
-            if not (
-                getattr(settings, "ULTRA_HD_PROVIDER_ENABLED", False)
-                and getattr(settings, "KUKUTOOL_PROVIDER_ENABLED", False)
-            ):
-                return record(
-                    ProviderHealthTestStatus.UNAVAILABLE,
-                    error_type="CapabilityDisabled",
-                    error_message="ULTRA_HD_PROVIDER_ENABLED 或 KUKUTOOL_PROVIDER_ENABLED 未启用",
-                )
-            health = get_kukutool_provider_health()
-            if not health.get("available"):
-                return record(
-                    ProviderHealthTestStatus.UNAVAILABLE,
-                    error_type="ProviderUnavailable",
-                    error_message=json.dumps(health, ensure_ascii=False),
-                )
-            result = parse_media_page(test_url, prefer_ultra_hd=True)
-            if result.assets:
-                return record(ProviderHealthTestStatus.SUCCESS)
-            return record(
-                ProviderHealthTestStatus.UNAVAILABLE,
-                error_type="NoAssets",
-                error_message="未解析到超清资源",
-            )
-
-        if item["key"] == "douyin_tiantianjiexi_ultra":
-            if not (
-                getattr(settings, "ULTRA_HD_PROVIDER_ENABLED", False)
-                and env_runtime_bool("THIRD_PARTY_PROVIDER_ENABLED", False)
-                and env_runtime_bool("TIANTIANJIEXI_PROVIDER_ENABLED", False)
-            ):
-                return record(
-                    ProviderHealthTestStatus.UNAVAILABLE,
-                    error_type="CapabilityDisabled",
-                    error_message="ULTRA_HD_PROVIDER_ENABLED、THIRD_PARTY_PROVIDER_ENABLED 或 TIANTIANJIEXI_PROVIDER_ENABLED 未启用",
-                )
-            adapter = DouyinAdapter()
-            deadline = time.monotonic() + 10.0
-            context = adapter.build_parse_context(
-                test_url,
-                fetch_direct_page=not bool(adapter.supports_url(test_url)),
-                fast_short_link=True,
-                request_deadline=deadline,
-            )
-            result = DouyinTianTianJieXiProvider().parse(adapter, context)
-            validation_error = provider_asset_manifest_validation_error(
-                result,
-                {"tiantianjiexi", "tiantianjiexi_generic"},
-                require_video=True,
-            )
-            metadata = result.metadata or {} if result else {}
-            selected_provider = metadata.get("selected_provider") or metadata.get("source_provider")
-            if not validation_error and selected_provider in {"tiantianjiexi", "tiantianjiexi_generic"}:
-                return record(ProviderHealthTestStatus.SUCCESS)
-            return record(
-                ProviderHealthTestStatus.UNAVAILABLE,
-                error_type="InvalidParseResult",
-                error_message=validation_error or "天天解析 ParseResult provider 不匹配",
-            )
-
-        if item["key"] == "youtube_merge":
-            health = get_youtube_merge_health()
-            if not (health.get("implemented") and health.get("ready")):
-                return record(
-                    ProviderHealthTestStatus.UNAVAILABLE,
-                    error_type="ProviderUnavailable",
-                    error_message=json.dumps(health, ensure_ascii=False),
-                )
-            payload = YtDlpGenericProvider().parse(
-                test_url,
-                timeout_seconds=min(10.0, float(health.get("timeout_seconds") or 10.0)),
-            )
-            plan = build_youtube_merge_plan(
-                payload,
-                max_height=int(getattr(settings, "YTDLP_MERGE_DEFAULT_MAX_HEIGHT", 1080) or 1080),
-            )
-            if plan.get("available"):
-                return record(ProviderHealthTestStatus.SUCCESS)
-            return record(
-                ProviderHealthTestStatus.UNAVAILABLE,
-                error_type=str(plan.get("reason") or "MergeUnavailable"),
-                error_message=json.dumps(plan, ensure_ascii=False),
-            )
-
-        if item["key"] == "third_party_ytdlp":
-            if not env_runtime_bool("THIRD_PARTY_PROVIDER_ENABLED", False):
-                return record(
-                    ProviderHealthTestStatus.UNAVAILABLE,
-                    error_type="CapabilityDisabled",
-                    error_message="THIRD_PARTY_PROVIDER_ENABLED 未启用",
-                )
-            health = YtDlpGenericProvider().health(force_version_probe=True)
-            if not health.get("ready"):
-                return record(
-                    ProviderHealthTestStatus.UNAVAILABLE,
-                    error_type="ProviderUnavailable",
-                    error_message=json.dumps(health, ensure_ascii=False),
-                )
-            payload = YtDlpGenericProvider().parse(test_url, timeout_seconds=10.0)
-            if payload:
-                return record(ProviderHealthTestStatus.SUCCESS)
-            return record(
-                ProviderHealthTestStatus.UNAVAILABLE,
-                error_type="EmptyPayload",
-                error_message="yt-dlp 返回空结果",
-            )
-
-        if item["key"] == "gallery_dl":
-            if not env_runtime_bool("GALLERYDL_PROVIDER_ENABLED", False):
-                return record(
-                    ProviderHealthTestStatus.UNAVAILABLE,
-                    error_type="CapabilityDisabled",
-                    error_message="GALLERYDL_PROVIDER_ENABLED 未启用",
-                )
-            health = GalleryDlGenericProvider().health(force_version_probe=True)
-            if not health.get("ready"):
-                return record(
-                    ProviderHealthTestStatus.UNAVAILABLE,
-                    error_type="ProviderUnavailable",
-                    error_message=json.dumps(health, ensure_ascii=False),
-                )
-            payload = GalleryDlGenericProvider().parse(test_url, timeout_seconds=10.0)
-            if payload:
-                return record(ProviderHealthTestStatus.SUCCESS)
-            return record(
-                ProviderHealthTestStatus.UNAVAILABLE,
-                error_type="EmptyPayload",
-                error_message="gallery-dl 返回空结果",
-            )
-
-        if item["key"] == "third_party_tiantianjiexi":
-            if not (
-                env_runtime_bool("THIRD_PARTY_PROVIDER_ENABLED", False)
-                and env_runtime_bool("TIANTIANJIEXI_PROVIDER_ENABLED", False)
-            ):
-                return record(
-                    ProviderHealthTestStatus.UNAVAILABLE,
-                    error_type="CapabilityDisabled",
-                    error_message="THIRD_PARTY_PROVIDER_ENABLED 或 TIANTIANJIEXI_PROVIDER_ENABLED 未启用",
-                )
-            result = build_tiantianjiexi_third_party_parse_result(
-                test_url,
-                timeout_seconds=10.0,
-            )
-            validation_error = provider_asset_manifest_validation_error(
-                result,
-                {"tiantianjiexi_generic"},
-                require_video=False,
-            )
-            if not validation_error:
-                return record(ProviderHealthTestStatus.SUCCESS)
-            return record(
-                ProviderHealthTestStatus.UNAVAILABLE,
-                error_type="InvalidParseResult",
-                error_message=validation_error,
-            )
-
-        return record(
-            ProviderHealthTestStatus.FAILED,
-            error_type="UnknownTest",
-            error_message=f"Unknown test key: {item['key']}",
-        )
-    except Exception as error:
-        return record(
-            ProviderHealthTestStatus.FAILED,
-            error_type=type(error).__name__,
-            error_message=str(error),
-        )
-
-
 def build_provider_health_test_cards(request):
     runtime_setting = ProviderRuntimeSetting.load()
     test_setting = ProviderHealthTestSetting.load()
+    daily_keys = set(test_setting.daily_test_keys or ())
+    execution_context = provider_health_context_from_request(request)
     last_runs = {}
     for run in ProviderHealthTestRun.objects.order_by("-created_at")[:200]:
         last_runs.setdefault(run.test_key, run)
     cards = []
     for item in PROVIDER_HEALTH_TESTS:
-        runtime_info = provider_test_runtime_info(item, request, runtime_setting)
+        runtime_info = provider_test_runtime_info(item, execution_context, runtime_setting)
         test_url = provider_test_url_for(item, test_setting)
         cards.append(
             {
@@ -2028,6 +1662,7 @@ def build_provider_health_test_cards(request):
                 "url_configured": bool(test_url) or not item.get("url_field"),
                 "test_url_host": provider_test_url_host(test_url),
                 "last_run": last_runs.get(item["key"]),
+                "daily_selected": item["key"] in daily_keys,
             }
         )
     return cards
@@ -2047,6 +1682,22 @@ def provider_health_tests_context(request):
         request,
         ProviderHealthTestRun.objects.all(),
     )
+    suite_status = str(request.GET.get("suite_status") or "").strip()
+    suite_trigger = str(request.GET.get("suite_trigger") or "").strip()
+    suite_queryset = ProviderValidationSuiteRun.objects.all()
+    if suite_status in ProviderValidationSuiteStatus.values:
+        suite_queryset = suite_queryset.filter(status=suite_status)
+    else:
+        suite_status = ""
+    if suite_trigger in ProviderValidationSuiteTrigger.values:
+        suite_queryset = suite_queryset.filter(trigger=suite_trigger)
+    else:
+        suite_trigger = ""
+    suite_paginator = Paginator(suite_queryset, 25)
+    suite_page = suite_paginator.get_page(request.GET.get("suite_page"))
+    suite_query_params = request.GET.copy()
+    suite_query_params.pop("suite_page", None)
+    daily_report = build_daily_validation_report(test_setting)
     return {
         "title": "Provider 健康测试",
         "request_id": str(getattr(request, "request_id", "") or ""),
@@ -2058,6 +1709,14 @@ def provider_health_tests_context(request):
         "download_summary": download_runtime_summary(download_setting),
         "test_cards": build_provider_health_test_cards(request),
         "test_setting": test_setting,
+        "daily_report": daily_report,
+        "suite_runs": suite_page,
+        "suite_runs_page": suite_page,
+        "suite_runs_querystring": suite_query_params.urlencode(),
+        "suite_status_filter": suite_status,
+        "suite_trigger_filter": suite_trigger,
+        "suite_status_choices": ProviderValidationSuiteStatus.choices,
+        "suite_trigger_choices": ProviderValidationSuiteTrigger.choices,
         "can_manage_test_urls": provider_health_tests_manage_config_allowed(request),
         "recent_runs": recent_runs_page,
         "recent_runs_page": recent_runs_page,
@@ -2076,14 +1735,16 @@ def provider_health_tests_view(request):
         if request.POST.get("action") == "save_test_urls":
             if not provider_health_tests_manage_config_allowed(request):
                 return JsonResponse({"detail": "Not found."}, status=404)
-            _setting, invalid_labels = update_provider_health_test_setting(request)
-            if invalid_labels:
+            _setting, invalid_labels, config_errors = update_provider_health_test_setting(request)
+            if config_errors:
+                messages.error(request, " ".join(config_errors))
+            elif invalid_labels:
                 messages.warning(
                     request,
-                    f"Provider 测试 URL 已保存；以下输入不是有效 http/https URL，已清空：{'、'.join(invalid_labels)}。",
+                    f"Provider 测试与每日验证配置已保存；以下输入不是有效 http/https URL，已清空：{'、'.join(invalid_labels)}。",
                 )
             else:
-                messages.info(request, "Provider 测试 URL 已保存。")
+                messages.info(request, "Provider 测试与每日验证配置已保存。")
             if provider_health_tests_is_ajax(request):
                 return provider_health_tests_render(request)
             return redirect("provider_health_tests")
