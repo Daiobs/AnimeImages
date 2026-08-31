@@ -23,6 +23,9 @@ from .contracts import (
 
 MAX_WORKER_STDOUT_BYTES = 1024 * 1024
 MAX_WORKER_STDERR_BYTES = 128 * 1024
+WORKER_OPERATIONS = frozenset(
+    {"inventory", "match_dedicated", "backend", "legacy_auto"}
+)
 ALLOWED_PARENT_ENV = (
     "PATH",
     "LANG",
@@ -70,7 +73,11 @@ def environment_is_clean(env: dict[str, str]) -> bool:
     return True
 
 
-def parse_worker_stdout(stdout: str) -> dict[str, Any]:
+def parse_worker_stdout(
+    stdout: str,
+    *,
+    expected_operation: str | None = None,
+) -> dict[str, Any]:
     try:
         payload = json.loads(stdout or "")
     except (TypeError, ValueError) as error:
@@ -84,11 +91,22 @@ def parse_worker_stdout(stdout: str) -> dict[str, Any]:
             "PROVIDER_NOT_CONFIGURED",
             "PROVIDER_UNSUPPORTED",
             "PROVIDER_TIMEOUT",
+            "PROVIDER_OUTPUT_TOO_LARGE",
+            "PROVIDER_INVALID_JSON",
+            "PROVIDER_SCHEMA_INVALID",
+            "PROVIDER_PROCESS_FAILED",
             "PROVIDER_RESULT_EMPTY",
             "PROVIDER_LICENSE_RESTRICTED",
         }:
             raise ProviderLabError(code)
         raise ProviderLabError("PROVIDER_PROCESS_FAILED")
+    if expected_operation in {"inventory", "match_dedicated"}:
+        if payload.get("operation") != expected_operation:
+            raise ProviderLabError("PROVIDER_SCHEMA_INVALID")
+        expected_field = "inventory" if expected_operation == "inventory" else "backend_ids"
+        if not isinstance(payload.get(expected_field), list):
+            raise ProviderLabError("PROVIDER_SCHEMA_INVALID")
+        return payload
     result = payload.get("result")
     resources = payload.get("resources")
     if not isinstance(result, dict) or not isinstance(resources, list):
@@ -105,23 +123,36 @@ def execute_provider_worker(
     request_id: str,
     source: str,
     timeout_seconds: float,
+    operation: str | None = None,
+    backend_id: str = "",
+    backend_category: str = "",
 ) -> dict[str, Any]:
     source = str(source or "")
-    if not source or len(source) > MAX_SOURCE_LENGTH:
+    if (
+        len(source) > MAX_SOURCE_LENGTH
+        or (not source and operation != "inventory")
+        or (operation is not None and operation not in WORKER_OPERATIONS)
+    ):
         raise ProviderLabError("PROVIDER_SCHEMA_INVALID")
     python_path = Path(str(python or "")).expanduser()
     worker_path = Path(worker).resolve()
     if not python_path.is_file() or not worker_path.is_file():
         raise ProviderLabError("PROVIDER_NOT_CONFIGURED")
 
+    request_data = {
+        "schema_version": SCHEMA_VERSION,
+        "request_id": request_id,
+        "source": source,
+        "max_assets": MAX_ASSETS,
+        "max_output_bytes": MAX_WORKER_STDOUT_BYTES,
+    }
+    if operation is not None:
+        request_data["operation"] = operation
+    if operation == "backend":
+        request_data["backend_id"] = str(backend_id or "")
+        request_data["backend_category"] = str(backend_category or "")
     request_payload = json.dumps(
-        {
-            "schema_version": SCHEMA_VERSION,
-            "request_id": request_id,
-            "source": source,
-            "max_assets": MAX_ASSETS,
-            "max_output_bytes": MAX_WORKER_STDOUT_BYTES,
-        },
+        request_data,
         ensure_ascii=True,
         separators=(",", ":"),
     )
@@ -169,7 +200,7 @@ def execute_provider_worker(
                 stderr_file,
                 max_bytes=MAX_WORKER_STDERR_BYTES,
             )
-            payload = parse_worker_stdout(stdout)
+            payload = parse_worker_stdout(stdout, expected_operation=operation)
             if completed.returncode != 0:
                 raise ProviderLabError("PROVIDER_PROCESS_FAILED")
             return payload

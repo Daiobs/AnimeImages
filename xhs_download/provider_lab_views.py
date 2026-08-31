@@ -16,9 +16,11 @@ from xhs_download.services.provider_lab.contracts import ProviderLabError, safe_
 from xhs_download.services.provider_lab.providers import (
     PROVIDER_REGISTRY,
     list_provider_descriptors,
+    list_videodl_backend_inventory,
     normalized_source,
     run_provider,
 )
+from xhs_download.services.provider_lab.videodl_control import parse_videodl_options
 from xhs_download.services.provider_lab.resources import (
     consume_resource_token,
     public_resource_descriptor,
@@ -95,6 +97,7 @@ def provider_lab_view(request):
         "provider_lab_resource_url": "/admin/provider-lab/resource/",
         "provider_lab_max_concurrency": 3,
         "provider_lab_max_providers": 5,
+        "videodl_backend_inventory": list_videodl_backend_inventory(),
     }
     response = render(request, "admin/provider_lab.html", context)
     response["Cache-Control"] = "no-store"
@@ -109,11 +112,20 @@ def provider_lab_run_view(request):
     require_provider_lab_access(request)
     try:
         payload = parse_json_body(request)
-        if set(payload) != {"source", "provider_id"}:
+        payload_fields = set(payload)
+        if payload_fields not in (
+            {"source", "provider_id"},
+            {"source", "provider_id", "options"},
+        ):
             raise ProviderLabError("PROVIDER_SCHEMA_INVALID")
         provider_id = safe_text(payload.get("provider_id"), 80)
         if provider_id not in PROVIDER_REGISTRY:
             raise ProviderLabError("PROVIDER_NOT_SELECTED")
+        options = None
+        if "options" in payload:
+            if provider_id != "videodl_repo":
+                raise ProviderLabError("PROVIDER_SCHEMA_INVALID")
+            options = parse_videodl_options(payload.get("options"))
         source = normalized_source(payload.get("source"))
         limit = consume_fixed_window(
             "provider-lab-execution",
@@ -129,6 +141,7 @@ def provider_lab_run_view(request):
             provider_id=provider_id,
             source=source,
             user_id=request.user.pk,
+            options=options,
         )
         return secure_json(result)
     except ProviderLabError as error:

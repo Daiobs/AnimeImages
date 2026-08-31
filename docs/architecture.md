@@ -306,6 +306,22 @@ Whole-repository Workers：
 
 Lab 不自动 fan out、不选赢家、不修改平台路线、不做完整媒体 Relay。操作和许可证边界见 [Provider Lab](provider-lab.md)。
 
+videodl 是一个局部例外：浏览器仍然只对显式 Provider 并发，Django
+只在单个 `videodl_repo` 请求内部执行 AnimeImages-owned、顺序且有界的
+exact-backend orchestration。每个 backend attempt 使用独立子进程；
+backend category 不作为共享或安全判定。与 exact pin 绑定的局部 policy
+逐项审核 70 个 dedicated 和 37 个 common backend，并仅让 dedicated
+`allowed` 项进入 `reviewed_auto`。Common 不存在直接 `allowed` 状态：21 个
+exact-pin IDs 只有在 Staff 明确选择并确认 source sharing 后才能执行，16 个
+具有额外风险的 IDs 以及未知 IDs 均阻止。共享确认不授权 browser、TLS
+bypass、interactive/provider-owned downloader、embedded-cookie/credential
+行为。inventory 的 registry presence 与 controlled eligibility 分开，完整
+registry ID 集合必须与 policy 相等，并按 pin、policy identity 和 runtime
+identity 有界缓存。
+该局部 policy 和 attempt contract 不扩展为全局 Observation Kernel 或
+Backend Catalog。见
+[Asset 1/2 outcome](research/videodl/ASSET_1_2_IMPLEMENTATION_OUTCOME_V1.md)。
+
 ## Runtime Gate 分层
 
 正式 Provider 使用：

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
+import threading
 import time
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 from uuid import uuid4
 
 from django.conf import settings
+from django.core.cache import cache
 
 from xhs_download.services.assets import MediaAsset, ParseResult
 from xhs_download.services.common import (
@@ -25,6 +29,7 @@ from xhs_download.services.registry import parse_media_page
 
 from .contracts import (
     LabAssetV1,
+    LabProviderAttemptV1,
     LabProviderResultV1,
     LabRelationshipV1,
     MAX_ASSETS,
@@ -39,11 +44,24 @@ from .contracts import (
 )
 from .resources import issue_resource_token
 from .runtime import execute_provider_worker
+from .videodl_control import (
+    VideodlControlledError,
+    VideodlExecutionOptions,
+    execute_controlled_videodl,
+    load_videodl_inventory,
+    public_inventory,
+)
+from . import videodl_policy
+from .videodl_policy import VIDEODL_POLICY_PIN, VIDEODL_POLICY_REVISION
 
 
 PARSEHUB_PIN = "144260f4349c5bb57415f7555a572fcd48c3b8ba"
-VIDEODL_PIN = "6cd1de0fe1209380b183b654c65e98a629637873"
+VIDEODL_PIN = VIDEODL_POLICY_PIN
 WORKER_ROOT = Path(settings.BASE_DIR) / "tools" / "provider_lab" / "runtime" / "workers"
+VIDEODL_INVENTORY_SUCCESS_TTL_SECONDS = 600
+VIDEODL_INVENTORY_FAILURE_TTL_SECONDS = 30
+VIDEODL_INVENTORY_SINGLE_FLIGHT_SECONDS = 10
+_VIDEODL_INVENTORY_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -55,7 +73,7 @@ class ProviderDescriptor:
     license_name: str
     license_scope: str
     default_selected: bool
-    runner: Callable[..., tuple[dict[str, Any], list[dict[str, Any]]]]
+    runner: Callable[..., Any]
     availability: Callable[[], bool]
     not_configured_hint: str = ""
 
@@ -410,8 +428,101 @@ def run_parsehub_repo(**kwargs):
     return _run_external("parsehub", **kwargs)
 
 
-def run_videodl_repo(**kwargs):
-    return _run_external("videodl", **kwargs)
+def run_videodl_repo(
+    *,
+    source: str,
+    request_id: str,
+    user_id: int,
+    options: VideodlExecutionOptions | None = None,
+):
+    del user_id
+    if options is None:
+        result, resources = _run_external(
+            "videodl",
+            source=source,
+            request_id=request_id,
+            user_id=0,
+        )
+        return result, resources, ()
+    controlled = execute_controlled_videodl(
+        python=_external_python("videodl"),
+        worker=WORKER_ROOT / "videodl_worker.py",
+        request_id=request_id,
+        source=source,
+        options=options,
+        total_timeout_seconds=runtime_float(
+            "PROVIDER_LAB_EXTERNAL_TIMEOUT_SECONDS", 25.0
+        ),
+    )
+    return controlled.result, controlled.resources, controlled.attempts
+
+
+def _runtime_file_identity(path: str | Path) -> str:
+    candidate = Path(path).resolve()
+    try:
+        stat = candidate.stat()
+    except OSError:
+        return f"{candidate}:missing"
+    return f"{candidate}:{stat.st_size}:{stat.st_mtime_ns}"
+
+
+def videodl_inventory_cache_key(*, python: str, worker: str | Path) -> str:
+    identity = "|".join(
+        (
+            VIDEODL_PIN,
+            VIDEODL_POLICY_REVISION,
+            _runtime_file_identity(videodl_policy.__file__),
+            _runtime_file_identity(python),
+            _runtime_file_identity(worker),
+        )
+    )
+    digest = sha256(identity.encode("utf-8")).hexdigest()
+    return f"provider-lab:videodl-inventory:v3:{digest}"
+
+
+def list_videodl_backend_inventory() -> dict[str, Any]:
+    if not runtime_bool("VIDEODL_PROVIDER_LAB_ENABLED", False):
+        return {"status": "disabled", "items": []}
+    python = _external_python("videodl")
+    if not Path(python).is_file():
+        return {"status": "not_configured", "items": []}
+    worker = WORKER_ROOT / "videodl_worker.py"
+    cache_key = videodl_inventory_cache_key(python=python, worker=worker)
+    cached = cache.get(cache_key)
+    if isinstance(cached, dict):
+        return copy.deepcopy(cached)
+    with _VIDEODL_INVENTORY_LOCK:
+        cached = cache.get(cache_key)
+        if isinstance(cached, dict):
+            return copy.deepcopy(cached)
+        lock_key = f"{cache_key}:load"
+        if not cache.add(
+            lock_key,
+            1,
+            timeout=VIDEODL_INVENTORY_SINGLE_FLIGHT_SECONDS,
+        ):
+            cached = cache.get(cache_key)
+            return (
+                copy.deepcopy(cached)
+                if isinstance(cached, dict)
+                else {"status": "loading", "items": []}
+            )
+        try:
+            try:
+                items = load_videodl_inventory(
+                    python=python,
+                    worker=worker,
+                    request_id=request_id_value(),
+                )
+                payload = {"status": "ready", "items": public_inventory(items)}
+                timeout = VIDEODL_INVENTORY_SUCCESS_TTL_SECONDS
+            except ProviderLabError:
+                payload = {"status": "unavailable", "items": []}
+                timeout = VIDEODL_INVENTORY_FAILURE_TTL_SECONDS
+            cache.set(cache_key, payload, timeout=timeout)
+            return copy.deepcopy(payload)
+        finally:
+            cache.delete(lock_key)
 
 
 def _always_available() -> bool:
@@ -503,6 +614,7 @@ def _worker_result_to_contract(
     user_id: int,
     request_id: str,
     elapsed_ms: int,
+    attempts: tuple[LabProviderAttemptV1, ...] = (),
 ) -> LabProviderResultV1:
     if (
         result_data.get("provider_id") != descriptor.provider_id
@@ -594,6 +706,7 @@ def _worker_result_to_contract(
         metadata=result_data.get("metadata") or {},
         assets=assets,
         relationships=relationships,
+        attempts=attempts,
         warnings=result_data.get("warnings") or (),
         raw_shape=sanitize_raw_shape(result_data.get("raw_shape") or {}),
         license_name=descriptor.license_name,
@@ -607,6 +720,7 @@ def _failure_result(
     request_id: str,
     elapsed_ms: int,
     error: ProviderLabError,
+    attempts: tuple[LabProviderAttemptV1, ...] = (),
 ) -> dict[str, Any]:
     status = {
         "PROVIDER_NOT_CONFIGURED": "not_configured",
@@ -620,29 +734,50 @@ def _failure_result(
         provider_scope=descriptor.provider_scope,
         status=status,
         elapsed_ms=elapsed_ms,
+        attempts=attempts,
         error_code=error.code,
         license_name=descriptor.license_name,
         license_scope=descriptor.license_scope,
     ).as_dict()
 
 
-def run_provider(*, provider_id: str, source: str, user_id: int) -> dict[str, Any]:
+def run_provider(
+    *,
+    provider_id: str,
+    source: str,
+    user_id: int,
+    options: VideodlExecutionOptions | None = None,
+) -> dict[str, Any]:
     descriptor = PROVIDER_REGISTRY.get(str(provider_id or ""))
     if descriptor is None:
         raise ProviderLabError("PROVIDER_NOT_SELECTED")
     request_id = request_id_value()
     started_at = time.monotonic()
+    attempts: tuple[LabProviderAttemptV1, ...] = ()
     try:
         normalized = normalized_source(source)
+        if options is not None and (
+            provider_id != "videodl_repo"
+            or not isinstance(options, VideodlExecutionOptions)
+        ):
+            raise ProviderLabError("PROVIDER_SCHEMA_INVALID")
         if provider_id == "videodl_repo" and not runtime_bool(
             "VIDEODL_PROVIDER_LAB_ENABLED", False
         ):
             raise ProviderLabError("PROVIDER_LICENSE_RESTRICTED")
-        result_data, resources = descriptor.runner(
-            source=normalized,
-            request_id=request_id,
-            user_id=user_id,
-        )
+        if provider_id == "videodl_repo":
+            result_data, resources, attempts = descriptor.runner(
+                source=normalized,
+                request_id=request_id,
+                user_id=user_id,
+                options=options,
+            )
+        else:
+            result_data, resources = descriptor.runner(
+                source=normalized,
+                request_id=request_id,
+                user_id=user_id,
+            )
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
         if provider_id in {"parsehub_repo", "videodl_repo"}:
             contract = _worker_result_to_contract(
@@ -652,17 +787,27 @@ def run_provider(*, provider_id: str, source: str, user_id: int) -> dict[str, An
                 user_id=user_id,
                 request_id=request_id,
                 elapsed_ms=elapsed_ms,
+                attempts=attempts,
             )
             return contract.as_dict()
         result_data["elapsed_ms"] = elapsed_ms
         return result_data
-    except XhsProviderTimeoutError as error:
+    except XhsProviderTimeoutError:
         lab_error = ProviderLabError("PROVIDER_TIMEOUT")
         return _failure_result(
             descriptor=descriptor,
             request_id=request_id,
             elapsed_ms=int((time.monotonic() - started_at) * 1000),
             error=lab_error,
+            attempts=attempts,
+        )
+    except VideodlControlledError as error:
+        return _failure_result(
+            descriptor=descriptor,
+            request_id=request_id,
+            elapsed_ms=int((time.monotonic() - started_at) * 1000),
+            error=error,
+            attempts=error.attempts,
         )
     except ProviderLabError as error:
         return _failure_result(
@@ -670,6 +815,7 @@ def run_provider(*, provider_id: str, source: str, user_id: int) -> dict[str, An
             request_id=request_id,
             elapsed_ms=int((time.monotonic() - started_at) * 1000),
             error=error,
+            attempts=attempts,
         )
     except Exception:
         error = ProviderLabError("PROVIDER_PROCESS_FAILED")
@@ -678,4 +824,5 @@ def run_provider(*, provider_id: str, source: str, user_id: int) -> dict[str, An
             request_id=request_id,
             elapsed_ms=int((time.monotonic() - started_at) * 1000),
             error=error,
+            attempts=attempts,
         )

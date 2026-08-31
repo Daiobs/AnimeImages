@@ -80,6 +80,79 @@
                     {% endfor %}
                 </fieldset>
 
+                <section class="provider-lab-videodl-controls" data-videodl-controls hidden>
+                    <div class="provider-lab-videodl-heading">
+                        <div>
+                            <h3>videodl 受控执行</h3>
+                            <p>由 AnimeImages exact-pin policy 限定；已注册不等于可受控执行。受控模式不启用 WebMediaGrabber、DrissionPage / Chromium 或 browser observer。</p>
+                        </div>
+                        <span data-videodl-inventory-status>
+                            Inventory: {{ videodl_backend_inventory.status|upper }}
+                        </span>
+                    </div>
+
+                    <div class="provider-lab-control-grid">
+                        <label>
+                            <span>执行模式</span>
+                            <select name="videodl_mode" data-videodl-mode>
+                                <option value="reviewed_auto" selected>Reviewed Auto</option>
+                                <option value="specific_backend">Specific Backend</option>
+                                <option value="dedicated_only">Dedicated Only</option>
+                                <option value="common_only">Common Only</option>
+                                <option value="legacy_auto">Legacy Auto（不透明对照）</option>
+                            </select>
+                        </label>
+                        <label data-videodl-specific-category hidden>
+                            <span>Backend 类别</span>
+                            <select name="videodl_backend_category" data-videodl-backend-category>
+                                <option value="dedicated">Dedicated</option>
+                                <option value="common">Common（外部聚合）</option>
+                            </select>
+                        </label>
+                        <label data-videodl-specific-backend hidden>
+                            <span>Exact Backend</span>
+                            <select name="videodl_specific_backend" data-videodl-specific-select>
+                                <option value="">请选择固定 Backend</option>
+                                {% for backend in videodl_backend_inventory.items %}
+                                    <option
+                                        value="{{ backend.backend_id }}"
+                                        data-backend-category="{{ backend.backend_category }}"
+                                        data-backend-available="{% if backend.controlled_available %}true{% else %}false{% endif %}"
+                                        data-external-sharing-required="{% if backend.external_sharing_required %}true{% else %}false{% endif %}"
+                                        data-controlled-state="{{ backend.controlled_state }}"
+                                        {% if not backend.controlled_available %}disabled{% endif %}
+                                    >{{ backend.display_label }} · {{ backend.backend_category }}{% if not backend.controlled_available %} · {{ backend.policy_reason }}{% endif %}</option>
+                                {% endfor %}
+                            </select>
+                        </label>
+                    </div>
+
+                    <fieldset class="provider-lab-common-backends" data-videodl-common-backends>
+                        <legend>允许的 Common Backends</legend>
+                        <p>默认不选择。仅 `Common Only` 或 `Reviewed Auto` 在 dedicated 无有效结果后使用。</p>
+                        <div>
+                            {% for backend in videodl_backend_inventory.items %}
+                                {% if backend.backend_category == "common" and backend.controlled_available %}
+                                    <label>
+                                        <input
+                                            type="checkbox"
+                                            name="videodl_common_backends"
+                                            value="{{ backend.backend_id }}"
+                                        >
+                                        <span>{{ backend.display_label }}</span>
+                                    </label>
+                                {% endif %}
+                            {% endfor %}
+                        </div>
+                    </fieldset>
+
+                    <label class="provider-lab-sharing-confirmation" data-videodl-sharing-confirmation hidden>
+                        <input type="checkbox" name="videodl_external_sharing_confirmed">
+                        <span>我确认本次 source reference 可能发送给所选外部服务。</span>
+                    </label>
+                    <p>Legacy Auto 仅用于显式不透明对照，可能执行上游内部行为，且永远不是默认模式。</p>
+                </section>
+
                 <div class="provider-lab-form-actions">
                     <button class="provider-lab-primary" type="submit">运行上游测试</button>
                     <span class="provider-lab-form-message" data-provider-lab-form-message aria-live="polite"></span>
@@ -124,6 +197,25 @@
                         </dl>
                         <p class="provider-lab-content" data-provider-content hidden></p>
                         <p class="provider-lab-error" data-provider-error hidden></p>
+                        <section class="provider-lab-attempts" data-provider-attempts hidden>
+                            <h4>Backend Attempts</h4>
+                            <div class="provider-lab-attempt-table-wrap">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>#</th>
+                                            <th>Backend</th>
+                                            <th>类别</th>
+                                            <th>结果</th>
+                                            <th>耗时</th>
+                                            <th>候选</th>
+                                            <th>选择</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody data-provider-attempt-rows></tbody>
+                                </table>
+                            </div>
+                        </section>
                         <div class="provider-lab-assets" data-provider-assets></div>
                         <details class="provider-lab-raw" data-provider-raw hidden>
                             <summary>查看脱敏结构</summary>
@@ -140,4 +232,5 @@
     </div>
 </main>
 {{ provider_lab_providers|json_script:"provider-lab-config" }}
+{{ videodl_backend_inventory|json_script:"videodl-backend-inventory" }}
 {% endblock %}

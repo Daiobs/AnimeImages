@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Added controlled and observable videodl execution to the default-off,
+  noncommercial Staff Provider Lab. AnimeImages now owns exact-backend,
+  dedicated-only, explicitly confirmed common-only and reviewed-auto
+  orchestration plus bounded safe attempt diagnostics. Hidden common and
+  grabber fallbacks remain disabled in controlled modes; formal platform
+  routes, downloads, settings, dependencies, migrations and Production are
+  unchanged.
+
 - PR #74 added the fixed XHS ordinary-video Hybrid: Native remains authoritative
   for exact note identity and metadata, optional Ultra uses TianTian, and an
   unavailable or rejected TianTian result falls back to Native. XHS image and

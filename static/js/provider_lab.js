@@ -31,6 +31,16 @@
         PROVIDER_RESULT_EMPTY: "Provider 未返回可比较的资源。",
         PROVIDER_LICENSE_RESTRICTED: "该 Provider 仅限显式启用的非商业本地研究。",
         PROVIDER_RATE_LIMITED: "请求过于频繁，请稍后重试。",
+        PROVIDER_POLICY_REJECTED: "当前受控执行选项未通过安全策略。",
+    });
+    const ATTEMPT_OUTCOME_LABELS = Object.freeze({
+        success: "成功",
+        failed: "失败",
+        timeout: "超时",
+        unsupported: "不支持",
+        empty: "无结果",
+        policy_rejected: "策略拒绝",
+        skipped: "跳过",
     });
 
     function safeStatus(value) {
@@ -48,6 +58,87 @@
             return [];
         }
         return unique;
+    }
+
+    function readVideodlInventory(documentObject) {
+        const node = documentObject.querySelector("#videodl-backend-inventory");
+        if (!node) { return {status: "unavailable", items: []}; }
+        try {
+            const payload = JSON.parse(node.textContent || "{}");
+            return {
+                status: String(payload.status || "unavailable"),
+                items: Array.isArray(payload.items) ? payload.items : [],
+            };
+        } catch (_error) {
+            return {status: "unavailable", items: []};
+        }
+    }
+
+    function videodlOptionError(message) {
+        const error = new Error("videodl_options_invalid");
+        error.userMessage = message;
+        return error;
+    }
+
+    function videodlOptions(form, inventory) {
+        const mode = String(form.elements.videodl_mode?.value || "");
+        const category = String(form.elements.videodl_backend_category?.value || "");
+        const exactBackend = String(form.elements.videodl_specific_backend?.value || "");
+        const confirmed = Boolean(form.elements.videodl_external_sharing_confirmed?.checked);
+        const commonIds = Array.from(
+            form.querySelectorAll('input[name="videodl_common_backends"]:checked'),
+        ).map((item) => String(item.value || "")).filter(Boolean);
+        const available = new Set(
+            (inventory?.items || [])
+                .filter((item) => Boolean(item && item.controlled_available))
+                .map((item) => `${item.backend_category}:${item.backend_id}`),
+        );
+        const inventoryById = new Map(
+            (inventory?.items || []).map((item) => [
+                `${item.backend_category}:${item.backend_id}`,
+                item,
+            ]),
+        );
+        let backendIds = [];
+        let backendCategory = "";
+        let externalSharingConfirmed = false;
+
+        if (mode === "specific_backend") {
+            backendCategory = category;
+            backendIds = exactBackend ? [exactBackend] : [];
+            if (!backendIds.length || !available.has(`${backendCategory}:${exactBackend}`)) {
+                throw videodlOptionError("请选择可用的固定 Backend。");
+            }
+            const descriptor = inventoryById.get(`${backendCategory}:${exactBackend}`) || {};
+            const requiresSharing = Boolean(descriptor.external_sharing_required);
+            externalSharingConfirmed = requiresSharing && confirmed;
+            if (requiresSharing && !externalSharingConfirmed) {
+                throw videodlOptionError("使用该 Backend 前必须确认外部共享。");
+            }
+        } else if (mode === "dedicated_only") {
+            backendCategory = "dedicated";
+        } else if (mode === "common_only" || mode === "reviewed_auto") {
+            backendCategory = "common";
+            backendIds = Array.from(new Set(commonIds));
+            if (mode === "common_only" && !backendIds.length) {
+                throw videodlOptionError("Common Only 至少选择一个 Common Backend。");
+            }
+            if (backendIds.some((backendId) => !available.has(`common:${backendId}`))) {
+                throw videodlOptionError("所选 Common Backend 当前不可用。");
+            }
+            externalSharingConfirmed = backendIds.length > 0 && confirmed;
+            if (backendIds.length && !externalSharingConfirmed) {
+                throw videodlOptionError("使用 Common Backend 前必须确认外部共享。");
+            }
+        } else if (mode !== "legacy_auto") {
+            throw videodlOptionError("请选择有效的 videodl 执行模式。");
+        }
+        return {
+            mode,
+            backend_ids: backendIds,
+            backend_category: backendCategory,
+            external_sharing_confirmed: externalSharingConfirmed,
+        };
     }
 
     async function runWithConcurrency(items, maximum, worker) {
@@ -157,10 +248,14 @@
         const content = card.querySelector("[data-provider-content]");
         const error = card.querySelector("[data-provider-error]");
         const assets = card.querySelector("[data-provider-assets]");
+        const attempts = card.querySelector("[data-provider-attempts]");
+        const attemptRows = card.querySelector("[data-provider-attempt-rows]");
         const raw = card.querySelector("[data-provider-raw]");
         if (content) { content.hidden = true; content.textContent = ""; }
         if (error) { error.hidden = true; error.textContent = ""; }
         if (assets) { assets.replaceChildren(); }
+        if (attempts) { attempts.hidden = true; }
+        if (attemptRows) { attemptRows.replaceChildren(); }
         if (raw) { raw.hidden = true; }
         card.querySelectorAll("[data-copy-json], [data-download-json]")
             .forEach((button) => { button.disabled = true; });
@@ -220,6 +315,47 @@
         });
     }
 
+    function attemptDisplayRows(attempts) {
+        return (Array.isArray(attempts) ? attempts : []).slice(0, 12).map((attempt) => ({
+            ordinal: Number(attempt.ordinal || 0),
+            backend: String(attempt.backend_id || "-"),
+            category: String(attempt.backend_category || "-"),
+            outcome: ATTEMPT_OUTCOME_LABELS[String(attempt.outcome || "")] || "失败",
+            elapsed: `${Math.max(0, Number(attempt.elapsed_ms || 0))} ms`,
+            candidates: Math.max(0, Number(attempt.candidate_count || 0)),
+            selected: attempt.selected ? "已选择" : "-",
+            failure: String(attempt.safe_failure_code || ""),
+            externalSharing: Boolean(attempt.external_sharing),
+        }));
+    }
+
+    function renderAttempts(documentObject, card, result) {
+        const section = card.querySelector("[data-provider-attempts]");
+        const body = card.querySelector("[data-provider-attempt-rows]");
+        if (!section || !body) { return; }
+        body.replaceChildren();
+        const rows = attemptDisplayRows(result?.attempts);
+        rows.forEach((attempt) => {
+            const row = documentObject.createElement("tr");
+            if (attempt.selected) { row.classList.add("is-selected"); }
+            [
+                attempt.ordinal,
+                attempt.backend,
+                attempt.category === "common" ? "Common" : "Dedicated",
+                attempt.failure ? `${attempt.outcome} · ${attempt.failure}` : attempt.outcome,
+                attempt.elapsed,
+                attempt.candidates,
+                attempt.selected,
+            ].forEach((value) => {
+                const cell = documentObject.createElement("td");
+                cell.textContent = String(value);
+                row.append(cell);
+            });
+            body.append(row);
+        });
+        section.hidden = rows.length === 0;
+    }
+
     function renderResult(card, result, documentObject) {
         const status = safeStatus(result && result.status);
         setCardStatus(card, status);
@@ -245,6 +381,7 @@
         if (assets) {
             renderAssets(documentObject, assets, result);
         }
+        renderAttempts(documentObject, card, result);
         const raw = card.querySelector("[data-provider-raw]");
         const rawOutput = card.querySelector("[data-provider-raw-output]");
         if (raw && rawOutput) {
@@ -368,6 +505,48 @@
         windowObject.setTimeout(() => windowObject.URL.revokeObjectURL(objectUrl), 0);
     }
 
+    function syncVideodlControls(form) {
+        const controls = form.querySelector("[data-videodl-controls]");
+        if (!controls) { return null; }
+        const provider = form.querySelector('input[name="providers"][value="videodl_repo"]');
+        const mode = String(form.elements.videodl_mode?.value || "reviewed_auto");
+        const category = String(form.elements.videodl_backend_category?.value || "dedicated");
+        const selectedCommon = form.querySelectorAll(
+            'input[name="videodl_common_backends"]:checked',
+        ).length;
+        controls.hidden = !provider?.checked || provider.disabled;
+        const categoryField = form.querySelector("[data-videodl-specific-category]");
+        const exactField = form.querySelector("[data-videodl-specific-backend]");
+        const commonField = form.querySelector("[data-videodl-common-backends]");
+        const sharingField = form.querySelector("[data-videodl-sharing-confirmation]");
+        const specific = mode === "specific_backend";
+        if (categoryField) { categoryField.hidden = !specific; }
+        if (exactField) { exactField.hidden = !specific; }
+        if (commonField) {
+            commonField.hidden = !["common_only", "reviewed_auto"].includes(mode);
+        }
+        if (sharingField) {
+            const selectedOption = form.elements.videodl_specific_backend?.selectedOptions?.[0];
+            const specificRequiresSharing = selectedOption?.dataset.externalSharingRequired === "true";
+            sharingField.hidden = !(
+                (specific && specificRequiresSharing)
+                || (["common_only", "reviewed_auto"].includes(mode) && selectedCommon > 0)
+            );
+        }
+        const exactSelect = form.elements.videodl_specific_backend;
+        if (exactSelect) {
+            Array.from(exactSelect.options || []).forEach((option) => {
+                if (!option.value) { return; }
+                const visible = option.dataset.backendCategory === category;
+                option.hidden = !visible;
+                option.disabled = !visible || option.dataset.backendAvailable !== "true";
+            });
+            const selectedOption = exactSelect.selectedOptions?.[0];
+            if (selectedOption?.disabled) { exactSelect.value = ""; }
+        }
+        return {mode, category, selectedCommon, visible: !controls.hidden};
+    }
+
     function createController(documentObject, overrides) {
         const options = overrides || {};
         const root = documentObject.querySelector("[data-provider-lab]");
@@ -385,19 +564,24 @@
         const resourceUrl = options.resourceUrl || root.dataset.resourceUrl;
         const maxConcurrency = Number(options.maxConcurrency || root.dataset.maxConcurrency || 3);
         const maxProviders = Number(options.maxProviders || root.dataset.maxProviders || 5);
+        const videodlInventory = options.videodlInventory || readVideodlInventory(documentObject);
         const resultByProvider = new Map();
         let running = false;
 
-        async function runOne(providerId, source, csrf) {
+        async function runOne(providerId, source, csrf, providerOptions) {
             const card = documentObject.querySelector(`[data-provider-card="${providerId}"]`);
             if (!card) { return null; }
             resetCard(card);
             setCardStatus(card, "running");
             try {
-                const result = await requestJson(fetchImpl, runUrl, csrf, {
+                const body = {
                     source,
                     provider_id: providerId,
-                });
+                };
+                if (providerId === "videodl_repo" && providerOptions) {
+                    body.options = providerOptions;
+                }
+                const result = await requestJson(fetchImpl, runUrl, csrf, body);
                 resultByProvider.set(providerId, result);
                 renderResult(card, result, documentObject);
                 return result;
@@ -423,6 +607,17 @@
                 if (message) { message.textContent = "请输入有效内容并选择 1 至 5 个可用 Provider。"; }
                 return;
             }
+            let controlledVideodlOptions = null;
+            if (providers.includes("videodl_repo")) {
+                try {
+                    controlledVideodlOptions = videodlOptions(form, videodlInventory);
+                } catch (error) {
+                    if (message) {
+                        message.textContent = error.userMessage || "videodl 受控执行选项无效。";
+                    }
+                    return;
+                }
+            }
             running = true;
             const submitButton = form.querySelector('[type="submit"]');
             if (submitButton) { submitButton.disabled = true; }
@@ -431,7 +626,12 @@
                 await runWithConcurrency(
                     providers,
                     maxConcurrency,
-                    (providerId) => runOne(providerId, source, csrfToken(form)),
+                    (providerId) => runOne(
+                        providerId,
+                        source,
+                        csrfToken(form),
+                        providerId === "videodl_repo" ? controlledVideodlOptions : null,
+                    ),
                 );
                 if (message) { message.textContent = "本轮测试已完成；结果不会持久化。"; }
             } finally {
@@ -473,13 +673,17 @@
         }
 
         form.addEventListener("submit", submit);
+        const change = () => syncVideodlControls(form);
+        form.addEventListener("change", change);
         root.addEventListener("click", click);
+        syncVideodlControls(form);
         const controller = {
             submit,
             runOne,
             resultByProvider,
             destroy() {
                 form.removeEventListener("submit", submit);
+                form.removeEventListener("change", change);
                 root.removeEventListener("click", click);
                 if (root.__animeImagesProviderLabController === controller) {
                     delete root.__animeImagesProviderLabController;
@@ -513,8 +717,10 @@
     }
 
     return {
+        ATTEMPT_OUTCOME_LABELS,
         ERROR_MESSAGES,
         STATUS_LABELS,
+        attemptDisplayRows,
         createController,
         errorMessage,
         formatBytes,
@@ -523,8 +729,11 @@
         initializeWhenReady,
         probeRange,
         requestJson,
+        readVideodlInventory,
         runWithConcurrency,
         safeStatus,
         selectedProviderIds,
+        syncVideodlControls,
+        videodlOptions,
     };
 }));

@@ -213,6 +213,14 @@ videodl is PolyForm Noncommercial 1.0.0 and is limited to noncommercial local St
 
 Provider Lab defaults off, does not persist results, does not choose a winner and does not perform full-media Relay. Stable operations live in [Provider Lab](provider-lab.md); research history lives in [Provider Lab research](research/provider_lab/01_UPSTREAM_PROVIDER_LAB_V1.md).
 
+videodl controlled execution is Provider-Lab-local. Use only fixed inventory
+IDs and the closed modes documented in
+[Asset 1/2 outcome](research/videodl/ASSET_1_2_IMPLEMENTATION_OUTCOME_V1.md).
+Do not reintroduce hidden common/grabber fallback, arbitrary import paths,
+client-controlled timeouts, or global observation/catalog abstractions.
+Asset 3 (daily production validation, Staff reporting and notification) is
+deferred, not cancelled, and requires a separate authorization.
+
 ParseHub Provider Lab Worker and ParseHub XHS Runtime are separate capabilities. Never reuse one flag or venv path to imply the other is enabled.
 
 ## Recent PR Timeline
