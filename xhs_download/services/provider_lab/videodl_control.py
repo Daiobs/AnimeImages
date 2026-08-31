@@ -15,7 +15,11 @@ from .contracts import (
     safe_public_text,
 )
 from .runtime import execute_provider_worker
-from .videodl_policy import backend_policy
+from .videodl_policy import (
+    REVIEWED_COMMON_BACKEND_IDS,
+    REVIEWED_DEDICATED_BACKEND_IDS,
+    backend_policy,
+)
 
 
 VIDEODL_MODES = frozenset(
@@ -201,6 +205,25 @@ def normalize_inventory(value: Any) -> tuple[VideodlBackendDescriptor, ...]:
     return tuple(inventory)
 
 
+def validate_inventory_policy_coverage(
+    inventory: Sequence[VideodlBackendDescriptor],
+) -> None:
+    actual_dedicated = {
+        item.backend_id
+        for item in inventory
+        if item.backend_category == "dedicated"
+    }
+    actual_common = {
+        item.backend_id
+        for item in inventory
+        if item.backend_category == "common"
+    }
+    if actual_dedicated != set(REVIEWED_DEDICATED_BACKEND_IDS) or (
+        actual_common != set(REVIEWED_COMMON_BACKEND_IDS)
+    ):
+        raise ProviderLabError("PROVIDER_POLICY_REJECTED")
+
+
 def load_videodl_inventory(
     *,
     python: str,
@@ -217,7 +240,9 @@ def load_videodl_inventory(
         timeout_seconds=timeout_seconds,
         operation="inventory",
     )
-    return normalize_inventory(payload.get("inventory"))
+    inventory = normalize_inventory(payload.get("inventory"))
+    validate_inventory_policy_coverage(inventory)
+    return inventory
 
 
 def _remaining_timeout(deadline: float, cap: float, clock: Callable[[], float]) -> float:

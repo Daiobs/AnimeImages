@@ -49,7 +49,7 @@ Staff presentation.
 The backend category is registry metadata, not an execution or sharing policy.
 The exact-pin local policy reviewed all 70 dedicated backends: 60 are
 `allowed`, `C56VideoClient` requires explicit sharing confirmation because it
-delegates to a nested platform parser, and 8 are blocked. The blocked set covers
+delegates to a nested platform parser, and 9 are blocked. The blocked set covers
 DrissionPage/Chromium execution, embedded Cookie or Provider credential
 material, TLS-verification bypass, nested third-party aggregation and an
 unapproved child process.
@@ -70,6 +70,34 @@ default to blocked.
 | child-process execution blocked | `TencentVideoClient` |
 | exact-pin reviewed allowed | the remaining 60 explicitly enumerated IDs in the local policy |
 
+The same local policy also enumerates all 37 Common registry IDs at the exact
+pin. No Common backend is directly `allowed`: 21 require explicit source-sharing
+confirmation and 16 are blocked for additional execution risk. Unknown Common
+IDs are blocked, and runtime inventory must match both complete policy ID sets.
+
+| Policy result | Common backends |
+| --- | --- |
+| sharing confirmation | the 21 exact-pin reviewed Common IDs without an additional blocked behavior |
+| TLS verification disabled blocked | `BugPkVideoClient`, `LongZhuVideoClient` |
+| browser execution blocked | `GVVIPVideoClient` |
+| interactive execution blocked | `IM1907VideoClient` |
+| provider-owned downloader execution blocked | `VThreadsVideoClient`, `VeedMateVideoClient` |
+| embedded Cookie blocked | `VideoFKVideoClient`, `ZanqianbaVideoClient` |
+| embedded Provider credential or signing material blocked | `APICXVideoClient`, `IIILabVideoClient`, `QingtingVideoClient`, `SnapAnyVideoClient`, `SpapiVideoClient`, `WzjunVideoClient`, `XCVTSVideoClient`, `XiazaitoolVideoClient` |
+
+External-sharing confirmation authorizes only sending the source reference to
+the selected reviewed service. It never authorizes TLS bypass, browser or
+interactive execution, provider-owned download jobs, embedded credentials or
+embedded Cookies.
+
+The bounded Common audit checked every registry implementation for disabled
+TLS verification, browser/Chromium use, child-process or shell execution,
+embedded authorization/credential/Cookie material, provider-owned downloader
+jobs and uncontrolled command or file behavior. No Common implementation added
+a separate child-process or local-file execution finding at this pin; every
+positive additional-risk finding is represented by one of the 16 blocked IDs
+above.
+
 `WebMediaGrabber`, static grabber fallback, DrissionPage/Chromium and browser
 observation are not available in controlled modes.
 
@@ -79,8 +107,9 @@ a 25-second total ceiling, and at most 12 attempts can be recorded. The exact
 backend inventory and dedicated match operations are separately bounded.
 Inventory output distinguishes callable registry presence from controlled
 eligibility. It is cached for 10 minutes on success and 30 seconds on safe
-failure with a key bound to the pin and runtime identity; concurrent cold loads
-are serialized. The cache contains no source or media URL.
+failure with a key bound to the pin, local policy revision/file identity and
+runtime identity; concurrent cold loads are serialized. The cache contains no
+source or media URL.
 
 ## Attempt Contract
 
@@ -156,7 +185,7 @@ an explicit trigger; they are not an active backlog.
 | `VideoInfo` | `KEEP_AS_ISOLATED_UPSTREAM` | Worker converts it to existing `LabProviderResultV1`; it never crosses as an object. |
 | `BaseVideoClient` | `REJECT` | Giant HTTP/download/filesystem/command boundary, TLS fallback and unsafe diagnostic surface. |
 | Dedicated clients | `KEEP_AS_ISOLATED_UPSTREAM` | Exact execution is allowed only when the pin-bound local policy says `allowed`, or after explicit confirmation for the one sharing-required backend; blocked/browser-capable clients never reach build/parse. |
-| Common clients | `KEEP_AS_ISOLATED_UPSTREAM` | External aggregators remain explicit, confirmed, selected and Lab-only. |
+| Common clients | `KEEP_AS_ISOLATED_UPSTREAM` | All 37 exact-pin IDs have local policy; only 21 explicitly selected sharing-confirmed IDs may run, while 16 higher-risk IDs and every unknown ID remain blocked. |
 | WebMediaGrabber direct probe | `DEFER_WITH_EXPLICIT_TRIGGER` | Reconsider only for a platform-scoped need with SSRF, redirect, TLS, host, byte and identity gates. |
 | WebMediaGrabber static extraction | `DEFER_WITH_EXPLICIT_TRIGGER` | Reconsider only with exact item binding and bounded candidate evidence. |
 | WebMediaGrabber browser observer | `REJECT` | Arbitrary page execution and unrelated-media risk; controlled modes block it. |
@@ -211,7 +240,14 @@ ASSET_1_DEDICATED_POLICY_REVIEWED = 70
 ASSET_1_CONTROLLED_ALLOWED = 60
 ASSET_1_CONTROLLED_REQUIRES_SHARING = 1
 ASSET_1_CONTROLLED_BLOCKED = 9
+ASSET_1_COMMON_POLICY_REVIEWED = 37
+ASSET_1_COMMON_REQUIRES_SHARING = 21
+ASSET_1_COMMON_BLOCKED = 16
+ASSET_1_COMMON_POLICY_REGISTRY_MATCH = PASS
+ASSET_1_BUGPK_TLS_BYPASS = BLOCKED
+ASSET_1_UNKNOWN_COMMON_DEFAULT = BLOCKED
 ASSET_1_CONTROLLED_BROWSER_EXECUTION = NO
+ASSET_1_CONTROLLED_TLS_BYPASS = NO
 ASSET_1_ATTEMPT_RETENTION_AT_TOTAL_DEADLINE = PASS
 ASSET_1_INVENTORY_PAGE_LOAD = CACHED_AND_BOUNDED
 ASSET_1_STAFF_LAB_CONTROLS = PASS

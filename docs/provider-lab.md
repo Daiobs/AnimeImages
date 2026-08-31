@@ -305,8 +305,10 @@ videodl Staff Lab 支持 `specific_backend`、`dedicated_only`、
 `reviewed_auto`。backend category 只描述 registry，不代表内部执行或共享
 行为。exact pin 的 70 个 dedicated backend 逐项审核为 60 个 `allowed`、
 1 个 `requires_sharing_confirmation` 和 9 个 `blocked`；未知 dedicated
-backend 默认阻止。common backend 默认不选择，且必须由 Staff 明确确认
-source reference 的外部共享。
+backend 默认阻止。exact pin 的 37 个 common backend 也逐项审核：21 个
+`requires_sharing_confirmation`、16 个 `blocked`，不存在直接 `allowed` 的
+common backend。未知 common backend 默认阻止；可执行 common 默认不选择，
+且必须由 Staff 明确选择并确认 source reference 的外部共享。
 
 受控模式只运行本地 exact-pin policy 明确允许的 backend。嵌套外部服务的
 dedicated backend 必须确认共享或被阻止；需要 DrissionPage / Chromium、
@@ -314,6 +316,9 @@ dedicated backend 必须确认共享或被阻止；需要 DrissionPage / Chromiu
 在启动 backend Worker 前阻止。受控模式不会进入未选择的 common、
 WebMediaGrabber、Chromium 或 browser observer fallback。`legacy_auto` 仍可
 用于显式不透明对照，但不是默认模式，也不作为受控执行完成证据。
+Common 的共享确认只授权向所选服务发送 source reference，不会解除 TLS
+校验、浏览器/交互执行、Provider-owned downloader、内嵌凭据或 Cookie 阻断。
+`BugPkVideoClient` 因禁用 TLS 校验而固定阻断，即使已确认共享也不能执行。
 
 AnimeImages 父进程拥有 backend 顺序、单次和总 deadline、selected
 backend、固定安全错误及最多 12 条 attempt。失败结果也可显示已经真实
@@ -321,9 +326,11 @@ backend、固定安全错误及最多 12 条 attempt。失败结果也可显示�
 attempts，且不伪造下一条。表格和脱敏 JSON 不包含 URL、Header/Cookie 值、异常、
 本地路径或外部 API 数据。
 
-页面 inventory 区分 registry presence 与 controlled eligibility。成功结果按
-videodl pin 和 runtime identity 缓存 10 分钟，安全失败缓存 30 秒；并发冷加载
-由短期 single-flight 锁合并。匿名或非 Staff 请求在 inventory Worker 前返回
+页面 inventory 区分 registry presence 与 controlled eligibility。运行时要求
+70 个 dedicated 和 37 个 common registry ID 与本地 policy 完整集合相等，
+缺失或新增 ID 均 fail closed。成功结果按 videodl pin、policy revision/file
+identity 和 runtime identity 缓存 10 分钟，安全失败缓存 30 秒；并发冷加载由
+短期 single-flight 锁合并。匿名或非 Staff 请求在 inventory Worker 前返回
 404，缓存内容只含固定 backend 元数据，不含 source 或 media URL。
 
 完整实现与 26 项组件处置见

@@ -51,7 +51,8 @@ from .videodl_control import (
     load_videodl_inventory,
     public_inventory,
 )
-from .videodl_policy import VIDEODL_POLICY_PIN
+from . import videodl_policy
+from .videodl_policy import VIDEODL_POLICY_PIN, VIDEODL_POLICY_REVISION
 
 
 PARSEHUB_PIN = "144260f4349c5bb57415f7555a572fcd48c3b8ba"
@@ -469,12 +470,14 @@ def videodl_inventory_cache_key(*, python: str, worker: str | Path) -> str:
     identity = "|".join(
         (
             VIDEODL_PIN,
+            VIDEODL_POLICY_REVISION,
+            _runtime_file_identity(videodl_policy.__file__),
             _runtime_file_identity(python),
             _runtime_file_identity(worker),
         )
     )
     digest = sha256(identity.encode("utf-8")).hexdigest()
-    return f"provider-lab:videodl-inventory:v2:{digest}"
+    return f"provider-lab:videodl-inventory:v3:{digest}"
 
 
 def list_videodl_backend_inventory() -> dict[str, Any]:

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 
 VIDEODL_POLICY_PIN = "6cd1de0fe1209380b183b654c65e98a629637873"
+VIDEODL_POLICY_REVISION = "dedicated-v1-common-v1"
 CONTROLLED_STATES = frozenset(
     {"allowed", "requires_sharing_confirmation", "blocked"}
 )
@@ -172,24 +173,119 @@ DEDICATED_BACKEND_POLICIES = {
 }
 
 
+# Common backends always disclose the source reference to an external service.
+# This exact-pin allowlist records which services may run after explicit Staff
+# confirmation; an ID absent from the tuple is unreviewed and stays blocked.
+REVIEWED_COMMON_BACKEND_IDS = (
+    "SnapAnyVideoClient",
+    "GVVideoClient",
+    "SnapWCVideoClient",
+    "IM1907VideoClient",
+    "XMFlvVideoClient",
+    "IIILabVideoClient",
+    "RayVideoClient",
+    "VeedMateVideoClient",
+    "VideoFKVideoClient",
+    "VThreadsVideoClient",
+    "SENJiexiVideoClient",
+    "JXM3U8VideoClient",
+    "VgetVideoClient",
+    "AnyFetcherVideoClient",
+    "PVVideoClient",
+    "KedouVideoClient",
+    "ODwonVideoClient",
+    "KuKuToolVideoClient",
+    "APICXVideoClient",
+    "SpapiVideoClient",
+    "QingQiuVideoClient",
+    "WzjunVideoClient",
+    "XiaolvfangVideoClient",
+    "BVVideoClient",
+    "KuLeuVideoClient",
+    "KIT9VideoClient",
+    "MiZhiVideoClient",
+    "QZXDPToolsVideoClient",
+    "BugPkVideoClient",
+    "NoLogoVideoClient",
+    "GVVIPVideoClient",
+    "JisuYunVideoClient",
+    "QingtingVideoClient",
+    "XCVTSVideoClient",
+    "XiazaitoolVideoClient",
+    "ZanqianbaVideoClient",
+    "LongZhuVideoClient",
+)
+
+_COMMON_BLOCKED = {
+    "APICXVideoClient": ("EMBEDDED_PROVIDER_CREDENTIAL_BLOCKED", False),
+    "BugPkVideoClient": ("TLS_VERIFICATION_DISABLED_BLOCKED", False),
+    "GVVIPVideoClient": ("BROWSER_EXECUTION_BLOCKED", True),
+    "IIILabVideoClient": ("EMBEDDED_PROVIDER_CREDENTIAL_BLOCKED", False),
+    "IM1907VideoClient": ("INTERACTIVE_EXECUTION_BLOCKED", False),
+    "LongZhuVideoClient": ("TLS_VERIFICATION_DISABLED_BLOCKED", False),
+    "QingtingVideoClient": ("EMBEDDED_PROVIDER_CREDENTIAL_BLOCKED", False),
+    "SnapAnyVideoClient": ("EMBEDDED_PROVIDER_CREDENTIAL_BLOCKED", False),
+    "SpapiVideoClient": ("EMBEDDED_PROVIDER_CREDENTIAL_BLOCKED", False),
+    "VThreadsVideoClient": ("PROVIDER_DOWNLOADER_EXECUTION_BLOCKED", False),
+    "VeedMateVideoClient": ("PROVIDER_DOWNLOADER_EXECUTION_BLOCKED", False),
+    "VideoFKVideoClient": ("EMBEDDED_COOKIE_BLOCKED", False),
+    "WzjunVideoClient": ("EMBEDDED_PROVIDER_CREDENTIAL_BLOCKED", False),
+    "XCVTSVideoClient": ("EMBEDDED_PROVIDER_CREDENTIAL_BLOCKED", False),
+    "XiazaitoolVideoClient": ("EMBEDDED_PROVIDER_CREDENTIAL_BLOCKED", False),
+    "ZanqianbaVideoClient": ("EMBEDDED_COOKIE_BLOCKED", False),
+}
+
+
+def _common_policy(backend_id: str) -> VideodlBackendPolicy:
+    if backend_id not in REVIEWED_COMMON_BACKEND_IDS:
+        return VideodlBackendPolicy(
+            backend_id=backend_id,
+            controlled_state="blocked",
+            external_sharing_required=False,
+            browser_execution=False,
+            policy_reason="UNREVIEWED_COMMON_BACKEND_BLOCKED",
+        )
+    blocked = _COMMON_BLOCKED.get(backend_id)
+    if blocked is not None:
+        reason, browser_execution = blocked
+        return VideodlBackendPolicy(
+            backend_id=backend_id,
+            controlled_state="blocked",
+            external_sharing_required=True,
+            browser_execution=browser_execution,
+            policy_reason=reason,
+        )
+    return VideodlBackendPolicy(
+        backend_id=backend_id,
+        controlled_state="requires_sharing_confirmation",
+        external_sharing_required=True,
+        browser_execution=False,
+        policy_reason="COMMON_EXTERNAL_SHARING_CONFIRMATION_REQUIRED",
+    )
+
+
+COMMON_BACKEND_POLICIES = {
+    backend_id: _common_policy(backend_id)
+    for backend_id in REVIEWED_COMMON_BACKEND_IDS
+}
+
+
 def backend_policy(
     backend_id: str,
     backend_category: str,
     *,
     registry_present: bool = False,
 ) -> VideodlBackendPolicy:
+    del registry_present
     if backend_category == "dedicated":
         return DEDICATED_BACKEND_POLICIES.get(
             backend_id,
             _dedicated_policy(backend_id),
         )
-    if backend_category == "common" and registry_present:
-        return VideodlBackendPolicy(
-            backend_id=backend_id,
-            controlled_state="requires_sharing_confirmation",
-            external_sharing_required=True,
-            browser_execution=False,
-            policy_reason="COMMON_EXTERNAL_SHARING_CONFIRMATION_REQUIRED",
+    if backend_category == "common":
+        return COMMON_BACKEND_POLICIES.get(
+            backend_id,
+            _common_policy(backend_id),
         )
     return VideodlBackendPolicy(
         backend_id=backend_id,
@@ -200,7 +296,17 @@ def backend_policy(
     )
 
 
-if len(REVIEWED_DEDICATED_BACKEND_IDS) != 70 or len(
-    DEDICATED_BACKEND_POLICIES
-) != 70:
+if (
+    len(REVIEWED_DEDICATED_BACKEND_IDS) != 70
+    or len(set(REVIEWED_DEDICATED_BACKEND_IDS)) != 70
+    or set(REVIEWED_DEDICATED_BACKEND_IDS) != set(DEDICATED_BACKEND_POLICIES)
+):
     raise RuntimeError("videodl exact-pin policy must cover 70 dedicated backends")
+
+if (
+    len(REVIEWED_COMMON_BACKEND_IDS) != 37
+    or len(set(REVIEWED_COMMON_BACKEND_IDS)) != 37
+    or set(REVIEWED_COMMON_BACKEND_IDS) != set(COMMON_BACKEND_POLICIES)
+    or not set(_COMMON_BLOCKED).issubset(REVIEWED_COMMON_BACKEND_IDS)
+):
+    raise RuntimeError("videodl exact-pin policy must cover 37 common backends")
