@@ -374,6 +374,7 @@ class ProviderHealthSampleUrlPolicyTests(TestCase):
     DJANGO_DEFAULT_FROM_EMAIL="noreply@example.test",
     PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED=True,
     PROVIDER_VALIDATION_EMAIL_RECIPIENTS=("maintainer@example.test",),
+    REQUIRE_PRODUCTION_CONFIG=False,
 )
 class DailyValidationOrchestrationTests(TestCase):
     def setUp(self):
@@ -576,6 +577,7 @@ class DailyValidationOrchestrationTests(TestCase):
     DJANGO_DEFAULT_FROM_EMAIL="noreply@example.test",
     PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED=True,
     PROVIDER_VALIDATION_EMAIL_RECIPIENTS=("maintainer@example.test",),
+    REQUIRE_PRODUCTION_CONFIG=False,
 )
 class DailyValidationNotificationTests(TestCase):
     def setUp(self):
