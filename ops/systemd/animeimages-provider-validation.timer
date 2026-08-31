@@ -1,0 +1,11 @@
+[Unit]
+Description=Run AnimeImages Provider validation daily
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=15m
+Unit=animeimages-provider-validation.service
+
+[Install]
+WantedBy=timers.target

@@ -331,3 +331,21 @@ NEWER_UNDEPLOYED_CAPABILITIES = XHS HYBRID + XHS IMAGE FIDELITY + STAFF LIVEPHOT
 PRODUCTION_REVERIFIED_BY_THIS_TASK = NO
 PRODUCTION_DEPLOYMENT_BY_THIS_TASK = NO
 ```
+
+## Asset 3 Daily Validation Candidate
+
+The Asset 3 branch extends the existing Provider Health Tests rather than
+introducing a global health platform. It preserves the original nine checks,
+adds five XHS/Bilibili/videodl checks, and supplies one bounded daily Suite,
+change-based email logic, an Admin report, retention, and inactive systemd
+candidates. Defaults keep daily execution and email delivery off.
+
+```text
+ASSET_3_CODE = IMPLEMENTED_IN_CANDIDATE_PR
+ASSET_3_PRODUCTION_ACTIVATION = NOT_PERFORMED
+PRODUCTION_SAMPLES_CONFIGURED = NO_CLAIM
+SMTP_CONFIGURED = NO_CLAIM
+SYSTEMD_INSTALLED = NO
+FORMAL_ROUTE_CHANGE = NO
+DOWNLOAD_CHANGE = NO
+```

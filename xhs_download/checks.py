@@ -1,8 +1,14 @@
 import importlib.util
+from urllib.parse import urlparse
 
 from django.conf import settings
 from django.core.checks import Error, Warning as CheckWarning, register
 
+from .services.env_config import runtime_bool, runtime_list, runtime_str
+from .services.provider_daily_validation import (
+    NON_DELIVERY_EMAIL_BACKENDS,
+    provider_validation_email_backend_is_importable,
+)
 from .services.platforms.douyin_kukutool import (
     get_kukutool_runtime_status,
     get_kukutool_sidecar_status,
@@ -10,6 +16,90 @@ from .services.platforms.douyin_kukutool import (
 from .services.platforms.gallerydl_generic import GalleryDlGenericProvider
 from .services.platforms.ytdlp_generic import YtDlpGenericProvider
 from .services.youtube_merge import get_youtube_merge_health
+
+
+@register()
+def check_provider_validation_email_configuration(app_configs, **kwargs):
+    del app_configs, kwargs
+    if not runtime_bool("PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED", False):
+        return []
+
+    issues = []
+    recipients = tuple(
+        str(value or "").strip()
+        for value in runtime_list("PROVIDER_VALIDATION_EMAIL_RECIPIENTS", ())
+        if str(value or "").strip()
+    )
+    backend = runtime_str(
+        "DJANGO_EMAIL_BACKEND",
+        "django.core.mail.backends.console.EmailBackend",
+    )
+    if not provider_validation_email_backend_is_importable(backend):
+        issues.append(
+            Error(
+                "Provider validation email delivery requires an importable Django email backend.",
+                id="xhs_download.E019",
+            )
+        )
+    if not recipients:
+        issues.append(
+            Error(
+                "Provider validation email delivery requires at least one configured recipient.",
+                id="xhs_download.E013",
+            )
+        )
+    if not runtime_str("DJANGO_DEFAULT_FROM_EMAIL", ""):
+        issues.append(
+            Error(
+                "Provider validation email delivery requires DJANGO_DEFAULT_FROM_EMAIL.",
+                id="xhs_download.E014",
+            )
+        )
+    if runtime_bool("DJANGO_EMAIL_USE_TLS", False) and runtime_bool(
+        "DJANGO_EMAIL_USE_SSL", False
+    ):
+        issues.append(
+            Error(
+                "Provider validation email delivery cannot enable TLS and SSL together.",
+                id="xhs_download.E015",
+            )
+        )
+    if backend.endswith("smtp.EmailBackend") and not runtime_str(
+        "DJANGO_EMAIL_HOST", ""
+    ):
+        issues.append(
+            Error(
+                "Provider validation SMTP delivery requires DJANGO_EMAIL_HOST.",
+                id="xhs_download.E016",
+            )
+        )
+    if getattr(settings, "REQUIRE_PRODUCTION_CONFIG", not settings.DEBUG) and (
+        backend in NON_DELIVERY_EMAIL_BACKENDS
+    ):
+        issues.append(
+            Error(
+                "Production Provider validation delivery requires a real email backend.",
+                id="xhs_download.E017",
+            )
+        )
+    report_url = runtime_str("PROVIDER_VALIDATION_ADMIN_REPORT_URL", "")
+    if report_url:
+        parsed = urlparse(report_url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            issues.append(
+                Error(
+                    "Provider validation Admin report URL must be an http/https URL without credentials, query, or fragment.",
+                    id="xhs_download.E018",
+                )
+            )
+    return issues
 
 
 def third_party_specific_provider_enabled():

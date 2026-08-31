@@ -298,6 +298,32 @@ XHS_ALLOW_ABSOLUTE_SAVE_PATH=True
 XHS_DEFAULT_SERVER_SAVE_DIR=/Users/your-name/Downloads/xhs
 ```
 
+## Daily Provider Validation Candidate
+
+The repository includes inactive
+`ops/systemd/animeimages-provider-validation.service` and `.timer` candidates.
+Merging them does not install or enable production scheduling. The command is
+safe-defaulted by database `daily_enabled=false`, selected keys
+`["health_ready"]`, and environment email delivery disabled. SMTP passwords,
+real recipients and approved public sample URLs must be configured only in a
+separately authorized production activation.
+
+Admin save-time validation is only the first gate. Every scheduled sample is
+revalidated before external execution, including DNS resolution where every
+resolved address must remain public; Staff access never authorizes private or
+metadata endpoints. Production email delivery also rejects console, dummy,
+locmem, and filebased backends, and an unimportable backend is never considered
+configured. A notification is marked sent only after an allowed backend
+confirms one delivery.
+
+Before installation, follow the ordered activation checklist in
+`docs/admin-provider-health-tests.md`. In particular: back up and migrate the
+database, retain the disabled DB gate while samples are entered, validate
+`--dry-run`, run a no-email canary, validate SMTP separately, inspect the Admin
+report, verify timezone and units, then enable the timer and only finally open
+the daily DB gate. No deployment, restart, `daemon-reload`, timer enablement or
+SMTP setup is performed by the Asset 3 development task.
+
 ## Admin Release Management
 
 `/admin/release-management/` shows the current Git branch, commit, matching tag, the locally cached `origin/main`, latest tags, readiness status, and recent release deployment jobs. Release Management v1 only deploys `main`; tags remain visible for planning and audit, but the UI and POST endpoint do not create tag deployment jobs.

@@ -134,6 +134,32 @@
         min-height: 76px;
         resize: vertical;
     }
+    .health-field input[type="text"],
+    .health-field input[type="number"],
+    .health-field select {
+        box-sizing: border-box;
+        width: 100%;
+        min-height: 42px;
+    }
+    .health-check-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px 14px;
+        margin-top: 10px;
+    }
+    .health-check {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        padding: 10px;
+        border: 1px solid #edf0f3;
+        border-radius: 8px;
+        background: #f8fafc;
+        color: #374151;
+        font-size: 13px;
+    }
+    .health-check input { margin-top: 2px; }
+    .health-warning { display: block; margin-top: 4px; color: #8a5a00; font-size: 12px; }
     .health-form-actions {
         display: flex;
         flex-wrap: wrap;
@@ -187,6 +213,8 @@
     }
     .health-badge-success { background: #e9f7ef; color: #137333; }
     .health-badge-failed { background: #fce8e6; color: #a50e0e; }
+    .health-badge-degraded { background: #fff4dd; color: #8a5a00; }
+    .health-badge-running { background: #e8f1ff; color: #174ea6; }
     .health-badge-skipped { background: #f3f4f6; color: #4b5563; }
     .health-badge-unavailable { background: #fff8e1; color: #765400; }
     .health-table { width: 100%; border-collapse: collapse; }
@@ -228,7 +256,8 @@
     @media (max-width: 980px) {
         .health-grid,
         .health-card-grid,
-        .health-form-grid { grid-template-columns: 1fr; }
+        .health-form-grid,
+        .health-check-grid { grid-template-columns: 1fr; }
     }
 </style>
 
@@ -297,32 +326,80 @@
         </section>
 
         <section class="health-panel">
-            <h2>测试 URL 配置</h2>
-            <p class="health-muted">这些 URL 保存在数据库中，可随时在后台修改；测试记录只保存 host，不保存完整链接。建议只使用稳定公开视频或公开图片链接。</p>
+            <h2>测试样本与每日验证配置</h2>
+            <p class="health-muted">样本 URL 只保存在数据库配置中；运行记录、报告和邮件只保留 host。每日任务默认关闭，默认只选择 Runtime Readiness。</p>
             <form method="post" data-loading-text="正在保存测试 URL...">
                 {% csrf_token %}
                 <input type="hidden" name="action" value="save_test_urls">
+                <input type="hidden" name="daily_configuration_present" value="1">
                 <div class="health-form-grid">
                     <div class="health-field">
                         <label for="id_douyin_url">抖音测试 URL</label>
-                        <textarea id="id_douyin_url" name="douyin_url" {% if not can_manage_test_urls %}readonly{% endif %}>{{ test_setting.douyin_url }}</textarea>
+                        <textarea id="id_douyin_url" name="douyin_url" {% if not can_manage_test_urls %}readonly{% endif %}>{% if can_manage_test_urls %}{{ test_setting.douyin_url }}{% elif test_setting.douyin_url %}已配置（内容隐藏）{% endif %}</textarea>
                     </div>
                     <div class="health-field">
                         <label for="id_youtube_url">YouTube 测试 URL</label>
-                        <textarea id="id_youtube_url" name="youtube_url" {% if not can_manage_test_urls %}readonly{% endif %}>{{ test_setting.youtube_url }}</textarea>
+                        <textarea id="id_youtube_url" name="youtube_url" {% if not can_manage_test_urls %}readonly{% endif %}>{% if can_manage_test_urls %}{{ test_setting.youtube_url }}{% elif test_setting.youtube_url %}已配置（内容隐藏）{% endif %}</textarea>
                     </div>
                     <div class="health-field">
                         <label for="id_third_party_url">第三方 yt-dlp 测试 URL</label>
-                        <textarea id="id_third_party_url" name="third_party_url" {% if not can_manage_test_urls %}readonly{% endif %}>{{ test_setting.third_party_url }}</textarea>
+                        <textarea id="id_third_party_url" name="third_party_url" {% if not can_manage_test_urls %}readonly{% endif %}>{% if can_manage_test_urls %}{{ test_setting.third_party_url }}{% elif test_setting.third_party_url %}已配置（内容隐藏）{% endif %}</textarea>
                     </div>
                     <div class="health-field">
                         <label for="id_gallerydl_url">gallery-dl 测试 URL</label>
-                        <textarea id="id_gallerydl_url" name="gallerydl_url" {% if not can_manage_test_urls %}readonly{% endif %}>{{ test_setting.gallerydl_url }}</textarea>
+                        <textarea id="id_gallerydl_url" name="gallerydl_url" {% if not can_manage_test_urls %}readonly{% endif %}>{% if can_manage_test_urls %}{{ test_setting.gallerydl_url }}{% elif test_setting.gallerydl_url %}已配置（内容隐藏）{% endif %}</textarea>
                     </div>
+                    <div class="health-field">
+                        <label for="id_xhs_video_url">小红书视频测试 URL</label>
+                        <textarea id="id_xhs_video_url" name="xhs_video_url" {% if not can_manage_test_urls %}readonly{% endif %}>{% if can_manage_test_urls %}{{ test_setting.xhs_video_url }}{% elif test_setting.xhs_video_url %}已配置（内容隐藏）{% endif %}</textarea>
+                    </div>
+                    <div class="health-field">
+                        <label for="id_xhs_gallery_url">小红书图集测试 URL</label>
+                        <textarea id="id_xhs_gallery_url" name="xhs_gallery_url" {% if not can_manage_test_urls %}readonly{% endif %}>{% if can_manage_test_urls %}{{ test_setting.xhs_gallery_url }}{% elif test_setting.xhs_gallery_url %}已配置（内容隐藏）{% endif %}</textarea>
+                    </div>
+                    <div class="health-field">
+                        <label for="id_bilibili_url">哔哩哔哩测试 URL</label>
+                        <textarea id="id_bilibili_url" name="bilibili_url" {% if not can_manage_test_urls %}readonly{% endif %}>{% if can_manage_test_urls %}{{ test_setting.bilibili_url }}{% elif test_setting.bilibili_url %}已配置（内容隐藏）{% endif %}</textarea>
+                    </div>
+                    <div class="health-field">
+                        <label for="id_videodl_url">videodl Dedicated 测试 URL</label>
+                        <textarea id="id_videodl_url" name="videodl_url" {% if not can_manage_test_urls %}readonly{% endif %}>{% if can_manage_test_urls %}{{ test_setting.videodl_url }}{% elif test_setting.videodl_url %}已配置（内容隐藏）{% endif %}</textarea>
+                    </div>
+                    <div class="health-field">
+                        <label for="id_videodl_backend_id">videodl Dedicated Backend ID</label>
+                        <input id="id_videodl_backend_id" name="videodl_backend_id" type="text" maxlength="80" value="{% if can_manage_test_urls %}{{ test_setting.videodl_backend_id }}{% elif test_setting.videodl_backend_id %}已配置（内容隐藏）{% endif %}" {% if not can_manage_test_urls %}readonly{% endif %}>
+                        <span class="health-warning">只允许 exact-pin policy 中明确 allowed 且无需外部共享的 Dedicated backend；Asset 3 v1 不提供 Common backend。</span>
+                    </div>
+                    <div class="health-field">
+                        <label for="id_failure_threshold">连续不健康告警阈值</label>
+                        <input id="id_failure_threshold" name="failure_threshold" type="number" min="1" max="10" value="{{ test_setting.failure_threshold }}" {% if not can_manage_test_urls %}readonly{% endif %}>
+                    </div>
+                    <div class="health-field">
+                        <label for="id_notification_cooldown_hours">提醒冷却（小时）</label>
+                        <input id="id_notification_cooldown_hours" name="notification_cooldown_hours" type="number" min="1" max="168" value="{{ test_setting.notification_cooldown_hours }}" {% if not can_manage_test_urls %}readonly{% endif %}>
+                    </div>
+                    <div class="health-field">
+                        <label for="id_retention_days">批次历史保留（天）</label>
+                        <input id="id_retention_days" name="retention_days" type="number" min="7" max="365" value="{{ test_setting.retention_days }}" {% if not can_manage_test_urls %}readonly{% endif %}>
+                    </div>
+                </div>
+                <div class="health-check-grid" aria-label="每日验证开关">
+                    <label class="health-check"><input type="checkbox" name="daily_enabled" value="1" {% if test_setting.daily_enabled %}checked{% endif %} {% if not can_manage_test_urls %}disabled{% endif %}><span>启用每日验证</span></label>
+                    <label class="health-check"><input type="checkbox" name="email_notifications_enabled" value="1" {% if test_setting.email_notifications_enabled %}checked{% endif %} {% if not can_manage_test_urls %}disabled{% endif %}><span>启用状态变化邮件（仍需环境投递 Gate）</span></label>
+                    <label class="health-check"><input type="checkbox" name="notify_recovery" value="1" {% if test_setting.notify_recovery %}checked{% endif %} {% if not can_manage_test_urls %}disabled{% endif %}><span>恢复后发送通知</span></label>
+                </div>
+                <h3>每日测试项</h3>
+                <div class="health-check-grid">
+                    {% for card in test_cards %}
+                        <label class="health-check">
+                            <input type="checkbox" name="daily_test_keys" value="{{ card.key }}" {% if card.daily_selected %}checked{% endif %} {% if not can_manage_test_urls %}disabled{% endif %}>
+                            <span><strong>{{ card.name }}</strong><br><span class="health-muted">{{ card.key }}</span>{% if card.side_effect_warning %}<span class="health-warning">{{ card.side_effect_warning }}</span>{% endif %}</span>
+                        </label>
+                    {% endfor %}
                 </div>
                 <div class="health-form-actions">
                     <button class="health-button health-button-primary" type="submit" {% if not can_manage_test_urls %}disabled{% endif %}>
-                        保存测试 URL
+                        保存测试与每日配置
                     </button>
                     {% if not can_manage_test_urls %}
                         <span class="health-muted">需要 change ProviderHealthTestSetting 权限。</span>
@@ -341,6 +418,48 @@
                     <span class="health-muted">未配置 URL 的项目会记录为 skipped。</span>
                 {% endif %}
             </form>
+        </section>
+
+        <section class="health-grid" aria-label="每日验证摘要">
+            <div class="health-panel">
+                <h2>每日验证</h2>
+                <ul class="health-list">
+                    <li><span>任务状态</span><strong>{{ test_setting.daily_enabled|yesno:"已启用,已关闭" }}</strong></li>
+                    <li><span>已选测试</span><strong>{{ daily_report.selected_test_count }} / 14</strong></li>
+                    <li><span>当前异常项</span><strong>{{ daily_report.active_failing_count }}</strong></li>
+                </ul>
+            </div>
+            <div class="health-panel">
+                <h2>邮件 Gate</h2>
+                <ul class="health-list">
+                    <li><span>数据库开关</span><strong>{{ test_setting.email_notifications_enabled|yesno:"已启用,已关闭" }}</strong></li>
+                    <li><span>环境投递 Gate</span><strong>{{ daily_report.email_delivery.env_enabled|yesno:"已启用,已关闭" }}</strong></li>
+                    <li><span>投递配置完整</span><strong>{{ daily_report.email_delivery.configured|yesno:"是,否" }}</strong></li>
+                    <li><span>收件人数</span><strong>{{ daily_report.email_delivery.recipient_count }}</strong></li>
+                    <li><span>Backend</span><strong>{{ daily_report.email_delivery.backend|default:"-" }}</strong></li>
+                    <li><span>最近通知状态</span><strong>{% if daily_report.latest_notification_suite %}{{ daily_report.latest_notification_suite.notification_status }}{% else %}暂无{% endif %}</strong></li>
+                </ul>
+            </div>
+            <div class="health-panel">
+                <h2>最近定时批次</h2>
+                <ul class="health-list">
+                    {% with suite=daily_report.latest_scheduled_suite %}
+                        <li><span>状态</span><strong>{{ suite.status|default:"暂无" }}</strong></li>
+                        <li><span>时间</span><strong>{% if suite %}{{ suite.created_at|date:"Y-m-d H:i:s" }}{% else %}-{% endif %}</strong></li>
+                        <li><span>耗时</span><strong>{% if suite %}{{ suite.duration_ms }} ms{% else %}-{% endif %}</strong></li>
+                        <li><span>结果</span><strong>{% if suite %}{{ suite.success_count }}/{{ suite.failed_count }}/{{ suite.skipped_count }}/{{ suite.unavailable_count }}{% else %}-{% endif %}</strong></li>
+                    {% endwith %}
+                </ul>
+            </div>
+            <div class="health-panel">
+                <h2>7 / 30 天趋势</h2>
+                <ul class="health-list">
+                    <li><span>7 天 success</span><strong>{{ daily_report.trend_7.success|default:0 }}</strong></li>
+                    <li><span>7 天 degraded</span><strong>{{ daily_report.trend_7.degraded|default:0 }}</strong></li>
+                    <li><span>30 天 success</span><strong>{{ daily_report.trend_30.success|default:0 }}</strong></li>
+                    <li><span>30 天 degraded</span><strong>{{ daily_report.trend_30.degraded|default:0 }}</strong></li>
+                </ul>
+            </div>
         </section>
 
         <section class="health-card-grid" aria-label="测试项">
@@ -378,6 +497,113 @@
                     </form>
                 </article>
             {% endfor %}
+        </section>
+
+        <section class="health-panel">
+            <h2>每日测试项状态</h2>
+            <table class="health-table">
+                <thead>
+                <tr>
+                    <th>测试项</th>
+                    <th>最近状态</th>
+                    <th>最近运行</th>
+                    <th>最近成功</th>
+                    <th>最近不健康</th>
+                    <th>连续不健康</th>
+                    <th>错误代码</th>
+                    <th>通知</th>
+                    <th>Host</th>
+                </tr>
+                </thead>
+                <tbody>
+                {% for state in daily_report.test_states %}
+                    {% with run=state.latest %}
+                    <tr>
+                        <td><strong>{{ state.display_name }}</strong><br><span class="health-muted">{{ state.test_key }}</span></td>
+                        <td>{% if run %}<span class="health-badge health-badge-{{ run.status }}">{{ run.status }}</span>{% else %}-{% endif %}</td>
+                        <td>{% if run %}{{ run.created_at|date:"Y-m-d H:i:s" }}{% else %}-{% endif %}</td>
+                        <td>{% if state.last_success_at %}{{ state.last_success_at|date:"Y-m-d H:i:s" }}{% else %}-{% endif %}</td>
+                        <td>{% if state.last_unhealthy_at %}{{ state.last_unhealthy_at|date:"Y-m-d H:i:s" }}{% else %}-{% endif %}</td>
+                        <td>{{ state.consecutive_unhealthy }}</td>
+                        <td>{{ run.error_code|default:"-" }}</td>
+                        <td>{% if run %}{{ run.notification_event }} / {{ run.notification_delivery_status }}{% else %}-{% endif %}</td>
+                        <td>{{ run.test_url_host|default:"-" }}</td>
+                    </tr>
+                    {% endwith %}
+                {% empty %}
+                    <tr><td colspan="9">未选择每日测试项</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+
+        <section class="health-panel">
+            <h2>每日批次历史</h2>
+            <form method="get" class="health-inline-form">
+                <label for="id_suite_status">状态</label>
+                <select id="id_suite_status" name="suite_status">
+                    <option value="">全部</option>
+                    {% for value, label in suite_status_choices %}<option value="{{ value }}" {% if suite_status_filter == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+                </select>
+                <label for="id_suite_trigger">触发方式</label>
+                <select id="id_suite_trigger" name="suite_trigger">
+                    <option value="">全部</option>
+                    {% for value, label in suite_trigger_choices %}<option value="{{ value }}" {% if suite_trigger_filter == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+                </select>
+                <button class="health-button" type="submit">筛选</button>
+            </form>
+            <table class="health-table">
+                <thead>
+                <tr>
+                    <th>时间</th>
+                    <th>触发</th>
+                    <th>状态</th>
+                    <th>总数</th>
+                    <th>成功</th>
+                    <th>失败</th>
+                    <th>跳过</th>
+                    <th>不可用</th>
+                    <th>耗时</th>
+                    <th>通知</th>
+                    <th>request_id</th>
+                </tr>
+                </thead>
+                <tbody>
+                {% for suite in suite_runs %}
+                    <tr>
+                        <td>{{ suite.created_at|date:"Y-m-d H:i:s" }}</td>
+                        <td>{{ suite.trigger }}</td>
+                        <td><span class="health-badge health-badge-{{ suite.status }}">{{ suite.status }}</span></td>
+                        <td>{{ suite.total_count }}</td>
+                        <td>{{ suite.success_count }}</td>
+                        <td>{{ suite.failed_count }}</td>
+                        <td>{{ suite.skipped_count }}</td>
+                        <td>{{ suite.unavailable_count }}</td>
+                        <td>{{ suite.duration_ms }} ms</td>
+                        <td>{{ suite.notification_status }}</td>
+                        <td>{{ suite.request_id }}</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="11">暂无每日批次记录</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% if suite_runs_page.paginator.count %}
+                <div class="health-pagination">
+                    <span>共 {{ suite_runs_page.paginator.count }} 条，每页 {{ suite_runs_page.paginator.per_page }} 条，当前第 {{ suite_runs_page.number }} / {{ suite_runs_page.paginator.num_pages }} 页</span>
+                    <div class="health-pagination-links">
+                        {% if suite_runs_page.has_previous %}
+                            <a href="?{% if suite_runs_querystring %}{{ suite_runs_querystring }}&{% endif %}suite_page=1">首页</a>
+                            <a href="?{% if suite_runs_querystring %}{{ suite_runs_querystring }}&{% endif %}suite_page={{ suite_runs_page.previous_page_number }}">上一页</a>
+                        {% endif %}
+                        <strong>{{ suite_runs_page.number }}</strong>
+                        {% if suite_runs_page.has_next %}
+                            <a href="?{% if suite_runs_querystring %}{{ suite_runs_querystring }}&{% endif %}suite_page={{ suite_runs_page.next_page_number }}">下一页</a>
+                            <a href="?{% if suite_runs_querystring %}{{ suite_runs_querystring }}&{% endif %}suite_page={{ suite_runs_page.paginator.num_pages }}">末页</a>
+                        {% endif %}
+                    </div>
+                </div>
+            {% endif %}
         </section>
 
         <section class="health-panel">
@@ -476,7 +702,7 @@
                 }
             });
 
-            document.querySelectorAll(".health-tests form").forEach(function (form) {
+            document.querySelectorAll(".health-tests form[method='post']").forEach(function (form) {
                 form.addEventListener("submit", async function (event) {
                     event.preventDefault();
                     if (healthRequestInFlight) {

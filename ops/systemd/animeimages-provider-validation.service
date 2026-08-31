@@ -1,0 +1,16 @@
+[Unit]
+Description=AnimeImages daily Provider validation candidate
+Wants=network-online.target
+After=network-online.target postgresql.service redis-server.service
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+WorkingDirectory=/srv/animeimages
+EnvironmentFile=/srv/animeimages/.env.production
+ExecStart=/srv/animeimages/.venv/bin/python manage.py run_daily_provider_validation
+UMask=0077
+PrivateTmp=true
+NoNewPrivileges=true
+TimeoutStartSec=1100

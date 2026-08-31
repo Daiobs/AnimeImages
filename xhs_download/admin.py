@@ -22,6 +22,7 @@ from .models import (
     ProviderAdminAuditLog,
     ProviderHealthTestRun,
     ProviderRuntimeSetting,
+    ProviderValidationSuiteRun,
     ReleaseDeployJob,
     RoutingDecisionLog,
     SelfHealingEvent,
@@ -543,11 +544,23 @@ class ProviderHealthTestRunAdmin(ReadOnlyLogAdmin):
         "status",
         "provider",
         "duration_ms",
+        "suite_run",
+        "error_code",
+        "notification_event",
+        "notification_delivery_status",
         "error_type",
         "actor_username",
         "request_id",
     )
-    list_filter = ("test_key", "status", "provider", "is_staff", "created_at")
+    list_filter = (
+        "test_key",
+        "status",
+        "provider",
+        "notification_event",
+        "notification_delivery_status",
+        "is_staff",
+        "created_at",
+    )
     search_fields = (
         "request_id",
         "test_key",
@@ -555,7 +568,27 @@ class ProviderHealthTestRunAdmin(ReadOnlyLogAdmin):
         "error_type",
         "actor_username",
         "test_url_host",
+        "error_code",
     )
+
+
+@admin.register(ProviderValidationSuiteRun)
+class ProviderValidationSuiteRunAdmin(ReadOnlyLogAdmin):
+    list_display = (
+        "created_at",
+        "trigger",
+        "status",
+        "total_count",
+        "success_count",
+        "failed_count",
+        "skipped_count",
+        "unavailable_count",
+        "duration_ms",
+        "notification_status",
+        "request_id",
+    )
+    list_filter = ("trigger", "status", "notification_status", "created_at")
+    search_fields = ("request_id", "error_code", "actor_username")
 
 
 @admin.register(SelfHealingEvent)
