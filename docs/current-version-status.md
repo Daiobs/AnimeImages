@@ -98,7 +98,12 @@ PRODUCTION_VERIFICATION_SCOPE = EXACT_SHA_AND_ASSET_3_OPERATIONS
 ```
 
 Repository main and the live checkout matched the reviewed target at activation.
-The activation-record Draft PR is documentation only and is not deployed.
+The activation-record PR is documentation-only. Merging that record does not
+deploy or alter the production runtime.
+
+After the record PR merges, repository main may be ahead of the verified
+production application SHA by documentation only. That documentation-only
+difference does not require production deployment.
 
 Any future deployment must compare exact SHAs, run the release gates and receive explicit production authorization. This file does not authorize deployment.
 

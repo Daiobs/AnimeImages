@@ -3,7 +3,9 @@
 Date: 2026-09-04. Result: `ASSET_3_PRODUCTION_ACTIVATION_PARTIAL`.
 
 This is an authorized operations record, not application-code development or a
-new full-platform browser acceptance. The record PR remains Draft.
+new full-platform browser acceptance. This record was prepared in Draft PR #83
+for Human review and may enter main as the reviewed partial-production-activation
+record.
 
 ## Exact Deployment And Backup
 
@@ -199,9 +201,10 @@ CANARY_RERUN = NO
 
 Closeout record validation passed Django check, 68 focused daily-validation
 tests, whitespace checks, local Markdown links and a sensitive-content scan.
-PR #83 remains a Draft partial-activation record for Human review. The closeout
-does not convert the existing ORM/report evidence into browser acceptance or
-change the outstanding email configuration gate.
+PR #83 records the partial production activation for Human review.
+Merging this documentation record does not redeploy or modify the production
+runtime. The closeout does not convert the existing ORM/report evidence into
+browser acceptance or change the outstanding email configuration gate.
 
 ## Boundaries And Rollback
 
@@ -231,7 +234,7 @@ migration or history deletion is authorized by this record.
 FINAL_STATUS = ASSET_3_PRODUCTION_ACTIVATION_PARTIAL
 ROLLBACK_READY = YES
 FULL_COMPLETE = NO
-RECORD_PR = DRAFT_ONLY
+RECORD_PR = REVIEWED_PARTIAL_ACTIVATION_RECORD
 OPERATIONAL_TEMP_CLEANUP = PASS
 SUDO_CREDENTIAL_CACHE_REVOCATION = PASS
 FINAL_ACTIVATION_STATUS = PARTIAL_EMAIL_NOT_CONFIGURED
