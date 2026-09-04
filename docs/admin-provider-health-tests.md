@@ -4,6 +4,22 @@
 
 这个页面不是公网入口，也不会自动开放第三方 Provider。它只做管理员诊断。
 
+## 当前生产激活记录
+
+2026-09-04 已授权部署 PR #82 的 exact SHA，并应用 migration 0025。
+daily 和 timer 已启用，首批仅选择 `health_ready`、`douyin_native_parse`、
+`videodl_policy_inventory`；使用生产数据库中既有批准的抖音样本，不调用超清
+付费解析。无邮件 canary 和首次 scheduled Suite 均为 3/3 success。
+
+生产尚无已批准的 SMTP 配置和收件人，数据库及环境邮件 Gate 均保持关闭。
+Admin 报告的 ORM/趋势数据已验证，浏览器工具超时，未宣称浏览器验收通过。
+因此本次状态为 **PARTIAL**，不是完整邮件激活。
+同日恢复连接后的收尾核验已完成：环境和依赖检查通过，任务临时文件已清理，
+审计证据和备份保留，sudo 凭据缓存已撤销。Web 和 timer 仍正常，下一次自动
+运行尚未到时；未重新部署、迁移、补跑 canary 或修改每日/邮件配置。
+邮件与浏览器验收缺口仍保留，不能将本次收尾理解为完整激活。
+详见[生产激活记录](research/production/ASSET_3_PRODUCTION_ACTIVATION_V1.md)。
+
 ## 入口
 
 后台入口：
@@ -179,7 +195,8 @@ test runs。未关联 Suite 的既有手动 `ProviderHealthTestRun` 不会自动
 
 ## 生产激活前清单
 
-本候选 PR 不执行以下动作。后续独立授权任务必须按顺序完成：
+以下是部署/重新激活的操作清单；代码合并本身不执行这些动作。
+2026-09-04 独立授权任务的实际执行结果和未完成项见上方记录。
 
 1. 确认生产 checkout exact SHA，并备份数据库。
 2. 执行 migrate，确认 Admin 页面与权限。
@@ -199,8 +216,8 @@ test runs。未关联 Suite 的既有手动 `ProviderHealthTestRun` 不会自动
 需在单独运维任务中 disable。迁移反向执行只在明确评估数据影响后进行。
 
 ```text
-ASSET_3_CODE = IMPLEMENTED_IN_CANDIDATE_PR
-ASSET_3_PRODUCTION_ACTIVATION = NOT_PERFORMED
+ASSET_3_CODE = DEPLOYED_2026_09_04
+ASSET_3_PRODUCTION_ACTIVATION = PARTIAL_EMAIL_AND_BROWSER_GAPS
 MERGE != DEPLOYMENT
 SYSTEMD_FILE_IN_REPOSITORY != INSTALLED
 EMAIL_CODE != SMTP_CONFIGURED

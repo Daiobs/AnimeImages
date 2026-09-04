@@ -1,6 +1,6 @@
 # Current Version Status
 
-Date: 2026-08-29
+Date: 2026-09-04
 
 ## Source Of Truth
 
@@ -16,17 +16,21 @@ Date: 2026-08-29
 
 Never infer deployment from a merge to `main`. Repository code, recorded production code, active host configuration and Runtime Settings are separate facts.
 
-This documentation task did not access production. It therefore uses **recorded production runtime**, not **live production verified**.
+The authorized Asset 3 activation on 2026-09-04 verified the live production
+checkout and deployed the exact reviewed SHA below. See the
+[activation record](research/production/ASSET_3_PRODUCTION_ACTIVATION_V1.md) for
+the operational scope and incomplete email/browser gates. This is not a new
+full-platform browser acceptance.
 
 ## Development Repository
 
 ```text
 CURRENT_DEVELOPMENT_BASELINE = LATEST_FETCHED_ORIGIN_MAIN
-DOCUMENTED_APPLICATION_BASELINE = 457139b98d67d6e5f79b099f9a4e91d60a26904f
+DOCUMENTED_APPLICATION_BASELINE = 509ef74b76a4424f907bbf6152a824b5a9b2d633
 ```
 
 This documentation was prepared against the application baseline above, which
-includes the development changes merged by PR #74, #75 and #76. Resolve the
+includes the development changes merged through PR #82. Resolve the
 current Repository SHA instead of treating this snapshot as a permanent main
 pointer:
 
@@ -71,24 +75,35 @@ Staff-only Upstream Provider Lab:
 ## Last Recorded Production Runtime
 
 ```text
-last recorded production runtime = 38992e955f2f268c2a6d4ecd81d900feba83f048
-source PR = #65
-source title = Support reviewed Douyin final CDN redirects and terminal download failures
+last verified production runtime = 509ef74b76a4424f907bbf6152a824b5a9b2d633
+previous verified production runtime = 38992e955f2f268c2a6d4ecd81d900feba83f048
+source PR = #82
+source title = Add daily real-sample validation reports and notifications
 ```
 
-This is the production SHA already recorded when the documentation task began. The task did not reconnect to the server, inspect the active checkout, restart services or run a new production browser acceptance.
+The activation verified a clean production `main`, created and verified a
+PostgreSQL backup, deployed the reviewed target, applied migration 0025 and
+rechecked local/public health. The deployment used the existing scripts and
+retained the Web and Nginx topology.
 
-PR #74, #75 and #76 are not recorded as deployed by this task.
+PR #74, #75 and #76 code is included in the deployed target. Deployment does not
+claim renewed browser acceptance or enable the Staff Provider Lab page.
 
 ## Repository Ahead Of Production
 
 ```text
-REPOSITORY_MAIN_AHEAD_OF_RECORDED_PRODUCTION = YES
-AHEAD_TYPE = APPLICATION_CODE_AND_DOCUMENTATION
-PRODUCTION_VERIFICATION_SCOPE = NOT_REVERIFIED_BY_THIS_DOCUMENTATION_TASK
+REPOSITORY_MAIN_AHEAD_OF_RECORDED_PRODUCTION = NO_AT_ACTIVATION
+AHEAD_TYPE = NONE_AT_REVIEWED_TARGET
+PRODUCTION_VERIFICATION_SCOPE = EXACT_SHA_AND_ASSET_3_OPERATIONS
 ```
 
-The difference is not docs-only. Development main contains newer XHS application routes and Provider Lab code in addition to this documentation refresh.
+Repository main and the live checkout matched the reviewed target at activation.
+The activation-record PR is documentation-only. Merging that record does not
+deploy or alter the production runtime.
+
+After the record PR merges, repository main may be ahead of the verified
+production application SHA by documentation only. That documentation-only
+difference does not require production deployment.
 
 Any future deployment must compare exact SHAs, run the release gates and receive explicit production authorization. This file does not authorize deployment.
 
@@ -98,12 +113,12 @@ The following describes development main. The last column records whether this d
 
 | Capability | Anonymous | Active Staff | Batch | Development main | Recorded production evidence |
 | --- | --- | --- | --- | --- | --- |
-| XHS ordinary video | Native; optional Ultra by existing product setting | Same route with Staff diagnostics | Flat ordinary result | Native identity + TianTian Ultra + Native fallback | PR #74 not recorded deployed |
-| XHS image/gallery | Ordered flat originals | Same originals | Ordered flat originals | Native identity/order + ParseHub raw original + Native same-item fallback | PR #75 not recorded deployed |
-| XHS Live Photo | Flat stills only | Badge, one-shot playback, still + motion archive | Flat stills only | Staff-only vertical slice | PR #75 not recorded deployed |
-| Douyin | Native baseline; Ultra by Runtime Setting | Additional diagnostics | Separate TianTian -> Native order | Stable fixed strategy | Last recorded runtime is PR #65 |
-| Bilibili | Native video-only | Native plus Lab comparison when Lab enabled | Existing video boundary | Native remains formal route | Provider Lab result not recorded deployed |
-| Provider Lab | No | Staff-only when flags enabled | No | Present, default off | Not recorded deployed |
+| XHS ordinary video | Native; optional Ultra by existing product setting | Same route with Staff diagnostics | Flat ordinary result | Native identity + TianTian Ultra + Native fallback | Code deployed; no renewed browser acceptance |
+| XHS image/gallery | Ordered flat originals | Same originals | Ordered flat originals | Native identity/order + ParseHub raw original + Native same-item fallback | Code deployed; runtime gates not changed |
+| XHS Live Photo | Flat stills only | Badge, one-shot playback, still + motion archive | Flat stills only | Staff-only vertical slice | Code deployed; no renewed browser acceptance |
+| Douyin | Native baseline; Ultra by Runtime Setting | Additional diagnostics | Separate TianTian -> Native order | Stable fixed strategy | Native parse-only canary and scheduled check passed |
+| Bilibili | Native video-only | Native plus Lab comparison when Lab enabled | Existing video boundary | Native remains formal route | Code deployed; route configuration not changed |
+| Provider Lab | No | Staff-only when flags enabled | No | Present, default off | Code deployed; Lab page remains disabled |
 
 ## XHS Fixed Routes
 
@@ -183,7 +198,7 @@ Provider Lab is present in development main and defaults off:
 ```text
 UPSTREAM_PROVIDER_LAB_ENABLED=False
 VIDEODL_PROVIDER_LAB_ENABLED=False
-PROVIDER_LAB_PRODUCTION_STATUS=NOT_DEPLOYED
+PROVIDER_LAB_PRODUCTION_STATUS=CODE_DEPLOYED_UI_DISABLED
 ```
 
 It is Staff-only, sends one POST per Provider, limits browser concurrency to three, does not let Django fan out automatically, does not choose a winner and does not persist results.
@@ -195,7 +210,11 @@ ParseHub=144260f4349c5bb57415f7555a572fcd48c3b8ba
 videodl=6cd1de0fe1209380b183b654c65e98a629637873
 ```
 
-videodl is PolyForm Noncommercial 1.0.0 and is restricted to a noncommercial local Staff Lab. It is not a production Provider candidate.
+videodl is PolyForm Noncommercial 1.0.0. The 2026-09-04 task separately authorized
+internal noncommercial production validation: its persistent isolated runtime
+is enabled for the daily policy inventory while `UPSTREAM_PROVIDER_LAB_ENABLED`
+remains false. This does not authorize a public or formal production Provider
+route, Common execution, provider downloads or browser execution.
 
 See [Provider Lab](provider-lab.md) for stable operations and [Provider Lab research](research/provider_lab/01_UPSTREAM_PROVIDER_LAB_V1.md) for historical design evidence.
 
@@ -244,12 +263,13 @@ It was not modified by the documentation refresh and must not be described as a 
 
 Other explicit boundaries:
 
-- Provider Lab production rollout is a separate future task.
+- Enabling the Provider Lab production page remains a separate future task.
 - XHS Anonymous and Batch Live Photo motion remain closed.
 - Bilibili Dynamic/Opus and merge upgrades remain research/product work.
 - videodl cannot enter public or production routes under the current license boundary.
 - Provider Lab resource inspection is not full-file equivalence proof.
-- Development main has not received a production acceptance in this task.
+- Asset 3 has operational acceptance with email and Admin browser gaps; no
+  renewed full-platform browser/download acceptance is claimed.
 
 ## Previously Accepted Milestones
 
@@ -301,11 +321,15 @@ See [Download UI acceptance](research/download-ui-batch-actions-production-accep
 
 The Provider Stabilization line first exposed a production formatter mismatch and rolled back, then accepted its corrected formatter and Provider terminal diagnostics at the next reviewed candidate. Evidence recorded exact browser Streaming, zero ordinary-media server bytes, bounded Batch behavior and sanitized logs.
 
-The later PR #65 recorded runtime supersedes those candidates as the last documented production application SHA.
+PR #65 later superseded those historical candidates; the 2026-09-04 Asset 3
+activation now records the newer exact production application SHA above.
 
 ## Historical Infrastructure Evidence
 
-Earlier audits recorded a canonical Nginx and systemd baseline, PostgreSQL, Redis-backed shared controls and a Browser Download Telemetry route. Those records remain useful deployment evidence, but this documentation task did not reconnect to the host and therefore does not reassert zero drift.
+Earlier audits recorded a canonical Nginx and systemd baseline, PostgreSQL,
+Redis-backed shared controls and a Browser Download Telemetry route. The Asset 3
+activation compared pre/post file hashes: Nginx configuration and the Web unit
+were unchanged. Only the two approved validation units were installed.
 
 Canonical infrastructure files remain under `ops/`; merging repository files does not install, reload or restart production configuration.
 
@@ -323,29 +347,54 @@ Canonical infrastructure files remain under `ops/`; merging repository files doe
 
 ```text
 CURRENT_DEVELOPMENT_BASELINE = LATEST_FETCHED_ORIGIN_MAIN
-DOCUMENTED_APPLICATION_BASELINE = 457139b98d67d6e5f79b099f9a4e91d60a26904f
-LAST_RECORDED_PRODUCTION_RUNTIME = 38992e955f2f268c2a6d4ecd81d900feba83f048
-REPOSITORY_MAIN_AHEAD_OF_RECORDED_PRODUCTION = YES
-AHEAD_TYPE = APPLICATION_CODE_AND_DOCUMENTATION
-NEWER_UNDEPLOYED_CAPABILITIES = XHS HYBRID + XHS IMAGE FIDELITY + STAFF LIVEPHOTO + PROVIDER LAB
-PRODUCTION_REVERIFIED_BY_THIS_TASK = NO
-PRODUCTION_DEPLOYMENT_BY_THIS_TASK = NO
+DOCUMENTED_APPLICATION_BASELINE = 509ef74b76a4424f907bbf6152a824b5a9b2d633
+LAST_RECORDED_PRODUCTION_RUNTIME = 509ef74b76a4424f907bbf6152a824b5a9b2d633
+REPOSITORY_MAIN_AHEAD_OF_RECORDED_PRODUCTION = NO_AT_ACTIVATION
+AHEAD_TYPE = NONE_AT_REVIEWED_TARGET
+PRODUCTION_REVERIFIED_BY_THIS_TASK = EXACT_SHA_AND_ASSET_3_OPERATIONS
+PRODUCTION_DEPLOYMENT_BY_THIS_TASK = YES
 ```
 
-## Asset 3 Daily Validation Candidate
+## Asset 3 Daily Validation Activation
 
-The Asset 3 branch extends the existing Provider Health Tests rather than
+Asset 3 extends the existing Provider Health Tests rather than
 introducing a global health platform. It preserves the original nine checks,
 adds five XHS/Bilibili/videodl checks, and supplies one bounded daily Suite,
 change-based email logic, an Admin report, retention, and inactive systemd
-candidates. Defaults keep daily execution and email delivery off.
+candidates. Code defaults keep daily execution and email delivery off; the
+authorized production activation now enables daily execution with the three
+validated keys below. Missing approved SMTP and recipients keep both email
+gates closed. Admin ORM/report evidence passed; the browser tool timed out.
+
+The authorized reconnection closeout on the same date confirmed the unchanged
+production target, environment and dependency checks, healthy Web/timer state,
+evidence-preserving temporary cleanup and sudo credential-cache revocation.
+The next automatic run had not occurred; the existing scheduled 3/3 result was
+retained without another canary. No redeploy or production configuration change
+was performed during closeout. Email and browser acceptance gaps remain open.
 
 ```text
-ASSET_3_CODE = IMPLEMENTED_IN_CANDIDATE_PR
-ASSET_3_PRODUCTION_ACTIVATION = NOT_PERFORMED
-PRODUCTION_SAMPLES_CONFIGURED = NO_CLAIM
-SMTP_CONFIGURED = NO_CLAIM
-SYSTEMD_INSTALLED = NO
-FORMAL_ROUTE_CHANGE = NO
-DOWNLOAD_CHANGE = NO
+ASSET_3_CODE = DEPLOYED
+ASSET_3_PRODUCTION_ACTIVATION = PARTIAL
+DAILY_ENABLED = YES
+DAILY_TEST_KEYS = health_ready, douyin_native_parse, videodl_policy_inventory
+APPROVED_SAMPLE_HOST = www.douyin.com
+FIRST_SCHEDULED_SUITE = SUCCESS_3_OF_3
+SMTP_CONFIGURED = NO
+EMAIL_DB_GATE = DISABLED
+EMAIL_ENV_GATE = DISABLED
+ADMIN_BROWSER_SMOKE = NOT_AVAILABLE_TOOLING_TIMEOUT
+SYSTEMD_INSTALLED = YES
+TIMER_ENABLED = YES
+ACTIVATION_SPECIFIC_ROUTE_OVERRIDE = NO
+ACTIVATION_SPECIFIC_DOWNLOAD_CHANGE = NO
+SSH_CLOSEOUT = PASS
+SUPPLEMENTAL_ENVIRONMENT_CHECK = PASS
+DEPENDENCY_CHECK = PASS
+OPERATIONAL_TEMP_CLEANUP = PASS
+SUDO_CREDENTIAL_CACHE_REVOCATION = PASS
+POST_CLOSEOUT_WEB_HEALTH = PASS
+POST_CLOSEOUT_TIMER = ACTIVE_AND_ENABLED
+FINAL_ACTIVATION_STATUS = PARTIAL_EMAIL_NOT_CONFIGURED
+PRODUCTION_REDEPLOY_DURING_CLOSEOUT = NO
 ```
