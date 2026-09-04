@@ -134,14 +134,74 @@ Local record validation also passed: 68 daily-validation Django tests, 246 Node
 tests, Django check, migration dry-run, whitespace checks and the three changed
 documents' seven local links. No real Provider was called by automated tests.
 
-The operator control connection ended during supplemental closing checks, after
-the successful scheduled Suite and healthy production observation. Public
-live/ready were then checked again and returned 200. A supplemental installed
-dependency/environment comparison, temporary-operation-file cleanup and explicit
-credential-cache revocation could not be confirmed after that interruption.
-These closeout steps require operator reconnection; they are not marked PASS.
-The earlier infrastructure hash and result-record audits remain the observations
-reported above. No application failure or rollback was observed.
+The operator control connection ended during the original supplemental closing
+checks. Those steps were initially left unverified, not labeled PASS. The
+separately authorized closeout below completed them after reconnection, without
+repeating deployment or a canary. No application failure or rollback was observed.
+
+## Reconnection Closeout
+
+Closeout verified on 2026-09-04, approximately 19:49 +08:00. A fresh connection
+confirmed the deployment identity, clean production `main` and unchanged exact
+target. Privileged access was reauthenticated rather than assumed from the old
+session. Only read-only operational checks and scoped evidence-preserving cleanup
+were performed; no application/configuration changes were made.
+
+| Gate | Closeout observation |
+| --- | --- |
+| Environment | Owner/group and 0600 mode preserved; PostgreSQL and Redis configuration present |
+| Activation environment comparison | Only the four previously authorized Asset 3 variable names differ from the pre-activation backup; no additional changes |
+| Dependencies | `pip check` passed; installed `pip freeze` matches the activation backup; no installation performed |
+| Daily budget | Safe default of 300 seconds active; no override introduced |
+| Daily settings | Enabled; the same three keys; threshold 2, cooldown 24 hours, recovery true, retention 90 days |
+| Email | Both gates disabled; SMTP host/credentials/from/recipients absent; no mail attempted |
+| videodl | Persistent exact pin/package; deployment user owns it; Web identity can read/execute but not modify; other access denied |
+| Scope | Provider Lab gate closed; no Common or specific backend daily check selected |
+| Infrastructure | Pre-activation Nginx/Web hashes still match; installed validation service/timer remain repository byte-exact |
+| Latest scheduled Suite | Still `87ac0161d84f407f800a38f28ba02abf`, success 3/0/0/0; three successful child rows; no new run triggered |
+| Next automatic run | Not yet due; observed 2026-09-05 03:44:16 +08:00 in both server Asia/Hong_Kong and Asia/Singapore |
+| Persistence/coordination | Host-only inspected child records; single-flight released; task-owned process residue 0 |
+| Backup | Original database dump size and SHA-256 verified unchanged; environment backups and infrastructure manifest retained |
+| Cleanup | 9 allowlisted temporary files removed, including the closeout helper; temporary directory removed |
+| Evidence retention | Four temporary audit logs copied into restricted backup storage with byte-hash equality before temporary copies were removed |
+| Unrelated temporary data | 31 other top-level temporary entries observed and left untouched; no global cleanup or process termination |
+| Privilege closeout | `sudo -k` exited 0; no subsequent sudo command executed |
+| Final health | Web active, NRestarts=0; local/public live and ready all 200; timer active/enabled; target Git still clean |
+
+Production filesystem writes during closeout were limited to the temporary
+read-only audit helper, preserving four audit-log copies in restricted backup
+storage, and deleting the enumerated task temporary files. This is not described
+as a zero-write session. No production code, environment, database settings,
+service units, routes or download configuration were changed. No redeploy,
+migration, static collection, restart, bootstrap, timer enablement or canary was
+repeated. The administrator's existing session and SSH configuration were not
+deleted or changed.
+
+```text
+SSH_CLOSEOUT = PASS
+SUPPLEMENTAL_ENVIRONMENT_CHECK = PASS
+DEPENDENCY_CHECK = PASS
+OPERATIONAL_TEMP_CLEANUP = PASS
+TASK_OWNED_TEMP_FILES_FOUND = 9
+TASK_OWNED_TEMP_FILES_REMOVED = 9
+UNKNOWN_TEMP_FILES_LEFT_UNTOUCHED = YES
+SUDO_CREDENTIAL_CACHE_REVOCATION = PASS
+LATEST_SCHEDULED_SUITE = SUCCESS_3_OF_3_EXISTING_EVIDENCE
+POST_CLOSEOUT_WEB_HEALTH = PASS
+POST_CLOSEOUT_TIMER = ACTIVE_AND_ENABLED
+SECRET_LEAKAGE = NO
+FULL_URL_LEAKAGE = NO
+PRODUCTION_CONFIG_CHANGE_DURING_CLOSEOUT = NO
+PRODUCTION_REDEPLOY = NO
+MIGRATION_RERUN = NO
+CANARY_RERUN = NO
+```
+
+Closeout record validation passed Django check, 68 focused daily-validation
+tests, whitespace checks, local Markdown links and a sensitive-content scan.
+PR #83 remains a Draft partial-activation record for Human review. The closeout
+does not convert the existing ORM/report evidence into browser acceptance or
+change the outstanding email configuration gate.
 
 ## Boundaries And Rollback
 
@@ -172,7 +232,9 @@ FINAL_STATUS = ASSET_3_PRODUCTION_ACTIVATION_PARTIAL
 ROLLBACK_READY = YES
 FULL_COMPLETE = NO
 RECORD_PR = DRAFT_ONLY
-OPERATIONAL_TEMP_CLEANUP = PENDING_RECONNECTION
-CREDENTIAL_CACHE_REVOCATION = NOT_VERIFIED
+OPERATIONAL_TEMP_CLEANUP = PASS
+SUDO_CREDENTIAL_CACHE_REVOCATION = PASS
+FINAL_ACTIVATION_STATUS = PARTIAL_EMAIL_NOT_CONFIGURED
+ADMIN_BROWSER_SMOKE = NOT_AVAILABLE_TOOLING_TIMEOUT
 NEXT_PRODUCT_TASK = NOT_STARTED
 ```

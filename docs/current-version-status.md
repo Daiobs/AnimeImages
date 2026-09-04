@@ -361,6 +361,13 @@ authorized production activation now enables daily execution with the three
 validated keys below. Missing approved SMTP and recipients keep both email
 gates closed. Admin ORM/report evidence passed; the browser tool timed out.
 
+The authorized reconnection closeout on the same date confirmed the unchanged
+production target, environment and dependency checks, healthy Web/timer state,
+evidence-preserving temporary cleanup and sudo credential-cache revocation.
+The next automatic run had not occurred; the existing scheduled 3/3 result was
+retained without another canary. No redeploy or production configuration change
+was performed during closeout. Email and browser acceptance gaps remain open.
+
 ```text
 ASSET_3_CODE = DEPLOYED
 ASSET_3_PRODUCTION_ACTIVATION = PARTIAL
@@ -376,4 +383,13 @@ SYSTEMD_INSTALLED = YES
 TIMER_ENABLED = YES
 ACTIVATION_SPECIFIC_ROUTE_OVERRIDE = NO
 ACTIVATION_SPECIFIC_DOWNLOAD_CHANGE = NO
+SSH_CLOSEOUT = PASS
+SUPPLEMENTAL_ENVIRONMENT_CHECK = PASS
+DEPENDENCY_CHECK = PASS
+OPERATIONAL_TEMP_CLEANUP = PASS
+SUDO_CREDENTIAL_CACHE_REVOCATION = PASS
+POST_CLOSEOUT_WEB_HEALTH = PASS
+POST_CLOSEOUT_TIMER = ACTIVE_AND_ENABLED
+FINAL_ACTIVATION_STATUS = PARTIAL_EMAIL_NOT_CONFIGURED
+PRODUCTION_REDEPLOY_DURING_CLOSEOUT = NO
 ```
