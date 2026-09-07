@@ -931,6 +931,7 @@ class ProviderHealthTestSetting(models.Model):
         validators=(validate_provider_daily_test_keys,),
     )
     email_notifications_enabled = models.BooleanField(default=False)
+    email_recipients = models.JSONField(default=list, blank=True)
     failure_threshold = models.PositiveSmallIntegerField(
         default=2,
         validators=(MinValueValidator(1), MaxValueValidator(10)),
@@ -970,6 +971,31 @@ class ProviderHealthTestSetting(models.Model):
             raise ValidationError(
                 {"videodl_backend_id": "只允许 exact-pin policy 中明确 allowed 的 Dedicated backend。"}
             )
+
+
+class MailChannelSetting(models.Model):
+    singleton_key = models.PositiveSmallIntegerField(default=1, unique=True, editable=False)
+    source = models.CharField(max_length=12, default="env", choices=(("env", "环境配置"), ("database", "后台配置")))
+    provider = models.CharField(max_length=12, default="smtp", choices=(("smtp", "SMTP"), ("brevo", "Brevo")))
+    from_email = models.EmailField(blank=True)
+    from_name = models.CharField(max_length=120, blank=True)
+    smtp_host = models.CharField(max_length=253, blank=True)
+    smtp_port = models.PositiveIntegerField(default=587)
+    smtp_username = models.CharField(max_length=254, blank=True)
+    smtp_security = models.CharField(max_length=12, default="starttls", choices=(("starttls", "STARTTLS"), ("tls", "TLS")))
+    smtp_password_encrypted = models.TextField(blank=True, editable=False)
+    brevo_key_encrypted = models.TextField(blank=True, editable=False)
+    revision = models.PositiveIntegerField(default=0, editable=False)
+    last_test_at = models.DateTimeField(null=True, editable=False)
+    last_test_result = models.CharField(max_length=40, blank=True, editable=False)
+    last_test_fingerprint = models.CharField(max_length=64, blank=True, editable=False)
+
+    class Meta:
+        verbose_name = "邮件通道配置"
+        permissions = (("test_mailchannelsetting", "Can send a mail channel test"),)
+
+    def __str__(self):
+        return "邮件通道配置"
 
 
 class UserFeedbackStatus(models.TextChoices):

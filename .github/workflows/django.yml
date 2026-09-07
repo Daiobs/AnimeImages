@@ -119,6 +119,7 @@ jobs:
           node --check static/js/parse_preferences.js
           node --check static/js/provider_lab.js
           node --check static/js/project_settings.js
+          node --check static/js/mail_settings.js
           node --check static/js/result_url_safety.js
           node --check static/js/user_feedback.js
           node --check static/js/xhs_livephoto_preview.js

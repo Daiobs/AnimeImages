@@ -1224,6 +1224,11 @@ class ProviderValidationAdminTests(TestCase):
 class ProviderDailyValidationMigrationTests(TransactionTestCase):
     reset_sequences = True
 
+    def tearDown(self):
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
+        super().tearDown()
+
     migrate_from = ("xhs_download", "0024_userfeedback")
     migrate_to = ("xhs_download", "0025_provider_daily_validation")
 

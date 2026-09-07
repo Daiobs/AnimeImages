@@ -24,6 +24,14 @@ def check_provider_validation_email_configuration(app_configs, **kwargs):
     if not runtime_bool("PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED", False):
         return []
 
+    from .services.mail_channel import resolve_mail_channel
+    channel = resolve_mail_channel()
+    if channel.source != "env":
+        errors = list(channel.errors)
+        if not channel.recipients:
+            errors.append("RECIPIENTS_REQUIRED")
+        return [Error("Admin mail configuration: " + code, id="xhs_download.E020") for code in errors] + _check_mail_report_url()
+
     issues = []
     recipients = tuple(
         str(value or "").strip()
@@ -82,6 +90,11 @@ def check_provider_validation_email_configuration(app_configs, **kwargs):
                 id="xhs_download.E017",
             )
         )
+    return issues + _check_mail_report_url()
+
+
+def _check_mail_report_url():
+    issues = []
     report_url = runtime_str("PROVIDER_VALIDATION_ADMIN_REPORT_URL", "")
     if report_url:
         parsed = urlparse(report_url)

@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from django.conf import settings
 from django.core.cache import cache
-from django.core.mail import EmailMessage, get_connection
+from django.core.mail import EmailMessage
 from django.core.mail.backends.base import BaseEmailBackend
 from django.db.models import Count
 from django.utils import timezone
@@ -27,9 +27,7 @@ from ..models import (
 )
 from .env_config import (
     runtime_bool,
-    runtime_float,
     runtime_int,
-    runtime_list,
     runtime_str,
 )
 from .provider_health_tests import (
@@ -128,61 +126,23 @@ def provider_validation_email_backend_is_delivering(backend) -> bool:
 
 
 def email_delivery_configuration() -> dict[str, Any]:
-    recipients = tuple(
-        str(value or "").strip()
-        for value in runtime_list("PROVIDER_VALIDATION_EMAIL_RECIPIENTS", ())
-        if str(value or "").strip()
-    )
-    env_enabled = runtime_bool("PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED", False)
-    backend = runtime_str(
-        "DJANGO_EMAIL_BACKEND",
-        "django.core.mail.backends.console.EmailBackend",
-    )
-    from_email = runtime_str("DJANGO_DEFAULT_FROM_EMAIL", "")
-    use_tls = runtime_bool("DJANGO_EMAIL_USE_TLS", False)
-    use_ssl = runtime_bool("DJANGO_EMAIL_USE_SSL", False)
-    backend_importable = provider_validation_email_backend_is_importable(backend)
-    smtp_host_ready = not backend.endswith("smtp.EmailBackend") or bool(
-        runtime_str("DJANGO_EMAIL_HOST", "")
-    )
-    production_backend_ready = not (
-        getattr(settings, "REQUIRE_PRODUCTION_CONFIG", not settings.DEBUG)
-        and env_enabled
-        and not provider_validation_email_backend_is_delivering(backend)
-    )
-    backend_valid = bool(
-        backend_importable
-        and from_email
-        and not (use_tls and use_ssl)
-        and smtp_host_ready
-        and production_backend_ready
-    )
+    from .mail_channel import resolve_mail_channel
+    snapshot = resolve_mail_channel()
     return {
-        "env_enabled": env_enabled,
-        "recipients": recipients,
-        "recipient_count": len(recipients),
-        "backend": backend,
-        "configured": bool(env_enabled and recipients and backend_valid),
+        "env_enabled": snapshot.env_enabled,
+        "recipient_count": len(snapshot.recipients),
+        "backend": snapshot.backend,
+        "source": snapshot.source,
+        "configured": bool(snapshot.env_enabled and snapshot.recipients and snapshot.complete),
     }
 
 
-def _provider_validation_email_connection(backend):
-    options = {}
-    if str(backend or "").endswith("smtp.EmailBackend"):
-        options = {
-            "host": runtime_str("DJANGO_EMAIL_HOST", ""),
-            "port": runtime_int("DJANGO_EMAIL_PORT", 25),
-            "username": runtime_str("DJANGO_EMAIL_HOST_USER", ""),
-            "password": runtime_str("DJANGO_EMAIL_HOST_PASSWORD", ""),
-            "use_tls": runtime_bool("DJANGO_EMAIL_USE_TLS", False),
-            "use_ssl": runtime_bool("DJANGO_EMAIL_USE_SSL", False),
-            "timeout": runtime_float("DJANGO_EMAIL_TIMEOUT_SECONDS", 10.0),
-        }
-    return get_connection(
-        backend=backend,
-        fail_silently=False,
-        **options,
-    )
+def _provider_validation_email_connection(backend, *, snapshot=None):
+    from .mail_channel import MailError, resolve_mail_channel
+    snapshot = snapshot or resolve_mail_channel()
+    if backend != snapshot.backend:
+        raise MailError("CONFIG_CHANGED")
+    return snapshot.connection()
 
 
 def selected_test_keys(setting, override=None) -> tuple[str, ...]:
@@ -415,11 +375,12 @@ def deliver_notifications(suite, events, setting, *, no_email=False, now=None) -
     now = now or timezone.now()
     if not events:
         return ProviderValidationNotificationStatus.NOT_NEEDED
-    config = email_delivery_configuration()
+    from .mail_channel import resolve_mail_channel
+    snapshot = resolve_mail_channel()
     gate_open = bool(
         not no_email
         and setting.email_notifications_enabled
-        and config["configured"]
+        and snapshot.env_enabled and snapshot.complete and snapshot.recipients
     )
     if not gate_open:
         ProviderHealthTestRun.objects.filter(pk__in=[event.run.pk for event in events]).update(
@@ -430,9 +391,9 @@ def deliver_notifications(suite, events, setting, *, no_email=False, now=None) -
         sent_count = EmailMessage(
             subject=_notification_subject(events),
             body=_notification_body(suite, events),
-            from_email=runtime_str("DJANGO_DEFAULT_FROM_EMAIL", ""),
-            to=list(config["recipients"]),
-            connection=_provider_validation_email_connection(config["backend"]),
+            from_email=snapshot.from_email,
+            to=list(snapshot.recipients),
+            connection=_provider_validation_email_connection(snapshot.backend, snapshot=snapshot),
         ).send(fail_silently=False)
         if sent_count != 1:
             raise RuntimeError("EMAIL_DELIVERY_NOT_CONFIRMED")

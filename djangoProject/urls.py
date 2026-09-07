@@ -24,8 +24,10 @@ from djangoProject import health
 from xhs_download import views as download_views
 from xhs_download import provider_lab_views
 from xhs_download import user_feedback_views
+from xhs_download.mail_settings_views import mail_settings
 
 urlpatterns = [
+                  path("admin/mail-settings/", mail_settings, name="mail_settings"),
                   path(
                       "favicon.ico",
                       RedirectView.as_view(
