@@ -45,6 +45,82 @@ class MailChannelTests(TestCase):
         self.assertTrue(snapshot.complete)
         self.assertEqual(MailChannelSetting.objects.count(), 0)
 
+    def test_brevo_without_smtp_fields_preserves_smtp(self):
+        self.client.post('/admin/mail-settings/', self.data())
+        original = MailChannelSetting.objects.get()
+        response = self.client.post('/admin/mail-settings/', dict(
+            action='save', revision=1, source='database', provider='brevo',
+            from_email='sender@example.test', brevo_key=SECRET,
+            email_recipients='alerts@example.test'))
+        self.assertEqual(response.status_code, 302)
+        row = MailChannelSetting.objects.get()
+        for field in ('smtp_host', 'smtp_port', 'smtp_username', 'smtp_security', 'smtp_password_encrypted'):
+            self.assertEqual(getattr(row, field), getattr(original, field))
+        self.assertTrue(resolve_mail_channel().complete)
+
+    def test_env_ignores_inactive_invalid_draft_and_preserves_all_config(self):
+        self.client.post('/admin/mail-settings/', self.data())
+        original = MailChannelSetting.objects.get()
+        response = self.client.post('/admin/mail-settings/', dict(
+            action='save', revision=1, source='env', provider='invalid',
+            smtp_port='invalid', from_email='invalid', email_recipients='invalid',
+            clear_smtp_password='on', clear_brevo_key='on', brevo_key='bad\nkey'))
+        self.assertEqual(response.status_code, 302)
+        row = MailChannelSetting.objects.get()
+        for field in MailSettingsForm.Meta.fields:
+            if field != 'source':
+                self.assertEqual(getattr(row, field), getattr(original, field))
+        self.assertEqual(row.smtp_password_encrypted, original.smtp_password_encrypted)
+        self.assertEqual(ProviderHealthTestSetting.objects.get().email_recipients, ['alerts@example.test'])
+        self.assertFalse(ProviderHealthTestSetting.objects.get().email_notifications_enabled)
+        self.assertTrue(resolve_mail_channel().env_enabled)
+
+    def test_inactive_secret_clear_and_invalid_values_are_ignored(self):
+        self.client.post('/admin/mail-settings/', self.data(provider='brevo', brevo_key=SECRET))
+        old = MailChannelSetting.objects.get().brevo_key_encrypted
+        response = self.client.post('/admin/mail-settings/', self.data(
+            revision=1, brevo_key='bad\nkey', clear_brevo_key='on'))
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(MailChannelSetting.objects.get().brevo_key_encrypted, old)
+
+    def test_active_brevo_secret_error_is_not_ignored(self):
+        response = self.client.post('/admin/mail-settings/', self.data(provider='brevo', brevo_key='bad\nkey'))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('brevo_key', response.context['form'].errors)
+
+    def test_brevo_ignores_invalid_smtp_and_clear(self):
+        self.client.post('/admin/mail-settings/', self.data())
+        original = MailChannelSetting.objects.get().smtp_password_encrypted
+        response = self.client.post('/admin/mail-settings/', self.data(
+            revision=1, provider='brevo', brevo_key=SECRET, smtp_port='invalid',
+            smtp_host='invalid/host', smtp_security='invalid', clear_smtp_password='on'))
+        self.assertEqual(response.status_code, 302)
+        row = MailChannelSetting.objects.get()
+        self.assertEqual(row.smtp_password_encrypted, original)
+        self.assertEqual(row.smtp_host, 'smtp.example.test')
+        self.assertEqual(row.smtp_port, 587)
+
+    def test_env_minimal_post_preserves_recipients_and_both_secrets(self):
+        self.client.post('/admin/mail-settings/', self.data())
+        row = MailChannelSetting.objects.get()
+        row.brevo_key_encrypted = encrypt(SECRET)
+        row.save()
+        response = self.client.post('/admin/mail-settings/', dict(action='save', revision=1, source='env'))
+        self.assertEqual(response.status_code, 302)
+        updated = MailChannelSetting.objects.get()
+        self.assertEqual(updated.smtp_password_encrypted, row.smtp_password_encrypted)
+        self.assertEqual(updated.brevo_key_encrypted, row.brevo_key_encrypted)
+        self.assertEqual(ProviderHealthTestSetting.objects.get().email_recipients, ['alerts@example.test'])
+
+    def test_incomplete_draft_cannot_test_send(self):
+        self.client.post('/admin/mail-settings/', self.data(smtp_host='', smtp_password=''))
+        snapshot = resolve_mail_channel()
+        self.assertFalse(snapshot.complete)
+        with patch('django.core.mail.EmailMessage.send') as send:
+            self.client.post('/admin/mail-settings/', dict(action='test', confirm='on',
+                test_recipient='test@example.test', fingerprint=snapshot.fingerprint))
+            send.assert_not_called()
+
     def test_encryption_authenticated_and_no_secret_repr(self):
         stored = encrypt(SECRET)
         self.assertNotIn(SECRET, stored)

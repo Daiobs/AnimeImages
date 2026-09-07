@@ -34,6 +34,10 @@ def allowed(user, *, test=False):
 
 
 class MailSettingsForm(forms.ModelForm):
+    COMMON_FIELDS = {"provider", "from_email", "from_name", "email_recipients"}
+    SMTP_FIELDS = {"smtp_host", "smtp_port", "smtp_username", "smtp_security",
+                   "smtp_password", "clear_smtp_password"}
+    BREVO_FIELDS = {"brevo_key", "clear_brevo_key"}
     smtp_password = forms.CharField(label="SMTP 密码", required=False, max_length=4096,
                                    widget=forms.PasswordInput(render_value=False), strip=False)
     brevo_key = forms.CharField(label="Brevo API Key", required=False, max_length=4096,
@@ -52,15 +56,32 @@ class MailSettingsForm(forms.ModelForm):
                   "from_name": "发件显示名称", "smtp_host": "SMTP 主机", "smtp_port": "SMTP 端口",
                   "smtp_username": "SMTP 用户名", "smtp_security": "安全连接"}
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        source = self.data.get("source") if self.is_bound else self.instance.source
+        provider = self.data.get("provider") if self.is_bound else self.instance.provider
+        self.active_fields = {"source", "revision"}
+        if source == "database":
+            self.active_fields |= self.COMMON_FIELDS
+            self.active_fields |= self.SMTP_FIELDS if provider == "smtp" else self.BREVO_FIELDS
+        for name, field in self.fields.items():
+            if name not in self.active_fields:
+                # Django binds disabled fields to stored initial values, never POST data.
+                field.disabled = True
+
     def clean(self):
         data = super().clean()
+        if data.get("source") == "env":
+            return data
         for name in ("from_name", "smtp_host", "smtp_username", "smtp_password", "brevo_key"):
+            if name not in self.active_fields:
+                continue
             if any(c in data.get(name, "") for c in "\r\n"):
                 self.add_error(name, "不允许换行。")
         host = data.get("smtp_host", "")
-        if host and (any(c.isspace() for c in host) or any(c in host for c in "/@?#")):
+        if "smtp_host" in self.active_fields and host and (any(c.isspace() for c in host) or any(c in host for c in "/@?#")):
             self.add_error("smtp_host", "仅填写 SMTP 主机名或 IP。")
-        if data.get("smtp_port") is not None and not 1 <= data["smtp_port"] <= 65535:
+        if "smtp_port" in self.active_fields and data.get("smtp_port") is not None and not 1 <= data["smtp_port"] <= 65535:
             self.add_error("smtp_port", "端口范围为 1 到 65535。")
         try:
             data["email_recipients"] = list(email_addresses(
@@ -68,6 +89,8 @@ class MailSettingsForm(forms.ModelForm):
         except forms.ValidationError:
             self.add_error("email_recipients", "请填写有效邮箱，每行一个，最多 20 个。")
         for name, stored in (("smtp_password", "smtp_password_encrypted"), ("brevo_key", "brevo_key_encrypted")):
+            if name not in self.active_fields:
+                continue
             clear = data.get("clear_" + name)
             value = data.get(name)
             if clear and value:
@@ -112,6 +135,8 @@ def mail_settings(request):
                     form.add_error(None, "配置已更新，请刷新后重试。")
                 else:
                     for name, stored in (("smtp_password", "smtp_password_encrypted"), ("brevo_key", "brevo_key_encrypted")):
+                        if name not in form.active_fields:
+                            continue
                         if form.cleaned_data["clear_" + name]:
                             setattr(row, stored, "")
                         elif form.cleaned_data[name]:
@@ -120,9 +145,10 @@ def mail_settings(request):
                     row.last_test_result = ""
                     row.last_test_fingerprint = ""
                     row.save()
-                    health, _ = ProviderHealthTestSetting.objects.get_or_create(singleton_key=1)
-                    health.email_recipients = form.cleaned_data["email_recipients"]
-                    health.save(update_fields=["email_recipients", "updated_at"])
+                    if form.cleaned_data["source"] == "database":
+                        health, _ = ProviderHealthTestSetting.objects.get_or_create(singleton_key=1)
+                        health.email_recipients = form.cleaned_data["email_recipients"]
+                        health.save(update_fields=["email_recipients", "updated_at"])
                     messages.success(request, "邮件配置已保存；未发送邮件，未开启业务通知。")
                     return redirect("mail_settings")
     elif request.method == "POST" and request.POST.get("action") == "test":

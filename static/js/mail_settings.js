@@ -5,9 +5,17 @@
     const source = document.getElementById('id_source');
     const provider = document.getElementById('id_provider');
     function update() {
-        document.getElementById('mail-database-fields').hidden = source.value !== 'database';
+        const database = document.getElementById('mail-database-fields');
+        const active = source.value === 'database';
+        database.hidden = !active;
+        database.querySelectorAll('input, select, textarea').forEach(control => {
+            control.disabled = !active;
+        });
         config.querySelectorAll('[data-provider]').forEach(section => {
             section.hidden = section.dataset.provider !== provider.value;
+            section.querySelectorAll('input, select, textarea').forEach(control => {
+                control.disabled = !active || section.hidden;
+            });
         });
     }
     config.addEventListener('input', () => {
