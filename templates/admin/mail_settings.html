@@ -1,0 +1,58 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+{% block content_title %}{% endblock %}
+{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'css/mail_settings.css' %}">{% endblock %}
+{% block content %}
+<div class="mail-settings">
+  <header><h1>邮件设置</h1><a href="{% url 'provider_health_tests' %}">Provider 健康测试</a></header>
+  <dl class="mail-status">
+    <div><dt>当前来源</dt><dd>{% if mail_source == 'env' %}环境配置{% else %}后台配置{% endif %}</dd></div>
+    <div><dt>配置完整性</dt><dd>{% if mail_complete %}完整{% else %}未完整{% endif %}</dd></div>
+    <div><dt>环境外发开关</dt><dd>{{ env_gate|yesno:"开启,关闭" }}</dd></div>
+    <div><dt>业务通知开关</dt><dd>{{ db_gate|yesno:"开启,关闭" }}</dd></div>
+    <div><dt>有效告警收件人</dt><dd>{{ recipient_count }} 人</dd></div>
+  </dl>
+  {% if mail_errors %}<p role="status">缺失或无效配置：{{ mail_errors|join:", " }}</p>{% endif %}
+  {% if not key_ready %}<p class="errornote">凭据存储不可用：主密钥未配置、无效或无法解密旧凭据。环境配置路径仍可单独使用。</p>{% endif %}
+  <form method="post" id="mail-config-form" autocomplete="off">
+    {% csrf_token %}<input type="hidden" name="action" value="save">{{ form.revision }}
+    {{ form.non_field_errors }}
+    <div class="mail-field">{{ form.source.label_tag }}{{ form.source }}{{ form.source.errors }}</div>
+    <fieldset id="mail-database-fields"><legend>后台通道</legend>
+      <div class="mail-field">{{ form.provider.label_tag }}{{ form.provider }}{{ form.provider.errors }}</div>
+      <div class="mail-grid">
+        <div class="mail-field">{{ form.from_email.label_tag }}{{ form.from_email }}{{ form.from_email.errors }}</div>
+        <div class="mail-field">{{ form.from_name.label_tag }}{{ form.from_name }}{{ form.from_name.errors }}</div>
+      </div>
+      <div data-provider="smtp">
+        <div class="mail-grid">
+          <div class="mail-field">{{ form.smtp_host.label_tag }}{{ form.smtp_host }}{{ form.smtp_host.errors }}</div>
+          <div class="mail-field">{{ form.smtp_port.label_tag }}{{ form.smtp_port }}{{ form.smtp_port.errors }}</div>
+          <div class="mail-field">{{ form.smtp_username.label_tag }}{{ form.smtp_username }}{{ form.smtp_username.errors }}</div>
+          <div class="mail-field">{{ form.smtp_security.label_tag }}{{ form.smtp_security }}{{ form.smtp_security.errors }}</div>
+        </div>
+        <div class="mail-field">{{ form.smtp_password.label_tag }}{{ form.smtp_password }}{{ form.smtp_password.errors }}<span>{{ smtp_secret_set|yesno:"已设置,未设置" }}；留空保留</span></div>
+        <p>{{ form.clear_smtp_password }} {{ form.clear_smtp_password.label_tag }}</p>
+      </div>
+      <div data-provider="brevo">
+        <div class="mail-field">{{ form.brevo_key.label_tag }}{{ form.brevo_key }}{{ form.brevo_key.errors }}<span>{{ brevo_secret_set|yesno:"已设置,未设置" }}；留空保留</span></div>
+        <p>{{ form.clear_brevo_key }} {{ form.clear_brevo_key.label_tag }}</p>
+      </div>
+      <div class="mail-field">{{ form.email_recipients.label_tag }}{{ form.email_recipients }}{{ form.email_recipients.errors }}</div>
+    </fieldset>
+    <button type="submit">保存配置</button>
+  </form>
+  <section class="mail-test"><h2>测试邮件</h2>
+    <p>最近测试：{{ last_test_at|default:"无" }} · {{ last_test_result }}</p>
+    <p id="mail-dirty" hidden>存在未保存修改，请先保存配置。</p>
+    {% if can_test %}<form method="post" id="mail-test-form">
+      {% csrf_token %}<input type="hidden" name="action" value="test">{{ test_form.fingerprint }}
+      {{ test_form.non_field_errors }}
+      <div class="mail-field">{{ test_form.test_recipient.label_tag }}{{ test_form.test_recipient }}{{ test_form.test_recipient.errors }}</div>
+      <p>{{ test_form.confirm }} {{ test_form.confirm.label_tag }}{{ test_form.confirm.errors }}</p>
+      <button type="submit">发送测试邮件</button>
+    </form>{% endif %}
+  </section>
+</div>
+<script src="{% static 'js/mail_settings.js' %}" defer></script>
+{% endblock %}

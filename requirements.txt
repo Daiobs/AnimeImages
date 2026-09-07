@@ -7,3 +7,4 @@ gunicorn>=26.0,<27.0
 requests>=2.32,<3.0
 redis>=5.2,<7.0
 psycopg[binary]>=3.2,<4.0
+cryptography>=46,<48

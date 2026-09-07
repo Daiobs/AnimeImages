@@ -2,6 +2,13 @@
 
 Date: 2026-09-04
 
+Development mail pilot, 2026-09-07: Human confirmed TopicEye/Rardar has no
+configured real mail service. AnimeImages is the first source-code capability
+absorption pilot, not a migration of credentials. The Admin SMTP/Brevo work is
+development-only; see [mail setup](admin-mail-settings.md). PR #84's historical
+access failures are not prerequisites for this work. Production state below is
+not reverified or changed by this pilot; real delivery remains unconfigured.
+
 ## Source Of Truth
 
 | Concern | Source of truth |
