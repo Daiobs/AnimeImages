@@ -1,5 +1,50 @@
 # Admin-Managed Mail Pilot
 
+## Production Deployment: 2026-09-07
+
+Status: `MAIL_CAPABILITY_DEPLOYED_UI_VERIFICATION_PENDING`.
+
+The authorized deployment replaced the verified production application
+`509ef74b76a4424f907bbf6152a824b5a9b2d633` with reviewed PR #85 merge
+`003f75b83e164fc19a043c8213e887ddf9879459` at approximately 20:14 HKT.
+Pre-deploy checks and exact-SHA dry-run passed. The existing deployment script
+completed dependency installation, migration, static collection and Web restart
+once. Production checkout is clean. PR #84 was already closed without merge.
+
+| Gate | Observed result |
+| --- | --- |
+| Backup | New restricted PostgreSQL custom dump: 252040 bytes; `pg_restore --list` passed; timestamp and SHA-256 retained server-side |
+| Baseline backups | Environment, Python/dependencies, migration list, Daily/Runtime settings and units retained with restricted access |
+| Migration | Only 0026_mail_channel_setting added; prior migrations retained |
+| Dependencies | cryptography 47.0.0, cffi 2.1.1 and pycparser 3.0 added; no prior package removed or upgraded; pip check passed |
+| Encryption | First independent key generated internally, atomically persisted with original owner/mode; separate restricted key backup; existing encrypt/decrypt memory roundtrip passed |
+| Runtime environment | Web and Daily units reference the same existing environment file; command probe loaded that file; authenticated Web key-state inspection remains pending |
+| Mail configuration | env source; no saved channel/account; environment and business mail gates both false |
+| Web | Local readiness and public home/live/ready passed; NRestarts=0 |
+| Static | Collected mail CSS/JS match target source and public response bytes |
+| Checks | Django check, migration drift check and pip check passed |
+| Deploy warnings | security.W004/W008/W012/W016 remain; settings and prior environment values are unchanged, no HTTPS hardening attempted |
+| Permissions | Anonymous mail-settings and Provider Health requests return 404 |
+| Authenticated browser | Not completed: Chrome control timed out opening mail settings; no session fabricated or admin created |
+| Daily | Settings, samples and Provider Runtime snapshot unchanged; dry-run selected existing three tests with zero executions and notifications disabled |
+| Timer | Remained active/enabled throughout; no pause/disable or unit change; maintenance occurred over seven hours before next trigger with no running service/lock |
+| Next natural run | Observed 2026-09-08 03:36:34 HKT after daemon reload; randomized delay remains configured |
+| Natural-run evidence | Latest scheduled success completed 2026-09-07 03:40:13 HKT, before deployment; POST_DEPLOY_NATURAL_RUN=NOT_YET_OBSERVED |
+
+The backup readability check is not a disaster-recovery restore drill. Rollback
+reference is the verified prior application SHA plus retained dependency and
+environment snapshots; compatible additive migration structures would be
+preserved, not automatically reversed. No rollback was needed. Restricted
+backups and deployment evidence remain on the server; local task scripts were
+removed. The task's sudo cache was invalidated; no sudoers rule was changed.
+
+`REAL_DELIVERY=NOT_CONFIGURED`, `REAL_MAIL_ATTEMPTED=NO`. No credentials or
+recipients were inserted, no mail gate enabled, and no full daily canary run.
+Provider routes, downloads, TopicEye/Rardar and PR #62 were not changed.
+Authenticated desktop/mobile mail UI and Provider Health browser acceptance
+remain outstanding; service/ORM checks do not replace that gate. The healthy
+deployment is retained. Asset 3's real-email loop is not COMPLETE.
+
 AnimeImages is the first mail capability pilot. Human clarified on 2026-09-07
 that TopicEye/Rardar has mail code and an Admin entry, but no configured real
 mail service. This is source-capability absorption, not account migration.
@@ -60,8 +105,8 @@ reports expose recipient count, not the list or channel secrets.
 
 ## Key And Deployment Prerequisites
 
-This PR is not deployed and does not activate production email. At a separately
-reviewed deployment, install the declared cryptography dependency (locally
+The pilot did not activate production email; the dated deployment above keeps
+delivery off. For future independently reviewed installations, install the declared cryptography dependency (locally
 verified with 47.0.0), run migration 0026, and configure one Fernet key through a
 restricted environment file as `MAIL_CONFIG_ENCRYPTION_KEY`. Generate it once
 with `Fernet.generate_key()` in an approved environment and transfer it without

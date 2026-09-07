@@ -1,8 +1,25 @@
 # Current Version Status
 
-Date: 2026-09-04
+Date: 2026-09-07
 
-Development mail pilot, 2026-09-07: Human confirmed TopicEye/Rardar has no
+## Latest Authorized Deployment
+
+Mail capability production deployment on 2026-09-07 verified the previous live
+SHA `509ef74b76a4424f907bbf6152a824b5a9b2d633`, then deployed exact reviewed SHA
+`003f75b83e164fc19a043c8213e887ddf9879459`. Migration 0026, cryptography 47.0.0
+and the independent persisted mail key are present. Web health, static assets,
+command encryption roundtrip and unchanged Daily/Runtime settings passed.
+Both mail gates remain off; real delivery remains unconfigured.
+
+Status: `MAIL_CAPABILITY_DEPLOYED_UI_VERIFICATION_PENDING`. Chrome control
+timed out, so authenticated mail/Admin browser acceptance is not claimed.
+Timer remains active/enabled; no post-deploy natural run has yet been observed.
+See the [dated mail deployment record](admin-mail-settings.md#production-deployment-2026-09-07).
+This records deployment, not real-email activation or full-platform acceptance.
+The September 4 baseline below remains historical evidence, not the latest
+production SHA. This docs-only follow-up does not redeploy the application.
+
+Historical development mail pilot, before this deployment: Human confirmed TopicEye/Rardar has no
 configured real mail service. AnimeImages is the first source-code capability
 absorption pilot, not a migration of credentials. The Admin SMTP/Brevo work is
 development-only; see [mail setup](admin-mail-settings.md). PR #84's historical
