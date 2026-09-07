@@ -208,6 +208,103 @@ browser acceptance or change the outstanding email configuration gate.
 
 ## Boundaries And Rollback
 
+### Email Reuse Preparation: 2026-09-07
+
+Result: `ASSET_3_EMAIL_REUSE_PREPARED_NEEDS_HUMAN_INPUT`. This is a
+code-level configuration mapping, not a successful email activation.
+
+Fetched AnimeImages main was `1c550fbeb50cfa40964966aeb7e314a06bd3be69`.
+The recorded production application remains
+`509ef74b76a4424f907bbf6152a824b5a9b2d633`; it was **not reverified**:
+both the existing Ubuntu SSH identity and the dedicated recovery identity
+failed noninteractive authentication. No remote command executed. Current
+Daily, Timer, next-run time and both email gates are therefore unverified;
+the September 4 observations above remain historical, not current readings.
+
+Source code inspected: `Brilliant666/TopicEye`, main observed at
+`72bd85b60fd274a3c8b0eeca973f5751384c3b38`. Read README, the Rardar local
+startup script, email factory, SMTP/Brevo providers, secret store and
+AppSetting model. The script describes a Windows-local Python environment
+and an existing PostgreSQL cluster, with repository/version/process identity
+stored in its runtime state. This identifies a documented runtime location,
+not the currently running machine, checkout or database. No accessible source
+runtime was established from this Mac; no app lifespan or startup/sync command
+was executed. The associated Rardar deployment documentation does not prove
+that its server contains the Windows TopicEye email configuration.
+
+The source factory reads only `app_settings.key = email_provider_config` and
+JSON in `value`; SMTP password and Brevo key are decrypted with the original
+secret-store function. No database row or secret was read in this attempt.
+The source factory's Brevo default is not evidence that Brevo is configured.
+
+| Source SMTP field | AnimeImages environment field |
+| --- | --- |
+| smtp_host | DJANGO_EMAIL_HOST |
+| smtp_port | DJANGO_EMAIL_PORT |
+| smtp_username | DJANGO_EMAIL_HOST_USER |
+| decrypted smtp_password | DJANGO_EMAIL_HOST_PASSWORD |
+| approved from_email | DJANGO_DEFAULT_FROM_EMAIL |
+
+For SMTP, the existing Django SMTP backend suffices. Source SSL true maps to
+SSL true / TLS false; source SSL false maps to SSL false / TLS true (STARTTLS),
+not plaintext. The original secret-store master key must not be transferred.
+A Brevo API key is not an SMTP password. No backend adaptation is justified
+until the actual source provider and available transport are verified.
+
+The existing AnimeImages `email_delivery_configuration()` and
+`_provider_validation_email_connection()` accept the mapped environment
+configuration. Their inspection is not a connectivity or sending test.
+No approved recipient list was established; neither sender nor administrator
+identity was substituted for it. Same-path canary and activation remain gated.
+
+```text
+SOURCE_REPOSITORY = Brilliant666/TopicEye
+SOURCE_RUNTIME_IDENTIFIED = NO
+SOURCE_RUNTIME_VERSION = NOT_VERIFIED
+SOURCE_ACCESS_GAP = SOURCE_RUNTIME_UNREACHABLE
+SOURCE_CONFIG_FOUND = NOT_VERIFIED
+SOURCE_PROVIDER = UNKNOWN
+SOURCE_SECRET_READABLE = NOT_TESTED
+SOURCE_TRANSPORT_CONFIG_COMPLETE = NOT_VERIFIED
+SOURCE_PREVIOUS_SEND_EVIDENCE = NOT_CHECKED
+REUSE_PATH = NONE_PENDING_RUNTIME_VERIFICATION
+ALERT_RECIPIENTS_APPROVED = NO
+ALERT_RECIPIENT_COUNT = 0_CONFIRMED
+ALERT_RECIPIENT_APPROVAL_SOURCE = NONE
+MAIL_CONFIG_WRITTEN = NO
+MAIL_TRANSPORT_ACCEPTED = NOT_ATTEMPTED
+INBOX_DELIVERY_VERIFIED = NOT_VERIFIED
+EMAIL_DB_GATE = NOT_VERIFIED_HISTORICALLY_FALSE
+EMAIL_ENV_GATE = NOT_VERIFIED_HISTORICALLY_FALSE
+DAILY_ENABLED = NOT_VERIFIED_HISTORICALLY_TRUE
+DAILY_TEST_KEYS_UNCHANGED = NO_WRITE_CURRENT_STATE_NOT_VERIFIED
+TIMER_UNCHANGED = NO_WRITE_CURRENT_STATE_NOT_VERIFIED
+POST_ENABLE_NATURAL_RUN = NOT_APPLICABLE_NOT_ENABLED
+POST_ENABLE_BUSINESS_NOTIFICATION_OBSERVED = NO
+TOPICEYE_CONFIG_CHANGED = NO
+RARDAR_CHANGED = NO
+SECRET_DISCLOSURE = NO
+APPLICATION_REDEPLOY = NO
+MIGRATION_RERUN = NO
+FULL_DAILY_CANARY_RERUN = NO
+WEB_RESTART = NO
+PROVIDER_ROUTE_CHANGE = NO
+DOWNLOAD_CHANGE = NO
+PR62_UNTOUCHED = YES
+ADMIN_BROWSER_ACCEPTANCE = PREVIOUS_TOOLING_TIMEOUT_NOT_RETESTED
+CODE_PR = NONE
+```
+
+Remaining inputs: access to the actual TopicEye Windows runtime and its
+recorded identity, restored AnimeImages SSH access, and an approved AnimeImages
+alert recipient list entered through a restricted configuration channel. No
+password, key, ciphertext or recipient address belongs in this record.
+No configuration backup or sudo-cache revocation was needed: no privileged
+session was established and no configuration was written. No temporary source
+runtime, secret export, application service or canary was created.
+
+### Existing Activation Rollback
+
 - Pre/post Provider Runtime settings hashes matched. Existing sample fields
   were preserved; only reviewed daily-validation fields were changed.
 - Nginx and Web-unit hashes/topology matched the pre-deploy manifest. Only the

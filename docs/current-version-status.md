@@ -2,6 +2,13 @@
 
 Date: 2026-09-04
 
+Email follow-up, 2026-09-07: TopicEye source-code configuration mapping is
+complete, but its actual runtime/configuration remains inaccessible, production
+SSH authentication failed, and no alert recipients are approved. No mail was
+sent or configuration changed. Both mail gates and Timer state were not
+reverified; the activation observations below remain dated historical facts.
+See the [email preparation record](research/production/ASSET_3_PRODUCTION_ACTIVATION_V1.md#email-reuse-preparation-2026-09-07).
+
 ## Source Of Truth
 
 | Concern | Source of truth |
