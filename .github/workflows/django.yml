@@ -136,4 +136,6 @@ jobs:
           node --test tests_js/provider_lab.test.js
           node --test tests_js/result_url_safety.test.js
           node --test tests_js/user_feedback.test.js
+          node --test tests_js/upstream_downloads.test.js
+          node --test tests_js/upstream_batch_authorization.test.js
           node --test tests_js/xhs_livephoto_staff_preview.test.js

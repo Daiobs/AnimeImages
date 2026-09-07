@@ -12,6 +12,7 @@ STATIC_VERSION_FILES = (
     "static/js/app.js",
     "static/js/user_feedback.js",
     "static/css/provider_lab.css",
+    "static/css/upstream_coverage.css",
     "static/js/provider_lab.js",
     "static/js/batch_parse.js",
     "static/js/browser_photo_archive.js",

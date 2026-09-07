@@ -405,6 +405,25 @@
             || contentType.startsWith("video/");
     }
 
+    function isUpstreamItem(item) {
+        return Boolean(item && String(item.asset_id || "").startsWith("upstream:"));
+    }
+
+    function isBoundUpstreamItem(item) {
+        if (!isUpstreamItem(item) || item.browser_upstream_bound !== true
+            || item.source_platform !== "upstream"
+            || !["yt_dlp_generic", "gallery_dl_generic"].includes(item.provider)) {
+            return false;
+        }
+        try {
+            const url = new URL(String(item.url || item.video_url || ""));
+            return url.protocol === "https:" && !url.username && !url.password
+                && !url.hash && (!url.port || url.port === "443");
+        } catch (error) {
+            return false;
+        }
+    }
+
     function isOrdinaryMediaItem(item) {
         return Boolean(
             item
@@ -412,6 +431,7 @@
             && String(item.type || item.media_type || "").toLowerCase() === "video"
             && isHttpUrl(item.url || item.video_url)
             && booleanValue(item.browser_direct_fetch_safe)
+            && (!isUpstreamItem(item) || isBoundUpstreamItem(item))
             && !booleanValue(item.requires_merge)
             && !booleanValue(item.requires_cookie)
         );
@@ -671,6 +691,9 @@
 
     function safeErrorMessage(error) {
         const errorCode = String(error && error.errorCode || "");
+        if (errorCode === "UPSTREAM_BROWSER_FETCH_FAILED") {
+            return "浏览器无法读取资源：可能是来源未允许跨域（CORS）、重定向被拒绝或网络连接失败。不会转为服务器下载。";
+        }
         if (errorCode === "DOWNLOAD_MANAGER_CANCELLED" || errorCode === "USER_CANCELLED") {
             return "下载已取消。";
         }
@@ -990,12 +1013,13 @@
         const filename = sanitizeFilename(settings.filename || item.filename);
         const downloadId = createDownloadId(settings);
         const sourceUrl = String(item.url || item.video_url || "");
+        const upstreamBound = isBoundUpstreamItem(item);
         if (
-            !streamingProtocol
+            !upstreamBound && (!streamingProtocol
             || typeof streamingProtocol.isAllowedInitialMediaUrl !== "function"
             || !streamingProtocol.isAllowedInitialMediaUrl(sourceUrl, {
                 allowLoopbackHttp: Boolean(settings.allowLoopback),
-            })
+            }))
         ) {
             throw responseGateDownloadError(null, sourceUrl, settings);
         }
@@ -1060,7 +1084,7 @@
             fetchGuard.touch();
             response = await fetchImpl(
                 sourceUrl,
-                browserFetchOptions(fetchGuard.signal),
+                {...browserFetchOptions(fetchGuard.signal), ...(upstreamBound ? {redirect: "error", mode: "cors"} : {})},
             );
         } catch (error) {
             fetchGuard.clear();
@@ -1075,7 +1099,7 @@
                 throw error;
             }
             throw downloadError(
-                "BROWSER_FETCH_FAILED",
+                upstreamBound ? "UPSTREAM_BROWSER_FETCH_FAILED" : "BROWSER_FETCH_FAILED",
                 "浏览器无法获取资源。",
             );
         }
@@ -1088,7 +1112,11 @@
             );
         }
 
-        const responseGate = streamingProtocol.classifyResponseRejection(response, {
+        const responseGate = upstreamBound ? {
+            rejected: Boolean(response.redirected || response.type === "opaque"
+                || response.type === "opaqueredirect"
+                || (response.url && response.url !== sourceUrl)),
+        } : streamingProtocol.classifyResponseRejection(response, {
             initialUrl: sourceUrl,
             allowLoopbackHttp: Boolean(settings.allowLoopback),
         });
@@ -1248,7 +1276,7 @@
                 "当前资源不支持浏览器直接保存。",
             );
         }
-        if (settings.forceBlob === true) {
+        if (settings.forceBlob === true || isBoundUpstreamItem(item)) {
             return downloadViaBlob(item, settings);
         }
         try {

@@ -94,6 +94,10 @@ def item_is_video(item):
     return item_type(item) == "video"
 
 
+def item_is_upstream(item):
+    return isinstance(item, dict) and str(item.get("asset_id") or "").startswith("upstream:")
+
+
 def item_is_xhs_zero_relay_image(item):
     return bool(
         isinstance(item, dict)
@@ -191,6 +195,8 @@ def provider_item_can_direct_download(item):
 
 
 def provider_item_requires_server(item):
+    if item_is_upstream(item):
+        return False
     provider = item_provider(item)
     if not provider:
         return False
@@ -206,6 +212,8 @@ def item_can_browser_direct_video(item):
     if not is_http_url(url):
         return False
     provider = item_provider(item)
+    if item_is_upstream(item):
+        return provider_manifest_allows_public_download(item)
     if item_is_xhs_native_browser_video(item):
         return True
     if (
@@ -221,6 +229,8 @@ def item_can_browser_direct_video(item):
 
 
 def single_video_can_server_proxy_download(item):
+    if item_is_upstream(item):
+        return False
     if not isinstance(item, dict) or not item_is_video(item):
         return False
     if not is_http_url(item_url(item)):
@@ -237,6 +247,8 @@ def single_video_can_server_proxy_download(item):
 
 
 def single_video_can_attachment_download(item):
+    if item_is_upstream(item):
+        return False
     if not isinstance(item, dict) or not item_is_video(item):
         return False
     if not is_http_url(item_url(item)):
@@ -284,6 +296,8 @@ def single_video_prefers_browser_direct(item, runtime_setting=None):
 
 
 def single_image_can_attachment_download(item):
+    if item_is_upstream(item):
+        return False
     if not isinstance(item, dict) or not item_is_image(item):
         return False
     if not is_http_url(item_url(item)):
@@ -318,6 +332,8 @@ def public_route_item(item):
         if isinstance(item, dict) and item.get(key) not in (None, "")
     }
     if isinstance(item, dict):
+        if item_is_upstream(item):
+            public_item["browser_upstream_bound"] = provider_manifest_allows_public_download(item)
         browser_direct_fetch_safe = item_can_browser_direct_video(item)
         public_item["browser_direct_fetch_safe"] = browser_direct_fetch_safe
         if browser_direct_fetch_safe:
@@ -336,6 +352,11 @@ def route_payload(
     error_code="",
     warnings=None,
 ):
+    if any(item_is_upstream(item) for item in media_items or ()) and route_type not in {ROUTE_DIRECT, ROUTE_BLOCKED}:
+        route_type = ROUTE_BLOCKED
+        route_reason = "扩展资源仅支持浏览器下载，不支持服务器中转。"
+        download_strategy = "browser_download_required"
+        error_code = "UPSTREAM_BROWSER_DOWNLOAD_REQUIRED"
     if route_type == ROUTE_DIRECT:
         server_egress = 0
         browser_egress = estimated_bytes
@@ -390,6 +411,30 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
             media_items=normalized_items,
             estimated_bytes=0,
             error_code="NO_MEDIA_SELECTED",
+            warnings=warnings,
+        )
+
+    if any(item_is_upstream(item) for item in normalized_items):
+        valid = all(
+            item_is_upstream(item) and provider_manifest_allows_public_download(item)
+            for item in normalized_items
+        )
+        images_only = all(item_is_image(item) for item in normalized_items)
+        browser_selection = images_only or (
+            len(normalized_items) == 1 and item_is_video(normalized_items[0])
+        )
+        allowed = valid and browser_selection and requested_mode in {"", "auto", "browser"}
+        return route_payload(
+            route_type=ROUTE_DIRECT if allowed else ROUTE_BLOCKED,
+            route_reason=("资源由浏览器获取并保存" if allowed else "扩展资源仅支持浏览器下载；请单独选择图片或一个视频，失效时重新解析。"),
+            download_strategy=(
+                "browser_direct_images" if allowed and images_only
+                else "browser_direct_provider_video" if allowed
+                else "browser_download_required"
+            ),
+            media_items=normalized_items,
+            estimated_bytes=estimated_bytes,
+            error_code="" if allowed else "UPSTREAM_BROWSER_DOWNLOAD_REQUIRED",
             warnings=warnings,
         )
 

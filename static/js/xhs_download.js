@@ -72,6 +72,7 @@
         const logicalType = card.dataset.logicalType || card.dataset.assetKind || type;
         const sizeBytes = Number.parseInt(card.dataset.sizeBytes || "0", 10) || 0;
         const providerFields = {
+            ...(card.dataset.downloadFilename ? {filename: card.dataset.downloadFilename} : {}),
             source_platform: card.dataset.sourcePlatform || "",
             asset_id: card.dataset.assetId || "",
             provider: card.dataset.provider || "",
@@ -891,6 +892,7 @@
                     || item.type === "livephoto"
                     || item.source_platform === "xiaohongshu"
                     || item.provider === "parsehub_xhs_images"
+                    || String(item.asset_id || "").startsWith("upstream:")
                 ))
             );
         }
@@ -1007,7 +1009,7 @@
         }
 
         async function downloadSelectedPhotos(payload) {
-            const items = selected
+            const items = (payload.browserRouteItems || selected)
                 .map((item, index) => ({
                     ...item,
                     filenameStem: item.filenameStem || `${getBaseFilename()}_${String(index + 1).padStart(2, "0")}`,
@@ -1739,6 +1741,10 @@
 
         async function handleDirectRoute(routeData) {
             const directItems = routeData.items || [];
+            if (directItems.some((item) => String(item.asset_id || "").startsWith("upstream:"))
+                && !directRouteHasOrdinaryMedia(directItems)) {
+                throw new Error("下载组件不可用或资源授权已失效，请刷新页面或重新解析。");
+            }
             if (directRouteHasOrdinaryMedia(directItems)) {
                 try {
                     const filenames = await downloadOrdinaryMediaRouteItems(directItems);
@@ -1894,6 +1900,23 @@
                         getStatusElement(),
                         presentationText("正在准备图片 ZIP...", "服务器正在准备图片 ZIP..."),
                     );
+                }
+
+                if (selected.some((item) => String(item.asset_id || "").startsWith("upstream:"))) {
+                    const route = await fetchRouteOnly(payload);
+                    if (!route || route.route_type !== "direct"
+                        || !route.items || !route.items.every((item) => item.browser_upstream_bound === true)) {
+                        throw new Error(route && (route.message || route.route_reason) || "下载授权已失效，请重新解析。");
+                    }
+                    if (route.items.every((item) => item.type === "image")) {
+                        if (!browserPhotoApi) {
+                            throw new Error("图片下载组件不可用，请刷新页面后重试。");
+                        }
+                        await downloadSelectedPhotos({...payload, browserRouteItems: route.items});
+                    } else {
+                        await handleDirectRoute(route);
+                    }
+                    return;
                 }
 
                 if (

@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 from django.conf import settings
 
 from ..models import ProviderAccessMode, ProviderRuntimeSetting
-from .common import host_matches, is_blocked_hostname
+from .common import extract_url_from_text, host_matches, is_blocked_hostname
 
 
 logger = logging.getLogger(__name__)
@@ -14,6 +14,36 @@ logger = logging.getLogger(__name__)
 PROVIDER_DOUYIN_ULTRA = "douyin_ultra"
 PROVIDER_YOUTUBE_MERGE = "youtube_merge"
 PROVIDER_THIRD_PARTY = "third_party"
+UPSTREAM_PROVIDER_IDS = ("yt_dlp_generic", "gallery_dl_generic")
+UPSTREAM_PARSE_TIMEOUT_SECONDS = 30.0
+
+
+def upstream_match_is_blocked(match, runtime_setting):
+    provider = str(match.get("provider_id") or "")
+    extractor = str(match.get("extractor_id") or "").lower()
+    blocked = set(parse_csv_values(getattr(runtime_setting, "third_party_blocked_platforms", "")))
+    return bool(blocked.intersection({
+        "upstream", f"upstream:{provider}",
+        f"upstream:{provider}:{extractor}", f"upstream:extractor:{extractor}",
+    }))
+
+
+def upstream_match_is_public_allowed(match, host, runtime_setting):
+    provider = str(match.get("provider_id") or "")
+    if provider not in UPSTREAM_PROVIDER_IDS or upstream_match_is_blocked(match, runtime_setting):
+        return False
+    return third_party_platform_is_public_allowed(
+        f"upstream:{provider}", host, runtime_setting,
+    ) or third_party_platform_is_public_allowed("upstream", host, runtime_setting)
+
+
+def update_upstream_bulk_allowlist(value, selected_providers):
+    bulk_tokens = {f"upstream:{provider}" for provider in UPSTREAM_PROVIDER_IDS}
+    values = [token for token in parse_csv_values(value) if token not in bulk_tokens]
+    values.extend(f"upstream:{provider}" for provider in UPSTREAM_PROVIDER_IDS if provider in selected_providers)
+    return "\n".join(dict.fromkeys(values))
+
+
 def request_user_is_staff(request):
     user = getattr(request, "user", None)
     return bool(
@@ -302,10 +332,12 @@ def third_party_platform_is_public_allowed(platform_id, host, runtime_setting=No
 def third_party_public_access_summary(query_url, request=None, runtime_setting=None):
     from .platforms.third_party import (
         PUBLIC_DENIED_RISK_LEVELS,
-        THIRD_PARTY_PLATFORM_RULES,
+        GenericThirdPartyAdapter,
+        provider_is_enabled,
     )
 
     runtime_setting = runtime_setting or load_runtime_setting()
+    query_url = extract_url_from_text(query_url or "")
     parsed = urlparse(query_url or "")
     host = (parsed.hostname or "").strip().lower()
     staff_user = request_user_is_staff(request)
@@ -333,10 +365,7 @@ def third_party_public_access_summary(query_url, request=None, runtime_setting=N
             "platform_id": "",
             "host": host,
         }
-    rule = next(
-        (item for item in THIRD_PARTY_PLATFORM_RULES if item.supports_hostname(host)),
-        None,
-    )
+    rule = GenericThirdPartyAdapter().get_rule_for_url(query_url)
     if rule is None:
         return {
             "allowed": False,
@@ -387,6 +416,27 @@ def third_party_public_access_summary(query_url, request=None, runtime_setting=N
             "platform_id": rule.platform_id,
             "host": host,
             "risk_level": rule.risk_level,
+        }
+    if rule.platform_id == "upstream":
+        matches = tuple(
+            match for match in getattr(rule, "upstream_matches", ())
+            if isinstance(match, dict)
+            and match.get("provider_id") in UPSTREAM_PROVIDER_IDS
+            and match.get("provider_id") in rule.provider_ids
+            and match.get("extractor_id")
+            and provider_is_enabled(match["provider_id"])
+            and not upstream_match_is_blocked(match, runtime_setting)
+            and ((staff_user and rule.staff_default) or upstream_match_is_public_allowed(match, host, runtime_setting))
+        )
+        return {
+            "allowed": bool(matches),
+            "error_code": "" if matches else "THIRD_PARTY_PLATFORM_NOT_ALLOWLISTED",
+            "message": "可尝试" if matches else "该链接暂不可用。",
+            "platform_id": "upstream",
+            "host": host,
+            "risk_level": rule.risk_level,
+            "upstream_matches": matches,
+            "upstream_provider_ids": tuple(dict.fromkeys(match["provider_id"] for match in matches)),
         }
     if staff_user:
         if not rule.staff_default:

@@ -51,9 +51,13 @@ class PlatformRegistry:
         ultra_attempt_controller=None,
         enable_xhs_livephoto_preview=False,
         enable_xhs_livephoto_staff_preview=False,
+        upstream_provider_ids=None,
+        upstream_matches=None,
     ):
         url = extract_url_from_text(url)
         adapter = self.get_adapter_for_url(url)
+        if upstream_matches is not None and "upstream_matches" not in adapter.parse_option_names:
+            raise XhsParseError("上游解析权限接口暂不可用。")
         return adapter.parse(
             url,
             prefer_ultra_hd=prefer_ultra_hd,
@@ -68,6 +72,8 @@ class PlatformRegistry:
             ultra_attempt_controller=ultra_attempt_controller,
             enable_xhs_livephoto_preview=enable_xhs_livephoto_preview,
             enable_xhs_livephoto_staff_preview=enable_xhs_livephoto_staff_preview,
+            upstream_provider_ids=upstream_provider_ids,
+            upstream_matches=upstream_matches,
         )
 
 
@@ -100,6 +106,8 @@ def parse_media_page(
     ultra_attempt_controller=None,
     enable_xhs_livephoto_preview=False,
     enable_xhs_livephoto_staff_preview=False,
+    upstream_provider_ids=None,
+    upstream_matches=None,
 ):
     return default_registry.parse_url(
         url,
@@ -115,4 +123,6 @@ def parse_media_page(
         ultra_attempt_controller=ultra_attempt_controller,
         enable_xhs_livephoto_preview=enable_xhs_livephoto_preview,
         enable_xhs_livephoto_staff_preview=enable_xhs_livephoto_staff_preview,
+        upstream_provider_ids=upstream_provider_ids,
+        upstream_matches=upstream_matches,
     )

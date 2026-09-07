@@ -28,11 +28,33 @@
 
     .provider-dashboard {
         min-height: calc(100vh - 96px);
-        margin: -20px -20px 0;
+        margin: 0;
         padding: 34px clamp(18px, 4vw, 54px) 56px;
         background:
             linear-gradient(180deg, #fff 0%, var(--provider-bg) 54%, #fff 100%);
         color: var(--provider-text);
+        overflow-wrap: anywhere;
+    }
+
+    .provider-dashboard,
+    .provider-dashboard * {
+        box-sizing: border-box;
+    }
+
+    .provider-dashboard .provider-shell,
+    .provider-dashboard .provider-form,
+    .provider-dashboard .provider-field-grid,
+    .provider-dashboard .provider-settings-panel,
+    .provider-dashboard .provider-platform-panel {
+        min-width: 0;
+        max-width: 100%;
+    }
+
+    .provider-dashboard label {
+        float: none;
+        width: auto;
+        min-width: 0;
+        max-width: 100%;
     }
 
     .provider-shell {
@@ -367,7 +389,7 @@
     }
 
     .provider-mode-options label,
-    .provider-settings-panel label {
+    .provider-settings-panel > label {
         display: grid;
         grid-template-columns: 18px minmax(0, 1fr);
         gap: 8px;
@@ -433,8 +455,13 @@
         margin-top: 0;
     }
 
-    .provider-field {
+    .provider-dashboard .provider-field {
         display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        min-width: 0;
+        margin: 0;
+        padding: 0;
+        border: 0;
         gap: 6px;
         color: var(--provider-text);
         font-size: 13px;
@@ -444,6 +471,9 @@
     .provider-field input,
     .provider-field select,
     .provider-field textarea {
+        width: 100%;
+        min-width: 0;
+        max-width: 100%;
         min-height: 38px;
         border: 1px solid var(--provider-line);
         border-radius: 8px;
@@ -458,11 +488,15 @@
         resize: vertical;
     }
 
+    .provider-upstream-controls legend { font-size: 13px; font-weight: 800; margin: 0; }
+    .provider-upstream-controls label { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+    .provider-upstream-controls input[type="checkbox"] { width: 18px; height: 18px; min-height: 18px; padding: 0; flex: 0 0 18px; }
+
     .provider-platform-panel {
         border: 1px solid var(--provider-line);
         border-radius: 8px;
         background: #fff;
-        overflow: hidden;
+        overflow-x: auto;
     }
 
     .provider-platform-header {
@@ -486,6 +520,7 @@
 
     .provider-platform-table {
         width: 100%;
+        min-width: 760px;
         border-collapse: collapse;
         font-size: 13px;
     }
@@ -526,7 +561,7 @@
 
     @media (max-width: 720px) {
         .provider-dashboard {
-            margin: -15px -10px 0;
+            margin: 0;
             padding: 24px 14px 42px;
         }
 
@@ -805,13 +840,24 @@
                         <span>允许公开平台 platform_id</span>
                         <textarea name="third_party_allowed_public_platforms" placeholder="youtube&#10;flickr">{{ runtime_setting.third_party_allowed_public_platforms }}</textarea>
                     </label>
+                    <fieldset class="provider-field provider-upstream-controls">
+                        <legend>上游匹配平台批量开放</legend>
+                        <input type="hidden" name="upstream_bulk_controls" value="1">
+                        {% for provider in upstream_bulk_providers %}
+                            <label>
+                                <input type="checkbox" name="upstream_bulk_providers" value="{{ provider.id }}" {% if provider.checked %}checked{% endif %} {% if not can_change_provider_settings %}disabled{% endif %}>
+                                {{ provider.label }} 匹配平台可尝试
+                            </label>
+                        {% endfor %}
+                        <a href="{% url 'home' %}?coverage=1">查看上游平台覆盖</a>
+                    </fieldset>
                     <label class="provider-field">
                         <span>允许公开 Host</span>
                         <textarea name="third_party_allowed_public_hosts" placeholder="youtube.com&#10;flickr.com">{{ runtime_setting.third_party_allowed_public_hosts }}</textarea>
                     </label>
                     <label class="provider-field">
-                        <span>阻止平台 platform_id</span>
-                        <textarea name="third_party_blocked_platforms" placeholder="reddit&#10;x">{{ runtime_setting.third_party_blocked_platforms }}</textarea>
+                        <span>阻止平台 / 上游解析器</span>
+                        <textarea name="third_party_blocked_platforms" placeholder="reddit&#10;upstream:yt_dlp_generic:ExtractorId">{{ runtime_setting.third_party_blocked_platforms }}</textarea>
                     </label>
                     <label class="provider-field">
                         <span>阻止 Host</span>

@@ -1788,7 +1788,10 @@ test("Single and Batch use one shared ordinary download primitive", () => {
         batchSource.indexOf('const imageDownloadButton = event.target.closest("[data-batch-image-download]")'),
     );
     assert.match(singleSource, /ordinaryMediaDownloadApi\.download\(item/);
-    assert.match(ordinaryVideoHandler, /ordinaryMediaDownloadApi\.download\(item/);
+    assert.match(
+        ordinaryVideoHandler,
+        /const authorizedItems = await authorizeBatchUpstreamItems\(batchPage, \[item\]\);\s*await ordinaryMediaDownloadApi\.download\(authorizedItems\[0\],/,
+    );
     assert.doesNotMatch(ordinaryVideoHandler, /response\.blob\s*\(|new Blob\(chunks/);
     assert.match(batchSource, /async function readBatchPhotoArchiveResponse\(/);
 });

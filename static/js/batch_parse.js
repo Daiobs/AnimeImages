@@ -339,6 +339,7 @@
             return null;
         }
         return {
+            ...batchPhotoMediaItem(node),
             type: "image",
             url,
             source_platform: String(node.dataset.sourcePlatform || ""),
@@ -358,6 +359,7 @@
             && sourceItems.some((item) => (
                 item.source_platform === "xiaohongshu"
                 || item.provider === "parsehub_xhs_images"
+                || String(item.asset_id || "").startsWith("upstream:")
             ))
         );
     }
@@ -368,7 +370,37 @@
         if (!browserPhotoApi || !photoItem) {
             throw new Error("图片下载地址不可用，请重新解析。");
         }
-        return browserPhotoApi.downloadImage(photoItem, options || {});
+        const page = button.closest("[data-batch-download-url]");
+        const authorized = await authorizeBatchUpstreamItems(page, [photoItem], options);
+        return browserPhotoApi.downloadImage(authorized[0], options || {});
+    }
+
+    async function authorizeBatchUpstreamItems(page, items, options) {
+        if (!items.some((item) => String(item.asset_id || "").startsWith("upstream:"))) {
+            return items;
+        }
+        const token = page && page.querySelector('input[name="csrfmiddlewaretoken"]');
+        if (!page || !token) {
+            throw new Error("下载授权不可用，请刷新后重试。");
+        }
+        const response = await fetch(safeSameOriginDownloadUrl(page.dataset.batchDownloadUrl, window.location.origin), {
+            method: "POST",
+            headers: {"Content-Type": "application/json", "X-CSRFToken": token.value},
+            body: JSON.stringify({media_items: items, route_only: true, save_format: "original", base_filename: "media"}),
+            signal: options && options.signal,
+        });
+        if (!response.ok) {
+            throw new Error("下载授权已失效，请重新解析。");
+        }
+        const route = await response.json();
+        if (route.route_type !== "direct" || !Array.isArray(route.items)
+            || route.items.length !== items.length
+            || route.items.some((item, index) => item.browser_upstream_bound !== true
+                || item.asset_id !== items[index].asset_id || item.url !== items[index].url
+                || item.type !== items[index].type)) {
+            throw new Error("下载授权已失效，请重新解析。");
+        }
+        return route.items.map((item, index) => ({...items[index], ...item}));
     }
 
     function batchPhotoMediaItem(node) {
@@ -390,6 +422,7 @@
             ["providerResourceId", "provider_resource_id"],
             ["providerCacheKey", "provider_cache_key"],
             ["providerManifestToken", "provider_manifest_token"],
+            ["sourcePlatform", "source_platform"],
         ];
         fields.forEach(([datasetKey, payloadKey]) => {
             const value = String(node.dataset[datasetKey] || "").trim();
@@ -875,7 +908,8 @@
             allowCancel: true,
         });
         try {
-            const result = await browserPhotoApi.createArchive(items, {
+            const authorizedItems = await authorizeBatchUpstreamItems(batchPage, items, {signal: controller.signal});
+            const result = await browserPhotoApi.createArchive(authorizedItems, {
                 baseFilename: String(section.dataset.baseFilename || "images"),
                 signal: controller.signal,
                 onProgress(event) {
@@ -1791,9 +1825,15 @@
                         directDownloadButton.getAttribute("data-batch-requires-cookie") === "true"
                     ),
                 };
+                const resourceNode = directDownloadButton.closest("[data-batch-download-item]");
+                for (const [key, field] of [["assetId", "asset_id"], ["providerResourceId", "provider_resource_id"],
+                    ["providerCacheKey", "provider_cache_key"], ["providerManifestToken", "provider_manifest_token"]]) {
+                    if (resourceNode && resourceNode.dataset[key]) item[field] = resourceNode.dataset[key];
+                }
+                const upstream = String(item.asset_id || "").startsWith("upstream:");
                 if (
                     !ordinaryMediaDownloadApi
-                    || !ordinaryMediaDownloadApi.isOrdinaryMediaItem(item)
+                    || (!upstream && !ordinaryMediaDownloadApi.isOrdinaryMediaItem(item))
                 ) {
                     showBatchDownloadButtonMessage(directDownloadButton, "请重新解析");
                     return;
@@ -1801,7 +1841,8 @@
                 setBatchDownloadButtonLoading(directDownloadButton, true, "正在准备下载...");
                 resetBatchDownloadProgress(directDownloadButton);
                 try {
-                    await ordinaryMediaDownloadApi.download(item, {
+                    const authorizedItems = await authorizeBatchUpstreamItems(batchPage, [item]);
+                    await ordinaryMediaDownloadApi.download(authorizedItems[0], {
                         filename,
                         onStage(_stage, message) {
                             setBatchDownloadButtonLoading(directDownloadButton, true, message);
@@ -1846,6 +1887,7 @@
     }
 
     const testApi = Object.freeze({
+        authorizeBatchUpstreamItems,
         collectBatchResourceLinks,
         buildBatchLinksText,
         buildBatchAria2Text,

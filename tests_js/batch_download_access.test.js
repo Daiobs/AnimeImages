@@ -18,7 +18,7 @@ test("Batch ordinary video uses the shared browser download primitive", () => {
 
     assert.match(source, /AnimeImagesOrdinaryMediaDownload/);
     assert.match(source, /ordinaryMediaDownloadApi\.isOrdinaryMediaItem\(item\)/);
-    assert.match(source, /ordinaryMediaDownloadApi\.download\(item/);
+    assert.match(source, /ordinaryMediaDownloadApi\.download\(authorizedItems\[0\]/);
 });
 
 

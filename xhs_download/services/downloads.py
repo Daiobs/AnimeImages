@@ -463,6 +463,10 @@ def tiantianjiexi_douyin_manifest_is_allowed(item):
 def provider_manifest_allows_public_download(item):
     if not isinstance(item, dict):
         return False
+    if str(item.get("asset_id") or "").startswith("upstream:"):
+        from .upstream_delivery import upstream_manifest_item_is_allowed
+
+        return upstream_manifest_item_is_allowed(item)
     if item.get("provider") not in {
         "kukutool",
         "tiantianjiexi",
@@ -569,6 +573,7 @@ def invalidate_external_provider_caches(item):
 
 
 def validate_provider_signed_download_url(provider_item, url, message):
+    reject_upstream_server_download(provider_item)
     if provider_item is None:
         validate_public_download_url(url, message)
         return url
@@ -611,6 +616,8 @@ def validate_provider_signed_download_url(provider_item, url, message):
 
 
 def build_provider_signed_cover_item(item, cover_url):
+    if isinstance(item, dict) and str(item.get("asset_id") or "").startswith("upstream:"):
+        return None
     if not cover_url or not provider_manifest_allows_public_download(item):
         return {"type": "image", "url": cover_url}
 
@@ -709,6 +716,7 @@ def request_public_provider_get_with_retry(
     provider_item=None,
     deadline_monotonic=None,
 ):
+    reject_upstream_server_download(provider_item)
     if provider_item is not None and not provider_manifest_allows_public_download(provider_item):
         raise XhsDownloadError("Provider 签名资源未通过校验")
 
@@ -883,6 +891,7 @@ def fetch_item_to_temp_path(
     progress_callback=None,
     expected_type="",
 ):
+    reject_upstream_server_download(item)
     if (
         str(item.get("provider") or "") == YOUTUBE_MERGE_PROVIDER_ID
         and str(item.get("type") or "") == "video"
@@ -995,6 +1004,7 @@ def fetch_cover_to_temp_path(
     max_bytes=MAX_IMAGE_BYTES,
     progress_callback=None,
 ):
+    reject_upstream_server_download(item)
     if youtube_merge_manifest_identity(item):
         cover_item = {
             "type": "image",
@@ -1075,6 +1085,7 @@ def fetch_item_binary(
 
 
 def fetch_cover_binary(item, cover_url, timeout=30, max_bytes=MAX_IMAGE_BYTES):
+    reject_upstream_server_download(item)
     return fetch_item_binary(
         build_provider_signed_cover_item(item, cover_url),
         timeout=timeout,
@@ -1084,6 +1095,8 @@ def fetch_cover_binary(item, cover_url, timeout=30, max_bytes=MAX_IMAGE_BYTES):
 
 
 def iter_download_files(media_items, base_filename, save_format=ORIGINAL_FORMAT, quality=95, video_save_mode="video"):
+    for item in media_items:
+        reject_upstream_server_download(item)
     base_filename = clean_filename(base_filename or "xhs")
     save_format = normalize_save_format(save_format)
     quality = normalize_quality(quality)
@@ -1172,6 +1185,11 @@ def iter_download_files(media_items, base_filename, save_format=ORIGINAL_FORMAT,
         yield "failed.txt", "\n".join(failures).encode("utf-8")
 
 
+def reject_upstream_server_download(item):
+    if isinstance(item, dict) and str(item.get("asset_id") or "").startswith("upstream:"):
+        raise XhsDownloadError("扩展资源仅支持浏览器下载，不支持服务器中转。")
+
+
 def assert_download_request(media_items):
     if not media_items:
         raise XhsDownloadError("没有选择资源")
@@ -1252,6 +1270,8 @@ def build_download_archive_file(
     progress_callback=None,
     archive_profile="",
 ):
+    for item in media_items:
+        reject_upstream_server_download(item)
     archive_profile = normalize_archive_profile(archive_profile)
     validate_download_media_items(
         media_items,
@@ -1507,6 +1527,8 @@ def save_media_items_to_server(
     allow_absolute=False,
 ):
     assert_download_request(media_items)
+    for item in media_items:
+        reject_upstream_server_download(item)
 
     base_filename = clean_filename(base_filename or "xhs")
     save_format = normalize_save_format(save_format)

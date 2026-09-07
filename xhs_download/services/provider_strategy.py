@@ -35,6 +35,19 @@ def build_download_strategy(asset, *, result_platform="", result_metadata=None):
     source_provider = normalize_provider((result_metadata or {}).get("source_provider"))
     selected_provider = normalize_provider((result_metadata or {}).get("selected_provider"))
     effective_provider = provider or selected_provider or source_provider
+    if str(getattr(asset, "asset_id", "") or "").startswith("upstream:"):
+        return {
+            "download_strategy": (
+                DOWNLOAD_STRATEGY_BROWSER_BLOB if media_type == "video"
+                else DOWNLOAD_STRATEGY_BROWSER_DIRECT
+            ),
+            "fallback_strategy": FALLBACK_NONE,
+            "cors_expected": True,
+            "browser_direct_fetch_safe": False,
+            "requires_merge": False,
+            "requires_cookie": False,
+            "strategy_label": "下载",
+        }
     is_xhs_tiantian_video = bool(
         result_platform == "xiaohongshu"
         and effective_provider == "tiantianjiexi_generic"

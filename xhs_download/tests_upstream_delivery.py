@@ -1,0 +1,99 @@
+from unittest.mock import patch
+
+from django.core.cache import cache
+from django.test import SimpleTestCase, override_settings
+
+from .services.common import XhsParseError
+from .services.upstream_delivery import normalize_upstream_result, upstream_manifest_item_is_allowed
+
+
+@override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}})
+class UpstreamDeliveryTests(SimpleTestCase):
+    def setUp(self):
+        cache.clear()
+        self.dns = patch('xhs_download.services.upstream_delivery.validate_public_download_url', side_effect=lambda u: u)
+        self.dns.start()
+        self.addCleanup(self.dns.stop)
+        self.match = dict(provider_id='gallery_dl_generic', extractor_id='ExampleImage', label='example:image', version='test')
+
+    def image_result(self):
+        return normalize_upstream_result([[3, 'https://cdn.example.org/original.png', {'extension': 'png'}]],
+                                         match=self.match, source_url='https://example.org/post/1')
+
+    def test_exact_resource_issued(self):
+        result = self.image_result()
+        self.assertEqual(result.platform, 'third_party')
+        self.assertTrue(upstream_manifest_item_is_allowed(result.assets[0].to_download_item()))
+
+    def test_tampered_fields_rejected(self):
+        item = self.image_result().assets[0].to_download_item()
+        for key in ('url', 'provider', 'provider_resource_id', 'provider_cache_key', 'asset_id', 'source_platform', 'type'):
+            with self.subTest(key=key):
+                self.assertFalse(upstream_manifest_item_is_allowed({**item, key: 'forged'}))
+
+    def test_signature_required(self):
+        item = self.image_result().assets[0].to_download_item()
+        item.pop('provider_manifest_token')
+        self.assertFalse(upstream_manifest_item_is_allowed(item))
+
+    def test_cache_eviction_fails_closed(self):
+        item = self.image_result().assets[0].to_download_item()
+        cache.clear()
+        self.assertFalse(upstream_manifest_item_is_allowed(item))
+
+    def test_metadata_urls_do_not_become_assets(self):
+        payload = [[3, 'https://cdn.example.org/original.png', {'extension': 'png', 'avatar': 'https://cdn.example.org/avatar.png'}]]
+        result = normalize_upstream_result(payload, match=self.match, source_url='https://example.org/post/1')
+        self.assertEqual(len(result.assets), 1)
+        self.assertTrue(result.assets[0].url.endswith('/original.png'))
+
+    def test_queue_not_normalized(self):
+        with self.assertRaises(XhsParseError):
+            normalize_upstream_result([[6, 'https://example.org/user', {}]], match=self.match, source_url='https://example.org/post/1')
+
+    def test_resource_limit_does_not_silently_truncate_gallery(self):
+        payload = [[3, f'https://cdn.example.org/{index}.png', {'extension': 'png'}]
+                   for index in range(31)]
+        with self.assertRaises(XhsParseError), patch(
+                'xhs_download.services.upstream_delivery._issue_assets') as issue:
+            normalize_upstream_result(payload, match=self.match, source_url='https://example.org/post/1')
+        issue.assert_not_called()
+
+    def test_credentials_and_non_https_rejected(self):
+        for url in ('file:///tmp/media.png', 'http://cdn.example.org/file.png', 'https://user:pass@cdn.example.org/file.png',
+                    'https://cdn.example.org:8443/file.png'):
+            with self.subTest(url=url), self.assertRaises(XhsParseError):
+                normalize_upstream_result([[3, url, {'extension': 'png'}]], match=self.match, source_url='https://example.org/post/1')
+
+    def test_video_must_contain_audio_and_video(self):
+        match = {**self.match, 'provider_id': 'yt_dlp_generic'}
+        for payload in ({'_type': 'playlist', 'entries': []}, {'url': 'https://cdn.example.org/video.mp4', 'vcodec': 'h264', 'acodec': 'none'}):
+            with self.assertRaises(XhsParseError):
+                normalize_upstream_result(payload, match=match, source_url='https://example.org/post/1')
+
+    def test_complete_video_uses_existing_format_selection(self):
+        payload = {'title': 'Example', 'formats': [{'url': 'https://cdn.example.org/video.mp4', 'vcodec': 'h264', 'acodec': 'aac', 'protocol': 'https', 'height': 720}]}
+        result = normalize_upstream_result(payload, match={**self.match, 'provider_id': 'yt_dlp_generic'}, source_url='https://example.org/post/1')
+        self.assertEqual(len(result.video_assets), 1)
+        self.assertTrue(upstream_manifest_item_is_allowed(result.assets[0].to_download_item()))
+
+    def test_independent_parse_authorities(self):
+        first = self.image_result().assets[0]
+        second = self.image_result().assets[0]
+        self.assertNotEqual(first.asset_id, second.asset_id)
+        mixed = {**first.to_download_item(), 'provider_cache_key': second.provider_cache_key}
+        self.assertFalse(upstream_manifest_item_is_allowed(mixed))
+
+    def test_mature_urls_never_enter_dynamic_third_party_matcher(self):
+        from .services.platforms.third_party import GenericThirdPartyAdapter
+        with patch('xhs_download.services.upstream_matching.match_upstream_url') as matcher:
+            for url in ('https://www.xiaohongshu.com/explore/example', 'https://v.douyin.com/example/',
+                        'https://www.bilibili.com/video/BVexample'):
+                self.assertIsNone(GenericThirdPartyAdapter().get_rule_for_url(url))
+            matcher.assert_not_called()
+
+    def test_legacy_diagnostics_cannot_execute_dynamic_matches(self):
+        from types import SimpleNamespace
+        from .services.platforms.third_party import GenericThirdPartyAdapter
+        rule = SimpleNamespace(upstream_matches=(self.match,))
+        self.assertEqual(list(GenericThirdPartyAdapter().iter_provider_specs(rule)), [])

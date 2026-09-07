@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}上游平台覆盖 · 星空的高清下载小站{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{% static 'css/upstream_coverage.css' %}?v={{ static_asset_version }}">{% endblock %}
+{% block content %}
+<section class="upstream-coverage" aria-labelledby="coverage-title">
+    <header class="coverage-header">
+        <div><a href="{% url 'home' %}"><i class="bi bi-arrow-left" aria-hidden="true"></i> 返回解析</a><h1 id="coverage-title">上游平台覆盖</h1></div>
+        <p class="coverage-totals">{{ coverage_total }} 个解析器 · {{ coverage_allowed_count }} 可尝试 · {{ coverage_unavailable_count }} 暂不可用</p>
+    </header>
+    <p class="coverage-notice">匹配能力不代表已验证成功；具体链接仍受平台、Host 和解析器限制。</p>
+    <form method="get" action="{% url 'home' %}" class="coverage-filters" role="search">
+        <input type="hidden" name="coverage" value="1">
+        <label for="coverage-search">平台 / 解析器<input id="coverage-search" type="search" name="search" maxlength="200" value="{{ coverage_query }}" placeholder="搜索平台或解析器"></label>
+        <label for="coverage-state">当前用户状态<select id="coverage-state" name="state">
+            <option value="all" {% if coverage_state == 'all' %}selected{% endif %}>全部</option>
+            <option value="allowed" {% if coverage_state == 'allowed' %}selected{% endif %}>可尝试</option>
+            <option value="unavailable" {% if coverage_state == 'unavailable' %}selected{% endif %}>暂不可用</option>
+        </select></label>
+        <button type="submit" aria-label="搜索" title="搜索"><i class="bi bi-search" aria-hidden="true"></i></button>
+    </form>
+    <div class="coverage-table-wrap">
+        <table class="coverage-table">
+            <thead><tr><th scope="col">平台 / 解析器</th><th scope="col">执行器</th><th scope="col">版本</th><th scope="col">当前状态</th></tr></thead>
+            <tbody>
+            {% for row in coverage_page %}
+                <tr><td><strong>{{ row.label }}</strong><small>{{ row.extractor_id }}</small></td><td>{% if row.provider_id == 'yt_dlp_generic' %}yt-dlp{% else %}gallery-dl{% endif %}</td><td>{{ row.version|default:'—' }}</td><td><span class="coverage-status {% if row.allowed %}is-allowed{% endif %}">{{ row.status_label }}</span></td></tr>
+            {% empty %}<tr><td colspan="4" class="coverage-empty">{% if coverage_total %}没有匹配的解析器{% else %}覆盖清单暂不可用{% endif %}</td></tr>{% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <nav class="coverage-pagination" aria-label="覆盖清单分页">
+        {% if coverage_page.has_previous %}<a aria-label="上一页" title="上一页" href="?coverage=1&amp;search={{ coverage_query|urlencode }}&amp;state={{ coverage_state }}&amp;page={{ coverage_page.previous_page_number }}"><i class="bi bi-chevron-left" aria-hidden="true"></i></a>{% endif %}
+        <span>{{ coverage_page.number }} / {{ coverage_page.paginator.num_pages }} · {{ coverage_page.paginator.count }} 项</span>
+        {% if coverage_page.has_next %}<a aria-label="下一页" title="下一页" href="?coverage=1&amp;search={{ coverage_query|urlencode }}&amp;state={{ coverage_state }}&amp;page={{ coverage_page.next_page_number }}"><i class="bi bi-chevron-right" aria-hidden="true"></i></a>{% endif %}
+    </nav>
+</section>
+{% endblock %}
