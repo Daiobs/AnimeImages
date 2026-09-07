@@ -127,6 +127,11 @@ Static-version and presentation checks were repeated after the final style/versi
 adjustments (20 passed). No model, dependency or migration was added. An earlier
 full run hit the existing fixed-window click-interval assertion; its isolated
 recheck and subsequent full run passed without changing the rate-limit code.
+The first remote run failed because the application requirements intentionally do
+not install the optional upstream packages. CI now explicitly installs the two
+audited versions above for offline contract tests; application requirements and
+production runtime installation remain unchanged. Tests are not skipped when the
+packages are missing from the test environment.
 
 ## Remaining Provider Blockers
 
