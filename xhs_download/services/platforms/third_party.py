@@ -1,7 +1,7 @@
 import inspect
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import urlparse
 
 from django.conf import settings
@@ -72,6 +72,7 @@ class ThirdPartyPlatformRule:
     public_default: bool = False
     staff_default: bool = True
     notes: str = ""
+    upstream_matches: tuple = ()
 
     def supports_hostname(self, hostname):
         return host_matches(hostname, self.host_suffixes)
@@ -316,6 +317,8 @@ def provider_attempt_record(provider_id, status, duration_ms, error=None):
 
 
 def frontend_budget_seconds(rule=None):
+    if getattr(rule, "platform_id", "") == "upstream":
+        return 30.0
     base_budget = max(
         0.1,
         float(getattr(settings, "THIRD_PARTY_FRONTEND_TIMEOUT_SECONDS", 3.0) or 3.0),
@@ -411,6 +414,8 @@ def result_with_provider_diagnostics(
 
 
 def provider_is_enabled(provider_id):
+    if provider_id == "parsehub_generic":
+        return runtime_bool("PARSEHUB_UPSTREAM_ENABLED", False)
     if provider_id == "kukutool_generic":
         return bool(
             getattr(settings, "THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED", False)
@@ -508,6 +513,8 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         "prefer_youtube_merge",
         "timeout_seconds",
         "deadline_monotonic",
+        "upstream_provider_ids",
+        "upstream_matches",
     )
 
     def __init__(
@@ -557,6 +564,10 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         }
 
     def iter_provider_specs(self, rule, *, respect_enabled=True):
+        if getattr(rule, "upstream_matches", ()):
+            # Legacy diagnostics must not execute dynamic matches through an
+            # unrestricted CLI; the product uses the exact-extractor worker.
+            return
         provider_ids = configured_third_party_provider_order(rule)
         allowed_provider_ids = set(self.provider_policy.third_party_providers)
         specs = self.provider_specs()
@@ -584,6 +595,23 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         for rule in self.platform_rules:
             if rule.supports_hostname(hostname):
                 return rule
+        from ..registry import DEFAULT_ADAPTERS
+        if any(adapter.platform_id != self.platform_id and adapter.supports_url(url)
+               for adapter in DEFAULT_ADAPTERS):
+            return None
+        # Mature rules retain precedence. The extension never invokes paid services
+        # or treats a catch-all extractor as evidence of platform support.
+        if host_matches(hostname, BLOCKED_PUBLIC_HOST_SUFFIXES):
+            return None
+        from ..upstream_matching import match_upstream_url
+        matches = tuple(match_upstream_url(url))
+        if matches:
+            return ThirdPartyPlatformRule(
+                platform_id="upstream", display_name=matches[0]["label"],
+                host_suffixes=(hostname,),
+                provider_ids=tuple(dict.fromkeys(m["provider_id"] for m in matches)),
+                upstream_matches=matches, notes="上游专用解析器匹配，可尝试；未逐站验证。",
+            )
         return None
 
     def supports_url(self, url):
@@ -601,6 +629,8 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         prefer_youtube_merge=False,
         timeout_seconds=None,
         deadline_monotonic=None,
+        upstream_provider_ids=None,
+        upstream_matches=None,
     ):
         source_url = self.normalize_source_url(url)
         self.require_supported_url(source_url)
@@ -608,6 +638,17 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         platform_name = rule.display_name if rule else self.display_name
         if not runtime_bool("THIRD_PARTY_PROVIDER_ENABLED", False):
             raise XhsParseError("第三方通用解析 Provider 当前未启用。")
+        if getattr(rule, "upstream_matches", ()):
+            if upstream_matches is not None:
+                authorized = {(m.get('provider_id'), m.get('extractor_id'), m.get('version')) for m in upstream_matches}
+                rule = replace(rule, upstream_matches=tuple(
+                    m for m in rule.upstream_matches
+                    if (m.get('provider_id'), m.get('extractor_id'), m.get('version')) in authorized
+                ))
+            if upstream_provider_ids is not None:
+                rule = replace(rule, upstream_matches=tuple(
+                    m for m in rule.upstream_matches if m['provider_id'] in upstream_provider_ids))
+            return self.parse_upstream_rule(source_url, rule, timeout_seconds, deadline_monotonic)
         providers = list(self.iter_provider_specs(rule, respect_enabled=True))
         failures = []
         attempts = []
@@ -871,6 +912,56 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
             },
         )
         raise XhsParseError(f"{platform_name} 第三方解析失败：{summary or '没有可用 Provider'}")
+
+    def parse_upstream_rule(self, source_url, rule, timeout_seconds, deadline_monotonic):
+        from ..upstream_matching import parse_upstream_url
+        from ..upstream_delivery import normalize_upstream_result
+        from ..common import validate_public_download_url
+
+        validate_public_download_url(source_url)
+        started = time.monotonic()
+        deadline = min(started + 30.0, float(deadline_monotonic)) if deadline_monotonic else (
+            started + min(30.0, max(0.1, float(timeout_seconds or 30.0))))
+        attempts = []
+        used_providers = set()
+        failure_code = "upstream_unavailable"
+        for match in rule.upstream_matches:
+            provider = match["provider_id"]
+            if provider in used_providers or len(used_providers) >= 2 or not provider_is_enabled(provider):
+                continue
+            used_providers.add(provider)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise XhsProviderTimeoutError("扩展解析超时，请稍后再试。")
+            attempt_start = time.monotonic()
+            try:
+                payload = parse_upstream_url(match, source_url, timeout_seconds=min(20.0, remaining))
+                result = normalize_upstream_result(payload, match=match, source_url=source_url)
+                attempts.append(provider_attempt_record(provider, "success", elapsed_ms(attempt_start)))
+                return result_with_provider_diagnostics(result, provider, elapsed_ms(attempt_start), attempts,
+                                                        total_duration_ms=elapsed_ms(started))
+            except Exception as error:
+                # Upstream errors can contain signed URLs/credentials. Keep only class.
+                attempts.append(provider_attempt_record(provider, "failed", elapsed_ms(attempt_start)))
+                failure_code = str(getattr(error, 'code', 'unsupported_result'))
+                logger.info("upstream_parse_failed", extra={"provider": provider, "error_type": type(error).__name__,
+                                                          "error_code": failure_code})
+        if not attempts:
+            raise XhsParseError("匹配的扩展解析器当前未启用或不可执行。")
+        messages = {
+            'auth_required': '该公开链接的上游解析需要登录；本入口不读取账号凭据。',
+            'access_denied': '上游拒绝访问该内容，可能存在地区或访问限制。',
+            'execution_timeout': '上游解析超时，请稍后再试。',
+            'network_timeout': '上游网络连接超时，请稍后再试。',
+            'playlist_denied': '本入口仅接受单条内容，不支持账号或播放列表。',
+            'delegation_denied': '该链接需要额外的上游跳转解析，当前暂不支持。',
+            'unsupported_result': '解析结果没有可交付的图片或完整视频，可能为分离音视频或流媒体。',
+            'no_formats': '上游没有返回当前可保存的媒体格式。',
+            'unknown_media_tracks': '上游未提供足够的音视频轨道信息，暂时无法确认这是完整视频。',
+            'separate_media_tracks': '上游仅提供分离音轨或视频轨，本入口暂不支持合流。',
+            'streaming_media': '上游仅提供 HLS/DASH 流媒体，本入口暂不支持保存该格式。',
+        }
+        raise XhsParseError('扩展解析失败：' + messages.get(failure_code, '当前上游不可用，请稍后重试。'))
 
     def describe(self):
         description = super().describe()

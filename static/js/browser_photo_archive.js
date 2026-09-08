@@ -592,6 +592,8 @@
     function safeErrorMessage(error) {
         const code = safeErrorCode(error);
         const messages = {
+            UPSTREAM_PHOTO_FETCH_FAILED: "浏览器无法读取图片：可能是来源未允许跨域（CORS）、重定向被拒绝或网络连接失败。不会转为服务器下载。",
+            UPSTREAM_PHOTO_INVALID_ITEM: "图片下载授权已失效，请重新解析。",
             BROWSER_PHOTO_CANCELLED: "图片下载已取消。",
             BROWSER_PHOTO_CORS_UNAVAILABLE: "浏览器无法直接读取这些图片。",
             BROWSER_PHOTO_FETCH_TIMEOUT: "图片资源响应超时，请重试下载。",
@@ -640,6 +642,13 @@
     }
 
     async function readImageResponse(response, item, context) {
+        if (isUpstreamPhoto(item) && (response.redirected
+            || (response.url && response.url !== item.url))) {
+            if (response.body && typeof response.body.cancel === "function") {
+                await response.body.cancel().catch(() => {});
+            }
+            throw photoError("IMAGE_CONTENT_INVALID");
+        }
         if (
             item.source_platform === "xiaohongshu"
             && !isSafeXhsImageUrl(response.url || item.url)
@@ -750,6 +759,7 @@
         });
         const requiresMagic = Boolean(
             item.require_magic === true
+            || isUpstreamPhoto(item)
             || item.requireMagic === true
             || item.source_platform === "xiaohongshu"
             || item.provider === "parsehub_xhs_images"
@@ -778,6 +788,7 @@
                     credentials: "omit",
                     referrerPolicy: "no-referrer",
                     signal: itemController.signal,
+                    ...(isUpstreamPhoto(item) ? {redirect: "error", mode: "cors"} : {}),
                 }),
                 context.idleTimeoutMs,
                 () => itemController.abort(),
@@ -790,7 +801,7 @@
             if (safeErrorCode(error) === "BROWSER_PHOTO_FETCH_TIMEOUT") {
                 throw error;
             }
-            throw photoError("BROWSER_PHOTO_CORS_UNAVAILABLE");
+            throw photoError(isUpstreamPhoto(item) ? "UPSTREAM_PHOTO_FETCH_FAILED" : "BROWSER_PHOTO_CORS_UNAVAILABLE");
         } finally {
             if (!response) {
                 releaseSignal();
@@ -1014,7 +1025,21 @@
         };
     }
 
+    function isUpstreamPhoto(item) {
+        return Boolean(item && String(item.asset_id || "").startsWith("upstream:"));
+    }
+
     function assertPhotoItem(item) {
+        if (isUpstreamPhoto(item)) {
+            let url;
+            try { url = new URL(item.url); } catch (error) { /* Rejected below. */ }
+            if (item.browser_upstream_bound !== true || item.source_platform !== "upstream"
+                || !["yt_dlp_generic", "gallery_dl_generic", "parsehub_generic"].includes(item.provider)
+                || !url || url.protocol !== "https:" || url.username || url.password
+                || url.hash || (url.port && url.port !== "443")) {
+                throw photoError("UPSTREAM_PHOTO_INVALID_ITEM");
+            }
+        }
         if (!item || item.type !== "image" || !item.url) {
             throw photoError("BROWSER_PHOTO_INVALID_ITEM", "图片下载信息无效，请重新解析。");
         }

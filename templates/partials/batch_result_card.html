@@ -149,11 +149,12 @@
                                     <button type="button"
                                             class="batch-photo-preview"
                                             data-batch-lightbox-open
-                                            data-card-preview-src="{{ proxy_image_url }}?{{ item.card_preview_proxy_query }}"
-                                            data-lightbox-preview-src="{{ proxy_image_url }}?{{ item.lightbox_preview_proxy_query }}"
+                                            data-card-preview-src="{% if item.source_platform == 'upstream' %}{{ item.card_preview_url }}{% else %}{{ proxy_image_url }}?{{ item.card_preview_proxy_query }}{% endif %}"
+                                            data-lightbox-preview-src="{% if item.source_platform == 'upstream' %}{{ item.lightbox_preview_url }}{% else %}{{ proxy_image_url }}?{{ item.lightbox_preview_proxy_query }}{% endif %}"
                                             aria-label="放大查看图片 {{ forloop.counter }}">
                                         <img
-                                                src="{{ proxy_image_url }}?{{ item.card_preview_proxy_query }}"
+                                                src="{% if item.source_platform == 'upstream' %}{{ item.card_preview_url }}{% else %}{{ proxy_image_url }}?{{ item.card_preview_proxy_query }}{% endif %}"
+                                                {% if item.source_platform == 'upstream' %}referrerpolicy="no-referrer"{% endif %}
                                                 alt="图片 {{ forloop.counter }}"
                                                 {% if forloop.first %}loading="eager" fetchpriority="high"{% else %}loading="lazy"{% endif %}
                                                 decoding="async"
@@ -245,7 +246,8 @@
                     <div class="batch-result-cover">
                         {% if row.video_items and row.video_items.0.cover_url %}
                             <img
-                                    src="{{ proxy_image_url }}?u={{ row.video_items.0.encoded_preview_cover_url|default:row.video_items.0.encoded_cover_url }}{% if row.video_items.0.cover_preview_provider_query %}&{{ row.video_items.0.cover_preview_provider_query }}{% endif %}"
+                                    src="{% if row.video_items.0.source_platform == 'upstream' %}{{ row.video_items.0.cover_url }}{% else %}{{ proxy_image_url }}?u={{ row.video_items.0.encoded_preview_cover_url|default:row.video_items.0.encoded_cover_url }}{% if row.video_items.0.cover_preview_provider_query %}&{{ row.video_items.0.cover_preview_provider_query }}{% endif %}{% endif %}"
+                                    {% if row.video_items.0.source_platform == 'upstream' %}referrerpolicy="no-referrer"{% endif %}
                                     alt="视频封面"
                                     loading="lazy"
                                     decoding="async"
@@ -265,7 +267,11 @@
                                 <div class="batch-direct-item"
                                  data-batch-download-item
                                  data-type="video"
-                                 data-source-platform="{{ row.platform|default:'' }}"
+                                 data-asset-id="{{ item.asset_id|default:'' }}"
+                                 data-provider-resource-id="{{ item.provider_resource_id|default:'' }}"
+                                 data-provider-cache-key="{{ item.provider_cache_key|default:'' }}"
+                                 data-provider-manifest-token="{{ item.provider_manifest_token|default:'' }}"
+                                 data-source-platform="{{ item.source_platform|default:row.platform }}"
                                  data-url="{{ item.direct_url }}"
                                  data-size-bytes="{{ item.size_bytes|default:0 }}"
                                  data-provider="{{ item.provider|default:'' }}"
@@ -274,7 +280,7 @@
                                  data-browser-direct-fetch-safe="{{ item.browser_direct_fetch_safe|yesno:'true,false' }}"
                                  data-requires-merge="{{ item.requires_merge|yesno:'true,false' }}"
                                  data-requires-cookie="{{ item.requires_cookie|yesno:'true,false' }}"
-                                 data-download-filename="{{ row.base_filename|default:'video' }}_{{ forloop.counter }}.mp4">
+                                 data-download-filename="{{ row.base_filename|default:'video' }}_{{ forloop.counter }}.{{ item.download_extension|default:'mp4' }}">
                                 <div class="batch-direct-summary">
                                     <span class="batch-direct-icon">
                                         <i class="bi bi-file-earmark-play"></i>
@@ -299,17 +305,18 @@
                                                 打开直链
                                             </a>
                                         {% endif %}
-                                        {% if batch_download_allowed and item.browser_direct_fetch_safe and not item.requires_merge and not item.requires_cookie %}
+                                        {% if batch_download_allowed and not item.requires_merge and not item.requires_cookie %}
+                                        {% if item.browser_direct_fetch_safe or item.upstream_browser_action %}
                                             <button type="button"
                                                     class="btn btn-brand btn-sm batch-browser-download-btn"
                                                     data-batch-direct-download
                                                     data-batch-direct-url="{{ item.direct_url }}"
-                                                    data-batch-direct-filename="{{ row.base_filename|default:'video' }}_{{ forloop.counter }}.mp4"
+                                                    data-batch-direct-filename="{{ row.base_filename|default:'video' }}_{{ forloop.counter }}.{{ item.download_extension|default:'mp4' }}"
                                                     data-batch-direct-provider="{{ item.provider|default:'' }}"
-                                                    data-batch-direct-source-platform="{{ row.platform|default:'' }}"
+                                                    data-batch-direct-source-platform="{{ item.source_platform|default:row.platform }}"
                                                     data-batch-direct-size-bytes="{{ item.size_bytes|default:0 }}"
                                                     data-batch-direct-size-is-estimate="{{ item.size_is_estimate|yesno:'true,false' }}"
-                                                    data-batch-browser-fetch-safe="true"
+                                                    data-batch-browser-fetch-safe="{{ item.browser_direct_fetch_safe|yesno:'true,false' }}"
                                                     data-batch-requires-merge="false"
                                                     data-batch-requires-cookie="false">
                                                 <span class="spinner-border spinner-border-sm me-1 batch-download-spinner" aria-hidden="true"></span>
@@ -317,8 +324,10 @@
                                                 <span class="batch-download-label">下载</span>
                                             </button>
                                         {% endif %}
+                                        {% endif %}
                                     </div>
-                                    {% if item.browser_direct_fetch_safe and not item.requires_merge and not item.requires_cookie %}
+                                    {% if batch_download_allowed and not item.requires_merge and not item.requires_cookie %}
+                                    {% if item.browser_direct_fetch_safe or item.upstream_browser_action %}
                                         <div class="download-progress-wrap batch-download-progress"
                                              data-batch-download-progress
                                              hidden>
@@ -347,6 +356,7 @@
                                              data-batch-download-status
                                              role="alert"
                                              hidden></div>
+                                    {% endif %}
                                     {% endif %}
                                 {% endif %}
                                 {% if batch_raw_links_allowed %}

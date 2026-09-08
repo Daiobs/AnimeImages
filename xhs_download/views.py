@@ -114,6 +114,7 @@ from .services.download_routing import (
     ROUTE_PROXY,
     ROUTE_ZIP,
     decide_download_route,
+    item_is_upstream,
     request_is_mobile,
 )
 from .services.downloads import (
@@ -180,7 +181,12 @@ from .services.provider_access import (
     provider_is_allowed_for_request,
     request_is_in_public_rollout,
     third_party_public_access_summary,
+    UPSTREAM_PROVIDER_IDS,
+    UPSTREAM_PARSE_TIMEOUT_SECONDS,
+    parse_csv_values,
+    update_upstream_bulk_allowlist,
 )
+from .services.upstream_public_errors import public_upstream_error_message
 from .services.provider_strategy import (
     build_download_strategy,
     build_download_strategy_matrix,
@@ -380,6 +386,8 @@ def get_video_size_details(asset, *, probe_missing=True):
 
 
 def build_provider_preview_query(asset, preview_url, asset_id_suffix=""):
+    if str(asset.asset_id or "").startswith("upstream:"):
+        return ""
     if asset.provider == "parsehub_xhs_images":
         return ""
     if not asset.provider or not preview_url:
@@ -1033,6 +1041,11 @@ def provider_settings_view(request):
         ):
             setattr(runtime_setting, field_name, str(request.POST.get(field_name, "") or "").strip())
         runtime_setting.kukutool_disabled = request.POST.get("kukutool_disabled") == "1"
+        if request.POST.get("upstream_bulk_controls") == "1":
+            runtime_setting.third_party_allowed_public_platforms = update_upstream_bulk_allowlist(
+                runtime_setting.third_party_allowed_public_platforms,
+                request.POST.getlist("upstream_bulk_providers"),
+            )
         runtime_setting.save(
             update_fields=[
                 "douyin_ultra_mode",
@@ -1079,6 +1092,12 @@ def provider_settings_view(request):
             "provider_rows": rows,
             "provider_health": health,
             "can_change_provider_settings": provider_settings_change_allowed(request),
+            "upstream_bulk_providers": [
+                {"id": provider, "label": {"yt_dlp_generic": "yt-dlp", "gallery_dl_generic": "gallery-dl",
+                                           "parsehub_generic": "ParseHub"}[provider],
+                 "checked": f"upstream:{provider}" in parse_csv_values(runtime_setting.third_party_allowed_public_platforms)}
+                for provider in UPSTREAM_PROVIDER_IDS
+            ],
             "third_party_platform_rules": [
                 rule.to_dict() for rule in THIRD_PARTY_PLATFORM_RULES
             ],
@@ -3635,7 +3654,7 @@ def build_image_item(
         **asset.to_download_item(),
         **build_asset_strategy_fields(asset, result),
         "type": "image",
-        "source_platform": result.platform,
+        "source_platform": asset.source_platform if str(asset.asset_id or "").startswith("upstream:") else result.platform,
         "url": asset.url,
         "download_extension": image_download_extension(asset),
         "encoded_url": encode_url(asset.url),
@@ -3672,15 +3691,23 @@ def build_image_item(
 
 
 def build_video_item(asset, result, *, probe_missing_size=True):
+    upstream = str(asset.asset_id or "").startswith("upstream:")
     size_bytes, size_is_estimate = get_video_size_details(
         asset,
-        probe_missing=probe_missing_size,
+        probe_missing=probe_missing_size and not upstream,
     )
+    extension = str(asset.ext or "").lower().lstrip(".")
+    if extension not in {"mp4", "webm", "mov", "m4v", "mkv", "avi", "flv", "ogv"}:
+        extension = "bin" if upstream else "mp4"
     return {
         **asset.to_download_item(),
         **build_asset_strategy_fields(asset, result),
         "type": "video",
-        "source_platform": result.platform,
+        "source_platform": asset.source_platform if upstream else result.platform,
+        **({"download_extension": extension,
+            "filename": f"{result.base_filename or 'video'}.{extension}",
+            "upstream_browser_action": asset.source_platform == "upstream" and asset.provider in UPSTREAM_PROVIDER_IDS,
+            } if upstream else {}),
         "video_url": asset.url,
         "cover_url": asset.cover_url,
         "size_bytes": size_bytes,
@@ -3996,11 +4023,40 @@ def browser_download_telemetry_view(request):
 
 
 def search_view(request, platform_key="home"):
+    if platform_key == "home" and request.GET.get("coverage") == "1":
+        return upstream_coverage_view(request)
     return render(
         request,
         "xhs_download.html",
         get_download_settings_context(platform_key, request),
     )
+
+
+@require_GET
+def upstream_coverage_view(request):
+    from .services.upstream_coverage import coverage_rows_for_request
+
+    query = str(request.GET.get("search") or "").strip()[:200]
+    state = str(request.GET.get("state") or "all")
+    if state not in {"all", "allowed", "unavailable"}:
+        state = "all"
+    rows = coverage_rows_for_request(request, ProviderRuntimeSetting.load())
+    total = len(rows)
+    allowed_count = sum(row["allowed"] for row in rows)
+    if query:
+        rows = [row for row in rows if query.casefold() in " ".join(
+            (row["label"], row["extractor_id"], row["provider_id"])
+        ).casefold()]
+    if state != "all":
+        rows = [row for row in rows if row["allowed"] == (state == "allowed")]
+    page = Paginator(rows, 50).get_page(request.GET.get("page"))
+    response = render(request, "upstream_coverage.html", {
+        "coverage_page": page, "coverage_query": query, "coverage_state": state,
+        "coverage_total": total, "coverage_allowed_count": allowed_count,
+        "coverage_unavailable_count": total - allowed_count,
+    })
+    response["Cache-Control"] = "private, no-store"
+    return response
 
 
 def server_save_mode_is_enabled():
@@ -4170,9 +4226,12 @@ def apply_search_result_to_context(
         )
         set_result_provider_notice(
             context,
-            "本次已解析到可用资源，资源可用性取决于原始页面。",
+            ("已保留可用图片；另有视频因轨道信息不足暂不提供下载。"
+             if result_metadata.get("limited_media_count") else
+             "本次已解析到可用资源，资源可用性取决于原始页面。"),
             (
-                f"本次由 {provider_label} 第三方解析，"
+                ("已保留可用图片；另有视频因轨道信息不足暂不提供下载。" if result_metadata.get("limited_media_count") else "")
+                + f"本次由 {provider_label} 第三方解析，"
                 "资源可用性取决于上游平台。"
             ),
         )
@@ -4322,6 +4381,7 @@ def apply_search_result_to_context(
 
 def build_search_results_context(request, platform_key="home"):
     query = request.GET.get("q", "").strip()
+    third_party_gate = {}
     query_platform_id = ""
     if query:
         try:
@@ -4558,6 +4618,13 @@ def build_search_results_context(request, platform_key="home"):
             and getattr(request.user, "is_staff", False)
         )
         parse_options = {"prefer_ultra_hd": prefer_ultra_hd}
+        if third_party_gate.get("platform_id") == "upstream":
+            parse_options.update(
+                upstream_provider_ids=third_party_gate["upstream_provider_ids"],
+                upstream_matches=third_party_gate["upstream_matches"],
+                timeout_seconds=UPSTREAM_PARSE_TIMEOUT_SECONDS,
+                deadline_monotonic=parse_started_at + UPSTREAM_PARSE_TIMEOUT_SECONDS,
+            )
         if enable_xhs_livephoto_staff_preview:
             parse_options["enable_xhs_livephoto_staff_preview"] = True
         if prefer_youtube_merge:
@@ -4713,7 +4780,10 @@ def build_search_results_context(request, platform_key="home"):
     except XhsProviderTimeoutError as error:
         set_result_error_message(
             context,
-            "解析响应超时，请稍后重试。",
+            public_upstream_error_message(
+                error, is_upstream=third_party_gate.get("platform_id") == "upstream",
+                fallback="解析响应超时，请稍后重试。",
+            ),
             str(error),
         )
         log_parse_request_event(
@@ -4733,7 +4803,10 @@ def build_search_results_context(request, platform_key="home"):
     except XhsError as error:
         set_result_error_message(
             context,
-            "解析失败，请检查链接后重试。",
+            public_upstream_error_message(
+                error, is_upstream=third_party_gate.get("platform_id") == "upstream",
+                fallback="解析失败，请检查链接后重试。",
+            ),
             f"解析失败：{error}",
         )
         log_parse_request_event(
@@ -4990,6 +5063,12 @@ def build_batch_result_rows(
     response_deadline,
     budget=None,
 ):
+    from .services.batch_parse.results import batch_source_is_upstream
+
+    upstream_sources = (
+        tuple(link for link in links if batch_source_is_upstream(link))
+        if third_party_provider_is_available(request) else ()
+    )
     budget = budget or build_batch_parse_budget(
         len(links),
         prefer_ultra_hd=prefer_ultra_hd,
@@ -5007,6 +5086,7 @@ def build_batch_result_rows(
         max_response_timeout_seconds=budget.max_response_timeout_seconds,
         completion_grace_seconds=budget.completion_grace_seconds,
         row_builder=build_batch_result_row,
+        upstream_sources=upstream_sources,
     )
 
 
@@ -5118,14 +5198,20 @@ def batch_parse_retry_view(request):
         1,
         prefer_ultra_hd=prefer_ultra_hd,
     )
+    from .services.batch_parse.results import batch_source_is_upstream
+
+    retry_timeout = (
+        UPSTREAM_PARSE_TIMEOUT_SECONDS if third_party_provider_is_available(request) and batch_source_is_upstream(source_lines[0])
+        else budget.per_link_timeout_seconds
+    )
     started_at = time.monotonic()
     row = build_batch_result_row(
         request,
         source_lines[0],
         prefer_ultra_hd=prefer_ultra_hd,
         prefer_youtube_merge=prefer_youtube_merge,
-        per_link_timeout_seconds=budget.per_link_timeout_seconds,
-        deadline=started_at + budget.per_link_timeout_seconds,
+        per_link_timeout_seconds=retry_timeout,
+        deadline=started_at + retry_timeout,
     )
     retry_wall_duration_ms = int((time.monotonic() - started_at) * 1000)
     summary = build_batch_summary(
@@ -6159,6 +6245,12 @@ def download_images_api(request):
     if image_urls and not media_items:
         media_items = [{"type": "image", "url": url} for url in image_urls]
     download_mode = (data.get("download_mode") or "browser").lower().strip()
+    if download_mode == "server" and any(item_is_upstream(item) for item in media_items):
+        return download_guard_error_response(
+            "扩展资源仅支持浏览器下载，不支持服务器保存。",
+            status=403,
+            error_code="UPSTREAM_BROWSER_DOWNLOAD_REQUIRED",
+        )
     if download_mode == "server" and not server_save_mode_is_enabled():
         download_mode = "auto"
     routed_download_modes = {"auto", "browser", "proxy", "server_single", "zip"}

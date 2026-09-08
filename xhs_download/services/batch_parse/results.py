@@ -7,13 +7,18 @@ from urllib.parse import urlparse
 
 import requests
 
-from ..common import XhsError, XhsParseError, XhsProviderTimeoutError
+from ..common import XhsError, XhsParseError, XhsProviderTimeoutError, extract_url_from_text
 from ..env_config import runtime_int as env_runtime_int
 from ..observability import sanitize_observability_text
-from ..provider_access import PROVIDER_THIRD_PARTY, provider_is_allowed_for_request
+from ..provider_access import (
+    PROVIDER_THIRD_PARTY, UPSTREAM_PARSE_TIMEOUT_SECONDS,
+    provider_is_allowed_for_request, third_party_public_access_summary,
+)
 from ..rate_limits import get_client_identity
-from ..registry import get_adapter_for_url, parse_media_page
+from ..registry import DEFAULT_ADAPTERS, get_adapter_for_url, parse_media_page
+from ..platforms.base import BasePlatformAdapter
 from ..region_routing import get_request_country_code
+from ..upstream_public_errors import public_upstream_error_message
 from ..platforms.xhs_tiantian_hybrid import XhsUltraAttemptController
 
 
@@ -58,10 +63,12 @@ def normalize_batch_platform(value):
 
 
 def batch_platform_for_source(source_text):
-    try:
-        return normalize_batch_platform(get_adapter_for_url(source_text).platform_id)
-    except XhsError:
-        return "unknown"
+    # Progress labels must not launch dynamic extractor matching on scheduler threads.
+    url = extract_url_from_text(source_text)
+    for adapter in DEFAULT_ADAPTERS:
+        if BasePlatformAdapter.supports_url(adapter, url):
+            return normalize_batch_platform(adapter.platform_id)
+    return "unknown"
 
 
 def normalize_batch_request_id(value):
@@ -275,6 +282,15 @@ def third_party_provider_is_available(request):
     return provider_is_allowed_for_request(PROVIDER_THIRD_PARTY, request)
 
 
+def batch_source_is_upstream(source):
+    try:
+        adapter = get_adapter_for_url(source)
+        return bool(adapter.platform_id == "third_party" and
+                    adapter.get_rule_for_url(source).platform_id == "upstream")
+    except (XhsError, AttributeError):
+        return False
+
+
 def build_batch_result_row(
     request,
     source_text,
@@ -291,6 +307,7 @@ def build_batch_result_row(
     stage_tracker=None,
 ):
     started_at = time.monotonic()
+    third_party_gate = {}
     execution_deadline = (
         float(deadline)
         if deadline is not None
@@ -325,11 +342,12 @@ def build_batch_result_row(
                 BATCH_ITEM_TIMEOUT_MESSAGE,
                 started_at,
             )
-        if (
-            query_uses_third_party_provider_func(source_text)
-            and not third_party_provider_is_available_func(request)
-        ):
-            raise XhsParseError("第三方通用解析暂未开放。")
+        if query_uses_third_party_provider_func(source_text):
+            if not third_party_provider_is_available_func(request):
+                raise XhsParseError("第三方通用解析暂未开放。")
+            third_party_gate = third_party_public_access_summary(source_text, request)
+            if not third_party_gate["allowed"]:
+                raise XhsParseError(third_party_gate["message"])
         parser_kwargs = {
             "prefer_ultra_hd": prefer_ultra_hd,
             "client_country_code": (
@@ -340,6 +358,11 @@ def build_batch_result_row(
             "timeout_seconds": remaining_timeout,
             "deadline_monotonic": execution_deadline,
         }
+        if third_party_gate.get("platform_id") == "upstream":
+            parser_kwargs.update(
+                upstream_provider_ids=third_party_gate["upstream_provider_ids"],
+                upstream_matches=third_party_gate["upstream_matches"],
+            )
         if prefer_ultra_hd and batch_platform_for_source(source_text) == "xiaohongshu":
             parser_kwargs["ultra_attempt_controller"] = XhsUltraAttemptController(
                 client_identity=get_client_identity(request),
@@ -367,6 +390,8 @@ def build_batch_result_row(
         metadata = result.metadata or {}
         selected_provider = metadata.get("selected_provider") or metadata.get("source_provider") or ""
         provider_notice = ""
+        if metadata.get("source_platform") == "upstream" and metadata.get("limited_media_count"):
+            provider_notice = "已保留可用图片；另有视频因轨道信息不足暂不提供下载。"
         if result.platform == "xiaohongshu" and prefer_ultra_hd:
             if metadata.get("xhs_tiantian_hybrid_status") == "success":
                 provider_notice = "已获取小红书原画 / 超高清资源。"
@@ -385,12 +410,15 @@ def build_batch_result_row(
         if stage_tracker is not None:
             stage_tracker.update("completed")
         return row
-    except XhsProviderTimeoutError:
+    except XhsProviderTimeoutError as error:
         return build_batch_timeout_row(
             source_text,
             BATCH_PROVIDER_TIMEOUT_MESSAGE,
             started_at,
-            public_reason=BATCH_PUBLIC_PROVIDER_TIMEOUT_MESSAGE,
+            public_reason=public_upstream_error_message(
+                error, is_upstream=third_party_gate.get("platform_id") == "upstream",
+                fallback=BATCH_PUBLIC_PROVIDER_TIMEOUT_MESSAGE,
+            ),
         )
     except requests.Timeout:
         return build_batch_timeout_row(
@@ -404,6 +432,10 @@ def build_batch_result_row(
             source_text,
             f"解析执行失败：{error}",
             started_at,
+            public_reason=public_upstream_error_message(
+                error, is_upstream=third_party_gate.get("platform_id") == "upstream",
+                fallback=BATCH_PUBLIC_FAILURE_MESSAGE,
+            ),
         )
     except requests.RequestException as error:
         return build_batch_failed_row(
@@ -519,6 +551,7 @@ def iter_batch_result_rows(
     completion_grace_seconds=1.0,
     row_builder=None,
     row_builder_kwargs=None,
+    upstream_sources=(),
 ):
     """Schedule rows within explicit scheduling and HTTP response deadlines.
 
@@ -538,6 +571,15 @@ def iter_batch_result_rows(
     response_deadline = float(response_deadline)
     scheduling_timeout = max(0.0, float(scheduling_timeout_seconds or 0))
     max_response_timeout = max(0.0, float(max_response_timeout_seconds or 0))
+    upstream_sources = set(upstream_sources).intersection(links)
+    if upstream_sources:
+        # Reserve the longer completion window only for dynamic sources.
+        extension = max(0.0, min(
+            UPSTREAM_PARSE_TIMEOUT_SECONDS - per_link_timeout,
+            time.monotonic() + UPSTREAM_PARSE_TIMEOUT_SECONDS + completion_grace - response_deadline,
+        ))
+        response_deadline += extension
+        max_response_timeout += extension
     rows = [None] * len(links)
     executor = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="batch-parse")
     active_futures = {}
@@ -565,7 +607,7 @@ def iter_batch_result_rows(
             link = links[index]
             next_index += 1
             stage_tracker = BatchParseStageTracker(
-                platform=batch_platform_for_source(link),
+                platform="third_party" if link in upstream_sources else batch_platform_for_source(link),
                 request_id=getattr(request, "request_id", ""),
             )
             future = executor.submit(
@@ -575,7 +617,7 @@ def iter_batch_result_rows(
                 link,
                 prefer_ultra_hd=prefer_ultra_hd,
                 prefer_youtube_merge=prefer_youtube_merge,
-                per_link_timeout_seconds=per_link_timeout,
+                per_link_timeout_seconds=(UPSTREAM_PARSE_TIMEOUT_SECONDS if link in upstream_sources else per_link_timeout),
                 response_deadline=response_deadline,
                 completion_grace_seconds=completion_grace,
                 row_builder_kwargs=row_builder_kwargs,

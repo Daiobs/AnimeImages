@@ -90,6 +90,11 @@
                                 </button>
                             </div>
                         </form>
+                        {% if platform_key == "home" %}
+                            <div class="text-center mt-3">
+                                <a href="{% url 'home' %}?coverage=1"><i class="bi bi-list-check" aria-hidden="true"></i> 平台覆盖</a>
+                            </div>
+                        {% endif %}
                     </div>
                 </div>
             </div>
@@ -106,7 +111,7 @@
                                 <i class="bi bi-person-check"></i>
                             </div>
                             <h3>无需登录/注册</h3>
-                            <p>打开页面即可解析链接，无使用限制。</p>
+                            <p>公开内容可尝试解析，具体可用范围见<a href="{% url 'home' %}?coverage=1">平台覆盖</a>。</p>
                         </div>
                     </div>
 

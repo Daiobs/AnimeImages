@@ -100,6 +100,7 @@
                              data-type="video"
                              data-source-platform="{{ item.source_platform|default:'' }}"
                              data-url="{{ item.video_url }}"
+                             data-download-filename="{{ item.filename }}"
                              data-cover-url="{{ item.cover_url|default:'' }}"
                              data-size-bytes="{{ item.size_bytes|default:0 }}"
                              data-size-is-estimate="{{ item.size_is_estimate|yesno:'true,false' }}"
@@ -120,7 +121,8 @@
 
                             {% if item.cover_url %}
                                 <img
-                                        src="{{ proxy_image_url }}?u={{ item.encoded_preview_cover_url|default:item.encoded_cover_url }}{% if item.cover_preview_provider_query %}&{{ item.cover_preview_provider_query }}{% endif %}"
+                                        src="{% if item.source_platform == 'upstream' %}{{ item.cover_url }}{% else %}{{ proxy_image_url }}?u={{ item.encoded_preview_cover_url|default:item.encoded_cover_url }}{% if item.cover_preview_provider_query %}&{{ item.cover_preview_provider_query }}{% endif %}{% endif %}"
+                                        {% if item.source_platform == 'upstream' %}referrerpolicy="no-referrer"{% endif %}
                                         alt="视频封面"
                                         loading="lazy"
                                         decoding="async"
@@ -228,7 +230,8 @@
                                 <div class="xhs-livephoto-asset-media">
                             {% endif %}
                                 <img
-                                        src="{{ proxy_image_url }}?{{ item.preview_proxy_query }}"
+                                        src="{% if item.source_platform == 'upstream' %}{{ item.card_preview_url }}{% else %}{{ proxy_image_url }}?{{ item.preview_proxy_query }}{% endif %}"
+                                        {% if item.source_platform == 'upstream' %}referrerpolicy="no-referrer"{% endif %}
                                         alt="{% if item.asset_kind == 'livephoto' %}实况照片静态画面{% else %}素材图片{% endif %}"
                                         loading="lazy"
                                         decoding="async"
