@@ -147,4 +147,5 @@ jobs:
           node --test tests_js/upstream_downloads.test.js
           node --test tests_js/upstream_batch_authorization.test.js
           node --test tests_js/batch_preview_failure.test.js
+          node --test tests_js/upstream_image_failure_ui.test.js
           node --test tests_js/xhs_livephoto_staff_preview.test.js
