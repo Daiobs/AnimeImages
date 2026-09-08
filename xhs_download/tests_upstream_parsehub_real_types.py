@@ -18,6 +18,18 @@ class InstalledParseHubCompatibilityTests(unittest.TestCase):
         python = os.environ.get("PARSEHUB_COMPAT_PYTHON", "")
         self.assertTrue(python and Path(python).is_file())
         before = {k for k in sys.modules if k == "parsehub" or k.startswith("parsehub.")}
+        real_call = bridge._call
+
+        def diagnosed_call(request, timeout):
+            try:
+                return real_call(request, timeout)
+            except bridge.ParseHubBridgeError as error:
+                # Quality execution intentionally collapses these safe worker details.
+                self.fail(
+                    f"ParseHub wire contract: action={request['action']} "
+                    f"code={error.code} stage={error.stage} error_class={error.error_class}"
+                )
+
         script = f'''import sys
 sys.path.insert(0, {str(ROOT)!r})
 from tools import upstream_parsehub_worker as worker
@@ -30,7 +42,7 @@ worker.main()
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "offline_worker.py"
             path.write_text(script)
-            with override_settings(PARSEHUB_UPSTREAM_ENABLED=True, PARSEHUB_UPSTREAM_PYTHON=python), patch.object(bridge, "WORKER", path):
+            with override_settings(PARSEHUB_UPSTREAM_ENABLED=True, PARSEHUB_UPSTREAM_PYTHON=python), patch.object(bridge, "WORKER", path), patch.object(bridge, "_call", side_effect=diagnosed_call):
                 rows, match, _ = _execute_upstream("parsehub_generic", "https://mp.weixin.qq.com/s/offline-fixture", 20)
         self.assertEqual(match["extractor_id"], "WXParser")
         self.assertEqual(rows[0][1], "http://media.example/image.jpg")
