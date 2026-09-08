@@ -2,7 +2,9 @@
 
 ## Status
 
-**Real acceptance: three-site browser delivery verified; Draft for human review.**
+**Wave 2: partial implementation; new browser delivery target not yet met.**
+PR #87's three-site browser delivery below is historical accepted evidence, not
+new Wave 2 success. PR #87 is merged; this follow-up remains a separate Draft.
 The implementation provides controlled discovery,
 exact-extractor parsing and resource admission for additional platforms through
 `yt_dlp_generic`, `gallery_dl_generic` and an isolated `parsehub_generic` bridge.
@@ -227,6 +229,97 @@ and whitespace checks passed. The new optional environment keys use the existing
 are unchanged. Exact-head remote CI is recorded in PR metadata after pushing.
 The task-owned 8001 service uses an isolated SQLite database/cache, an isolated
 ParseHub runtime and disabled email delivery; the original 8000 service is untouched.
+
+## Wave 2: Compatible Results And Public Share Inputs (2026-09-08)
+
+Baseline: `d2e9ce04d8dc38574874cf33587486e6b1b3b549`. The independent local
+worktree, application venv, SQLite database and cache leave the existing shared
+8000/8001 worktree untouched. Local preview uses loopback port 8002 and has real
+email delivery disabled. The existing exact-pin ParseHub runtime is read-only;
+the Django process does not import it. CI installs that same pin in a separate
+runtime and requires the real type tests to execute, not skip.
+
+### Implemented Scope
+
+- Add two specific ParseHub entries: Coolapk feed/picture and Douban group topic.
+  Five bridge entries now means five attemptable entries, not five working sites.
+- Accept trusted installed Image/Video/Multimedia/RichText result classes and
+  legitimate subclasses with `isinstance`; reject arbitrary same-name objects.
+  RichText contributes only its explicit media list, never rendered HTML or URLs
+  recursively scraped from Markdown. Image order is retained. Animated MP4
+  references remain video candidates, not mislabeled downloadable images.
+- Douban checks the actual response topic ID. Coolapk requires exactly one
+  `feed-detail` and a matching server-rendered App intent identity in script text;
+  request URL echo alone, arbitrary page text and conflicting identities fail.
+- Coolapk preserves the access parameters `s` and `shareKey` while parsing;
+  known share tracking is ignored. Douban accepts a bounded explicit tracking-key
+  set. Unknown query keys, identity-changing parameters, fragments, account/search
+  paths and unreviewed short links are rejected. Existing share-text extraction
+  and desktop/mobile Douban topic forms continue through the shared matcher.
+  Short-link resolution is **not implemented** in this increment; `douc.cc`
+  remains rejected rather than passed to an arbitrary recursive resolver.
+- The original four mature routes and existing 11 rules keep priority. None of
+  the six proposed candidate families was swallowed by those rules, so no
+  fallback-on-error or platform-wide routing reorder was needed.
+- ParseHub unknown-track MP4 candidates can use the existing single-candidate
+  guarded BMFF probe within the same total deadline. Verified audio+video evidence
+  permits existing browser delivery; absent/unknown tracks retain limitations.
+  No full server media transfer, URL rewriting or new downloader is introduced.
+- Batch preview failures receive a stable error instead of calling an undefined
+  function; upstream archive errors retain the actual safe failure category,
+  rather than always describing a CORS failure as an expired resource.
+
+### Real Evidence And Remaining Gates
+
+Native and wrapped calls used the same pinned package and local network, without
+user login, cookies or proxy inheritance. Raw responses and private screenshots
+remain outside Git; no real media URLs or account credentials are archived here.
+
+| Candidate | Native / product result | Delivery / remaining limitation |
+| --- | --- | --- |
+| Douban | Response identity confirmed; native and wrapper each yield seven explicit body images; anonymous homepage and Batch show seven | Media HTTP 418 and `MissingAllowOriginHeader`; Chrome cannot read the response; no saved file |
+| Coolapk | Eight images; native and wrapper agree; response App intent matches requested post and media order matches its detail container; anonymous homepage and Batch show eight | Media HTTP 200 but `MissingAllowOriginHeader`; Chrome cannot read the response; no saved file |
+| Weixin | Fixed-package public sample returns HTTP 200 but lacks supported body container; native ParseError | No candidate delivered; not called CORS |
+| Zuiyou | Additional public sample: exact post identity, three videos and six images | All nine returned URLs use HTTP; bridge rejects `insecure_media`, no fabricated HTTPS conversion or delivery |
+| Pipix | Additional public sample: HTTP 200 with null item detail, native ParseError | No verified item payload; no browser delivery claim |
+| Weibo | One final anonymous native call with Cookie explicitly removed returned HTTP 302 toward the login domain | Redirect not followed; no anonymous result or media delivery |
+| Zhihu | Fixed implementation requires a login-cookie value | Not connected or tested with credentials |
+| Xiaoheihe | Fixed implementation includes device-profile exchange and a generated cookie | Not promoted in this increment; no user credential acquisition |
+
+The browser source/CDN failures above are separate from parser compatibility.
+They do not authorize a server relay. ImgBB, PeerTube and Tieba remain prior-wave
+regressions, not newly counted sites. Multi-image browser saving, new three-site
+delivery, two newly connected ParseHub delivery paths and short-link acceptance
+remain **unmet**, so the Wave 2 result is **PARTIAL**, not ready-for-human-review
+success. One failed sample also does not prove every resource from that site fails.
+
+### Access And Rollout
+
+The new entries share `parsehub_generic`, the existing bulk allowlist and explicit
+exclusions. The bridge still defaults off and requires an independent runtime.
+Deployments already allowing the entire ParseHub bridge will gain additional
+attemptable entries after a future upgrade; this is not a per-site verified
+download promise. This task neither deploys nor changes production flags, email,
+Daily, TopicEye/Rardar or PR #62.
+
+### Verification
+
+Local complete `xhs_download`: 2252 passed; whole-project Django: 2258 passed.
+Node: 262 passed without skips or TODOs. Final anonymous Batch browser regression
+renders seven/eight images, has zero page JavaScript errors, no horizontal overflow
+at 390px, and zero server media-download endpoint calls. Source failures remain
+visible and are not labeled successful saves or automatically relayed.
+The suites run with the optional product bridge off, while explicit bridge tests
+enable it and real-type tests use `PARSEHUB_COMPAT_PYTHON`. An initial local run
+inherited the preview's enabled bridge and failed two default-off inventory
+assertions; rerunning with the intended isolated test gate passed without
+changing their expectations. Separate child tests exercise eight installed-type
+cases and thirteen source/response cases, without live network calls.
+
+Django system check, migration dry-run and diff whitespace checks pass. There
+are no model/migration/application-requirements changes. CI adds isolated pinned
+ParseHub installation and the Batch preview-error Node regression. Exact-head
+remote CI is recorded in the Draft PR after pushing.
 
 ## Source Pointers
 

@@ -12,6 +12,64 @@
     const BATCH_SYNC_ARCHIVE_MAX_BYTES = 128 * 1024 * 1024;
     const batchPhotoControllers = new WeakMap();
 
+    function retryBatchImage(img) {
+        const container = img && img.closest(".batch-photo-preview, .batch-result-cover");
+        if (!container || img.dataset.batchPreviewFailed === "true"
+            || img.dataset.batchPreviewRetryPending === "true") {
+            return;
+        }
+        const fail = () => {
+            img.dataset.batchPreviewFailed = "true";
+            img.onerror = null;
+            img.hidden = true;
+            img.style.display = "none";
+            const status = img.ownerDocument.createElement("span");
+            status.className = "text-muted";
+            status.setAttribute("role", "status");
+            status.textContent = "预览加载失败";
+            container.appendChild(status);
+        };
+        let url;
+        try {
+            url = new URL(img.src, window.location.origin);
+        } catch (_error) {
+            fail();
+            return;
+        }
+        // Direct upstream previews may be signed; never rewrite them or use a proxy.
+        if (img.getAttribute("referrerpolicy") === "no-referrer"
+            || url.origin !== window.location.origin) {
+            fail();
+            return;
+        }
+        const retry = Number.parseInt(img.dataset.retry || "0", 10) || 0;
+        if (retry >= 3) {
+            fail();
+            return;
+        }
+        img.dataset.retry = String(retry + 1);
+        img.dataset.batchPreviewRetryPending = "true";
+        window.setTimeout(() => {
+            delete img.dataset.batchPreviewRetryPending;
+            if (!img.isConnected || img.dataset.batchPreviewFailed === "true") {
+                return;
+            }
+            url.searchParams.set("_retry", Date.now().toString());
+            img.src = url.toString();
+        }, (retry + 1) * 1000);
+    }
+
+    if (typeof window !== "undefined") {
+        const previousRetryImage = window.retryImage;
+        window.retryImage = function (img) {
+            if (img && img.closest(".batch-photo-preview, .batch-result-cover")) {
+                retryBatchImage(img);
+            } else if (typeof previousRetryImage === "function") {
+                previousRetryImage(img);
+            }
+        };
+    }
+
     function showBatchInternalDiagnostics(node) {
         const page = node && typeof node.closest === "function"
             ? node.closest(".batch-parse-page")
@@ -882,6 +940,7 @@
         const section = button ? button.closest("[data-batch-photo-section]") : null;
         const items = buildBatchBrowserPhotoItems(section);
         const zeroRelay = batchPhotoItemsRequireZeroRelay(items);
+        const upstream = items.some((item) => String(item.asset_id || "").startsWith("upstream:"));
         if (!section || items.length < 2) {
             throw new Error("当前图片列表无法由浏览器打包，请重新解析。");
         }
@@ -931,8 +990,9 @@
                 return;
             }
             setBatchPhotoArchiveState(section, "error", {
-                message: zeroRelay
-                    ? "原始图片资源已失效，请重新解析后再试。"
+                message: upstream
+                    ? browserPhotoApi.safeErrorMessage(error)
+                    : zeroRelay ? "原始图片资源已失效，请重新解析后再试。"
                     : `${browserPhotoApi.safeErrorMessage(error)} ${batchPresentationText(
                         section,
                         "可选择“换一种方式打包”。",
@@ -1887,6 +1947,7 @@
     }
 
     const testApi = Object.freeze({
+        downloadBatchPhotoArchive,
         authorizeBatchUpstreamItems,
         collectBatchResourceLinks,
         buildBatchLinksText,
