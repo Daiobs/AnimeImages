@@ -622,6 +622,8 @@ def main():
         for key in tuple(os.environ):
             if key not in {"PATH", "HOME", "LANG", "TMPDIR"}:
                 os.environ.pop(key, None)
+        # GMP discovery can spawn ldconfig on Linux; use Cryptodome's bundled fallback.
+        os.environ["PYCRYPTODOME_DISABLE_GMP"] = "1"
         verify_install()
         try:
             import resource

@@ -9,6 +9,29 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class InstalledParseHubCompatibilityTests(unittest.TestCase):
+    def test_worker_import_does_not_probe_system_gmp(self):
+        import json
+        python = os.environ.get("PARSEHUB_COMPAT_PYTHON", "")
+        self.assertTrue(python and Path(python).is_file())
+        script = f'''import ctypes.util
+import sys
+sys.path.insert(0, {str(ROOT)!r})
+from tools import upstream_parsehub_worker as worker
+def denied_lookup(name):
+    raise AssertionError("system_library_probe")
+ctypes.util.find_library = denied_lookup
+worker.main()
+assert "Cryptodome.Math._IntegerGMP" not in sys.modules
+'''
+        done = subprocess.run(
+            [python, "-I", "-B", "-c", script], input='{"action":"catalog"}',
+            cwd=ROOT, capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(done.returncode, 0)
+        data = json.loads(done.stdout)
+        self.assertTrue(data.get("ok"), {key: data.get(key) for key in ("error", "stage", "error_class")})
+        self.assertEqual(len(data["payload"]["entries"]), 20)
+
     def test_quality_execution_uses_real_parsehub_wire_contract(self):
         import tempfile
         from unittest.mock import patch
