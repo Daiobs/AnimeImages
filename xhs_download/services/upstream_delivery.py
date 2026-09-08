@@ -237,7 +237,7 @@ def _normalize_downloadable_result(payload, *, match, source_url):
 
 def normalize_upstream_result(payload, *, match, source_url):
     """Preserve bounded valid candidates even when no download asset is admitted."""
-    from .upstream_candidates import MAX_CANDIDATES, candidate_url, issue_candidate
+    from .upstream_candidates import MAX_CANDIDATES, candidate_url, issue_candidates
     from .provider_lab.contracts import safe_public_text
 
     provider = match.get('provider_id')
@@ -247,55 +247,83 @@ def normalize_upstream_result(payload, *, match, source_url):
     author = ''
     rows = []
     scope = {}
+    unexpanded_unknown = False
     collection = False
     if provider == 'yt_dlp_generic':
         if not isinstance(payload, dict):
             raise XhsParseError('扩展解析只接受单条内容。')
         if isinstance(payload.get('upstream_scope'), dict):
             scope = payload['upstream_scope']
-        collection = payload.get('_type') in {'playlist', 'multi_video'}
+        collection = payload.get('_type') in {'playlist', 'multi_video', 'compat_list'}
         if collection:
             scope = payload.get('upstream_scope') or {}
             if scope.get('bounded') is not True or not isinstance(payload.get('entries'), list):
                 raise XhsParseError('集合结果未提供有界范围。')
-            formats = []
-            for entry in payload['entries'][:100]:
-                if not isinstance(entry, dict) or entry.get('_type', 'video') not in {'video', None}:
-                    continue
-                values = entry.get('formats') or ([entry] if entry.get('url') else [])
-                if not isinstance(values, list):
-                    continue
-                formats.extend({**item, 'work_label': entry.get('title'), 'duration': entry.get('duration')}
-                               for item in values[:1000] if isinstance(item, dict))
-                if len(formats) >= 1000:
-                    break
         elif payload.get('_type', 'video') not in {'video', None}:
             raise XhsParseError('扩展解析只接受有界媒体结果。')
-        else:
-            formats = payload.get('formats') or ([payload] if payload.get('url') else [])
-        if not isinstance(formats, list):
-            raise XhsParseError('上游格式结构无效。')
         title = payload.get('title') or title
         author = payload.get('uploader') or payload.get('creator') or ''
-        rows = [(item.get('url'), {**{'duration': payload.get('duration')}, **item})
-                for item in formats[:1000] if isinstance(item, dict)]
-        input_count = len(formats)
-        total = scope.get('format_total')
-        if type(total) is int and 0 <= total <= 1000000:
-            input_count = max(input_count, total)
+        input_count = 0
+        nodes = 0
+
+        def visit(node, depth=0):
+            nonlocal nodes, input_count, unexpanded_unknown, scope
+            if nodes >= 101 or depth >= 16:
+                unexpanded_unknown = True
+                return
+            nodes += 1
+            if not isinstance(node, dict):
+                return
+            node_scope = node.get('upstream_scope') or {}
+            if node_scope:
+                scope = node_scope
+            if node.get('_type') in {'playlist', 'multi_video', 'compat_list'}:
+                entries = node.get('entries')
+                if node_scope.get('bounded') is not True or not isinstance(entries, list):
+                    unexpanded_unknown = True
+                    return
+                if node_scope.get('completion') != 'complete':
+                    unexpanded_unknown = True
+                for child in entries:
+                    if nodes >= 101:
+                        unexpanded_unknown = True
+                        break
+                    visit(child, depth + 1)
+                return
+            if node.get('_type', 'video') not in {'video', None}:
+                unexpanded_unknown = True
+                return
+            formats = node.get('formats') or ([node] if node.get('url') else [])
+            if not isinstance(formats, list):
+                raise XhsParseError('上游格式结构无效。')
+            total = node_scope.get('format_total')
+            input_count += max(len(formats), total if type(total) is int and 0 <= total <= 1000000 else 0)
+            for item in formats[:max(0, MAX_CANDIDATES - len(rows))]:
+                if isinstance(item, dict):
+                    rows.append((item.get('url'), {
+                        'duration': node.get('duration'), 'work_label': node.get('title'), **item}))
+
+        visit(payload)
     else:
         if not isinstance(payload, list):
             raise XhsParseError('上游媒体结构无效。')
-        rows = [(row[1], row[2]) for row in payload[:1000]
+        rows = [(row[1], row[2]) for row in payload
                 if isinstance(row, (tuple, list)) and len(row) == 3 and row[0] == 3
                 and isinstance(row[2], dict)]
-        input_count = len(payload)
+        input_count = len(rows)
+        rows = rows[:MAX_CANDIDATES]
     candidates = []
     admitted_rows = []
     rejected = 0
+    examined = 0
     for url, metadata in rows:
+        if len(candidates) >= MAX_CANDIDATES:
+            break
+        examined += 1
         if isinstance(metadata.get('upstream_scope'), dict):
             scope = metadata['upstream_scope']
+            if scope.get('unexpanded_count') is None and scope.get('completion') != 'complete':
+                unexpanded_unknown = True
         total = metadata.get('candidate_total')
         if metadata.get('candidates_truncated') is True and type(total) is int and 0 <= total <= 1000000:
             input_count = max(input_count, total)
@@ -307,8 +335,6 @@ def normalize_upstream_result(payload, *, match, source_url):
         if not safe_url:
             rejected += 1
             continue
-        if len(candidates) >= MAX_CANDIDATES:
-            break
         title = metadata.get('title') or title
         author = metadata.get('author') or metadata.get('uploader') or author
         media_type = str(metadata.get('media_type') or metadata.get('type') or '')
@@ -325,12 +351,13 @@ def normalize_upstream_result(payload, *, match, source_url):
             state = 'silent_video'
         if urlsplit(url).scheme == 'http':
             state = 'insecure_reference'
-        candidates.append(issue_candidate(safe_url, metadata, ordinal=len(candidates) + 1,
+        candidates.append(dict(url=safe_url, metadata=metadata, ordinal=len(candidates) + 1,
                                            provider=provider, source_url=source_url,
                                            media_type=media_type, state=state, match=match))
         admitted_rows.append((safe_url, metadata))
     if not candidates:
         raise XhsParseError('上游没有返回有效的公网媒体候选。')
+    candidates = issue_candidates(candidates)
     assets = ()
     if provider == 'yt_dlp_generic':
         downloadable_payload = {**payload, 'formats': [dict(meta, url=url) for url, meta in admitted_rows]}
@@ -352,6 +379,13 @@ def normalize_upstream_result(payload, *, match, source_url):
             upstream_extractor=match.get('extractor_id', ''), upstream_version=match.get('version', ''),
             canonical_source_url=source_url, coverage_status='matched_attemptable',
             upstream_candidates=candidates, candidates_truncated=max(0, input_count - len(candidates) - rejected),
+            candidate_count=input_count, candidate_returned_count=input_count,
+            candidate_retained_count=len(candidates),
+            candidate_unexpanded_count=None if unexpanded_unknown else max(0, input_count - len(candidates) - rejected),
+            returned_count=input_count, retained_count=len(candidates),
+            declared_count=input_count, examined_count=examined, rejected_count=rejected,
+            unexpanded_count=None if unexpanded_unknown else max(0, input_count - len(candidates) - rejected),
+            truncated_count=max(0, input_count - len(candidates) - rejected),
             unexpanded_scope={'bounded': True, 'completion': 'unknown'} if scope else {},
             rejected_candidate_count=rejected, limited_media_count=max(0, len(candidates) - len(assets)),
             delivery_limitation='解析候选已保留；预览、自动保存、合流和归档能力单独判断。',

@@ -51,6 +51,48 @@ MAX_REDIRECTS = 10
 MAX_HOPS = 16
 MAX_FORMATS = 1000
 MAX_BODY = 8 * 1024 * 1024
+MAX_RETAINED_CANDIDATES = 1000
+DESCRIPTOR_FIELDS = frozenset({
+    "url", "id", "title", "uploader", "creator", "author", "extractor", "extractor_key",
+    "webpage_url", "original_url", "duration", "width", "height", "fps", "tbr", "abr", "vbr",
+    "bitrate", "filesize", "filesize_approx", "format_id", "format_note", "format", "resolution",
+    "vcodec", "acodec", "audio_ext", "video_ext", "ext", "extension", "protocol", "mime_type",
+    "media_type", "type", "audio_channels", "language", "quality", "preference", "source_preference",
+    "format_index", "upstream_candidate_index", "dynamic_range", "has_drm", "manifest_url",
+    "media_completeness", "candidate_kind", "work_label", "relationship_id", "relationship_role",
+    "filename", "category", "subcategory", "num", "count", "date", "description",
+    "requires_merge", "role", "audio_asset_present", "work_id", "upstream_asset_id", "asset_id",
+    "audio_tracks", "video_tracks", "upstream_role",
+})
+
+
+def compact_descriptor(value):
+    """Retain media evidence, not large extractor internals or duplicate payloads."""
+    result = {}
+    for key in DESCRIPTOR_FIELDS:
+        item = value.get(key)
+        if item is None or isinstance(item, (bool, int, float)):
+            if key in value:
+                result[key] = item
+        elif isinstance(item, str):
+            identity = key.endswith('url') or key in {
+                'id', 'format_id', 'asset_id', 'upstream_asset_id', 'work_id', 'relationship_id'}
+            result[key] = item if identity else item[:300]
+    for key in ("upstream_track_evidence", "upstream_bmff_track_evidence", "upstream_scope",
+                "http_headers", "request_context", "headers"):
+        item = value.get(key)
+        if isinstance(item, dict):
+            result[key] = {k: v
+                           for k, v in list(item.items())[:32]
+                           if isinstance(k, str) and (v is None or isinstance(v, (str, bool, int, float)))}
+    if isinstance(value.get('relationships'), (list, tuple)):
+        result['relationships'] = [
+            {key: relation[key] for key in
+             ('relationship_type', 'source_asset_id', 'target_asset_id') if isinstance(relation.get(key), str)}
+            for relation in value['relationships'][:16] if isinstance(relation, dict)
+            and all(isinstance(relation.get(key), str) and 0 < len(relation[key]) <= 120
+                    for key in ('relationship_type', 'source_asset_id', 'target_asset_id'))]
+    return result
 _STAGE = "request"
 
 
@@ -113,7 +155,15 @@ def public_ip(value):
 
 
 def validate_url(url):
-    if not isinstance(url, str) or not url or len(url) > MAX_URL:
+    return _validate_public_url(url, MAX_URL)
+
+
+def validate_media_url(url):
+    return _validate_public_url(url, 8192)
+
+
+def _validate_public_url(url, max_length):
+    if not isinstance(url, str) or not url or len(url) > max_length:
         raise ValueError("invalid_url")
     if any(ord(char) <= 32 or ord(char) == 127 for char in url) or "\\" in url:
         raise ValueError("invalid_url")
@@ -420,6 +470,7 @@ def parse_ytdlp(cls, url, timeout):
         depth = 0
         limit_reason = None
         output_bytes = 0
+        retained_formats = 0
 
         def account_output(self, result):
             for chunk in json.JSONEncoder().iterencode(self.sanitize_info(result)):
@@ -459,6 +510,8 @@ def parse_ytdlp(cls, url, timeout):
 
         def process_bounded_result(self, result, extra_info):
             if result.get("_type") in {"playlist", "multi_video", "compat_list"}:
+                result = {**compact_descriptor(result), '_type': result['_type'],
+                          'entries': result.get('entries')}
                 entries = []
                 reason = "item_limit"
                 self.account_output({key: value for key, value in result.items() if key != "entries"})
@@ -483,6 +536,8 @@ def parse_ytdlp(cls, url, timeout):
                 result["entries"] = entries
                 result["upstream_scope"] = {"bounded": True, "limit": MAX_ITEMS,
                                              "node_limit": MAX_ITEMS + 1, "depth_limit": MAX_HOPS,
+                                             "returned_count": len(entries), "retained_count": len(entries),
+                                             "unexpanded_count": None,
                                              "completion": "unknown", "reason": reason}
                 return result
             return super().process_ie_result(result, False, extra_info)
@@ -494,17 +549,43 @@ def parse_ytdlp(cls, url, timeout):
             formats = payload.get("formats") or [payload]
             if not isinstance(formats, list):
                 raise ValueError("item_limit")
-            if len(formats) > MAX_FORMATS:
-                total = len(formats)
+            total = len(formats)
+            if total > MAX_FORMATS:
                 formats = payload["formats"] = formats[:MAX_FORMATS]
                 payload["upstream_scope"] = {
                     "bounded": True, "completion": "unknown", "reason": "format_limit",
                     "format_total": total, "format_retained": len(formats), "limit": MAX_FORMATS}
-            for item in formats:
+            for index, item in enumerate(formats):
                 if isinstance(item, dict):
+                    item['upstream_candidate_index'] = index
                     item.setdefault("upstream_track_evidence", {
                         key: item.get(key) for key in ("acodec", "vcodec", "audio_ext", "video_ext")})
             result = super().process_video_result(payload, download=False)
+            processed = result.get('formats') or [result]
+            retained = []
+            used = 0
+            for item in sorted(processed, key=lambda item: item.get('upstream_candidate_index', 0)):
+                if self.retained_formats + len(retained) >= MAX_RETAINED_CANDIDATES:
+                    break
+                descriptor = compact_descriptor(item)
+                size = len(json.dumps(descriptor).encode()) + 2
+                if self.output_bytes + used + size > MAX_OUTPUT - 32768:
+                    break
+                retained.append(descriptor)
+                used += size
+            result = compact_descriptor(result)
+            result['formats'] = retained
+            self.retained_formats += len(retained)
+            if not retained:
+                result.pop('url', None)
+            if len(retained) < total:
+                result['upstream_scope'] = {
+                    'bounded': True, 'completion': 'unknown',
+                    'reason': 'format_limit' if total > MAX_FORMATS else 'output_limit',
+                    'format_total': total, 'format_retained': len(retained), 'limit': MAX_FORMATS,
+                    'returned_count': total, 'retained_count': len(retained),
+                    'declared_count': total, 'examined_count': len(processed), 'rejected_count': 0,
+                    'unexpanded_count': total - len(retained)}
             self.account_output(result)
             return result
 
@@ -549,6 +630,7 @@ def parse_gallery(cls, url, timeout):
     _STAGE = "gallery_initialize"
     result = []
     output_bytes = 0
+    media_count = 0
     hops = 0
     seen = set()
     registry = extractor_classes("gallery_dl_generic")
@@ -585,13 +667,18 @@ def parse_gallery(cls, url, timeout):
             if not message or message[0] not in {Message.Directory, Message.Url}:
                 raise ValueError("collection_or_queue_denied")
             if message[0] == Message.Url:
-                validate_url(message[1])
+                validate_media_url(message[1])
+            elif len(result) - media_count >= MAX_ITEMS:
+                raise ValueError("item_limit")
+            message = [*message[:-1], compact_descriptor(message[-1])]
             serialized = json.dumps(message, default=util.json_default)
             output_bytes += len(serialized.encode())
             if output_bytes > MAX_OUTPUT - 4096:
                 raise ValueError("output_limit")
             result.append(json.loads(serialized))
-            if len(result) >= MAX_ITEMS:
+            if message[0] == Message.Url:
+                media_count += 1
+            if media_count >= MAX_RETAINED_CANDIDATES:
                 reason = "item_limit"
                 break
     except Exception as error:
@@ -599,10 +686,12 @@ def parse_gallery(cls, url, timeout):
             raise
         reason = safe_error(error)["error"]
     if reason:
-        for message in result:
+        first_media = next((message for message in result if message[0] == Message.Url), result[0])
+        for message in (result[0], first_media, result[-1]):
             message[-1]["upstream_scope"] = {
                 "bounded": True, "completion": "unknown", "reason": reason,
-                "limit": MAX_ITEMS}
+                "limit": MAX_RETAINED_CANDIDATES, "returned_count": media_count,
+                "retained_count": media_count, "unexpanded_count": None}
     if not any(message[0] == Message.Url for message in result):
         raise ValueError("no_formats")
     return result

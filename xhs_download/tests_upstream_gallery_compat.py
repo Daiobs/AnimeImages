@@ -41,10 +41,12 @@ class GalleryCompatibilityTests(unittest.TestCase):
             for index in range(1000):
                 consumed.append(index)
                 yield (3, "https://example.org/image.jpg", {"index": index})
-        with mock.patch.object(cls, "__iter__", items), mock.patch.object(worker, "MAX_ITEMS", 2):
+        with mock.patch.object(cls, "__iter__", items), mock.patch.object(worker, "MAX_RETAINED_CANDIDATES", 2):
             result = worker.parse_gallery(cls, "https://commons.wikimedia.org/wiki/Category:Example", 1)
         self.assertEqual(consumed, [0, 1])
         self.assertEqual(result[-1][2]["upstream_scope"]["reason"], "item_limit")
+        self.assertEqual(result[-1][2]["upstream_scope"]["retained_count"], 2)
+        self.assertIsNone(result[-1][2]["upstream_scope"]["unexpanded_count"])
 
     def test_exact_matching_handle_and_version_binding(self):
         request = {"action": "match", "provider_id": self.provider,

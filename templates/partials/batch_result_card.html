@@ -383,7 +383,7 @@
                 </div>
                 {% endif %}
 
-                {% include "partials/upstream_candidates.html" with upstream_candidates=row.upstream_candidates candidates_truncated=row.candidates_truncated upstream_route=row.upstream_route unexpanded_scope=row.unexpanded_scope image_items=row.image_items video_items=row.video_items %}
+                {% include "partials/upstream_candidates.html" with upstream_candidates=row.upstream_candidates candidates_truncated=row.candidates_truncated upstream_route=row.upstream_route unexpanded_scope=row.unexpanded_scope returned_count=row.returned_count retained_count=row.retained_count unexpanded_count=row.unexpanded_count image_items=row.image_items video_items=row.video_items %}
                 <div class="batch-result-actions mt-3">
                     <button type="button"
                             class="btn btn-brand btn-sm batch-retry-btn"

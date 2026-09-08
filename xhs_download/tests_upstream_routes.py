@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
+from django.core import signing
 from django.core.cache import cache
 from django.test import Client, RequestFactory, TestCase, override_settings
 from django.urls import reverse
@@ -217,7 +218,12 @@ class RouteConsumptionTests(RouteFixtures, TestCase):
             PlatformRegistry().parse_url(SOURCE, upstream_provider_ids=PIDS, upstream_matches=newer)
         self.assertEqual(self.execute.call_count, 3)
         self.assertTrue(self.parse().metadata["upstream_route"]["cache_hit"])
-        cache.delete("upstream:candidate:" + self.candidate["candidate_id"])
+        from .services.upstream_candidates import SALT
+        token = signing.loads(self.candidate["resource_token"], salt=SALT)
+        bundle_key = "upstream:candidate-bundle:" + token["bundle"]
+        records = cache.get(bundle_key)
+        del records[self.candidate["candidate_id"]]
+        cache.set(bundle_key, records, timeout=300)
         self.assertFalse(self.parse().metadata["upstream_route"]["cache_hit"])
         self.assertEqual(self.execute.call_count, 4)
         with patch("xhs_download.services.platforms.third_party.provider_is_enabled", return_value=False):
@@ -269,6 +275,107 @@ class RouteConsumptionTests(RouteFixtures, TestCase):
         self.assertEqual(candidates[0]["candidate_id"], "4k")
         self.assertCountEqual(result.metadata["upstream_candidates"], candidates)
         self.execute.assert_called_once()
+
+    def prepare_tail_format_candidates(self, preferences, baseline_count=70):
+        rows = [[3, f"https://media.example/video-{index}.mp4", {
+            "media_type": "video", "extension": "mp4", "height": 720,
+            "vcodec": "avc1.64001f", "acodec": "none", "format_note": f"baseline-{index}",
+        }] for index in range(baseline_count)]
+        for index in (0, 31, 65):
+            rows.insert(index, [3, f"https://media.example/image-{index}.jpg", {
+                "media_type": "image", "extension": "jpg", "format_note": f"image-{index}",
+            }])
+        rows.extend([
+            [3, "https://media.example/tail-2160.mp4", {"media_type": "video", "extension": "mp4",
+                "height": 2160, "vcodec": "avc1.640033", "acodec": "none", "format_note": "tail-2160"}],
+            [3, "https://media.example/tail-av1.webm", {"media_type": "video", "extension": "webm",
+                "height": 1080, "vcodec": "av01.0.08M.08", "acodec": "none", "format_note": "tail-av1"}],
+        ])
+        self.stack.enter_context(patch("xhs_download.services.quality_execution._python_for", return_value=sys.executable))
+        for module in ("upstream_delivery", "upstream_candidates"):
+            self.stack.enter_context(patch(f"xhs_download.services.{module}.validate_public_download_url"))
+        self.transport = self.stack.enter_context(patch("xhs_download.services.quality_execution._execute_upstream",
+                                                       return_value=(rows, MATCHES[2], {})))
+        self.normalized_results = []
+
+        def execute(*args, **kwargs):
+            result = self.real_execute(*args, **kwargs)
+            self.normalized_results.append(result)
+            return result
+
+        self.execute.side_effect = execute
+        self.save(format_preferences=preferences)
+        return self.parse()
+
+    def assert_candidate_identity_and_image_order(self, result, expected_count=75):
+        original = self.normalized_results[0].metadata["upstream_candidates"]
+        ordered = result.metadata["upstream_candidates"]
+        self.assertEqual(len(original), expected_count)
+        self.assertEqual(len({candidate["candidate_id"] for candidate in original}), expected_count)
+        self.assertCountEqual(ordered, original)
+        self.assertEqual([(index, candidate) for index, candidate in enumerate(ordered) if candidate["media_type"] == "image"],
+                         [(index, candidate) for index, candidate in enumerate(original) if candidate["media_type"] == "image"])
+        self.assertEqual(result.metadata["candidates_truncated"], 0)
+
+    def test_tail_2160_preference_uses_retained_candidates_beyond_64(self):
+        result = self.prepare_tail_format_candidates({"max_height": 2160, "preferred_video_codec": "h264"})
+        selection = result.metadata["format_preference_selection"]
+        candidate = next(item for item in result.metadata["upstream_candidates"]
+                         if item["candidate_id"] == selection["candidate_id"])
+        self.assertEqual(candidate["format_label"], "tail-2160")
+        self.assert_candidate_identity_and_image_order(result)
+        self.transport.assert_called_once()
+
+    def test_tail_alternative_codec_preference_preserves_every_candidate(self):
+        result = self.prepare_tail_format_candidates({"max_height": 1080, "preferred_video_codec": "av1",
+                                                      "preferred_container": "webm"})
+        selection = result.metadata["format_preference_selection"]
+        self.assertEqual(selection["status"], "matched")
+        candidate = next(item for item in result.metadata["upstream_candidates"]
+                         if item["candidate_id"] == selection["candidate_id"])
+        self.assertEqual(candidate["format_label"], "tail-av1")
+        self.assert_candidate_identity_and_image_order(result)
+        self.transport.assert_called_once()
+
+    def test_parse_cache_keeps_all_retained_candidates_and_stable_ids(self):
+        from .services.upstream_routes import parse_cache_key
+        first = self.prepare_tail_format_candidates({"max_height": 2160, "preferred_video_codec": "h264"})
+        second = self.parse()
+        self.assertTrue(second.metadata["upstream_route"]["cache_hit"])
+        self.transport.assert_called_once()
+        self.assertEqual(first.metadata["upstream_candidates"], second.metadata["upstream_candidates"])
+        _, route = route_matches(SOURCE, MATCHES)
+        stored = cache.get(parse_cache_key(SOURCE, route, "parsehub_generic"))
+        self.assertEqual(len(stored.metadata["upstream_candidates"]), 75)
+        self.assertEqual(stored.metadata["upstream_candidates"],
+                         self.normalized_results[0].metadata["upstream_candidates"])
+        self.assertEqual(stored.metadata["upstream_candidates"][-2]["format_label"], "tail-2160")
+        self.assertEqual(stored.metadata["upstream_candidates"][-1]["format_label"], "tail-av1")
+        self.assert_candidate_identity_and_image_order(second)
+
+    def test_355_candidate_bundle_keeps_every_record_valid_with_default_cache_capacity(self):
+        from .services.upstream_candidates import SALT, resolve_candidate_record
+        self.assertEqual(cache._max_entries, 300)
+        first = self.prepare_tail_format_candidates({"max_height": 2160, "preferred_video_codec": "h264"},
+                                                     baseline_count=350)
+        candidates = first.metadata["upstream_candidates"]
+        self.assertEqual(len(candidates), 355)
+        bundle_ids = {signing.loads(candidate["resource_token"], salt=SALT)["bundle"] for candidate in candidates}
+        self.assertEqual(len(bundle_ids), 1)
+        for candidate in candidates:
+            with self.subTest(ordinal=candidate["ordinal"]):
+                record = resolve_candidate_record(candidate["resource_token"], candidate["candidate_id"])
+                self.assertEqual(record["public"], candidate)
+                self.assertEqual(record["source_url"], SOURCE)
+                self.assertEqual(record["provider_id"], "parsehub_generic")
+        second = self.parse()
+        self.assertTrue(second.metadata["upstream_route"]["cache_hit"])
+        self.transport.assert_called_once()
+        self.assertEqual(second.metadata["upstream_candidates"], candidates)
+        selection = second.metadata["format_preference_selection"]
+        selected = next(candidate for candidate in candidates if candidate["candidate_id"] == selection["candidate_id"])
+        self.assertEqual(selected["format_label"], "tail-2160")
+        self.assert_candidate_identity_and_image_order(second, expected_count=355)
 
     def test_unmatched_format_preferences_keep_success_and_do_not_fallback(self):
         self.save(["parsehub_generic", "yt_dlp_generic"], format_preferences={"max_height": 720})

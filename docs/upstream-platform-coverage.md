@@ -438,6 +438,24 @@ are no model/migration/application-requirements changes. CI adds isolated pinned
 ParseHub installation and the Batch preview-error Node regression. Exact-head
 remote CI is recorded in the Draft PR after pushing.
 
+## Quality Comparison Correction (2026-09-08, Local Only)
+
+The PR #89 correction keeps compact candidate retention separate from the initial
+64-row presentation. The shared path retains up to 1,000 descriptors within
+bounded output/cache budgets; hard-limit omissions remain explicit. Tail formats
+remain available to saved preferences, while body-image order stays unchanged.
+Unknown track and pairing facts stay unknown, and embedded audio does not imply
+an independent audio asset. These facts do not grant download authority.
+
+The bounded Bilibili comparison tried three works through seven direct parse-only
+calls. ParseHub succeeded on two videos; yt-dlp did not succeed on the same works.
+The dynamic-work intersection also failed. A final Chrome ParseHub result and
+current-candidate selection passed, but this is not a dual-upstream success or
+browser-save acceptance. No new media save was attempted or claimed.
+`LIVE_COMPARISON_PENDING = YES`; see the dated [Provider Lab evidence](provider-lab.md)
+for implementation distinctions, stages and declared dimensions. Historical Wave 2
+delivery limits and its unmet automatic-save target remain unchanged.
+
 ## Source Pointers
 
 - `tools/upstream_match_worker.py`: inventory, exclusions, exact execution and guards.

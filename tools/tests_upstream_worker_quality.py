@@ -156,7 +156,7 @@ class WorkerQualityTests(unittest.TestCase):
                     visited.append(True)
                     yield {"id": "1", "url": "https://example.org/file.mp4"}
                 return self.playlist_result([{
-                    "_type": "playlist", "id": "child", "description": "x" * 5000,
+                    "_type": "playlist", "id": "child", "http_headers": {str(i): "x" * 4000 for i in range(3)},
                     "entries": children()}])
 
         with patch.object(worker, "MAX_OUTPUT", 20000):
@@ -235,6 +235,130 @@ class WorkerQualityTests(unittest.TestCase):
             result = worker.parse_gallery(Root, "https://example.org/root", 3)
         self.assertEqual(result[0][2]["extension"], "jpg")
         self.assertEqual(result[0][2]["upstream_scope"]["reason"], "cycle_detected")
+
+    def test_gallery_retention_is_not_old_hundred_message_cap(self):
+        class Gallery:
+            category = 'fixture'
+            pattern = r'https://example.org/item'
+
+            def __init__(self, match):
+                pass
+
+            def __iter__(self):
+                yield (2, {'title': 'fixture'})
+                for i in range(1005):
+                    yield (3, f'https://example.org/{i}.jpg', {'extension': 'jpg', 'width': i + 1})
+
+        result = worker.parse_gallery(Gallery, 'https://example.org/item', 3)
+        media = [row for row in result if row[0] == 3]
+        self.assertEqual(len(media), 1000)
+        self.assertEqual(media[-1][2]['width'], 1000)
+        self.assertIsNone(media[0][2]['upstream_scope']['unexpanded_count'])
+        self.assertLess(len(json.dumps(result).encode()), worker.MAX_OUTPUT)
+
+    def test_parsehub_compact_retention_preserves_tail_and_counts(self):
+        import sys
+        from types import SimpleNamespace
+        from tools import upstream_parsehub_worker as parsehub
+
+        class MediaRef:
+            pass
+
+        class ImageRef(MediaRef):
+            def __init__(self, i):
+                self.url = f'https://example.org/{i}.jpg'
+                self.ext = 'jpg'
+                self.width = i + 1
+
+        class VideoRef(MediaRef):
+            pass
+
+        class ParseResult:
+            raw_url = 'https://example.org/post/1'
+            title = 'fixture'
+            content = 'x' * 16000
+            media = [ImageRef(i) for i in range(1005)]
+
+        types = SimpleNamespace(MediaRef=MediaRef, ImageRef=ImageRef, VideoRef=VideoRef,
+                                AniRef=type('AniRef', (MediaRef,), {}),
+                                LivePhotoRef=type('LivePhotoRef', (MediaRef,), {}))
+        with patch.dict(sys.modules, {'parsehub.types.media_ref': types,
+                                      'parsehub.types.result': SimpleNamespace(ParseResult=ParseResult)}):
+            result = parsehub.normalize_result(ParseResult(), ParseResult.raw_url)
+            with patch.object(parsehub, 'MAX_BYTES', 20000):
+                small = parsehub.normalize_result(ParseResult(), ParseResult.raw_url)
+        self.assertEqual(len(result), 1000)
+        self.assertEqual(result[-1][2]['width'], 1000)
+        self.assertEqual(result[0][2]['upstream_scope']['unexpanded_count'], 5)
+        self.assertLess(len(json.dumps(result).encode()), parsehub.MAX_BYTES)
+        self.assertLess(len(small), 1000)
+        self.assertLess(len(json.dumps(small).encode()), 20000)
+        self.assertEqual(small[0][2]['upstream_scope']['unexpanded_count'], 1005 - len(small))
+
+    def test_compact_descriptors_preserve_explicit_relationship_facts(self):
+        from tools import upstream_parsehub_worker as parsehub
+        facts = {'requires_merge': False, 'audio_asset_present': True, 'role': 'live_photo_video',
+                 'work_id': 'work1', 'upstream_asset_id': 'motion1',
+                 'relationships': [{'relationship_type': 'live_photo',
+                                    'source_asset_id': 'still1', 'target_asset_id': 'motion1'}]}
+        self.assertEqual({key: worker.compact_descriptor(facts)[key] for key in facts}, facts)
+        self.assertEqual({key: parsehub.scalar_fields(facts)[key] for key in facts}, facts)
+
+    def test_explicit_track_states_and_upstream_role_survive_compaction(self):
+        from types import SimpleNamespace
+        from tools import upstream_parsehub_worker as parsehub
+        for state in ('present', 'absent', 'unknown'):
+            fields = {'audio_tracks': state, 'video_tracks': state,
+                      'upstream_role': 'live_photo_video'}
+            self.assertEqual(worker.compact_descriptor(fields), fields)
+            self.assertEqual(parsehub.scalar_fields(fields), fields)
+            self.assertEqual(parsehub.scalar_fields(SimpleNamespace(**fields)), fields)
+        for compact in (worker.compact_descriptor, parsehub.scalar_fields):
+            self.assertNotIn('audio_tracks', compact({}))
+            self.assertNotIn('video_tracks', compact({}))
+
+    def test_compaction_preserves_exact_long_resource_identity(self):
+        url = 'https://example.org/media?signature=' + 'x' * 5000
+        fields = {'url': url, 'manifest_url': url, 'format_id': 'f' * 400,
+                  'work_id': 'w' * 400, 'upstream_asset_id': 'a' * 400,
+                  'http_headers': {'Referer': url},
+                  'relationships': [{'relationship_type': 'live_photo',
+                                     'source_asset_id': 'a' * 400, 'target_asset_id': 'b' * 400}]}
+        self.assertEqual(worker.compact_descriptor(fields), {**fields, 'relationships': []})
+        from yt_dlp.extractor.common import InfoExtractor
+
+        class LongURLIE(InfoExtractor):
+            _VALID_URL = r'https://example.org/(?P<id>\d+)'
+
+            def _real_extract(self, source):
+                return {'id': '1', 'formats': [dict(fields)]}
+
+        result = worker.parse_ytdlp(LongURLIE, 'https://example.org/1', 3)
+        self.assertEqual(result['formats'][0]['url'], url)
+        self.assertEqual(result['formats'][0]['http_headers']['Referer'], url)
+
+    def test_overlong_relationship_endpoints_never_alias_valid_prefix(self):
+        from tools import upstream_parsehub_worker as parsehub
+        prefix = 'a' * 120
+        valid = {'relationship_type': 'live_photo', 'source_asset_id': prefix,
+                 'target_asset_id': 'motion'}
+        forged = {**valid, 'source_asset_id': prefix + 'suffix'}
+        metadata = {'work_id': 'w' * 121, 'upstream_asset_id': prefix + 'suffix',
+                    'relationships': [valid, forged]}
+        for compact in (worker.compact_descriptor, parsehub.scalar_fields):
+            result = compact(metadata)
+            self.assertEqual(result['relationships'], [valid])
+            self.assertEqual(result['work_id'], metadata['work_id'])
+            self.assertEqual(result['upstream_asset_id'], metadata['upstream_asset_id'])
+
+    def test_media_guard_remains_independent_of_source_validator(self):
+        with patch.object(worker, 'validate_url', side_effect=lambda value: value):
+            for url in ('http://127.0.0.1/media', 'https://user:pass@example.org/media',
+                        'https://example.org:22/media', 'https://example.org/' + 'x' * 8192):
+                with self.assertRaises(ValueError):
+                    worker.validate_media_url(url)
+            exact = 'https://example.org/media?signature=' + 'x' * 5000
+            self.assertEqual(worker.validate_media_url(exact), exact)
 
     def test_actual_http_request_and_cookie_boundary(self):
         with patch.object(http.client.HTTPConnection, "putrequest"), \

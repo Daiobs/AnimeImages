@@ -33,9 +33,11 @@ from .contracts import (
     LabProviderResultV1,
     LabRelationshipV1,
     MAX_ASSETS,
+    MAX_RETAINED_CANDIDATES,
     MAX_RELATIONSHIPS,
     MAX_SOURCE_LENGTH,
     ProviderLabError,
+    exact_public_identity,
     safe_float,
     safe_int,
     safe_text,
@@ -134,6 +136,7 @@ def _issue_asset(
     role: str,
     headers_present: bool = False,
     requires_cookie: bool = False,
+    resource_bundle: dict | None = None,
     **kwargs,
 ) -> LabAssetV1:
     _url, hostname = validated_resource_url(url)
@@ -146,6 +149,7 @@ def _issue_asset(
         media_type=media_type,
         headers_present=headers_present,
         requires_cookie=requires_cookie,
+        resource_bundle=resource_bundle,
     )
     return LabAssetV1(
         asset_id=asset_id,
@@ -182,6 +186,7 @@ def _media_asset_to_lab(
     user_id: int,
     request_id: str,
     provider_id: str,
+    resource_bundle: dict | None = None,
 ) -> LabAssetV1:
     header_names = {str(key).strip().lower() for key in (asset.headers or {})}
     return _issue_asset(
@@ -189,6 +194,7 @@ def _media_asset_to_lab(
         request_id=request_id,
         provider_id=provider_id,
         asset_id=f"{provider_id}-{index}",
+        resource_bundle=resource_bundle,
         url=asset.url,
         media_type=asset.media_type if asset.media_type in {"image", "video", "audio"} else "unknown",
         role="primary" if total == 1 else "gallery",
@@ -208,34 +214,64 @@ def _track_state(codec):
     return 'absent' if value == 'none' else 'present'
 
 
+def _candidate_relationships(candidates):
+    retained = candidates[:MAX_RETAINED_CANDIDATES]
+    by_work = {}
+    for candidate in retained:
+        work = exact_public_identity(candidate.get('work_id'))
+        upstream_id = exact_public_identity(candidate.get('upstream_asset_id'))
+        if work and upstream_id:
+            key = (work, upstream_id)
+            # Ambiguous upstream IDs must not create an accidental pairing.
+            by_work[key] = candidate['candidate_id'] if key not in by_work else None
+    relationships = []
+    seen = set()
+    for candidate in retained:
+        work = exact_public_identity(candidate.get('work_id'))
+        for relation in candidate.get('relationships') or ():
+            source = by_work.get((work, exact_public_identity(relation.get('source_asset_id'))))
+            target = by_work.get((work, exact_public_identity(relation.get('target_asset_id'))))
+            identity = (relation.get('relationship_type'), source, target)
+            if source and target and source != target and identity not in seen:
+                seen.add(identity)
+                relationships.append(LabRelationshipV1(*identity))
+                if len(relationships) >= MAX_RETAINED_CANDIDATES:
+                    return relationships
+    return relationships
+
+
 def parse_result_to_lab(result, *, provider_id, user_id, request_id, provider_version=None):
     """Present the product's retained candidates, not its downloadable subset."""
     if not isinstance(result, ParseResult):
         raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
     descriptor = PROVIDER_REGISTRY[provider_id]
     metadata = dict(result.metadata or {})
+    from .resources import create_resource_bundle, store_resource_bundle
+    resource_bundle = create_resource_bundle()
     candidates = metadata.get('upstream_candidates')
     assets = []
     if candidates is not None:
         from ..upstream_candidates import resolve_candidate_record
         if not isinstance(candidates, (list, tuple)):
             raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
-        for candidate in candidates[:MAX_ASSETS]:
+        for candidate in candidates[:MAX_RETAINED_CANDIDATES]:
             if not isinstance(candidate, dict):
                 raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
             candidate_id = candidate.get('candidate_id')
             record = resolve_candidate_record(candidate.get('resource_token'), candidate_id)
             if not isinstance(record, dict) or not record.get('url'):
                 raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
-            audio = _track_state(candidate.get('acodec'))
-            video = _track_state(candidate.get('vcodec'))
+            audio = candidate.get('audio_tracks', _track_state(candidate.get('acodec')))
+            video = candidate.get('video_tracks', _track_state(candidate.get('vcodec')))
             headers = record.get('headers') or {}
             header_names = {str(key).lower() for key in headers}
             assets.append(_issue_asset(
                 user_id=user_id, request_id=request_id, provider_id=provider_id,
                 asset_id=candidate_id, url=record['url'],
+                resource_bundle=resource_bundle,
                 media_type=candidate.get('media_type', 'unknown'),
-                role='audio' if candidate.get('media_type') == 'audio' else 'primary',
+                role=candidate.get('role', 'unknown'),
+                upstream_role=candidate.get('upstream_role', ''),
                 declared_extension=candidate.get('extension') or record.get('ext', ''),
                 width=safe_int(candidate.get('width')), height=safe_int(candidate.get('height')),
                 duration_seconds=safe_float(candidate.get('duration')),
@@ -243,6 +279,7 @@ def parse_result_to_lab(result, *, provider_id, user_id, request_id, provider_ve
                 size_is_estimate=candidate.get('size_is_estimate') is True,
                 quality_label=candidate.get('format_label', ''),
                 format_id=candidate.get('format_id', ''), fps=candidate.get('fps'),
+                work_id=candidate.get('work_id', ''), upstream_asset_id=candidate.get('upstream_asset_id', ''),
                 work_label=candidate.get('work_label', ''),
                 vcodec=candidate.get('vcodec', ''), acodec=candidate.get('acodec', ''),
                 codec=candidate.get('vcodec') or candidate.get('acodec') or '',
@@ -251,8 +288,8 @@ def parse_result_to_lab(result, *, provider_id, user_id, request_id, provider_ve
                 delivery_state=candidate.get('delivery_state', 'unknown'),
                 metadata_source=candidate.get('metadata_source', 'unknown'),
                 ordinal=candidate.get('ordinal', len(assets) + 1),
-                requires_merge=audio == 'absent' and video == 'present',
-                audio_asset_present=audio == 'present',
+                requires_merge=candidate.get('requires_merge'),
+                audio_asset_present=candidate.get('audio_asset_present'),
                 headers_present=bool(headers) or record.get('headers_present') is True
                                 or candidate.get('headers_present') is True
                                 or candidate.get('requires_context') is True,
@@ -260,19 +297,23 @@ def parse_result_to_lab(result, *, provider_id, user_id, request_id, provider_ve
                                 or candidate.get('requires_cookie') is True,
             ))
     else:
-        assets = [_media_asset_to_lab(asset, index=index, total=len(result.assets),
+        assets = [_media_asset_to_lab(asset, index=index, total=len(result.assets), resource_bundle=resource_bundle,
                     user_id=user_id, request_id=request_id, provider_id=provider_id)
-                  for index, asset in enumerate(result.assets[:MAX_ASSETS], 1)]
+                  for index, asset in enumerate(result.assets[:MAX_RETAINED_CANDIDATES], 1)]
     if not assets:
         raise ProviderLabError('PROVIDER_RESULT_EMPTY')
+    store_resource_bundle(resource_bundle)
     observed = len(candidates) if candidates is not None else len(result.assets)
     public_metadata = _parse_result_metadata(result)
     truncated = safe_int(metadata.get('candidates_truncated', metadata.get('truncated_count')))
     public_metadata.update(candidate_count=metadata.get('candidate_count', observed + truncated),
-                           truncated_count=truncated + max(0, observed - MAX_ASSETS),
-                           truncated=bool(truncated or metadata.get('truncated') or observed > MAX_ASSETS),
+                           returned_count=metadata.get('returned_count', observed),
+                           truncated_count=truncated + max(0, observed - MAX_RETAINED_CANDIDATES),
+                           truncated=bool(truncated or metadata.get('truncated') or observed > MAX_RETAINED_CANDIDATES),
+                           unexpanded_count=metadata.get('unexpanded_count'),
                            unexpanded_scope=metadata.get('unexpanded_scope', ''),
                            baseline=provider_id == 'animeimages_current')
+    relationships = _candidate_relationships(candidates or ())
     payload = LabProviderResultV1(
         request_id=request_id, provider_id=provider_id,
         provider_version=provider_version or metadata.get('upstream_version') or descriptor.provider_version,
@@ -280,7 +321,7 @@ def parse_result_to_lab(result, *, provider_id, user_id, request_id, provider_ve
         claimed_platform=result.platform,
         selected_backend=safe_text(metadata.get('upstream_extractor') or metadata.get('source_provider'), 160),
         result_kind=_result_kind(result.post_type, assets), metadata=public_metadata,
-        assets=assets, warnings=metadata.get('warnings') or (),
+        assets=assets, relationships=relationships, warnings=metadata.get('warnings') or (),
         raw_shape=sanitize_raw_shape({'result_class': type(result).__name__, 'candidate_count': observed}),
         license_name=descriptor.license_name, license_scope=descriptor.license_scope,
     )
@@ -648,6 +689,7 @@ def _worker_result_to_contract(
                 asset_id=asset_id,
                 media_type=item.get("media_type", "unknown"),
                 role=item.get("role", "unknown"),
+                upstream_role=item.get("upstream_role", item.get("role", "")),
                 resource_token=token,
                 host_class=hostname,
                 declared_extension=item.get("declared_extension", ""),
@@ -657,10 +699,10 @@ def _worker_result_to_contract(
                 size_bytes=safe_int(item.get("size_bytes")),
                 quality_label=item.get("quality_label", ""),
                 codec=item.get("codec", ""),
-                requires_merge=bool(item.get("requires_merge")),
+                requires_merge=item.get("requires_merge"),
                 requires_cookie=bool(resource.get("requires_cookie")),
                 headers_present=bool(resource.get("headers_present")),
-                audio_asset_present=bool(item.get("audio_asset_present")),
+                audio_asset_present=item.get("audio_asset_present"),
             )
         )
     if not assets:

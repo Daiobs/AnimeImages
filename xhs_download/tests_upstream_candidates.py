@@ -48,8 +48,8 @@ class UpstreamCandidateTests(SimpleTestCase):
 
     def test_bounded_formats_report_truncation(self):
         result = self.result([dict(url=f'https://cdn.example.org/{i}.mp4') for i in range(90)])
-        self.assertEqual(len(result.metadata['upstream_candidates']), 64)
-        self.assertEqual(result.metadata['candidates_truncated'], 26)
+        self.assertEqual(len(result.metadata['upstream_candidates']), 90)
+        self.assertEqual(result.metadata['candidates_truncated'], 0)
         self.assertEqual(result.assets, ())
 
     def test_bounded_collection_retains_partial_formats_without_download_grant(self):

@@ -17,7 +17,7 @@ class Node {
         if (name === "value") this.value = String(value);
     }
     getAttribute(name) { return (name.startsWith("data-") ? this.dataset[dataKey(name)] : this.attributes[name]) ?? null; }
-    append(...nodes) { nodes.forEach((node) => { if (typeof node === "string") return; node.parentNode = this; this.children.push(node); }); }
+    append(...nodes) { nodes.forEach((node) => { if (typeof node === "string") return; node.remove(); node.parentNode = this; this.children.push(node); }); }
     replaceChildren(...nodes) { this.children.forEach((node) => { node.parentNode = null; }); this.children = []; this.append(...nodes); }
     remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter((node) => node !== this); }
     matches(selector) {

@@ -13,14 +13,18 @@
     <summary>已取得的媒体与格式候选（{{ upstream_candidates|length }}）</summary>
     <header class="upstream-candidates-heading">
         <h3>媒体与格式候选 <small>{{ upstream_candidates|length }}</small></h3>
+        <label>格式顺序 <select data-candidates-order><option value="source">初始展示顺序</option><option value="resolution">视频分辨率降序</option></select></label>
         {% if show_internal_diagnostics %}<a href="{% url 'provider_lab' %}" data-compare-candidate-source>比较上游</a>{% endif %}
         {% if candidates_truncated %}<span>另有 {{ candidates_truncated }} 项未展开</span>{% endif %}
     </header>
+    <p class="upstream-candidate-counts">返回 {{ returned_count|default_if_none:"未知"|default:"未知" }} · 保留 {% if retained_count %}{{ retained_count }}{% else %}{{ upstream_candidates|length }}{% endif %} · <span data-candidate-counts>已显示 {% if upstream_candidates|length > 64 %}64{% else %}{{ upstream_candidates|length }}{% endif %} · 待展开 {% if upstream_candidates|length > 64 %}{{ upstream_candidates|length|add:"-64" }}{% else %}0{% endif %}</span></p>
+    <p class="upstream-candidate-counts">上游未展开 {% if unexpanded_count == 0 %}0{% elif unexpanded_count %}{{ unexpanded_count }}{% else %}未知{% endif %}</p>
     <div class="upstream-candidate-list">
         {% for candidate in upstream_candidates %}
         <article class="upstream-candidate" data-upstream-candidate
                  data-candidate-id="{{ candidate.candidate_id }}" data-resource-token="{{ candidate.resource_token }}"
-                 {% if forloop.counter > 10 %}hidden{% endif %}>
+                 data-media-type="{{ candidate.media_type }}" data-width="{{ candidate.width|default:0 }}" data-height="{{ candidate.height|default:0 }}"
+                 {% if forloop.counter > 64 %}hidden{% endif %}>
             <div class="upstream-candidate-title">
                 {% if candidate.work_label %}<span>{{ candidate.work_label }}</span>{% endif %}
                 <strong>{{ candidate.ordinal|default:forloop.counter }} · {{ candidate.media_type|default:"未知媒体" }}</strong>
@@ -28,7 +32,7 @@
                 <span>{{ candidate.format_label|default:"格式未知" }}</span>
             </div>
             <dl class="upstream-candidate-properties">
-                <div><dt>分辨率</dt><dd>{% if candidate.width and candidate.height %}{{ candidate.width }} × {{ candidate.height }}{% else %}未知{% endif %}</dd></div>
+                <div><dt>分辨率</dt><dd>{% if candidate.width or candidate.height %}{{ candidate.width|default:"未知" }} × {{ candidate.height|default:"未知" }}{% else %}未知{% endif %}</dd></div>
                 <div><dt>帧率</dt><dd>{% if candidate.fps %}{{ candidate.fps }} fps{% else %}未知{% endif %}</dd></div>
                 <div><dt>视频 / 音频编码</dt><dd>{{ candidate.vcodec|default:"未知" }} / {{ candidate.acodec|default:"未知" }}</dd></div>
                 <div><dt>码率</dt><dd>{% if candidate.bitrate %}{{ candidate.bitrate }} kbps{% else %}未知{% endif %}</dd></div>
@@ -50,6 +54,6 @@
         </article>
         {% endfor %}
     </div>
-    {% if upstream_candidates|length > 10 %}<button type="button" class="btn btn-outline-secondary btn-sm" data-candidates-expand>显示其余候选</button>{% endif %}
+    {% if upstream_candidates|length > 64 %}<button type="button" class="btn btn-outline-secondary btn-sm" data-candidates-expand>再显示最多 64 项</button>{% endif %}
 </details>
 {% endif %}

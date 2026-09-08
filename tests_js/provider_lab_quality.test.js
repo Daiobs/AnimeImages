@@ -94,8 +94,8 @@ test("overall budget explicitly marks unexecuted jobs without dropping successfu
 });
 
 test("quality ordering does not invent dimensions or mutate original format order", () => {
-    const assets = [{asset_id: "label-only", quality_label: "4K"},
-        {asset_id: "1080", width: 1920, height: 1080}, {asset_id: "2160", width: 3840, height: 2160}];
+    const assets = [{asset_id: "label-only", media_type: "video", quality_label: "4K"},
+        {asset_id: "1080", media_type: "video", width: 1920, height: 1080}, {asset_id: "2160", media_type: "video", width: 3840, height: 2160}];
     assert.deepEqual(lab.qualityOrder(assets).map((asset) => asset.asset_id), ["2160", "1080", "label-only"]);
     assert.equal(assets[0].asset_id, "label-only");
     assert.equal(lab.knownBoolean(undefined, "需要"), "未知");
@@ -139,4 +139,25 @@ test("bounded scope does not claim complete collection even with known truncatio
         assert.doesNotMatch(message, /object Object/);
     }
     assert.equal(lab.scopeMessage({}), "");
+});
+
+test("video quality order leaves image and audio positions in source order", () => {
+    const rows = [{asset_id: "img1", media_type: "image", width: 100, height: 100},
+        {asset_id: "low", media_type: "video", width: 1280, height: 720},
+        {asset_id: "img2", media_type: "image", width: 8000, height: 8000},
+        {asset_id: "audio", media_type: "audio"}, {asset_id: "high", media_type: "video", width: 3840, height: 2160}];
+    assert.deepEqual(lab.qualityOrder(rows).map((row) => row.asset_id), ["img1", "high", "img2", "audio", "low"]);
+});
+
+test("nullable merge and independent audio are not inferred from embedded tracks", () => {
+    const {Node, documentFor} = require("./helpers/lab_dom");
+    const doc = documentFor(new Node());
+    const fragment = lab.metaFragment(doc, {media_type: "video", requires_merge: null,
+        audio_asset_present: null, audio_tracks: "present", video_tracks: "present", height: 2160, width: null});
+    const textOf = (node) => node.textContent + node.children.map(textOf).join("");
+    const text = textOf(fragment);
+    assert.match(text, /合并 未知/);
+    assert.match(text, /未知×2160/);
+    assert.match(text, /独立音频资源 未知/);
+    assert.match(text, /内嵌视频轨 \/ 音频轨 存在 \/ 存在/);
 });

@@ -17,6 +17,7 @@ try:
         parse_request,
         raw_shape,
         safe_text,
+        validated_url,
     )
 except ImportError:  # Direct execution inside the isolated venv.
     from worker_common import (
@@ -28,6 +29,7 @@ except ImportError:  # Direct execution inside the isolated venv.
         parse_request,
         raw_shape,
         safe_text,
+        validated_url,
     )
 
 
@@ -235,7 +237,20 @@ def normalize_result(video_infos: object, request: dict) -> tuple[dict, list[dic
             return
         headers = getattr(info, f"default_{suffix}_headers", None)
         cookies = getattr(info, f"default_{suffix}_cookies", None)
-        has_audio = bool(getattr(info, "audio_download_url", ""))
+        requires_merge = None
+        audio_asset_present = None
+        if role == "primary" and media_type == "video":
+            paired = False
+            try:
+                video_url, _ = validated_url(getattr(info, "download_url", ""))
+                audio_url, _ = validated_url(getattr(info, "audio_download_url", ""))
+                paired = video_url != audio_url
+            except WorkerError:
+                pass
+            explicit_merge = getattr(info, "requires_merge", None)
+            explicit_audio = getattr(info, "audio_asset_present", None)
+            requires_merge = explicit_merge if type(explicit_merge) is bool else True if paired else None
+            audio_asset_present = explicit_audio if type(explicit_audio) is bool else True if paired else None
         public, private = asset(
             asset_id=f"videodl-{len(public_assets) + 1}-{role}",
             url=url,
@@ -244,12 +259,10 @@ def normalize_result(video_infos: object, request: dict) -> tuple[dict, list[dic
             declared_extension=(
                 getattr(info, "audio_ext", "") if role == "audio" else getattr(info, "ext", "")
             ),
-            requires_merge=bool(
-                getattr(info, "download_with_ffmpeg", False) or has_audio
-            ),
+            requires_merge=requires_merge,
             requires_cookie=bool(cookies),
             headers_present=bool(headers),
-            audio_asset_present=has_audio,
+            audio_asset_present=audio_asset_present,
         )
         public_assets.append(public)
         private_resources.append(private)

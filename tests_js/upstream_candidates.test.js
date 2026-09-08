@@ -2,7 +2,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {Node} = require("./helpers/lab_dom");
-const {act, permittedUrl} = require("../static/js/upstream_candidates");
+const {act, permittedUrl, pageCandidates} = require("../static/js/upstream_candidates");
 
 function fixture(action, response = {status: "success", url: "https://cdn.example.org/media?access=keep&shareKey=exact"}, ok = true) {
     const section = new Node("section", {"data-upstream-candidates": "", "data-candidate-url": "/media/upstream-candidate/"});
@@ -83,4 +83,23 @@ test("single-flight candidate operation cannot duplicate popup or request while 
     const run = act(f.button, f.options); await act(f.button, f.options);
     assert.equal(count, 1); assert.equal(f.calls.length, 1);
     release({ok: false}); await run;
+});
+
+test("ordinary candidate paging reveals tail quality without rebinding identity or sorting images", () => {
+    const section = new Node("section", {"data-upstream-candidates": ""});
+    const list = new Node("div", {"class": "upstream-candidate-list"}); section.append(list);
+    section.append(new Node("span", {"data-candidate-counts": ""}), new Node("button", {"data-candidates-expand": ""}));
+    const rows = Array.from({length: 130}, (_, i) => new Node("article", {"data-upstream-candidate": "",
+        "data-candidate-id": `c${i}`, "data-media-type": i === 0 || i === 2 ? "image" : "video",
+        "data-width": i === 129 ? "" : "3840", "data-height": i === 129 ? "2160" : "720"}));
+    list.append(...rows);
+    pageCandidates(section, "source");
+    assert.equal(rows.filter((row) => !row.hidden).length, 64);
+    pageCandidates(section, "resolution");
+    assert.equal(list.children[0], rows[0]); assert.equal(list.children[2], rows[2]);
+    assert.equal(list.children[1], rows[129]); assert.equal(rows[129].dataset.candidateId, "c129");
+    pageCandidates(section, null, true);
+    assert.equal(rows.filter((row) => !row.hidden).length, 128);
+    pageCandidates(section, "source");
+    assert.deepEqual(list.children, rows);
 });

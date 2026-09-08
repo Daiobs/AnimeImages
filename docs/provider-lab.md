@@ -21,7 +21,7 @@ Provider Lab 不是公开解析产品、自动 Provider Planner 或微服务。�
 迁移 `0027_upstream_manual_routes` 新增路线及修改记录，不改变邮件、Daily 或生产配置。
 未人工优选的来源仍按允许的通用默认顺序尝试；比较页面不会自动保存最快或首个成功结果。
 
-### 本轮验收记录（2026-09-08，本地）
+### 初始验收记录（2026-09-08，本地，修正前）
 
 - 完整 Django 2,330 项、Node 291 项、独立 Worker 安全/广度测试 19 项通过；迁移漂移与 Django check 通过。
 - 确定性测试覆盖独立结果、分离轨保留、超时隔离、选择不写路线、修订冲突、恢复默认、真实缓存失效及普通/Batch 路线消费。
@@ -32,6 +32,39 @@ Provider Lab 不是公开解析产品、自动 Provider Planner 或微服务。�
 - `IMPLEMENTATION_READY` 与 `LIVE_COMPARISON_PENDING` 分开：同作品两个独立真实上游成功的验收仍缺失，没有新增自动保存成功统计。
 
 浏览器取消会停止排队/等待并隔离迟到结果；已经进入服务端的执行仍受其既有子进程 deadline 和清理机制约束，不声称关闭 fetch 能瞬时终止服务端进程。
+
+### 候选保真修正（2026-09-08，本地）
+
+旧实现的 64 项前缀截断已由失败测试复现：尾部 2160p、音频与编码/容器偏好候选会丢失，缓存亦只保留截断结果。
+当前共享路径在既有有界输出内保留最多 1,000 项精简描述，候选及 Lab 资源分别使用有界缓存 bundle，避免默认缓存容量淘汰同一结果的前部资源。
+每个 bundle 仍受 2 MiB、有效期、权限、资源绑定与使用次数限制；候选描述不产生下载授权。
+旧受控 Lab Worker 的 64 项硬预算没有扩大，触及该层或输出字节预算时仍须报告未展开范围。
+页面初始显示 64 项，可继续展开；视频分辨率排序在完整保留结果中进行，不重排正文图片，展开与排序不改变候选身份或本次选择。
+“返回、保留、已显示、待展开、上游未展开”分别呈现，触及硬上限不表示已经取得全量最高画质。
+
+内嵌音轨与独立音频资源分开记录。轨道未知、仅视频但配对未知时，合并需求保持未知；不由缺失值生成 false，也不将任意音频配给所有视频。
+上游明确角色、合并标记及同作品显式关系继续保留；描述性关系不扩大授权。
+
+真实比较限定为三个公开作品、七次直接 parse-only 调用，没有媒体下载：
+
+| 脱敏样本 | 独立实现 | 实际结果 |
+| --- | --- | --- |
+| BILI-VIDEO-1 | ParseHub BiliParse / yt-dlp BiliBili | ParseHub 1 项，声明 640×360；yt-dlp 在 extract 阶段 DownloadError |
+| BILI-DYNAMIC-2 | ParseHub BiliParse / yt-dlp BiliBiliDynamic / gallery-dl BilibiliArticleExtractor | 分别 ParseError / DownloadError / HttpError，没有有效候选 |
+| BILI-VIDEO-3 | ParseHub BiliParse / yt-dlp BiliBili | ParseHub 1 项，声明 3840×1920；yt-dlp 在 extract 阶段 DownloadError |
+
+直接调用观察窗口为北京时间 16:27–16:32。尺寸仅为上游声明，不是媒体实测。
+开发中两次页面调用显示通用失败，未取得内部阶段证据，不归因为 CORS 或源站拒绝。
+冻结修正后的 Chrome 再做一次 ParseHub 页面核验：BILI-VIDEO-1 成功返回并显示 1 项候选，未知轨道/合并/独立音频仍为未知；选择候选未修改路线，未点击媒体检查或下载。
+这次复核不抹除此前失败，也不将其算成第二个独立上游。
+
+`INDEPENDENT_UPSTREAM_SUCCESS_COUNT_PER_SAME_WORK = 1`，`LIVE_COMPARISON_PENDING = YES`。
+没有冒充两个包装入口为独立成功，没有继续扫描网站，没有修改本地人工路线或生产。
+
+修正后完整 Django 2,372 项、Node 295 项、独立 Worker 26 项通过；Django check、迁移漂移与 JS 语法检查通过。
+针对性回归包括 64 项后部高清/编码偏好、355 项默认缓存保留、图片顺序、未知及显式关系、资源过期/撤销和使用预算。
+资源 bundle 的并发测试复现并修正了短锁租期过期后旧请求回写的问题：过期请求不能继续授权，单资源仍最多使用十次。
+本次未新增迁移、依赖或 Workflow 改动；PR 原有路线迁移不等于本轮新增迁移。新 Head CI 以 PR 实际运行结果为准。
 
 ## 当前状态
 

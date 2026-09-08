@@ -187,12 +187,16 @@ def isolated_suite():
             self.assertNotIn("<script", json.dumps(rows))
 
         def test_limits_keep_prefix_and_validate_unsafe_tail(self):
-            rows = self.normalize(ImageParseResult(photo=[image] * 101))
-            self.assertEqual(len(rows), 100)
-            self.assertEqual(rows[-1][2]["candidate_total"], 101)
+            photos = [ImageRef(url=image, width=index + 1) for index in range(worker.MAX_ASSETS + 1)]
+            rows = self.normalize(ImageParseResult(photo=photos))
+            self.assertEqual(len(rows), worker.MAX_ASSETS)
+            self.assertEqual(rows[-1][2]['width'], worker.MAX_ASSETS)
+            self.assertEqual(rows[0][2]["candidate_total"], worker.MAX_ASSETS + 1)
+            self.assertEqual(rows[0][2]['upstream_scope']['retained_count'], worker.MAX_ASSETS)
+            self.assertEqual(rows[0][2]['upstream_scope']['unexpanded_count'], 1)
             for url in ["https://127.0.0.1/a", "file:///etc/passwd", "https://user:password@example.com/a"]:
                 with self.assertRaises(ValueError):
-                    self.normalize(ImageParseResult(photo=[image] * 100 + [url]))
+                    self.normalize(ImageParseResult(photo=[image] * worker.MAX_ASSETS + [url]))
             with self.assertRaisesRegex(ValueError, "no_formats"):
                 self.normalize(ParseResult())
 

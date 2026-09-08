@@ -65,12 +65,12 @@ class SharedQualityExecutionTests(SimpleTestCase):
         self.assertEqual(assets[1]['fps'],60)
         self.assertEqual(assets[1]['acodec'],'none')
         self.assertEqual(assets[1]['audio_tracks'],'absent')
-        self.assertTrue(assets[1]['requires_merge'])
+        self.assertIsNone(assets[1]['requires_merge'])
         self.assertTrue(assets[1]['size_is_estimate'])
         self.assertEqual(assets[2]['media_type'],'audio')
         self.assertEqual(assets[3]['audio_tracks'],'unknown')
         self.assertEqual(assets[3]['video_tracks'],'unknown')
-        self.assertFalse(assets[3]['requires_merge'])
+        self.assertIsNone(assets[3]['requires_merge'])
         self.assertIsNone(assets[3]['fps'])
         self.assertNotIn('signature',json.dumps(lab))
         urls=[]
@@ -80,14 +80,14 @@ class SharedQualityExecutionTests(SimpleTestCase):
             urls.append(resource.url)
         self.assertEqual(urls,[URL,URL])
 
-    def test_64_formats_and_visible_truncation(self):
+    def test_formats_beyond_display_limit_remain_retained(self):
         result=self.execute('yt_dlp_existing',{'formats':[
             {'url':URL,'format_id':str(index),'height':index+1} for index in range(70)]})
         lab,_=parse_result_to_lab(result,provider_id='yt_dlp_existing',user_id=1,request_id='many-formats')
-        self.assertEqual(len(lab['assets']),64)
+        self.assertEqual(len(lab['assets']),70)
         self.assertEqual(lab['metadata']['candidate_count'],70)
-        self.assertEqual(lab['metadata']['truncated_count'],6)
-        self.assertTrue(lab['metadata']['truncated'])
+        self.assertEqual(lab['metadata']['truncated_count'],0)
+        self.assertFalse(lab['metadata']['truncated'])
 
     def test_parsehub_runner_does_not_import_parsehub_in_parent(self):
         before={name for name in sys.modules if name=='parsehub' or name.startswith('parsehub.')}

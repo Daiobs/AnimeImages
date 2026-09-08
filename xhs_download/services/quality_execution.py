@@ -221,21 +221,24 @@ def _execute_upstream(provider, source, timeout_seconds, *, expected_match=None)
 def _normalize_videodl_candidates(payload, match, source):
     """Candidate-only admission never creates a download manifest or host grant."""
     from .assets import ParseResult
-    from .upstream_candidates import MAX_CANDIDATES, candidate_url, issue_candidate
+    from .upstream_candidates import MAX_CANDIDATES, candidate_url, issue_candidates
     candidates = []
     rejected = 0
+    examined = 0
     for _, url, metadata in payload:
+        if len(candidates) >= MAX_CANDIDATES:
+            break
+        examined += 1
         url = candidate_url(url)
         if not url:
             rejected += 1
             continue
-        if len(candidates) >= MAX_CANDIDATES:
-            break
-        candidates.append(issue_candidate(url, metadata, ordinal=len(candidates)+1,
+        candidates.append(dict(url=url, metadata=metadata, ordinal=len(candidates)+1,
             provider='videodl_repo',source_url=source,match=match,media_type=metadata.get('media_type','unknown'),
             state='separate_media_tracks' if metadata.get('requires_merge') else 'candidate_only'))
     if not candidates:
         raise ProviderLabError('PROVIDER_RESULT_EMPTY')
+    candidates = issue_candidates(candidates)
     from .provider_lab.contracts import safe_public_text
     title = safe_public_text(payload[0][2].get('title') or 'videodl', 300)
     return ParseResult(platform='third_party',post_type='video' if any(c['media_type']=='video' for c in candidates) else 'image',
@@ -244,6 +247,13 @@ def _normalize_videodl_candidates(payload, match, source):
             'selected_provider':'videodl_repo','source_platform':'upstream','canonical_source_url':source,
             'upstream_extractor':match['extractor_id'],'upstream_version':match['version'],
             'candidates_truncated':max(0,len(payload)-len(candidates)-rejected),
+            'candidate_count':len(payload), 'candidate_returned_count':len(payload),
+            'candidate_retained_count':len(candidates),
+            'candidate_unexpanded_count':max(0,len(payload)-len(candidates)-rejected),
+            'returned_count':len(payload), 'retained_count':len(candidates),
+            'declared_count':len(payload), 'examined_count':examined, 'rejected_count':rejected,
+            'unexpanded_count':max(0,len(payload)-len(candidates)-rejected),
+            'truncated_count':max(0,len(payload)-len(candidates)-rejected),
             'rejected_candidate_count':rejected,'limited_media_count':len(candidates),
         })
 

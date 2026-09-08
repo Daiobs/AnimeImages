@@ -214,7 +214,7 @@ class WorkerContractTests(SimpleTestCase):
         with mock.patch.object(worker, "package_identity", return_value={"version": "1"}), \
                 mock.patch.object(worker, "extractor_classes", return_value=classes), \
                 mock.patch.object(KeenspotComicExtractor, "__iter__", items), \
-                mock.patch.object(worker, "MAX_ITEMS", 2):
+                mock.patch.object(worker, "MAX_RETAINED_CANDIDATES", 2):
             result = worker.handle({"action": "parse", "provider_id": "gallery_dl_generic",
                                     "version": "1", "extractor_id": "KeenspotComicExtractor",
                                     "url": "https://synthetic.keenspot.com/2026/01/01/",
@@ -222,6 +222,9 @@ class WorkerContractTests(SimpleTestCase):
         self.assertEqual(consumed, [0, 1])
         self.assertEqual(len(result), 2)
         self.assertEqual(result[-1][2]["upstream_scope"]["reason"], "item_limit")
+        self.assertEqual(result[-1][2]["upstream_scope"]["retained_count"], 2)
+        self.assertEqual(result[-1][2]["upstream_scope"]["limit"], 2)
+        self.assertIsNone(result[-1][2]["upstream_scope"]["unexpanded_count"])
 
     def test_safe_errors_do_not_expose_messages(self):
         for error, code in ((ValueError("network_denied"), "network_denied"),

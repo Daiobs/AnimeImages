@@ -383,7 +383,7 @@
             ["类型", asset.media_type],
             ["角色", asset.role],
             ["格式", asset.declared_extension || "未知"],
-            ["尺寸", asset.width && asset.height ? `${asset.width}×${asset.height}` : "未知"],
+            ["尺寸", asset.width || asset.height ? `${asset.width || "未知"}×${asset.height || "未知"}` : "未知"],
             ["时长", formatDuration(asset.duration_seconds)],
             ["大小", `${formatBytes(asset.size_bytes)}${asset.size_is_estimate === true ? "（估计）" : ""}`],
             ["质量", asset.quality_label || "未知"],
@@ -392,13 +392,13 @@
             ["音频编码", asset.acodec === "none" ? "无音轨" : asset.acodec || "未知"],
             ["帧率", asset.fps > 0 ? `${asset.fps} fps` : "未知"],
             ["码率", asset.bitrate > 0 ? `${asset.bitrate} kbps` : "未知"],
-            ["视频轨 / 音频轨", `${asset.video_tracks || "未知"} / ${asset.audio_tracks || "未知"}`],
+            ["内嵌视频轨 / 音频轨", `${trackLabel(asset.video_tracks)} / ${trackLabel(asset.audio_tracks)}`],
             ["交付", asset.delivery_state || "未知"],
             ["协议", asset.protocol || "未知"],
             ["来源", asset.metadata_source === "upstream_declared" ? "上游声明" : asset.metadata_source || "未知"],
             ["Host", asset.host_class || "未知"],
             ["合并", knownBoolean(asset.requires_merge, "需要")],
-            ["独立音频", knownBoolean(asset.audio_asset_present, "存在")],
+            ["独立音频资源", knownBoolean(asset.audio_asset_present, "存在")],
             ["Header", knownBoolean(asset.headers_present, "需要")],
             ["Cookie", knownBoolean(asset.requires_cookie, "需要")],
         ];
@@ -417,11 +417,19 @@
         return value === true ? yes : value === false ? "否" : "未知";
     }
 
+    function trackLabel(value) {
+        return value === "present" ? "存在" : value === "absent" ? "无" : "未知";
+    }
+
     function qualityOrder(assets) {
-        return Array.from(assets || []).map((asset, index) => ({asset, index})).sort((left, right) => {
-            const pixels = (asset) => Number(asset.width || 0) * Number(asset.height || 0);
-            return pixels(right.asset) - pixels(left.asset) || left.index - right.index;
+        const source = Array.from(assets || []);
+        const videos = source.filter((asset) => asset.media_type === "video").map((asset, index) => ({asset, index})).sort((left, right) => {
+            const known = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : -1;
+            return known(right.asset.height) - known(left.asset.height)
+                || known(right.asset.width) - known(left.asset.width) || left.index - right.index;
         }).map(({asset}) => asset);
+        let index = 0;
+        return source.map((asset) => asset.media_type === "video" ? videos[index++] : asset);
     }
 
     function renderAssets(documentObject, container, result, ordered) {
@@ -431,7 +439,7 @@
             const row = documentObject.createElement("div");
             row.className = "provider-lab-asset";
             row.dataset.assetId = String(asset.asset_id || "");
-            row.hidden = index >= 8;
+            row.hidden = index >= 64;
             const meta = documentObject.createElement("div");
             meta.className = "provider-lab-asset-meta";
             meta.append(metaFragment(documentObject, asset));
@@ -458,13 +466,30 @@
             row.append(meta, select, button, inspection);
             container.append(row);
         });
-        if (assets.length > 8) {
+        const counts = documentObject.createElement("p");
+        counts.dataset.labDisplayCounts = "1";
+        const metadata = result.metadata || {};
+        counts.dataset.returnedCount = metadata.returned_count ?? "未知";
+        counts.dataset.retainedCount = metadata.retained_count ?? assets.length;
+        counts.dataset.unexpandedCount = metadata.unexpanded_count ?? "未知";
+        container.append(counts);
+        if (assets.length > 64) {
             const expand = documentObject.createElement("button");
             expand.type = "button";
             expand.dataset.labExpand = "1";
-            expand.textContent = `展开其余 ${assets.length - 8} 个格式`;
+            expand.textContent = "再显示 64 项";
             container.append(expand);
         }
+        updateAssetCounts(container);
+    }
+
+    function updateAssetCounts(container) {
+        const rows = Array.from(container.querySelectorAll(".provider-lab-asset"));
+        const shown = rows.filter((row) => !row.hidden).length;
+        const counts = container.querySelector("[data-lab-display-counts]");
+        if (counts) counts.textContent = `返回 ${counts.dataset.returnedCount} · 保留 ${counts.dataset.retainedCount} · 已显示 ${shown} · 待展开 ${rows.length - shown} · 上游未展开 ${counts.dataset.unexpandedCount}`;
+        const expand = container.querySelector("[data-lab-expand]");
+        if (expand) { expand.hidden = shown >= rows.length; expand.textContent = `再显示 ${Math.min(64, rows.length - shown)} 项`; }
     }
 
     function attemptDisplayRows(attempts) {
@@ -1048,6 +1073,7 @@
                     .find((node) => node.dataset.assetId === currentSelection.asset.asset_id);
                 if (button) {
                     button.closest("[data-asset-id]").hidden = false;
+                    updateAssetCounts(card.querySelector("[data-provider-assets]"));
                     button.scrollIntoView?.({block: "nearest"});
                     await inspectAsset(button, {document: documentObject, fetch: fetchImpl, csrf: csrfToken(form), resourceUrl});
                 }
@@ -1067,9 +1093,10 @@
             }
             const expand = event.target.closest?.("[data-lab-expand]");
             if (expand) {
-                expand.closest("[data-provider-assets]").querySelectorAll("[data-asset-id]")
-                    .forEach((row) => { row.hidden = false; });
-                expand.remove();
+                const container = expand.closest("[data-provider-assets]");
+                Array.from(container.querySelectorAll(".provider-lab-asset")).filter((row) => row.hidden)
+                    .slice(0, 64).forEach((row) => { row.hidden = false; });
+                updateAssetCounts(container);
                 return;
             }
             const select = event.target.closest?.("[data-lab-select]");
@@ -1218,6 +1245,7 @@
         qualityOrder,
         metaFragment,
         scopeMessage,
+        trackLabel,
         errorMessage,
         formatBytes,
         formatDuration,

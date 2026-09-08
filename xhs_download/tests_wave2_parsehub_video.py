@@ -133,6 +133,14 @@ class ParseHubVideoParityTests(SimpleTestCase):
         match = {**self.match, 'version': bridge.PROVIDER_VERSION}
         with patch.object(bridge, '_call', return_value=[self.video()] * 31):
             self.assertEqual(len(bridge.parse_upstream_url(match, SOURCE)), 31)
-        with patch.object(bridge, '_call', return_value=[self.video()] * 101):
+        rows = [self.video() for _ in range(bridge.MAX_ASSETS)]
+        rows[0][2].update(candidates_truncated=True, candidate_total=bridge.MAX_ASSETS + 5,
+                         upstream_scope={'bounded': True, 'retained_count': bridge.MAX_ASSETS,
+                                         'unexpanded_count': 5})
+        with patch.object(bridge, '_call', return_value=rows):
+            result = bridge.parse_upstream_url(match, SOURCE)
+            self.assertEqual(len(result), bridge.MAX_ASSETS)
+            self.assertEqual(result[0][2]['upstream_scope']['unexpanded_count'], 5)
+        with patch.object(bridge, '_call', return_value=[self.video()] * (bridge.MAX_ASSETS + 1)):
             with self.assertRaisesRegex(bridge.ParseHubBridgeError, 'invalid_payload'):
                 bridge.parse_upstream_url(match, SOURCE)

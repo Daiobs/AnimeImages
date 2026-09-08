@@ -18,16 +18,17 @@ from urllib.parse import urljoin, urlsplit
 from unittest.mock import patch
 
 try:
-    from .upstream_match_worker import install_network_guard, safe_error, validate_url
+    from .upstream_match_worker import install_network_guard, safe_error, validate_url, validate_media_url
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from upstream_match_worker import install_network_guard, safe_error, validate_url
+    from upstream_match_worker import install_network_guard, safe_error, validate_url, validate_media_url
 
 PIN = "144260f4349c5bb57415f7555a572fcd48c3b8ba"
 VERSION = "2.2.0"
 PROVIDER_ID = "parsehub_generic"
 PROVIDER_VERSION = f"parsehub@{VERSION}+{PIN}"
-MAX_ASSETS = 100
+# Candidate descriptors are independent of downstream downloadable-asset limits.
+MAX_ASSETS = 1000
 MAX_BYTES = 2 * 1024 * 1024
 MAX_NETWORK_BYTES = 12 * 1024 * 1024
 MAX_WIRE_BYTES = 32 * 1024 * 1024
@@ -40,7 +41,9 @@ VIDEO_EXTENSIONS = {"mp4", "m4v", "mov", "webm"}
 COMPLETENESS = {"unknown", "image_candidate", "complete", "video_only", "audio_only", "hls", "dash", "richtext"}
 QUALITY_FIELDS = ("width", "height", "duration", "fps", "tbr", "abr", "vbr", "bitrate",
                   "filesize", "filesize_approx", "format_id", "format_note", "resolution",
-                  "vcodec", "acodec", "protocol", "audio_channels", "language")
+                  "vcodec", "acodec", "protocol", "audio_channels", "language",
+                  "role", "work_id", "upstream_asset_id", "asset_id",
+                  "audio_tracks", "video_tracks", "upstream_role")
 
 
 def registry():
@@ -144,7 +147,18 @@ def scalar_fields(obj):
             if value or key not in {"width", "height", "duration", "fps"}:
                 fields[key] = value
         elif isinstance(value, str) and value:
-            fields[key] = plain_text(value, 200)
+            fields[key] = value if key in {'format_id', 'asset_id', 'upstream_asset_id', 'work_id'} else plain_text(value, 200)
+    for key in ('requires_merge', 'audio_asset_present'):
+        if type(get(key)) is bool:
+            fields[key] = get(key)
+    relationships = get('relationships')
+    if isinstance(relationships, (list, tuple)):
+        fields['relationships'] = [
+            {key: relation[key] for key in
+             ('relationship_type', 'source_asset_id', 'target_asset_id') if isinstance(relation.get(key), str)}
+            for relation in relationships[:16] if isinstance(relation, dict)
+            and all(isinstance(relation.get(key), str) and 0 < len(relation[key]) <= 120
+                    for key in ('relationship_type', 'source_asset_id', 'target_asset_id'))]
     return fields
 
 
@@ -201,14 +215,15 @@ def normalize_result(result, source, *, extractor=None, identity_evidence="upstr
         details = scalar_fields(fmt)
         headers = fmt.get("http_headers") or {}
         if isinstance(headers, dict):
-            details["request_context"] = {k: str(v)[:4096] for k, v in headers.items()
-                                           if k.lower() in {"user-agent", "referer", "accept", "accept-language"}}
+            details["request_context"] = {k: v for k, v in headers.items()
+                                           if isinstance(k, str) and isinstance(v, str)
+                                           and k.lower() in {"user-agent", "referer", "accept", "accept-language"}}
         candidates.append((fmt["url"], kind, str(fmt.get("ext") or "").lower(), details))
     messages, used = [], 0
     for index, (url, kind, ext, details) in enumerate(candidates):
-        validate_url(url)
+        validate_media_url(url)
         if len(messages) >= MAX_ASSETS:
-            continue
+            break
         path_ext = Path(urlsplit(url).path).suffix.lower().lstrip(".")
         protocol = details.get("protocol", "")
         transport = "hls" if path_ext == "m3u8" or ext == "m3u8" or "m3u8" in protocol else "dash" if path_ext == "mpd" or ext == "mpd" or "dash" in protocol else "file"
@@ -231,7 +246,11 @@ def normalize_result(result, source, *, extractor=None, identity_evidence="upstr
         if ((kind == "video" and (ext in IMAGE_EXTENSIONS or path_ext in IMAGE_EXTENSIONS)) or
                 (kind == "image" and (ext in VIDEO_EXTENSIONS or path_ext in VIDEO_EXTENSIONS))):
             restrictions.append("media_type_conflict")
-        meta = {**common, **details, "extension": ext, "media_type": kind,
+        # Work-level prose and canonical URLs need not be repeated per candidate.
+        context = common if not messages else {
+            key: common[key] for key in ('extractor_id', 'identity_evidence', 'quality_evidence',
+                                        'result_type', 'candidate_schema')}
+        meta = {**context, **details, "extension": ext, "media_type": kind,
                 "mime_type": f"{kind}/unknown" if kind != "unknown" else "application/octet-stream",
                 "mime_evidence": "upstream_reference_type", "candidate_kind": transport if transport != "file" else completeness,
                 "media_completeness": completeness, "requires_completeness_check": kind == "video" and completeness == "unknown",
@@ -239,13 +258,18 @@ def normalize_result(result, source, *, extractor=None, identity_evidence="upstr
         row = [3, url, meta]
         size = len(json.dumps(row).encode())
         if used + size > MAX_BYTES - 16384:
-            continue
+            break
         messages.append(row)
         used += size
     if messages:
         if len(messages) < len(candidates):
-            for row in messages:
-                row[2].update(candidates_truncated=True, candidate_total=len(candidates), candidate_retained=len(messages))
+            messages[0][2].update(candidates_truncated=True, candidate_total=len(candidates), candidate_retained=len(messages),
+                              upstream_scope={'bounded': True, 'completion': 'unknown',
+                                  'returned_count': len(candidates), 'retained_count': len(messages),
+                                  'declared_count': len(candidates), 'examined_count': index + 1,
+                                  'rejected_count': 0,
+                                  'unexpanded_count': len(candidates) - len(messages),
+                                  'reason': 'candidate_limit' if len(candidates) > MAX_ASSETS else 'output_limit'})
         return messages
     if common["content_summary"]:
         return [[2, {**common, "candidate_kind": "richtext", "media_completeness": "richtext",

@@ -62,6 +62,28 @@ function routeFixture(canConfigure = true) {
     return {panel, doc: documentFor(panel)};
 }
 
+test("retained tail 2160p is reachable and selection survives quality sort and 64-item expansion", async () => {
+    const f = comparisonFixture(["A"]);
+    const assets = Array.from({length: 130}, (_, i) => ({asset_id: `v${i}`, media_type: "video",
+        width: i === 129 ? null : 1920, height: i === 129 ? 2160 : 720}));
+    const controller = lab.createController(f.doc, {window: {}, fetch: async () => ({ok: true,
+        json: async () => ({status: "success", request_id: "r", assets, metadata: {returned_count: 130, retained_count: 130}})})});
+    await controller.submit({preventDefault() {}}); await flush(); await flush();
+    const card = f.root.querySelector('[data-provider-card="A"]');
+    const rows = () => card.querySelectorAll(".provider-lab-asset");
+    assert.equal(rows().filter((row) => !row.hidden).length, 64);
+    const sort = new Node("select", {"data-lab-format-order": ""}); card.append(sort); sort.value = "resolution";
+    f.root.listeners.change({target: sort});
+    assert.equal(rows()[0].dataset.assetId, "v129");
+    await f.root.listeners.click({target: rows()[0].querySelector("[data-lab-select]"), preventDefault() {}});
+    await f.root.listeners.click({target: card.querySelector("[data-lab-expand]"), preventDefault() {}});
+    assert.equal(rows().filter((row) => !row.hidden).length, 128);
+    sort.value = "source"; f.root.listeners.change({target: sort});
+    assert.equal(controller.currentSelection.asset.asset_id, "v129");
+    assert.equal(rows()[129].querySelector("[data-lab-select]").getAttribute("aria-pressed"), "true");
+    controller.destroy();
+});
+
 const route = {source_host: "source.example", applicable: true, active: true, revision: 4,
     provider_order: ["yt_dlp_generic"], allowed_provider_ids: ["yt_dlp_generic", "parsehub_generic"],
     provider_options: {}, format_preferences: {max_height: 1080}};

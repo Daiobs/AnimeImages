@@ -70,6 +70,28 @@ class QualityCandidatePresentationTests(SimpleTestCase):
         self.assertIn("作品 2 &lt;source&gt;", html)
         self.assertNotIn("全部媒体", html)
 
+    def test_retained_tail_is_rendered_with_64_visible_and_separate_counts(self):
+        from html.parser import HTMLParser
+        class Candidates(HTMLParser):
+            rows = []
+            def handle_starttag(self, tag, attrs):
+                attrs = dict(attrs)
+                if "data-upstream-candidate" in attrs:
+                    self.rows.append(attrs)
+        candidates = [self.candidate() for _ in range(130)]
+        candidates[-1]["candidate_id"] = "tail-2160"
+        candidates[-1]["height"] = 2160
+        html = render_to_string("partials/upstream_candidates.html", {
+            "upstream_candidates": candidates, "returned_count": 130, "retained_count": 130,
+            "unexpanded_count": None,
+        })
+        parser = Candidates(); parser.feed(html)
+        self.assertEqual(len(parser.rows), 130)
+        self.assertEqual(sum("hidden" not in row for row in parser.rows), 64)
+        self.assertEqual(parser.rows[-1]["data-candidate-id"], "tail-2160")
+        self.assertIn("返回 130 · 保留 130", html)
+        self.assertIn("上游未展开 未知", html)
+
     def test_route_summary_is_visible_without_serializing_route_and_context_limit_is_explicit(self):
         html = render_to_string("partials/upstream_candidates.html", {
             "upstream_candidates": [self.candidate(requires_context=True)], "image_items": [object()],

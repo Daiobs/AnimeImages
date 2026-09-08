@@ -69,9 +69,40 @@
         }
     }
 
+    function pageCandidates(section, order, more) {
+        const list = section.querySelector(".upstream-candidate-list");
+        if (!list) return;
+        if (!section.__candidateSourceRows) section.__candidateSourceRows = Array.from(list.querySelectorAll("[data-upstream-candidate]"));
+        const source = section.__candidateSourceRows;
+        section.__candidateLimit = more ? (section.__candidateLimit || 64) + 64 : 64;
+        if (order) section.__candidateOrder = order;
+        let rows = source;
+        if (section.__candidateOrder === "resolution") {
+            const videos = source.filter((row) => row.dataset.mediaType === "video")
+                .map((row, index) => ({row, index})).sort((a, b) => {
+                    const known = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : -1;
+                    return known(b.row.dataset.height) - known(a.row.dataset.height)
+                        || known(b.row.dataset.width) - known(a.row.dataset.width) || a.index - b.index;
+                }).map(({row}) => row);
+            let index = 0;
+            rows = source.map((row) => row.dataset.mediaType === "video" ? videos[index++] : row);
+        }
+        rows.forEach((row, index) => { list.append(row); row.hidden = index >= section.__candidateLimit; });
+        const shown = Math.min(rows.length, section.__candidateLimit);
+        const counts = section.querySelector("[data-candidate-counts]");
+        if (counts) counts.textContent = `已显示 ${shown} · 待展开 ${rows.length - shown}`;
+        const expand = section.querySelector("[data-candidates-expand]");
+        if (expand) { expand.hidden = shown >= rows.length; expand.textContent = `再显示 ${Math.min(64, rows.length - shown)} 项`; }
+    }
+
     function attach(documentObject, windowObject) {
         if (documentObject.__upstreamCandidatesAttached) return;
         documentObject.__upstreamCandidatesAttached = true;
+        documentObject.addEventListener("change", (event) => {
+            if (event.target.matches?.("[data-candidates-order]")) {
+                pageCandidates(event.target.closest("[data-upstream-candidates]"), event.target.value);
+            }
+        });
         documentObject.addEventListener("click", (event) => {
             const compare = event.target.closest?.("[data-compare-candidate-source]");
             if (compare) {
@@ -86,9 +117,7 @@
             }
             const expand = event.target.closest?.("[data-candidates-expand]");
             if (expand) {
-                expand.closest("[data-upstream-candidates]").querySelectorAll("[data-upstream-candidate]")
-                    .forEach((node) => { node.hidden = false; });
-                expand.hidden = true;
+                pageCandidates(expand.closest("[data-upstream-candidates]"), null, true);
                 return;
             }
             const button = event.target.closest?.("[data-candidate-action]");
@@ -100,5 +129,5 @@
         });
     }
 
-    return {permittedUrl, act, attach};
+    return {permittedUrl, act, attach, pageCandidates};
 }));

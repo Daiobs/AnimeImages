@@ -13,6 +13,7 @@ SCHEMA_VERSION = "1.0"
 MAX_SOURCE_LENGTH = 4096
 MAX_ASSETS = 64
 MAX_RELATIONSHIPS = 64
+MAX_RETAINED_CANDIDATES = 1000
 MAX_ATTEMPTS = 12
 MAX_ATTEMPT_ELAPSED_MS = 60_000
 MAX_RAW_DEPTH = 6
@@ -145,6 +146,13 @@ def safe_public_text(value: Any, limit: int = MAX_SAFE_STRING_LENGTH) -> str:
     return "[redacted]" if string_requires_redaction(text) else text
 
 
+def exact_public_identity(value: Any) -> str:
+    """Identity comparisons must not alias through display-text normalization."""
+    if not isinstance(value, str) or not value or len(value) > 120:
+        return ""
+    return value if safe_public_text(value, 120) == value else ""
+
+
 def _object_fields(value: Any) -> Mapping[str, Any] | None:
     if is_dataclass(value) and not isinstance(value, type):
         return {item.name: getattr(value, item.name) for item in fields(value)}
@@ -227,6 +235,7 @@ class LabAssetV1:
     asset_id: str
     media_type: str = "unknown"
     role: str = "unknown"
+    upstream_role: str = ""
     resource_token: str = ""
     host_class: str = ""
     declared_extension: str = ""
@@ -236,12 +245,14 @@ class LabAssetV1:
     size_bytes: int = 0
     quality_label: str = ""
     codec: str = ""
-    requires_merge: bool = False
+    requires_merge: bool | None = None
     requires_cookie: bool = False
     headers_present: bool = False
-    audio_asset_present: bool = False
+    audio_asset_present: bool | None = None
     format_id: str = ""
     work_label: str = ""
+    work_id: str = ""
+    upstream_asset_id: str = ""
     fps: float | None = None
     vcodec: str = ""
     acodec: str = ""
@@ -259,6 +270,7 @@ class LabAssetV1:
             "asset_id": safe_public_text(self.asset_id, 120),
             "media_type": self.media_type if self.media_type in MEDIA_TYPES else "unknown",
             "role": self.role if self.role in ASSET_ROLES else "unknown",
+            "upstream_role": safe_public_text(self.upstream_role, 120),
             "resource_token": safe_text(self.resource_token, 160),
             "host_class": safe_text(self.host_class, 253),
             "declared_extension": safe_public_text(self.declared_extension, 16).lower().lstrip("."),
@@ -268,12 +280,14 @@ class LabAssetV1:
             "size_bytes": safe_int(self.size_bytes),
             "quality_label": safe_public_text(self.quality_label, 120),
             "codec": safe_public_text(self.codec, 80),
-            "requires_merge": bool(self.requires_merge),
+            "requires_merge": self.requires_merge if type(self.requires_merge) is bool else None,
             "requires_cookie": bool(self.requires_cookie),
             "headers_present": bool(self.headers_present),
-            "audio_asset_present": bool(self.audio_asset_present),
+            "audio_asset_present": self.audio_asset_present if type(self.audio_asset_present) is bool else None,
             "format_id": safe_public_text(self.format_id, 120),
             "work_label": safe_public_text(self.work_label, 160),
+            "work_id": exact_public_identity(self.work_id),
+            "upstream_asset_id": exact_public_identity(self.upstream_asset_id),
             "fps": safe_float(self.fps) if self.fps is not None else None,
             "vcodec": safe_public_text(self.vcodec, 80),
             "acodec": safe_public_text(self.acodec, 80),
@@ -297,8 +311,8 @@ class LabRelationshipV1:
     def as_dict(self) -> dict[str, str]:
         return {
             "relationship_type": safe_public_text(self.relationship_type, 80),
-            "source_asset_id": safe_public_text(self.source_asset_id, 120),
-            "target_asset_id": safe_public_text(self.target_asset_id, 120),
+            "source_asset_id": exact_public_identity(self.source_asset_id),
+            "target_asset_id": exact_public_identity(self.target_asset_id),
         }
 
 
@@ -368,9 +382,11 @@ class LabProviderResultV1:
             "author": safe_public_text(self.metadata.get("author"), 200),
             "content_summary": safe_public_text(self.metadata.get("content_summary"), 512),
             "candidate_count": safe_int(self.metadata.get("candidate_count", len(self.assets))),
-            "returned_count": min(len(self.assets), MAX_ASSETS),
-            "truncated_count": safe_int(self.metadata.get("truncated_count")) + max(0, len(self.assets) - MAX_ASSETS),
-            "truncated": bool(self.metadata.get("truncated") or len(self.assets) > MAX_ASSETS),
+            "returned_count": safe_int(self.metadata.get("returned_count", len(self.assets))),
+            "retained_count": min(len(self.assets), MAX_RETAINED_CANDIDATES),
+            "unexpanded_count": safe_int(self.metadata.get("unexpanded_count")) if self.metadata.get("unexpanded_count") is not None else None,
+            "truncated_count": safe_int(self.metadata.get("truncated_count")) + max(0, len(self.assets) - MAX_RETAINED_CANDIDATES),
+            "truncated": bool(self.metadata.get("truncated") or len(self.assets) > MAX_RETAINED_CANDIDATES),
             "unexpanded_scope": safe_public_text(self.metadata.get("unexpanded_scope"), 240),
             "baseline": self.metadata.get("baseline") is True,
         }
@@ -397,10 +413,10 @@ class LabProviderResultV1:
             "selected_backend": safe_public_text(self.selected_backend, 160),
             "result_kind": self.result_kind if self.result_kind in RESULT_KINDS else "unknown",
             "metadata": metadata,
-            "assets": [asset.as_dict() for asset in tuple(self.assets)[:MAX_ASSETS]],
+            "assets": [asset.as_dict() for asset in tuple(self.assets)[:MAX_RETAINED_CANDIDATES]],
             "relationships": [
                 relationship.as_dict()
-                for relationship in tuple(self.relationships)[:MAX_RELATIONSHIPS]
+                for relationship in tuple(self.relationships)[:MAX_RETAINED_CANDIDATES]
             ],
             "attempts": attempts,
             "warnings": [safe_public_text(item, 240) for item in tuple(self.warnings)[:32]],
