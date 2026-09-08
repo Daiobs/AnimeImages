@@ -55,8 +55,16 @@
                     ></textarea>
                 </label>
 
+                <div class="provider-lab-form-actions">
+                    <button class="provider-lab-primary" type="submit" data-lab-all>测试全部上游</button>
+                    <button class="provider-lab-secondary" type="button" data-lab-cancel disabled>取消未完成任务</button>
+                    <span class="provider-lab-form-message" data-provider-lab-form-message aria-live="polite"></span>
+                </div>
+
+                <details class="provider-lab-advanced">
+                <summary>高级：测试所选上游与执行选项</summary>
                 <fieldset class="provider-lab-provider-grid">
-                    <legend>选择上游</legend>
+                    <legend>已接入上游</legend>
                     {% for provider in provider_lab_providers %}
                         <label class="provider-lab-provider-option{% if not provider.available %} is-unavailable{% endif %}">
                             <input
@@ -152,12 +160,21 @@
                     </label>
                     <p>Legacy Auto 仅用于显式不透明对照，可能执行上游内部行为，且永远不是默认模式。</p>
                 </section>
+                <button class="provider-lab-secondary" type="submit" data-lab-selected>测试所选上游</button>
+                </details>
 
-                <div class="provider-lab-form-actions">
-                    <button class="provider-lab-primary" type="submit">运行上游测试</button>
-                    <button class="provider-lab-secondary" type="button" data-lab-cancel disabled>取消未完成任务</button>
-                    <span class="provider-lab-form-message" data-provider-lab-form-message aria-live="polite"></span>
+                <div class="provider-lab-call-authorizations">
+                    {% for provider in provider_lab_providers %}
+                    {% if provider.requires_confirmation %}
+                    <label class="provider-lab-sharing-confirmation">
+                        <input type="checkbox" name="provider_authorizations" value="{{ provider.provider_id }}">
+                        <span>{{ provider.label }}：{{ provider.confirmation_message|default:"确认本次调用可能消耗额度或向外部服务分享来源链接" }}</span>
+                    </label>
+                    {% endif %}
+                    {% endfor %}
                 </div>
+
+                <p data-lab-run-stats aria-live="polite">尚未开始本轮检查</p>
             </form>
         </section>
 
@@ -181,7 +198,7 @@
                         <h3>执行顺序</h3>
                         <ol data-route-order></ol>
                         <select data-route-add aria-label="添加备选上游"><option value="">添加备选上游</option></select>
-                        <button type="button" class="provider-lab-secondary" data-route-use-current>将本次上游设为首选</button>
+                        <button type="button" class="provider-lab-secondary" data-route-use-current>将此上游设为该平台固定路线</button>
                     </div>
                     <div class="provider-lab-control-grid">
                         <label><span>最高分辨率</span><input type="number" name="max_height" min="144" max="8640" placeholder="不限制"></label>
@@ -193,10 +210,11 @@
                         </select></label>
                     </div>
                 </div>
-                <label class="provider-lab-route-confirm"><input type="checkbox" data-route-confirm>确认修改上方来源范围的后续解析路线</label>
+                <p data-route-confirmation-summary>请先读取来源站点并选择固定上游。</p>
+                <label class="provider-lab-route-confirm"><input type="checkbox" data-route-confirm>已核对来源、当前与拟保存路线、执行选项和格式偏好，确认修改后续解析</label>
             </fieldset>
             <div class="provider-lab-form-actions">
-                <button type="button" class="provider-lab-primary" data-route-save disabled>保存为平台路线</button>
+                <button type="button" class="provider-lab-primary" data-route-save disabled>确认保存固定路线</button>
                 <button type="button" class="provider-lab-secondary" data-route-reset disabled>恢复默认</button>
                 <span data-route-status role="status"></span>
             </div>
@@ -227,6 +245,9 @@
                             <span>{{ provider.license_name }}</span>
                             <strong>{{ provider.license_scope }}</strong>
                         </div>
+                        {% if not provider.available %}<p class="provider-lab-availability">未执行条件：{% if provider.unexecuted_reason == 'PROVIDER_DISABLED' %}该通道已关闭{% else %}{{ provider.not_configured_hint|default:"当前环境未配置或缺少运行依赖" }}{% endif %}</p>{% endif %}
+                        {% if provider.baseline %}<p class="provider-lab-availability">复合基线：仅作对照，不计入独立上游统计，不能保存为固定上游。</p>
+                        {% elif not provider.route_selectable %}<p class="provider-lab-availability">仅可比较：尚无可用于后续解析的独立执行器。</p>{% endif %}
                         <dl class="provider-lab-summary" data-provider-summary>
                             <div><dt>平台</dt><dd data-field="claimed_platform">-</dd></div>
                             <div><dt>Backend</dt><dd data-field="selected_backend">-</dd></div>

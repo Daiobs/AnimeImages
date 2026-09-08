@@ -107,11 +107,81 @@ test("route controller saves explicit reusable choice with revision, then DELETE
     assert.equal(writes[0].headers["X-CSRFToken"], "csrf");
     const payload = JSON.parse(writes[0].body);
     assert.equal(payload.expected_revision, 4);
-    assert.deepEqual(payload.provider_order, ["parsehub_generic", "yt_dlp_generic"]);
+    assert.deepEqual(payload.provider_order, ["parsehub_generic"]);
     assert.deepEqual(payload.format_preferences, {max_height: 1080});
     await editor.persist(true);
     assert.equal(writes[1].method, "DELETE");
     assert.deepEqual(JSON.parse(writes[1].body), {source_url: "https://source.example/post", expected_revision: 5});
+});
+
+test("test-all derives descriptors, includes unavailable and unapproved, and does not wait for a second success", async () => {
+    const f = comparisonFixture(["A", "B", "C", "paid", "missing", "animeimages_current"]);
+    const descriptors = ["A", "B", "C", "paid", "missing", "animeimages_current"].map((id) => ({provider_id: id,
+        execution_provider_id: id, available: id !== "missing", baseline: id === "animeimages_current",
+        requires_confirmation: id === "paid" ? ["paid_service", "external_sharing"] : [], not_configured_hint: "运行依赖未配置"}));
+    const calls = [];
+    const controller = lab.createController(f.doc, {window: {}, descriptors, fetch: async (_url, options) => {
+        const id = JSON.parse(options.body).provider_id; calls.push(id);
+        return {ok: true, json: async () => ({provider_id: id, executed: true, status: id === "B" ? "unsupported" : "success", assets: []})};
+    }});
+    await controller.submit({preventDefault() {}}); await flush(); await flush();
+    assert.deepEqual(calls.sort(), ["A", "B", "C"]);
+    assert.equal(controller.resultByProvider.get("paid").status, "skipped");
+    assert.equal(controller.resultByProvider.get("missing").status, "skipped");
+    assert.deepEqual(controller.runStats, {included: 5, executed: 3, success: 2, unsupported: 1,
+        failed: 0, timeout: 0, notrun: 2});
+    assert.equal(controller.currentSelection, null);
+    controller.destroy();
+});
+
+test("explicit paid confirmation enables only that retry with backend confirmation contract", async () => {
+    const f = comparisonFixture(["paid"]);
+    const consent = new Node("input", {name: "provider_authorizations", value: "paid"}); f.form.append(consent);
+    const calls = [];
+    const controller = lab.createController(f.doc, {window: {}, descriptors: [{provider_id: "paid", available: true,
+        requires_confirmation: ["paid_service", "external_sharing"]}], fetch: async (_url, options) => {
+        calls.push(JSON.parse(options.body));
+        return {ok: true, json: async () => ({status: "success", executed: true, assets: []})};
+    }});
+    await controller.submit({preventDefault() {}}); await flush(); await flush();
+    assert.equal(calls.length, 0);
+    consent.checked = true;
+    const retry = f.root.querySelector("[data-lab-retry]");
+    await f.root.listeners.click({target: retry, preventDefault() {}}); await flush(); await flush();
+    assert.deepEqual(calls[0].confirmations, {paid_service: true, external_sharing: true});
+    assert.equal(controller.runStats.executed, 1); assert.equal(controller.runStats.notrun, 0);
+    controller.destroy();
+});
+
+test("advanced selection remains explicit and server rejection does not count an upstream execution", async () => {
+    const f = comparisonFixture(["A", "B"]);
+    f.form.querySelector('input[value="B"]').checked = false;
+    const calls = [];
+    const controller = lab.createController(f.doc, {window: {}, descriptors: ["A", "B"].map((id) => ({provider_id: id, available: true, requires_confirmation: []})),
+        fetch: async (_url, options) => { calls.push(JSON.parse(options.body).provider_id);
+            return {ok: true, json: async () => ({status: "failed", executed: false, unexecuted_reason: "PROVIDER_DISABLED"})}; }});
+    await controller.submit({preventDefault() {}, submitter: {hasAttribute: (name) => name === "data-lab-selected"}});
+    await flush(); await flush();
+    assert.deepEqual(calls, ["A"]);
+    assert.deepEqual(controller.runStats, {included: 1, executed: 0, success: 0, unsupported: 0, failed: 0, timeout: 0, notrun: 1});
+    assert.equal(controller.currentSelection, null);
+    controller.destroy();
+});
+
+test("route uses descriptor execution mapping for a sole service success, never the composite baseline", async () => {
+    const {panel, doc} = routeFixture(); const writes = [];
+    const editor = lab.createRouteEditor(doc, {url: "/routes", csrf: () => "csrf", getSource: () => "https://source.example/one",
+        descriptors: [{provider_id: "service_lab", execution_provider_id: "service_executor", route_selectable: true},
+            {provider_id: "animeimages_current", execution_provider_id: "service_executor", baseline: true}],
+        window: {location: {origin: "https://local.example"}}, fetch: async (_url, options) => {
+            if (options.method) writes.push(JSON.parse(options.body));
+            return {ok: true, json: async () => ({ok: true, route: {...route, allowed_provider_ids: ["service_executor"]}})};
+        }});
+    await editor.load(); editor.selectProvider("animeimages_current");
+    assert.match(panel.querySelector("[data-route-status]").textContent, /不能保存/);
+    editor.selectProvider("service_lab"); assert.equal(writes.length, 0);
+    panel.querySelector("[data-route-confirm]").checked = true; await editor.persist(false);
+    assert.deepEqual(writes[0].provider_order, ["service_executor"]);
 });
 
 test("route 409 invalidates authority and requires explicit reread", async () => {

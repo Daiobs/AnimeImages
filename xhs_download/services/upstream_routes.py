@@ -17,10 +17,12 @@ from tools.upstream_match_worker import validate_url
 from ..models import UpstreamRoute, UpstreamRouteAudit
 from .common import XhsParseError, extract_url_from_text, host_matches, is_blocked_hostname
 from .env_config import runtime_list
+from .quality_execution import PROVIDER_ALIASES
 
 
-PROVIDER_IDS = ("yt_dlp_generic", "gallery_dl_generic", "parsehub_generic", "videodl_repo")
-DEFAULT_PROVIDER_ORDER = PROVIDER_IDS
+PROVIDER_IDS = tuple(dict.fromkeys(PROVIDER_ALIASES.values()))
+# New service channels require an explicit Human route, not automatic default calls.
+DEFAULT_PROVIDER_ORDER = ("yt_dlp_generic", "gallery_dl_generic", "parsehub_generic", "videodl_repo")
 
 
 class UpstreamRouteError(ValueError):
@@ -150,6 +152,13 @@ def route_cache_identity(route, matches):
 def route_matches(source_url, matches):
     route = read_route(source_url)
     matches = tuple(matches)
+    from .quality_execution import SERVICE_PROVIDER_IDS
+    current_services = {
+        (match['provider_id'], match['extractor_id'], match['version'])
+        for match in saved_service_matches(source_url)
+    }
+    matches = tuple(match for match in matches if match.get('provider_id') not in SERVICE_PROVIDER_IDS
+                    or (match.get('provider_id'), match.get('extractor_id'), match.get('version')) in current_services)
     if any(match.get("provider_id") == "videodl_repo" for match in matches):
         current = (videodl_route_availability(source_url, route)["matches"]
                    if route["applicable"] and route["active"] and "videodl_repo" in route["provider_order"] else ())
@@ -160,6 +169,29 @@ def route_matches(source_url, matches):
     ordered = tuple(match for pid in route["effective_provider_order"]
                     for match in matches if match.get("provider_id") == pid)
     return ordered, {**route, "cache_identity": route_cache_identity(route, ordered)}
+
+
+def saved_service_matches(source_url):
+    """An explicit saved route permits a service to decide support at parse time."""
+    from .quality_execution import SERVICE_PROVIDER_IDS, service_match, provider_available
+    from .provider_lab.contracts import ProviderLabError
+    if not any(provider_available(provider) for provider in SERVICE_PROVIDER_IDS):
+        return ()
+    try:
+        route = read_route(source_url)
+        if not route['applicable'] or not route['active']:
+            return ()
+        matches = []
+        for provider in route['provider_order']:
+            if provider not in SERVICE_PROVIDER_IDS:
+                continue
+            try:
+                matches.append(service_match(provider, source_url))
+            except ProviderLabError:
+                continue
+        return tuple(matches)
+    except (UpstreamRouteError, ValueError):
+        return ()
 
 
 def saved_videodl_matches(source_url):
@@ -218,7 +250,10 @@ def videodl_route_availability(source_url, route):
 
 def parse_cache_key(source_url, route, provider):
     """Cache only executable, admitted providers, scoped to this source and revision."""
-    from .quality_execution import _python_for
+    from .quality_execution import _python_for, SERVICE_PROVIDER_IDS
+    if provider in SERVICE_PROVIDER_IDS:
+        # Reuse the existing service client's cache, never an extra stale account snapshot.
+        return None
     try:
         python = _python_for(provider)
         if provider in ("yt_dlp_generic", "gallery_dl_generic"):

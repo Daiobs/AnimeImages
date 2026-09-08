@@ -596,13 +596,13 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         if any(adapter.platform_id != self.platform_id and adapter.supports_url(url)
                for adapter in DEFAULT_ADAPTERS):
             return None
-        # Mature rules retain precedence. The extension never invokes paid services
-        # or treats a catch-all extractor as evidence of platform support.
+        # Mature rules retain precedence. Paid services are eligible only through
+        # a saved Human route; matching itself never calls their remote APIs.
         if host_matches(hostname, BLOCKED_PUBLIC_HOST_SUFFIXES):
             return None
         from ..upstream_matching import match_upstream_url
-        from ..upstream_routes import saved_videodl_matches
-        matches = tuple(match_upstream_url(url)) + saved_videodl_matches(url)
+        from ..upstream_routes import saved_videodl_matches, saved_service_matches
+        matches = tuple(match_upstream_url(url)) + saved_videodl_matches(url) + saved_service_matches(url)
         if matches:
             return ThirdPartyPlatformRule(
                 platform_id="upstream", display_name=matches[0]["label"],
@@ -912,7 +912,7 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         raise XhsParseError(f"{platform_name} 第三方解析失败：{summary or '没有可用 Provider'}")
 
     def parse_upstream_rule(self, source_url, rule, timeout_seconds, deadline_monotonic):
-        from ..quality_execution import execute_provider
+        from ..quality_execution import execute_provider, SERVICE_PROVIDER_IDS
         from ..common import validate_public_download_url
         from ..upstream_routes import (route_matches, parse_cache_key, cached_parse_result,
                                        cache_parse_result, apply_format_preferences)
@@ -943,6 +943,8 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
                     execution["backend"] = match["extractor_id"]
                 else:
                     execution["expected_match"] = match
+                if provider in SERVICE_PROVIDER_IDS:
+                    execution['service_authorized'] = route['mode'] == 'manual'
                 cache_key = parse_cache_key(source_url, route, provider)
                 result = cached_parse_result(cache_key, source_url, provider)
                 cache_hit = result is not None

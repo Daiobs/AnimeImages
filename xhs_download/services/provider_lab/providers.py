@@ -78,9 +78,22 @@ class ProviderDescriptor:
     runner: Callable[..., Any]
     availability: Callable[[], bool]
     not_configured_hint: str = ""
+    execution_provider_id: str = ""
+    enabled_setting: str = ""
+    requires_confirmation: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         from ..quality_execution import PROVIDER_ALIASES
+        execution_id = self.execution_provider_id or PROVIDER_ALIASES.get(self.provider_id, '')
+        baseline = self.provider_id == 'animeimages_current'
+        enabled = not self.enabled_setting or runtime_bool(self.enabled_setting, False)
+        try:
+            available = enabled and bool(self.availability())
+        except Exception:
+            available = False
+        reason = '' if available else 'PROVIDER_DISABLED' if not enabled else 'PROVIDER_NOT_CONFIGURED'
+        route_reason = 'COMPOSITE_BASELINE' if baseline else (
+            '' if execution_id in PROVIDER_ALIASES.values() else 'NO_REPEATABLE_EXECUTOR')
         return {
             "provider_id": self.provider_id,
             "label": self.label,
@@ -89,10 +102,15 @@ class ProviderDescriptor:
             "license_name": self.license_name,
             "license_scope": self.license_scope,
             "default_selected": self.default_selected,
-            "available": bool(self.availability()),
+            "available": available,
+            "unexecuted_reason": reason,
             "not_configured_hint": self.not_configured_hint,
-            "execution_provider_id": PROVIDER_ALIASES.get(self.provider_id, self.provider_id),
-            "baseline": self.provider_id == 'animeimages_current',
+            "execution_provider_id": execution_id,
+            "baseline": baseline,
+            "independent_upstream": not baseline,
+            "route_selectable": not bool(route_reason),
+            "route_unavailable_reason": route_reason,
+            "requires_confirmation": list(self.requires_confirmation),
         }
 
 
@@ -328,10 +346,11 @@ def parse_result_to_lab(result, *, provider_id, user_id, request_id, provider_ve
     return payload.as_dict(), []
 
 
-def _run_shared(provider_id, *, source, request_id, user_id):
+def _run_shared(provider_id, *, source, request_id, user_id, service_authorized=False):
     from ..quality_execution import execute_provider
+    authorization = {'service_authorized': True} if service_authorized is True else {}
     result = execute_provider(provider_id, source, timeout_seconds=runtime_float(
-        'PROVIDER_LAB_EXTERNAL_TIMEOUT_SECONDS', 25.0))
+        'PROVIDER_LAB_EXTERNAL_TIMEOUT_SECONDS', 25.0), **authorization)
     return parse_result_to_lab(result, provider_id=provider_id, user_id=user_id, request_id=request_id)
 
 
@@ -351,6 +370,16 @@ def run_ytdlp_existing(*, source: str, request_id: str, user_id: int):
 
 def run_gallerydl_existing(*, source: str, request_id: str, user_id: int):
     return _run_shared('gallery_dl_existing', source=source, request_id=request_id, user_id=user_id)
+
+
+def run_tiantian_shared(*, source, request_id, user_id, service_authorized=False):
+    return _run_shared('tiantian_existing', source=source, request_id=request_id, user_id=user_id,
+                       service_authorized=service_authorized)
+
+
+def run_kukutool_existing(*, source, request_id, user_id, service_authorized=False):
+    return _run_shared('kukutool_existing', source=source, request_id=request_id, user_id=user_id,
+                       service_authorized=service_authorized)
 
 
 def run_tiantian_existing(*, source: str, request_id: str, user_id: int):
@@ -569,9 +598,10 @@ PROVIDER_REGISTRY: Mapping[str, ProviderDescriptor] = {
         provider_scope="runtime",
         license_name="AnimeImages",
         license_scope="runtime",
-        default_selected=True,
+        default_selected=False,
         runner=run_animeimages_current,
         availability=_always_available,
+        requires_confirmation=('paid_service', 'external_sharing'),
     ),
     "parsehub_repo": ProviderDescriptor(
         provider_id="parsehub_repo",
@@ -583,6 +613,7 @@ PROVIDER_REGISTRY: Mapping[str, ProviderDescriptor] = {
         default_selected=True,
         runner=run_parsehub_repo,
         availability=lambda: _shared_available('parsehub_repo'),
+        enabled_setting='PARSEHUB_UPSTREAM_ENABLED',
         not_configured_hint="请先初始化 ParseHub 独立环境。",
     ),
     "videodl_repo": ProviderDescriptor(
@@ -594,8 +625,8 @@ PROVIDER_REGISTRY: Mapping[str, ProviderDescriptor] = {
         license_scope="noncommercial_lab_only",
         default_selected=True,
         runner=run_videodl_repo,
-        availability=lambda: runtime_bool("VIDEODL_PROVIDER_LAB_ENABLED", False)
-        and _external_available("videodl"),
+        availability=lambda: _shared_available('videodl_repo'),
+        enabled_setting='VIDEODL_PROVIDER_LAB_ENABLED',
         not_configured_hint="仅限非商业本地研究测试；需显式启用并初始化独立环境。",
     ),
     "yt_dlp_existing": ProviderDescriptor(
@@ -608,6 +639,7 @@ PROVIDER_REGISTRY: Mapping[str, ProviderDescriptor] = {
         default_selected=False,
         runner=run_ytdlp_existing,
         availability=lambda: _shared_available('yt_dlp_existing'),
+        enabled_setting='YTDLP_PROVIDER_ENABLED',
     ),
     "gallery_dl_existing": ProviderDescriptor(
         provider_id="gallery_dl_existing", label="gallery-dl",
@@ -615,6 +647,7 @@ PROVIDER_REGISTRY: Mapping[str, ProviderDescriptor] = {
         license_name="GPL-2.0", license_scope="runtime_metadata_only",
         default_selected=False, runner=run_gallerydl_existing,
         availability=lambda: _shared_available('gallery_dl_existing'),
+        enabled_setting='GALLERYDL_PROVIDER_ENABLED',
         not_configured_hint="请配置 gallery-dl 独立执行环境。",
     ),
     "tiantian_existing": ProviderDescriptor(
@@ -625,14 +658,38 @@ PROVIDER_REGISTRY: Mapping[str, ProviderDescriptor] = {
         license_name="Configured upstream",
         license_scope="runtime_parse_only",
         default_selected=False,
-        runner=run_tiantian_existing,
+        runner=run_tiantian_shared,
         availability=tiantian_provider_configured,
+        execution_provider_id='tiantianjiexi_generic',
+        enabled_setting='TIANTIANJIEXI_PROVIDER_ENABLED',
+        requires_confirmation=('paid_service','external_sharing'),
+    ),
+    "kukutool_existing": ProviderDescriptor(
+        provider_id='kukutool_existing', label='Kukutool', provider_version='kukutool-existing',
+        provider_scope='runtime', license_name='Configured upstream', license_scope='runtime_parse_only',
+        default_selected=False, runner=run_kukutool_existing,
+        availability=lambda: _shared_available('kukutool_existing'),
+        execution_provider_id='kukutool_generic', enabled_setting='THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED',
+        requires_confirmation=('external_sharing',),
     ),
 }
 
 
 def list_provider_descriptors() -> list[dict[str, Any]]:
     return [descriptor.as_dict() for descriptor in PROVIDER_REGISTRY.values()]
+
+
+def route_provider_ids() -> tuple[str, ...]:
+    return tuple(item['execution_provider_id'] for item in list_provider_descriptors() if item['route_selectable'])
+
+
+def validate_confirmations(value):
+    if value is None:
+        return {}
+    if (not isinstance(value, dict) or set(value) - {'paid_service', 'external_sharing'}
+            or any(type(flag) is not bool for flag in value.values())):
+        raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
+    return value
 
 
 def _worker_result_to_contract(
@@ -751,13 +808,14 @@ def _failure_result(
     elapsed_ms: int,
     error: ProviderLabError,
     attempts: tuple[LabProviderAttemptV1, ...] = (),
+    executed: bool = False,
 ) -> dict[str, Any]:
     status = {
         "PROVIDER_NOT_CONFIGURED": "not_configured",
         "PROVIDER_UNSUPPORTED": "unsupported",
         "PROVIDER_TIMEOUT": "timeout",
     }.get(error.code, "failed")
-    return LabProviderResultV1(
+    result = LabProviderResultV1(
         request_id=request_id,
         provider_id=descriptor.provider_id,
         provider_version=descriptor.provider_version,
@@ -769,6 +827,10 @@ def _failure_result(
         license_name=descriptor.license_name,
         license_scope=descriptor.license_scope,
     ).as_dict()
+    result.update(executed=executed, unexecuted_reason='' if executed else error.code,
+                  baseline=descriptor.provider_id == 'animeimages_current',
+                  independent_upstream=descriptor.provider_id != 'animeimages_current')
+    return result
 
 
 def run_provider(
@@ -777,15 +839,27 @@ def run_provider(
     source: str,
     user_id: int,
     options: VideodlExecutionOptions | None = None,
+    confirmations: dict | None = None,
 ) -> dict[str, Any]:
     descriptor = PROVIDER_REGISTRY.get(str(provider_id or ""))
     if descriptor is None:
         raise ProviderLabError("PROVIDER_NOT_SELECTED")
+    confirmations = validate_confirmations(confirmations)
     request_id = request_id_value()
     started_at = time.monotonic()
     attempts: tuple[LabProviderAttemptV1, ...] = ()
+    execution_started = False
     try:
         normalized = normalized_source(source)
+        state = descriptor.as_dict()
+        missing = [name for name in descriptor.requires_confirmation if confirmations.get(name) is not True]
+        if not state['available'] or missing:
+            reason = state['unexecuted_reason'] or 'CONFIRMATION_REQUIRED'
+            result = _failure_result(descriptor=descriptor, request_id=request_id, elapsed_ms=0,
+                error=ProviderLabError('PROVIDER_NOT_CONFIGURED' if not state['available'] else 'PROVIDER_POLICY_REJECTED'))
+            result.update(executed=False, unexecuted_reason=reason, requires_confirmation=missing,
+                          baseline=state['baseline'], independent_upstream=state['independent_upstream'])
+            return result
         if options is not None and (
             provider_id != "videodl_repo"
             or not isinstance(options, VideodlExecutionOptions)
@@ -797,19 +871,27 @@ def run_provider(
             raise ProviderLabError("PROVIDER_LICENSE_RESTRICTED")
         if provider_id == "videodl_repo":
             from ..quality_execution import execute_provider
+            execution_started = True
             result = execute_provider(provider_id, normalized, options=options,
                 timeout_seconds=runtime_float('PROVIDER_LAB_EXTERNAL_TIMEOUT_SECONDS', 25.0))
             result_data, resources = parse_result_to_lab(result, provider_id=provider_id,
                 request_id=request_id, user_id=user_id)
             result_data['attempts'] = list(result.metadata.get('attempts') or ())
         else:
+            from ..quality_execution import SERVICE_PROVIDER_IDS
+            authorization = ({'service_authorized': True}
+                             if descriptor.execution_provider_id in SERVICE_PROVIDER_IDS else {})
+            execution_started = True
             result_data, resources = descriptor.runner(
                 source=normalized,
                 request_id=request_id,
                 user_id=user_id,
+                **authorization,
             )
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
         result_data["elapsed_ms"] = elapsed_ms
+        result_data.update(executed=True, unexecuted_reason='', baseline=state['baseline'],
+                           independent_upstream=state['independent_upstream'])
         return result_data
     except XhsProviderTimeoutError:
         lab_error = ProviderLabError("PROVIDER_TIMEOUT")
@@ -819,6 +901,7 @@ def run_provider(
             elapsed_ms=int((time.monotonic() - started_at) * 1000),
             error=lab_error,
             attempts=attempts,
+            executed=execution_started,
         )
     except VideodlControlledError as error:
         return _failure_result(
@@ -827,6 +910,7 @@ def run_provider(
             elapsed_ms=int((time.monotonic() - started_at) * 1000),
             error=error,
             attempts=error.attempts,
+            executed=execution_started,
         )
     except ProviderLabError as error:
         return _failure_result(
@@ -835,6 +919,7 @@ def run_provider(
             elapsed_ms=int((time.monotonic() - started_at) * 1000),
             error=error,
             attempts=attempts,
+            executed=execution_started,
         )
     except Exception:
         error = ProviderLabError("PROVIDER_PROCESS_FAILED")
@@ -844,4 +929,5 @@ def run_provider(
             elapsed_ms=int((time.monotonic() - started_at) * 1000),
             error=error,
             attempts=attempts,
+            executed=execution_started,
         )

@@ -3,7 +3,11 @@
 from contextlib import ExitStack
 from dataclasses import replace
 import json
+import os
+from pathlib import Path
+import subprocess
 import sys
+import tempfile
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,7 +16,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.core import signing
 from django.core.cache import cache
-from django.test import Client, RequestFactory, TestCase, override_settings
+from django.test import Client, RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
 from .models import UpstreamRoute, UpstreamRouteAudit
@@ -38,6 +42,43 @@ class RouteFixtures:
     def save(self, order=None, revision=0, **kwargs):
         return write_route(SOURCE, actor=self.user, expected_revision=revision,
                            provider_order=order or ["parsehub_generic"], **kwargs)
+
+
+class RouteRestartPersistenceTests(SimpleTestCase):
+    def test_saved_route_and_audit_survive_a_fresh_process_and_empty_cache(self):
+        root = Path(__file__).resolve().parents[1]
+        setup = "import os\nos.environ['DJANGO_SETTINGS_MODULE']='djangoProject.settings'\nimport django\ndjango.setup()\n"
+        writer = setup + f"""
+from django.core.management import call_command
+from types import SimpleNamespace
+from xhs_download.services.upstream_routes import write_route
+call_command('migrate', 'xhs_download', verbosity=0, interactive=False)
+write_route({SOURCE!r}, expected_revision=0, actor=SimpleNamespace(pk=None, username='restart-test'),
+            provider_order=['parsehub_generic'], format_preferences={{'max_height':2160}})
+print('saved-test-route')
+"""
+        reader = setup + f"""
+import json
+from django.core.cache import cache
+from xhs_download.models import UpstreamRouteAudit
+from xhs_download.services.upstream_routes import read_route
+cache.clear()
+route = read_route({SOURCE.replace('123', '456')!r})
+assert route['revision'] == 1 and route['active'] is True
+assert route['effective_provider_order'] == ['parsehub_generic']
+assert route['format_preferences'] == {{'max_height':2160}}
+assert UpstreamRouteAudit.objects.count() == 1
+print('fresh-process-route-preserved')
+"""
+        with tempfile.TemporaryDirectory(prefix="route-restart-") as directory:
+            env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1",
+                   "DJANGO_DATABASE_URL": "sqlite:///" + str(Path(directory) / "test.sqlite3"),
+                   "DJANGO_CACHE_URL": "", "DJANGO_CACHE_KEY_PREFIX": "route-restart-test"}
+            for script, expected in ((writer, "saved-test-route"), (reader, "fresh-process-route-preserved")):
+                completed = subprocess.run([sys.executable, "-B", "-c", script], cwd=root, env=env,
+                                           capture_output=True, text=True, timeout=60)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertIn(expected, completed.stdout)
 
 
 class RoutePersistenceTests(RouteFixtures, TestCase):
@@ -153,6 +194,175 @@ class RouteApiTests(RouteFixtures, TestCase):
                               "provider_order": PIDS, "token": "private"})
         self.assertEqual(response.status_code, 400)
         self.assertNotIn("private", response.content.decode())
+
+    def test_explicit_sole_winner_save_replaces_old_order_without_implicit_fallback(self):
+        self.save(["yt_dlp_generic", "gallery_dl_generic"])
+        self.client.force_login(self.user)
+        response = self.post({"source_url": SOURCE, "expected_revision": 1,
+                              "provider_order": ["parsehub_generic"]})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["route"]["effective_provider_order"], ["parsehub_generic"])
+        self.assertEqual(UpstreamRoute.objects.get().provider_order, ["parsehub_generic"])
+        self.assertEqual(UpstreamRouteAudit.objects.count(), 2)
+
+    def test_read_and_candidate_selection_payload_do_not_write_route(self):
+        self.save()
+        self.client.force_login(self.user)
+        before = read_route(SOURCE)
+        for _ in range(2):
+            self.assertEqual(self.client.get(self.endpoint, {"source_url": SOURCE}).status_code, 200)
+        response = self.post({"source_url": SOURCE, "expected_revision": 1,
+                              "candidate_id": "this-run-only", "provider_order": ["gallery_dl_generic"]})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(read_route(SOURCE), before)
+        self.assertEqual(UpstreamRouteAudit.objects.count(), 1)
+
+
+@override_settings(THIRD_PARTY_PROVIDER_ENABLED=True,
+                   CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+                                       "LOCATION": "saved-service-routes"}})
+class SavedServiceRouteTests(RouteFixtures, TestCase):
+    service_ids = ("tiantianjiexi_generic", "kukutool_generic")
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        from .services import quality_execution
+        self.stack.enter_context(patch.object(quality_execution, "provider_available",
+                                               side_effect=lambda pid: pid in self.service_ids))
+        self.stack.enter_context(patch.object(quality_execution, "service_configured", return_value=True))
+        self.matcher = self.stack.enter_context(patch.object(quality_execution, "service_match",
+                                                             wraps=quality_execution.service_match))
+        self.stack.enter_context(patch("xhs_download.services.upstream_matching.match_upstream_url", return_value=()))
+        self.stack.enter_context(patch("xhs_download.services.platforms.third_party.provider_is_enabled", return_value=True))
+        for module in ("common", "upstream_candidates"):
+            self.stack.enter_context(patch(f"xhs_download.services.{module}.validate_public_download_url"))
+        self.clients = {}
+        for pid, target in (
+            (self.service_ids[0], "tiantianjiexi_generic.TianTianJieXiGenericProvider"),
+            (self.service_ids[1], "kukutool_generic.KukutoolGenericProvider"),
+        ):
+            self.clients[pid] = self.stack.enter_context(patch(f"xhs_download.services.platforms.{target}.parse",
+                return_value={"title": "restricted", "videos": [{"url": "http://media.example/stream.m3u8",
+                    "height": 2160, "vcodec": "av01", "acodec": "none"}]}))
+
+    def gate(self, source=SOURCE):
+        from .models import ProviderRuntimeSetting, ProviderAccessMode
+        from .services.provider_access import third_party_public_access_summary
+        runtime = ProviderRuntimeSetting(third_party_mode=ProviderAccessMode.PUBLIC,
+            third_party_allowed_public_platforms="\n".join(f"upstream:{pid}" for pid in self.service_ids))
+        return third_party_public_access_summary(source, runtime_setting=runtime)
+
+    def parse(self, source=SOURCE):
+        gate = self.gate(source)
+        self.assertTrue(gate["allowed"], gate)
+        return PlatformRegistry().parse_url(source, upstream_provider_ids=gate["upstream_provider_ids"],
+                                           upstream_matches=gate["upstream_matches"])
+
+    def test_route_ids_derive_aliases_but_services_do_not_enter_default_order(self):
+        from .services.quality_execution import PROVIDER_ALIASES
+        from .services.upstream_routes import PROVIDER_IDS, DEFAULT_PROVIDER_ORDER
+        self.assertEqual(set(PROVIDER_IDS), set(PROVIDER_ALIASES.values()))
+        self.assertNotIn("animeimages_current", PROVIDER_IDS)
+        self.assertEqual(tuple(DEFAULT_PROVIDER_ORDER), tuple(PIDS))
+        self.assertTrue(set(self.service_ids).issubset(PROVIDER_IDS))
+
+    def test_default_unselected_and_mature_sources_never_probe_services(self):
+        from .services.upstream_routes import saved_service_matches
+        self.assertEqual(saved_service_matches(SOURCE), ())
+        self.assertIsNone(GenericThirdPartyAdapter().get_rule_for_url(SOURCE))
+        self.save(["parsehub_generic"])
+        self.assertEqual(saved_service_matches(SOURCE), ())
+        self.assertEqual(saved_service_matches("https://www.youtube.com/watch?v=test"), ())
+        self.matcher.assert_not_called()
+        for client in self.clients.values():
+            client.assert_not_called()
+        with patch("xhs_download.services.quality_execution.provider_available", return_value=False):
+            with self.assertNumQueries(0):
+                self.assertEqual(saved_service_matches(SOURCE), ())
+
+    def test_fixed_service_uses_shared_executor_and_retains_restricted_candidates(self):
+        from .services import quality_execution
+        from .services.upstream_candidates import resolve_candidate_record
+        from .services.upstream_routes import parse_cache_key
+        self.save(list(self.service_ids))
+        with patch.object(quality_execution, "execute_provider", wraps=quality_execution.execute_provider) as execute:
+            result = self.parse()
+        execute.assert_called_once()
+        self.assertIs(execute.call_args.kwargs["service_authorized"], True)
+        self.assertEqual(execute.call_args.kwargs["expected_match"]["provider_id"], self.service_ids[0])
+        self.assertEqual(result.metadata["upstream_route"]["selected_provider"], self.service_ids[0])
+        self.assertEqual(result.assets, ())
+        self.clients[self.service_ids[0]].assert_called_once()
+        self.clients[self.service_ids[1]].assert_not_called()
+        for candidate in result.metadata["upstream_candidates"]:
+            record = resolve_candidate_record(candidate["resource_token"], candidate["candidate_id"])
+            self.assertEqual(record["provider_id"], self.service_ids[0])
+            self.assertEqual(record["source_url"], SOURCE)
+        self.assertIsNone(parse_cache_key(SOURCE, result.metadata["upstream_route"], self.service_ids[0]))
+        self.assertEqual(UpstreamRouteAudit.objects.count(), 1)
+
+    def test_service_failure_uses_only_explicit_fallback(self):
+        self.save([self.service_ids[0]])
+        self.clients[self.service_ids[0]].side_effect = XhsParseError("failed")
+        with self.assertRaises(XhsParseError):
+            self.parse()
+        self.clients[self.service_ids[1]].assert_not_called()
+        self.save(list(self.service_ids), revision=1)
+        result = self.parse()
+        self.assertEqual(result.metadata["selected_provider"], self.service_ids[1])
+        self.assertEqual(result.metadata["upstream_route"]["fallback_reason"], f"{self.service_ids[0]}: failed")
+        self.clients[self.service_ids[1]].assert_called_once()
+
+    def test_same_host_new_link_executes_saved_service_without_outer_cache(self):
+        self.save([self.service_ids[0]])
+        self.parse()
+        second = SOURCE.replace("123", "456")
+        self.parse(second)
+        self.assertEqual([call.args[0] for call in self.clients[self.service_ids[0]].call_args_list], [SOURCE, second])
+        self.clients[self.service_ids[1]].assert_not_called()
+        self.assertEqual(UpstreamRouteAudit.objects.count(), 1)
+
+    def test_batch_uses_saved_service_on_a_different_link(self):
+        from .models import ProviderRuntimeSetting, ProviderAccessMode
+        from .services.batch_parse.results import build_batch_result_row
+        self.save([self.service_ids[0]])
+        runtime = ProviderRuntimeSetting(third_party_mode=ProviderAccessMode.PUBLIC,
+            third_party_allowed_public_platforms=f"upstream:{self.service_ids[0]}")
+        request = RequestFactory().get("/")
+        request.user = self.user
+        source = SOURCE.replace("123", "456")
+        with patch("xhs_download.services.provider_access.load_runtime_setting", return_value=runtime):
+            row = build_batch_result_row(request, source, prefer_ultra_hd=False, prefer_youtube_merge=False,
+                per_link_timeout_seconds=30, query_uses_third_party_provider_func=lambda _: True,
+                third_party_provider_is_available_func=lambda _: True,
+                display_context_builder=lambda result, **kwargs: {"upstream_candidates": result.metadata["upstream_candidates"]})
+        self.assertEqual(row["status"], "success", row)
+        self.assertEqual(row["selected_provider"], self.service_ids[0])
+        self.clients[self.service_ids[0]].assert_called_once()
+        self.assertEqual(self.clients[self.service_ids[0]].call_args.args[0], source)
+        self.clients[self.service_ids[1]].assert_not_called()
+        self.assertEqual(UpstreamRouteAudit.objects.count(), 1)
+
+    def test_stale_service_rule_is_rejected_after_winner_change_and_reset(self):
+        self.save([self.service_ids[0]])
+        adapter = GenericThirdPartyAdapter()
+        stale_rule = adapter.get_rule_for_url(SOURCE)
+        self.save([self.service_ids[1]], revision=1)
+        self.assertEqual(route_matches(SOURCE, stale_rule.upstream_matches)[0], ())
+        with self.assertRaises(XhsParseError):
+            adapter.parse_upstream_rule(SOURCE, stale_rule, 30, None)
+        fresh = adapter.get_rule_for_url(SOURCE)
+        wrong_version = [{**fresh.upstream_matches[0], "version": "stale-version"}]
+        self.assertEqual(route_matches(SOURCE, wrong_version)[0], ())
+        write_route(SOURCE, expected_revision=2, actor=self.user, reset=True)
+        self.assertEqual(route_matches(SOURCE, fresh.upstream_matches)[0], ())
+        with self.assertRaises(XhsParseError):
+            adapter.parse_upstream_rule(SOURCE, fresh, 30, None)
+        for client in self.clients.values():
+            client.assert_not_called()
 
 
 @override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache",
@@ -431,6 +641,73 @@ class RouteConsumptionTests(RouteFixtures, TestCase):
         self.assertEqual(self.parse().metadata["selected_provider"], "gallery_dl_generic")
         write_route(SOURCE, actor=self.user, expected_revision=2, reset=True)
         self.assertEqual(self.parse().metadata["selected_provider"], "yt_dlp_generic")
+
+    def test_fixed_winner_execution_failure_does_not_try_unsaved_alternatives(self):
+        self.save(["parsehub_generic"])
+        before = read_route(SOURCE)
+        self.execute.side_effect = XhsParseError("failed")
+        with self.assertRaises(XhsParseError):
+            self.parse()
+        self.assertEqual([call.args[0] for call in self.execute.call_args_list], ["parsehub_generic"])
+        self.assertEqual(read_route(SOURCE), before)
+        self.assertEqual(UpstreamRouteAudit.objects.count(), 1)
+
+    def test_all_explicit_fallbacks_fail_without_overwriting_route(self):
+        order = ["parsehub_generic", "gallery_dl_generic", "yt_dlp_generic"]
+        self.save(order, format_preferences={"max_height": 2160})
+        before = read_route(SOURCE)
+        self.execute.side_effect = XhsParseError("failed")
+        with self.assertRaises(XhsParseError):
+            self.parse()
+        self.assertEqual([call.args[0] for call in self.execute.call_args_list], order)
+        self.assertEqual(read_route(SOURCE), before)
+        self.assertEqual(UpstreamRouteAudit.objects.count(), 1)
+
+    def test_same_host_second_link_executes_fixed_winner_in_ordinary_and_batch(self):
+        from .services.batch_parse.results import build_batch_result_row
+        from .services.upstream_candidates import issue_candidate
+        self.enable_real_cache()
+        self.save(["parsehub_generic"])
+
+        def execute(provider, source, **kwargs):
+            candidate = issue_candidate("https://media.example/video.mp4", {"height": 2160}, ordinal=1,
+                provider=provider, source_url=source, media_type="video", state="separate_tracks")
+            return replace(self.result, metadata={**self.result.metadata, "upstream_candidates": [candidate]})
+
+        self.execute.side_effect = execute
+        self.parse()
+        self.assertTrue(self.parse().metadata["upstream_route"]["cache_hit"])
+        second_url = SOURCE.replace("123", "456")
+        second = PlatformRegistry().parse_url(second_url, upstream_provider_ids=PIDS, upstream_matches=MATCHES)
+        self.assertFalse(second.metadata["upstream_route"]["cache_hit"])
+        third_url = SOURCE.replace("123", "789")
+        gate = {"allowed": True, "platform_id": "upstream", "upstream_provider_ids": PIDS, "upstream_matches": MATCHES}
+        request = RequestFactory().get("/")
+        request.user = self.user
+        with patch("xhs_download.services.batch_parse.results.third_party_public_access_summary", return_value=gate):
+            row = build_batch_result_row(request, third_url, prefer_ultra_hd=False, prefer_youtube_merge=False,
+                per_link_timeout_seconds=30, query_uses_third_party_provider_func=lambda _: True,
+                third_party_provider_is_available_func=lambda _: True,
+                display_context_builder=lambda result, **kwargs: {"upstream_candidates": result.metadata["upstream_candidates"]})
+        self.assertEqual(row["status"], "success", row)
+        self.assertEqual([call.args[:2] for call in self.execute.call_args_list],
+                         [("parsehub_generic", url) for url in (SOURCE, second_url, third_url)])
+        self.assertEqual(UpstreamRouteAudit.objects.count(), 1)
+
+    def test_restricted_valid_candidates_never_trigger_fallback_or_route_write(self):
+        self.save(["parsehub_generic", "gallery_dl_generic"])
+        before = read_route(SOURCE)
+        for state in ("separate_media_tracks", "streaming_media", "insecure_reference", "unknown_media_tracks"):
+            with self.subTest(state=state):
+                candidate = {**self.candidate, "delivery_state": state}
+                self.execute.reset_mock()
+                self.execute.return_value = replace(self.result, metadata={"upstream_candidates": [candidate]})
+                parsed = self.parse()
+                self.assertEqual(parsed.metadata["upstream_candidates"], [candidate])
+                self.execute.assert_called_once()
+                self.assertEqual(self.execute.call_args.args[0], "parsehub_generic")
+        self.assertEqual(read_route(SOURCE), before)
+        self.assertEqual(UpstreamRouteAudit.objects.count(), 1)
 
     def test_explicit_failure_order_can_reach_fourth_provider(self):
         self.save(PIDS)

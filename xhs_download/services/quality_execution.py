@@ -13,8 +13,42 @@ PROVIDER_ALIASES = {
     'gallery_dl_existing': 'gallery_dl_generic', 'gallery_dl_generic': 'gallery_dl_generic',
     'parsehub_repo': 'parsehub_generic', 'parsehub_generic': 'parsehub_generic',
     'videodl_repo': 'videodl_repo',
+    'tiantian_existing': 'tiantianjiexi_generic', 'tiantianjiexi_generic': 'tiantianjiexi_generic',
+    'kukutool_existing': 'kukutool_generic', 'kukutool_generic': 'kukutool_generic',
 }
 EXPECTED_VERSIONS = {'yt_dlp_generic':'2026.3.17', 'gallery_dl_generic':'1.32.4'}
+SERVICE_VERSIONS = {'tiantianjiexi_generic': 'tiantian-existing',
+                    'kukutool_generic': 'kukutool-existing-v1'}
+SERVICE_PROVIDER_IDS = tuple(SERVICE_VERSIONS)
+
+
+def service_configured(provider_id):
+    """Inspect existing gates/runtime state without probing a remote service."""
+    if provider_id == 'tiantianjiexi_generic':
+        from .platforms.tiantianjiexi_generic import provider_configured
+        return provider_configured()
+    if provider_id == 'kukutool_generic':
+        from django.conf import settings
+        from .platforms.douyin_kukutool import get_kukutool_runtime_status, KUKUTOOL_HELPER
+        return bool(runtime_bool('THIRD_PARTY_PROVIDER_ENABLED', False)
+                    and getattr(settings, 'THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED', False)
+                    and get_kukutool_runtime_status().get('available')
+                    and KUKUTOOL_HELPER.is_file())
+    return False
+
+
+def service_match(provider_id, source_url):
+    """Bridge identity only; callers must authorize source routing separately."""
+    provider = canonical_provider_id(provider_id)
+    if provider not in SERVICE_VERSIONS:
+        raise ProviderLabError('PROVIDER_UNSUPPORTED')
+    _python_for(provider)
+    from .common import validate_public_url
+    from .upstream_candidates import candidate_url
+    if not candidate_url(source_url, validator=validate_public_url):
+        raise ProviderLabError('PROVIDER_UNSUPPORTED')
+    return {'provider_id': provider, 'extractor_id': provider,
+            'version': SERVICE_VERSIONS[provider], 'label': provider}
 
 
 def canonical_provider_id(provider_id):
@@ -25,6 +59,10 @@ def canonical_provider_id(provider_id):
 
 
 def _python_for(provider_id):
+    if provider_id in SERVICE_VERSIONS:
+        if not service_configured(provider_id):
+            raise ProviderLabError('PROVIDER_NOT_CONFIGURED')
+        return None
     if provider_id == 'parsehub_generic':
         if not runtime_bool('PARSEHUB_UPSTREAM_ENABLED', False):
             raise ProviderLabError('PROVIDER_NOT_CONFIGURED')
@@ -223,6 +261,7 @@ def _normalize_videodl_candidates(payload, match, source):
     from .assets import ParseResult
     from .upstream_candidates import MAX_CANDIDATES, candidate_url, issue_candidates
     candidates = []
+    provider = match['provider_id']
     rejected = 0
     examined = 0
     for _, url, metadata in payload:
@@ -234,17 +273,17 @@ def _normalize_videodl_candidates(payload, match, source):
             rejected += 1
             continue
         candidates.append(dict(url=url, metadata=metadata, ordinal=len(candidates)+1,
-            provider='videodl_repo',source_url=source,match=match,media_type=metadata.get('media_type','unknown'),
+            provider=provider,source_url=source,match=match,media_type=metadata.get('media_type','unknown'),
             state='separate_media_tracks' if metadata.get('requires_merge') else 'candidate_only'))
     if not candidates:
         raise ProviderLabError('PROVIDER_RESULT_EMPTY')
     candidates = issue_candidates(candidates)
     from .provider_lab.contracts import safe_public_text
-    title = safe_public_text(payload[0][2].get('title') or 'videodl', 300)
+    title = safe_public_text(payload[0][2].get('title') or provider, 300)
     return ParseResult(platform='third_party',post_type='video' if any(c['media_type']=='video' for c in candidates) else 'image',
-        base_filename='videodl',assets=(),metadata={
-            'title':title,'upstream_candidates':candidates,'source_provider':'videodl_repo',
-            'selected_provider':'videodl_repo','source_platform':'upstream','canonical_source_url':source,
+        base_filename='videodl' if provider == 'videodl_repo' else provider,assets=(),metadata={
+            'title':title,'upstream_candidates':candidates,'source_provider':provider,
+            'selected_provider':provider,'source_platform':'upstream','canonical_source_url':source,
             'upstream_extractor':match['extractor_id'],'upstream_version':match['version'],
             'candidates_truncated':max(0,len(payload)-len(candidates)-rejected),
             'candidate_count':len(payload), 'candidate_returned_count':len(payload),
@@ -258,8 +297,65 @@ def _normalize_videodl_candidates(payload, match, source):
         })
 
 
+def _execute_service(provider, source, timeout_seconds, expected_match):
+    from .common import XhsProviderTimeoutError
+    from .upstream_candidates import MAX_CANDIDATES, candidate_url
+    from itertools import islice
+    from .platforms.tiantianjiexi_generic import TianTianJieXiGenericProvider
+    from .platforms.kukutool_generic import KukutoolGenericProvider
+    match = _select_match([service_match(provider, source)], provider, expected_match)
+    if not candidate_url(source):
+        raise ProviderLabError('PROVIDER_UNSUPPORTED')
+    factory = (TianTianJieXiGenericProvider if provider == 'tiantianjiexi_generic'
+               else KukutoolGenericProvider)
+    try:
+        payload = factory().parse(source, timeout_seconds=min(30.0, max(.1, float(timeout_seconds))))
+    except (XhsProviderTimeoutError, TimeoutError):
+        raise ProviderLabError('PROVIDER_TIMEOUT') from None
+    except Exception:
+        raise ProviderLabError('PROVIDER_PROCESS_FAILED') from None
+    if not isinstance(payload, dict):
+        raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
+    rows = []
+    declared = 0
+    def add(raw, media_type):
+        if len(rows) >= MAX_CANDIDATES:
+            return
+        metadata = dict(raw) if isinstance(raw, dict) else {}
+        url = (metadata.get('url') or metadata.get('download_url') or metadata.get('play_url')
+               if isinstance(raw, dict) else raw)
+        metadata.setdefault('media_type', media_type)
+        metadata.setdefault('title', payload.get('title'))
+        metadata.setdefault('quality_label', metadata.get('quality') or metadata.get('type'))
+        metadata.setdefault('size_bytes', metadata.get('size'))
+        rows.append([3, url, metadata])
+    for key, kind in (('videos', 'video'), ('images', 'image'), ('pics', 'image'),
+                      ('image_urls', 'image'), ('imageUrls', 'image'), ('audios', 'audio')):
+        items = payload.get(key) or ()
+        if not isinstance(items, (list, tuple)):
+            raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
+        declared += len(items)
+        for item in items:
+            add(item, kind)
+            if isinstance(item, dict):
+                variants = item.get('video_fullinfo') or ()
+                if not isinstance(variants, (list, tuple)):
+                    raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
+                declared += len(variants)
+                for variant in islice(variants, max(0, MAX_CANDIDATES - len(rows))):
+                    add(variant, kind)
+    if payload.get('audio_url'):
+        declared += 1
+        add(payload['audio_url'], 'audio')
+    if any(payload.get(key) for key in ('url', 'download_url', 'play_url')):
+        declared += 1
+        add(payload, 'unknown')
+    return rows, match, {'service_declared_count': declared,
+                        'service_unexpanded_count': declared - len(rows)}
+
+
 def execute_provider(provider_id, source_url, *, timeout_seconds=20.0, backend=None, options=None,
-                     expected_match=None):
+                     expected_match=None, service_authorized=False):
     """Execute only the requested provider, independent of saved route preference.
 
     Results are successful when candidates exist, including unknown/separate
@@ -269,8 +365,14 @@ def execute_provider(provider_id, source_url, *, timeout_seconds=20.0, backend=N
     from .upstream_delivery import normalize_upstream_result
     provider = canonical_provider_id(provider_id)
     source = normalized_source(source_url)
+    if provider in SERVICE_VERSIONS and service_authorized is not True:
+        raise ProviderLabError('PROVIDER_POLICY_REJECTED')
     _python_for(provider)
-    if provider == 'videodl_repo':
+    if provider in SERVICE_VERSIONS:
+        if backend is not None or options is not None:
+            raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
+        payload, match, execution = _execute_service(provider, source, timeout_seconds, expected_match)
+    elif provider == 'videodl_repo':
         if expected_match is not None:
             from .provider_lab.videodl_policy import VIDEODL_POLICY_PIN
             _select_match([expected_match], provider, expected_match)
@@ -287,9 +389,17 @@ def execute_provider(provider_id, source_url, *, timeout_seconds=20.0, backend=N
             raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
         payload, match, execution = _execute_upstream(provider,source,timeout_seconds,
                                                       expected_match=expected_match)
-    result = (_normalize_videodl_candidates(payload,match,source) if provider == 'videodl_repo' else
+    result = (_normalize_videodl_candidates(payload,match,source) if provider == 'videodl_repo' or provider in SERVICE_VERSIONS else
               normalize_upstream_result(payload, match=match, source_url=source))
     metadata = dict(result.metadata)
+    if provider in SERVICE_VERSIONS:
+        omitted = execution['service_unexpanded_count']
+        for key in ('candidate_count', 'candidate_returned_count', 'returned_count', 'declared_count'):
+            metadata[key] = execution['service_declared_count']
+        for key in ('candidate_unexpanded_count', 'unexpanded_count', 'truncated_count', 'candidates_truncated'):
+            metadata[key] += omitted
+        if omitted:
+            metadata['unexpanded_scope'] = 'service_candidate_descriptor_limit'
     metadata.update({key:execution[key] for key in ('warnings','unexpanded_scope','attempts') if key in execution})
     metadata['truncated'] = bool(execution.get('truncated') or metadata.get('candidates_truncated'))
     upstream_count = execution.get('upstream_format_count')

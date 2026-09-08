@@ -53,6 +53,13 @@
         return Object.prototype.hasOwnProperty.call(STATUS_LABELS, status) ? status : "failed";
     }
 
+    function readProviderDescriptors(documentObject) {
+        try {
+            const rows = JSON.parse(documentObject.querySelector("#provider-lab-config")?.textContent || "[]");
+            return Array.isArray(rows) ? rows : [];
+        } catch (_error) { return []; }
+    }
+
     function selectedProviderIds(inputs, maximum) {
         const values = Array.from(inputs || [])
             .filter((input) => Boolean(input && input.checked && !input.disabled))
@@ -567,7 +574,7 @@
         if (error && status !== "success") {
             error.textContent = errorMessage(result.error_code);
             if (status === "cancelled") error.textContent = "已取消；其他已完成结果保留。";
-            if (status === "skipped") error.textContent = "本次未执行：整体预算已用尽。";
+            if (status === "skipped") error.textContent = result.not_run_reason || "本次未执行：整体预算已用尽。";
             error.hidden = false;
         }
         if (error && status === "success") { error.hidden = true; error.textContent = ""; }
@@ -742,6 +749,16 @@
             if (save) save.disabled = busy || !canConfigure || !route?.applicable || !confirm?.checked || !order.length;
             if (reset) reset.disabled = busy || !canConfigure || !route?.applicable || !route.active;
         }
+        function draftSummary() {
+            const node = panel.querySelector("[data-route-confirmation-summary]");
+            if (!node || !route) return;
+            const current = route.active ? (route.provider_order || []).join(" → ") : "通用默认路线";
+            const preferences = ["max_height", "preferred_video_codec", "preferred_container"]
+                .filter((name) => field(name)?.value).map((name) => `${name}=${field(name).value}`).join("，") || "未指定";
+            const execution = order.includes("videodl_repo")
+                ? `${field("route_videodl_mode")?.value || "dedicated_only"} ${field("route_videodl_backend")?.value || ""}` : "该上游标准模式";
+            node.textContent = `来源站点：${route.source_host}；当前：${current}；拟固定：${order[0] || "未选择"}；执行选项：${execution}；格式偏好：${preferences}；明确备选：${order.slice(1).join(" → ") || "无，首选失败即停止"}。`;
+        }
         function renderOrder() {
             orderNode.replaceChildren();
             order.forEach((id, index) => {
@@ -772,6 +789,7 @@
                 option.value = id; option.textContent = id; addSelect.append(option);
             });
             buttons();
+            draftSummary();
         }
         function apply(snapshot) {
             route = snapshot;
@@ -851,12 +869,17 @@
             finally { if (version === sequence) { busy = false; buttons(); } }
         }
         function selectProvider(providerId) {
-            const id = ROUTE_PROVIDER_IDS[providerId];
+            const descriptor = settings.descriptors?.find((item) => item.provider_id === providerId);
+            const id = descriptor ? descriptor.execution_provider_id : ROUTE_PROVIDER_IDS[providerId];
+            if (providerId === "animeimages_current" || descriptor?.baseline || descriptor?.route_selectable === false) {
+                text(descriptor?.route_unavailable_reason || "当前路线基线不是独立上游，不能保存为固定路线。");
+                return;
+            }
             if (!route?.applicable || !id || !route.allowed_provider_ids.includes(id)) {
                 text("该候选不适用于此来源的持久路线，或路线尚未读取。");
                 return;
             }
-            order = [id, ...order.filter((value) => value !== id)];
+            order = [id];
             if (confirm) confirm.checked = false;
             renderOrder(); text("已调整路线草稿；尚未保存。");
         }
@@ -881,6 +904,8 @@
             if (event.target === addSelect && addSelect.value) {
                 order.push(addSelect.value); if (confirm) confirm.checked = false; renderOrder();
             }
+            if (event.target !== confirm && confirm) confirm.checked = false;
+            draftSummary();
             buttons();
         });
         buttons();
@@ -954,12 +979,17 @@
         const maxProviders = Math.max(Number(options.maxProviders || root.dataset.maxProviders || 5),
             form.querySelectorAll('input[name="providers"]').length);
         const videodlInventory = options.videodlInventory || readVideodlInventory(documentObject);
+        const descriptors = options.descriptors || readProviderDescriptors(documentObject);
+        const descriptorById = new Map(descriptors.map((item) => [item.provider_id, item]));
+        const executedProviders = new Set();
+        const requestedProviders = new Set();
+        let includedProviders = [];
         const resultByProvider = new Map();
         let running = false;
         let currentSource = "";
         let currentSelection = null;
         const message = documentObject.querySelector("[data-provider-lab-form-message]");
-        const submitButton = form.querySelector('[type="submit"]');
+        const submitButton = form.querySelector('[data-lab-all]') || form.querySelector('[type="submit"]');
         const cancelButton = form.querySelector("[data-lab-cancel]");
 
         function updateSelection(selection) {
@@ -980,6 +1010,29 @@
         function summarize() {
             const warning = root.querySelector("[data-lab-comparison-warning]");
             if (warning) warning.textContent = comparisonWarnings(Array.from(resultByProvider.values())).join(" ");
+        }
+
+        function runStats() {
+            const stats = {included: 0, executed: 0, success: 0, unsupported: 0, failed: 0, timeout: 0, notrun: 0};
+            for (const id of includedProviders) {
+                if (descriptorById.get(id)?.baseline || id === "animeimages_current") continue;
+                stats.included += 1;
+                const job = queue.jobs.get(id);
+                const executed = job?.result?.executed === true || executedProviders.has(id) && job?.result?.executed !== false;
+                if (executed) stats.executed += 1;
+                if (job?.result?.executed === false) stats.notrun += 1;
+                else if (["success", "unsupported", "failed", "timeout"].includes(job?.status)) stats[job.status] += 1;
+                else if (["skipped", "not_configured"].includes(job?.status) || job?.status === "cancelled" && !requestedProviders.has(id)) stats.notrun += 1;
+            }
+            return stats;
+        }
+        function showRunStats() {
+            const node = root.querySelector("[data-lab-run-stats]");
+            if (!node) return;
+            const s = runStats();
+            node.textContent = `纳入 ${s.included} · 实际执行 ${s.executed} · 成功 ${s.success} · 不支持 ${s.unsupported} · 失败 ${s.failed} · 超时 ${s.timeout} · 未执行 ${s.notrun}`;
+            const uncertain = includedProviders.filter((id) => queue.jobs.get(id)?.status === "cancelled" && requestedProviders.has(id) && !executedProviders.has(id)).length;
+            if (uncertain) node.textContent += ` · 已取消，执行状态未确认 ${uncertain}`;
         }
 
         const queue = createExecutionQueue({
@@ -1004,6 +1057,7 @@
                     if (note) { note.hidden = false; note.textContent = job.reason; }
                 }
                 if (currentSelection?.providerId === job.id && job.status === "queued") updateSelection(null);
+                showRunStats();
             },
             onIdle() {
                 running = false;
@@ -1015,12 +1069,29 @@
         const routeEditor = createRouteEditor(documentObject, {fetch: fetchImpl, window: windowObject,
             url: root.dataset.routeUrl || "/provider-lab/routes/", csrf: () => csrfToken(form),
             getSource: () => String(form.elements.source?.value || "").trim(),
-            getSelection: () => currentSelection});
+            getSelection: () => currentSelection, descriptors});
 
         async function runOne(providerId, source, csrf, providerOptions, signal) {
+            const descriptor = descriptorById.get(providerId);
+            const authorized = Boolean(form.querySelector(`input[name="provider_authorizations"][value="${providerId}"]`)?.checked);
+            let reason = descriptor?.available === false ? descriptor.unexecuted_reason === "PROVIDER_DISABLED"
+                ? "该上游已关闭。" : descriptor.not_configured_hint || "当前通道未配置或缺少运行依赖。" : "";
+            const requirements = Array.isArray(descriptor?.requires_confirmation) ? descriptor.requires_confirmation : [];
+            if (!reason && requirements.length && !authorized) reason = "尚未确认本次付费调用或外部分享授权。";
+            if (!reason && providerId === "videodl_repo") {
+                try { providerOptions = videodlOptions(form, videodlInventory); }
+                catch (error) { reason = error.userMessage || "受控执行选项未获授权。"; }
+            }
+            if (reason) return {provider_id: providerId, status: "skipped", executed: false, not_run_reason: reason, assets: []};
             const body = {source, provider_id: providerId};
+            if (requirements.length) body.confirmations = Object.fromEntries(requirements.map((name) => [name, authorized]));
             if (providerId === "videodl_repo" && providerOptions) body.options = providerOptions;
+            requestedProviders.add(providerId);
             const result = await requestJson(fetchImpl, runUrl, csrf, body, {signal});
+            if (result.executed === true || !descriptor && result.executed !== false) executedProviders.add(providerId);
+            if (result.executed === false) return {...result, provider_id: providerId, status: "skipped",
+                not_run_reason: result.unexecuted_reason === "PROVIDER_DISABLED" ? "该上游已关闭。"
+                    : result.unexecuted_reason === "CONFIRMATION_REQUIRED" ? "缺少本次调用授权。" : "当前配置或运行条件不允许执行。"};
             return {...result, provider_id: providerId};
         }
 
@@ -1028,7 +1099,9 @@
             event.preventDefault();
             if (running) { return; }
             const source = String(form.elements.source?.value || "").trim();
-            const providers = selectedProviderIds(
+            const providers = descriptors.length && !event.submitter?.hasAttribute?.("data-lab-selected")
+                ? descriptors.filter((item) => !item.baseline && item.provider_id !== "animeimages_current").map((item) => item.provider_id)
+                : selectedProviderIds(
                 form.querySelectorAll('input[name="providers"]'),
                 maxProviders,
             );
@@ -1036,29 +1109,21 @@
                 if (message) { message.textContent = `请输入有效内容并选择 1 至 ${maxProviders} 个可用 Provider。`; }
                 return;
             }
-            let controlledVideodlOptions = null;
-            if (providers.includes("videodl_repo")) {
-                try {
-                    controlledVideodlOptions = videodlOptions(form, videodlInventory);
-                } catch (error) {
-                    if (message) {
-                        message.textContent = error.userMessage || "videodl 受控执行选项无效。";
-                    }
-                    return;
-                }
-            }
             running = true;
             if (submitButton) { submitButton.disabled = true; }
             if (cancelButton) cancelButton.disabled = false;
             if (message) { message.textContent = `正在运行 ${providers.length} 个独立测试...`; }
             currentSource = source;
+            includedProviders = Array.from(new Set(providers));
+            executedProviders.clear();
+            requestedProviders.clear();
             resultByProvider.clear();
             updateSelection(null);
             root.querySelectorAll("[data-provider-card]").forEach((card) => {
                 resetCard(card);
                 if (!providers.includes(card.dataset.providerCard)) setCardStatus(card, "skipped");
             });
-            queue.start(providers, {source, csrf: csrfToken(form), providerOptions: {videodl_repo: controlledVideodlOptions}});
+            queue.start(includedProviders, {source, csrf: csrfToken(form), providerOptions: {}});
             void routeEditor?.load();
             running = true;
             if (submitButton) submitButton.disabled = true;
@@ -1145,6 +1210,10 @@
                 queue.invalidate();
                 routeEditor?.invalidate();
                 resultByProvider.clear();
+                includedProviders = [];
+                executedProviders.clear();
+                requestedProviders.clear();
+                showRunStats();
                 currentSource = "";
                 updateSelection(null);
                 root.querySelectorAll("[data-provider-card]").forEach(resetCard);
@@ -1174,6 +1243,7 @@
             queue,
             routeEditor,
             get currentSelection() { return currentSelection; },
+            get runStats() { return runStats(); },
             destroy() {
                 queue.invalidate();
                 routeEditor?.invalidate();

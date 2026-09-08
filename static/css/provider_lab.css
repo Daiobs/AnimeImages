@@ -133,6 +133,11 @@
     margin-top: 18px;
 }
 
+.provider-lab-advanced > summary { cursor: pointer; font-weight: 700; margin-bottom: 12px; }
+.provider-lab-call-authorizations { display: grid; gap: 8px; }
+[data-lab-run-stats], [data-route-confirmation-summary] { margin: 10px 0; font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
+.provider-lab-availability { margin: 0; font-size: 12px; color: var(--lab-warning); overflow-wrap: anywhere; }
+
 .provider-lab-source-field {
     display: grid;
     gap: 7px;

@@ -242,6 +242,7 @@ class ProviderLabRegistryAndContractTests(SimpleTestCase):
                 "yt_dlp_existing",
                 "gallery_dl_existing",
                 "tiantian_existing",
+                "kukutool_existing",
             ),
         )
 
@@ -250,8 +251,8 @@ class ProviderLabRegistryAndContractTests(SimpleTestCase):
         self.assertNotIn("import_module", source)
         self.assertNotIn("entry_points", source)
 
-    def test_18_all_six_providers_can_be_compared(self):
-        self.assertEqual(len(PROVIDER_REGISTRY), 6)
+    def test_18_all_seven_providers_can_be_compared(self):
+        self.assertEqual(len(PROVIDER_REGISTRY), 7)
 
     def test_19_share_text_extracts_one_url(self):
         self.assertEqual(
@@ -361,7 +362,7 @@ class ProviderLabRegistryAndContractTests(SimpleTestCase):
         tiantian_health_mock,
     ):
         descriptors = list_provider_descriptors()
-        self.assertEqual(len(descriptors), 6)
+        self.assertEqual(len(descriptors), 7)
         ytdlp_health_mock.assert_not_called()
         tiantian_health_mock.assert_not_called()
 

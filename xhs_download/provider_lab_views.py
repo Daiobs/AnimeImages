@@ -19,6 +19,7 @@ from xhs_download.services.provider_lab.providers import (
     list_videodl_backend_inventory,
     normalized_source,
     run_provider,
+    validate_confirmations,
 )
 from xhs_download.services.provider_lab.videodl_control import parse_videodl_options
 from xhs_download.services.provider_lab.resources import (
@@ -113,14 +114,12 @@ def provider_lab_run_view(request):
     try:
         payload = parse_json_body(request)
         payload_fields = set(payload)
-        if payload_fields not in (
-            {"source", "provider_id"},
-            {"source", "provider_id", "options"},
-        ):
+        if not {'source','provider_id'} <= payload_fields or payload_fields - {'source','provider_id','options','confirmations'}:
             raise ProviderLabError("PROVIDER_SCHEMA_INVALID")
         provider_id = safe_text(payload.get("provider_id"), 80)
         if provider_id not in PROVIDER_REGISTRY:
             raise ProviderLabError("PROVIDER_NOT_SELECTED")
+        confirmations = validate_confirmations(payload.get('confirmations'))
         options = None
         if "options" in payload:
             if provider_id != "videodl_repo":
@@ -143,6 +142,7 @@ def provider_lab_run_view(request):
                 source=source,
                 user_id=request.user.pk,
                 options=options,
+                confirmations=confirmations,
             )
         finally:
             identity = execution_identity(request.user.pk, provider_id, source)

@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 import sys
 import tempfile
@@ -92,11 +93,19 @@ class SharedQualityExecutionTests(SimpleTestCase):
     def test_parsehub_runner_does_not_import_parsehub_in_parent(self):
         before={name for name in sys.modules if name=='parsehub' or name.startswith('parsehub.')}
         result=self.execute('parsehub_repo',[[3,URL,{'media_type':'video','extension':'mp4'}]])
-        with patch.object(execution,'execute_provider',return_value=result) as shared:
+        descriptor = replace(PROVIDER_REGISTRY['parsehub_repo'], enabled_setting='', availability=lambda: True)
+        with patch.dict(PROVIDER_REGISTRY, {'parsehub_repo': descriptor}), \
+                patch.object(execution,'execute_provider',return_value=result) as shared:
             lab=run_provider(provider_id='parsehub_repo',source=SOURCE,user_id=1)
         self.assertEqual(lab['status'],'success')
         self.assertEqual(len(lab['assets']),1)
         shared.assert_called_once()
+        with patch.dict(PROVIDER_REGISTRY, {'parsehub_repo': replace(descriptor, availability=lambda: False)}), \
+                patch.object(execution,'execute_provider') as blocked:
+            unavailable = run_provider(provider_id='parsehub_repo',source=SOURCE,user_id=1)
+        self.assertEqual(unavailable['status'], 'not_configured')
+        self.assertFalse(unavailable['executed'])
+        blocked.assert_not_called()
         self.assertEqual(before,{name for name in sys.modules if name=='parsehub' or name.startswith('parsehub.')})
 
     def test_provider_identity_mismatch_rejected(self):

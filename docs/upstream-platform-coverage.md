@@ -2,6 +2,27 @@
 
 ## Status
 
+### PR #89 local all-upstream follow-up (2026-09-08)
+
+The existing Staff Lab now checks every registered independent channel from one
+public link, without requiring a precomputed provider intersection. Disabled or
+unapproved channels remain visible and are not counted as executed. See the
+[Lab workflow and local evidence](provider-lab.md).
+
+One Coolapk sample produced one successful ParseHub result (8 images), three
+unsupported results (videodl, yt-dlp, gallery-dl), and two disabled service channels
+(TianTian, Kukutool). The composite current-route baseline was not called.
+Explicitly confirming the existing single-provider route advanced its revision
+without changing its provider/options/preferences. Subsequent homepage and Batch
+parses both displayed the manual ParseHub route and 8 items. Another real work on
+the same host was not verified this round; different-link routing is covered
+offline. Preview failures remained visible; no media was downloaded.
+
+Service routes reuse existing clients and require explicit Human configuration;
+they are not new default fallbacks. Their candidate-only bridge adds no download
+authority. This changes neither the historical automatic-delivery counts nor the
+unmet Wave 2 saving target. No production configuration or runtime was touched.
+
 **Wave 2: parser increment with delivery limits; original new-site automatic
 delivery target remains unmet.**
 PR #87's three-site browser delivery below is historical accepted evidence, not
