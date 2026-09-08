@@ -72,6 +72,7 @@ print('fresh-process-route-preserved')
 """
         with tempfile.TemporaryDirectory(prefix="route-restart-") as directory:
             env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1",
+                   "DJANGO_ENV": "local", "DJANGO_DEBUG": "True",
                    "DJANGO_DATABASE_URL": "sqlite:///" + str(Path(directory) / "test.sqlite3"),
                    "DJANGO_CACHE_URL": "", "DJANGO_CACHE_KEY_PREFIX": "route-restart-test"}
             for script, expected in ((writer, "saved-test-route"), (reader, "fresh-process-route-preserved")):
