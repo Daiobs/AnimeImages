@@ -71,6 +71,19 @@ test("upstream images reuse archive fetch with strict redirects and authorizatio
     }), {errorCode: "UPSTREAM_PHOTO_FETCH_FAILED"});
 });
 
+test("ParseHub images use the same bound browser delivery, not a separate downloader", async () => {
+    let saved = false;
+    await photo.downloadImage({...item("image"), provider: "parsehub_generic"}, {
+        fetchImpl: async (_url, options) => {
+            assert.equal(options.redirect, "error");
+            assert.equal(options.credentials, "omit");
+            return new Response(Uint8Array.from([255, 216, 255, 224, 1]),
+                {headers: {"Content-Type": "image/jpeg"}});
+        }, handoff: async () => { saved = true; },
+    });
+    assert.equal(saved, true);
+});
+
 test("upstream Blob rejects HTTP, content type, empty, oversized and truncated bodies without saving", async () => {
     const cases = [
         [new Response("denied", {status: 403}), "BROWSER_FETCH_HTTP_ERROR", {}],

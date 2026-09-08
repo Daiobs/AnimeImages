@@ -390,6 +390,8 @@ def build_batch_result_row(
         metadata = result.metadata or {}
         selected_provider = metadata.get("selected_provider") or metadata.get("source_provider") or ""
         provider_notice = ""
+        if metadata.get("source_platform") == "upstream" and metadata.get("limited_media_count"):
+            provider_notice = "已保留可用图片；另有视频因轨道信息不足暂不提供下载。"
         if result.platform == "xiaohongshu" and prefer_ultra_hd:
             if metadata.get("xhs_tiantian_hybrid_status") == "success":
                 provider_notice = "已获取小红书原画 / 超高清资源。"

@@ -414,6 +414,8 @@ def result_with_provider_diagnostics(
 
 
 def provider_is_enabled(provider_id):
+    if provider_id == "parsehub_generic":
+        return runtime_bool("PARSEHUB_UPSTREAM_ENABLED", False)
     if provider_id == "kukutool_generic":
         return bool(
             getattr(settings, "THIRD_PARTY_KUKUTOOL_PROVIDER_ENABLED", False)
@@ -955,6 +957,9 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
             'delegation_denied': '该链接需要额外的上游跳转解析，当前暂不支持。',
             'unsupported_result': '解析结果没有可交付的图片或完整视频，可能为分离音视频或流媒体。',
             'no_formats': '上游没有返回当前可保存的媒体格式。',
+            'unknown_media_tracks': '上游未提供足够的音视频轨道信息，暂时无法确认这是完整视频。',
+            'separate_media_tracks': '上游仅提供分离音轨或视频轨，本入口暂不支持合流。',
+            'streaming_media': '上游仅提供 HLS/DASH 流媒体，本入口暂不支持保存该格式。',
         }
         raise XhsParseError('扩展解析失败：' + messages.get(failure_code, '当前上游不可用，请稍后重试。'))
 

@@ -9,6 +9,9 @@ UPSTREAM_PUBLIC_MESSAGES = {
     "UPSTREAM_DELEGATION_DENIED": "该链接需要额外的上游跳转解析，当前暂不支持。",
     "UPSTREAM_UNSUPPORTED_RESULT": "解析结果没有可交付的图片或完整视频，可能为分离音视频或流媒体。",
     "UPSTREAM_NO_FORMATS": "上游没有返回当前可保存的媒体格式。",
+    "UPSTREAM_UNKNOWN_MEDIA_TRACKS": "上游未提供足够的音视频轨道信息，暂时无法确认这是完整视频。",
+    "UPSTREAM_SEPARATE_MEDIA_TRACKS": "上游仅提供分离音轨或视频轨，本入口暂不支持合流。",
+    "UPSTREAM_STREAMING_MEDIA": "上游仅提供 HLS/DASH 流媒体，本入口暂不支持保存该格式。",
     "UPSTREAM_UNAVAILABLE": "当前上游不可用，请稍后重试。",
 }
 _LEGACY_MESSAGES = {

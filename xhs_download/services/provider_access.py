@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 PROVIDER_DOUYIN_ULTRA = "douyin_ultra"
 PROVIDER_YOUTUBE_MERGE = "youtube_merge"
 PROVIDER_THIRD_PARTY = "third_party"
-UPSTREAM_PROVIDER_IDS = ("yt_dlp_generic", "gallery_dl_generic")
+UPSTREAM_PROVIDER_IDS = ("yt_dlp_generic", "gallery_dl_generic", "parsehub_generic")
 UPSTREAM_PARSE_TIMEOUT_SECONDS = 30.0
 
 

@@ -1093,7 +1093,8 @@ def provider_settings_view(request):
             "provider_health": health,
             "can_change_provider_settings": provider_settings_change_allowed(request),
             "upstream_bulk_providers": [
-                {"id": provider, "label": "yt-dlp" if provider == "yt_dlp_generic" else "gallery-dl",
+                {"id": provider, "label": {"yt_dlp_generic": "yt-dlp", "gallery_dl_generic": "gallery-dl",
+                                           "parsehub_generic": "ParseHub"}[provider],
                  "checked": f"upstream:{provider}" in parse_csv_values(runtime_setting.third_party_allowed_public_platforms)}
                 for provider in UPSTREAM_PROVIDER_IDS
             ],
@@ -4225,9 +4226,12 @@ def apply_search_result_to_context(
         )
         set_result_provider_notice(
             context,
-            "本次已解析到可用资源，资源可用性取决于原始页面。",
+            ("已保留可用图片；另有视频因轨道信息不足暂不提供下载。"
+             if result_metadata.get("limited_media_count") else
+             "本次已解析到可用资源，资源可用性取决于原始页面。"),
             (
-                f"本次由 {provider_label} 第三方解析，"
+                ("已保留可用图片；另有视频因轨道信息不足暂不提供下载。" if result_metadata.get("limited_media_count") else "")
+                + f"本次由 {provider_label} 第三方解析，"
                 "资源可用性取决于上游平台。"
             ),
         )

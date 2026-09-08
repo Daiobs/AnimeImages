@@ -4,7 +4,9 @@ from django.core.cache import cache
 from django.test import SimpleTestCase, override_settings
 
 from .services.common import XhsParseError
-from .services.upstream_delivery import normalize_upstream_result, upstream_manifest_item_is_allowed
+from .services.upstream_delivery import (
+    normalize_upstream_result, upstream_manifest_item_is_allowed, video_evidence_state, UpstreamMediaError,
+)
 
 
 @override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}})
@@ -76,6 +78,65 @@ class UpstreamDeliveryTests(SimpleTestCase):
         result = normalize_upstream_result(payload, match={**self.match, 'provider_id': 'yt_dlp_generic'}, source_url='https://example.org/post/1')
         self.assertEqual(len(result.video_assets), 1)
         self.assertTrue(upstream_manifest_item_is_allowed(result.assets[0].to_download_item()))
+
+    def test_unknown_tracks_are_not_reported_as_explicit_split(self):
+        payload = {'url': 'https://cdn.example.org/video.mp4', 'ext': 'mp4'}
+        self.assertEqual(video_evidence_state(payload), 'unknown_media_tracks')
+        with self.assertRaises(UpstreamMediaError) as raised:
+            normalize_upstream_result(payload, match={**self.match, 'provider_id': 'yt_dlp_generic'},
+                                      source_url='https://example.org/post/1')
+        self.assertEqual(raised.exception.code, 'unknown_media_tracks')
+
+    def test_distinct_track_and_streaming_evidence(self):
+        base = {'url': 'https://cdn.example.org/media.mp4'}
+        for fields, expected in (
+            ({'acodec': 'aac', 'vcodec': 'h264'}, 'complete'),
+            ({'acodec': 'none', 'vcodec': 'h264'}, 'separate_media_tracks'),
+            ({'acodec': 'aac', 'vcodec': 'none'}, 'separate_media_tracks'),
+            ({'protocol': 'm3u8_native'}, 'streaming_media'),
+            ({'protocol': 'http_dash_segments'}, 'streaming_media'),
+        ):
+            with self.subTest(fields=fields):
+                self.assertEqual(video_evidence_state({**base, **fields}), expected)
+        self.assertEqual(video_evidence_state({}), 'no_formats')
+
+    def test_derived_track_defaults_do_not_override_extractor_unknown(self):
+        item = {'url': 'https://cdn.example.org/media.mp4', 'acodec': 'aac', 'vcodec': 'h264',
+                'upstream_track_evidence': {'acodec': None, 'vcodec': None}}
+        self.assertEqual(video_evidence_state(item), 'unknown_media_tracks')
+
+    def test_bounded_bmff_evidence_confirms_unknown_but_not_explicit_split(self):
+        item = {'url': 'https://cdn.example.org/media.mp4',
+                'upstream_track_evidence': {'acodec': None, 'vcodec': None},
+                'upstream_bmff_track_evidence': {'schema': 'iso_bmff_tracks_v1',
+                    'complete_moov': True, 'audio': 'present', 'video': 'present',
+                    'reason': 'complete_track_table'}}
+        self.assertEqual(video_evidence_state(item), 'complete')
+        item['upstream_track_evidence']['acodec'] = 'none'
+        self.assertEqual(video_evidence_state(item), 'separate_media_tracks')
+
+    def test_parsehub_image_gets_same_exact_authority(self):
+        result = normalize_upstream_result(
+            [[3, 'https://cdn.example.org/image.png', {'extension': 'png', 'media_completeness': 'image_candidate'}]],
+            match={**self.match, 'provider_id': 'parsehub_generic'}, source_url='https://example.org/post/1')
+        self.assertTrue(upstream_manifest_item_is_allowed(result.assets[0].to_download_item()))
+
+    def test_parsehub_unknown_video_does_not_receive_authority(self):
+        with self.assertRaises(UpstreamMediaError), patch(
+                'xhs_download.services.upstream_delivery._issue_assets') as issue:
+            normalize_upstream_result(
+                [[3, 'https://cdn.example.org/video.mp4', {'extension': 'mp4', 'media_completeness': 'unknown'}]],
+                match={**self.match, 'provider_id': 'parsehub_generic'}, source_url='https://example.org/post/1')
+        issue.assert_not_called()
+
+    def test_mixed_unknown_video_does_not_discard_valid_image(self):
+        result = normalize_upstream_result(
+            [[3, 'https://cdn.example.org/video.mp4', {'extension': 'mp4'}],
+             [3, 'https://cdn.example.org/image.png', {'extension': 'png'}]],
+            match={**self.match, 'provider_id': 'parsehub_generic'}, source_url='https://example.org/post/1')
+        self.assertEqual(len(result.image_assets), 1)
+        self.assertEqual(len(result.video_assets), 0)
+        self.assertEqual(result.metadata['limited_media_count'], 1)
 
     def test_independent_parse_authorities(self):
         first = self.image_result().assets[0]

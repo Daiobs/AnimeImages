@@ -87,7 +87,7 @@ class MatchingServiceTests(SimpleTestCase):
     def test_unavailable_inventory_does_not_leak_details(self):
         with mock.patch.object(service, "_context", side_effect=OSError("sensitive-path")):
             rows = service.coverage_snapshot()
-        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows), 3)
         self.assertTrue(all(not row["available"] for row in rows))
         self.assertNotIn("sensitive", json.dumps(rows))
 
@@ -263,8 +263,14 @@ class WorkerContractTests(SimpleTestCase):
             def extract(self, url):
                 return self.payload
 
-        self.assertEqual(worker.parse_ytdlp(Fake, "https://example.com/item", 1)["formats"],
-                         Fake.payload["formats"])
+        with mock.patch('tools.upstream_metadata_probe.probe_in_guarded_child', return_value={"audio": "unknown"}):
+            processed = worker.parse_ytdlp(Fake, "https://example.com/item", 1)["formats"][0]
+        self.assertEqual(processed["url"], "https://example.com/v.mp4")
+        self.assertEqual(processed["ext"], "mp4")
+        self.assertEqual(processed["protocol"], "https")
+        self.assertEqual(processed["format_id"], "0")
+        self.assertEqual(processed["upstream_track_evidence"], {
+            "acodec": None, "vcodec": None, "audio_ext": None, "video_ext": None})
         for payload in ({"_type": "url", "url": "https://example.com/next"},
                         {"_type": "playlist", "entries": []}, {"entries": []},
                         {"_type": "url_transparent"}):
@@ -434,7 +440,8 @@ assert len(w.parse_ytdlp(proxy, 'https://vimeo.com/12345678',1)['formats']) == 1
         with override_settings(YTDLP_BINARY=f"{sys.executable} -m yt_dlp",
                                GALLERYDL_BINARY=f"{sys.executable} -m gallery_dl"):
             inventory = service.coverage_snapshot()
-            self.assertTrue(all(row["available"] for row in inventory))
+            self.assertTrue(all(row["available"] for row in inventory[:2]))
+            self.assertFalse(inventory[2]["available"])
             self.assertEqual(inventory[0]["version"], importlib.metadata.version("yt-dlp"))
             self.assertGreater(inventory[0]["counts"]["eligible"], 1000)
             self.assertEqual(inventory[1]["version"], importlib.metadata.version("gallery-dl"))
@@ -454,6 +461,7 @@ assert len(w.parse_ytdlp(proxy, 'https://vimeo.com/12345678',1)['formats']) == 1
                 self.assertEqual(counts["total"], counts["eligible"] + counts["excluded"])
                 self.assertEqual(counts["excluded"], counts["already_routed"] + counts["other_excluded"])
                 self.assertEqual(counts["eligible"], len(row["entries"]))
-                self.assertGreater(counts["already_routed"], 0)
+                if row['provider_id'] != 'parsehub_generic':
+                    self.assertGreater(counts["already_routed"], 0)
                 for entry in row["entries"]:
                     self.assertFalse(entry["extractor_id"].lower().startswith(worker._ROUTED_PREFIXES))

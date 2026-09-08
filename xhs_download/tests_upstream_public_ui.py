@@ -153,8 +153,9 @@ class UpstreamPreviewTests(SimpleTestCase):
 
         with patch("xhs_download.services.upstream_delivery.safe_resource_url", side_effect=lambda url: url):
             result = normalize_upstream_result(
-                [[3, "https://cdn.example/video.webm", {"extension": "webm", "filename": "example"}]],
-                match=MATCHES[1], source_url="https://example.org/post/1",
+                {"title": "example", "url": "https://cdn.example/video.webm", "ext": "webm",
+                 "vcodec": "vp9", "acodec": "opus"},
+                match=MATCHES[0], source_url="https://example.org/post/1",
             )
         item = build_video_item(result.assets[0], result)
         self.assertFalse(item["browser_direct_fetch_safe"])

@@ -1034,7 +1034,7 @@
             let url;
             try { url = new URL(item.url); } catch (error) { /* Rejected below. */ }
             if (item.browser_upstream_bound !== true || item.source_platform !== "upstream"
-                || !["yt_dlp_generic", "gallery_dl_generic"].includes(item.provider)
+                || !["yt_dlp_generic", "gallery_dl_generic", "parsehub_generic"].includes(item.provider)
                 || !url || url.protocol !== "https:" || url.username || url.password
                 || url.hash || (url.port && url.port !== "443")) {
                 throw photoError("UPSTREAM_PHOTO_INVALID_ITEM");

@@ -71,7 +71,7 @@ def _executor(provider):
     else:
         raise UpstreamMatchingError("unsupported_executor")
     signature = []
-    for path in (executable, python, str(WORKER)):
+    for path in (executable, python, str(WORKER), str(WORKER.with_name('upstream_metadata_probe.py'))):
         stat = Path(path).stat()
         signature.append((path, stat.st_size, stat.st_mtime_ns, stat.st_ino))
     return [python, "-I", "-B", str(WORKER)], signature
@@ -176,6 +176,8 @@ def match_upstream_url(url):
             matches.extend(_cached(provider, "match", url))
         except (UpstreamMatchingError, OSError, ValueError, SyntaxError):
             continue
+    from .upstream_parsehub import match_upstream_url as match_parsehub
+    matches.extend(match_parsehub(url))
     return tuple(matches)
 
 
@@ -195,11 +197,19 @@ def coverage_snapshot():
                            "available": False,
                            "counts": {"total": 0, "eligible": 0, "excluded": 0,
                                       "already_routed": 0, "other_excluded": 0}})
+    from .upstream_parsehub import coverage_snapshot as parsehub_coverage
+    result.append(parsehub_coverage())
     return result
 
 
 def parse_upstream_url(match, url, timeout_seconds=15.0):
     """Execute one freshly verified match; return raw normalizer-compatible payload."""
+    if isinstance(match, dict) and match.get("provider_id") == "parsehub_generic":
+        from .upstream_parsehub import parse_upstream_url as parse_parsehub, ParseHubBridgeError
+        try:
+            return parse_parsehub(match, url, timeout_seconds)
+        except ParseHubBridgeError as error:
+            raise UpstreamMatchingError(error.code, stage=error.stage, error_class=error.error_class) from None
     try:
         validate_url(url)
         provider = match["provider_id"]

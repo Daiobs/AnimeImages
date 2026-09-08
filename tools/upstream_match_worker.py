@@ -10,6 +10,7 @@ import re
 import socket
 import sys
 import subprocess
+import time
 from urllib.parse import urlsplit
 
 
@@ -25,6 +26,8 @@ YTDLP_EXCLUDED = re.compile(
 GALLERY_SINGLE = frozenset({"post", "tweet", "image", "video", "submission", "pin"})
 # Its nominal image URL runs an artist/title search and can return other paintings.
 GALLERY_EXCLUDED = frozenset({"WikiartImageExtractor"})
+# This mixed extractor is admitted only for its exact File namespace in suitable().
+GALLERY_URL_SCOPED = frozenset({"WikimediaArticleExtractor"})
 # Established routes own these families; they are not newly opened dynamic coverage.
 # Keep this small override map separate from upstream's bulk extractor inventory.
 ESTABLISHED_ROUTE_PREFIXES = {
@@ -233,7 +236,7 @@ def eligible(provider, cls):
                 getattr(cls, "_RETURN_TYPE", None) != "playlist" and
                 getattr(cls, "_VALID_URL", None) not in (None, False))
     return (cls.__name__ not in GALLERY_EXCLUDED and
-            cls.subcategory in GALLERY_SINGLE and
+            (cls.subcategory in GALLERY_SINGLE or cls.__name__ in GALLERY_URL_SCOPED) and
             cls.category not in {"generic", "directlink", "recursive", "ytdl", "oauth"})
 
 
@@ -247,11 +250,27 @@ def entry(provider, cls, version):
 def suitable(provider, cls, url):
     if provider == "yt_dlp_generic":
         return cls.suitable(url)
-    return re.match(cls.pattern, url) is not None
+    match = re.match(cls.pattern, url)
+    if match is None:
+        return False
+    if cls.__name__ == "WikimediaArticleExtractor":
+        # Mirror upstream's namespace selection, without constructing an extractor
+        # or opening article/category generators (including recursive queues).
+        path = match.groups()[-1]
+        if len(path) > 2 and path[2] == "/":
+            path = path[3:]
+        if path.startswith("wiki/"):
+            path = path[5:]
+        elif path.startswith("index.php/"):
+            path = path[10:]
+        namespace, separator, title = path.partition(":")
+        return namespace.lower() == "file" and bool(separator and title.strip())
+    return True
 
 
 def parse_ytdlp(cls, url, timeout):
     global _STAGE
+    deadline = time.monotonic() + timeout
     _STAGE = "ytdlp_import"
     from yt_dlp import YoutubeDL
     # Lazy proxies construct a different class in __new__, bypassing overrides.
@@ -288,7 +307,7 @@ def parse_ytdlp(cls, url, timeout):
         "cachedir": False, "socket_timeout": timeout, "retries": 0,
         "extractor_retries": 0, "enable_file_urls": False,
         "external_downloader": None, "remote_components": set(),
-        "js_runtimes": {},
+        "js_runtimes": {}, "format": "bestvideo+bestaudio/best",
     }, auto_init=False) as ydl:
         _STAGE = "ytdlp_extract"
         payload = ExactExtractor(ydl).extract(url)
@@ -298,7 +317,36 @@ def parse_ytdlp(cls, url, timeout):
             raise ValueError("non_item_result")
         if not payload.get("formats") and not payload.get("url"):
             raise ValueError("no_formats")
-        # Keep the complete formats dictionary; do not invoke result processing/downloads.
+        formats = payload.get("formats") or [payload]
+        if not isinstance(formats, list) or len(formats) > 1000:
+            raise ValueError("item_limit")
+        # Preserve extractor evidence before yt-dlp derives extension/codec defaults.
+        for item in formats:
+            if isinstance(item, dict):
+                item["upstream_track_evidence"] = {
+                    key: item.get(key) for key in ("acodec", "vcodec", "audio_ext", "video_ext")
+                }
+        _STAGE = "ytdlp_process_video"
+        payload.setdefault("extractor", str(getattr(cls, "IE_NAME", cls.__name__)))
+        payload.setdefault("webpage_url", url)
+        payload = ydl.process_video_result(payload, download=False)
+        candidates = []
+        for item in payload.get("formats") or [payload]:
+            evidence = item.get("upstream_track_evidence", {})
+            codecs = [str(evidence.get(key) or "").lower() for key in ("acodec", "vcodec")]
+            if (item.get("ext") == "mp4" and item.get("protocol") == "https"
+                    and "none" not in codecs and not all(codecs)):
+                candidates.append(item)
+        if candidates and time.monotonic() < deadline:
+            try:
+                from tools.upstream_metadata_probe import probe_in_guarded_child
+            except ModuleNotFoundError:
+                sys.path.insert(0, str(Path(__file__).resolve().parent))
+                from upstream_metadata_probe import probe_in_guarded_child
+            # One candidate only; the probe owns a shared two-request/5s budget.
+            candidate = max(candidates, key=lambda item: item.get("height") or 0)
+            candidate["upstream_bmff_track_evidence"] = probe_in_guarded_child(
+                candidate["url"], deadline_monotonic=deadline)
         return ydl.sanitize_info(payload)
 
 
