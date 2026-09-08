@@ -43,6 +43,36 @@ reliably deduplicated. Existing rules and the four mature routes remain in place
 
 ## Implementation Boundary
 
+### Quality Comparison And Manual Routes (Local Increment)
+
+This increment is stacked on PR #88 and is not a production rollout. It separates
+valid parsed candidates from currently authorized downloadable assets. Unknown
+tracks, silent video, audio, HLS/DASH and HTTP references are retained within the
+candidate budget; invalid/private targets still fail closed. Candidate metadata
+does not itself create a download manifest. Bounded collection output identifies
+its incomplete scope rather than claiming an exhaustive result.
+
+The pinned ParseHub registry replaces the five-site product list. yt-dlp and
+gallery-dl use installed matching knowledge, with request/delegation/redirect,
+output and wall-time budgets instead of broad class-name bans. Mature routes and
+the known wrong-source Wikiart exception remain protected. Earlier measurements
+below describe their historical implementation, not the current matching count.
+
+Lab and ordinary parsing share execution and normalization. Lab compares all
+explicitly selected providers independently; ordinary parsing follows a saved
+Human source-host route or the permitted default order. A candidate-only success
+does not fall through to a lower-quality provider because saving is unavailable.
+Route changes are explicit, revision checked and audited. No CDN URL or temporary
+format identifier is stored as a reusable platform route.
+
+Offline installed-registry evidence is recorded in
+[the bounded-worker report](../tools/upstream_worker_quality_evidence.json):
+1,791 yt-dlp classes and 960 gallery-dl classes matched an installed example each.
+ParseHub's fixed registry has 20 entries with 400 offline matching inputs. These
+are entry/input checks, not unique-site counts or live parse/save successes.
+
+### Prior PR #87/#88 Implementation Boundary
+
 - Inventory and URL matching run offline in an isolated worker. Matching binds
   the provider, extractor ID and package version; parse revalidates that match.
   Cache identity includes executor/package evidence, not just the URL.

@@ -174,7 +174,7 @@ class ProviderLabAccessTests(TestCase):
         self.assertEqual(run_provider_mock.call_args.kwargs["provider_id"], "animeimages_current")
 
     @mock.patch("xhs_download.provider_lab_views.run_provider")
-    def test_11_duplicate_execution_is_single_flight_limited(self, run_provider_mock):
+    def test_11_completed_execution_can_be_retried(self, run_provider_mock):
         run_provider_mock.return_value = {"schema_version": "1.0", "status": "success"}
         self.client.force_login(self.staff)
         body = json.dumps(
@@ -183,8 +183,22 @@ class ProviderLabAccessTests(TestCase):
         first = self.client.post(reverse("provider_lab_run"), body, content_type="application/json")
         second = self.client.post(reverse("provider_lab_run"), body, content_type="application/json")
         self.assertEqual(first.status_code, 200)
-        self.assertEqual(second.status_code, 429)
-        self.assertEqual(second.json()["error_code"], "PROVIDER_RATE_LIMITED")
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(run_provider_mock.call_count, 2)
+
+    @mock.patch("xhs_download.provider_lab_views.run_provider")
+    def test_11b_inflight_execution_is_single_flight_limited(self, run_provider_mock):
+        self.client.force_login(self.staff)
+        body = json.dumps({"source": "https://example.com/same", "provider_id": "animeimages_current"})
+        def during_execution(**kwargs):
+            duplicate = self.client.post(reverse("provider_lab_run"), body, content_type="application/json")
+            self.assertEqual(duplicate.status_code, 429)
+            self.assertEqual(duplicate.json()["error_code"], "PROVIDER_RATE_LIMITED")
+            return {"schema_version": "1.0", "status": "success"}
+        run_provider_mock.side_effect = during_execution
+        response = self.client.post(reverse("provider_lab_run"), body, content_type="application/json")
+        self.assertEqual(response.status_code, 200)
+        run_provider_mock.assert_called_once()
 
     @mock.patch("xhs_download.provider_lab_views.consume_fixed_window")
     def test_12_execution_rate_limit_is_enforced(self, limit_mock):
@@ -226,6 +240,7 @@ class ProviderLabRegistryAndContractTests(SimpleTestCase):
                 "parsehub_repo",
                 "videodl_repo",
                 "yt_dlp_existing",
+                "gallery_dl_existing",
                 "tiantian_existing",
             ),
         )
@@ -235,8 +250,8 @@ class ProviderLabRegistryAndContractTests(SimpleTestCase):
         self.assertNotIn("import_module", source)
         self.assertNotIn("entry_points", source)
 
-    def test_18_max_provider_contract_is_five(self):
-        self.assertEqual(len(PROVIDER_REGISTRY), 5)
+    def test_18_all_six_providers_can_be_compared(self):
+        self.assertEqual(len(PROVIDER_REGISTRY), 6)
 
     def test_19_share_text_extracts_one_url(self):
         self.assertEqual(
@@ -346,7 +361,7 @@ class ProviderLabRegistryAndContractTests(SimpleTestCase):
         tiantian_health_mock,
     ):
         descriptors = list_provider_descriptors()
-        self.assertEqual(len(descriptors), 5)
+        self.assertEqual(len(descriptors), 6)
         ytdlp_health_mock.assert_not_called()
         tiantian_health_mock.assert_not_called()
 
@@ -749,21 +764,12 @@ class ProviderLabNormalizerTests(TestCase):
         self.assertIn("prefer_youtube_merge=False", lab_source)
 
     @mock.patch(
-        "xhs_download.services.provider_lab.providers.YtDlpGenericProvider.parse"
+        "xhs_download.services.quality_execution.execute_provider"
     )
-    @mock.patch(
-        "xhs_download.services.provider_lab.providers.YtDlpGenericProvider.health"
-    )
-    def test_56b_ytdlp_wrapper_issues_only_lab_tokens(self, health_mock, parse_mock):
-        health_mock.return_value = {"ready": True, "version_output": "test-version"}
-        parse_mock.return_value = {
-            "title": "Video",
-            "extractor_key": "Example",
-            "url": "https://video.example.com/video.mp4",
-            "vcodec": "h264",
-            "acodec": "aac",
-            "ext": "mp4",
-        }
+    def test_56b_ytdlp_wrapper_issues_only_lab_tokens(self, parse_mock):
+        parse_mock.return_value = ParseResult(platform="third_party", post_type="video",
+            base_filename="Video", assets=(MediaAsset(platform="third_party", url="https://video.example.com/video.mp4", media_type="video"),),
+            metadata={"title": "Video"})
         result, resources = run_ytdlp_existing(
             source="https://example.com/post",
             request_id="request_ytdlp",

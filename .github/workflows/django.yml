@@ -110,7 +110,9 @@ jobs:
           python manage.py inspect_third_party_provider --health --json
 
       - name: Django tests
-        run: python manage.py test --noinput
+        run: |
+          python manage.py test --noinput
+          python -m unittest tools.tests_upstream_worker_quality -q
 
       - name: Node frontend checks
         run: |
@@ -126,6 +128,7 @@ jobs:
           node --check static/js/ordinary_media_streaming_protocol.js
           node --check static/js/parse_preferences.js
           node --check static/js/provider_lab.js
+          node --check static/js/upstream_candidates.js
           node --check static/js/project_settings.js
           node --check static/js/mail_settings.js
           node --check static/js/result_url_safety.js
@@ -142,6 +145,9 @@ jobs:
           node --test tests_js/ordinary_media_streaming.test.js
           node --test tests_js/parse_preferences.test.js
           node --test tests_js/provider_lab.test.js
+          node --test tests_js/provider_lab_quality.test.js
+          node --test tests_js/provider_lab_controller_quality.test.js
+          node --test tests_js/upstream_candidates.test.js
           node --test tests_js/result_url_safety.test.js
           node --test tests_js/user_feedback.test.js
           node --test tests_js/upstream_downloads.test.js

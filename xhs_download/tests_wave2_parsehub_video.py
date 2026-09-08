@@ -36,8 +36,9 @@ class ParseHubVideoParityTests(SimpleTestCase):
 
     def rejected(self, row):
         with patch('xhs_download.services.upstream_delivery._issue_assets') as issue:
-            with self.assertRaises(XhsParseError):
-                self.normalize([row])
+            result = self.normalize([row])
+            self.assertEqual(result.assets, ())
+            self.assertEqual(len(result.metadata['upstream_candidates']), 1)
             issue.assert_not_called()
 
     def test_verified_video_receives_exact_authority_without_leaking_evidence(self):
@@ -85,13 +86,17 @@ class ParseHubVideoParityTests(SimpleTestCase):
         self.rejected(self.video())
 
     def test_unsafe_urls_and_streaming_are_not_admitted(self):
-        for url in ('http://cdn.example.org/video.mp4', 'https://u:p@cdn.example.org/video.mp4',
+        for url in ('http://cdn.example.org/video.mp4',
                     'https://cdn.example.org/video.m3u8', 'https://cdn.example.org/video.mpd'):
             with self.subTest(url=url):
                 row = self.video()
                 row[1] = url
                 self.rejected(row)
         self.rejected(self.video(protocol='m3u8_native'))
+        row = self.video()
+        row[1] = 'https://u:p@cdn.example.org/video.mp4'
+        with self.assertRaises(XhsParseError):
+            self.normalize([row])
 
     def test_mime_only_video_uses_safe_extension(self):
         for extension in ('', '../../bad.html', 'video/mp4', 'html'):
@@ -109,23 +114,25 @@ class ParseHubVideoParityTests(SimpleTestCase):
         self.assertEqual(len(self.normalize([self.video(), self.video()]).assets), 1)
         rows = [[3, f'https://cdn.example.org/{index}.mp4', self.video()[2]]
                 for index in range(31)]
-        with patch('xhs_download.services.upstream_delivery._issue_assets') as issue:
-            with self.assertRaises(XhsParseError):
-                self.normalize(rows)
-            issue.assert_not_called()
+        result = self.normalize(rows)
+        self.assertEqual(len(result.assets), 30)
+        self.assertEqual(len(result.metadata['upstream_candidates']), 31)
+        self.assertEqual(result.metadata['limited_media_count'], 1)
 
     def test_bridge_preserves_candidate_metadata_without_promoting_unknown(self):
         payload = [self.video()]
-        with patch.object(bridge, 'match_url', return_value=(self.match,)), \
-                patch.object(bridge, '_call', return_value=payload) as call:
-            result = bridge.parse_upstream_url(self.match, SOURCE)
+        match = {**self.match, 'version': bridge.PROVIDER_VERSION}
+        with patch.object(bridge, '_call', return_value=payload) as call:
+            result = bridge.parse_upstream_url(match, SOURCE)
         call.assert_called_once()
         self.assertIs(result, payload)
         self.assertEqual(result[0][2]['media_completeness'], 'unknown')
         self.assertEqual(result[0][2]['upstream_bmff_track_evidence'], EVIDENCE)
 
-    def test_bridge_payload_limit_stays_30(self):
-        with patch.object(bridge, 'match_url', return_value=(self.match,)), \
-                patch.object(bridge, '_call', return_value=[self.video()] * 31):
+    def test_bridge_candidate_budget_is_independent_of_delivery_limit(self):
+        match = {**self.match, 'version': bridge.PROVIDER_VERSION}
+        with patch.object(bridge, '_call', return_value=[self.video()] * 31):
+            self.assertEqual(len(bridge.parse_upstream_url(match, SOURCE)), 31)
+        with patch.object(bridge, '_call', return_value=[self.video()] * 101):
             with self.assertRaisesRegex(bridge.ParseHubBridgeError, 'invalid_payload'):
-                bridge.parse_upstream_url(self.match, SOURCE)
+                bridge.parse_upstream_url(match, SOURCE)

@@ -1074,6 +1074,34 @@ class UserFeedback(models.Model):
         return f"{local_datetime_label(self.created_at)} 用户反馈"
 
 
+class UpstreamRoute(models.Model):
+    source_host = models.CharField(max_length=253, unique=True)
+    revision = models.PositiveIntegerField(default=0)
+    active = models.BooleanField(default=False)
+    provider_order = models.JSONField(default=list)
+    provider_options = models.JSONField(default=dict)
+    format_preferences = models.JSONField(default=dict)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("source_host",)
+
+
+class UpstreamRouteAudit(models.Model):
+    route = models.ForeignKey(UpstreamRoute, on_delete=models.PROTECT, related_name="audit_entries")
+    revision = models.PositiveIntegerField()
+    action = models.CharField(max_length=8, choices=(("save", "save"), ("reset", "reset")))
+    before = models.JSONField(default=dict)
+    after = models.JSONField(default=dict)
+    actor_id = models.PositiveIntegerField(null=True)
+    actor_username = models.CharField(max_length=150, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        constraints = (models.UniqueConstraint(fields=("route", "revision"), name="upstream_route_audit_revision"),)
+
+
 class ReleaseDeployJobStatus(models.TextChoices):
     PENDING = "pending", "等待执行"
     RUNNING = "running", "执行中"

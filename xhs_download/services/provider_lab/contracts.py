@@ -240,6 +240,19 @@ class LabAssetV1:
     requires_cookie: bool = False
     headers_present: bool = False
     audio_asset_present: bool = False
+    format_id: str = ""
+    work_label: str = ""
+    fps: float | None = None
+    vcodec: str = ""
+    acodec: str = ""
+    bitrate: float | None = None
+    size_is_estimate: bool = False
+    audio_tracks: str = "unknown"
+    video_tracks: str = "unknown"
+    protocol: str = ""
+    delivery_state: str = "unknown"
+    metadata_source: str = "unknown"
+    ordinal: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -259,6 +272,19 @@ class LabAssetV1:
             "requires_cookie": bool(self.requires_cookie),
             "headers_present": bool(self.headers_present),
             "audio_asset_present": bool(self.audio_asset_present),
+            "format_id": safe_public_text(self.format_id, 120),
+            "work_label": safe_public_text(self.work_label, 160),
+            "fps": safe_float(self.fps) if self.fps is not None else None,
+            "vcodec": safe_public_text(self.vcodec, 80),
+            "acodec": safe_public_text(self.acodec, 80),
+            "bitrate": safe_float(self.bitrate) if self.bitrate is not None else None,
+            "size_is_estimate": bool(self.size_is_estimate),
+            "audio_tracks": self.audio_tracks if self.audio_tracks in {"unknown", "present", "absent"} else "unknown",
+            "video_tracks": self.video_tracks if self.video_tracks in {"unknown", "present", "absent"} else "unknown",
+            "protocol": safe_public_text(self.protocol, 80),
+            "delivery_state": safe_public_text(self.delivery_state, 80),
+            "metadata_source": safe_public_text(self.metadata_source, 80),
+            "ordinal": safe_int(self.ordinal),
         }
 
 
@@ -341,6 +367,12 @@ class LabProviderResultV1:
             "title": safe_public_text(self.metadata.get("title"), 300),
             "author": safe_public_text(self.metadata.get("author"), 200),
             "content_summary": safe_public_text(self.metadata.get("content_summary"), 512),
+            "candidate_count": safe_int(self.metadata.get("candidate_count", len(self.assets))),
+            "returned_count": min(len(self.assets), MAX_ASSETS),
+            "truncated_count": safe_int(self.metadata.get("truncated_count")) + max(0, len(self.assets) - MAX_ASSETS),
+            "truncated": bool(self.metadata.get("truncated") or len(self.assets) > MAX_ASSETS),
+            "unexpanded_scope": safe_public_text(self.metadata.get("unexpanded_scope"), 240),
+            "baseline": self.metadata.get("baseline") is True,
         }
         attempts = []
         selected_seen = False

@@ -1,8 +1,37 @@
 # Provider Lab
 
-Provider Lab 是 AnimeImages Django monolith 内的 Staff-only 上游对比工具。它用于在不改变正式平台路线的前提下，并排检查现有 Provider 与隔离的 whole-repository Provider。
+Provider Lab 是 AnimeImages Django monolith 内的 Staff-only 上游对比工具。它并排检查现有 Provider 与隔离的 whole-repository Provider；比较本身不会改变路线，具有配置权限的 Human 可以另外明确保存通用来源 Host 的路线。
 
-Provider Lab 不是公开解析产品、自动 Provider Planner、生产路由层或微服务。它不会选择赢家，也不会把实验结果写回正式 Registry。
+Provider Lab 不是公开解析产品、自动 Provider Planner 或微服务。它不会选择赢家，也不会把实验结果写回正式 Registry。人工路线不覆盖已有成熟平台的严格路线。
+
+## 本地质量比较与人工路线增量
+
+本增量依赖 PR #88，仅供独立本地体验，不表示生产已部署。
+普通通用解析和 Lab 共用 `quality_execution` 的执行与候选归一化。
+`animeimages_current` 是复合路线基线，不是额外独立上游。
+
+- 各上游独立完成，默认最多并发 3 项，而非总共只能执行 3 项；可取消、单项重试，旧请求不污染新比较。
+- 候选保留宽高、格式、帧率、编码、码率、大小与估计标记。缺失值显示未知，上游声明不等于实测画质。
+- 分离轨、音轨、流媒体、未知轨道与 HTTP 引用可以作为受限候选存在；这不授予下载权限，也不新增合流或服务器 Relay。
+- “本次选择”只改变页面当前候选。“保存为平台路线”需显式确认，写入来源 Host、上游顺序、受控 Backend 和可复用格式偏好，不保存媒体 URL 或临时 Token。
+- 路线使用数据库 revision 防止旧页面覆盖新修改，并保留基本审计。恢复默认是另一项明确操作；解析失败不删除人工配置。
+- 通用候选信息可供已获准解析的用户查看、复制或打开；候选 URL 仍由短期信息令牌和当前访问 Gate 控制，成熟平台的特殊权限不变。
+- 资源所需请求上下文只保留在受控缓存中，前端仅显示条件标记；不返回 Cookie 或 Authorization 值。
+
+迁移 `0027_upstream_manual_routes` 新增路线及修改记录，不改变邮件、Daily 或生产配置。
+未人工优选的来源仍按允许的通用默认顺序尝试；比较页面不会自动保存最快或首个成功结果。
+
+### 本轮验收记录（2026-09-08，本地）
+
+- 完整 Django 2,330 项、Node 291 项、独立 Worker 安全/广度测试 19 项通过；迁移漂移与 Django check 通过。
+- 确定性测试覆盖独立结果、分离轨保留、超时隔离、选择不写路线、修订冲突、恢复默认、真实缓存失效及普通/Batch 路线消费。
+- Chrome 下酷安同一公开作品由 ParseHub 返回 8 项；所选 gallery-dl、yt-dlp 分别返回不支持，不抹除成功结果。这不是两个独立上游均成功的证据。
+- Chrome 本次选择不改变 revision；明确保存后，新首页解析返回 8 项并标明手动 ParseHub 路线。新 Django 命令亦读到保存结果，候选复制成功但不计为下载。
+- 1440/820/390 宽度检查无横向溢出，页面 JavaScript 异常为 0。
+- 本地 videodl Runtime、收费服务未配置；videodl 受控匹配和执行接线以隔离离线测试验证。新功能不构成生产启用许可。
+- `IMPLEMENTATION_READY` 与 `LIVE_COMPARISON_PENDING` 分开：同作品两个独立真实上游成功的验收仍缺失，没有新增自动保存成功统计。
+
+浏览器取消会停止排队/等待并隔离迟到结果；已经进入服务端的执行仍受其既有子进程 deadline 和清理机制约束，不声称关闭 fetch 能瞬时终止服务端进程。
 
 ## 当前状态
 
@@ -54,7 +83,7 @@ Provider Lab 没有以下公开发布模式：
 
 ## 固定 Provider 清单
 
-Registry 显式列出五个 Provider：
+Registry 显式列出六个入口：
 
 | Provider ID | 类型 | 运行位置 | 用途 |
 | --- | --- | --- | --- |
@@ -62,6 +91,7 @@ Registry 显式列出五个 Provider：
 | `parsehub_repo` | whole-repository Provider | 隔离 Python Runtime | 对比 ParseHub 仓库的 parse-only 能力 |
 | `videodl_repo` | whole-repository Provider | 隔离 Python Runtime | 非商业本地 Staff Lab 对比 |
 | `yt_dlp_existing` | 现有工具包装 | 受控外部工具路径 | 观察当前 yt-dlp 行为和失败隔离 |
+| `gallery_dl_existing` | 现有工具包装 | 受控外部工具路径 | 与普通通用解析共享候选承接 |
 | `tiantian_existing` | 现有 Provider 包装 | 当前受控 Provider 路径 | 对比 TianTian 解析结果 |
 
 固定 Registry 防止用户通过请求参数加载任意 Python 包、命令或 Provider。添加新 Provider 必须经过代码审查；页面不会扫描本机环境自动发现工具。
@@ -119,7 +149,7 @@ flowchart TD
 - 服务端不自动 fan out；
 - 一个 Provider 失败不阻塞其它结果；
 - Lab 不计算全局分数，也不选择正式赢家；
-- Lab 不修改平台路线或 Runtime Setting；
+- 比较不修改平台路线；仅具有配置权限的 Human 明确保存时更新通用 Host 路线，不修改 Provider Runtime Setting；
 - 刷新页面清除结果；
 - 服务端不做完整媒体 Relay。
 

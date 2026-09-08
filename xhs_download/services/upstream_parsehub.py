@@ -1,13 +1,9 @@
-"""Opt-in product ParseHub bridge. Integration owns admission and delivery.
+"""Opt-in isolated ParseHub registry bridge, shared by Lab and normal parsing.
 
-Set PARSEHUB_UPSTREAM_ENABLED and PARSEHUB_UPSTREAM_PYTHON independently of XHS.
-parse_upstream_url returns gallery-style [3, url, metadata] messages. Videos carry
-media_completeness=unknown and MUST NOT be admitted as complete without evidence.
-The worker may attach upstream_bmff_track_evidence to one URL message's metadata:
-{"schema": "iso_bmff_tracks_v1", "complete_moov": True, "audio": "present",
- "video": "present", "reason": "complete_track_table"}.
-This bridge preserves that evidence without probing or promoting completeness;
-delivery owns verification and explicit missing-track rejection.
+URL messages [3, url, metadata] preserve candidates independently of delivery.
+Metadata-only messages [2, metadata] preserve sanitized richtext summaries.
+Completeness is upstream-declared; operation restrictions never mean parse failure.
+No ParseHub package imports or matching occur in the application process.
 """
 
 import json
@@ -16,7 +12,7 @@ import re
 import subprocess
 
 from tools.upstream_parsehub_worker import (
-    MAX_BYTES, PARSERS, PROVIDER_ID, PROVIDER_VERSION, match_url, timeout_value,
+    COMPLETENESS, MAX_ASSETS, MAX_BYTES, PROVIDER_ID, PROVIDER_VERSION, timeout_value, validate_url,
 )
 from .platforms.external_tools import run_external_command, ExternalCommandOutputTooLarge
 from .env_config import runtime_bool, runtime_str
@@ -51,7 +47,8 @@ def _call(request, timeout):
         allowed = {"version_changed", "unavailable", "network_timeout", "network_denied",
                    "execution_guard", "extractor_mismatch", "identity_mismatch", "no_formats",
                    "output_limit", "request_limit", "insecure_media", "unsupported_result", "media_type_conflict",
-                   "auth_required", "access_denied", "tls_error", "upstream_unavailable"}
+                   "auth_required", "access_denied", "tls_error", "upstream_unavailable",
+                   "delegation_limit", "redirect_limit", "scope_limited", "invalid_url"}
         code = data.get("error") if isinstance(data, dict) else None
         stage = data.get("stage") if isinstance(data, dict) else None
         error_class = data.get("error_class", "") if isinstance(data, dict) else ""
@@ -64,35 +61,37 @@ def _call(request, timeout):
 
 
 def match_upstream_url(url):
-    matches = match_url(url)
-    if not matches:
-        return ()
     try:
-        identity = _call({"action": "identity"}, 5)
-        if identity != {"provider_id": PROVIDER_ID, "version": PROVIDER_VERSION}:
+        validate_url(url)
+        matches = _call({"action": "match", "url": url}, 10)
+        if not isinstance(matches, list) or len(matches) > 100 or not all(valid_match(m) for m in matches):
             return ()
-    except ParseHubBridgeError:
+    except (ParseHubBridgeError, ValueError, TypeError):
         return ()
-    return matches
+    return tuple(matches)
+
+
+def valid_match(match):
+    return (isinstance(match, dict) and set(match) == {"provider_id", "extractor_id", "label", "version"}
+            and match.get("provider_id") == PROVIDER_ID and match.get("version") == PROVIDER_VERSION
+            and isinstance(match.get("extractor_id"), str)
+            and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,99}", match["extractor_id"]) is not None
+            and isinstance(match.get("label"), str) and len(match["label"]) <= 200)
 
 
 def coverage_snapshot():
-    """Return reviewed bridge entries only after the exact runtime handshake.
-
-    Counts describe this bridge's catalog, not ParseHub's full platform inventory
-    or successful live parses. The caller may append this dict to its snapshots.
-    """
+    """The fixed runtime's actual registry, not a per-site application allowlist."""
     available = False
+    entries = []
     try:
-        available = _call({"action": "identity"}, 5) == {
-            "provider_id": PROVIDER_ID, "version": PROVIDER_VERSION}
+        catalog = _call({"action": "catalog"}, 10)
+        available = (isinstance(catalog, dict) and catalog.get("provider_id") == PROVIDER_ID
+                     and catalog.get("version") == PROVIDER_VERSION
+                     and isinstance(catalog.get("entries"), list) and len(catalog["entries"]) <= 100
+                     and all(valid_match(m) for m in catalog["entries"]))
+        entries = catalog["entries"] if available else []
     except ParseHubBridgeError:
         pass
-    entries = [
-        {"provider_id": PROVIDER_ID, "extractor_id": extractor,
-         "label": label, "version": PROVIDER_VERSION}
-        for extractor, (_, label) in PARSERS.items()
-    ] if available else []
     return {"provider_id": PROVIDER_ID, "version": PROVIDER_VERSION if available else "",
             "available": available, "entries": entries,
             "counts": {"total": len(entries), "eligible": len(entries),
@@ -102,17 +101,30 @@ def coverage_snapshot():
 def parse_upstream_url(match, url, timeout_seconds=15.0):
     try:
         timeout = timeout_value(timeout_seconds)
-        if (match,) != match_url(url):
+        validate_url(url)
+        if not valid_match(match):
             raise ValueError()
     except (ValueError, TypeError):
         raise ParseHubBridgeError("invalid_parse_request") from None
     payload = _call({"action": "parse", "url": url, "match": match,
                      "timeout_seconds": timeout}, timeout)
-    if not isinstance(payload, list) or not payload or len(payload) > 30:
+    if not isinstance(payload, list) or not payload or len(payload) > MAX_ASSETS:
         raise ParseHubBridgeError("invalid_payload")
     for row in payload:
-        if (not isinstance(row, list) or len(row) != 3 or row[0] != 3 or
-                not isinstance(row[1], str) or not isinstance(row[2], dict) or
-                row[2].get("media_completeness") not in {"unknown", "image_candidate"}):
+        if not isinstance(row, list) or len(row) not in {2, 3}:
+            raise ParseHubBridgeError("invalid_payload")
+        if len(row) == 3 and row[0] == 3 and isinstance(row[1], str):
+            try:
+                validate_url(row[1])
+            except (ValueError, TypeError):
+                raise ParseHubBridgeError("invalid_payload") from None
+            meta = row[2]
+        elif len(row) == 2 and row[0] == 2:
+            meta = row[1]
+            if not isinstance(meta, dict) or meta.get("candidate_kind") != "richtext" or not meta.get("content_summary"):
+                raise ParseHubBridgeError("invalid_payload")
+        else:
+            raise ParseHubBridgeError("invalid_payload")
+        if not isinstance(meta, dict) or meta.get("media_completeness") not in COMPLETENESS:
             raise ParseHubBridgeError("invalid_payload")
     return payload

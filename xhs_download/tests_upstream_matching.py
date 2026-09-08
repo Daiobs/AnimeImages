@@ -194,7 +194,7 @@ class WorkerContractTests(SimpleTestCase):
                 self.assertEqual(captured.exception.stage, "gallery_extract")
                 self.assertNotIn("private", str(captured.exception))
 
-    def test_comic_collection_is_rejected_before_instantiation(self):
+    def test_comic_collection_admitted_with_bounded_runtime(self):
         from gallery_dl.extractor.keenspot import KeenspotComicExtractor
         from gallery_dl.extractor.naverwebtoon import NaverWebtoonComicExtractor
         from gallery_dl.extractor.readcomiconline import ReadcomiconlineComicExtractor
@@ -204,16 +204,24 @@ class WorkerContractTests(SimpleTestCase):
                    ReadcomiconlineComicExtractor, WebtoonsComicExtractor]
         for cls in classes:
             self.assertEqual(cls.subcategory, "comic")
-            self.assertFalse(worker.eligible("gallery_dl_generic", cls))
-        # Keenspot follows pages internally, so rejecting Queue alone is insufficient.
+            self.assertTrue(worker.eligible("gallery_dl_generic", cls))
+        # Internal pagination is bounded even when no Queue message is emitted.
+        consumed = []
+        def items(instance):
+            for index in range(1000):
+                consumed.append(index)
+                yield (3, "https://example.com/image.jpg", {"index": index})
         with mock.patch.object(worker, "package_identity", return_value={"version": "1"}), \
                 mock.patch.object(worker, "extractor_classes", return_value=classes), \
-                mock.patch.object(worker, "parse_gallery") as parse:
-            with self.assertRaisesMessage(ValueError, "extractor_mismatch"):
-                worker.handle({"action": "parse", "provider_id": "gallery_dl_generic",
-                               "version": "1", "extractor_id": "KeenspotComicExtractor",
-                               "url": "https://synthetic.keenspot.com/2026/01/01/"})
-            parse.assert_not_called()
+                mock.patch.object(KeenspotComicExtractor, "__iter__", items), \
+                mock.patch.object(worker, "MAX_ITEMS", 2):
+            result = worker.handle({"action": "parse", "provider_id": "gallery_dl_generic",
+                                    "version": "1", "extractor_id": "KeenspotComicExtractor",
+                                    "url": "https://synthetic.keenspot.com/2026/01/01/",
+                                    "timeout_seconds": 1})
+        self.assertEqual(consumed, [0, 1])
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[-1][2]["upstream_scope"]["reason"], "item_limit")
 
     def test_safe_errors_do_not_expose_messages(self):
         for error, code in ((ValueError("network_denied"), "network_denied"),
@@ -224,24 +232,25 @@ class WorkerContractTests(SimpleTestCase):
             self.assertEqual(result["error"], code)
             self.assertNotIn("private", json.dumps(result))
 
-    def test_collection_classes_not_admitted(self):
+    def test_collection_names_do_not_override_registry_admission(self):
         for key in ("Generic", "YoutubeTab", "YoutubePlaylist", "InstagramUser", "TestURL"):
             self.assertFalse(worker.eligible("yt_dlp_generic", SimpleNamespace(
                 ie_key=lambda: key, _VALID_URL="https://example.com/item")))
         self.assertTrue(worker.eligible("yt_dlp_generic", SimpleNamespace(
             ie_key=lambda: "NewDedicatedProvider", _VALID_URL="https://example.com/item")))
-        self.assertFalse(worker.eligible("yt_dlp_generic", SimpleNamespace(
+        self.assertTrue(worker.eligible("yt_dlp_generic", SimpleNamespace(
             ie_key=lambda: "UnobviousCollection", _RETURN_TYPE="playlist", _VALID_URL="https://example.com/item")))
         for subcategory in ("user", "album", "gallery", "search", "collection", "timeline"):
-            self.assertFalse(worker.eligible("gallery_dl_generic", SimpleNamespace(
-                __name__="SyntheticExtractor", subcategory=subcategory, category="example")))
+            self.assertTrue(worker.eligible("gallery_dl_generic", SimpleNamespace(
+                __name__="SyntheticExtractor", subcategory=subcategory, category="example",
+                pattern=r"https://example.com/item")))
 
-    def test_hidden_and_history_helpers_are_not_dynamic_coverage(self):
+    def test_hidden_helpers_excluded_but_suffixes_are_not_policy(self):
         self.assertFalse(worker.eligible("yt_dlp_generic", SimpleNamespace(
             ie_key=lambda: "HiddenHelper", IE_DESC=False, _VALID_URL="https://example.com/item")))
         for suffix in ("History", "Recommended", "Subscriptions", "WatchLater",
                        "Notifications", "TruncatedID", "TruncatedURL"):
-            self.assertFalse(worker.eligible("yt_dlp_generic", SimpleNamespace(
+            self.assertTrue(worker.eligible("yt_dlp_generic", SimpleNamespace(
                 ie_key=lambda: "Synthetic" + suffix, _VALID_URL="https://example.com/item")))
 
     def test_established_route_prefixes_excluded_for_both_providers(self):
@@ -253,54 +262,49 @@ class WorkerContractTests(SimpleTestCase):
             self.assertFalse(worker.eligible("gallery_dl_generic", SimpleNamespace(
                 __name__=prefix + "ImageExtractor", subcategory="image", category=prefix.lower())))
 
-    def test_ytdlp_complete_formats_and_no_delegation(self):
-        class Fake:
+    def test_ytdlp_formats_and_bounded_normal_delegation(self):
+        from yt_dlp.extractor.common import InfoExtractor
+        class FakeIE(InfoExtractor):
+            _VALID_URL = r"https://example.com/(?P<id>item)"
             payload = {"id": "synthetic", "formats": [{"url": "https://example.com/v.mp4"}]}
 
-            def __init__(self, ydl):
-                self.ydl = ydl
+            def _real_extract(self, url):
+                return json.loads(json.dumps(self.payload))
 
-            def extract(self, url):
-                return self.payload
-
-        with mock.patch('tools.upstream_metadata_probe.probe_in_guarded_child', return_value={"audio": "unknown"}):
-            processed = worker.parse_ytdlp(Fake, "https://example.com/item", 1)["formats"][0]
+        with mock.patch('tools.upstream_metadata_probe.probe_in_guarded_child') as probe:
+            processed = worker.parse_ytdlp(FakeIE, "https://example.com/item", 1)["formats"][0]
+            probe.assert_not_called()
         self.assertEqual(processed["url"], "https://example.com/v.mp4")
         self.assertEqual(processed["ext"], "mp4")
         self.assertEqual(processed["protocol"], "https")
         self.assertEqual(processed["format_id"], "0")
         self.assertEqual(processed["upstream_track_evidence"], {
             "acodec": None, "vcodec": None, "audio_ext": None, "video_ext": None})
-        for payload in ({"_type": "url", "url": "https://example.com/next"},
-                        {"_type": "playlist", "entries": []}, {"entries": []},
-                        {"_type": "url_transparent"}):
-            Fake.payload = payload
-            with self.assertRaises(ValueError):
-                worker.parse_ytdlp(Fake, "https://example.com/item", 1)
+        class DelegatingIE(FakeIE):
+            def _real_extract(self, url):
+                return self._downloader.extract_info(url, ie_key=self.ie_key())
 
-        class Delegating(Fake):
-            def extract(self, url):
-                return self.ydl.extract_info(url)
+        with self.assertRaisesMessage(ValueError, "cycle_detected"):
+            worker.parse_ytdlp(DelegatingIE, "https://example.com/item", 1)
 
-        with self.assertRaisesMessage(ValueError, "delegation_denied"):
-            worker.parse_ytdlp(Delegating, "https://example.com/item", 1)
-
-        class Collection(Fake):
-            def extract(self, url):
+        class CollectionIE(FakeIE):
+            def _real_extract(self, url):
                 def items():
-                    raise AssertionError("entries must not be consumed")
-                    yield
+                    yield dict(id="first", url="https://example.com/a.mp4")
+                    raise TimeoutError("private details")
                 return self.playlist_result(items())
 
-        with self.assertRaisesMessage(ValueError, "collection_denied"):
-            worker.parse_ytdlp(Collection, "https://example.com/item", 1)
+        partial = worker.parse_ytdlp(CollectionIE, "https://example.com/item", 1)
+        self.assertEqual(len(partial["entries"]), 1)
+        self.assertEqual(partial["upstream_scope"]["reason"], "network_timeout")
+        self.assertNotIn("private", json.dumps(partial))
 
-        class URLResult(Fake):
-            def extract(self, url):
-                return self.url_result(url)
+        class URLResultIE(FakeIE):
+            def _real_extract(self, url):
+                return self.url_result(url, self.ie_key())
 
-        with self.assertRaisesMessage(ValueError, "delegation_denied"):
-            worker.parse_ytdlp(URLResult, "https://example.com/item", 1)
+        with self.assertRaisesMessage(ValueError, "cycle_detected"):
+            worker.parse_ytdlp(URLResultIE, "https://example.com/item", 1)
 
     def test_gallery_exact_messages_queue_and_item_limits(self):
         class Fake:
@@ -427,10 +431,18 @@ from yt_dlp.extractor import get_info_extractor
 proxy = get_info_extractor('Vimeo')
 concrete = getattr(proxy, 'real_class', proxy)
 concrete.initialize = lambda self: None
-concrete._real_extract = lambda self, url: self.playlist_result(iter(()))
+concrete._real_extract = lambda self, url: self.url_result(url, self.ie_key())
 try: w.parse_ytdlp(proxy, 'https://vimeo.com/12345678',1)
-except ValueError as error: assert str(error) == 'collection_denied'
+except ValueError as error: assert str(error) == 'cycle_detected'
 else: raise AssertionError('lazy proxy bypassed guards')
+def entries():
+    for i in range(1000):
+        yield {'id':str(i), 'url':'https://example.com/video.mp4'}
+concrete._real_extract = lambda self, url: self.playlist_result(entries())
+w.MAX_ITEMS = 2
+partial = w.parse_ytdlp(proxy, 'https://vimeo.com/12345678',1)
+assert len(partial['entries']) == 2
+assert partial['upstream_scope']['reason'] == 'item_limit'
 concrete._real_extract = lambda self, url: {'id':'synthetic','formats':[
     {'url':'https://example.com/video.mp4'}]}
 assert len(w.parse_ytdlp(proxy, 'https://vimeo.com/12345678',1)['formats']) == 1

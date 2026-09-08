@@ -1235,8 +1235,9 @@ class VideodlProviderLabIntegrationTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error_code"], "PROVIDER_POLICY_REJECTED")
 
+    @mock.patch("xhs_download.services.quality_execution._python_for", return_value="/isolated/python")
     @mock.patch("xhs_download.services.provider_lab.providers.execute_controlled_videodl")
-    def test_runtime_failure_retains_safe_attempts(self, execute_mock):
+    def test_runtime_failure_retains_safe_attempts(self, execute_mock, python_mock):
         attempt = LabProviderAttemptV1(
             ordinal=1,
             backend_id="ExactBackend",

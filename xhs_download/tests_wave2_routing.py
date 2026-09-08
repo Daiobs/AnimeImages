@@ -2,14 +2,14 @@
 
 from unittest import mock
 
-from django.test import SimpleTestCase
+from django.test import TestCase
 
 from xhs_download.services.common import XhsParseError, extract_url_from_text
 from xhs_download.services.platforms.third_party import GenericThirdPartyAdapter
 from xhs_download.services.registry import PlatformRegistry
 
 
-class Wave2RoutingTests(SimpleTestCase):
+class Wave2RoutingTests(TestCase):
     candidates = (
         ("CoolapkParser", "https://www.coolapk.com/feed/123456"),
         ("CoolapkParser", "https://www.coolapk.com/picture/123456"),
@@ -86,7 +86,7 @@ class Wave2RoutingTests(SimpleTestCase):
                         return_value=(self.match(extractor),)), \
                 mock.patch("xhs_download.services.platforms.third_party.runtime_bool", return_value=True), \
                 mock.patch("xhs_download.services.common.validate_public_download_url"), \
-                mock.patch("xhs_download.services.upstream_matching.parse_upstream_url",
+                mock.patch("xhs_download.services.quality_execution.execute_provider",
                            side_effect=XhsParseError("synthetic failure")) as parse, \
                 mock.patch.object(self.adapter, "iter_provider_specs") as legacy:
             with self.assertRaises(XhsParseError):

@@ -78,6 +78,7 @@ class ProviderDescriptor:
     not_configured_hint: str = ""
 
     def as_dict(self) -> dict[str, Any]:
+        from ..quality_execution import PROVIDER_ALIASES
         return {
             "provider_id": self.provider_id,
             "label": self.label,
@@ -88,6 +89,8 @@ class ProviderDescriptor:
             "default_selected": self.default_selected,
             "available": bool(self.availability()),
             "not_configured_hint": self.not_configured_hint,
+            "execution_provider_id": PROVIDER_ALIASES.get(self.provider_id, self.provider_id),
+            "baseline": self.provider_id == 'animeimages_current',
         }
 
 
@@ -161,7 +164,7 @@ def _parse_result_metadata(result: ParseResult) -> dict[str, str]:
     return {
         "title": safe_text(metadata.get("title") or result.base_filename, 300),
         "author": safe_text(
-            metadata.get("author") or metadata.get("nickname") or metadata.get("uploader"),
+            metadata.get("author") or metadata.get("author_name") or metadata.get("nickname") or metadata.get("uploader"),
             200,
         ),
         "content_summary": safe_text(
@@ -192,9 +195,103 @@ def _media_asset_to_lab(
         declared_extension=asset.ext,
         size_bytes=asset.size_bytes,
         quality_label=asset.quality_label,
+        size_is_estimate=asset.size_is_estimate,
         headers_present=bool(asset.headers),
         requires_cookie="cookie" in header_names,
     )
+
+
+def _track_state(codec):
+    value = str(codec or '').strip().lower()
+    if not value or value == 'unknown':
+        return 'unknown'
+    return 'absent' if value == 'none' else 'present'
+
+
+def parse_result_to_lab(result, *, provider_id, user_id, request_id, provider_version=None):
+    """Present the product's retained candidates, not its downloadable subset."""
+    if not isinstance(result, ParseResult):
+        raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
+    descriptor = PROVIDER_REGISTRY[provider_id]
+    metadata = dict(result.metadata or {})
+    candidates = metadata.get('upstream_candidates')
+    assets = []
+    if candidates is not None:
+        from ..upstream_candidates import resolve_candidate_record
+        if not isinstance(candidates, (list, tuple)):
+            raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
+        for candidate in candidates[:MAX_ASSETS]:
+            if not isinstance(candidate, dict):
+                raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
+            candidate_id = candidate.get('candidate_id')
+            record = resolve_candidate_record(candidate.get('resource_token'), candidate_id)
+            if not isinstance(record, dict) or not record.get('url'):
+                raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
+            audio = _track_state(candidate.get('acodec'))
+            video = _track_state(candidate.get('vcodec'))
+            headers = record.get('headers') or {}
+            header_names = {str(key).lower() for key in headers}
+            assets.append(_issue_asset(
+                user_id=user_id, request_id=request_id, provider_id=provider_id,
+                asset_id=candidate_id, url=record['url'],
+                media_type=candidate.get('media_type', 'unknown'),
+                role='audio' if candidate.get('media_type') == 'audio' else 'primary',
+                declared_extension=candidate.get('extension') or record.get('ext', ''),
+                width=safe_int(candidate.get('width')), height=safe_int(candidate.get('height')),
+                duration_seconds=safe_float(candidate.get('duration')),
+                size_bytes=safe_int(candidate.get('size_bytes')),
+                size_is_estimate=candidate.get('size_is_estimate') is True,
+                quality_label=candidate.get('format_label', ''),
+                format_id=candidate.get('format_id', ''), fps=candidate.get('fps'),
+                work_label=candidate.get('work_label', ''),
+                vcodec=candidate.get('vcodec', ''), acodec=candidate.get('acodec', ''),
+                codec=candidate.get('vcodec') or candidate.get('acodec') or '',
+                bitrate=candidate.get('bitrate'), audio_tracks=audio, video_tracks=video,
+                protocol=candidate.get('protocol', ''),
+                delivery_state=candidate.get('delivery_state', 'unknown'),
+                metadata_source=candidate.get('metadata_source', 'unknown'),
+                ordinal=candidate.get('ordinal', len(assets) + 1),
+                requires_merge=audio == 'absent' and video == 'present',
+                audio_asset_present=audio == 'present',
+                headers_present=bool(headers) or record.get('headers_present') is True
+                                or candidate.get('headers_present') is True
+                                or candidate.get('requires_context') is True,
+                requires_cookie='cookie' in header_names or record.get('requires_cookie') is True
+                                or candidate.get('requires_cookie') is True,
+            ))
+    else:
+        assets = [_media_asset_to_lab(asset, index=index, total=len(result.assets),
+                    user_id=user_id, request_id=request_id, provider_id=provider_id)
+                  for index, asset in enumerate(result.assets[:MAX_ASSETS], 1)]
+    if not assets:
+        raise ProviderLabError('PROVIDER_RESULT_EMPTY')
+    observed = len(candidates) if candidates is not None else len(result.assets)
+    public_metadata = _parse_result_metadata(result)
+    truncated = safe_int(metadata.get('candidates_truncated', metadata.get('truncated_count')))
+    public_metadata.update(candidate_count=metadata.get('candidate_count', observed + truncated),
+                           truncated_count=truncated + max(0, observed - MAX_ASSETS),
+                           truncated=bool(truncated or metadata.get('truncated') or observed > MAX_ASSETS),
+                           unexpanded_scope=metadata.get('unexpanded_scope', ''),
+                           baseline=provider_id == 'animeimages_current')
+    payload = LabProviderResultV1(
+        request_id=request_id, provider_id=provider_id,
+        provider_version=provider_version or metadata.get('upstream_version') or descriptor.provider_version,
+        provider_scope=descriptor.provider_scope, status='success',
+        claimed_platform=result.platform,
+        selected_backend=safe_text(metadata.get('upstream_extractor') or metadata.get('source_provider'), 160),
+        result_kind=_result_kind(result.post_type, assets), metadata=public_metadata,
+        assets=assets, warnings=metadata.get('warnings') or (),
+        raw_shape=sanitize_raw_shape({'result_class': type(result).__name__, 'candidate_count': observed}),
+        license_name=descriptor.license_name, license_scope=descriptor.license_scope,
+    )
+    return payload.as_dict(), []
+
+
+def _run_shared(provider_id, *, source, request_id, user_id):
+    from ..quality_execution import execute_provider
+    result = execute_provider(provider_id, source, timeout_seconds=runtime_float(
+        'PROVIDER_LAB_EXTERNAL_TIMEOUT_SECONDS', 25.0))
+    return parse_result_to_lab(result, provider_id=provider_id, user_id=user_id, request_id=request_id)
 
 
 def run_animeimages_current(*, source: str, request_id: str, user_id: int):
@@ -204,138 +301,15 @@ def run_animeimages_current(*, source: str, request_id: str, user_id: int):
         prefer_youtube_merge=False,
         timeout_seconds=runtime_float("PROVIDER_LAB_CURRENT_TIMEOUT_SECONDS", 20.0),
     )
-    if not isinstance(result, ParseResult):
-        raise ProviderLabError("PROVIDER_SCHEMA_INVALID")
-    source_assets = list(result.assets or ())[:MAX_ASSETS]
-    assets = [
-        _media_asset_to_lab(
-            item,
-            index=index,
-            total=len(source_assets),
-            user_id=user_id,
-            request_id=request_id,
-            provider_id="animeimages_current",
-        )
-        for index, item in enumerate(source_assets, start=1)
-    ]
-    if not assets:
-        raise ProviderLabError("PROVIDER_RESULT_EMPTY")
-    metadata = dict(result.metadata or {})
-    payload = LabProviderResultV1(
-        request_id=request_id,
-        provider_id="animeimages_current",
-        provider_version="animeimages-current",
-        provider_scope="runtime",
-        status="success",
-        claimed_platform=result.platform,
-        selected_backend=safe_text(
-            metadata.get("source_provider") or metadata.get("provider_label") or "platform_registry",
-            160,
-        ),
-        result_kind=_result_kind(result.post_type, assets),
-        metadata=_parse_result_metadata(result),
-        assets=assets,
-        raw_shape=sanitize_raw_shape(
-            {
-                "result_class": type(result).__name__,
-                "platform": result.platform,
-                "post_type": result.post_type,
-                "metadata": metadata,
-                "asset_count": len(result.assets or ()),
-                "rich_media": result.rich_media,
-            }
-        ),
-        license_name="AnimeImages",
-        license_scope="runtime",
-    )
-    return payload.as_dict(), []
-
-
-def _ytdlp_assets(payload, *, user_id, request_id):
-    candidates = []
-    formats = payload.get("formats")
-    if isinstance(formats, list):
-        candidates.extend(item for item in formats if isinstance(item, dict))
-    if payload.get("url"):
-        candidates.insert(0, payload)
-    assets = []
-    seen = set()
-    for item in candidates:
-        url = str(item.get("url") or "").strip()
-        if not url or url in seen:
-            continue
-        try:
-            validated_resource_url(url)
-        except ProviderLabError:
-            continue
-        seen.add(url)
-        vcodec = safe_text(item.get("vcodec"), 80)
-        acodec = safe_text(item.get("acodec"), 80)
-        has_video = bool(vcodec and vcodec != "none")
-        has_audio = bool(acodec and acodec != "none")
-        media_type = "video" if has_video or not item.get("vcodec") else "audio"
-        assets.append(
-            _issue_asset(
-                user_id=user_id,
-                request_id=request_id,
-                provider_id="yt_dlp_existing",
-                asset_id=f"yt-dlp-{len(assets) + 1}",
-                url=url,
-                media_type=media_type,
-                role="primary" if not assets else ("audio" if media_type == "audio" else "gallery"),
-                declared_extension=item.get("ext"),
-                width=safe_int(item.get("width")),
-                height=safe_int(item.get("height")),
-                duration_seconds=safe_float(item.get("duration") or payload.get("duration")),
-                size_bytes=safe_int(item.get("filesize") or item.get("filesize_approx")),
-                quality_label=safe_text(
-                    item.get("format_note") or item.get("resolution") or item.get("format_id"),
-                    120,
-                ),
-                codec=vcodec or acodec,
-                requires_merge=bool(has_video and not has_audio),
-                audio_asset_present=bool(has_audio),
-            )
-        )
-        if len(assets) >= MAX_ASSETS:
-            break
-    return assets
+    return parse_result_to_lab(result, provider_id='animeimages_current', user_id=user_id, request_id=request_id)
 
 
 def run_ytdlp_existing(*, source: str, request_id: str, user_id: int):
-    provider = YtDlpGenericProvider()
-    health = provider.health(force_version_probe=False)
-    if not health.get("ready"):
-        raise ProviderLabError("PROVIDER_NOT_CONFIGURED")
-    payload = provider.parse(
-        source,
-        timeout_seconds=runtime_float("PROVIDER_LAB_YTDLP_TIMEOUT_SECONDS", 20.0),
-    )
-    if not isinstance(payload, dict):
-        raise ProviderLabError("PROVIDER_SCHEMA_INVALID")
-    assets = _ytdlp_assets(payload, user_id=user_id, request_id=request_id)
-    if not assets:
-        raise ProviderLabError("PROVIDER_RESULT_EMPTY")
-    result = LabProviderResultV1(
-        request_id=request_id,
-        provider_id="yt_dlp_existing",
-        provider_version=safe_text(health.get("version_output") or "yt-dlp-existing", 160),
-        provider_scope="runtime",
-        status="success",
-        claimed_platform=safe_text(payload.get("extractor_key") or payload.get("extractor"), 80),
-        selected_backend=safe_text(payload.get("extractor_key") or payload.get("extractor"), 160),
-        result_kind="video",
-        metadata={
-            "title": payload.get("title"),
-            "author": payload.get("uploader") or payload.get("channel"),
-            "content_summary": payload.get("description"),
-        },
-        assets=assets,
-        raw_shape=sanitize_raw_shape(payload),
-        license_name="yt-dlp",
-        license_scope="runtime_metadata_only",
-    )
-    return result.as_dict(), []
+    return _run_shared('yt_dlp_existing', source=source, request_id=request_id, user_id=user_id)
+
+
+def run_gallerydl_existing(*, source: str, request_id: str, user_id: int):
+    return _run_shared('gallery_dl_existing', source=source, request_id=request_id, user_id=user_id)
 
 
 def run_tiantian_existing(*, source: str, request_id: str, user_id: int):
@@ -425,7 +399,7 @@ def _run_external(provider: str, *, source: str, request_id: str, user_id: int):
 
 
 def run_parsehub_repo(**kwargs):
-    return _run_external("parsehub", **kwargs)
+    return _run_shared('parsehub_repo', **kwargs)
 
 
 def run_videodl_repo(
@@ -434,6 +408,7 @@ def run_videodl_repo(
     request_id: str,
     user_id: int,
     options: VideodlExecutionOptions | None = None,
+    timeout_seconds: float | None = None,
 ):
     del user_id
     if options is None:
@@ -450,7 +425,7 @@ def run_videodl_repo(
         request_id=request_id,
         source=source,
         options=options,
-        total_timeout_seconds=runtime_float(
+        total_timeout_seconds=min(30.0, max(.1, float(timeout_seconds))) if timeout_seconds is not None else runtime_float(
             "PROVIDER_LAB_EXTERNAL_TIMEOUT_SECONDS", 25.0
         ),
     )
@@ -540,10 +515,15 @@ def _ytdlp_available() -> bool:
     return bool(external_command_health(binary, "yt-dlp").get("executable_found"))
 
 
+def _shared_available(provider_id):
+    from ..quality_execution import provider_available
+    return provider_available(provider_id)
+
+
 PROVIDER_REGISTRY: Mapping[str, ProviderDescriptor] = {
     "animeimages_current": ProviderDescriptor(
         provider_id="animeimages_current",
-        label="AnimeImages 当前结果",
+        label="AnimeImages 当前路线基线",
         provider_version="animeimages-current",
         provider_scope="runtime",
         license_name="AnimeImages",
@@ -561,7 +541,7 @@ PROVIDER_REGISTRY: Mapping[str, ProviderDescriptor] = {
         license_scope="lab_only_production_candidate",
         default_selected=True,
         runner=run_parsehub_repo,
-        availability=lambda: _external_available("parsehub"),
+        availability=lambda: _shared_available('parsehub_repo'),
         not_configured_hint="请先初始化 ParseHub 独立环境。",
     ),
     "videodl_repo": ProviderDescriptor(
@@ -586,7 +566,15 @@ PROVIDER_REGISTRY: Mapping[str, ProviderDescriptor] = {
         license_scope="runtime_metadata_only",
         default_selected=False,
         runner=run_ytdlp_existing,
-        availability=_ytdlp_available,
+        availability=lambda: _shared_available('yt_dlp_existing'),
+    ),
+    "gallery_dl_existing": ProviderDescriptor(
+        provider_id="gallery_dl_existing", label="gallery-dl",
+        provider_version="gallery-dl-runtime", provider_scope="runtime",
+        license_name="GPL-2.0", license_scope="runtime_metadata_only",
+        default_selected=False, runner=run_gallerydl_existing,
+        availability=lambda: _shared_available('gallery_dl_existing'),
+        not_configured_hint="请配置 gallery-dl 独立执行环境。",
     ),
     "tiantian_existing": ProviderDescriptor(
         provider_id="tiantian_existing",
@@ -766,12 +754,12 @@ def run_provider(
         ):
             raise ProviderLabError("PROVIDER_LICENSE_RESTRICTED")
         if provider_id == "videodl_repo":
-            result_data, resources, attempts = descriptor.runner(
-                source=normalized,
-                request_id=request_id,
-                user_id=user_id,
-                options=options,
-            )
+            from ..quality_execution import execute_provider
+            result = execute_provider(provider_id, normalized, options=options,
+                timeout_seconds=runtime_float('PROVIDER_LAB_EXTERNAL_TIMEOUT_SECONDS', 25.0))
+            result_data, resources = parse_result_to_lab(result, provider_id=provider_id,
+                request_id=request_id, user_id=user_id)
+            result_data['attempts'] = list(result.metadata.get('attempts') or ())
         else:
             result_data, resources = descriptor.runner(
                 source=normalized,
@@ -779,17 +767,6 @@ def run_provider(
                 user_id=user_id,
             )
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
-        if provider_id in {"parsehub_repo", "videodl_repo"}:
-            contract = _worker_result_to_contract(
-                result_data,
-                resources,
-                descriptor=descriptor,
-                user_id=user_id,
-                request_id=request_id,
-                elapsed_ms=elapsed_ms,
-                attempts=attempts,
-            )
-            return contract.as_dict()
         result_data["elapsed_ms"] = elapsed_ms
         return result_data
     except XhsProviderTimeoutError:

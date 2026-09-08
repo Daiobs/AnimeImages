@@ -404,16 +404,13 @@ def result_with_provider_diagnostics(
             1 for attempt in attempts if attempt.get("status") != "success"
         ),
     })
-    return ParseResult(
-        platform=result.platform,
-        post_type=result.post_type,
-        base_filename=result.base_filename,
-        assets=result.assets,
-        metadata=metadata,
-    )
+    return replace(result, metadata=metadata)
 
 
 def provider_is_enabled(provider_id):
+    if provider_id == "videodl_repo":
+        from ..quality_execution import provider_available
+        return provider_available(provider_id)
     if provider_id == "parsehub_generic":
         return runtime_bool("PARSEHUB_UPSTREAM_ENABLED", False)
     if provider_id == "kukutool_generic":
@@ -604,7 +601,8 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         if host_matches(hostname, BLOCKED_PUBLIC_HOST_SUFFIXES):
             return None
         from ..upstream_matching import match_upstream_url
-        matches = tuple(match_upstream_url(url))
+        from ..upstream_routes import saved_videodl_matches
+        matches = tuple(match_upstream_url(url)) + saved_videodl_matches(url)
         if matches:
             return ThirdPartyPlatformRule(
                 platform_id="upstream", display_name=matches[0]["label"],
@@ -914,29 +912,53 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         raise XhsParseError(f"{platform_name} 第三方解析失败：{summary or '没有可用 Provider'}")
 
     def parse_upstream_rule(self, source_url, rule, timeout_seconds, deadline_monotonic):
-        from ..upstream_matching import parse_upstream_url
-        from ..upstream_delivery import normalize_upstream_result
+        from ..quality_execution import execute_provider
         from ..common import validate_public_download_url
+        from ..upstream_routes import (route_matches, parse_cache_key, cached_parse_result,
+                                       cache_parse_result, apply_format_preferences)
 
         validate_public_download_url(source_url)
+        matches, route = route_matches(source_url, rule.upstream_matches)
         started = time.monotonic()
         deadline = min(started + 30.0, float(deadline_monotonic)) if deadline_monotonic else (
             started + min(30.0, max(0.1, float(timeout_seconds or 30.0))))
         attempts = []
-        used_providers = set()
         failure_code = "upstream_unavailable"
-        for match in rule.upstream_matches:
-            provider = match["provider_id"]
-            if provider in used_providers or len(used_providers) >= 2 or not provider_is_enabled(provider):
+        for provider in route["effective_provider_order"]:
+            match = next((m for m in matches if m["provider_id"] == provider), None)
+            if match is None or not provider_is_enabled(provider):
+                if route["mode"] == "manual":
+                    attempts.append({"provider": provider, "status": "unavailable", "duration_ms": 0,
+                                     "reason": "not_matched_or_not_permitted" if match is None else "disabled"})
                 continue
-            used_providers.add(provider)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise XhsProviderTimeoutError("扩展解析超时，请稍后再试。")
             attempt_start = time.monotonic()
             try:
-                payload = parse_upstream_url(match, source_url, timeout_seconds=min(20.0, remaining))
-                result = normalize_upstream_result(payload, match=match, source_url=source_url)
+                execution = {}
+                if provider == "videodl_repo":
+                    # Execute exactly the backend admitted above, never re-expand to
+                    # a dedicated backend excluded by source/access matching.
+                    execution["backend"] = match["extractor_id"]
+                else:
+                    execution["expected_match"] = match
+                cache_key = parse_cache_key(source_url, route, provider)
+                result = cached_parse_result(cache_key, source_url, provider)
+                cache_hit = result is not None
+                if not cache_hit:
+                    result = execute_provider(provider, source_url, timeout_seconds=min(20.0, remaining), **execution)
+                if not result.assets and not (result.metadata or {}).get("upstream_candidates"):
+                    raise XhsParseError("empty_upstream_result")
+                if not cache_hit:
+                    cache_parse_result(cache_key, result)
+                result = apply_format_preferences(result, route["format_preferences"])
+                result = replace(result, metadata={**(result.metadata or {}),
+                                                   "upstream_route": {**route, "cache_hit": cache_hit,
+                                                       "selected_provider": provider,
+                                                       "fallback_reason": "; ".join(
+                                                           f"{attempt['provider']}: {attempt['status']}"
+                                                           for attempt in attempts)}})
                 attempts.append(provider_attempt_record(provider, "success", elapsed_ms(attempt_start)))
                 return result_with_provider_diagnostics(result, provider, elapsed_ms(attempt_start), attempts,
                                                         total_duration_ms=elapsed_ms(started))
@@ -948,6 +970,8 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
                                                           "error_code": failure_code})
         if not attempts:
             raise XhsParseError("匹配的扩展解析器当前未启用或不可执行。")
+        if route["mode"] == "manual" and all(a["status"] == "unavailable" for a in attempts):
+            raise XhsParseError("已保存的人工路线当前不可执行；设置已保留，请检查配置或明确恢复默认。")
         messages = {
             'auth_required': '该公开链接的上游解析需要登录；本入口不读取账号凭据。',
             'access_denied': '上游拒绝访问该内容，可能存在地区或访问限制。',

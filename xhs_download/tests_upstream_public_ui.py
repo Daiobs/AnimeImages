@@ -151,7 +151,8 @@ class UpstreamPreviewTests(SimpleTestCase):
     def test_normalized_unbound_upstream_video_exposes_authorization_action(self):
         from .services.upstream_delivery import normalize_upstream_result
 
-        with patch("xhs_download.services.upstream_delivery.safe_resource_url", side_effect=lambda url: url):
+        with patch("xhs_download.services.upstream_delivery.safe_resource_url", side_effect=lambda url: url), \
+                patch("xhs_download.services.upstream_delivery.validate_public_download_url", side_effect=lambda url: url):
             result = normalize_upstream_result(
                 {"title": "example", "url": "https://cdn.example/video.webm", "ext": "webm",
                  "vcodec": "vp9", "acodec": "opus"},
