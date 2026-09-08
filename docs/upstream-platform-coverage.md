@@ -2,7 +2,8 @@
 
 ## Status
 
-**Wave 2: partial implementation; new browser delivery target not yet met.**
+**Wave 2: parser increment with delivery limits; original new-site automatic
+delivery target remains unmet.**
 PR #87's three-site browser delivery below is historical accepted evidence, not
 new Wave 2 success. PR #87 is merged; this follow-up remains a separate Draft.
 The implementation provides controlled discovery,
@@ -290,8 +291,94 @@ The browser source/CDN failures above are separate from parser compatibility.
 They do not authorize a server relay. ImgBB, PeerTube and Tieba remain prior-wave
 regressions, not newly counted sites. Multi-image browser saving, new three-site
 delivery, two newly connected ParseHub delivery paths and short-link acceptance
-remain **unmet**, so the Wave 2 result is **PARTIAL**, not ready-for-human-review
-success. One failed sample also does not prove every resource from that site fails.
+remain **unmet**. That initial Wave 2 result was **PARTIAL**. The subsequent human
+scope adjustment below permits review of the parser increment with delivery
+limits; it does not retroactively pass the original delivery target. One failed
+sample also does not prove every resource from that site fails.
+
+### Delivery-Limit Follow-Up (2026-09-08)
+
+The review scope is now the usable parser increment, existing permitted resource
+actions and accurate failure states, not further random platform expansion.
+For each of Douban and Coolapk, one representative image came from the same
+product parse, at local origin `http://127.0.0.1:8002`, in a fresh anonymous Chrome
+context with no related-site login. Fetch and native navigation used the same
+unchanged resource URL within the same short observation window. The product
+already used omitted credentials, no-referrer and redirect-error fetch; adding
+those same options again would not be a fix.
+
+| Stage | Douban representative | Coolapk representative |
+| --- | --- | --- |
+| Parse | Seven ordered body images | Eight ordered body images |
+| Inline preview | Not displayed | Not displayed; Chromium reports `ERR_BLOCKED_BY_ORB` |
+| Web fetch | JavaScript receives TypeError, no readable response | JavaScript receives TypeError, no readable response |
+| DevTools diagnostic only | HTTP 418, image/jpeg, missing applicable Allow-Origin | HTTP 200, image/jpeg, missing applicable Allow-Origin |
+| Native top-level open | Same URL, HTTP 418, image cannot display | Same URL, HTTP 200, JPEG displays at 720 x 1561 |
+| Native manual save | `MANUAL_SAVE_NOT_VERIFIED` | `MANUAL_SAVE_NOT_VERIFIED` |
+| Web automatic save / ZIP | No successful file | No successful file |
+
+Native opening is not file saving. Native save dialogs were not operated; neither
+CDP response-body extraction nor an out-of-browser request was used to manufacture
+a saved file. There is no new manual-save or automatic-save success to count.
+Douban's top-level rejection means native saving must not be promised. Coolapk's
+display success establishes a useful native-open action, not a verified save.
+
+DevTools can observe a status that the page script cannot read. The user-facing
+TypeError message therefore describes browser unreadability and possible network
+or source restrictions; it does not assert confirmed CORS, expiration or HTTP 418.
+Inline ORB, cross-origin script readability and top-level access are separate
+observations. No site-wide permanent CORS classification is stored.
+
+The homepage had a concrete preview bug: its failure retry appended `_retry` to
+external image URLs. It now preserves upstream URLs and displays one stable
+preview failure without automatic retries, matching Batch's existing protection.
+Image previews already lacked an unnecessary crossorigin attribute; none was
+removed as a supposed fix. No parser change is used to address media policy.
+
+Existing raw-link permissions remain in force. Copy/open actions are not download
+success, do not increment saved counts and do not automatically open multiple
+tabs. Native navigation may follow source redirects and does not inherit fetch's
+redirect-error guarantee. Source access and actual browser saving remain subject
+to the source response. No relay, proxy, URL rewrite, thumbnail substitution,
+canvas export or browser-security bypass is introduced.
+
+Staff homepage now offers one open action; Batch reuses its copy/open controls.
+Both obtain fresh single-image authorization through the existing route with a
+Staff-only `resource_link` intent. Expired, revoked, substituted or tampered
+resources fail closed, with no DOM-URL fallback. Pure link authorization does
+not create a successful download log. Anonymous raw-link permissions are not
+expanded. Homepage failures stop the busy progress state and retain a stable
+preview placeholder without covering the selection control. All-failed ZIPs
+retain the first safe failure category and explicitly report no ZIP saved.
+
+Final local verification: 2275 whole-project Django tests and 271 Node tests
+passed. Focused tests cover native link semantics, real signing-clock expiration,
+revocation, tampering, inactive/non-Staff denial, unchanged download logging,
+source order, bounded retry and cancellation. Checks and migration dry-run pass.
+
+Offline Chrome regression separates two forms of evidence:
+
+- Two actual HTTP loopback origins, with default browser security: six CORS/HTTP
+  cases passed (200, 403 and 418 with/without CORS). Six current-template preview
+  cases passed, including displayable images whose fetch is unreadable and ORB
+  failure. Source parameters were preserved without retries.
+- Synthetic HTTPS responses supplied by browser test interception: existing
+  product automatic PNG and two-entry original ZIP produced browser download
+  events and exact fixture bytes. Staff link operations used a synthetic
+  authorization response and did not count as saves. These are intercepted
+  offline regression results, not real HTTPS/CDN delivery or native manual-save
+  evidence. The product still rejects insecure HTTP media.
+
+An earlier offline self-signed HTTPS harness used a certificate-ignore option;
+its results were discarded and temporary certificates removed. The final run
+uses no certificate exception, insecure flag or trust-store modification. Real
+site comparisons never used that harness. No APIRequest or CDP body extraction
+was counted as browser saving.
+
+The adjusted review status is
+`WAVE2_PARSER_INCREMENT_READY_WITH_DELIVERY_LIMITS`, subject to the exact-head CI
+recorded in PR #88. New automatic site/file saves remain **0 / 0**; original
+three-site, multi-image automatic save and short-link goals remain unmet.
 
 ### Access And Rollout
 

@@ -184,15 +184,24 @@
                                                 {% if batch_raw_links_allowed %}
                                                     <button type="button"
                                                             class="btn btn-outline-secondary btn-sm batch-copy-btn"
-                                                            data-copy-text="{{ item.url }}">
+                                                            data-batch-image-link-action="copy"
+                                                            {% if item.source_platform != 'upstream' %}data-copy-text="{{ item.url }}"{% endif %}>
                                                         复制直链
                                                     </button>
+                                                    {% if item.source_platform == 'upstream' %}
+                                                    <button type="button" class="btn btn-outline-secondary btn-sm"
+                                                            data-batch-image-link-action="open">
+                                                        打开直链
+                                                    </button>
+                                                    {% else %}
                                                     <a class="btn btn-outline-secondary btn-sm"
+                                                       data-batch-image-link-action="open"
                                                        href="{{ item.url }}"
                                                        target="_blank"
                                                        rel="noopener noreferrer">
                                                         打开直链
                                                     </a>
+                                                    {% endif %}
                                                 {% endif %}
                                             </div>
                                         {% endif %}

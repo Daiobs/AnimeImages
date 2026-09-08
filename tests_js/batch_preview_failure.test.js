@@ -26,6 +26,7 @@ function image(src, upstream = false, kind = "photo") {
         src, dataset: {}, style: {}, hidden: false, isConnected: true, onerror: "retryImage(this)",
         children,
         closest(selector) {
+            if (selector === "[data-batch-photo-item]") return null;
             assert.equal(selector, ".batch-photo-preview, .batch-result-cover");
             return container;
         },
@@ -59,9 +60,9 @@ test("inline image and cover errors show one stable failure without direct URL r
     }
 });
 
-test("upstream archive CORS failure keeps safe messaging and never offers server fallback", async () => {
+test("upstream archive unreadable failure keeps safe messaging and never offers server fallback", async () => {
     const photoApi = require("../static/js/browser_photo_archive.js");
-    for (const upstream of [true, false]) {
+    for (const [upstream, rawAllowed] of [[true, false], [true, true], [false, false]]) {
         const error = Object.assign(new Error("private signed URL"), {
             errorCode: upstream ? "UPSTREAM_PHOTO_FETCH_FAILED" : "BROWSER_PHOTO_CORS_UNAVAILABLE",
         });
@@ -96,6 +97,8 @@ test("upstream archive CORS failure keeps safe messaging and never offers server
             querySelector(selector) {
                 if (selector === "[data-batch-photo-archive-status]") return status;
                 if (selector === "[data-batch-photo-server-fallback]") return fallback;
+                if (selector === "[data-batch-image-link-action]" && rawAllowed) return {};
+                if (selector === '[data-asset-id^="upstream:"]' && upstream) return {};
                 return null;
             },
         };
@@ -104,11 +107,12 @@ test("upstream archive CORS failure keeps safe messaging and never offers server
         assert.equal(archiveCalls, 1);
         assert.equal(authorizationCalls, upstream ? 1 : 0);
         assert.equal(fallback.hidden, true);
+        const hint = rawAllowed ? " 可使用现有的“打开直链”或“复制直链”；打开或复制不代表已保存。" : "";
         assert.equal(status.textContent, upstream
-            ? photoApi.safeErrorMessage(error) : "原始图片资源已失效，请重新解析后再试。");
+            ? photoApi.safeErrorMessage(error) + hint : "原始图片资源已失效，请重新解析后再试。");
         if (upstream) {
-            assert.match(status.textContent, /CORS/);
-            assert.doesNotMatch(status.textContent, /已失效|private signed URL/);
+            assert.match(status.textContent, /解析已成功.*浏览器无法读取/);
+            assert.doesNotMatch(status.textContent, /CORS|已失效|private signed URL/);
         }
     }
 });

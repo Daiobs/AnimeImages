@@ -589,14 +589,15 @@
         return /^[A-Z0-9_]{1,64}$/.test(code) ? code : "BROWSER_PHOTO_FETCH_FAILED";
     }
 
-    function safeErrorMessage(error) {
+    function safeErrorMessage(error, options) {
         const code = safeErrorCode(error);
         const messages = {
-            UPSTREAM_PHOTO_FETCH_FAILED: "浏览器无法读取图片：可能是来源未允许跨域（CORS）、重定向被拒绝或网络连接失败。不会转为服务器下载。",
+            UPSTREAM_PHOTO_FETCH_FAILED: "解析已成功，但浏览器无法读取图片，本次未保存。可能与网络或来源访问限制有关，具体原因无法确认。不会转为服务器下载。",
             UPSTREAM_PHOTO_INVALID_ITEM: "图片下载授权已失效，请重新解析。",
             BROWSER_PHOTO_CANCELLED: "图片下载已取消。",
             BROWSER_PHOTO_CORS_UNAVAILABLE: "浏览器无法直接读取这些图片。",
             BROWSER_PHOTO_FETCH_TIMEOUT: "图片资源响应超时，请重试下载。",
+            BROWSER_PHOTO_HTTP_FAILED: "图片来源返回 HTTP 错误，浏览器未能获取图片。",
             BROWSER_PHOTO_ITEM_TOO_LARGE: "单张图片超过浏览器安全下载上限。",
             BROWSER_PHOTO_ARCHIVE_TOO_LARGE: "图片总量超过浏览器安全打包上限。",
             BROWSER_PHOTO_SERVER_REQUIRED: "当前图片需要服务器打包。",
@@ -610,6 +611,13 @@
             BROWSER_LIVEPHOTO_PAIR_TOO_LARGE: "该实况素材过大，暂无法在浏览器中打包。",
             BROWSER_LIVEPHOTO_PAIR_INVALID: "实况素材信息无效，请重新解析。",
         };
+        if (code === "BROWSER_PHOTO_NO_SUCCESS" && options && options.upstream) {
+            const firstCode = String(error && error.firstFailureCode || "");
+            const reason = firstCode !== code && Object.hasOwn(messages, firstCode) ? messages[firstCode] : "";
+            return "解析已成功，但浏览器未能获取任何图片，本次未保存 ZIP。"
+                + (reason ? ` 首个失败提示：${reason}` : "可能与网络或来源访问限制有关，具体原因无法确认。")
+                + " 不会转为服务器下载。";
+        }
         return messages[code] || "图片下载失败，请稍后重试。";
     }
 
@@ -1057,6 +1065,17 @@
         }
     }
 
+    function validatedUpstreamImageUrl(item, route) {
+        const bound = route && route.route_type === "direct" && Array.isArray(route.items)
+            && route.items.length === 1 ? route.items[0] : null;
+        if (!isUpstreamPhoto(item) || !bound || bound.asset_id !== item.asset_id
+            || bound.url !== item.url || bound.type !== item.type || bound.type !== "image") {
+            throw photoError("UPSTREAM_PHOTO_INVALID_ITEM");
+        }
+        assertPhotoItem(bound);
+        return bound.url;
+    }
+
     function supportsSelection(items, saveFormat) {
         const sourceItems = Array.isArray(items) ? items : [];
         return Boolean(
@@ -1241,7 +1260,9 @@
                 });
             });
             if (!entries.length) {
-                throw photoError("BROWSER_PHOTO_NO_SUCCESS");
+                const error = photoError("BROWSER_PHOTO_NO_SUCCESS");
+                error.firstFailureCode = failures.sort((left, right) => left.index - right.index)[0]?.errorCode || "";
+                throw error;
             }
             failures.sort((left, right) => left.index - right.index);
             if (failures.length) {
@@ -1644,6 +1665,7 @@
         encodeDosDateTime,
         createStoreZip,
         supportsSelection,
+        validatedUpstreamImageUrl,
         downloadImage,
         createArchive,
         createLivePhotoPairArchive,
