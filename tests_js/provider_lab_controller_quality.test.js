@@ -6,11 +6,37 @@ const lab = require("../static/js/provider_lab.js");
 const {Node, documentFor} = require("./helpers/lab_dom.js");
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
+test('helper diagnostics contain only fixed codes, never upstream bodies', () => {
+    const fs = require('node:fs');
+    const vm = require('node:vm');
+    const path = require('node:path');
+    const source = fs.readFileSync(path.join(__dirname, '../xhs_download/services/platforms/kukutool_provider.js'), 'utf8');
+    const start = source.indexOf('function safeFailureDetail(');
+    const end = source.indexOf('main().catch(', start);
+    const context = vm.createContext({});
+    vm.runInContext(source.slice(start, end), context);
+    for (const [message, expected] of [
+        ['parse failed (403): secret token', 'SERVICE_HTTP_403'],
+        ['auth failed (200): private body', 'SERVICE_AUTH_REJECTED'],
+        ['parse failed (200): private body', 'SERVICE_PARSE_REJECTED'],
+        ['upstream returned invalid JSON (200)', 'SERVICE_INVALID_JSON'],
+        ['upstream redirect left the allowed origin', 'SERVICE_REDIRECT_REJECTED'],
+        ['fetch failed', 'SERVICE_NETWORK_ERROR'],
+        ['https://private.invalid/?secret=value', 'SERVICE_HELPER_FAILED'],
+    ]) assert.equal(context.safeFailureDetail({ message }), expected);
+});
+
 test("safe failure details distinguish execution stages from admin permissions", () => {
     assert.match(lab.errorMessage("PROVIDER_TIMEOUT", "MATCH_DEADLINE"), /匹配阶段/);
     assert.match(lab.errorMessage("PROVIDER_TIMEOUT", "PARSE_DEADLINE"), /解析阶段/);
     assert.match(lab.errorMessage("PROVIDER_POLICY_REJECTED", "NESTED_AGGREGATOR_TLS_BYPASS_BLOCKED"), /TLS/);
     assert.equal(lab.errorMessage("PROVIDER_TIMEOUT", "secret"), lab.errorMessage("PROVIDER_TIMEOUT"));
+    assert.match(lab.errorMessage("PROVIDER_UPSTREAM_FAILED", "SERVICE_HTTP_418"), /HTTP 418/);
+    assert.match(lab.errorMessage("PROVIDER_UPSTREAM_FAILED", "SERVICE_HELPER_FAILED"), /不能据此判定 Node 缺失/);
+    assert.match(lab.errorMessage("PROVIDER_UPSTREAM_FAILED", "SERVICE_INVALID_JSON"), /JSON/);
+    for (const detail of ["SERVICE_HTTP_403 secret", "https://private.invalid", "__proto__"]) {
+        assert.equal(lab.errorMessage("PROVIDER_UPSTREAM_FAILED", detail), lab.errorMessage("PROVIDER_UPSTREAM_FAILED"));
+    }
 });
 
 function comparisonFixture(ids) {

@@ -486,7 +486,21 @@ function upstreamError(stage, status, payload) {
   return new Error(`${stage} failed (${status}): ${reason || "unknown error"}`);
 }
 
+function safeFailureDetail(error) {
+  const message = String(error?.message || "");
+  const status = message.match(/^(?:auth failed|parse failed|upstream returned invalid JSON|upstream response is too large|upstream redirect rejected) \(([45]\d\d)\)/);
+  if (status) return `SERVICE_HTTP_${status[1]}`;
+  if (message.startsWith("auth failed (")) return "SERVICE_AUTH_REJECTED";
+  if (message.startsWith("parse failed (")) return "SERVICE_PARSE_REJECTED";
+  if (message.startsWith("upstream returned invalid JSON (")) return "SERVICE_INVALID_JSON";
+  if (message.startsWith("upstream response is too large (")) return "SERVICE_RESPONSE_TOO_LARGE";
+  if (message.startsWith("upstream redirect")) return "SERVICE_REDIRECT_REJECTED";
+  if (message === "fetch failed") return "SERVICE_NETWORK_ERROR";
+  return "SERVICE_HELPER_FAILED";
+}
+
 main().catch((error) => {
+  process.stderr.write(`KUKUTOOL_SAFE_ERROR:${safeFailureDetail(error)}\n`);
   process.stderr.write(`${error.message}\n`);
   process.exitCode = 1;
 });

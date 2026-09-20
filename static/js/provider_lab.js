@@ -284,6 +284,23 @@
     }
 
     function errorMessage(code, detail) {
+        if (code === "PROVIDER_UPSTREAM_FAILED") {
+            if (/^SERVICE_HTTP_[45]\d\d$/.test(detail || "")) {
+                return `服务接口返回 HTTP ${detail.slice(-3)}；这不是本地管理员权限错误。`;
+            }
+            const serviceDetails = {
+                SERVICE_NETWORK_ERROR: "服务请求网络失败，尚不能确定是连接、DNS 或其他网络原因。",
+                SERVICE_TLS_ERROR: "服务请求 TLS 校验失败；未关闭证书校验。",
+                SERVICE_INVALID_JSON: "服务响应不是有效 JSON。",
+                SERVICE_RESPONSE_REJECTED: "服务未返回可用结果，具体业务原因未确认。",
+                SERVICE_AUTH_REJECTED: "辅助程序的上游授权阶段未通过，不代表本地管理员登录失败。",
+                SERVICE_PARSE_REJECTED: "辅助程序的上游解析阶段未返回可用结果。",
+                SERVICE_REDIRECT_REJECTED: "服务重定向被现有安全规则拒绝。",
+                SERVICE_RESPONSE_TOO_LARGE: "服务响应超过读取上限。",
+                SERVICE_HELPER_FAILED: "辅助程序已运行但失败，具体原因未知；不能据此判定 Node 缺失。",
+            };
+            if (Object.prototype.hasOwnProperty.call(serviceDetails, detail)) return serviceDetails[detail];
+        }
         if (code === "PROVIDER_POLICY_REJECTED" && detail === "NESTED_AGGREGATOR_TLS_BYPASS_BLOCKED") {
             return "该固定版本 Backend 使用嵌套聚合服务并绕过 TLS 校验，已被安全策略禁用；不是管理员权限不足。";
         }

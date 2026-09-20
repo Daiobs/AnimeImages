@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from dataclasses import replace
 
 from django.core.cache import cache
@@ -15,6 +15,48 @@ MEDIA = 'https://cdn.example.org/media'
 
 @override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}})
 class SharedServiceExecutionTests(SimpleTestCase):
+    def test_tiantian_transport_errors_are_classified_without_network(self):
+        import requests
+        from .services.platforms.tiantianjiexi_generic import TianTianJieXiApiClient, TianTianJieXiApiError
+        response = Mock(status_code=403)
+        cases = [(requests.HTTPError('private', response=response), 'SERVICE_HTTP_403'),
+                 (requests.exceptions.SSLError('private'), 'SERVICE_TLS_ERROR'),
+                 (requests.ConnectionError('private'), 'SERVICE_NETWORK_ERROR'),
+                 (requests.exceptions.JSONDecodeError('private', 'x', 0), 'SERVICE_INVALID_JSON')]
+        for error, detail in cases:
+            session = Mock()
+            session.post.side_effect = error
+            with patch('xhs_download.services.platforms.tiantianjiexi_generic.api_configured', return_value=True):
+                with self.assertRaises(TianTianJieXiApiError) as caught:
+                    TianTianJieXiApiClient(session=session).parse_url(SOURCE)
+            self.assertEqual(caught.exception.diagnostic_detail, detail)
+            self.assertNotIn('private', str(caught.exception))
+
+    def test_helper_failure_is_not_executor_missing_and_details_are_safe(self):
+        from .services.platforms.douyin_kukutool import KukutoolHelperError, kukutool_failure_detail
+        for stderr, expected in (
+            ('KUKUTOOL_SAFE_ERROR:SERVICE_HTTP_403\nsecret body', 'SERVICE_HTTP_403'),
+            ('KUKUTOOL_SAFE_ERROR:https://secret.invalid/key', 'SERVICE_HELPER_FAILED'),
+            ('raw credentials', 'SERVICE_HELPER_FAILED')):
+            detail = kukutool_failure_detail(stderr)
+            self.assertEqual(detail, expected)
+            with self.mock_client('kukutool_generic') as client:
+                client.side_effect = KukutoolHelperError(stderr, detail)
+                with self.assertRaises(ProviderLabError) as caught:
+                    execution.execute_provider('kukutool_existing', SOURCE, service_authorized=True)
+                self.assertEqual(caught.exception.code, 'PROVIDER_UPSTREAM_FAILED')
+                self.assertEqual(caught.exception.detail, expected)
+                self.assertNotIn('secret', str(caught.exception))
+
+    def test_tiantian_diagnostic_detail_survives_mapping(self):
+        from .services.platforms.tiantianjiexi_generic import TianTianJieXiApiError
+        for detail in ('SERVICE_HTTP_418', 'SERVICE_NETWORK_ERROR', 'SERVICE_TLS_ERROR', 'SERVICE_INVALID_JSON'):
+            with self.mock_client('tiantianjiexi_generic') as client:
+                client.side_effect = TianTianJieXiApiError('private payload', diagnostic_detail=detail)
+                with self.assertRaises(ProviderLabError) as caught:
+                    execution.execute_provider('tiantian_existing', SOURCE, service_authorized=True)
+                self.assertEqual(caught.exception.detail, detail)
+
     def test_timeout_phase_is_preserved_without_raw_error(self):
         from .services.upstream_parsehub import ParseHubBridgeError
         match = {'provider_id': 'parsehub_generic'}

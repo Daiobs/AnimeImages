@@ -46,6 +46,24 @@ from ..rate_limits import (
 AWEME_ID_PATTERN = re.compile(r"^\d{15,22}$")
 BYTE_CDN_HOST_SUFFIXES = ("365yg.com", "douyinvod.com")
 KUKUTOOL_HELPER = Path(__file__).with_name("kukutool_provider.js")
+
+
+class KukutoolHelperError(OSError):
+    """A launched helper failed; this does not imply a missing executor."""
+
+    def __init__(self, message, diagnostic_detail="SERVICE_HELPER_FAILED"):
+        super().__init__(message)
+        self.diagnostic_detail = diagnostic_detail
+
+
+def kukutool_failure_detail(stderr):
+    for line in str(stderr).splitlines():
+        if line.startswith("KUKUTOOL_SAFE_ERROR:"):
+            from ..provider_lab.contracts import ERROR_DETAILS
+            detail = line.removeprefix("KUKUTOOL_SAFE_ERROR:").strip()
+            if detail in ERROR_DETAILS and detail.startswith("SERVICE_"):
+                return detail
+    return "SERVICE_HELPER_FAILED"
 KUKUTOOL_BUNDLED_NODE = (
     Path.home()
     / ".cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
@@ -793,7 +811,7 @@ def run_kukutool_helper(
     )
     if process.returncode != 0:
         message = (process.stderr or process.stdout or "KuKuTool request failed").strip()
-        raise OSError(message[:2000])
+        raise KukutoolHelperError(message[:2000], kukutool_failure_detail(process.stderr))
     if len(process.stdout) > 10 * 1024 * 1024:
         raise ValueError("KuKuTool response is too large")
     payload = json.loads(process.stdout)
@@ -1016,7 +1034,7 @@ def run_kukutool_url_helper(
     )
     if process.returncode != 0:
         message = (process.stderr or process.stdout or "KuKuTool request failed").strip()
-        raise OSError(message[:2000])
+        raise KukutoolHelperError(message[:2000], kukutool_failure_detail(process.stderr))
     if len(process.stdout) > 10 * 1024 * 1024:
         raise ValueError("KuKuTool response is too large")
     payload = json.loads(process.stdout)

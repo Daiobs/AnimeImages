@@ -49,7 +49,9 @@ XHS_NOTE_ID_RE = re.compile(r"(?<![0-9a-f])([0-9a-f]{24})(?![0-9a-f])", re.IGNOR
 
 
 class TianTianJieXiApiError(RuntimeError):
-    pass
+    def __init__(self, message, *, diagnostic_detail="SERVICE_RESPONSE_REJECTED"):
+        super().__init__(message)
+        self.diagnostic_detail = diagnostic_detail
 
 
 class TianTianJieXiAuthError(TianTianJieXiApiError):
@@ -363,10 +365,18 @@ class TianTianJieXiApiClient:
             payload = response.json()
         except requests.Timeout as error:
             raise XhsProviderTimeoutError("天天解析接口超时") from error
+        except requests.exceptions.JSONDecodeError as error:
+            raise TianTianJieXiApiError("天天解析接口返回非 JSON", diagnostic_detail="SERVICE_INVALID_JSON") from error
+        except requests.exceptions.SSLError as error:
+            raise TianTianJieXiApiError("天天解析 TLS 失败", diagnostic_detail="SERVICE_TLS_ERROR") from error
+        except requests.HTTPError as error:
+            status = error.response.status_code if error.response is not None else 0
+            detail = f"SERVICE_HTTP_{status}" if 400 <= status <= 599 else "SERVICE_RESPONSE_REJECTED"
+            raise TianTianJieXiApiError("天天解析 HTTP 失败", diagnostic_detail=detail) from error
         except requests.RequestException as error:
-            raise TianTianJieXiApiError("天天解析接口请求失败") from error
+            raise TianTianJieXiApiError("天天解析接口请求失败", diagnostic_detail="SERVICE_NETWORK_ERROR") from error
         except ValueError as error:
-            raise TianTianJieXiApiError("天天解析接口返回非 JSON") from error
+            raise TianTianJieXiApiError("天天解析接口返回非 JSON", diagnostic_detail="SERVICE_INVALID_JSON") from error
         ensure_api_success(payload)
         return TianTianJieXiResultNormalizer.normalize_payload(unwrap_api_payload(payload))
 
