@@ -3,6 +3,7 @@
 from dataclasses import replace
 from pathlib import Path
 import time
+import subprocess
 from uuid import uuid4
 
 from .env_config import runtime_bool, runtime_str
@@ -90,7 +91,16 @@ def _python_for(provider_id):
 
 def provider_available(provider_id):
     try:
-        _python_for(canonical_provider_id(provider_id))
+        provider = canonical_provider_id(provider_id)
+        python = _python_for(provider)
+        if provider in {'parsehub_generic', 'videodl_repo'}:
+            from .provider_lab.providers import WORKER_ROOT, PARSEHUB_PIN, VIDEODL_PIN
+            from .provider_lab.runtime import worker_install_available
+            name, lab_id, pin = (('parsehub', 'parsehub_repo', PARSEHUB_PIN)
+                                if provider == 'parsehub_generic' else
+                                ('videodl', 'videodl_repo', VIDEODL_PIN))
+            return worker_install_available(python, WORKER_ROOT / f'{name}_worker.py',
+                                            lab_id, f'{name}@{pin}')
         return True
     except ProviderLabError:
         return False
@@ -220,10 +230,11 @@ def _execute_upstream(provider, source, timeout_seconds, *, expected_match=None)
     """Use the product worker transport and installed registries, not Lab parsers."""
     from . import upstream_matching, upstream_parsehub
     deadline = time.monotonic() + min(30.0, max(.1, float(timeout_seconds)))
+    phase = 'MATCH_DEADLINE'
     def remaining():
         value = deadline - time.monotonic()
         if value <= 0:
-            raise ProviderLabError('PROVIDER_TIMEOUT')
+            raise ProviderLabError('PROVIDER_TIMEOUT', detail=phase)
         return value
     try:
         if provider == 'parsehub_generic':
@@ -231,6 +242,7 @@ def _execute_upstream(provider, source, timeout_seconds, *, expected_match=None)
             if not isinstance(matches,list) or not all(upstream_parsehub.valid_match(m) for m in matches):
                 raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
             match = _select_match(matches, provider, expected_match)
+            phase = 'PARSE_DEADLINE'
             payload = upstream_parsehub.parse_upstream_url(match, source, remaining())
         else:
             command, version, _ = upstream_matching._context(provider)
@@ -244,6 +256,7 @@ def _execute_upstream(provider, source, timeout_seconds, *, expected_match=None)
             if (not isinstance(match,dict) or match.get('provider_id') != provider
                     or match.get('version') != version):
                 raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
+            phase = 'PARSE_DEADLINE'
             payload = upstream_matching._call(command, {**request,'action':'parse',
                 'extractor_id':match['extractor_id'],'timeout_seconds':remaining()},remaining())
         return payload, match, {}
@@ -253,7 +266,7 @@ def _execute_upstream(provider, source, timeout_seconds, *, expected_match=None)
                     'PROVIDER_NOT_CONFIGURED' if code in {'disabled','unavailable','executor_unavailable','version_changed'} else
                     'PROVIDER_UNSUPPORTED' if code == 'extractor_mismatch' else
                     'PROVIDER_RESULT_EMPTY' if code == 'no_formats' else 'PROVIDER_PROCESS_FAILED')
-        raise ProviderLabError(lab_code) from None
+        raise ProviderLabError(lab_code, detail=phase if lab_code == 'PROVIDER_TIMEOUT' else '') from None
 
 
 def _normalize_videodl_candidates(payload, match, source):
@@ -301,7 +314,8 @@ def _execute_service(provider, source, timeout_seconds, expected_match):
     from .common import XhsProviderTimeoutError
     from .upstream_candidates import MAX_CANDIDATES, candidate_url
     from itertools import islice
-    from .platforms.tiantianjiexi_generic import TianTianJieXiGenericProvider
+    from .platforms.tiantianjiexi_generic import (TianTianJieXiGenericProvider,
+        TianTianJieXiAuthError, TianTianJieXiRateLimitError, TianTianJieXiApiError)
     from .platforms.kukutool_generic import KukutoolGenericProvider
     match = _select_match([service_match(provider, source)], provider, expected_match)
     if not candidate_url(source):
@@ -310,8 +324,16 @@ def _execute_service(provider, source, timeout_seconds, expected_match):
                else KukutoolGenericProvider)
     try:
         payload = factory().parse(source, timeout_seconds=min(30.0, max(.1, float(timeout_seconds))))
-    except (XhsProviderTimeoutError, TimeoutError):
+    except (XhsProviderTimeoutError, TimeoutError, subprocess.TimeoutExpired):
         raise ProviderLabError('PROVIDER_TIMEOUT') from None
+    except TianTianJieXiAuthError:
+        raise ProviderLabError('PROVIDER_AUTH_FAILED') from None
+    except TianTianJieXiRateLimitError:
+        raise ProviderLabError('PROVIDER_RATE_LIMITED') from None
+    except TianTianJieXiApiError:
+        raise ProviderLabError('PROVIDER_UPSTREAM_FAILED') from None
+    except OSError:
+        raise ProviderLabError('PROVIDER_EXECUTOR_FAILED') from None
     except Exception:
         raise ProviderLabError('PROVIDER_PROCESS_FAILED') from None
     if not isinstance(payload, dict):

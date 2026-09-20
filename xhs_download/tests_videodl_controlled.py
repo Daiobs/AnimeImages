@@ -284,14 +284,14 @@ class VideodlControlledOrchestrationTests(SimpleTestCase):
                 policy.controlled_state == "requires_sharing_confirmation"
                 for policy in COMMON_BACKEND_POLICIES.values()
             ),
-            21,
+            22,
         )
         self.assertEqual(
             sum(
                 policy.controlled_state == "blocked"
                 for policy in COMMON_BACKEND_POLICIES.values()
             ),
-            16,
+            15,
         )
         self.assertEqual(
             {
@@ -358,8 +358,8 @@ class VideodlControlledOrchestrationTests(SimpleTestCase):
             "UNREVIEWED_COMMON_BACKEND_BLOCKED",
         )
 
-    def test_bugpk_tls_bypass_is_blocked_before_any_worker_invocation(self):
-        policy = COMMON_BACKEND_POLICIES["BugPkVideoClient"]
+    def test_unadapted_tls_backend_is_blocked_before_any_worker_invocation(self):
+        policy = COMMON_BACKEND_POLICIES["LongZhuVideoClient"]
         self.assertEqual(policy.controlled_state, "blocked")
         self.assertEqual(
             policy.policy_reason,
@@ -374,7 +374,7 @@ class VideodlControlledOrchestrationTests(SimpleTestCase):
                 source="https://example.com/watch",
                 options=self._options(
                     "specific_backend",
-                    ids=("BugPkVideoClient",),
+                    ids=("LongZhuVideoClient",),
                     category="common",
                     confirmed=True,
                 ),
@@ -394,7 +394,7 @@ class VideodlControlledOrchestrationTests(SimpleTestCase):
                 source="https://example.com/watch",
                 options=self._options(
                     "reviewed_auto",
-                    ids=("BugPkVideoClient",),
+                    ids=("LongZhuVideoClient",),
                     category="common",
                     confirmed=True,
                 ),
@@ -404,14 +404,58 @@ class VideodlControlledOrchestrationTests(SimpleTestCase):
         self.assertEqual(context.exception.attempts, ())
         self.assertEqual(calls, [])
 
+    def test_guarded_common_backend_still_requires_explicit_consent(self):
+        policy = COMMON_BACKEND_POLICIES['BugPkVideoClient']
+        self.assertEqual(policy.controlled_state, 'requires_sharing_confirmation')
+        self.assertEqual(policy.policy_reason, 'TLS_VERIFIED_SHARING_ADAPTER')
+        calls = []
+        with self.assertRaises(ProviderLabError):
+            execute_controlled_videodl(python='python', worker='worker.py', request_id='consent',
+                source='https://example.com/watch',
+                options=self._options('specific_backend', ids=('BugPkVideoClient',), category='common'),
+                invoke=self._invoke(inventory=[], calls=calls))
+        self.assertEqual(calls, [])
+
+    def test_guarded_tls_adapter_enforces_verification_and_denies_http(self):
+        import contextlib
+        import sys
+        import requests
+        from types import SimpleNamespace
+        from tools import upstream_match_worker as guard
+        from tools.provider_lab.runtime.workers.videodl_worker import run_tls_guarded, WorkerError
+        from unittest.mock import Mock, patch
+        prepared = requests.Request('GET', 'https://example.com/api',
+            headers={'X-Forwarded-For': '1.2.3.4'}).prepare()
+        client = SimpleNamespace(parsefromurl=lambda *args, **kw:
+            requests.Session().send(prepared, verify=False, proxies={'https': 'http://invalid'}))
+        with patch.dict(sys.modules, {'upstream_match_worker': guard}), \
+                patch.object(guard, 'install_network_guard') as install, \
+                patch.object(guard, 'runtime_budget', return_value=contextlib.nullcontext()), \
+                patch.object(requests.Session, 'send', return_value=['fixture']) as send:
+            self.assertEqual(run_tls_guarded(client, 'https://example.com/watch'), ['fixture'])
+            self.assertTrue(send.call_args.kwargs['verify'])
+            self.assertEqual(send.call_args.kwargs['proxies'], {})
+            self.assertNotIn('X-Forwarded-For', prepared.headers)
+            send.reset_mock()
+            prepared.url = 'http://example.com/api'
+            with self.assertRaises(WorkerError):
+                run_tls_guarded(client, 'https://example.com/watch')
+            send.assert_not_called()
+            prepared.url = 'https://127.0.0.1/private'
+            with self.assertRaises(ValueError):
+                run_tls_guarded(client, 'https://example.com/watch')
+            send.assert_not_called()
+        install.assert_called_with(offline=False)
+
     def test_dedicated_external_sharing_policy_is_not_category_derived(self):
         nested = DEDICATED_BACKEND_POLICIES["C56VideoClient"]
         youtube = DEDICATED_BACKEND_POLICIES["YouTubeVideoClient"]
         ordinary = DEDICATED_BACKEND_POLICIES["BilibiliVideoClient"]
         self.assertEqual(nested.controlled_state, "requires_sharing_confirmation")
         self.assertTrue(nested.external_sharing_required)
-        self.assertEqual(youtube.controlled_state, "blocked")
-        self.assertTrue(youtube.external_sharing_required)
+        self.assertEqual(youtube.controlled_state, "allowed")
+        self.assertFalse(youtube.external_sharing_required)
+        self.assertEqual(youtube.policy_reason, "OFFICIAL_ONLY_GUARDED_ADAPTER")
         self.assertFalse(ordinary.external_sharing_required)
 
         inventory = normalize_inventory(
@@ -560,6 +604,36 @@ class VideodlControlledOrchestrationTests(SimpleTestCase):
         self.assertEqual(context.exception.code, "PROVIDER_POLICY_REJECTED")
         self.assertEqual(context.exception.attempts, ())
         self.assertFalse(any(item.get("operation") == "backend" for item in calls))
+
+    def test_youtube_official_adapter_is_selected_without_aggregator_consent(self):
+        calls = []
+        execute_controlled_videodl(
+            python="python", worker="worker.py", request_id="policy_reason",
+            source="https://example.com/watch",
+            options=self._options("dedicated_only", category="dedicated"),
+            invoke=self._invoke(inventory=self._inventory(("dedicated", "YouTubeVideoClient")),
+                                matches=("YouTubeVideoClient",), calls=calls))
+        self.assertTrue(any(item.get("operation") == "backend" for item in calls))
+
+    def test_youtube_adapter_disables_nested_services_and_installs_guard(self):
+        import contextlib
+        import sys
+        from unittest.mock import Mock, patch
+        from tools import upstream_match_worker as guard
+        from tools.provider_lab.runtime.workers.videodl_worker import run_youtube_official_only
+        client = Mock()
+        def parse(source, request_overrides):
+            self.assertEqual(source, 'https://www.youtube.com/watch?v=abcdefghijk')
+            self.assertEqual(client._parsefromurlwithytdown(source), [])
+            self.assertEqual(client._parsefromurlwithdownr(source), [])
+            return ['official-only']
+        client.parsefromurl.side_effect = parse
+        with patch.dict(sys.modules, {'upstream_match_worker': guard}), \
+                patch.object(guard, 'install_network_guard') as install, \
+                patch.object(guard, 'runtime_budget', return_value=contextlib.nullcontext()) as budget:
+            self.assertEqual(run_youtube_official_only(client, 'https://www.youtube.com/shorts/abcdefghijk'), ['official-only'])
+        install.assert_called_once_with(offline=False)
+        budget.assert_called_once_with(8.0)
 
     def test_specific_backend_runs_exactly_one_backend_without_fallback(self):
         calls = []
@@ -1045,13 +1119,14 @@ class VideodlProviderLabIntegrationTests(TestCase):
         )
         self.assertIsNotNone(blocked_option)
         self.assertIn("disabled", blocked_option.group(0))
-        self.assertIsNone(
-            re.search(
+        blocked_checkbox = re.search(
                 r'<input(?=[^>]*name="videodl_common_backends")'
                 r'(?=[^>]*value="BugPkVideoClient")[^>]*>',
                 content,
             )
-        )
+        self.assertIsNotNone(blocked_checkbox)
+        self.assertIn('disabled', blocked_checkbox.group(0))
+        self.assertIn('完整 Backend 状态清单', content)
 
     @mock.patch("xhs_download.services.provider_lab.providers.load_videodl_inventory")
     @mock.patch("xhs_download.services.provider_lab.providers._external_python")
@@ -1091,7 +1166,7 @@ class VideodlProviderLabIntegrationTests(TestCase):
         self.assertEqual(VIDEODL_INVENTORY_SUCCESS_TTL_SECONDS, 600)
 
     def test_policy_revision_changes_inventory_cache_key(self):
-        self.assertEqual(VIDEODL_POLICY_REVISION, "dedicated-v1-common-v1")
+        self.assertEqual(VIDEODL_POLICY_REVISION, "guarded-tls-v3-full-inventory")
         initial = videodl_inventory_cache_key(
             python=sys.executable,
             worker=videodl_worker.__file__,
@@ -1235,9 +1310,10 @@ class VideodlProviderLabIntegrationTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error_code"], "PROVIDER_POLICY_REJECTED")
 
+    @mock.patch("xhs_download.services.provider_lab.runtime.worker_install_available", return_value=True)
     @mock.patch("xhs_download.services.quality_execution._python_for", return_value="/isolated/python")
     @mock.patch("xhs_download.services.provider_lab.providers.execute_controlled_videodl")
-    def test_runtime_failure_retains_safe_attempts(self, execute_mock, python_mock):
+    def test_runtime_failure_retains_safe_attempts(self, execute_mock, python_mock, install_mock):
         attempt = LabProviderAttemptV1(
             ordinal=1,
             backend_id="ExactBackend",

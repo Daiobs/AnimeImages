@@ -57,6 +57,9 @@ ERROR_CODES = frozenset(
         "PROVIDER_INVALID_JSON",
         "PROVIDER_SCHEMA_INVALID",
         "PROVIDER_PROCESS_FAILED",
+        "PROVIDER_AUTH_FAILED",
+        "PROVIDER_UPSTREAM_FAILED",
+        "PROVIDER_EXECUTOR_FAILED",
         "PROVIDER_RESULT_EMPTY",
         "PROVIDER_LICENSE_RESTRICTED",
         "PROVIDER_RATE_LIMITED",
@@ -79,9 +82,13 @@ ABSOLUTE_PATH_RE = re.compile(r"^(?:/|[A-Za-z]:[\\/]|~[/\\])")
 SAFE_FIELD_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
 
 
+ERROR_DETAILS = frozenset({"MATCH_DEADLINE", "PARSE_DEADLINE", "NESTED_AGGREGATOR_TLS_BYPASS_BLOCKED"})
+
+
 class ProviderLabError(RuntimeError):
-    def __init__(self, code: str, *, http_status: int = 400):
+    def __init__(self, code: str, *, http_status: int = 400, detail: str = ""):
         self.code = code if code in ERROR_CODES else "PROVIDER_PROCESS_FAILED"
+        self.detail = detail if detail in ERROR_DETAILS else ""
         self.http_status = int(http_status)
         super().__init__(self.code)
 

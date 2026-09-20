@@ -136,23 +136,35 @@
                     </div>
 
                     <fieldset class="provider-lab-common-backends" data-videodl-common-backends>
-                        <legend>允许的 Common Backends</legend>
+                        <legend>全部 Common Backends</legend>
                         <p>默认不选择。仅 `Common Only` 或 `Reviewed Auto` 在 dedicated 无有效结果后使用。</p>
                         <div>
                             {% for backend in videodl_backend_inventory.items %}
-                                {% if backend.backend_category == "common" and backend.controlled_available %}
+                                {% if backend.backend_category == "common" %}
                                     <label>
                                         <input
                                             type="checkbox"
                                             name="videodl_common_backends"
                                             value="{{ backend.backend_id }}"
+                                            {% if not backend.controlled_available %}disabled{% endif %}
                                         >
-                                        <span>{{ backend.display_label }}</span>
+                                        <span>{{ backend.display_label }} · {{ backend.policy_description|default:backend.policy_reason }}</span>
                                     </label>
                                 {% endif %}
                             {% endfor %}
                         </div>
                     </fieldset>
+
+                    <details>
+                        <summary>完整 Backend 状态清单（{{ videodl_backend_inventory.items|length }}）</summary>
+                        <ul>
+                        {% for backend in videodl_backend_inventory.items %}
+                            <li>{{ backend.display_label }} · {{ backend.backend_category }} ·
+                                {% if not backend.controlled_available %}暂不可执行{% elif backend.external_sharing_required %}确认外部分享后可测试{% else %}可测试{% endif %}
+                                · {{ backend.policy_description|default:backend.policy_reason }}</li>
+                        {% endfor %}
+                        </ul>
+                    </details>
 
                     <label class="provider-lab-sharing-confirmation" data-videodl-sharing-confirmation hidden>
                         <input type="checkbox" name="videodl_external_sharing_confirmed">

@@ -15,6 +15,56 @@ MEDIA = 'https://cdn.example.org/media'
 
 @override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}})
 class SharedServiceExecutionTests(SimpleTestCase):
+    def test_timeout_phase_is_preserved_without_raw_error(self):
+        from .services.upstream_parsehub import ParseHubBridgeError
+        match = {'provider_id': 'parsehub_generic'}
+        for during_match in (True, False):
+            with self.subTest(during_match=during_match), \
+                    patch('xhs_download.services.upstream_parsehub._call') as call, \
+                    patch('xhs_download.services.upstream_parsehub.valid_match', return_value=True), \
+                    patch.object(execution, '_select_match', return_value=match), \
+                    patch('xhs_download.services.upstream_parsehub.parse_upstream_url') as parse:
+                call.return_value = [match]
+                (call if during_match else parse).side_effect = ParseHubBridgeError('execution_timeout')
+                with self.assertRaises(ProviderLabError) as caught:
+                    execution._execute_upstream('parsehub_generic', SOURCE, 25)
+                self.assertEqual(caught.exception.code, 'PROVIDER_TIMEOUT')
+                self.assertEqual(caught.exception.detail, 'MATCH_DEADLINE' if during_match else 'PARSE_DEADLINE')
+
+    def test_failure_detail_is_allowlisted_and_serialized(self):
+        from .services.provider_lab.providers import _failure_result
+        for supplied, expected in (('PARSE_DEADLINE', 'PARSE_DEADLINE'),
+                                   ('secret https://example.org/token', '')):
+            result = _failure_result(descriptor=PROVIDER_REGISTRY['parsehub_repo'],
+                request_id='safe', elapsed_ms=5, executed=True,
+                error=ProviderLabError('PROVIDER_TIMEOUT', detail=supplied))
+            self.assertEqual(result['error_detail'], expected)
+            self.assertEqual(result['status'], 'timeout')
+
+    def test_service_errors_keep_safe_classification_without_exception_text(self):
+        from .services.platforms.tiantianjiexi_generic import (
+            TianTianJieXiAuthError, TianTianJieXiRateLimitError, TianTianJieXiApiError)
+        for error, code in ((TianTianJieXiAuthError, 'PROVIDER_AUTH_FAILED'),
+                            (TianTianJieXiRateLimitError, 'PROVIDER_RATE_LIMITED'),
+                            (TianTianJieXiApiError, 'PROVIDER_UPSTREAM_FAILED'),
+                            (OSError, 'PROVIDER_EXECUTOR_FAILED'),
+                            (RuntimeError, 'PROVIDER_PROCESS_FAILED')):
+            with self.subTest(code=code), self.mock_client('tiantianjiexi_generic') as client:
+                client.side_effect = error('secret credential and upstream body')
+                with self.assertRaises(ProviderLabError) as caught:
+                    execution.execute_provider('tiantian_existing', SOURCE, service_authorized=True)
+                self.assertEqual(caught.exception.code, code)
+                self.assertNotIn('secret', str(caught.exception))
+
+    def test_late_configuration_failure_is_not_counted_as_execution(self):
+        descriptor = replace(PROVIDER_REGISTRY['parsehub_repo'], enabled_setting='',
+                             availability=lambda: True,
+                             runner=lambda **kwargs: (_ for _ in ()).throw(ProviderLabError('PROVIDER_NOT_CONFIGURED')))
+        with patch.dict(PROVIDER_REGISTRY, {'parsehub_repo': descriptor}):
+            result = run_provider(provider_id='parsehub_repo', source=SOURCE, user_id=7)
+        self.assertEqual(result['status'], 'not_configured')
+        self.assertFalse(result['executed'])
+
     def setUp(self):
         cache.clear()
         self.gate = patch.object(execution, 'service_configured', return_value=True)

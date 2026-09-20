@@ -65,6 +65,21 @@ class VideodlBackendDescriptor:
     display_label: str
 
     def as_dict(self) -> dict[str, Any]:
+        descriptions = {
+            "EXACT_PIN_REVIEWED": "固定版本已审查",
+            "OFFICIAL_ONLY_GUARDED_ADAPTER": "仅官方分支，聚合分支禁用",
+            "TLS_VERIFIED_GUARDED_ADAPTER": "受控适配，强制 TLS 校验",
+            "TLS_VERIFIED_SHARING_ADAPTER": "强制 TLS 校验；需确认外部分享",
+            "COMMON_EXTERNAL_SHARING_CONFIRMATION_REQUIRED": "需确认向外部聚合服务分享链接",
+            "NESTED_PROVIDER_SHARING_CONFIRMATION_REQUIRED": "含嵌套服务，需确认外部分享",
+            "EMBEDDED_PROVIDER_CREDENTIAL_BLOCKED": "上游内置凭据尚未安全隔离",
+            "EMBEDDED_COOKIE_BLOCKED": "上游内置 Cookie 尚未安全隔离",
+            "BROWSER_EXECUTION_BLOCKED": "浏览器执行环境尚未受控适配",
+            "CHILD_PROCESS_EXECUTION_BLOCKED": "子进程执行尚未受控适配",
+            "INTERACTIVE_EXECUTION_BLOCKED": "依赖交互操作，尚未受控适配",
+            "PROVIDER_DOWNLOADER_EXECUTION_BLOCKED": "解析路径调用下载器，尚未隔离",
+            "TLS_VERIFICATION_DISABLED_BLOCKED": "不安全传输路径尚未受控适配",
+        }
         return {
             "backend_id": self.backend_id,
             "backend_category": self.backend_category,
@@ -74,6 +89,7 @@ class VideodlBackendDescriptor:
             "external_sharing_required": self.external_sharing_required,
             "browser_execution": self.browser_execution,
             "policy_reason": self.policy_reason,
+            "policy_description": descriptions.get(self.policy_reason, self.policy_reason),
             "display_label": self.display_label,
         }
 
@@ -86,9 +102,9 @@ class VideodlControlledResult:
 
 
 class VideodlControlledError(ProviderLabError):
-    def __init__(self, code: str, attempts: Sequence[LabProviderAttemptV1] = ()):
+    def __init__(self, code: str, attempts: Sequence[LabProviderAttemptV1] = (), *, detail: str = ""):
         self.attempts = tuple(attempts)[:MAX_ATTEMPTS]
-        super().__init__(code)
+        super().__init__(code, detail=detail)
 
 
 WorkerInvoker = Callable[..., dict[str, Any]]
@@ -343,6 +359,7 @@ def execute_controlled_videodl(
     dedicated_ids: list[str] = []
     common_ids: list[str] = []
     policy_skipped = 0
+    blocked_reasons = set()
     if options.mode == "specific_backend":
         if options.backend_category == "dedicated":
             dedicated_ids = list(options.backend_ids)
@@ -370,6 +387,7 @@ def execute_controlled_videodl(
                 dedicated_ids.append(backend_id)
             elif descriptor.controlled_state != "allowed":
                 policy_skipped += 1
+                blocked_reasons.add(descriptor.policy_reason)
     if options.mode in {"common_only", "reviewed_auto"}:
         common_ids = list(options.backend_ids)
 
@@ -467,7 +485,8 @@ def execute_controlled_videodl(
             code = "PROVIDER_UNSUPPORTED"
         else:
             code = "PROVIDER_POLICY_REJECTED"
-        raise VideodlControlledError(code)
+        detail = next(iter(blocked_reasons)) if len(blocked_reasons) == 1 else ""
+        raise VideodlControlledError(code, detail=detail)
     raise VideodlControlledError(_final_error_code(attempts), attempts)
 
 

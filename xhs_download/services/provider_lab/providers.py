@@ -815,6 +815,8 @@ def _failure_result(
         "PROVIDER_UNSUPPORTED": "unsupported",
         "PROVIDER_TIMEOUT": "timeout",
     }.get(error.code, "failed")
+    if error.code == "PROVIDER_NOT_CONFIGURED":
+        executed = False
     result = LabProviderResultV1(
         request_id=request_id,
         provider_id=descriptor.provider_id,
@@ -827,7 +829,7 @@ def _failure_result(
         license_name=descriptor.license_name,
         license_scope=descriptor.license_scope,
     ).as_dict()
-    result.update(executed=executed, unexecuted_reason='' if executed else error.code,
+    result.update(error_detail=error.detail, executed=executed, unexecuted_reason='' if executed else error.code,
                   baseline=descriptor.provider_id == 'animeimages_current',
                   independent_upstream=descriptor.provider_id != 'animeimages_current')
     return result

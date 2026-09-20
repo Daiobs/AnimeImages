@@ -31,6 +31,9 @@
         PROVIDER_INVALID_JSON: "Provider 返回格式无效。",
         PROVIDER_SCHEMA_INVALID: "Provider 返回结构未通过校验。",
         PROVIDER_PROCESS_FAILED: "Provider 执行失败。",
+        PROVIDER_AUTH_FAILED: "上游认证失败，请检查该通道的账号配置。",
+        PROVIDER_UPSTREAM_FAILED: "上游接口请求或响应失败，尚未取得有效媒体。",
+        PROVIDER_EXECUTOR_FAILED: "上游辅助程序或请求执行失败，具体远端原因未确认。",
         PROVIDER_RESULT_EMPTY: "Provider 未返回可比较的资源。",
         PROVIDER_LICENSE_RESTRICTED: "该 Provider 仅限显式启用的非商业本地研究。",
         PROVIDER_RATE_LIMITED: "请求过于频繁，请稍后重试。",
@@ -280,7 +283,16 @@
             invalidate() { cancel(); generation += 1; active.clear(); jobs.clear(); }};
     }
 
-    function errorMessage(code) {
+    function errorMessage(code, detail) {
+        if (code === "PROVIDER_POLICY_REJECTED" && detail === "NESTED_AGGREGATOR_TLS_BYPASS_BLOCKED") {
+            return "该固定版本 Backend 使用嵌套聚合服务并绕过 TLS 校验，已被安全策略禁用；不是管理员权限不足。";
+        }
+        if (code === "PROVIDER_TIMEOUT" && detail === "MATCH_DEADLINE") {
+            return "上游匹配阶段超时，尚未进入媒体解析；不是管理员权限不足。";
+        }
+        if (code === "PROVIDER_TIMEOUT" && detail === "PARSE_DEADLINE") {
+            return "上游解析阶段超时；可能涉及网络或源站响应，不能仅凭超时确定原因。";
+        }
         return ERROR_MESSAGES[String(code || "")] || "Provider 执行失败。";
     }
 
@@ -572,7 +584,7 @@
         }
         const error = card.querySelector("[data-provider-error]");
         if (error && status !== "success") {
-            error.textContent = errorMessage(result.error_code);
+            error.textContent = errorMessage(result.error_code, result.error_detail);
             if (status === "cancelled") error.textContent = "已取消；其他已完成结果保留。";
             if (status === "skipped") error.textContent = result.not_run_reason || "本次未执行：整体预算已用尽。";
             error.hidden = false;
@@ -1018,7 +1030,8 @@
                 if (descriptorById.get(id)?.baseline || id === "animeimages_current") continue;
                 stats.included += 1;
                 const job = queue.jobs.get(id);
-                const executed = job?.result?.executed === true || executedProviders.has(id) && job?.result?.executed !== false;
+                const notrun = job?.result?.executed === false || ["skipped", "not_configured"].includes(job?.status);
+                const executed = !notrun && (job?.result?.executed === true || executedProviders.has(id) && job?.result?.executed !== false);
                 if (executed) stats.executed += 1;
                 if (job?.result?.executed === false) stats.notrun += 1;
                 else if (["success", "unsupported", "failed", "timeout"].includes(job?.status)) stats[job.status] += 1;

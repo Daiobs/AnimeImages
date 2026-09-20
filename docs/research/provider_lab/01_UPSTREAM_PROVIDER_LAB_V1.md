@@ -246,3 +246,66 @@ A future whole-repository upstream requires exactly these steps:
 
 It does not require one AnimeImages adapter per platform. Platform routing is a
 separate, later product decision based on reviewed Lab evidence.
+
+## Local YouTube Follow-up (2026-09-20)
+
+The ParseHub yt-dlp boundary now requests all formats without format probes.
+This avoids an implicit FFmpeg version subprocess during metadata-only format
+selection; the subprocess prohibition remains intact. A local browser retest
+returned a successful ParseHub result after correcting the local network/DNS
+configuration. No media download was tested. ParseHub's YouTube path delegates
+to yt-dlp, so these two provider results are not independent parser evidence.
+
+The pinned videodl YouTube backend is now admitted only through an official-only
+adapter. Its ytdown/downr branches are disabled inside the one-request worker.
+The adapter canonicalizes an exact YouTube video identity and applies public-IP
+network admission, bounded HTTP requests/bytes/time, and the existing subprocess
+guard. It does not permit TLS bypass or automatically call a common backend.
+Other blocked backend policies are unchanged. The policy revision was advanced
+to invalidate the old inventory cache.
+
+The local browser attempt reached this adapter but returned no comparable
+resource. This is execution admission, not successful media delivery. No service
+credentials, paid calls, saved routes, or production settings were changed.
+
+### Controlled inventory expansion
+
+The Staff panel now exposes all 107 pinned backends, including unavailable
+Common entries with explicit reasons rather than omitting them. Visibility is
+not execution admission or proof of successful parsing.
+
+Yinyuetai and BugPk are additionally admitted through a worker-local adapter
+that requires HTTPS, enforces certificate verification, strips generated
+client-address forwarding headers, and retains the existing public-IP,
+subprocess, request/byte and elapsed-time guards. BugPk still requires explicit
+external-sharing consent. LongZhu's HTTP-only path remains unavailable; no URL
+is silently rewritten. Embedded credentials, browser execution and downloader
+paths that lack a reviewed adapter remain unavailable.
+
+Local UI inspection confirmed the complete list and the new admission labels.
+Offline regressions cover forced TLS verification, HTTP/private-address
+rejection and consent enforcement. No live request to either newly admitted
+backend was made, so remote parsing success is not claimed. Formal routes,
+credentials and production configuration are unchanged.
+
+### Committed diagnostic baseline (2026-09-20)
+
+Current local preview: `http://127.0.0.1:8000/admin/provider-lab/`.
+Earlier 8003 acceptance entries describe the historical preview, not another
+active instance. No application route or saved route revision was changed.
+
+Runtime availability uses a bounded five-second check-only worker handshake,
+including imports and the exact pin. Its short-lived cache is invalidated by
+interpreter, worker, shared worker helper and installed package metadata changes.
+Readiness failure is not reported as unsupported parsing. Match/parse deadlines
+and safe service authentication/API/executor errors are distinguished; unexecuted
+or unconfigured results do not increase the executed-provider count.
+
+Validation: 205 focused Django tests, 2419 full Django tests, 302 Node tests and
+36 standalone worker tests passed. Django check, migration dry-run and changed
+JavaScript syntax checks passed. Full local tests explicitly disable the local
+videodl environment flag and select the installed ParseHub compatibility Python;
+this isolates tests from the enabled preview runtime, without changing its config.
+The first improperly isolated run failed six assertions (four missing compatibility
+runtime inputs and two environment-dependent inventory expectations); no assertions
+were relaxed. Local proxy/DNS changes are outside this repository diff.

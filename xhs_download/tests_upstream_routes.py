@@ -781,6 +781,7 @@ class SavedVideodlAdmissionTests(RouteFixtures, TestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.stack.enter_context(patch("xhs_download.services.quality_execution._python_for", return_value=sys.executable))
+        self.stack.enter_context(patch("xhs_download.services.provider_lab.runtime.worker_install_available", return_value=True))
         self.stack.enter_context(patch("xhs_download.services.upstream_matching.match_upstream_url", return_value=()))
         from .services.provider_lab.videodl_policy import REVIEWED_DEDICATED_BACKEND_IDS, REVIEWED_COMMON_BACKEND_IDS
         self.inventory = [{"backend_id": backend, "backend_category": category,

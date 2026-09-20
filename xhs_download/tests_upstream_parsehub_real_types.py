@@ -291,6 +291,15 @@ def isolated_suite():
             def extract(ydl, url, download=False):
                 seen.append(set(ydl._request_director.handlers))
                 self.assertTrue(foreign.closed)
+                self.assertEqual(ydl.params['format'], 'all')
+                self.assertFalse(ydl.params['check_formats'])
+                import subprocess
+                with patch.object(subprocess, 'Popen', side_effect=AssertionError('no subprocess')):
+                    ydl.process_ie_result({'id': 'fixture', 'title': 'fixture', 'formats': [
+                        {'format_id': 'v', 'url': 'https://example.com/video.mp4',
+                         'ext': 'mp4', 'vcodec': 'avc1', 'acodec': 'none'},
+                        {'format_id': 'a', 'url': 'https://example.com/audio.m4a',
+                         'ext': 'm4a', 'vcodec': 'none', 'acodec': 'mp4a'}]}, download=False)
                 return {"id": "fixture"}
             async def run():
                 with worker.execution_boundary(worker.Budget(5), source, "Example"):

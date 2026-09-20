@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
+from functools import lru_cache
 from typing import Any
 
 from xhs_download.services.platforms.external_tools import (
@@ -43,6 +45,45 @@ FORBIDDEN_ENV_MARKERS = (
     "BROWSER",
     "DOWNLOAD",
 )
+
+
+def worker_install_available(python: str, worker: Path, provider_id: str, version: str) -> bool:
+    root = Path(python).parent.parent
+    paths = [Path(python), root / "pyvenv.cfg", worker, worker.parent / "worker_common.py"]
+    # Package replacement can leave the interpreter and pyvenv.cfg unchanged.
+    for site in sorted((root / "lib").glob("python*/site-packages")):
+        paths.append(site)
+        for pattern in ("*.dist-info/METADATA", "*.dist-info/direct_url.json"):
+            paths.extend(sorted(site.glob(pattern)))
+    def identity(path):
+        try:
+            stat = path.stat()
+            return (str(path), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        except OSError:
+            return None
+    return _check_worker_install(python, str(worker), provider_id, version,
+                                tuple(identity(path) for path in paths), int(time.monotonic() // 30))
+
+
+@lru_cache(maxsize=32)
+def _check_worker_install(python, worker, provider_id, version, identities, time_bucket):
+    # Check imports and exact pins without a source URL or provider execution.
+    try:
+        with tempfile.TemporaryDirectory(prefix="provider_check_") as root, \
+                tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+            env = clean_worker_environment(home=root, config_home=root, cache_home=root)
+            completed = _execute_external_process(
+                [python, worker, "--check-only"], stdout=stdout, stderr=stderr,
+                stdin=subprocess.DEVNULL, cwd=root, env=env, timeout_seconds=5.0,
+                max_stdout_bytes=8192, max_stderr_bytes=8192,
+            )
+            payload = json.loads(read_external_output(stdout, max_bytes=8192))
+            return bool(completed.returncode == 0 and isinstance(payload, dict)
+                        and payload.get("status") == "ok"
+                        and payload.get("provider_id") == provider_id
+                        and payload.get("provider_version") == version)
+    except (OSError, ValueError, subprocess.TimeoutExpired, ExternalCommandOutputTooLarge):
+        return False
 
 
 def clean_worker_environment(*, home: str, config_home: str, cache_home: str) -> dict[str, str]:

@@ -6,6 +6,13 @@ const lab = require("../static/js/provider_lab.js");
 const {Node, documentFor} = require("./helpers/lab_dom.js");
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
+test("safe failure details distinguish execution stages from admin permissions", () => {
+    assert.match(lab.errorMessage("PROVIDER_TIMEOUT", "MATCH_DEADLINE"), /匹配阶段/);
+    assert.match(lab.errorMessage("PROVIDER_TIMEOUT", "PARSE_DEADLINE"), /解析阶段/);
+    assert.match(lab.errorMessage("PROVIDER_POLICY_REJECTED", "NESTED_AGGREGATOR_TLS_BYPASS_BLOCKED"), /TLS/);
+    assert.equal(lab.errorMessage("PROVIDER_TIMEOUT", "secret"), lab.errorMessage("PROVIDER_TIMEOUT"));
+});
+
 function comparisonFixture(ids) {
     const root = new Node("main", {"data-provider-lab": "", "data-run-url": "/run", "data-resource-url": "/resource"});
     const form = new Node("form", {"data-provider-lab-form": ""});
@@ -131,6 +138,17 @@ test("test-all derives descriptors, includes unavailable and unapproved, and doe
     assert.deepEqual(controller.runStats, {included: 5, executed: 3, success: 2, unsupported: 1,
         failed: 0, timeout: 0, notrun: 2});
     assert.equal(controller.currentSelection, null);
+    controller.destroy();
+});
+
+test("late not-configured response never counts as both executed and not run", async () => {
+    const f = comparisonFixture(["A"]);
+    const controller = lab.createController(f.doc, {window: {},
+        descriptors: [{provider_id: "A", available: true, requires_confirmation: []}],
+        fetch: async () => ({ok: true, json: async () => ({status: "not_configured", executed: true, assets: []})})});
+    await controller.submit({preventDefault() {}}); await flush(); await flush();
+    assert.equal(controller.runStats.executed, 0);
+    assert.equal(controller.runStats.notrun, 1);
     controller.destroy();
 });
 

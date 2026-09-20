@@ -84,6 +84,7 @@ class MatchingServiceTests(SimpleTestCase):
                 self.assertEqual(service.match_upstream_url(url), ())
             context.assert_not_called()
 
+    @override_settings(PARSEHUB_UPSTREAM_ENABLED=False)
     def test_unavailable_inventory_does_not_leak_details(self):
         with mock.patch.object(service, "_context", side_effect=OSError("sensitive-path")):
             rows = service.coverage_snapshot()
@@ -451,6 +452,7 @@ concrete._real_extract = lambda self, url: {'id':'synthetic','formats':[
 assert len(w.parse_ytdlp(proxy, 'https://vimeo.com/12345678',1)['formats']) == 1
 """)
 
+    @override_settings(PARSEHUB_UPSTREAM_ENABLED=False)
     def test_real_installed_matching_is_offline_and_specific(self):
         with override_settings(YTDLP_BINARY=f"{sys.executable} -m yt_dlp",
                                GALLERYDL_BINARY=f"{sys.executable} -m gallery_dl"):

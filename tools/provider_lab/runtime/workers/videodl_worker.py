@@ -6,6 +6,8 @@ from importlib import metadata
 import json
 from pathlib import Path
 import re
+import sys
+from urllib.parse import parse_qs, urlsplit
 
 try:
     from .worker_common import (
@@ -210,7 +212,14 @@ def run_exact_backend(source: str, backend_id: str, backend_category: str, work_
     builder = BuildVideoClient if backend_category == "dedicated" else BuildCommonVideoClient
     try:
         client = builder(backend_config(backend_id, work_dir))
-        infos = client.parsefromurl(source, request_overrides={})
+        if backend_id == "YouTubeVideoClient" and backend_category == "dedicated":
+            infos = run_youtube_official_only(client, source)
+        elif (backend_category, backend_id) in {
+            ("dedicated", "YinyuetaiVideoClient"), ("common", "BugPkVideoClient")
+        }:
+            infos = run_tls_guarded(client, source)
+        else:
+            infos = client.parsefromurl(source, request_overrides={})
     except Exception as error:
         raise WorkerError("PROVIDER_PROCESS_FAILED") from error
     valid_infos = [
@@ -222,6 +231,54 @@ def run_exact_backend(source: str, backend_id: str, backend_category: str, work_
     if not valid_infos:
         raise WorkerError("PROVIDER_RESULT_EMPTY")
     return valid_infos
+
+
+def run_tls_guarded(client, source):
+    """Override the exact reviewed parsers' verify=False without relaxing admission."""
+    from unittest.mock import patch
+    import requests
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from upstream_match_worker import install_network_guard, runtime_budget, validate_url
+    send = requests.Session.send
+
+    def verified_send(session, request, **kwargs):
+        validate_url(request.url)
+        if urlsplit(request.url).scheme != "https":
+            raise WorkerError("PROVIDER_POLICY_REJECTED")
+        kwargs.update(verify=True, proxies={}, timeout=8.0)
+        # Do not retain upstream-generated spoofed client-address headers.
+        for name in list(request.headers):
+            if name.lower() in {"forwarded", "x-forwarded-for", "x-real-ip", "client-ip"}:
+                del request.headers[name]
+        return send(session, request, **kwargs)
+
+    install_network_guard(offline=False)
+    with patch.object(requests.Session, "send", verified_send), runtime_budget(8.0):
+        return client.parsefromurl(source, request_overrides={})
+
+
+def run_youtube_official_only(client, source):
+    """Use the pinned official parser without its nested aggregator fallbacks."""
+    from unittest.mock import patch
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from upstream_match_worker import install_network_guard, runtime_budget, validate_url
+
+    validate_url(source)
+    parsed = urlsplit(source)
+    if parsed.hostname not in {"youtube.com", "www.youtube.com", "m.youtube.com"}:
+        raise WorkerError("PROVIDER_UNSUPPORTED")
+    parts = parsed.path.strip("/").split("/")
+    values = parse_qs(parsed.query).get("v", []) if parsed.path == "/watch" else (
+        [parts[1]] if len(parts) == 2 and parts[0] in {"shorts", "embed"} else [])
+    if len(values) != 1 or not re.fullmatch(r"[A-Za-z0-9_-]{11}", values[0]):
+        raise WorkerError("PROVIDER_UNSUPPORTED")
+    source = "https://www.youtube.com/watch?v=" + values[0]
+    # This worker exits after one request. Guards intentionally cannot be undone.
+    install_network_guard(offline=False)
+    with patch.object(client, "_parsefromurlwithytdown", return_value=[]), \
+            patch.object(client, "_parsefromurlwithdownr", return_value=[]), \
+            runtime_budget(8.0):
+        return client.parsefromurl(source, request_overrides={})
 
 
 def normalize_result(video_infos: object, request: dict) -> tuple[dict, list[dict]]:

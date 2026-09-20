@@ -556,6 +556,7 @@ def execution_boundary(budget, source, extractor):
                          "cookiefile": None, "cookiesfrombrowser": None, "proxy": "",
                          "usenetrc": False, "enable_file_urls": False, "remote_components": set(),
                          "js_runtimes": {}, "external_downloader": None,
+                         "format": "all", "check_formats": False,
                          "socket_timeout": max(.1, budget.deadline - time.monotonic()),
                          "retries": 0, "extractor_retries": 0, "extract_flat": False}) as ydl:
             restrict_ytdlp_transport(ydl)

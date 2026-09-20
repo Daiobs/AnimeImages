@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -368,6 +369,47 @@ class ProviderLabRegistryAndContractTests(SimpleTestCase):
 
 
 class ProviderLabWorkerProtocolTests(SimpleTestCase):
+    def test_install_check_requires_import_and_pin_not_just_python(self):
+        from .services.provider_lab.runtime import worker_install_available
+        for payload, expected in (({"status": "ok", "provider_id": "parsehub_repo",
+                                    "provider_version": "parsehub@exact"}, True),
+                                  ({"status": "ok", "provider_id": "parsehub_repo",
+                                    "provider_version": "parsehub@wrong"}, False),
+                                  ({"error": {"code": "PROVIDER_NOT_CONFIGURED"}}, False)):
+            script = self._script("import sys\nassert sys.argv[1:] == ['--check-only']\nprint(" + repr(json.dumps(payload)) + ")\n")
+            self.assertEqual(worker_install_available(sys.executable, script,
+                             "parsehub_repo", "parsehub@exact"), expected)
+
+    def test_install_check_invalidates_on_worker_change(self):
+        from .services.provider_lab.runtime import worker_install_available
+        script = self._script('print("invalid")')
+        self.assertFalse(worker_install_available(sys.executable, script, "test", "exact"))
+        script.write_text('print(\'{"status":"ok","provider_id":"test","provider_version":"exact"}\')')
+        self.assertTrue(worker_install_available(sys.executable, script, "test", "exact"))
+
+    def test_install_check_timeout_fails_closed(self):
+        from .services.provider_lab.runtime import worker_install_available
+        script = self._script('pass')
+        with mock.patch('xhs_download.services.provider_lab.runtime._execute_external_process',
+                        side_effect=subprocess.TimeoutExpired('worker', 5)) as runner:
+            self.assertFalse(worker_install_available(sys.executable, script, "test", "exact"))
+        self.assertEqual(runner.call_args.kwargs['timeout_seconds'], 5.0)
+        self.assertNotIn('PROVIDER_COOKIE', runner.call_args.kwargs['env'])
+
+    def test_install_check_identity_tracks_in_place_package_replacement(self):
+        from .services.provider_lab.runtime import worker_install_available
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            metadata = root / 'lib/python3.14/site-packages/parsehub-2.2.0.dist-info/METADATA'
+            metadata.parent.mkdir(parents=True)
+            metadata.write_text('Version: 2.2.0')
+            with mock.patch('xhs_download.services.provider_lab.runtime._check_worker_install', return_value=True) as check:
+                worker_install_available(str(root / 'bin/python'), root / 'worker.py', 'parsehub_repo', 'exact')
+                before = check.call_args.args[4]
+                metadata.write_text('Version: 2.3.0')
+                worker_install_available(str(root / 'bin/python'), root / 'worker.py', 'parsehub_repo', 'exact')
+                self.assertNotEqual(before, check.call_args.args[4])
+
     def _script(self, source):
         directory = tempfile.TemporaryDirectory()
         path = Path(directory.name) / "worker.py"
