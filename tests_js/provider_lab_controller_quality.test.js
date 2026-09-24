@@ -6,6 +6,35 @@ const lab = require("../static/js/provider_lab.js");
 const {Node, documentFor} = require("./helpers/lab_dom.js");
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
+test('non-JSON diagnostics retain stage, status and MIME category without response text', async () => {
+    const fs = require('node:fs');
+    const vm = require('node:vm');
+    const path = require('node:path');
+    const source = fs.readFileSync(path.join(__dirname, '../xhs_download/services/platforms/kukutool_provider.js'), 'utf8');
+    const context = vm.createContext({readText: async () => '<html>secret account body</html>'});
+    vm.runInContext(source.slice(source.indexOf('async function readJson('), source.indexOf('async function readText(')), context);
+    vm.runInContext(source.slice(source.indexOf('function safeFailureDetail('), source.indexOf('main().catch(')), context);
+    for (const phase of ['AUTH', 'PARSE']) {
+        for (const [mime, category] of [['text/html; charset=utf-8', 'HTML'], ['application/json', 'JSON'],
+            ['text/plain', 'TEXT'], ['', 'MISSING'], ['application/octet-stream; secret=value', 'OTHER']]) {
+            for (const status of [200, 403, 502]) {
+                await assert.rejects(context.readJson({status, headers: {get: () => mime}}, phase), error => {
+                    const detail = context.safeFailureDetail(error);
+                    assert.equal(detail, `SERVICE_JSON_${phase}_HTTP_${status}_TYPE_${category}`);
+                    assert.doesNotMatch(detail, /secret|account|charset/);
+                    return true;
+                });
+            }
+        }
+    }
+    context.readText = async () => '{"ok":true}';
+    assert.equal((await context.readJson({status: 200}, 'AUTH')).ok, true);
+    assert.match(lab.errorMessage('PROVIDER_UPSTREAM_FAILED', 'SERVICE_JSON_AUTH_HTTP_200_TYPE_HTML'), /上游授权.*HTTP 200.*HTML/);
+    assert.match(lab.errorMessage('PROVIDER_UPSTREAM_FAILED', 'SERVICE_BUSINESS_CODE_403'), /不是 HTTP 状态/);
+    assert.match(lab.errorMessage('PROVIDER_RESULT_EMPTY', 'SERVICE_EMPTY_RESULT'), /没有可用媒体/);
+    assert.equal(lab.errorMessage('PROVIDER_UPSTREAM_FAILED', 'SERVICE_JSON_AUTH_HTTP_200_TYPE_HTML secret'), lab.errorMessage('PROVIDER_UPSTREAM_FAILED'));
+});
+
 test('helper diagnostics contain only fixed codes, never upstream bodies', () => {
     const fs = require('node:fs');
     const vm = require('node:vm');

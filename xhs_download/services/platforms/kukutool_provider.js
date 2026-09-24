@@ -102,7 +102,7 @@ async function main() {
     }),
     signal: AbortSignal.timeout(10000),
   });
-  const parsed = await readJson(parseResponse);
+  const parsed = await readJson(parseResponse, "PARSE");
   if (!parseResponse.ok || parsed.status !== 0) {
     throw upstreamError("parse", parseResponse.status, parsed);
   }
@@ -306,7 +306,7 @@ async function requestAuthTicket(profiles, headers, requestURL) {
           signal: AbortSignal.timeout(6000),
         }
       );
-      const auth = await readJson(response);
+      const auth = await readJson(response, "AUTH");
       const authKey = auth[profile.authResponseFields.key];
       const authSeed = auth[profile.authResponseFields.seed];
       if (!response.ok || !authKey || !authSeed) {
@@ -376,12 +376,20 @@ function decodeCustomBase64(value) {
   }).join("");
 }
 
-async function readJson(response) {
+async function readJson(response, stage = "UNKNOWN") {
   const text = await readText(response);
   try {
     return JSON.parse(text);
   } catch {
-    throw new Error(`upstream returned invalid JSON (${response.status})`);
+    const error = new Error(`upstream returned invalid JSON (${response.status})`);
+    const phase = ["AUTH", "PARSE"].includes(stage) ? stage : "UNKNOWN";
+    const status = Number.isInteger(response.status) && response.status >= 100 && response.status <= 599
+      ? response.status : "UNKNOWN";
+    const mime = String(response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
+    const type = !mime ? "MISSING" : mime === "application/json" || mime.endsWith("+json") ? "JSON"
+      : ["text/html", "application/xhtml+xml"].includes(mime) ? "HTML" : mime.startsWith("text/") ? "TEXT" : "OTHER";
+    error.safeDetail = `SERVICE_JSON_${phase}_HTTP_${status}_TYPE_${type}`;
+    throw error;
   }
 }
 
@@ -487,6 +495,9 @@ function upstreamError(stage, status, payload) {
 }
 
 function safeFailureDetail(error) {
+  if (/^SERVICE_JSON_(AUTH|PARSE|UNKNOWN)_HTTP_([1-5]\d{2}|UNKNOWN)_TYPE_(JSON|HTML|TEXT|OTHER|MISSING)$/.test(error?.safeDetail || "")) {
+    return error.safeDetail;
+  }
   const message = String(error?.message || "");
   const status = message.match(/^(?:auth failed|parse failed|upstream returned invalid JSON|upstream response is too large|upstream redirect rejected) \(([45]\d\d)\)/);
   if (status) return `SERVICE_HTTP_${status[1]}`;

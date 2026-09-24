@@ -15,6 +15,41 @@ MEDIA = 'https://cdn.example.org/media'
 
 @override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}})
 class SharedServiceExecutionTests(SimpleTestCase):
+    def test_business_codes_are_bounded_and_not_http_statuses(self):
+        from .services.platforms.tiantianjiexi_generic import ensure_api_success, TianTianJieXiApiError
+        for value, expected in [(403, '403'), (-2, '-2'), ('502', '502'),
+                                ('secret-value', 'UNKNOWN'), (123456789, 'UNKNOWN'),
+                                (None, 'UNKNOWN'), ('４０３', 'UNKNOWN')]:
+            with self.assertRaises(TianTianJieXiApiError) as caught:
+                ensure_api_success({'code': value, 'message': 'private upstream text'})
+            self.assertEqual(caught.exception.diagnostic_detail, 'SERVICE_BUSINESS_CODE_' + expected)
+        # The diagnostic change must not turn accepted business responses into failures.
+        ensure_api_success({'code': 200})
+
+    def test_json_phase_details_are_allowlisted_through_helper_and_lab(self):
+        from .services.platforms.douyin_kukutool import kukutool_failure_detail
+        from .services.provider_lab.providers import _failure_result
+        detail = 'SERVICE_JSON_AUTH_HTTP_200_TYPE_HTML'
+        self.assertEqual(kukutool_failure_detail('KUKUTOOL_SAFE_ERROR:' + detail), detail)
+        result = _failure_result(descriptor=PROVIDER_REGISTRY['kukutool_existing'], request_id='safe',
+            elapsed_ms=1, executed=True, error=ProviderLabError('PROVIDER_UPSTREAM_FAILED', detail=detail))
+        self.assertEqual(result['error_detail'], detail)
+        for bad in [detail + '\nsecret', 'SERVICE_BUSINESS_CODE_1234567',
+                    'SERVICE_JSON_AUTH_HTTP_200_TYPE_text/html', {'secret': 'value'}]:
+            self.assertEqual(ProviderLabError('PROVIDER_UPSTREAM_FAILED', detail=bad).detail, '')
+
+    def test_empty_media_result_has_distinct_safe_detail(self):
+        from .services.platforms.tiantianjiexi_generic import TianTianJieXiGenericProvider
+        from .services.provider_reliability import ProviderResultInvalidError
+        with self.assertRaises(ProviderResultInvalidError) as caught:
+            TianTianJieXiGenericProvider().validate_payload({'images': [], 'videos': []})
+        with self.mock_client('tiantianjiexi_generic') as client:
+            client.side_effect = caught.exception
+            with self.assertRaises(ProviderLabError) as mapped:
+                execution.execute_provider('tiantian_existing', SOURCE, service_authorized=True)
+        self.assertEqual(mapped.exception.code, 'PROVIDER_RESULT_EMPTY')
+        self.assertEqual(mapped.exception.detail, 'SERVICE_EMPTY_RESULT')
+
     def test_tiantian_transport_errors_are_classified_without_network(self):
         import requests
         from .services.platforms.tiantianjiexi_generic import TianTianJieXiApiClient, TianTianJieXiApiError

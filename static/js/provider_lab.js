@@ -284,7 +284,19 @@
     }
 
     function errorMessage(code, detail) {
+        if (code === "PROVIDER_RESULT_EMPTY" && detail === "SERVICE_EMPTY_RESULT") {
+            return "服务返回的结果没有可用媒体；不是下载失败。";
+        }
         if (code === "PROVIDER_UPSTREAM_FAILED") {
+            const business = /^SERVICE_BUSINESS_CODE_(-?\d{1,3})$/.exec(detail || "");
+            if (business) return `服务业务响应未通过，业务码 ${business[1]}；该值不是 HTTP 状态，具体含义待核对。`;
+            if (detail === "SERVICE_BUSINESS_CODE_UNKNOWN") return "服务业务响应未通过，未提供可安全识别的业务码。";
+            const jsonFailure = /^SERVICE_JSON_(AUTH|PARSE|UNKNOWN)_HTTP_([1-5]\d{2}|UNKNOWN)_TYPE_(JSON|HTML|TEXT|OTHER|MISSING)$/.exec(detail || "");
+            if (jsonFailure) {
+                const stages = {AUTH: "上游授权", PARSE: "上游解析", UNKNOWN: "未知"};
+                const types = {JSON: "JSON", HTML: "HTML", TEXT: "文本", OTHER: "其他", MISSING: "未提供"};
+                return `${stages[jsonFailure[1]]}阶段响应不是有效 JSON；HTTP ${jsonFailure[2] === "UNKNOWN" ? "未知" : jsonFailure[2]}，Content-Type 类别：${types[jsonFailure[3]]}。`;
+            }
             if (/^SERVICE_HTTP_[45]\d\d$/.test(detail || "")) {
                 return `服务接口返回 HTTP ${detail.slice(-3)}；这不是本地管理员权限错误。`;
             }

@@ -318,6 +318,7 @@ def _execute_service(provider, source, timeout_seconds, expected_match):
         TianTianJieXiAuthError, TianTianJieXiRateLimitError, TianTianJieXiApiError)
     from .platforms.kukutool_generic import KukutoolGenericProvider
     from .platforms.douyin_kukutool import KukutoolHelperError
+    from .provider_reliability import ProviderResultInvalidError
     match = _select_match([service_match(provider, source)], provider, expected_match)
     if not candidate_url(source):
         raise ProviderLabError('PROVIDER_UNSUPPORTED')
@@ -333,6 +334,10 @@ def _execute_service(provider, source, timeout_seconds, expected_match):
         raise ProviderLabError('PROVIDER_RATE_LIMITED') from None
     except (TianTianJieXiApiError, KukutoolHelperError) as error:
         raise ProviderLabError('PROVIDER_UPSTREAM_FAILED', detail=error.diagnostic_detail) from None
+    except ProviderResultInvalidError as error:
+        if getattr(error, 'diagnostic_detail', '') == 'SERVICE_EMPTY_RESULT':
+            raise ProviderLabError('PROVIDER_RESULT_EMPTY', detail='SERVICE_EMPTY_RESULT') from None
+        raise ProviderLabError('PROVIDER_PROCESS_FAILED') from None
     except OSError:
         raise ProviderLabError('PROVIDER_EXECUTOR_FAILED') from None
     except Exception:

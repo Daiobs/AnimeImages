@@ -210,7 +210,11 @@ def ensure_api_success(payload):
         raise TianTianJieXiAuthError("天天解析认证失败")
     if message_indicates_rate_limit(message):
         raise TianTianJieXiRateLimitError("天天解析调用额度或频率受限")
-    raise TianTianJieXiApiError(message or "天天解析未返回可用媒体资源")
+    code = str(status_value) if type(status_value) in (int, str) else ""
+    detail = (f"SERVICE_BUSINESS_CODE_{int(code)}"
+              if re.fullmatch(r"-?[0-9]{1,3}", code)
+              else "SERVICE_BUSINESS_CODE_UNKNOWN")
+    raise TianTianJieXiApiError(message or "天天解析未返回可用媒体资源", diagnostic_detail=detail)
 
 
 def normalize_list(value):
@@ -475,7 +479,9 @@ class TianTianJieXiGenericProvider:
         )
         valid_audio = bool(public_url_or_empty(normalized["audio_url"]))
         if not (valid_video or valid_image or valid_audio):
-            raise ProviderResultInvalidError("天天解析未返回可用媒体资源")
+            error = ProviderResultInvalidError("天天解析未返回可用媒体资源")
+            error.diagnostic_detail = "SERVICE_EMPTY_RESULT"
+            raise error
         return payload
 
     def get_cached_payload_entry(self, source_key, payload_validator=None):

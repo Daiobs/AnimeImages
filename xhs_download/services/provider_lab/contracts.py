@@ -85,14 +85,27 @@ SAFE_FIELD_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
 ERROR_DETAILS = frozenset({"MATCH_DEADLINE", "PARSE_DEADLINE", "NESTED_AGGREGATOR_TLS_BYPASS_BLOCKED",
     "SERVICE_NETWORK_ERROR", "SERVICE_TLS_ERROR", "SERVICE_INVALID_JSON",
     "SERVICE_RESPONSE_REJECTED", "SERVICE_HELPER_FAILED", "SERVICE_REDIRECT_REJECTED",
-    "SERVICE_RESPONSE_TOO_LARGE", "SERVICE_AUTH_REJECTED", "SERVICE_PARSE_REJECTED"}
+    "SERVICE_RESPONSE_TOO_LARGE", "SERVICE_AUTH_REJECTED", "SERVICE_PARSE_REJECTED",
+    "SERVICE_BUSINESS_CODE_UNKNOWN", "SERVICE_EMPTY_RESULT"}
     | {f"SERVICE_HTTP_{status}" for status in range(400, 600)})
+
+
+def safe_error_detail(detail):
+    if not isinstance(detail, str):
+        return ""
+    if detail in ERROR_DETAILS or re.fullmatch(
+        r"SERVICE_BUSINESS_CODE_-?\d{1,3}|"
+        r"SERVICE_JSON_(?:AUTH|PARSE|UNKNOWN)_HTTP_(?:[1-5]\d{2}|UNKNOWN)_TYPE_(?:JSON|HTML|TEXT|OTHER|MISSING)",
+        detail, flags=re.ASCII,
+    ):
+        return detail
+    return ""
 
 
 class ProviderLabError(RuntimeError):
     def __init__(self, code: str, *, http_status: int = 400, detail: str = ""):
         self.code = code if code in ERROR_CODES else "PROVIDER_PROCESS_FAILED"
-        self.detail = detail if detail in ERROR_DETAILS else ""
+        self.detail = safe_error_detail(detail)
         self.http_status = int(http_status)
         super().__init__(self.code)
 

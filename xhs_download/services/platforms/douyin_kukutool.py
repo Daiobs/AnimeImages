@@ -59,9 +59,9 @@ class KukutoolHelperError(OSError):
 def kukutool_failure_detail(stderr):
     for line in str(stderr).splitlines():
         if line.startswith("KUKUTOOL_SAFE_ERROR:"):
-            from ..provider_lab.contracts import ERROR_DETAILS
+            from ..provider_lab.contracts import safe_error_detail
             detail = line.removeprefix("KUKUTOOL_SAFE_ERROR:").strip()
-            if detail in ERROR_DETAILS and detail.startswith("SERVICE_"):
+            if safe_error_detail(detail) and detail.startswith("SERVICE_"):
                 return detail
     return "SERVICE_HELPER_FAILED"
 KUKUTOOL_BUNDLED_NODE = (
