@@ -1234,17 +1234,17 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
         BATCH_PARSE_TOTAL_TIMEOUT_SECONDS=60,
         TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY=2,
     )
-    def test_ultra_budget_uses_serial_tiantian_lane_and_response_cap(self):
+    def test_ultra_budget_preserves_batch_workers_with_account_serialization(self):
         regular_budget = build_batch_parse_budget(7, prefer_ultra_hd=False)
         ultra_budget = build_batch_parse_budget(7, prefer_ultra_hd=True)
 
         self.assertEqual(regular_budget.worker_count, 4)
-        self.assertEqual(ultra_budget.worker_count, 1)
-        self.assertEqual(ultra_budget.wave_count, 7)
-        self.assertEqual(ultra_budget.theoretical_full_duration_seconds, 84)
-        self.assertEqual(ultra_budget.scheduling_timeout_seconds, 54)
+        self.assertEqual(ultra_budget.worker_count, 4)
+        self.assertEqual(ultra_budget.wave_count, 2)
+        self.assertEqual(ultra_budget.theoretical_full_duration_seconds, 24)
+        self.assertEqual(ultra_budget.scheduling_timeout_seconds, 60)
         self.assertEqual(ultra_budget.completion_grace_seconds, 1)
-        self.assertEqual(ultra_budget.max_response_timeout_seconds, 55)
+        self.assertEqual(ultra_budget.max_response_timeout_seconds, 25)
 
     @override_settings(
         BATCH_PARSE_PARALLEL_WORKERS=4,
@@ -1253,7 +1253,7 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
         BATCH_PARSE_TOTAL_TIMEOUT_SECONDS=60,
         TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY=2,
     )
-    def test_ultra_scheduler_serializes_tiantian_batch_requests(self):
+    def test_ultra_scheduler_does_not_serialize_unrelated_provider_rows(self):
         state_lock = threading.Lock()
         active_count = 0
         max_active_count = 0
@@ -1263,16 +1263,8 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
             with state_lock:
                 active_count += 1
                 max_active_count = max(max_active_count, active_count)
-                over_limit = active_count > 1
             try:
                 sleep(0.02)
-                if over_limit:
-                    return {
-                        "status": "failed",
-                        "source_text": source_text,
-                        "duration_ms": 20,
-                        "error_message": "provider concurrency limited",
-                    }
                 return self.success_row(source_text, duration_ms=20)
             finally:
                 with state_lock:
@@ -1296,7 +1288,7 @@ class BatchParseSchedulerRegressionTests(SimpleTestCase):
             row_builder=concurrency_sensitive_row_builder,
         )
 
-        self.assertEqual(max_active_count, 1)
+        self.assertGreater(max_active_count, 1)
         self.assertEqual([row["status"] for row in rows], ["success"] * 7)
 
     def test_view_context_passes_displayed_response_budget_to_scheduler(self):

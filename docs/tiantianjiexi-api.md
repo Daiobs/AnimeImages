@@ -25,6 +25,10 @@ operations, containers with separate temporary filesystems, or other OS users.
 The current local deployment is a single host/OS user. Do not claim account-wide
 serialization across those external environments.
 
+Batch keeps its configured worker count even when ultra quality is requested;
+only actual TianTian work enters the account guard. The legacy whole-batch
+TianTian worker cap no longer serializes unrelated provider rows.
+
 Kukutool retains existing execution concurrency, timeout and real rate-limit
 handling. No new low call quota or remote limit probing is introduced.
 
