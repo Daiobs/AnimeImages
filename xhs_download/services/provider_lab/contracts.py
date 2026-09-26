@@ -23,7 +23,7 @@ MAX_SAFE_STRING_LENGTH = 512
 MAX_RAW_SHAPE_BYTES = 256 * 1024
 
 RESULT_STATUSES = frozenset(
-    {"success", "unsupported", "not_configured", "timeout", "failed"}
+    {"success", "unsupported", "not_configured", "timeout", "failed", "skipped"}
 )
 RESULT_KINDS = frozenset(
     {"video", "image", "gallery", "livephoto", "multimedia", "article", "unknown"}
@@ -64,6 +64,7 @@ ERROR_CODES = frozenset(
         "PROVIDER_LICENSE_RESTRICTED",
         "PROVIDER_RATE_LIMITED",
         "PROVIDER_POLICY_REJECTED",
+        "PROVIDER_ADMISSION_DEFERRED",
     }
 )
 
@@ -86,7 +87,9 @@ ERROR_DETAILS = frozenset({"MATCH_DEADLINE", "PARSE_DEADLINE", "NESTED_AGGREGATO
     "SERVICE_NETWORK_ERROR", "SERVICE_TLS_ERROR", "SERVICE_INVALID_JSON",
     "SERVICE_RESPONSE_REJECTED", "SERVICE_HELPER_FAILED", "SERVICE_REDIRECT_REJECTED",
     "SERVICE_RESPONSE_TOO_LARGE", "SERVICE_AUTH_REJECTED", "SERVICE_PARSE_REJECTED",
-    "SERVICE_BUSINESS_CODE_UNKNOWN", "SERVICE_EMPTY_RESULT"}
+    "SERVICE_BUSINESS_CODE_UNKNOWN", "SERVICE_EMPTY_RESULT",
+    "SERVICE_QUEUE_DEFERRED", "SERVICE_QUEUE_CANCELLED",
+    "SERVICE_PREVIOUS_OUTCOME_UNKNOWN", "SERVICE_SERIAL_GUARD_UNAVAILABLE"}
     | {f"SERVICE_HTTP_{status}" for status in range(400, 600)})
 
 
@@ -413,6 +416,8 @@ class LabProviderResultV1:
             "truncated": bool(self.metadata.get("truncated") or len(self.assets) > MAX_RETAINED_CANDIDATES),
             "unexpanded_scope": safe_public_text(self.metadata.get("unexpanded_scope"), 240),
             "baseline": self.metadata.get("baseline") is True,
+            "queue_wait_ms": safe_int(self.metadata.get("queue_wait_ms")) if "queue_wait_ms" in self.metadata else None,
+            "execution_ms": safe_int(self.metadata.get("execution_ms")) if "execution_ms" in self.metadata else None,
         }
         attempts = []
         selected_seen = False

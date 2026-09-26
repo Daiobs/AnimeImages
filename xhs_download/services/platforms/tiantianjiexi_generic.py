@@ -37,6 +37,7 @@ from .kukutool_generic import (
     public_url_or_empty,
     source_key_for_url,
 )
+from .tiantian_serial import serialized, request_in_flight, TianTianAdmissionDeferred
 
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,10 @@ class TianTianJieXiApiError(RuntimeError):
 
 class TianTianJieXiAuthError(TianTianJieXiApiError):
     pass
+
+
+class TianTianJieXiUncertainError(TianTianJieXiApiError):
+    """A sent transport attempt must not enter the retry loop."""
 
 
 class TianTianJieXiRateLimitError(TianTianJieXiApiError):
@@ -350,11 +355,13 @@ class TianTianJieXiApiClient:
     def password(self):
         return runtime_str("TIANTIANJIEXI_PASSWORD")
 
+    @serialized
     def parse_url(self, url, timeout_seconds=None):
         if not api_configured():
             raise TianTianJieXiAuthError("天天解析账号未配置")
         timeout = float(timeout_seconds if timeout_seconds is not None else runtime_float("TIANTIANJIEXI_TIMEOUT_SECONDS", 15) or 15)
         try:
+            request_in_flight(True)
             response = self.session.post(
                 self.base_url,
                 data={
@@ -365,6 +372,7 @@ class TianTianJieXiApiClient:
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
                 timeout=max(0.1, timeout),
             )
+            request_in_flight(False)
             response.raise_for_status()
             payload = response.json()
         except requests.Timeout as error:
@@ -372,13 +380,15 @@ class TianTianJieXiApiClient:
         except requests.exceptions.JSONDecodeError as error:
             raise TianTianJieXiApiError("天天解析接口返回非 JSON", diagnostic_detail="SERVICE_INVALID_JSON") from error
         except requests.exceptions.SSLError as error:
-            raise TianTianJieXiApiError("天天解析 TLS 失败", diagnostic_detail="SERVICE_TLS_ERROR") from error
+            raise TianTianJieXiUncertainError("天天解析 TLS 失败", diagnostic_detail="SERVICE_TLS_ERROR") from error
         except requests.HTTPError as error:
+            if error.response is not None:
+                request_in_flight(False)
             status = error.response.status_code if error.response is not None else 0
             detail = f"SERVICE_HTTP_{status}" if 400 <= status <= 599 else "SERVICE_RESPONSE_REJECTED"
             raise TianTianJieXiApiError("天天解析 HTTP 失败", diagnostic_detail=detail) from error
         except requests.RequestException as error:
-            raise TianTianJieXiApiError("天天解析接口请求失败", diagnostic_detail="SERVICE_NETWORK_ERROR") from error
+            raise TianTianJieXiUncertainError("天天解析接口请求失败", diagnostic_detail="SERVICE_NETWORK_ERROR") from error
         except ValueError as error:
             raise TianTianJieXiApiError("天天解析接口返回非 JSON", diagnostic_detail="SERVICE_INVALID_JSON") from error
         ensure_api_success(payload)
@@ -725,6 +735,7 @@ class TianTianJieXiGenericProvider:
         except Exception:
             logger.exception("tiantianjiexi_single_flight_release_failed", extra={"provider": PROVIDER_ID})
 
+    @serialized
     def parse(
         self,
         url,
@@ -948,7 +959,8 @@ class TianTianJieXiGenericProvider:
                         candidate_count=len(payload.get("videos") or payload.get("images") or ()),
                     )
                     return payload
-                except (TianTianJieXiAuthError, TianTianJieXiRateLimitError):
+                except (TianTianJieXiAuthError, TianTianJieXiRateLimitError,
+                        TianTianAdmissionDeferred, TianTianJieXiUncertainError, XhsProviderTimeoutError):
                     raise
                 except Exception as error:
                     last_error = error

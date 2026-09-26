@@ -1,5 +1,33 @@
 # TianTianJieXi API Notes
 
+## Current local account policy (Human confirmed 2026-09-26)
+
+The configured TianTian account has lifetime membership, paid once; subsequent
+parses have no per-call fee. Authentication is still required. Kukutool has no
+practical request-count bottleneck at the current development scale. Neither
+requires repeated fee approval for public-source tests within an explicitly
+authorized task. External service/source sharing consent remains mandatory;
+this does not authorize purchases, new recipients, private content or new
+credential use. Historical approvals and request ledgers remain unchanged.
+
+All TianTian application entry points use same-host, same-OS-user account file
+locking, independent of Django cache namespace and worker process. Queue wait
+is bounded to 30 seconds (or the remaining caller deadline), separate from
+execution time. Admission expiry is unexecuted, not a parse failure. An active
+HTTP call retains the slot until it exits even if a browser stops waiting.
+Interrupted/uncertain remote requests leave a persistent unknown marker and
+are not retried automatically. Reconcile that outcome before explicitly
+clearing the account marker under the same lock; do not delete live lock files.
+Normal completed responses, exceptions outside HTTP work and cancelled waiters
+release the OS lock. A process crash releases the OS lock but preserves the
+uncertain marker. This is not a cross-machine lock and cannot serialize website
+operations, containers with separate temporary filesystems, or other OS users.
+The current local deployment is a single host/OS user. Do not claim account-wide
+serialization across those external environments.
+
+Kukutool retains existing execution concurrency, timeout and real rate-limit
+handling. No new low call quota or remote limit probing is introduced.
+
 Last updated: 2026-07-06
 
 This document summarizes the public TianTianJieXi API information and the

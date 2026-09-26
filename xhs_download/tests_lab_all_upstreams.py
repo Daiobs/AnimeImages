@@ -43,13 +43,13 @@ class AllUpstreamDescriptorTests(SimpleTestCase):
         runner = Mock(return_value=({'status':'success'}, []))
         descriptor = self.descriptor('tiantian_existing',runner)
         with patch.dict(providers.PROVIDER_REGISTRY,{'tiantian_existing':descriptor}):
-            for consent in (None, {'paid_service':True}, {'external_sharing':True}):
+            for consent in (None, {'paid_service':True}, {'external_sharing':False}):
                 result = providers.run_provider(provider_id='tiantian_existing',source='https://example.org/post',user_id=1,confirmations=consent)
                 self.assertFalse(result['executed'])
                 self.assertEqual(result['unexecuted_reason'],'CONFIRMATION_REQUIRED')
             runner.assert_not_called()
             result = providers.run_provider(provider_id='tiantian_existing',source='https://example.org/post',user_id=1,
-                confirmations={'paid_service':True,'external_sharing':True})
+                confirmations={'external_sharing':True})
             self.assertTrue(result['executed'])
             runner.assert_called_once()
             result = providers.run_provider(provider_id='tiantian_existing',source='https://example.org/post',user_id=1)

@@ -52,6 +52,8 @@ class SharedServiceExecutionTests(SimpleTestCase):
 
     def test_tiantian_transport_errors_are_classified_without_network(self):
         import requests
+        import tempfile
+        from pathlib import Path
         from .services.platforms.tiantianjiexi_generic import TianTianJieXiApiClient, TianTianJieXiApiError
         response = Mock(status_code=403)
         cases = [(requests.HTTPError('private', response=response), 'SERVICE_HTTP_403'),
@@ -61,7 +63,9 @@ class SharedServiceExecutionTests(SimpleTestCase):
         for error, detail in cases:
             session = Mock()
             session.post.side_effect = error
-            with patch('xhs_download.services.platforms.tiantianjiexi_generic.api_configured', return_value=True):
+            with tempfile.TemporaryDirectory() as directory, \
+                    patch('xhs_download.services.platforms.tiantian_serial.lock_root', return_value=Path(directory)), \
+                    patch('xhs_download.services.platforms.tiantianjiexi_generic.api_configured', return_value=True):
                 with self.assertRaises(TianTianJieXiApiError) as caught:
                     TianTianJieXiApiClient(session=session).parse_url(SOURCE)
             self.assertEqual(caught.exception.diagnostic_detail, detail)

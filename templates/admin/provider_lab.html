@@ -180,7 +180,7 @@
                     {% if provider.requires_confirmation %}
                     <label class="provider-lab-sharing-confirmation">
                         <input type="checkbox" name="provider_authorizations" value="{{ provider.provider_id }}">
-                        <span>{{ provider.label }}：{{ provider.confirmation_message|default:"确认本次调用可能消耗额度或向外部服务分享来源链接" }}</span>
+                        <span>{{ provider.label }}：{{ provider.confirmation_message|default:"确认在本次任务范围内调用外部服务并分享来源链接" }}</span>
                     </label>
                     {% endif %}
                     {% endfor %}

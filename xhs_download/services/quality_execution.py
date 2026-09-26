@@ -319,29 +319,41 @@ def _execute_service(provider, source, timeout_seconds, expected_match):
     from .platforms.kukutool_generic import KukutoolGenericProvider
     from .platforms.douyin_kukutool import KukutoolHelperError
     from .provider_reliability import ProviderResultInvalidError
+    from .platforms.tiantian_serial import TianTianAdmissionDeferred
     match = _select_match([service_match(provider, source)], provider, expected_match)
     if not candidate_url(source):
         raise ProviderLabError('PROVIDER_UNSUPPORTED')
     factory = (TianTianJieXiGenericProvider if provider == 'tiantianjiexi_generic'
                else KukutoolGenericProvider)
+    instance = factory()
+    def failure(code, *, detail=''):
+        error = ProviderLabError(code, detail=detail)
+        if provider == 'tiantianjiexi_generic':
+            error.queue_wait_ms = getattr(instance, 'queue_wait_ms', 0)
+            error.execution_ms = getattr(instance, 'execution_ms', 0)
+        return error
     try:
-        payload = factory().parse(source, timeout_seconds=min(30.0, max(.1, float(timeout_seconds))))
+        payload = instance.parse(source, timeout_seconds=min(30.0, max(.1, float(timeout_seconds))))
+    except TianTianAdmissionDeferred as error:
+        deferred = ProviderLabError('PROVIDER_ADMISSION_DEFERRED', detail=error.reason)
+        deferred.queue_wait_ms = error.queue_wait_ms
+        raise deferred from None
     except (XhsProviderTimeoutError, TimeoutError, subprocess.TimeoutExpired):
-        raise ProviderLabError('PROVIDER_TIMEOUT', detail='PARSE_DEADLINE') from None
+        raise failure('PROVIDER_TIMEOUT', detail='PARSE_DEADLINE') from None
     except TianTianJieXiAuthError:
-        raise ProviderLabError('PROVIDER_AUTH_FAILED') from None
+        raise failure('PROVIDER_AUTH_FAILED') from None
     except TianTianJieXiRateLimitError:
-        raise ProviderLabError('PROVIDER_RATE_LIMITED') from None
+        raise failure('PROVIDER_RATE_LIMITED') from None
     except (TianTianJieXiApiError, KukutoolHelperError) as error:
-        raise ProviderLabError('PROVIDER_UPSTREAM_FAILED', detail=error.diagnostic_detail) from None
+        raise failure('PROVIDER_UPSTREAM_FAILED', detail=error.diagnostic_detail) from None
     except ProviderResultInvalidError as error:
         if getattr(error, 'diagnostic_detail', '') == 'SERVICE_EMPTY_RESULT':
-            raise ProviderLabError('PROVIDER_RESULT_EMPTY', detail='SERVICE_EMPTY_RESULT') from None
-        raise ProviderLabError('PROVIDER_PROCESS_FAILED') from None
+            raise failure('PROVIDER_RESULT_EMPTY', detail='SERVICE_EMPTY_RESULT') from None
+        raise failure('PROVIDER_PROCESS_FAILED') from None
     except OSError:
-        raise ProviderLabError('PROVIDER_EXECUTOR_FAILED') from None
+        raise failure('PROVIDER_EXECUTOR_FAILED') from None
     except Exception:
-        raise ProviderLabError('PROVIDER_PROCESS_FAILED') from None
+        raise failure('PROVIDER_PROCESS_FAILED') from None
     if not isinstance(payload, dict):
         raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
     rows = []
@@ -379,7 +391,10 @@ def _execute_service(provider, source, timeout_seconds, expected_match):
         declared += 1
         add(payload, 'unknown')
     return rows, match, {'service_declared_count': declared,
-                        'service_unexpanded_count': declared - len(rows)}
+                        'service_unexpanded_count': declared - len(rows),
+                        **({'queue_wait_ms': getattr(instance, 'queue_wait_ms', 0),
+                            'execution_ms': getattr(instance, 'execution_ms', 0)}
+                           if provider == 'tiantianjiexi_generic' else {})}
 
 
 def execute_provider(provider_id, source_url, *, timeout_seconds=20.0, backend=None, options=None,
@@ -428,7 +443,7 @@ def execute_provider(provider_id, source_url, *, timeout_seconds=20.0, backend=N
             metadata[key] += omitted
         if omitted:
             metadata['unexpanded_scope'] = 'service_candidate_descriptor_limit'
-    metadata.update({key:execution[key] for key in ('warnings','unexpanded_scope','attempts') if key in execution})
+    metadata.update({key:execution[key] for key in ('warnings','unexpanded_scope','attempts', 'queue_wait_ms', 'execution_ms') if key in execution})
     metadata['truncated'] = bool(execution.get('truncated') or metadata.get('candidates_truncated'))
     upstream_count = execution.get('upstream_format_count')
     if isinstance(upstream_count, int):

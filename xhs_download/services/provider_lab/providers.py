@@ -323,6 +323,9 @@ def parse_result_to_lab(result, *, provider_id, user_id, request_id, provider_ve
     store_resource_bundle(resource_bundle)
     observed = len(candidates) if candidates is not None else len(result.assets)
     public_metadata = _parse_result_metadata(result)
+    for key in ('queue_wait_ms', 'execution_ms'):
+        if key in metadata:
+            public_metadata[key] = safe_int(metadata[key])
     truncated = safe_int(metadata.get('candidates_truncated', metadata.get('truncated_count')))
     public_metadata.update(candidate_count=metadata.get('candidate_count', observed + truncated),
                            returned_count=metadata.get('returned_count', observed),
@@ -601,7 +604,7 @@ PROVIDER_REGISTRY: Mapping[str, ProviderDescriptor] = {
         default_selected=False,
         runner=run_animeimages_current,
         availability=_always_available,
-        requires_confirmation=('paid_service', 'external_sharing'),
+        requires_confirmation=('external_sharing',),
     ),
     "parsehub_repo": ProviderDescriptor(
         provider_id="parsehub_repo",
@@ -662,7 +665,7 @@ PROVIDER_REGISTRY: Mapping[str, ProviderDescriptor] = {
         availability=tiantian_provider_configured,
         execution_provider_id='tiantianjiexi_generic',
         enabled_setting='TIANTIANJIEXI_PROVIDER_ENABLED',
-        requires_confirmation=('paid_service','external_sharing'),
+        requires_confirmation=('external_sharing',),
     ),
     "kukutool_existing": ProviderDescriptor(
         provider_id='kukutool_existing', label='Kukutool', provider_version='kukutool-existing',
@@ -814,8 +817,9 @@ def _failure_result(
         "PROVIDER_NOT_CONFIGURED": "not_configured",
         "PROVIDER_UNSUPPORTED": "unsupported",
         "PROVIDER_TIMEOUT": "timeout",
+        "PROVIDER_ADMISSION_DEFERRED": "skipped",
     }.get(error.code, "failed")
-    if error.code == "PROVIDER_NOT_CONFIGURED":
+    if error.code in {"PROVIDER_NOT_CONFIGURED", "PROVIDER_ADMISSION_DEFERRED"}:
         executed = False
     result = LabProviderResultV1(
         request_id=request_id,
@@ -832,6 +836,9 @@ def _failure_result(
     result.update(error_detail=error.detail, executed=executed, unexecuted_reason='' if executed else error.code,
                   baseline=descriptor.provider_id == 'animeimages_current',
                   independent_upstream=descriptor.provider_id != 'animeimages_current')
+    if error.code == "PROVIDER_ADMISSION_DEFERRED" or hasattr(error, 'queue_wait_ms'):
+        result.update(queue_wait_ms=safe_int(getattr(error, 'queue_wait_ms', 0)),
+                      execution_ms=safe_int(getattr(error, 'execution_ms', 0)))
     return result
 
 

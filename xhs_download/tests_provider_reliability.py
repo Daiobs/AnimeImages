@@ -458,7 +458,7 @@ class ProviderReliabilityContractTests(SimpleTestCase):
         TIANTIANJIEXI_GLOBAL_MAX_CONCURRENCY=2,
         TIANTIANJIEXI_REQUEST_LIMIT_PER_MINUTE=0,
     )
-    def test_tiantian_global_concurrency_never_exceeds_two(self):
+    def test_tiantian_account_serializes_even_when_old_counter_allows_two(self):
         release = Event()
         capacity_reached = Event()
         state_lock = Lock()
@@ -470,7 +470,7 @@ class ProviderReliabilityContractTests(SimpleTestCase):
                     state["active"] += 1
                     state["calls"] += 1
                     state["maximum"] = max(state["maximum"], state["active"])
-                    if state["active"] == 2:
+                    if state["active"] == 1:
                         capacity_reached.set()
                 release.wait(timeout=1)
                 with state_lock:
@@ -497,9 +497,8 @@ class ProviderReliabilityContractTests(SimpleTestCase):
                 except Exception:
                     outcomes.append(False)
 
-        self.assertEqual(state["maximum"], 2)
-        self.assertGreaterEqual(state["calls"], 2)
-        self.assertLessEqual(state["calls"], 4)
+        self.assertEqual(state["maximum"], 1)
+        self.assertEqual(state["calls"], 4)
         self.assertEqual(outcomes.count(True), state["calls"])
         self.assertEqual(outcomes.count(False), 4 - state["calls"])
 

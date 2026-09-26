@@ -37,6 +37,7 @@
         PROVIDER_RESULT_EMPTY: "Provider 未返回可比较的资源。",
         PROVIDER_LICENSE_RESTRICTED: "该 Provider 仅限显式启用的非商业本地研究。",
         PROVIDER_RATE_LIMITED: "请求过于频繁，请稍后重试。",
+        PROVIDER_ADMISSION_DEFERRED: "天天解析正在排队，或前次调用结果尚未确认；本次未发起解析，不会自动重试。",
         PROVIDER_POLICY_REJECTED: "当前受控执行选项未通过安全策略。",
     });
     const ATTEMPT_OUTCOME_LABELS = Object.freeze({
@@ -601,6 +602,11 @@
         setText(card, "selected_backend", result.selected_backend || "-");
         setText(card, "result_kind", result.result_kind || "-");
         setText(card, "elapsed_ms", Number(result.elapsed_ms || 0) ? `${result.elapsed_ms} ms` : "-");
+        const queueWait = result.queue_wait_ms ?? result.metadata?.queue_wait_ms;
+        const execution = result.execution_ms ?? result.metadata?.execution_ms;
+        if (Number.isFinite(queueWait) && Number.isFinite(execution)) {
+            setText(card, "elapsed_ms", `排队 ${queueWait} ms；执行 ${execution} ms`);
+        }
         setText(card, "title", result.metadata?.title || "-");
         setText(card, "author", result.metadata?.author || "-");
         setText(card, "asset_count", String((result.assets || []).length));
@@ -1119,7 +1125,7 @@
             let reason = descriptor?.available === false ? descriptor.unexecuted_reason === "PROVIDER_DISABLED"
                 ? "该上游已关闭。" : descriptor.not_configured_hint || "当前通道未配置或缺少运行依赖。" : "";
             const requirements = Array.isArray(descriptor?.requires_confirmation) ? descriptor.requires_confirmation : [];
-            if (!reason && requirements.length && !authorized) reason = "尚未确认本次付费调用或外部分享授权。";
+            if (!reason && requirements.length && !authorized) reason = "尚未确认本次任务的外部服务与来源分享授权。";
             if (!reason && providerId === "videodl_repo") {
                 try { providerOptions = videodlOptions(form, videodlInventory); }
                 catch (error) { reason = error.userMessage || "受控执行选项未获授权。"; }
