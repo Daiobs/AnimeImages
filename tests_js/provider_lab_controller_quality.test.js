@@ -124,6 +124,37 @@ function routeFixture(canConfigure = true) {
     return {panel, doc: documentFor(panel)};
 }
 
+test("shipped script retries initialization when interactive DOM has not mounted the Lab yet", async () => {
+    const fs = require("node:fs"), vm = require("node:vm");
+    const doc = documentFor(new Node("div")); doc.readyState = "interactive";
+    const calls = [];
+    const context = {document: doc, location: {origin: "http://local.example"}, navigator: {},
+        URL, AbortController, setTimeout, clearTimeout,
+        fetch: async (url, options) => { calls.push({url, options}); return {ok: true, json: async () => ({ok: true, batches: []})}; }};
+    vm.runInNewContext(fs.readFileSync(require.resolve("../static/js/provider_lab.js"), "utf8"), context);
+    assert.equal(typeof doc.listeners.DOMContentLoaded, "function", "actual bootstrap must propagate null to schedule a DOM-ready retry");
+    const f = comparisonFixture(["A"]);
+    const tab = new Node("button", {"data-lab-tab": "history", "aria-pressed": "false"});
+    const instant = new Node("button", {"data-lab-tab": "instant", "aria-pressed": "true"});
+    const panel = new Node("section", {"data-lab-history": ""}); panel.hidden = true;
+    for (const name of ["batches", "executions", "status", "heading", "host", "order"]) {
+        panel.append(new Node("div", {[`data-history-${name}`]: ""}));
+    }
+    f.root.append(tab, instant, panel); doc.append(f.root);
+    assert.equal(tab.closest("form"), null);
+    doc.readyState = "complete"; doc.listeners.DOMContentLoaded();
+    const controller = f.root.__animeImagesProviderLabController;
+    assert.ok(controller);
+    await f.root.listeners.click({target: tab}); await flush();
+    assert.equal(tab.getAttribute("aria-pressed"), "true"); assert.equal(panel.hidden, false);
+    assert.equal(calls.length, 1);
+    assert.equal(new URL(calls[0].url).pathname, "/admin/provider-lab/history/");
+    assert.equal(calls[0].options.method, undefined);
+    await f.root.listeners.click({target: instant});
+    assert.equal(panel.hidden, true); assert.equal(calls.length, 1);
+    controller.destroy();
+});
+
 test("retained tail 2160p is reachable and selection survives quality sort and 64-item expansion", async () => {
     const f = comparisonFixture(["A"]);
     const assets = Array.from({length: 130}, (_, i) => ({asset_id: `v${i}`, media_type: "video",
@@ -282,4 +313,96 @@ test("configuration permission cannot be bypassed by invoking save directly", as
         }});
     await editor.load(); panel.querySelector("[data-route-confirm]").checked = true;
     await editor.persist(false); assert.equal(writes, 0);
+});
+
+test("history route saves evidence only on explicit save and never guesses missing videodl options", async () => {
+    const {panel, doc} = routeFixture(); const writes = [];
+    panel.append(new Node("p", {"data-route-reference": ""}), new Node("p", {"data-route-confirmation-summary": ""}));
+    const evidence = {id: 73, batch: {label: "Scout batch", created_at: "2026-09-02"}, started_at: "2026-09-01", version: {app: "old"}, options: null};
+    const editor = lab.createRouteEditor(doc, {url: "/provider-lab/routes/", csrf: () => "csrf",
+        getSource: () => "https://source.example/history", getSelection: () => ({historyExecution: evidence}),
+        descriptors: [{provider_id: "videodl_repo", execution_provider_id: "videodl_repo", available: true, route_selectable: true}],
+        window: {location: {origin: "http://local.example"}}, fetch: async (_url, options) => {
+            if (options.method) writes.push(JSON.parse(options.body));
+            return {ok: true, json: async () => ({ok: true, route: {...route, allowed_provider_ids: ["videodl_repo"]}})};
+        }});
+    await editor.load(); editor.selectProvider("videodl_repo", evidence);
+    assert.equal(writes.length, 0);
+    assert.equal(panel.querySelector('[name="route_videodl_mode"]').value, "");
+    assert.match(panel.querySelector("[data-route-reference]").textContent, /Scout batch.*2026-09-02.*2026-09-01.*old/);
+    panel.querySelector("[data-route-confirm]").checked = true;
+    await editor.persist(false); assert.equal(writes.length, 0);
+    assert.match(panel.querySelector("[data-route-status]").textContent, /显式设置/);
+    panel.querySelector('[name="route_videodl_mode"]').value = "dedicated_only";
+    await editor.persist(false);
+    assert.equal(writes[0].reference_execution_id, 73);
+    assert.equal(writes[0].source_url, "https://source.example/history");
+    assert.equal(writes[0].expected_revision, 4);
+    assert.deepEqual(writes[0].provider_options, {videodl_repo: {mode: "dedicated_only"}});
+});
+
+test("history cannot trust imported route_selectable for removed or currently forbidden providers", async () => {
+    const {panel, doc} = routeFixture(); let writes = 0;
+    const editor = lab.createRouteEditor(doc, {url: "/routes", csrf: () => "csrf", getSource: () => "source",
+        descriptors: [{provider_id: "parsehub_repo", available: false, route_selectable: false}],
+        window: {location: {origin: "http://local.example"}}, fetch: async () => {
+            writes += 1; return {ok: true, json: async () => ({ok: true, route})};
+        }});
+    await editor.load(); editor.selectProvider("parsehub_repo", {id: 1, route_selectable: true});
+    assert.match(panel.querySelector("[data-route-status]").textContent, /当前 Provider 配置不允许/);
+    editor.selectProvider("removed", {id: 2, route_selectable: true});
+    assert.match(panel.querySelector("[data-route-status]").textContent, /当前 Provider 配置不允许/);
+    assert.equal(writes, 1);
+});
+
+test("single history run keeps original source/provider and requires current sharing authorization", async () => {
+    const f = comparisonFixture(["paid"]); const calls = [];
+    const consent = new Node("input", {name: "provider_authorizations", value: "paid"}); f.form.append(consent);
+    const controller = lab.createController(f.doc, {window: {}, descriptors: [{provider_id: "paid", available: true,
+        requires_confirmation: ["external_sharing"]}], fetch: async (url, options) => {
+        calls.push({url, body: JSON.parse(options.body)}); return {ok: true, json: async () => ({status: "success", executed: true, assets: []})};
+    }});
+    assert.equal((await controller.runOne("paid", "https://original.example/work", "csrf", null, undefined, 73)).executed, false);
+    assert.equal(calls.length, 0); consent.checked = true;
+    await controller.runOne("paid", "https://original.example/work", "csrf", null, undefined, 73);
+    assert.deepEqual(calls, [{url: "/run", body: {source: "https://original.example/work", provider_id: "paid",
+        history_execution_id: 73, confirmations: {external_sharing: true}}}]);
+    controller.destroy();
+});
+
+test("instant parse success remains success when its independent history write fails", async () => {
+    const f = comparisonFixture(["A"]); let calls = 0;
+    const controller = lab.createController(f.doc, {window: {}, fetch: async () => {
+        calls += 1; return {ok: true, json: async () => ({status: "success", executed: true,
+            assets: [], history: {saved: false, error_code: "HISTORY_SAVE_FAILED"}})};
+    }});
+    await controller.submit({preventDefault() {}}); await flush(); await flush();
+    const card = f.root.querySelector('[data-provider-card="A"]');
+    assert.equal(card.dataset.providerStatus, "success");
+    assert.equal(controller.resultByProvider.get("A").status, "success");
+    assert.equal(card.querySelector("[data-provider-error]").hidden, true);
+    assert.match(card.querySelector("[data-history-receipt]").textContent, /HISTORY_SAVE_FAILED.*不会自动重跑/);
+    assert.equal(calls, 1);
+    controller.destroy();
+});
+
+test("history route save reports current provider rejection and mismatched reference explicitly", async () => {
+    for (const [code, message] of [["HISTORY_PROVIDER_UNAVAILABLE", /拟保存的上游当前已禁用或未配置/],
+        ["INVALID_HISTORY_REFERENCE", /历史参考记录与当前来源不匹配/]]) {
+        const {panel, doc} = routeFixture(); let writes = 0;
+        const editor = lab.createRouteEditor(doc, {url: "/routes", csrf: () => "csrf", getSource: () => "https://source.example/work",
+            descriptors: [{provider_id: "parsehub_repo", execution_provider_id: "parsehub_generic", available: true, route_selectable: true}],
+            window: {location: {origin: "http://local.example"}}, fetch: async (_url, options) => {
+                if (!options.method) return {ok: true, json: async () => ({ok: true, route})};
+                writes += 1;
+                assert.equal(JSON.parse(options.body).reference_execution_id, 73);
+                return {ok: false, status: 422, json: async () => ({ok: false, error_code: code})};
+            }});
+        await editor.load(); editor.selectProvider("parsehub_repo", {id: 73});
+        panel.querySelector("[data-route-confirm]").checked = true;
+        await editor.persist(false);
+        assert.match(panel.querySelector("[data-route-status]").textContent, message);
+        assert.match(panel.querySelector("[data-route-status]").textContent, /路线未保存/);
+        assert.equal(writes, 1); assert.equal(editor.route.revision, 4);
+    }
 });

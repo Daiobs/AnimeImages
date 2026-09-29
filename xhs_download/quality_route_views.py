@@ -29,7 +29,7 @@ def upstream_routes_view(request):
             data = json.loads(request.body)
             allowed = {"source_url", "expected_revision"}
             if request.method == "POST":
-                allowed |= {"provider_order", "provider_options", "format_preferences"}
+                allowed |= {"provider_order", "provider_options", "format_preferences", "reference_execution_id"}
             if not isinstance(data, dict) or set(data) - allowed:
                 raise UpstreamRouteError("INVALID_REQUEST")
             source_url = data.get("source_url", "")
@@ -37,6 +37,7 @@ def upstream_routes_view(request):
                 source_url, expected_revision=data.get("expected_revision"), actor=user,
                 provider_order=data.get("provider_order"), provider_options=data.get("provider_options"),
                 format_preferences=data.get("format_preferences"), reset=request.method == "DELETE",
+                reference_execution_id=data.get("reference_execution_id"),
             )
         if "videodl_repo" in route["provider_order"]:
             availability = videodl_route_availability(source_url, route)

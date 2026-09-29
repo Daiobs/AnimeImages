@@ -21,6 +21,12 @@
         queued: "QUEUED",
         cancelled: "CANCELLED",
         skipped: "NOT RUN",
+        unknown: "UNKNOWN",
+        sent: "SENT / UNKNOWN",
+        planned: "PLANNED",
+        reserved: "RESERVED / UNKNOWN",
+        in_flight: "IN FLIGHT / UNKNOWN",
+        not_executed: "NOT RUN",
     });
     const ERROR_MESSAGES = Object.freeze({
         PROVIDER_NOT_SELECTED: "请选择有效的 Provider。",
@@ -422,6 +428,8 @@
         if (raw) { raw.hidden = true; }
         const scopeNote = card.querySelector("[data-provider-scope-note]");
         if (scopeNote) scopeNote.textContent = "";
+        const receipt = card.querySelector("[data-history-receipt]");
+        if (receipt) receipt.textContent = "";
         card.querySelectorAll("[data-copy-json], [data-download-json]")
             .forEach((button) => { button.disabled = true; });
     }
@@ -481,9 +489,21 @@
         return source.map((asset) => asset.media_type === "video" ? videos[index++] : asset);
     }
 
+    function historyCandidateId(executionId, ordinal) {
+        return `history:${executionId}:${ordinal}`;
+    }
+
     function renderAssets(documentObject, container, result, ordered) {
         container.replaceChildren();
+        if (result.history_summary && !Array.isArray(result.assets)) {
+            const note = documentObject.createElement("p");
+            note.textContent = "旧记录未保留候选明细；候选数量未知，不等于零。历史摘要可查看；资源访问需要重新解析。";
+            container.append(note); return;
+        }
         const assets = ordered || result.assets || [];
+        // View-only identities follow original ordinals, never upstream IDs or sorted positions.
+        const historyIds = result.history_summary && result.history_execution_id !== undefined
+            ? new Map((result.assets || []).map((asset, ordinal) => [asset, historyCandidateId(result.history_execution_id, ordinal)])) : null;
         assets.forEach((asset, index) => {
             const row = documentObject.createElement("div");
             row.className = "provider-lab-asset";
@@ -501,17 +521,22 @@
             button.dataset.providerId = String(result.provider_id || "");
             button.dataset.assetId = String(asset.asset_id || "");
             button.dataset.mediaType = String(asset.media_type || "unknown");
-            button.disabled = !asset.resource_token;
+            button.disabled = result.history_summary === true || !asset.resource_token;
+            if (result.history_summary) button.dataset.resourceToken = "";
             const select = documentObject.createElement("button");
             select.type = "button";
             select.textContent = "本次使用";
             select.dataset.labSelect = "1";
             select.dataset.assetId = String(asset.asset_id || "");
+            if (historyIds) {
+                row.dataset.historySelectionId = historyIds.get(asset);
+                select.dataset.historySelectionId = historyIds.get(asset);
+            }
             select.setAttribute("aria-pressed", "false");
             const inspection = documentObject.createElement("div");
             inspection.className = "provider-lab-inspection";
             inspection.dataset.labInspection = "1";
-            inspection.textContent = "尚未请求媒体描述符。";
+            inspection.textContent = result.history_summary ? "历史摘要可查看；资源访问需要重新解析。" : "尚未请求媒体描述符。";
             row.append(meta, select, button, inspection);
             container.append(row);
         });
@@ -609,7 +634,7 @@
         }
         setText(card, "title", result.metadata?.title || "-");
         setText(card, "author", result.metadata?.author || "-");
-        setText(card, "asset_count", String((result.assets || []).length));
+        setText(card, "asset_count", result.history_summary && !Array.isArray(result.assets) ? "未知（未保留候选）" : String((result.assets || []).length));
         setText(card, "relationship_count", String((result.relationships || []).length));
         if (result.provider_id === "animeimages_current") setText(card, "selected_backend", "现有路线基线（复合结果）");
         const content = card.querySelector("[data-provider-content]");
@@ -622,9 +647,18 @@
             error.textContent = errorMessage(result.error_code, result.error_detail);
             if (status === "cancelled") error.textContent = "已取消；其他已完成结果保留。";
             if (status === "skipped") error.textContent = result.not_run_reason || "本次未执行：整体预算已用尽。";
+            if (["unknown", "sent", "reserved", "in_flight", "queued", "running", "waiting"].includes(status)) error.textContent = `原执行状态：${STATUS_LABELS[status]}；请先核对原调用账本，不会自动重发。`;
+            if (["planned", "not_executed"].includes(status)) error.textContent = "原记录：未执行。";
             error.hidden = false;
         }
         if (error && status === "success") { error.hidden = true; error.textContent = ""; }
+        let receipt = card.querySelector("[data-history-receipt]");
+        if (result.history && !receipt) {
+            receipt = documentObject.createElement("p"); receipt.dataset.historyReceipt = "1"; card.append(receipt);
+        }
+        if (receipt) receipt.textContent = !result.history ? "" : result.history.saved === true
+            ? `评估历史已保存（${result.history.id}）。`
+            : `解析结果与历史保存独立：历史保存失败或未确认（${result.history.error_code || "未知"}）；不会自动重跑。`;
         const assets = card.querySelector("[data-provider-assets]");
         if (assets) {
             renderAssets(documentObject, assets, result);
@@ -788,6 +822,7 @@
         let order = [];
         let sequence = 0;
         let busy = false;
+        let reference = null;
         const canConfigure = panel.dataset.canConfigure === "true";
         const text = (value) => { if (message) message.textContent = value; };
         function field(name) { return panel.querySelector(`[name="${name}"]`); }
@@ -803,7 +838,7 @@
             const preferences = ["max_height", "preferred_video_codec", "preferred_container"]
                 .filter((name) => field(name)?.value).map((name) => `${name}=${field(name).value}`).join("，") || "未指定";
             const execution = order.includes("videodl_repo")
-                ? `${field("route_videodl_mode")?.value || "dedicated_only"} ${field("route_videodl_backend")?.value || ""}` : "该上游标准模式";
+                ? `${field("route_videodl_mode")?.value || "未知，请显式设置"} ${field("route_videodl_backend")?.value || ""}` : "该上游标准模式";
             node.textContent = `来源站点：${route.source_host}；当前：${current}；拟固定：${order[0] || "未选择"}；执行选项：${execution}；格式偏好：${preferences}；明确备选：${order.slice(1).join(" → ") || "无，首选失败即停止"}。`;
         }
         function renderOrder() {
@@ -885,6 +920,7 @@
             }
             const providerOptions = {};
             if (order.includes("videodl_repo")) {
+                if (!isReset && !field("route_videodl_mode")?.value) { text("历史 videodl 选项未知或不支持，请显式设置执行模式。"); return; }
                 providerOptions.videodl_repo = {mode: field("route_videodl_mode")?.value || "dedicated_only"};
                 if (providerOptions.videodl_repo.mode === "specific_backend") {
                     providerOptions.videodl_repo.backend_id = field("route_videodl_backend")?.value || "";
@@ -892,6 +928,7 @@
             }
             const body = routeRequestBody(source, route, {provider_order: order,
                 provider_options: providerOptions, format_preferences: preferences}, isReset);
+            if (!isReset && reference) body.reference_execution_id = reference.id;
             const version = ++sequence;
             busy = true; buttons();
             try {
@@ -907,6 +944,8 @@
                 }
                 if (!response.ok || payload.ok !== true) {
                     text(payload.error_code === "CONFIGURATION_PERMISSION_REQUIRED" ? "缺少路线配置权限。"
+                        : payload.error_code === "HISTORY_PROVIDER_UNAVAILABLE" ? "拟保存的上游当前已禁用或未配置，请重新核对当前能力。路线未保存。"
+                        : payload.error_code === "INVALID_HISTORY_REFERENCE" ? "历史参考记录与当前来源不匹配或已不可用，请重新选择对应来源的历史记录。路线未保存。"
                         : "路线未保存。请检查上游、Backend 和格式偏好。");
                     return;
                 }
@@ -915,8 +954,12 @@
             } catch (_error) { if (version === sequence) text("保存状态未确认，请重新读取路线后核对。"); }
             finally { if (version === sequence) { busy = false; buttons(); } }
         }
-        function selectProvider(providerId) {
+        function selectProvider(providerId, evidence) {
             const descriptor = settings.descriptors?.find((item) => item.provider_id === providerId);
+            evidence = evidence || settings.getSelection?.()?.historyExecution;
+            if (evidence && (!descriptor || descriptor.available === false || descriptor.route_selectable !== true)) {
+                text("当前 Provider 配置不允许保存路线；历史结果仍可查看。"); return;
+            }
             const id = descriptor ? descriptor.execution_provider_id : ROUTE_PROVIDER_IDS[providerId];
             if (providerId === "animeimages_current" || descriptor?.baseline || descriptor?.route_selectable === false) {
                 text(descriptor?.route_unavailable_reason || "当前路线基线不是独立上游，不能保存为固定路线。");
@@ -927,10 +970,32 @@
                 return;
             }
             order = [id];
+            reference = evidence || null;
+            const referenceNode = panel.querySelector("[data-route-reference]");
+            if (referenceNode) referenceNode.textContent = reference ? historyEvidence(reference) : "即时选择；无历史引用。";
+            if (reference && id === "videodl_repo") {
+                const recorded = reference.options?.videodl_repo || reference.options || {};
+                const mode = field("route_videodl_mode");
+                const backend = field("route_videodl_backend");
+                if (mode) mode.value = recorded.mode === "dedicated_only" ? "dedicated_only" : "";
+                if (backend) backend.value = "";
+                if (recorded.mode === "specific_backend" && recorded.backend_category === "dedicated") {
+                    const backendId = recorded.backend_id || (recorded.backend_ids?.length === 1 ? recorded.backend_ids[0] : "");
+                    if (backend && Array.from(backend.options || []).some((item) => item.value === backendId && !item.disabled)) {
+                        mode.value = "specific_backend"; backend.value = backendId;
+                    }
+                }
+            }
             if (confirm) confirm.checked = false;
-            renderOrder(); text("已调整路线草稿；尚未保存。");
+            renderOrder(); text(reference && id === "videodl_repo" && !field("route_videodl_mode")?.value
+                ? "历史 videodl 选项未知或当前不支持，请显式设置；尚未保存。" : "已调整路线草稿；尚未保存。");
         }
         panel.addEventListener("click", (event) => {
+            if (event.target.closest?.("[data-route-cancel]")) {
+                reference = null;
+                const node = panel.querySelector("[data-route-reference]"); if (node) node.textContent = "";
+                if (route) apply(route); text("已取消草稿，平台路线未改变。"); return;
+            }
             if (event.target.closest?.("[data-route-load]")) { void load(); return; }
             if (event.target.closest?.("[data-route-save]")) { void persist(false); return; }
             if (event.target.closest?.("[data-route-reset]")) { void persist(true); return; }
@@ -957,7 +1022,9 @@
         });
         buttons();
         return {load, persist, selectProvider, get route() { return route; },
-            invalidate() { sequence += 1; route = null; source = ""; busy = false; buttons(); text("来源已改变，请重新读取路线。"); }};
+            invalidate() { sequence += 1; route = null; source = ""; reference = null; busy = false;
+                const node = panel.querySelector("[data-route-reference]"); if (node) node.textContent = "";
+                buttons(); text("来源已改变，请重新读取路线。"); }};
     }
 
     function syncVideodlControls(form) {
@@ -1002,6 +1069,248 @@
         return {mode, category, selectedCommon, visible: !controls.hidden};
     }
 
+    function historyVersionSummary(value) {
+        const short = (item) => {
+            if (typeof item !== "string" || !item.trim()) return "未知";
+            return /^[a-f0-9]{12,64}$/i.test(item) ? item.slice(0, 8)
+                : item.length > 32 ? `${item.slice(0, 32)}…` : item;
+        };
+        if (typeof value === "string") return short(value);
+        const version = value || {};
+        const app = short(version.animeimages_head ?? version.animeimages ?? version.app ?? version.head);
+        const scout = short(version.scout_head ?? version.scout_revision?.head);
+        const parts = [`App ${app}${version.dirty === true || version.tracked_changes === true ? "（有未提交改动）" : ""}`,
+            `Scout ${scout}${version.scout_revision?.dirty === true ? "（有未提交改动）" : ""}`];
+        if (version.scout_code) parts.push(`Scout 代码指纹 ${short(version.scout_code)}`);
+        return parts.join(" · ");
+    }
+
+    function historyEvidence(execution) {
+        const batch = execution.batch || {};
+        return `参考批次：${batch.label || batch.batch_key || "未知"}；建档时间：${batch.created_at || "未知"}；执行时间：${execution.started_at || "未知"} → ${execution.finished_at || "未知"}；版本：${historyVersionSummary(execution.version ?? batch.metadata?.version)}；来源：${execution.origin || batch.origin || "未知"}；原状态：${execution.state || "未知"}`;
+    }
+
+    function historyRetestReason(execution, descriptor) {
+        if (execution.result?.error_detail === "SERVICE_PREVIOUS_OUTCOME_UNKNOWN"
+                || execution.result?.client_status === "OUTCOME_UNKNOWN") {
+            return "前次服务调用结果未知，尚不能确认是否已执行；请先核对原调用账本与服务状态，不能直接复测或重发。";
+        }
+        if (!execution.source_url) return "缺少原始来源链接，不能复测或保存路线。";
+        if (["unknown", "sent", "reserved", "in_flight", "running", "queued", "waiting"].includes(String(execution.state || "unknown").toLowerCase())) return "原调用结果未确认，请先核对账本；不能重发。";
+        if (execution.can_retest !== true) return "该记录当前不可复测。";
+        if (!descriptor || descriptor.available !== true) return "Provider 已移除、禁用或当前不可用。";
+        return "";
+    }
+
+    function createHistoryWorkspace(documentObject, settings) {
+        const root = settings.root;
+        const panel = root.querySelector("[data-lab-history]");
+        if (!panel) return null;
+        const batchesNode = panel.querySelector("[data-history-batches]");
+        const executionsNode = panel.querySelector("[data-history-executions]");
+        const status = panel.querySelector("[data-history-status]");
+        const host = panel.querySelector("[data-history-host]");
+        const order = panel.querySelector("[data-history-order]");
+        let batches = [], executions = [], batch = null, selected = null;
+        let sequence = 0, listSequence = 0, active = false, busy = false, selectedAsset = null;
+        const attempted = new Set();
+        const node = (tag, text, attribute, value = "") => {
+            const element = documentObject.createElement(tag);
+            if (text !== undefined) element.textContent = String(text);
+            if (attribute) element.setAttribute(attribute, value);
+            if (tag === "button") element.type = "button";
+            return element;
+        };
+        function metadataDetails(label, value) {
+            const details = node("details");
+            details.className = "provider-lab-history-metadata";
+            details.append(node("summary", label), node("pre", JSON.stringify(value ?? "未知", null, 2)));
+            return details;
+        }
+        async function read(params) {
+            const url = new URL(settings.url, settings.window.location.origin);
+            if (params) url.searchParams.set("batch_id", params);
+            const response = await settings.fetch(url.href, {credentials: "same-origin", cache: "no-store"});
+            const payload = await response.json();
+            if (!response.ok || payload.ok !== true) throw new Error("HISTORY_READ_FAILED");
+            return payload;
+        }
+        async function loadBatches() {
+            const version = ++listSequence;
+            status.textContent = "正在读取历史批次...";
+            try {
+                const payload = await read();
+                if (version !== listSequence) return;
+                batches = Array.isArray(payload.batches) ? payload.batches : [];
+                batchesNode.replaceChildren();
+                for (const item of batches) {
+                    const button = node("button", undefined, "data-history-batch", item.id);
+                    button.append(node("strong", item.label || item.batch_key || item.id),
+                        node("span", `${item.origin || "未知来源"} · 建档时间：${item.created_at || "未知"}`),
+                        node("span", `同步状态：${item.sync_status === "stored" ? "已入库" : "未知"}`),
+                        node("span", `目标 ${item.target_count ?? "未知"} · 样本 ${item.sample_count ?? "未知"} · 记录 ${item.execution_count ?? "未知"}`),
+                        node("span", [["planned", "计划"], ["executed", "已执行"], ["success", "成功"], ["unsupported", "不支持"], ["failed", "失败"], ["not_executed", "未执行"], ["unknown", "未知"]].map(([key, label]) => `${label} ${item.counts?.[key] ?? "未知"}`).join(" · ")),
+                        node("span", historyVersionSummary(item.metadata?.version ?? item.metadata)));
+                    const entry = node("div"); entry.className = "provider-lab-history-batch";
+                    entry.append(button, metadataDetails("原批次元数据", item.metadata));
+                    batchesNode.append(entry);
+                }
+                status.textContent = batches.length ? `${batches.length} 个批次；最新记录不代表已证明最佳。` : "暂无历史批次。";
+            } catch (_error) { if (version === listSequence) status.textContent = "历史读取失败，可刷新重试；未发起解析。"; }
+        }
+        async function loadBatch(id) {
+            const version = ++sequence;
+            selected = null; selectedAsset = null; settings.onSelection(null); settings.routeEditor?.invalidate();
+            batch = null; executions = []; executionsNode.replaceChildren();
+            status.textContent = "正在读取批次执行记录...";
+            try {
+                const payload = await read(id);
+                if (version !== sequence) return;
+                batch = payload.batch;
+                executions = (Array.isArray(payload.executions) ? payload.executions : []).map((item) => ({...item, batch}));
+                panel.querySelector("[data-history-heading]").textContent = batch.label || batch.batch_key || "批次";
+                host.replaceChildren(node("option", "全部站点", "value", "")); host.value = "";
+                Array.from(new Set(executions.map((item) => item.source_host || "未知站点"))).sort().forEach((value) => host.append(node("option", value, "value", value)));
+                render(); status.textContent = `${executions.length} 条执行/计划记录；仅查看已保存摘要。`;
+            } catch (_error) { if (version === sequence) status.textContent = "批次读取失败，请重新选择；未发起解析。"; }
+        }
+        function render() {
+            executionsNode.replaceChildren();
+            const rows = executions.filter((item) => !host.value || (item.source_host || "未知站点") === host.value).slice();
+            rows.sort((a, b) => order.value === "provider" ? String(a.provider_id).localeCompare(String(b.provider_id))
+                : (String(a.started_at || "").localeCompare(String(b.started_at || ""))) * (order.value === "oldest" ? 1 : -1));
+            const samples = new Map();
+            rows.forEach((execution) => {
+                const key = `${execution.source_host || ""}:${execution.sample_key || execution.source_url || execution.id}`;
+                let sample = samples.get(key);
+                if (!sample) {
+                    sample = node("section", undefined, "data-history-sample", key);
+                    sample.className = "provider-lab-history-sample";
+                    sample.append(node("h3", `${execution.source_host || "未知站点"} · ${execution.title || execution.sample_key || "未命名作品"}`), node("p", execution.source_url || "原始来源缺失"));
+                    samples.set(key, sample); executionsNode.append(sample);
+                }
+                const card = node("article", undefined, "data-history-execution", execution.id);
+                card.className = "provider-lab-card";
+                const descriptor = settings.descriptors.find((item) => item.provider_id === execution.provider_id);
+                card.append(node("h4", execution.provider_id || "未知 Provider"), node("p", historyEvidence(execution)),
+                    node("p", `当前配置：${descriptor ? descriptor.available ? "可用" : "不可用" : "已移除或未知"} · 当前版本 ${descriptor?.provider_version || "未知"} · 原 Provider 版本 ${execution.result?.provider_version || "未知"}`),
+                    node("span", "", "data-provider-status-label"), node("p", "", "data-provider-error"));
+                const details = node("details");
+                details.append(node("summary", `候选与执行详情（${Array.isArray(execution.result?.assets) ? `${execution.result.assets.length} 项` : "候选未知 / 未保留"}）`));
+                details.append(metadataDetails("完整执行版本", execution.version));
+                details.append(node("p", `来源记录：${execution.source_status || "未知"} / ${execution.source_state || "未知"}；复跑关系：${execution.replay_of || "无 / 未知"}；原执行选项：${JSON.stringify(execution.options ?? "未知")}`));
+                details.append(node("p", `底层关系：${JSON.stringify(execution.result?.relationships ?? "未知")}；限制：${JSON.stringify(execution.result?.limitations ?? "未知")}；警告：${JSON.stringify(execution.result?.warnings ?? [])}`));
+                details.append(node("p", `原候选统计：${execution.result?.candidate_count ?? "未知"}；保留信息：${JSON.stringify(execution.result?.retention ?? execution.result?.upstream_retention ?? "未知")}；缓存：${JSON.stringify(execution.result?.cache_status ?? execution.result?.cache_hit ?? "未知")}`));
+                for (const name of ["claimed_platform", "selected_backend", "result_kind", "elapsed_ms", "title", "author", "asset_count", "relationship_count"]) {
+                    const line = node("p"); line.append(node("span", `${name}：`), node("span", "", "data-field", name)); details.append(line);
+                }
+                details.append(node("p", "", "data-provider-content"), node("div", "", "data-provider-assets"), node("p", "", "data-provider-scope-note"));
+                const attempts = node("section", undefined, "data-provider-attempts");
+                attempts.className = "provider-lab-attempt-table-wrap";
+                const table = node("table"), head = node("thead"), header = node("tr");
+                ["#", "Backend", "类别", "结果", "耗时", "候选", "选择"].forEach((label) => header.append(node("th", label)));
+                head.append(header); table.append(head, node("tbody", undefined, "data-provider-attempt-rows"));
+                attempts.append(table); details.append(attempts);
+                const sort = node("select", undefined, "data-history-format");
+                sort.setAttribute("aria-label", "历史候选排序");
+                sort.append(node("option", "上游原顺序", "value", "source"), node("option", "分辨率降序", "value", "resolution"));
+                details.append(sort);
+                card.append(details);
+                renderResult(card, summary(execution), documentObject);
+                const route = node("button", "准备路线草稿", "data-history-route");
+                route.disabled = !execution.source_url || !descriptor?.available || descriptor.route_selectable !== true;
+                const retest = node("button", "复测此作品 / 此 Provider", "data-history-retest");
+                const reason = historyRetestReason(execution, descriptor);
+                retest.disabled = busy || attempted.has(execution.id) || Boolean(reason);
+                card.append(route, retest, node("p", reason || "复测使用当前执行选项与本次外部分享授权。"));
+                if (selected?.id === execution.id) card.classList.add("is-selected");
+                sample.append(card);
+            });
+            markSelection();
+        }
+        function summary(execution) {
+            return {...execution.result, provider_id: execution.provider_id,
+                status: Object.prototype.hasOwnProperty.call(STATUS_LABELS, execution.state)
+                    ? execution.state : execution.result?.status || "unknown", history_summary: true,
+                history_execution_id: execution.id};
+        }
+        async function select(execution, asset, draft) {
+            selected = execution;
+            selectedAsset = asset;
+            settings.routeEditor?.invalidate();
+            settings.onSelection({providerId: execution.provider_id, asset, historyExecution: execution});
+            markSelection();
+            if (!execution.source_url) return;
+            await settings.routeEditor?.load();
+            if (selected !== execution || !active) return;
+            if (draft) settings.routeEditor?.selectProvider(execution.provider_id, execution);
+            if (draft) root.querySelector("[data-lab-route-editor]")?.scrollIntoView?.({block: "start", behavior: "smooth"});
+        }
+        function markSelection() {
+            panel.querySelectorAll("[data-lab-select]").forEach((button) => {
+                const chosen = Boolean(selectedAsset) && button.closest("[data-history-execution]")?.dataset.historyExecution === String(selected?.id)
+                    && button.dataset.historySelectionId === historyCandidateId(selected.id, selected.result.assets.indexOf(selectedAsset));
+                button.setAttribute("aria-pressed", String(chosen));
+                button.textContent = chosen ? "本次已选" : "本次使用";
+            });
+        }
+        async function click(event) {
+            const target = event.target;
+            if (target.closest?.("[data-history-refresh]")) return loadBatches();
+            const batchButton = target.closest?.("[data-history-batch]");
+            if (batchButton) return loadBatch(batchButton.dataset.historyBatch);
+            if (target.closest?.("[data-lab-expand]")) {
+                const container = target.closest("[data-provider-assets]");
+                Array.from(container.querySelectorAll(".provider-lab-asset")).filter((row) => row.hidden).slice(0, 64).forEach((row) => { row.hidden = false; });
+                updateAssetCounts(container); return;
+            }
+            const card = target.closest?.("[data-history-execution]");
+            const execution = executions.find((item) => String(item.id) === card?.dataset.historyExecution);
+            if (!execution) return;
+            if (target.closest?.("[data-lab-inspect]")) return;
+            const choose = target.closest?.("[data-lab-select]");
+            if (choose) {
+                const asset = execution.result?.assets?.find((_asset, ordinal) =>
+                    historyCandidateId(execution.id, ordinal) === choose.dataset.historySelectionId);
+                if (asset) return select(execution, asset, false);
+                return;
+            }
+            if (target.closest?.("[data-history-route]")) return select(execution, null, true);
+            if (!target.closest?.("[data-history-retest]") || busy || attempted.has(execution.id)) return;
+            const reason = historyRetestReason(execution, settings.descriptors.find((item) => item.provider_id === execution.provider_id));
+            if (reason) { status.textContent = reason; return; }
+            if (!settings.window.confirm(`复测 ${execution.source_host || "此作品"} 的 ${execution.provider_id}？仅调用此项，使用当前执行选项及本次外部分享授权。`)) return;
+            busy = true; attempted.add(execution.id); render();
+            status.textContent = "正在执行指定项；原记录保持不变。";
+            try {
+                const result = await settings.retest(execution);
+                if (result.executed === false) { attempted.delete(execution.id); status.textContent = result.not_run_reason || "未执行，请核对当前授权与选项。"; }
+                else {
+                    status.textContent = `复测结果：${result.status || "未知"}；${result.history?.saved === true ? `历史已保存（${result.history.id}）` : `历史未确认保存：${result.history?.error_code || "未知"}；不会自动重跑`}`;
+                    const output = node("article"); output.className = "provider-lab-card";
+                    output.append(node("h3", "本次指定项复测"), node("p", "", "data-provider-error"), node("span", "", "data-provider-status-label"), node("div", "", "data-provider-assets"));
+                    renderResult(output, {...result, history_summary: true}, documentObject);
+                    output.querySelectorAll("[data-lab-select]").forEach((button) => { button.disabled = true; button.title = "从保存后的历史记录选择路线依据"; });
+                    panel.append(output);
+                }
+            } catch (_error) { status.textContent = "复测请求结果未确认；请核对历史与调用账本，不自动重发。"; }
+            finally { busy = false; render(); }
+        }
+        function change(event) {
+            if (event.target === host || event.target === order) { render(); return; }
+            if (!event.target.matches?.("[data-history-format]")) return;
+            const card = event.target.closest("[data-history-execution]");
+            const execution = executions.find((item) => String(item.id) === card.dataset.historyExecution);
+            renderAssets(documentObject, card.querySelector("[data-provider-assets]"), summary(execution),
+                event.target.value === "resolution" ? qualityOrder(execution.result?.assets) : execution.result?.assets);
+            markSelection();
+        }
+        panel.addEventListener("click", click); panel.addEventListener("change", change);
+        return {loadBatches, loadBatch, get source() { return selected?.source_url || ""; }, get active() { return active; }, get busy() { return busy; },
+            activate(value) { active = value; panel.hidden = !value; selected = null; selectedAsset = null; markSelection(); settings.onSelection(null); settings.routeEditor?.invalidate(); if (value) void loadBatches(); },
+            destroy() { sequence += 1; listSequence += 1; panel.removeEventListener("click", click); panel.removeEventListener("change", change); }};
+    }
+
     function createController(documentObject, overrides) {
         const options = overrides || {};
         const root = documentObject.querySelector("[data-provider-lab]");
@@ -1035,6 +1344,7 @@
         let running = false;
         let currentSource = "";
         let currentSelection = null;
+        let historyWorkspace = null;
         const message = documentObject.querySelector("[data-provider-lab-form-message]");
         const submitButton = form.querySelector('[data-lab-all]') || form.querySelector('[type="submit"]');
         const cancelButton = form.querySelector("[data-lab-cancel]");
@@ -1043,12 +1353,12 @@
             currentSelection = selection;
             const summary = root.querySelector("[data-lab-current-selection]");
             if (summary) summary.textContent = selection
-                ? `本次候选：${selection.providerId} · ${selection.asset.format_label || selection.asset.quality_label || selection.asset.asset_id}。未修改平台路线。`
+                ? `本次候选：${selection.providerId} · ${selection.asset?.format_label || selection.asset?.quality_label || selection.asset?.asset_id || "历史执行"}。未修改平台路线。`
                 : "尚未选择本次候选。平台路线未改变。";
             root.querySelectorAll("[data-lab-select]").forEach((button) => {
                 const card = button.closest("[data-provider-card]");
                 const selected = Boolean(selection && card?.dataset.providerCard === selection.providerId
-                    && button.dataset.assetId === selection.asset.asset_id);
+                    && button.dataset.assetId === selection.asset?.asset_id);
                 button.setAttribute("aria-pressed", String(selected));
                 button.textContent = selected ? "本次已选" : "本次使用";
             });
@@ -1116,10 +1426,17 @@
         });
         const routeEditor = createRouteEditor(documentObject, {fetch: fetchImpl, window: windowObject,
             url: root.dataset.routeUrl || "/provider-lab/routes/", csrf: () => csrfToken(form),
-            getSource: () => String(form.elements.source?.value || "").trim(),
+            getSource: () => historyWorkspace?.active ? historyWorkspace.source : String(form.elements.source?.value || "").trim(),
             getSelection: () => currentSelection, descriptors});
+        historyWorkspace = createHistoryWorkspace(documentObject, {root, descriptors, routeEditor,
+            fetch: fetchImpl, window: windowObject, url: root.dataset.historyUrl || "/admin/provider-lab/history/",
+            onSelection: updateSelection,
+            retest: (execution) => {
+                if (running) return Promise.resolve({executed: false, not_run_reason: "即时任务仍在执行，请结束后复测。"});
+                return runOne(execution.provider_id, execution.source_url, csrfToken(form), null, undefined, execution.id);
+            }});
 
-        async function runOne(providerId, source, csrf, providerOptions, signal) {
+        async function runOne(providerId, source, csrf, providerOptions, signal, historyExecutionId) {
             const descriptor = descriptorById.get(providerId);
             const authorized = Boolean(form.querySelector(`input[name="provider_authorizations"][value="${providerId}"]`)?.checked);
             let reason = descriptor?.available === false ? descriptor.unexecuted_reason === "PROVIDER_DISABLED"
@@ -1132,6 +1449,7 @@
             }
             if (reason) return {provider_id: providerId, status: "skipped", executed: false, not_run_reason: reason, assets: []};
             const body = {source, provider_id: providerId};
+            if (historyExecutionId !== undefined) body.history_execution_id = historyExecutionId;
             if (requirements.length) body.confirmations = Object.fromEntries(requirements.map((name) => [name, authorized]));
             if (providerId === "videodl_repo" && providerOptions) body.options = providerOptions;
             requestedProviders.add(providerId);
@@ -1145,6 +1463,8 @@
 
         async function submit(event) {
             event.preventDefault();
+            if (historyWorkspace?.active) return;
+            if (historyWorkspace?.busy) { if (message) message.textContent = "指定项复测仍在执行，请等待结果。"; return; }
             if (running) { return; }
             const source = String(form.elements.source?.value || "").trim();
             const providers = descriptors.length && !event.submitter?.hasAttribute?.("data-lab-selected")
@@ -1179,7 +1499,16 @@
         }
 
         async function click(event) {
+            const tab = event.target.closest?.("[data-lab-tab]");
+            if (tab) {
+                const historical = tab.dataset.labTab === "history";
+                root.dataset.labView = historical ? "history" : "instant";
+                root.querySelectorAll("[data-lab-tab]").forEach((button) => button.setAttribute("aria-pressed", String(button === tab)));
+                historyWorkspace?.activate(historical); return;
+            }
+            if (event.target.closest?.("[data-lab-history]")) return;
             const useCurrent = event.target.closest?.("[data-lab-current-inspect]");
+            if (useCurrent && currentSelection?.historyExecution) return;
             if (useCurrent && currentSelection) {
                 const card = documentObject.querySelector(`[data-provider-card="${currentSelection.providerId}"]`);
                 const button = Array.from(card?.querySelectorAll("[data-lab-inspect]") || [])
@@ -1197,6 +1526,7 @@
             const retry = event.target.closest?.("[data-lab-retry]");
             if (retry) {
                 event.preventDefault();
+                if (historyWorkspace?.busy) return;
                 if (queue.retry(retry.closest("[data-provider-card]")?.dataset.providerCard)) {
                     running = true;
                     if (submitButton) submitButton.disabled = true;
@@ -1274,6 +1604,7 @@
         form.elements.source?.addEventListener("input", input);
         root.addEventListener("click", click);
         const sortFormats = (event) => {
+            if (event.target.closest?.("[data-lab-history]")) return;
             if (!event.target.matches?.("[data-lab-format-order]")) return;
             const card = event.target.closest("[data-provider-card]");
             const result = resultByProvider.get(card?.dataset.providerCard);
@@ -1290,9 +1621,11 @@
             resultByProvider,
             queue,
             routeEditor,
+            historyWorkspace,
             get currentSelection() { return currentSelection; },
             get runStats() { return runStats(); },
             destroy() {
+                historyWorkspace?.destroy();
                 queue.invalidate();
                 routeEditor?.invalidate();
                 form.removeEventListener("submit", submit);
@@ -1344,7 +1677,7 @@
 
     if (typeof document !== "undefined") {
         initializeWhenReady(document, function () {
-            createController(document);
+            return createController(document);
         });
     }
 
@@ -1356,6 +1689,9 @@
         createController,
         createExecutionQueue,
         createRouteEditor,
+        createHistoryWorkspace,
+        historyRetestReason,
+        historyEvidence,
         routeRequestBody,
         diagnosticResult,
         comparisonWarnings,

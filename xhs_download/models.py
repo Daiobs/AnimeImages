@@ -1074,6 +1074,26 @@ class UserFeedback(models.Model):
         return f"{local_datetime_label(self.created_at)} 用户反馈"
 
 
+class EvaluationBatch(models.Model):
+    batch_key = models.CharField(max_length=160, unique=True)
+    label = models.CharField(max_length=200)
+    origin = models.CharField(max_length=16)
+    metadata = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class EvaluationExecution(models.Model):
+    batch = models.ForeignKey(EvaluationBatch, on_delete=models.CASCADE, related_name="executions")
+    execution_key = models.CharField(max_length=200)
+    summary = models.JSONField(default=dict)
+    fingerprint = models.CharField(max_length=64)
+    application_record = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = (models.UniqueConstraint(fields=("batch", "execution_key"), name="evaluation_execution_identity"),)
+
+
 class UpstreamRoute(models.Model):
     source_host = models.CharField(max_length=253, unique=True)
     revision = models.PositiveIntegerField(default=0)

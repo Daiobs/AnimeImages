@@ -146,6 +146,7 @@ jobs:
           node --test tests_js/ordinary_media_streaming.test.js
           node --test tests_js/parse_preferences.test.js
           node --test tests_js/provider_lab.test.js
+          node --test tests_js/provider_lab_history.test.js
           node --test tests_js/provider_lab_quality.test.js
           node --test tests_js/provider_lab_controller_quality.test.js
           node --test tests_js/upstream_candidates.test.js

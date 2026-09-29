@@ -594,3 +594,77 @@
     .provider-lab-common-backends > div { grid-template-columns: 1fr; }
     .provider-lab-asset { grid-template-columns: 1fr; }
 }
+
+.provider-lab-tabs,
+.provider-lab-history-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-block: 16px;
+}
+
+.provider-lab-tabs button[aria-pressed="true"] {
+    border-bottom: 3px solid #167b64;
+    font-weight: 700;
+}
+
+.provider-lab [hidden] { display: none !important; }
+
+.provider-lab[data-lab-view="history"] .provider-lab-source-field,
+.provider-lab[data-lab-view="history"] .provider-lab-form-actions:has([data-lab-all]),
+.provider-lab[data-lab-view="history"] [data-lab-selected],
+.provider-lab[data-lab-view="history"] [data-lab-run-stats],
+.provider-lab[data-lab-view="history"] .provider-lab-results,
+.provider-lab[data-lab-view="history"] [data-lab-current-inspect] { display: none; }
+
+.provider-lab-history-batches {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+    gap: 12px;
+}
+
+.provider-lab-history-batches button {
+    display: flex;
+    flex-direction: column;
+    align-items: start;
+    gap: 6px;
+    text-align: left;
+    border-radius: 6px;
+    padding: 12px;
+    min-width: 0;
+    width: 100%;
+}
+
+.provider-lab-history-batch { min-width: 0; }
+.provider-lab-history-metadata { margin-block: 8px; min-width: 0; }
+.provider-lab-history-metadata summary { cursor: pointer; font-size: 12px; }
+.provider-lab-history-metadata pre {
+    max-height: 240px;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 12px;
+}
+
+.provider-lab-history-batches span,
+.provider-lab-history-sample p,
+.provider-lab [data-route-reference] {
+    overflow-wrap: anywhere;
+    white-space: normal;
+    font-size: 12px;
+}
+
+.provider-lab-history-sample {
+    border-top: 1px solid var(--lab-border, #d7dde0);
+    margin-block: 20px;
+    padding-top: 12px;
+    min-width: 0;
+}
+
+.provider-lab-history-sample .provider-lab-card { margin-block: 12px; }
+.provider-lab-history-sample h3 { font-size: 17px; overflow-wrap: anywhere; }
+.provider-lab-history-sample h4 { font-size: 15px; overflow-wrap: anywhere; }
+.provider-lab-history-sample button { margin: 4px; white-space: normal; max-width: 100%; }
+.provider-lab-history-filters label { display: flex; align-items: center; gap: 8px; }
+.provider-lab-history-filters select { max-width: 240px; }
+.provider-lab [data-route-reference] { color: var(--lab-muted); }
