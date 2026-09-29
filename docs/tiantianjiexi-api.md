@@ -32,7 +32,26 @@ TianTian worker cap no longer serializes unrelated provider rows.
 Kukutool retains existing execution concurrency, timeout and real rate-limit
 handling. No new low call quota or remote limit probing is introduced.
 
-Last updated: 2026-07-06
+## Service-entry diagnosis (2026-09-29, local only)
+
+A single original Coolapk representative from the closed Scout batch returned
+HTTP 200, JSON business code 451 and the explicit message that the link is not
+currently supported. It contained no media. The request used the documented
+POST endpoint, form encoding and `phone`, `password`, `link` fields, with no
+redirect and an unchanged source. Configured credentials were present; values
+were not exported. This is evidence of rejection of this particular source,
+not HTTP 451, expired membership or a concurrency diagnosis.
+
+Only code 451 together with that explicit unsupported-link message maps to
+`PROVIDER_UNSUPPORTED`. Unknown 451 messages remain upstream failures. Explicit
+unsupported responses do not enter the client retry loop. Existing account
+serialization and uncertain-outcome handling are unchanged. Historical batch
+codes alone do not establish the messages for all seven earlier failures.
+
+The companion Kukutool diagnosis is recorded in
+[platform coverage](upstream-platform-coverage.md#service-entry-repair-2026-09-29-local-only).
+
+Historical API integration notes below: 2026-07-06.
 
 This document summarizes the public TianTianJieXi API information and the
 response shape observed while integrating it as a Douyin ultra-HD provider.

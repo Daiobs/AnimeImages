@@ -477,6 +477,56 @@ browser-save acceptance. No new media save was attempted or claimed.
 for implementation distinctions, stages and declared dimensions. Historical Wave 2
 delivery limits and its unmet automatic-save target remain unchanged.
 
+## Service Entry Repair (2026-09-29, Local Only)
+
+The closed Scout full-provider batch remains unchanged. A bounded diagnosis
+reused its original Coolapk work; it did not discover substitute works or rerun
+the batch. TianTian returned an explicit unsupported-link business message; see
+[the API notes](tiantianjiexi-api.md#service-entry-diagnosis-2026-09-29-local-only).
+No TianTian successful-media result is claimed.
+
+Kukutool had two demonstrated local compatibility defects:
+
+- The homepage listed 23 scripts and the current public protocol profile was in
+  the 14th. The old six-script discovery could not find it, and fallback recovery
+  repeated already-failed authorization profiles. Discovery now checks at most
+  24 same-origin scripts, two at a time, within existing size/time limits. It
+  reuses a cached successful profile, otherwise discovers before fallback, and
+  never retries an already-attempted profile in the same run. No new rotating
+  script filename or protocol identifier is hardcoded.
+- After current authorization and a parse business-success response, the old
+  decoder failed. The current public page decoder derives the AES key using
+  SHA-256; the helper previously used the raw public key string. Applying the
+  same derivation decoded the saved response offline. Malformed ciphertext
+  remains rejected; HTML is never accepted as a parse result.
+
+The original helper trace on this date showed old authorization routes returning
+404 JSON. Earlier `AUTH_HTTP_200_TYPE_HTML` bodies were not retained, so their
+historical HTML page category is not established. `AUTH` names the local stage,
+not proof of a bad user account. No login/captcha bypass or new credential use
+was introduced.
+
+At 2026-09-29 06:33:14 UTC, the normal authenticated Lab endpoint returned HTTP
+200, `success`, `executed=true`, one image candidate, no truncation, and 9212 ms
+for the same representative. Dimensions, codecs and pairing remained unknown;
+no quality facts were fabricated. This verifies entry, decryption and shared
+candidate normalization, not download, visual identity inspection, or support
+for every earlier failed site. Media probing, saving and ZIP were not tested.
+
+The diagnostic used one TianTian parse, nine directly observed Kukutool internal
+authorization/parse POSTs (including the old duplicate fallback attempts), then
+one normal Lab request whose successful path uses one authorization and one
+parse POST: twelve entry POSTs in total by that accounting. The final Lab call
+was not separately wire-instrumented. Public page/script GETs were separate
+bounded protocol reads, not media downloads or additional sample parses. No
+unknown request was resent. Offline decoding did not make service requests.
+
+The route revision and audit count remained 3 and 3. No route, credential,
+mail/Daily, production, runtime dependency or migration was changed. The existing
+frontend CI step now also runs the new offline Kukutool discovery/decoder tests.
+This evidence does not rewrite the historical 42-request Scout ledger or
+establish success for the seven previously failed sources.
+
 ## Source Pointers
 
 - `tools/upstream_match_worker.py`: inventory, exclusions, exact execution and guards.

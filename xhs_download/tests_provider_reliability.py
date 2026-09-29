@@ -80,6 +80,14 @@ class ProviderReliabilityContractTests(SimpleTestCase):
     def setUp(self):
         cache.clear()
 
+    @override_settings(TIANTIANJIEXI_RETRIES=3)
+    def test_explicit_unsupported_does_not_retry(self):
+        from .services.platforms.tiantianjiexi_generic import TianTianJieXiUnsupportedError
+        client = SequenceClient(TianTianJieXiUnsupportedError('unsupported'))
+        with self.assertRaises(TianTianJieXiUnsupportedError):
+            TianTianJieXiGenericProvider(client=client).parse(SOURCE_URL)
+        self.assertEqual(client.calls, 1)
+
     def douyin_provider(self, client):
         return DouyinTianTianJieXiProvider(
             provider_settings=ProviderSettings(

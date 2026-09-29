@@ -63,6 +63,10 @@ class TianTianJieXiUncertainError(TianTianJieXiApiError):
     """A sent transport attempt must not enter the retry loop."""
 
 
+class TianTianJieXiUnsupportedError(TianTianJieXiApiError):
+    """The service explicitly declined this source, not the account."""
+
+
 class TianTianJieXiRateLimitError(TianTianJieXiApiError):
     provider_outcome = ProviderOutcome.FAILURE_RATE_LIMIT
     provider_failure_class = ProviderFailureClass.RATE_LIMIT
@@ -209,6 +213,10 @@ def ensure_api_success(payload):
         return
     status_value = payload.get("status") or payload.get("code") or payload.get("success")
     message = response_message(payload)
+    if str(status_value) == "451" and "暂不支持该链接" in message:
+        raise TianTianJieXiUnsupportedError(
+            "天天解析暂不支持该链接", diagnostic_detail="SERVICE_BUSINESS_CODE_451"
+        )
     if status_value in {True, "true", "success", "ok", 0, "0", 1, "1", 200, "200"}:
         return
     if message_indicates_auth_error(message):
@@ -960,7 +968,8 @@ class TianTianJieXiGenericProvider:
                     )
                     return payload
                 except (TianTianJieXiAuthError, TianTianJieXiRateLimitError,
-                        TianTianAdmissionDeferred, TianTianJieXiUncertainError, XhsProviderTimeoutError):
+                        TianTianAdmissionDeferred, TianTianJieXiUncertainError,
+                        TianTianJieXiUnsupportedError, XhsProviderTimeoutError):
                     raise
                 except Exception as error:
                     last_error = error

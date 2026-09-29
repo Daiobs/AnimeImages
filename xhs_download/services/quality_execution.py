@@ -315,7 +315,8 @@ def _execute_service(provider, source, timeout_seconds, expected_match):
     from .upstream_candidates import MAX_CANDIDATES, candidate_url
     from itertools import islice
     from .platforms.tiantianjiexi_generic import (TianTianJieXiGenericProvider,
-        TianTianJieXiAuthError, TianTianJieXiRateLimitError, TianTianJieXiApiError)
+        TianTianJieXiAuthError, TianTianJieXiRateLimitError, TianTianJieXiApiError,
+        TianTianJieXiUnsupportedError)
     from .platforms.kukutool_generic import KukutoolGenericProvider
     from .platforms.douyin_kukutool import KukutoolHelperError
     from .provider_reliability import ProviderResultInvalidError
@@ -344,6 +345,8 @@ def _execute_service(provider, source, timeout_seconds, expected_match):
         raise failure('PROVIDER_AUTH_FAILED') from None
     except TianTianJieXiRateLimitError:
         raise failure('PROVIDER_RATE_LIMITED') from None
+    except TianTianJieXiUnsupportedError as error:
+        raise failure('PROVIDER_UNSUPPORTED', detail=error.diagnostic_detail) from None
     except (TianTianJieXiApiError, KukutoolHelperError) as error:
         raise failure('PROVIDER_UPSTREAM_FAILED', detail=error.diagnostic_detail) from None
     except ProviderResultInvalidError as error:

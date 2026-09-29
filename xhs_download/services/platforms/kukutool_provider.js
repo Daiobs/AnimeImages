@@ -15,7 +15,7 @@ const USER_AGENT =
 const MAX_RESPONSE_CHARS = 10 * 1024 * 1024;
 const MAX_DISCOVERY_PAGE_CHARS = 1024 * 1024;
 const MAX_DISCOVERY_SCRIPT_CHARS = 2 * 1024 * 1024;
-const MAX_DISCOVERY_SCRIPTS = 6;
+const MAX_DISCOVERY_SCRIPTS = 24;
 const DISCOVERY_BATCH_SIZE = 2;
 const MAX_REDIRECTS = 3;
 const FALLBACK_PROFILES = [
@@ -54,17 +54,20 @@ async function main() {
   };
 
   const configuredProfile = readConfiguredProfile();
-  const initialProfiles = uniqueProfiles([
-    ...(configuredProfile ? [configuredProfile] : []),
-    ...FALLBACK_PROFILES,
-  ]);
+  const initialProfiles = configuredProfile
+    ? [configuredProfile]
+    : await discoverProfiles(headers);
   let ticket;
   try {
-    // The known profile avoids loading the homepage and every JS bundle on
-    // each request. Discovery remains the recovery path when the profile rotates.
+    // Reuse a successful cached profile, but discover current public config
+    // before spending authorization attempts on obsolete fallback profiles.
     ticket = await requestAuthTicket(initialProfiles, headers, requestURL);
   } catch (fallbackError) {
-    const profiles = await discoverProfiles(headers);
+    const attempted = new Set(initialProfiles.map((p) => `${p.id}:${p.authRoute}`));
+    const profiles = configuredProfile
+      ? (await discoverProfiles(headers)).filter((p) => !attempted.has(`${p.id}:${p.authRoute}`))
+      : [];
+    if (!profiles.length) throw fallbackError;
     try {
       ticket = await requestAuthTicket(profiles, headers, requestURL);
     } catch (discoveryError) {
@@ -156,9 +159,7 @@ async function discoverProfiles(headers) {
       .filter((url) => new URL(url).origin === BASE_ORIGIN)
       .filter((url, index, values) => values.indexOf(url) === index)
       .slice(0, MAX_DISCOVERY_SCRIPTS);
-    const preferred = scriptUrls.filter((url) => /\/9802-[^/]+\.js/.test(url));
-    const remaining = scriptUrls.filter((url) => !preferred.includes(url));
-    const batches = preferred.length ? [preferred, remaining] : [scriptUrls];
+    const batches = [scriptUrls];
     for (const urls of batches) {
       if (!urls.length) {
         continue;
@@ -348,7 +349,7 @@ function decryptResponse(data, iv) {
   const decodedIv = Buffer.from(decodeCustomBase64(transform(iv)), "base64");
   const decipher = crypto.createDecipheriv(
     "aes-256-cbc",
-    Buffer.from(RESPONSE_KEY),
+    crypto.createHash("sha256").update(RESPONSE_KEY, "utf8").digest(),
     decodedIv
   );
   const plaintext = Buffer.concat([

@@ -15,6 +15,19 @@ MEDIA = 'https://cdn.example.org/media'
 
 @override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}})
 class SharedServiceExecutionTests(SimpleTestCase):
+    def test_explicit_tiantian_unsupported_is_not_http_or_account_failure(self):
+        from .services.platforms.tiantianjiexi_generic import ensure_api_success, TianTianJieXiUnsupportedError, TianTianJieXiApiError
+        with self.assertRaises(TianTianJieXiUnsupportedError) as caught:
+            ensure_api_success({'code':451, 'msg':'暂不支持该链接~'})
+        with self.mock_client('tiantianjiexi_generic') as client:
+            client.side_effect=caught.exception
+            with self.assertRaises(ProviderLabError) as mapped:
+                execution.execute_provider('tiantian_existing', SOURCE, service_authorized=True)
+        self.assertEqual(mapped.exception.code, 'PROVIDER_UNSUPPORTED')
+        with self.assertRaises(TianTianJieXiApiError) as unknown:
+            ensure_api_success({'code':451, 'msg':'different meaning'})
+        self.assertNotIsInstance(unknown.exception, TianTianJieXiUnsupportedError)
+
     def test_business_codes_are_bounded_and_not_http_statuses(self):
         from .services.platforms.tiantianjiexi_generic import ensure_api_success, TianTianJieXiApiError
         for value, expected in [(403, '403'), (-2, '-2'), ('502', '502'),

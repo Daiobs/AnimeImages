@@ -117,6 +117,7 @@ jobs:
       - name: Node frontend checks
         run: |
           node --check xhs_download/services/platforms/kukutool_provider.js
+          node --test tests_js/kukutool_discovery.test.js
           node --check static/js/app.js
           node --check static/js/batch_parse.js
           node --check static/js/browser_photo_archive.js
