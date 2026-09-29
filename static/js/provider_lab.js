@@ -817,6 +817,13 @@
         const save = panel.querySelector("[data-route-save]");
         const reset = panel.querySelector("[data-route-reset]");
         const fields = panel.querySelector("[data-route-fields]");
+        const anchor = documentObject.createElement("span");
+        panel.parentNode.insertBefore(anchor, panel);
+        const labels = {yt_dlp_generic: "yt-dlp", gallery_dl_generic: "gallery-dl", parsehub_generic: "ParseHub",
+            videodl_repo: "videodl", tiantianjiexi_generic: "天天解析", kukutool_generic: "Kukutool"};
+        const providerName = (id) => settings.descriptors?.find((item) =>
+            (item.execution_provider_id || ROUTE_PROVIDER_IDS[item.provider_id]) === id)?.label || labels[id] || id;
+        const routeNames = (ids) => (ids || []).map(providerName).join(" → ");
         let route = null;
         let source = "";
         let order = [];
@@ -831,22 +838,30 @@
             if (save) save.disabled = busy || !canConfigure || !route?.applicable || !confirm?.checked || !order.length;
             if (reset) reset.disabled = busy || !canConfigure || !route?.applicable || !route.active;
         }
+        function restore() { anchor.parentNode?.insertBefore(panel, anchor.nextSibling); }
+        function showCurrent() {
+            const current = panel.querySelector("[data-route-current]");
+            if (current) current.textContent = !route ? "当前路线：尚未读取" : route.applicable
+                ? `${route.active ? "当前人工路线" : "当前默认路线"}：${routeNames(route.effective_provider_order || route.provider_order) || "未配置"} · revision ${route.revision}`
+                : "当前沿用成熟平台路线，不适用通用路线编辑。";
+            settings.onChange?.();
+        }
         function draftSummary() {
             const node = panel.querySelector("[data-route-confirmation-summary]");
             if (!node || !route) return;
-            const current = route.active ? (route.provider_order || []).join(" → ") : "通用默认路线";
+            const current = routeNames(route.effective_provider_order || route.provider_order) || "未配置";
             const preferences = ["max_height", "preferred_video_codec", "preferred_container"]
                 .filter((name) => field(name)?.value).map((name) => `${name}=${field(name).value}`).join("，") || "未指定";
             const execution = order.includes("videodl_repo")
                 ? `${field("route_videodl_mode")?.value || "未知，请显式设置"} ${field("route_videodl_backend")?.value || ""}` : "该上游标准模式";
-            node.textContent = `来源站点：${route.source_host}；当前：${current}；拟固定：${order[0] || "未选择"}；执行选项：${execution}；格式偏好：${preferences}；明确备选：${order.slice(1).join(" → ") || "无，首选失败即停止"}。`;
+            node.textContent = `来源站点：${route.source_host}；revision ${route.revision}；当前：${current}；拟固定：${order[0] ? providerName(order[0]) : "未选择"}；执行选项：${execution}；格式偏好：${preferences}；明确备选：${routeNames(order.slice(1)) || "无，首选失败即停止"}。`;
         }
         function renderOrder() {
             orderNode.replaceChildren();
             order.forEach((id, index) => {
                 const li = documentObject.createElement("li");
                 const label = documentObject.createElement("span");
-                label.textContent = `${index === 0 ? "首选" : `备选 ${index}`} · ${id}`;
+                label.textContent = `${index === 0 ? "首选" : `备选 ${index}`} · ${providerName(id)}`;
                 li.append(label);
                 for (const [action, symbol, title] of [["up", "↑", "向前"], ["down", "↓", "向后"], ["remove", "×", "移除"]]) {
                     const button = documentObject.createElement("button");
@@ -855,7 +870,7 @@
                     button.dataset.providerId = id;
                     button.textContent = symbol;
                     button.title = title;
-                    button.setAttribute("aria-label", `${title} ${id}`);
+                    button.setAttribute("aria-label", `${title} ${providerName(id)}`);
                     button.disabled = action === "up" && index === 0 || action === "down" && index === order.length - 1;
                     li.append(button);
                 }
@@ -868,8 +883,11 @@
             addSelect.append(placeholder);
             (route?.allowed_provider_ids || []).filter((id) => !order.includes(id)).forEach((id) => {
                 const option = documentObject.createElement("option");
-                option.value = id; option.textContent = id; addSelect.append(option);
+                option.value = id; option.textContent = providerName(id); addSelect.append(option);
             });
+            const videodl = panel.querySelector("[data-route-videodl]");
+            if (videodl) videodl.hidden = !order.includes("videodl_repo");
+            showCurrent();
             buttons();
             draftSummary();
         }
@@ -890,10 +908,22 @@
             if (confirm) confirm.checked = false;
             renderOrder();
         }
-        async function load() {
+        async function load({preserveDraft = false} = {}) {
             const input = settings.getSource();
             if (!input) { text("请先输入来源链接。"); return; }
+            if (preserveDraft && route && source) {
+                try {
+                    if (new URL(input).hostname.toLowerCase().replace(/\.$/, "") === route.source_host) {
+                        source = input;
+                        return;
+                    }
+                } catch (_error) { /* The route endpoint remains the source validator. */ }
+            }
             const version = ++sequence;
+            route = null; source = ""; order = []; reference = null;
+            const referenceNode = panel.querySelector("[data-route-reference]");
+            if (referenceNode) referenceNode.textContent = "";
+            renderOrder();
             busy = true; buttons(); text("正在读取平台路线...");
             try {
                 const url = new URL(settings.url, settings.window.location.origin);
@@ -954,26 +984,33 @@
             } catch (_error) { if (version === sequence) text("保存状态未确认，请重新读取路线后核对。"); }
             finally { if (version === sequence) { busy = false; buttons(); } }
         }
-        function selectProvider(providerId, evidence) {
+        function selectProvider(providerId, evidence, position) {
             const descriptor = settings.descriptors?.find((item) => item.provider_id === providerId);
             evidence = evidence || settings.getSelection?.()?.historyExecution;
-            if (evidence && (!descriptor || descriptor.available === false || descriptor.route_selectable !== true)) {
+            if (evidence && (!descriptor || descriptor.available !== true || descriptor.route_selectable !== true)) {
                 text("当前 Provider 配置不允许保存路线；历史结果仍可查看。"); return;
             }
-            const id = descriptor ? descriptor.execution_provider_id : ROUTE_PROVIDER_IDS[providerId];
+            const id = descriptor?.execution_provider_id || ROUTE_PROVIDER_IDS[providerId];
             if (providerId === "animeimages_current" || descriptor?.baseline || descriptor?.route_selectable === false) {
                 text(descriptor?.route_unavailable_reason || "当前路线基线不是独立上游，不能保存为固定路线。");
                 return;
             }
-            if (!route?.applicable || !id || !route.allowed_provider_ids.includes(id)) {
+            if (busy || !canConfigure || !route?.applicable || source !== settings.getSource()
+                    || !id || !route.allowed_provider_ids.includes(id)) {
                 text("该候选不适用于此来源的持久路线，或路线尚未读取。");
                 return;
             }
-            order = [id];
+            const placement = position || (evidence ? "primary" : "replace");
+            if (placement === "fallback" && !order.length) {
+                text("请先设置首选上游，再加入备选；尚未保存。"); return;
+            }
+            const alreadyIncluded = order.includes(id);
+            if (placement === "fallback") order = Array.from(new Set([...order, id]));
+            else order = placement === "primary" ? [id, ...order.filter((item) => item !== id)] : [id];
             reference = evidence || null;
             const referenceNode = panel.querySelector("[data-route-reference]");
             if (referenceNode) referenceNode.textContent = reference ? historyEvidence(reference) : "即时选择；无历史引用。";
-            if (reference && id === "videodl_repo") {
+            if (reference && id === "videodl_repo" && !alreadyIncluded) {
                 const recorded = reference.options?.videodl_repo || reference.options || {};
                 const mode = field("route_videodl_mode");
                 const backend = field("route_videodl_backend");
@@ -1014,17 +1051,24 @@
         });
         panel.addEventListener("change", (event) => {
             if (event.target === addSelect && addSelect.value) {
-                order.push(addSelect.value); if (confirm) confirm.checked = false; renderOrder();
+                if (canConfigure && !busy && route?.applicable && route.allowed_provider_ids.includes(addSelect.value)) {
+                    order = Array.from(new Set([...order, addSelect.value]));
+                }
+                if (confirm) confirm.checked = false; renderOrder();
             }
             if (event.target !== confirm && confirm) confirm.checked = false;
             draftSummary();
             buttons();
         });
         buttons();
-        return {load, persist, selectProvider, get route() { return route; },
-            invalidate() { sequence += 1; route = null; source = ""; reference = null; busy = false;
+        return {load, persist, selectProvider, restore, mount(container) { container.append(panel); }, get route() { return route; },
+            get currentSummary() { return panel.querySelector("[data-route-current]")?.textContent || ""; },
+            invalidate() { sequence += 1; route = null; source = ""; reference = null; order = []; busy = false;
                 const node = panel.querySelector("[data-route-reference]"); if (node) node.textContent = "";
-                buttons(); text("来源已改变，请重新读取路线。"); }};
+                scope.textContent = "尚未读取来源范围";
+                const summary = panel.querySelector("[data-route-confirmation-summary]");
+                if (summary) summary.textContent = "请先读取来源站点并选择固定上游。";
+                renderOrder(); text("来源已改变，请重新读取路线。"); }};
     }
 
     function syncVideodlControls(form) {
@@ -1036,7 +1080,8 @@
         const selectedCommon = form.querySelectorAll(
             'input[name="videodl_common_backends"]:checked',
         ).length;
-        controls.hidden = !provider?.checked || provider.disabled;
+        const historicalProvider = form.dataset?.historyRetestProvider;
+        controls.hidden = historicalProvider ? historicalProvider !== "videodl_repo" : !provider?.checked || provider.disabled;
         const categoryField = form.querySelector("[data-videodl-specific-category]");
         const exactField = form.querySelector("[data-videodl-specific-backend]");
         const commonField = form.querySelector("[data-videodl-common-backends]");
@@ -1085,9 +1130,40 @@
         return parts.join(" · ");
     }
 
+    function historyTime(value) {
+        if (!value) return "未知";
+        if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return `${value}（未记录时刻）`;
+        if (!/(Z|[+-]\d{2}:\d{2})$/i.test(value)) return "未知（原时间缺少时区）";
+        const date = new Date(value);
+        if (!Number.isFinite(date.getTime())) return "未知";
+        const parts = new Intl.DateTimeFormat("en-GB", {timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"}).formatToParts(date);
+        const p = Object.fromEntries(parts.map(({type, value}) => [type, value]));
+        return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}（北京时间）`;
+    }
+
+    function historyOrigin(value) {
+        return value === "scout" ? "Scout · 自动评估" : value === "lab" ? "Provider Lab · 人工测试/复测" : "来源未记录";
+    }
+
+    function historyRelation(execution) {
+        const parent = String(execution.replay_of || "");
+        if (!parent) return `记录 #${execution.id}`;
+        if (parent.endsWith(":planned")) return `计划关联 · 记录 #${execution.id}`;
+        if ((execution.origin || execution.batch?.origin) === "lab" && /^\d+$/.test(parent)) {
+            return `单项复测 · 原记录 #${parent} → 当前 #${execution.id}`;
+        }
+        return `历史执行关联 · 记录 #${execution.id}`;
+    }
+
+    function historyTimestamp(value) {
+        if (typeof value !== "string" || !/(Z|[+-]\d{2}:\d{2})$/i.test(value)) return null;
+        const time = Date.parse(value);
+        return Number.isFinite(time) ? time : null;
+    }
+
     function historyEvidence(execution) {
         const batch = execution.batch || {};
-        return `参考批次：${batch.label || batch.batch_key || "未知"}；建档时间：${batch.created_at || "未知"}；执行时间：${execution.started_at || "未知"} → ${execution.finished_at || "未知"}；版本：${historyVersionSummary(execution.version ?? batch.metadata?.version)}；来源：${execution.origin || batch.origin || "未知"}；原状态：${execution.state || "未知"}`;
+        return `参考批次：${batch.label || batch.batch_key || "未知"}；建档时间：${historyTime(batch.created_at)}；执行时间：${historyTime(execution.started_at)} → ${historyTime(execution.finished_at)}；版本：${historyVersionSummary(execution.version ?? batch.metadata?.version)}；来源：${historyOrigin(execution.origin || batch.origin)}；原状态：${execution.state || "未知"}`;
     }
 
     function historyRetestReason(execution, descriptor) {
@@ -1111,7 +1187,33 @@
         const status = panel.querySelector("[data-history-status]");
         const host = panel.querySelector("[data-history-host]");
         const order = panel.querySelector("[data-history-order]");
+        const stateFilter = panel.querySelector("[data-history-state]");
         let batches = [], executions = [], batch = null, selected = null;
+        let inspected = null, pending = null, page = 0;
+        const pageSize = 10;
+        const providers = {parsehub_repo: "ParseHub", videodl_repo: "videodl", yt_dlp_existing: "yt-dlp", gallery_dl_existing: "gallery-dl", tiantian_existing: "天天解析", kukutool_existing: "Kukutool"};
+        const sampleIdentity = (e) => `${e.source_host || ""}:${e.sample_key || e.source_url || e.id}`;
+        const outcome = (e) => ["not_executed", "planned", "skipped"].includes(e.state) ? "not_executed" : e.result?.status || e.state || "unknown";
+        const outcomeLabel = (e) => ({success: "成功", failed: "失败", timeout: "超时", unsupported: "不支持", not_executed: "未执行", unknown: "未知", queued: "排队中", running: "执行中"}[outcome(e)] || "待核对");
+        function cancelPending() { pending = null; settings.configureRetest?.(null); }
+        function clearSelection(preserveRoute = false) {
+            selected = null; selectedAsset = null;
+            root.setAttribute("data-history-selection", "closed");
+            settings.onSelection(null);
+            if (!preserveRoute) settings.routeEditor?.invalidate();
+        }
+        function refreshCurrentRoute() {
+            const summary = panel.querySelector("[data-history-current-route]");
+            if (!summary) return;
+            const execution = executions.find((item) => String(item.id) === String(inspected));
+            const route = settings.routeEditor?.route;
+            let matches = false;
+            try { matches = Boolean(route && new URL(execution?.source_url).hostname.replace(/\.$/, "") === route.source_host); }
+            catch (_error) { /* Missing sources cannot identify a route. */ }
+            summary.textContent = matches
+                ? `${route.source_host} · ${settings.routeEditor.currentSummary}`
+                : "当前路线：尚未选择站点";
+        }
         let sequence = 0, listSequence = 0, active = false, busy = false, selectedAsset = null;
         const attempted = new Set();
         const node = (tag, text, attribute, value = "") => {
@@ -1145,14 +1247,18 @@
                 batchesNode.replaceChildren();
                 for (const item of batches) {
                     const button = node("button", undefined, "data-history-batch", item.id);
+                    button.setAttribute("aria-pressed", String(String(batch?.id) === String(item.id)));
                     button.append(node("strong", item.label || item.batch_key || item.id),
-                        node("span", `${item.origin || "未知来源"} · 建档时间：${item.created_at || "未知"}`),
-                        node("span", `同步状态：${item.sync_status === "stored" ? "已入库" : "未知"}`),
-                        node("span", `目标 ${item.target_count ?? "未知"} · 样本 ${item.sample_count ?? "未知"} · 记录 ${item.execution_count ?? "未知"}`),
-                        node("span", [["planned", "计划"], ["executed", "已执行"], ["success", "成功"], ["unsupported", "不支持"], ["failed", "失败"], ["not_executed", "未执行"], ["unknown", "未知"]].map(([key, label]) => `${label} ${item.counts?.[key] ?? "未知"}`).join(" · ")),
-                        node("span", historyVersionSummary(item.metadata?.version ?? item.metadata)));
+                        node("span", historyOrigin(item.origin), "data-history-origin", item.origin || "unknown"),
+                        node("span", `建档时间：${historyTime(item.created_at)}`),
+                        node("span", `样本 ${item.sample_count ?? "未知"} · 记录 ${item.execution_count ?? "未知"}`),
+                        node("span", [["success", "成功"], ["unsupported", "不支持"], ["failed", "失败"], ["not_executed", "未执行"]].map(([key, label]) => `${label} ${item.counts?.[key] ?? "未知"}`).join(" · ")));
                     const entry = node("div"); entry.className = "provider-lab-history-batch";
-                    entry.append(button, metadataDetails("原批次元数据", item.metadata));
+                    const info = metadataDetails("批次详情与原始元数据", item.metadata);
+                    info.append(node("span", `同步状态：${item.sync_status === "stored" ? "已入库" : "未知"}`),
+                        node("p", `目标 ${item.target_count ?? "未知"} · 计划 ${item.counts?.planned ?? "未知"} · 已执行 ${item.counts?.executed ?? "未知"} · 未知 ${item.counts?.unknown ?? "未知"}`),
+                        node("p", historyVersionSummary(item.metadata?.version ?? item.metadata)));
+                    entry.append(button, info);
                     batchesNode.append(entry);
                 }
                 status.textContent = batches.length ? `${batches.length} 个批次；最新记录不代表已证明最佳。` : "暂无历史批次。";
@@ -1160,13 +1266,16 @@
         }
         async function loadBatch(id) {
             const version = ++sequence;
-            selected = null; selectedAsset = null; settings.onSelection(null); settings.routeEditor?.invalidate();
+            settings.routeEditor?.restore?.();
+            cancelPending(); inspected = null; page = 0;
+            clearSelection();
             batch = null; executions = []; executionsNode.replaceChildren();
             status.textContent = "正在读取批次执行记录...";
             try {
                 const payload = await read(id);
                 if (version !== sequence) return;
                 batch = payload.batch;
+                batchesNode.querySelectorAll("[data-history-batch]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.historyBatch === String(batch.id))));
                 executions = (Array.isArray(payload.executions) ? payload.executions : []).map((item) => ({...item, batch}));
                 panel.querySelector("[data-history-heading]").textContent = batch.label || batch.batch_key || "批次";
                 host.replaceChildren(node("option", "全部站点", "value", "")); host.value = "";
@@ -1175,29 +1284,91 @@
             } catch (_error) { if (version === sequence) status.textContent = "批次读取失败，请重新选择；未发起解析。"; }
         }
         function render() {
+            settings.configureRetest?.(null);
+            settings.routeEditor?.restore?.();
             executionsNode.replaceChildren();
             const rows = executions.filter((item) => !host.value || (item.source_host || "未知站点") === host.value).slice();
             rows.sort((a, b) => order.value === "provider" ? String(a.provider_id).localeCompare(String(b.provider_id))
-                : (String(a.started_at || "").localeCompare(String(b.started_at || ""))) * (order.value === "oldest" ? 1 : -1));
+                : ((historyTimestamp(a.started_at) ?? -Infinity) - (historyTimestamp(b.started_at) ?? -Infinity)) * (order.value === "oldest" ? 1 : -1));
+            const groups = new Map();
+            rows.forEach((e) => { const key = sampleIdentity(e); if (!groups.has(key)) groups.set(key, []); groups.get(key).push(e); });
+            const visibleGroups = Array.from(groups.values()).filter((items) => !stateFilter?.value || items.some((e) =>
+                stateFilter.value === "failed" ? ["failed", "timeout"].includes(outcome(e)) : outcome(e) === stateFilter.value));
+            page = Math.min(page, Math.max(0, Math.ceil(visibleGroups.length / pageSize) - 1));
+            const columns = Array.from(new Set([...Object.keys(providers), ...rows.map((e) => e.provider_id).filter((id) => id && id !== "animeimages_current")]));
+            const wrap = node("div"); wrap.className = "provider-lab-history-matrix";
+            wrap.setAttribute("tabindex", "0"); wrap.setAttribute("role", "region"); wrap.setAttribute("aria-label", "作品与上游比较");
+            const table = node("table"), thead = node("thead"), tr = node("tr");
+            tr.append(node("th", "站点 / 作品"));
+            columns.forEach((id) => tr.append(node("th", providers[id] || id)));
+            thead.append(tr); table.append(thead);
+            const tbody = node("tbody");
+            for (const items of visibleGroups.slice(page * pageSize, (page + 1) * pageSize)) {
+                const first = items[0], row = node("tr"), label = node("th");
+                label.setAttribute("scope", "row");
+                label.append(node("strong", first.source_host || "来源站点未保留"), node("p", first.title || "未记录作品标题"));
+                if (!first.source_url) label.append(node("small", "来源链接未保留"));
+                row.append(label);
+                columns.forEach((id) => {
+                    const cell = node("td");
+                    const observations = items.filter((e) => e.provider_id === id).sort((a, b) =>
+                        ((historyTimestamp(b.started_at) ?? -Infinity) - (historyTimestamp(a.started_at) ?? -Infinity)) || Number(b.id) - Number(a.id));
+                    if (!observations.length) cell.append(node("span", "未纳入"));
+                    else {
+                        const e = observations[0], button = node("button", undefined, "data-history-inspect", e.id);
+                        button.className = "provider-lab-history-cell";
+                        button.setAttribute("data-state", outcome(e));
+                        button.setAttribute("aria-pressed", String(observations.some((x) => String(x.id) === String(inspected))));
+                        button.append(node("strong", outcomeLabel(e)));
+                        if (Array.isArray(e.result?.assets)) button.append(node("span", `${e.result.assets.length} 候选`));
+                        if (observations.length > 1) button.append(node("small", `${observations.length} 次记录 · ${observations.every((x) => historyTimestamp(x.started_at) !== null) ? "最新" : "时间不全"}`));
+                        cell.append(button);
+                    }
+                    row.append(cell);
+                });
+                tbody.append(row);
+            }
+            table.append(tbody); wrap.append(node("p", "", "data-history-current-route"), table); executionsNode.append(wrap);
+            refreshCurrentRoute();
+            const paging = node("div"); paging.className = "provider-lab-history-pagination";
+            const prev = node("button", "上一页", "data-history-page", "prev"), next = node("button", "下一页", "data-history-page", "next");
+            prev.disabled = page === 0; next.disabled = (page + 1) * pageSize >= visibleGroups.length;
+            paging.append(prev, node("span", `${visibleGroups.length} 条作品 · 第 ${page + 1} / ${Math.max(1, Math.ceil(visibleGroups.length / pageSize))} 页`), next);
+            executionsNode.append(paging);
+            const baselines = rows.filter((e) => e.provider_id === "animeimages_current");
+            if (baselines.length) {
+                const baseline = node("details"); baseline.append(node("summary", `复合路线基线（${baselines.length} 条，非独立上游）`));
+                baselines.forEach((e) => baseline.append(node("button", `${e.source_host || "来源未保留"} · ${outcomeLabel(e)}`, "data-history-inspect", e.id)));
+                executionsNode.append(baseline);
+            }
             const samples = new Map();
-            rows.forEach((execution) => {
+            rows.filter((execution) => String(execution.id) === String(inspected)).forEach((execution) => {
                 const key = `${execution.source_host || ""}:${execution.sample_key || execution.source_url || execution.id}`;
                 let sample = samples.get(key);
                 if (!sample) {
                     sample = node("section", undefined, "data-history-sample", key);
-                    sample.className = "provider-lab-history-sample";
-                    sample.append(node("h3", `${execution.source_host || "未知站点"} · ${execution.title || execution.sample_key || "未命名作品"}`), node("p", execution.source_url || "原始来源缺失"));
+                    sample.className = "provider-lab-history-sample provider-lab-history-detail";
+                    sample.append(node("h3", `${execution.source_host || "未知站点"} · ${execution.title || "未记录作品标题"}`), node("p", execution.source_url || "原始来源缺失"));
                     samples.set(key, sample); executionsNode.append(sample);
                 }
                 const card = node("article", undefined, "data-history-execution", execution.id);
                 card.className = "provider-lab-card";
                 const descriptor = settings.descriptors.find((item) => item.provider_id === execution.provider_id);
-                card.append(node("h4", execution.provider_id || "未知 Provider"), node("p", historyEvidence(execution)),
-                    node("p", `当前配置：${descriptor ? descriptor.available ? "可用" : "不可用" : "已移除或未知"} · 当前版本 ${descriptor?.provider_version || "未知"} · 原 Provider 版本 ${execution.result?.provider_version || "未知"}`),
+                card.append(node("h4", providers[execution.provider_id] || descriptor?.label || execution.provider_id || "未知 Provider"),
+                    node("span", historyOrigin(execution.origin || batch?.origin), "data-history-origin", execution.origin || batch?.origin || "unknown"),
+                    node("p", `执行时间：${historyTime(execution.started_at)}`),
+                    node("p", historyRelation(execution)),
                     node("span", "", "data-provider-status-label"), node("p", "", "data-provider-error"));
                 const details = node("details");
+                const observations = rows.filter((e) => sampleIdentity(e) === sampleIdentity(execution) && e.provider_id === execution.provider_id);
+                if (observations.length > 1) {
+                    const chooser = node("select", undefined, "data-history-observation"); chooser.setAttribute("aria-label", "执行记录");
+                    observations.forEach((e) => chooser.append(node("option", `#${e.id} · ${historyTime(e.started_at)} · ${outcomeLabel(e)}`, "value", e.id)));
+                    chooser.value = String(execution.id); card.append(chooser);
+                }
                 details.append(node("summary", `候选与执行详情（${Array.isArray(execution.result?.assets) ? `${execution.result.assets.length} 项` : "候选未知 / 未保留"}）`));
                 details.append(metadataDetails("完整执行版本", execution.version));
+                details.append(node("p", historyEvidence(execution)), node("p", `当前配置：${descriptor ? descriptor.available ? "可用" : "不可用" : "已移除或未知"} · 当前版本 ${descriptor?.provider_version || "未知"} · 原 Provider 版本 ${execution.result?.provider_version || "未知"}`));
                 details.append(node("p", `来源记录：${execution.source_status || "未知"} / ${execution.source_state || "未知"}；复跑关系：${execution.replay_of || "无 / 未知"}；原执行选项：${JSON.stringify(execution.options ?? "未知")}`));
                 details.append(node("p", `底层关系：${JSON.stringify(execution.result?.relationships ?? "未知")}；限制：${JSON.stringify(execution.result?.limitations ?? "未知")}；警告：${JSON.stringify(execution.result?.warnings ?? [])}`));
                 details.append(node("p", `原候选统计：${execution.result?.candidate_count ?? "未知"}；保留信息：${JSON.stringify(execution.result?.retention ?? execution.result?.upstream_retention ?? "未知")}；缓存：${JSON.stringify(execution.result?.cache_status ?? execution.result?.cache_hit ?? "未知")}`));
@@ -1217,14 +1388,27 @@
                 details.append(sort);
                 card.append(details);
                 renderResult(card, summary(execution), documentObject);
-                const route = node("button", "准备路线草稿", "data-history-route");
+                const route = node("button", "设为首选", "data-history-route", "primary");
                 route.disabled = !execution.source_url || !descriptor?.available || descriptor.route_selectable !== true;
+                const fallback = node("button", "加入备选", "data-history-route", "fallback");
+                fallback.disabled = route.disabled;
                 const retest = node("button", "复测此作品 / 此 Provider", "data-history-retest");
                 const reason = historyRetestReason(execution, descriptor);
                 retest.disabled = busy || attempted.has(execution.id) || Boolean(reason);
-                card.append(route, retest, node("p", reason || "复测使用当前执行选项与本次外部分享授权。"));
+                const actions = node("div");
+                actions.className = "provider-lab-card-actions";
+                actions.append(route, fallback, retest);
+                card.append(actions, node("p", reason || "复测使用当前执行选项与本次外部分享授权。"));
                 if (selected?.id === execution.id) card.classList.add("is-selected");
                 sample.append(card);
+                if (execution.source_url) settings.routeEditor?.mount?.(sample);
+                if (String(pending?.id) === String(execution.id)) {
+                    const confirmation = node("section", undefined, "data-history-confirmation");
+                    confirmation.append(node("h4", "确认单项复测"), node("p", `${execution.source_host || "来源"} · ${providers[execution.provider_id] || execution.provider_id} · 仅复测这一项`), node("p", execution.source_url));
+                    card.append(confirmation);
+                    settings.configureRetest?.(execution, confirmation);
+                    confirmation.append(node("button", "取消", "data-history-cancel"), node("button", "确认复测这一项", "data-history-confirm", execution.id));
+                }
             });
             markSelection();
         }
@@ -1237,13 +1421,14 @@
         async function select(execution, asset, draft) {
             selected = execution;
             selectedAsset = asset;
-            settings.routeEditor?.invalidate();
+            root.setAttribute("data-history-selection", "open");
             settings.onSelection({providerId: execution.provider_id, asset, historyExecution: execution});
             markSelection();
             if (!execution.source_url) return;
-            await settings.routeEditor?.load();
+            await settings.routeEditor?.load({preserveDraft: true});
+            refreshCurrentRoute();
             if (selected !== execution || !active) return;
-            if (draft) settings.routeEditor?.selectProvider(execution.provider_id, execution);
+            if (draft) settings.routeEditor?.selectProvider(execution.provider_id, execution, draft === true ? "primary" : draft);
             if (draft) root.querySelector("[data-lab-route-editor]")?.scrollIntoView?.({block: "start", behavior: "smooth"});
         }
         function markSelection() {
@@ -1256,6 +1441,21 @@
         }
         async function click(event) {
             const target = event.target;
+            if (target.closest?.("[data-history-cancel]")) { cancelPending(); render(); return; }
+            const inspection = target.closest?.("[data-history-inspect]");
+            if (inspection) {
+                cancelPending(); clearSelection(true); inspected = inspection.dataset.historyInspect; render();
+                const execution = executions.find((item) => String(item.id) === String(inspected));
+                if (execution?.source_url) {
+                    root.setAttribute("data-history-selection", "open");
+                    await settings.routeEditor?.load({preserveDraft: true});
+                    refreshCurrentRoute();
+                } else settings.routeEditor?.invalidate();
+                executionsNode.querySelector(".provider-lab-history-detail")?.scrollIntoView?.({block: "nearest"});
+                return;
+            }
+            const pagination = target.closest?.("[data-history-page]");
+            if (pagination && !pagination.disabled) { cancelPending(); clearSelection(); inspected = null; page += pagination.dataset.historyPage === "next" ? 1 : -1; render(); return; }
             if (target.closest?.("[data-history-refresh]")) return loadBatches();
             const batchButton = target.closest?.("[data-history-batch]");
             if (batchButton) return loadBatch(batchButton.dataset.historyBatch);
@@ -1275,11 +1475,18 @@
                 if (asset) return select(execution, asset, false);
                 return;
             }
-            if (target.closest?.("[data-history-route]")) return select(execution, null, true);
-            if (!target.closest?.("[data-history-retest]") || busy || attempted.has(execution.id)) return;
+            const routeAction = target.closest?.("[data-history-route]");
+            if (routeAction) {
+                if (routeAction.disabled) return;
+                cancelPending(); render(); return select(execution, null, routeAction.dataset.historyRoute || "primary");
+            }
+            const confirming = target.closest?.("[data-history-confirm]");
+            if ((!target.closest?.("[data-history-retest]") && !confirming) || busy || attempted.has(execution.id)) return;
             const reason = historyRetestReason(execution, settings.descriptors.find((item) => item.provider_id === execution.provider_id));
             if (reason) { status.textContent = reason; return; }
-            if (!settings.window.confirm(`复测 ${execution.source_host || "此作品"} 的 ${execution.provider_id}？仅调用此项，使用当前执行选项及本次外部分享授权。`)) return;
+            if (!confirming) { pending = execution; render(); return; }
+            if (pending !== execution || String(inspected) !== String(execution.id) || confirming.dataset.historyConfirm !== String(execution.id)) return;
+            cancelPending();
             busy = true; attempted.add(execution.id); render();
             status.textContent = "正在执行指定项；原记录保持不变。";
             try {
@@ -1296,8 +1503,18 @@
             } catch (_error) { status.textContent = "复测请求结果未确认；请核对历史与调用账本，不自动重发。"; }
             finally { busy = false; render(); }
         }
-        function change(event) {
-            if (event.target === host || event.target === order) { render(); return; }
+        async function change(event) {
+            if (event.target === host || event.target === order || event.target === stateFilter) { cancelPending(); clearSelection(); inspected = null; page = 0; render(); return; }
+            if (event.target.matches?.("[data-history-observation]")) {
+                cancelPending(); clearSelection(true); inspected = event.target.value; render();
+                const execution = executions.find((item) => String(item.id) === String(inspected));
+                if (execution?.source_url) {
+                    root.setAttribute("data-history-selection", "open");
+                    await settings.routeEditor?.load({preserveDraft: true});
+                    refreshCurrentRoute();
+                } else settings.routeEditor?.invalidate();
+                return;
+            }
             if (!event.target.matches?.("[data-history-format]")) return;
             const card = event.target.closest("[data-history-execution]");
             const execution = executions.find((item) => String(item.id) === card.dataset.historyExecution);
@@ -1306,9 +1523,9 @@
             markSelection();
         }
         panel.addEventListener("click", click); panel.addEventListener("change", change);
-        return {loadBatches, loadBatch, get source() { return selected?.source_url || ""; }, get active() { return active; }, get busy() { return busy; },
-            activate(value) { active = value; panel.hidden = !value; selected = null; selectedAsset = null; markSelection(); settings.onSelection(null); settings.routeEditor?.invalidate(); if (value) void loadBatches(); },
-            destroy() { sequence += 1; listSequence += 1; panel.removeEventListener("click", click); panel.removeEventListener("change", change); }};
+        return {loadBatches, loadBatch, refreshCurrentRoute, get source() { return selected?.source_url || executions.find((item) => String(item.id) === String(inspected))?.source_url || ""; }, get active() { return active; }, get busy() { return busy; },
+            activate(value) { cancelPending(); settings.routeEditor?.restore?.(); active = value; panel.hidden = !value; clearSelection(); markSelection(); if (value) void loadBatches(); },
+            destroy() { sequence += 1; listSequence += 1; settings.routeEditor?.restore?.(); panel.removeEventListener("click", click); panel.removeEventListener("change", change); }};
     }
 
     function createController(documentObject, overrides) {
@@ -1427,10 +1644,34 @@
         const routeEditor = createRouteEditor(documentObject, {fetch: fetchImpl, window: windowObject,
             url: root.dataset.routeUrl || "/provider-lab/routes/", csrf: () => csrfToken(form),
             getSource: () => historyWorkspace?.active ? historyWorkspace.source : String(form.elements.source?.value || "").trim(),
-            getSelection: () => currentSelection, descriptors});
+            getSelection: () => currentSelection, descriptors, onChange: () => historyWorkspace?.refreshCurrentRoute()});
+        const inputBand = root.querySelector(".provider-lab-input-band");
+        const inputAnchor = inputBand ? documentObject.createElement("div") : null;
+        if (inputBand) inputBand.parentNode.insertBefore(inputAnchor, inputBand);
+        let savedAdvancedOpen = false;
+        function configureHistoryRetest(execution, container) {
+            const wasOpen = root.dataset.historyConfig === "open";
+            root.setAttribute("data-history-config", execution ? "open" : "closed");
+            form.setAttribute("data-history-retest-provider", execution?.provider_id || "");
+            if (!inputBand) return;
+            const advanced = form.querySelector(".provider-lab-advanced");
+            if (!execution) {
+                inputAnchor.parentNode.insertBefore(inputBand, inputAnchor.nextSibling);
+                if (wasOpen && advanced) advanced.open = savedAdvancedOpen;
+                form.querySelectorAll('input[name="provider_authorizations"]').forEach((input) => { if (input.closest("label")) input.closest("label").hidden = false; });
+                syncVideodlControls(form, videodlInventory);
+                return;
+            }
+            if (advanced) { savedAdvancedOpen = advanced.open; advanced.open = true; }
+            form.querySelectorAll('input[name="provider_authorizations"]').forEach((input) => { if (input.closest("label")) input.closest("label").hidden = input.value !== execution.provider_id; });
+            const controls = form.querySelector("[data-videodl-controls]");
+            if (controls) controls.hidden = execution.provider_id !== "videodl_repo";
+            container.append(inputBand);
+        }
         historyWorkspace = createHistoryWorkspace(documentObject, {root, descriptors, routeEditor,
             fetch: fetchImpl, window: windowObject, url: root.dataset.historyUrl || "/admin/provider-lab/history/",
             onSelection: updateSelection,
+            configureRetest: configureHistoryRetest,
             retest: (execution) => {
                 if (running) return Promise.resolve({executed: false, not_run_reason: "即时任务仍在执行，请结束后复测。"});
                 return runOne(execution.provider_id, execution.source_url, csrfToken(form), null, undefined, execution.id);
@@ -1692,6 +1933,10 @@
         createHistoryWorkspace,
         historyRetestReason,
         historyEvidence,
+        historyTime,
+        historyOrigin,
+        historyRelation,
+        historyTimestamp,
         routeRequestBody,
         diagnosticResult,
         comparisonWarnings,

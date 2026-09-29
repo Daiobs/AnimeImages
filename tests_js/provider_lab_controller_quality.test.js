@@ -370,6 +370,110 @@ test("single history run keeps original source/provider and requires current sha
     controller.destroy();
 });
 
+test("history videodl controls survive form changes without instant selection and retain authorization on restore", async () => {
+    const f = comparisonFixture(["videodl_repo"]);
+    const provider = f.form.querySelector('input[name="providers"][value="videodl_repo"]');
+    provider.checked = false;
+    const band = new Node("section", {class: "provider-lab-input-band"});
+    band.append(f.form); f.root.append(band);
+    // Only this fixture needs native insertion and sibling semantics for form relocation.
+    f.root.insertBefore = function (node, reference) {
+        if (node === reference) return node;
+        node.remove();
+        const index = reference ? this.children.indexOf(reference) : this.children.length;
+        assert.ok(index >= 0);
+        node.parentNode = this;
+        this.children.splice(index, 0, node);
+        return node;
+    };
+    const createElement = f.doc.createElement;
+    f.doc.createElement = (tag) => {
+        const node = createElement(tag);
+        Object.defineProperty(node, "nextSibling", {get() {
+            return this.parentNode?.children[this.parentNode.children.indexOf(this) + 1] || null;
+        }});
+        return node;
+    };
+    const advanced = new Node("details", {class: "provider-lab-advanced"}); advanced.open = false;
+    const controls = new Node("section", {"data-videodl-controls": ""}); advanced.append(controls); f.form.append(advanced);
+    const mode = new Node("select", {name: "videodl_mode", value: "dedicated_only"});
+    const category = new Node("select", {name: "videodl_backend_category", value: "dedicated"});
+    const backend = new Node("select", {name: "videodl_specific_backend", value: "FixtureBackend"});
+    const option = new Node("option", {value: "FixtureBackend", "data-backend-category": "dedicated",
+        "data-backend-available": "true", "data-external-sharing-required": "true"});
+    backend.append(option); backend.options = [option]; backend.selectedOptions = [option];
+    const consent = new Node("input", {name: "videodl_external_sharing_confirmed"}); consent.checked = false;
+    controls.append(mode, category, backend, consent);
+    Object.assign(f.form.elements, {videodl_mode: mode, videodl_backend_category: category,
+        videodl_specific_backend: backend, videodl_external_sharing_confirmed: consent});
+    const panel = new Node("section", {"data-lab-history": ""});
+    for (const name of ["batches", "executions", "status", "heading", "host", "order", "state"]) {
+        panel.append(new Node("div", {[`data-history-${name}`]: ""}));
+    }
+    f.root.append(panel);
+    const writes = [];
+    const execution = {id: 73, provider_id: "videodl_repo", sample_key: "sample", state: "returned",
+        source_url: "https://original.example/work", source_host: "original.example", can_retest: true,
+        result: {status: "success", assets: []}};
+    const controller = lab.createController(f.doc, {
+        window: {location: {origin: "http://local.example"}, confirm: () => assert.fail("Use inline confirmation")},
+        descriptors: [{provider_id: "videodl_repo", available: true, route_selectable: true}],
+        videodlInventory: {items: [{backend_id: "FixtureBackend", backend_category: "dedicated",
+            controlled_available: true, external_sharing_required: true}]},
+        fetch: async (url, options) => {
+            if (options.method) {
+                assert.equal(url, "/run"); writes.push(JSON.parse(options.body));
+                assert.equal(band.parentNode === f.root, true);
+                assert.equal(f.form.dataset.historyRetestProvider, "");
+                return {ok: true, json: async () => ({status: "success", executed: true, assets: [], history: {saved: true, id: 74}})};
+            }
+            return {ok: true, json: async () => ({ok: true, batch: {id: 1}, batches: [], executions: [execution]})};
+        },
+    });
+    const click = async (selector) => {
+        const target = panel.querySelector(selector); assert.ok(target, selector);
+        await panel.listeners.click({target, preventDefault() {}});
+    };
+    try {
+        assert.equal(controls.hidden, true);
+        await controller.historyWorkspace.loadBatch(1);
+        const originalIndex = f.root.children.indexOf(band);
+        await click('[data-history-inspect="73"]');
+        await click("[data-history-retest]");
+        assert.equal(f.form.dataset.historyRetestProvider, "videodl_repo");
+        assert.equal(band.closest("[data-history-confirmation]") !== null, true);
+        assert.equal(advanced.open, true);
+        mode.value = "specific_backend";
+        for (const target of [mode, category, backend, consent]) {
+            f.form.listeners.change({target});
+            assert.equal(controls.hidden, false);
+            assert.equal(provider.checked, false);
+        }
+        await click("[data-history-cancel]");
+        assert.equal(f.form.dataset.historyRetestProvider, "");
+        assert.equal(band.parentNode === f.root, true);
+        assert.equal(f.root.children.indexOf(band), originalIndex);
+        assert.equal(advanced.open, false);
+        assert.equal(controls.hidden, true);
+        assert.equal(writes.length, 0);
+        await click("[data-history-retest]");
+        await click('[data-history-confirm="73"]');
+        assert.equal(writes.length, 0, "Unchecked backend sharing consent prevents execution");
+        assert.match(panel.querySelector("[data-history-status]").textContent, /外部共享/);
+        await click("[data-history-retest]");
+        consent.checked = true; f.form.listeners.change({target: consent});
+        assert.equal(controls.hidden, false);
+        await click('[data-history-confirm="73"]');
+        assert.deepEqual(writes, [{source: execution.source_url, provider_id: "videodl_repo", history_execution_id: 73,
+            options: {mode: "specific_backend", backend_ids: ["FixtureBackend"], backend_category: "dedicated",
+                external_sharing_confirmed: true}}]);
+        assert.equal(provider.checked, false);
+        assert.equal(consent.checked, true);
+        assert.equal(controls.hidden, true);
+        assert.equal(advanced.open, false);
+    } finally { controller.destroy(); }
+});
+
 test("instant parse success remains success when its independent history write fails", async () => {
     const f = comparisonFixture(["A"]); let calls = 0;
     const controller = lab.createController(f.doc, {window: {}, fetch: async () => {
