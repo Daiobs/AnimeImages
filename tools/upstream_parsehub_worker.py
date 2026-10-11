@@ -10,7 +10,8 @@ import os
 from pathlib import Path
 import re
 import sys
-from urllib.parse import parse_qs, unquote, urlsplit
+import time
+from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 
 try:
     from .upstream_match_worker import install_network_guard, safe_error, validate_url
@@ -30,6 +31,8 @@ PARSERS = {
     "TieBaParser": ("tieba", "Tieba"),
     "PipixParser": ("pipix", "Pipix"),
     "ZuiYouParser": ("zuiyou", "Zuiyou"),
+    "DoubanParser": ("douban", "Douban"),
+    "CoolapkParser": ("coolapk", "Coolapk"),
 }
 
 
@@ -38,6 +41,17 @@ def source_identity(url):
     p = urlsplit(url)
     if p.scheme != "https" or p.fragment or p.netloc != p.hostname:
         raise ValueError("invalid_url")
+    if p.hostname in {"www.coolapk.com", "coolapk.com"}:
+        match = re.fullmatch(r"/(feed|picture)/([1-9][0-9]{0,19})/?", p.path)
+        query = parse_qs(p.query, keep_blank_values=True)
+        if (match and set(query) <= {"shareKey", "s", "shareFrom", "shareUid", "shareType", "utm_source"}
+                and all(len(v) == 1 for v in query.values())):
+            return "CoolapkParser", match[2]
+    if p.hostname in {"www.douban.com", "m.douban.com", "douban.com"}:
+        match = re.fullmatch(r"/(?:group/)?topic/([1-9][0-9]{0,19})/?", p.path)
+        query = parse_qs(p.query, keep_blank_values=True)
+        if match and set(query) <= {"_i", "utm_source", "utm_medium", "utm_campaign", "from"}:
+            return "DoubanParser", match[1]
     if p.hostname == "tieba.baidu.com" and not p.query:
         match = re.fullmatch(r"/p/([1-9][0-9]{0,19})/?", p.path)
         if match:
@@ -97,26 +111,38 @@ def failure_summary(error, stage):
 
 
 def normalize_result(result, source):
+    from parsehub.types.media_ref import AniRef, ImageRef, VideoRef
+    from parsehub.types.result import (
+        ImageParseResult, MultimediaParseResult, RichTextParseResult, VideoParseResult,
+    )
+
+    if not isinstance(result, (ImageParseResult, VideoParseResult,
+                               MultimediaParseResult, RichTextParseResult)):
+        raise ValueError("unsupported_result")
     extractor, content_id = source_identity(source)
     if source_identity(getattr(result, "raw_url", "")) != (extractor, content_id):
         raise ValueError("identity_mismatch")
-    if type(result).__name__ not in {"ImageParseResult", "VideoParseResult", "MultimediaParseResult"}:
-        raise ValueError("unsupported_result")
+    # Rich text contributes explicit references only, never Markdown/HTML URLs.
     media = getattr(result, "media", None)
     media = list(media) if isinstance(media, (list, tuple)) else [media] if media else []
     if not media or len(media) > MAX_ASSETS:
         raise ValueError("item_limit" if media else "no_formats")
     messages = []
     for item in media:
-        kind = type(item).__name__
-        if kind not in {"ImageRef", "AniRef", "VideoRef"}:
+        if not isinstance(item, (ImageRef, AniRef, VideoRef)):
             raise ValueError("unsupported_result")
         url = validate_url(getattr(item, "url", ""))
         if urlsplit(url).scheme != "https":
             raise ValueError("insecure_media")
-        video = kind == "VideoRef"
         ext = str(getattr(item, "ext", "") or "").lower().lstrip(".")
         url_ext = Path(urlsplit(url).path).suffix.lower().lstrip(".")
+        animated_video = isinstance(item, AniRef) and (
+            ext in VIDEO_EXTENSIONS or url_ext in VIDEO_EXTENSIONS
+        )
+        video = isinstance(item, VideoRef) or animated_video
+        if animated_video and ext not in VIDEO_EXTENSIONS:
+            # AniRef defaults to GIF even when its URL identifies a video.
+            ext = url_ext
         conflicting = IMAGE_EXTENSIONS if video else VIDEO_EXTENSIONS
         if ext in conflicting or url_ext in conflicting:
             raise ValueError("media_type_conflict")
@@ -140,7 +166,18 @@ def import_parser(extractor):
 
 
 def verify_response_identity(extractor, content_id, response):
-    if extractor == "TieBaParser":
+    if extractor == "CoolapkParser":
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(response.text, "html.parser")
+        details = soup.find_all(id="feed-detail")
+        scripts = "\n".join(node.text for node in soup.find_all("script"))
+        ids = set(re.findall(r"intent://www\.coolapk\.com/(?:feed|picture)/([0-9]+)#Intent;", scripts))
+        if len(details) != 1 or ids != {content_id}:
+            raise ValueError("identity_mismatch")
+        return
+    elif extractor == "DoubanParser":
+        actual = response.json().get("id")
+    elif extractor == "TieBaParser":
         actual = response.json().get("thread", {}).get("id")
     elif extractor == "ZuiYouParser":
         actual = response.json().get("data", {}).get("post", {}).get("id")
@@ -164,6 +201,8 @@ def bounded_http(extractor, content_id, source, timeout):
                         ("POST", "https://tieba.baidu.com/c/f/pb/page_pc")},
         "PipixParser": {("GET", source)},
         "ZuiYouParser": {("POST", "https://share.xiaochuankeji.cn/planck/share/post/detail_h5")},
+        "DoubanParser": {("GET", f"https://m.douban.com/rexxar/api/v2/group/topic/{content_id}")},
+        "CoolapkParser": {("GET", source)},
     }[extractor]
 
     class Client(original):
@@ -199,6 +238,13 @@ def bounded_http(extractor, content_id, source, timeout):
                 response._content = b"".join(chunks)
                 if not is_head and not target.endswith("/dc/common/tbs"):
                     verify_response_identity(extractor, content_id, response)
+                    if extractor == "CoolapkParser":
+                        from bs4 import BeautifulSoup
+                        detail = BeautifulSoup(response.text, "html.parser").find(id="feed-detail")
+                        article = detail.find(class_="feed-article-message")
+                        images = (article.select("img.message-image") if article else
+                                  detail.select(".message-image-group img"))
+                        state["body_media"] = ["https:" + str(img.get("src", "")) for img in images]
                     state["identity"] = True
                 return response
             finally:
@@ -211,6 +257,13 @@ async def parse(source, timeout, parser_cls):
     import httpx
     from parsehub.utils.helpers import SecretCookie
     extractor, content_id = source_identity(source)
+    if extractor == "CoolapkParser":
+        parsed = urlsplit(source)
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        # Upstream retains these access parameters until parsing completes.
+        source = parsed._replace(netloc="www.coolapk.com", query=urlencode(
+            {k: v[0] for k, v in query.items() if k in {"shareKey", "s"} and v[0]})).geturl()
+    deadline = time.monotonic() + timeout
     original, client, state = bounded_http(extractor, content_id, source, timeout)
     httpx.AsyncClient = client
     try:
@@ -218,7 +271,22 @@ async def parse(source, timeout, parser_cls):
             result = await parser_cls(proxy=None, cookie=SecretCookie(None)).parse(source)
         if not state["identity"]:
             raise ValueError("identity_mismatch")
-        return normalize_result(result, source)
+        rows = normalize_result(result, source)
+        if extractor == "CoolapkParser" and [row[1] for row in rows] != state.get("body_media"):
+            raise ValueError("identity_mismatch")
+        # Same child-only metadata proof as yt-dlp, one candidate per parse budget.
+        for row in rows:
+            metadata = row[2]
+            if (metadata.get("media_type") == "video" and
+                    (metadata.get("extension") == "mp4" or urlsplit(row[1]).path.lower().endswith(".mp4"))):
+                try:
+                    from .upstream_metadata_probe import probe_in_guarded_child
+                except ImportError:
+                    from upstream_metadata_probe import probe_in_guarded_child
+                metadata["upstream_bmff_track_evidence"] = probe_in_guarded_child(
+                    row[1], deadline_monotonic=deadline)
+                break
+        return rows
     finally:
         httpx.AsyncClient = original
 

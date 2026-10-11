@@ -39,6 +39,34 @@
     }
 
     function retryImage(img) {
+        const card = img.closest(".asset-card");
+        let external = true;
+        try {
+            external = new URL(img.src, window.location.origin).origin !== window.location.origin;
+        } catch (_error) {
+            // An invalid preview URL cannot be retried safely.
+        }
+        if (external || img.getAttribute("referrerpolicy") === "no-referrer"
+            || (card && (card.dataset.sourcePlatform === "upstream"
+                || String(card.dataset.assetId || "").startsWith("upstream:")))) {
+            if (img.dataset.previewFailed === "true") {
+                return;
+            }
+            img.dataset.previewFailed = "true";
+            img.onerror = null;
+            img.hidden = true;
+            img.style.display = "none";
+            const status = img.ownerDocument.createElement("span");
+            status.className = "text-muted";
+            status.setAttribute("role", "status");
+            Object.assign(status.style, {
+                display: "grid", placeItems: "center", width: "100%", height: "220px",
+                boxSizing: "border-box", padding: "48px 16px 24px", textAlign: "center",
+            });
+            status.textContent = "预览加载失败";
+            img.insertAdjacentElement("afterend", status);
+            return;
+        }
         let retry = Number.parseInt(img.dataset.retry || "0", 10);
 
         if (retry >= MAX_IMAGE_RETRIES) {
@@ -56,6 +84,36 @@
     }
 
     window.retryImage = retryImage;
+
+    async function openUpstreamImage(button, requestRoute) {
+        const card = button.closest(".asset-card");
+        const status = card.querySelector("[data-upstream-image-link-status]");
+        const item = getCardItem(card);
+        const popup = window.open("about:blank", "_blank");
+        if (!popup) {
+            status.textContent = "浏览器阻止了新窗口，请允许弹窗后重试。";
+            return;
+        }
+        popup.opener = null;
+        const referrer = popup.document.createElement("meta");
+        referrer.name = "referrer";
+        referrer.content = "no-referrer";
+        popup.document.head.appendChild(referrer);
+        button.disabled = true;
+        status.textContent = "正在验证链接授权...";
+        try {
+            const route = await requestRoute({media_items: [item], save_format: "original", base_filename: "image",
+                intent: "resource_link"});
+            const url = browserPhotoApi.validatedUpstreamImageUrl(item, route);
+            popup.location.replace(url);
+            status.textContent = "已打开直链；这是独立的页面访问，不代表已保存，也不保证可保存。";
+        } catch (_error) {
+            popup.close();
+            status.textContent = "链接授权不可用或已失效，请重新解析后再试。";
+        } finally {
+            button.disabled = false;
+        }
+    }
 
     function setStatus(statusElement, message, variant) {
         if (!statusElement) {
@@ -1083,6 +1141,11 @@
             } catch (error) {
                 const errorCode = browserPhotoApi.safeErrorCode(error);
                 const cancelled = errorCode === "BROWSER_PHOTO_CANCELLED";
+                hideDownloadProgress();
+                const progress = getProgressElements();
+                for (const node of [progress.progressPercent, progress.progressSpeed, progress.progressEta, progress.blobWarning]) {
+                    if (node) node.innerText = "";
+                }
                 if (!cancelled && items.length > 1 && !zeroRelay) {
                     pendingPhotoServerFallback = true;
                     setPhotoActionVisibility({serverFallback: true});
@@ -1096,7 +1159,9 @@
                 if (!cancelled && zeroRelay) {
                     setStatus(
                         getStatusElement(),
-                        logicalDownloadErrorMessage(error, includesLivePhoto),
+                        items.some((item) => String(item.asset_id || "").startsWith("upstream:"))
+                            ? browserPhotoApi.safeErrorMessage(error, {upstream: true})
+                            : logicalDownloadErrorMessage(error, includesLivePhoto),
                         "text-danger",
                     );
                     return;
@@ -2287,6 +2352,12 @@
 
         if (resultsRegion) {
             resultsRegion.addEventListener("click", (event) => {
+                const openImageButton = event.target.closest("[data-upstream-image-open]");
+                if (openImageButton && resultsRegion.contains(openImageButton)) {
+                    event.preventDefault();
+                    void openUpstreamImage(openImageButton, fetchRouteOnly);
+                    return;
+                }
                 const photoCancelButton = event.target.closest("[data-photo-download-cancel]");
                 if (photoCancelButton && resultsRegion.contains(photoCancelButton)) {
                     event.preventDefault();

@@ -91,6 +91,11 @@ jobs:
       - name: Install optional upstream contract test runtimes
         run: python -m pip install --no-deps yt-dlp==2026.3.17 gallery-dl==1.32.4
 
+      - name: Install isolated pinned ParseHub contract runtime
+        run: |
+          python tools/parsehub_provider/bootstrap_parsehub_provider.py "$RUNNER_TEMP/parsehub-contract"
+          echo "PARSEHUB_COMPAT_PYTHON=$RUNNER_TEMP/parsehub-contract/bin/python" >> "$GITHUB_ENV"
+
       - name: Django checks
         run: |
           python manage.py check
@@ -141,4 +146,6 @@ jobs:
           node --test tests_js/user_feedback.test.js
           node --test tests_js/upstream_downloads.test.js
           node --test tests_js/upstream_batch_authorization.test.js
+          node --test tests_js/batch_preview_failure.test.js
+          node --test tests_js/upstream_image_failure_ui.test.js
           node --test tests_js/xhs_livephoto_staff_preview.test.js

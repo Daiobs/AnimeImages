@@ -12,6 +12,79 @@
     const BATCH_SYNC_ARCHIVE_MAX_BYTES = 128 * 1024 * 1024;
     const batchPhotoControllers = new WeakMap();
 
+    function batchImageLinkHint(scope) {
+        return scope && scope.querySelector("[data-batch-image-link-action]")
+            ? " 可使用现有的“打开直链”或“复制直链”；打开或复制不代表已保存。"
+            : "";
+    }
+
+    function batchPhotoFailureMessage(error, scope) {
+        const upstream = Boolean(scope && (String(scope.dataset.assetId || "").startsWith("upstream:")
+            || scope.querySelector('[data-asset-id^="upstream:"]')));
+        const message = browserPhotoApi.safeErrorMessage(error, {upstream});
+        return ["UPSTREAM_PHOTO_FETCH_FAILED", "BROWSER_PHOTO_NO_SUCCESS"].includes(browserPhotoApi.safeErrorCode(error))
+            && upstream
+            ? message + batchImageLinkHint(scope) : message;
+    }
+
+    function retryBatchImage(img) {
+        const container = img && img.closest(".batch-photo-preview, .batch-result-cover");
+        if (!container || img.dataset.batchPreviewFailed === "true"
+            || img.dataset.batchPreviewRetryPending === "true") {
+            return;
+        }
+        const fail = () => {
+            img.dataset.batchPreviewFailed = "true";
+            img.onerror = null;
+            img.hidden = true;
+            img.style.display = "none";
+            const status = img.ownerDocument.createElement("span");
+            status.className = "text-muted";
+            status.setAttribute("role", "status");
+            status.textContent = "预览加载失败" + batchImageLinkHint(img.closest("[data-batch-photo-item]"));
+            container.appendChild(status);
+        };
+        let url;
+        try {
+            url = new URL(img.src, window.location.origin);
+        } catch (_error) {
+            fail();
+            return;
+        }
+        // Direct upstream previews may be signed; never rewrite them or use a proxy.
+        if (img.getAttribute("referrerpolicy") === "no-referrer"
+            || url.origin !== window.location.origin) {
+            fail();
+            return;
+        }
+        const retry = Number.parseInt(img.dataset.retry || "0", 10) || 0;
+        if (retry >= 3) {
+            fail();
+            return;
+        }
+        img.dataset.retry = String(retry + 1);
+        img.dataset.batchPreviewRetryPending = "true";
+        window.setTimeout(() => {
+            delete img.dataset.batchPreviewRetryPending;
+            if (!img.isConnected || img.dataset.batchPreviewFailed === "true") {
+                return;
+            }
+            url.searchParams.set("_retry", Date.now().toString());
+            img.src = url.toString();
+        }, (retry + 1) * 1000);
+    }
+
+    if (typeof window !== "undefined") {
+        const previousRetryImage = window.retryImage;
+        window.retryImage = function (img) {
+            if (img && img.closest(".batch-photo-preview, .batch-result-cover")) {
+                retryBatchImage(img);
+            } else if (typeof previousRetryImage === "function") {
+                previousRetryImage(img);
+            }
+        };
+    }
+
     function showBatchInternalDiagnostics(node) {
         const page = node && typeof node.closest === "function"
             ? node.closest(".batch-parse-page")
@@ -386,7 +459,8 @@
         const response = await fetch(safeSameOriginDownloadUrl(page.dataset.batchDownloadUrl, window.location.origin), {
             method: "POST",
             headers: {"Content-Type": "application/json", "X-CSRFToken": token.value},
-            body: JSON.stringify({media_items: items, route_only: true, save_format: "original", base_filename: "media"}),
+            body: JSON.stringify({media_items: items, route_only: true, save_format: "original", base_filename: "media",
+                ...(options && options.intent === "resource_link" ? {intent: "resource_link"} : {})}),
             signal: options && options.signal,
         });
         if (!response.ok) {
@@ -401,6 +475,40 @@
             throw new Error("下载授权已失效，请重新解析。");
         }
         return route.items.map((item, index) => ({...items[index], ...item}));
+    }
+
+    async function handleBatchUpstreamLink(page, button, node) {
+        const item = batchBrowserPhotoItem(node);
+        const opening = button.getAttribute("data-batch-image-link-action") === "open";
+        const popup = opening ? window.open("about:blank", "_blank") : null;
+        if (opening && !popup) {
+            flashButton(button, "请允许弹窗后重试");
+            return;
+        }
+        if (popup) {
+            popup.opener = null;
+            const referrer = popup.document.createElement("meta");
+            referrer.name = "referrer";
+            referrer.content = "no-referrer";
+            popup.document.head.appendChild(referrer);
+        }
+        button.disabled = true;
+        try {
+            const items = await authorizeBatchUpstreamItems(page, [item], {intent: "resource_link"});
+            const url = browserPhotoApi.validatedUpstreamImageUrl(item, {route_type: "direct", items});
+            if (popup) {
+                popup.location.replace(url);
+                flashButton(button, "已打开，未计为保存");
+            } else {
+                await copyText(url);
+                flashButton(button, "已复制，未计为保存");
+            }
+        } catch (_error) {
+            if (popup) popup.close();
+            flashButton(button, "链接操作失败，请重新解析或重试");
+        } finally {
+            button.disabled = false;
+        }
     }
 
     function batchPhotoMediaItem(node) {
@@ -882,6 +990,7 @@
         const section = button ? button.closest("[data-batch-photo-section]") : null;
         const items = buildBatchBrowserPhotoItems(section);
         const zeroRelay = batchPhotoItemsRequireZeroRelay(items);
+        const upstream = items.some((item) => String(item.asset_id || "").startsWith("upstream:"));
         if (!section || items.length < 2) {
             throw new Error("当前图片列表无法由浏览器打包，请重新解析。");
         }
@@ -931,8 +1040,9 @@
                 return;
             }
             setBatchPhotoArchiveState(section, "error", {
-                message: zeroRelay
-                    ? "原始图片资源已失效，请重新解析后再试。"
+                message: upstream
+                    ? batchPhotoFailureMessage(error, section)
+                    : zeroRelay ? "原始图片资源已失效，请重新解析后再试。"
                     : `${browserPhotoApi.safeErrorMessage(error)} ${batchPresentationText(
                         section,
                         "可选择“换一种方式打包”。",
@@ -968,7 +1078,7 @@
             completionLabel = "已开始保存";
             return result;
         } catch (error) {
-            const message = browserPhotoApi.safeErrorMessage(error);
+            const message = batchPhotoFailureMessage(error, itemNode);
             setBatchPhotoArchiveState(section, "error", {message});
             completionLabel = "重试下载";
             throw error;
@@ -1736,12 +1846,19 @@
                         const result = await downloadBatchImageWithUi(imageButton);
                         setLightboxStatus(`已交给浏览器保存：${result.filename}`);
                     } catch (error) {
-                        setLightboxStatus("图片下载未能启动，请关闭预览后重试。");
+                        setLightboxStatus(batchPhotoFailureMessage(error, activeLightboxItem));
                     }
                 }
                 return;
             }
 
+            const linkAction = event.target.closest("[data-batch-image-link-action]");
+            const linkItem = linkAction && linkAction.closest("[data-batch-photo-item]");
+            if (linkItem && String(linkItem.dataset.assetId || "").startsWith("upstream:")) {
+                event.preventDefault();
+                await handleBatchUpstreamLink(batchPage, linkAction, linkItem);
+                return;
+            }
             const copyButton = event.target.closest("[data-copy-text]");
             if (copyButton) {
                 await copyText(copyButton.getAttribute("data-copy-text") || "");
@@ -1887,6 +2004,7 @@
     }
 
     const testApi = Object.freeze({
+        downloadBatchPhotoArchive,
         authorizeBatchUpstreamItems,
         collectBatchResourceLinks,
         buildBatchLinksText,

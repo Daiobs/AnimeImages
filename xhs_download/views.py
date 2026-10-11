@@ -6240,6 +6240,24 @@ def download_images_api(request):
         return JsonResponse({"status": "error", "message": "请求数据不是有效 JSON。"}, status=400)
 
     media_items = data.get("media_items", [])
+    resource_link = data.get("intent") == "resource_link"
+    if resource_link:
+        if not batch_parse_user_is_staff(request):
+            return download_guard_error_response(
+                "无权使用资源链接。", status=403, error_code="RESOURCE_LINK_FORBIDDEN",
+            )
+        if (data.get("route_only") is not True
+                or data.get("download_mode", "browser") not in ("browser", "auto")
+                or not isinstance(media_items, list) or len(media_items) != 1
+                or not isinstance(media_items[0], dict)
+                or media_items[0].get("type") != "image"
+                or not str(media_items[0].get("asset_id") or "").startswith("upstream:")
+                or not item_is_upstream(media_items[0])
+                or not provider_manifest_allows_public_download(media_items[0])):
+            return download_guard_error_response(
+                "资源链接授权不可用或已失效，请重新解析。",
+                status=403, error_code="RESOURCE_LINK_REJECTED",
+            )
     route_only = bool(data.get("route_only"))
     image_urls = data.get("image_urls", [])
     if image_urls and not media_items:
@@ -6389,17 +6407,34 @@ def download_images_api(request):
             error_code=error_code,
         )
 
+    if resource_link:
+        linked_items = route_info.get("items")
+        if (route_info.get("route_type") != ROUTE_DIRECT
+                or not isinstance(linked_items, list) or len(linked_items) != 1
+                or not isinstance(linked_items[0], dict)
+                or linked_items[0].get("browser_upstream_bound") is not True
+                or any(linked_items[0].get(key) != media_items[0].get(key)
+                       for key in ("asset_id", "url", "type", "provider", "provider_resource_id",
+                                   "provider_cache_key", "source_platform"))
+                or not provider_manifest_allows_public_download(media_items[0])):
+            return download_guard_error_response(
+                "资源链接授权不可用或已失效，请重新解析。",
+                status=403, error_code="RESOURCE_LINK_REJECTED",
+            )
+
     if download_mode in routed_download_modes and route_info.get("route_type") == ROUTE_DIRECT:
-        log_download_request_event(
-            request,
-            download_type=route_info.get("route_type", "auto"),
-            media_items=media_items,
-            status=ObservabilityStatus.SUCCESS,
-            started_at=started_at,
-            actual_bytes=0,
-            route_info=route_info,
-        )
-        return JsonResponse(
+        # Link authorization is not a download attempt or a saved file.
+        if not resource_link:
+            log_download_request_event(
+                request,
+                download_type=route_info.get("route_type", "auto"),
+                media_items=media_items,
+                status=ObservabilityStatus.SUCCESS,
+                started_at=started_at,
+                actual_bytes=0,
+                route_info=route_info,
+            )
+        response = JsonResponse(
             {
                 "status": "routed",
                 "route_type": route_info.get("route_type"),
@@ -6415,6 +6450,9 @@ def download_images_api(request):
                 "routing_score": route_info.get("routing_score", 0),
             }
         )
+        if resource_link:
+            response["Cache-Control"] = "private, no-store"
+        return response
 
     if route_only and download_mode in routed_download_modes:
         log_download_request_event(

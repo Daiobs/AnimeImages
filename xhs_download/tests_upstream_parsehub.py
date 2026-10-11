@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -13,18 +13,59 @@ from xhs_download.services import upstream_parsehub as bridge
 
 SOURCE = "https://tieba.baidu.com/p/123"
 
+# These registered test doubles model isinstance identity, not package compatibility.
+# Real package classes are exercised in tests_upstream_parsehub_real_types only.
+RESULT_TYPES = {
+    name: type("Mock" + name, (SimpleNamespace,), {})
+    for name in ("ImageParseResult", "VideoParseResult", "MultimediaParseResult", "RichTextParseResult")
+}
+REF_TYPES = {
+    name: type("Mock" + name, (SimpleNamespace,), {})
+    for name in ("ImageRef", "AniRef", "VideoRef", "LivePhotoRef")
+}
+
+
+class MockParseHubTypesMixin:
+    def setUp(self):
+        super().setUp()
+        modules = {name: ModuleType(name) for name in (
+            "parsehub", "parsehub.types", "parsehub.types.result", "parsehub.types.media_ref",
+        )}
+        modules["parsehub"].__path__ = []
+        modules["parsehub.types"].__path__ = []
+        modules["parsehub"].types = modules["parsehub.types"]
+        modules["parsehub.types"].result = modules["parsehub.types.result"]
+        modules["parsehub.types"].media_ref = modules["parsehub.types.media_ref"]
+        modules["parsehub.types.result"].__dict__.update(RESULT_TYPES)
+        modules["parsehub.types.media_ref"].__dict__.update(REF_TYPES)
+        registry = patch.dict("sys.modules", modules)
+        registry.start()
+        self.addCleanup(registry.stop)
+
 
 def ref(kind, url=None):
     video = kind == "VideoRef"
-    return type(kind, (), {"url": url or ("https://media.example/video.mp4" if video else "https://media.example/image.jpg"),
-                          "ext": "mp4" if video else "jpg"})()
+    return REF_TYPES[kind](
+        url=url or ("https://media.example/video.mp4" if video else "https://media.example/image.jpg"),
+        ext="mp4" if video else "jpg",
+    )
 
 
 def result(media, raw_url=SOURCE):
-    return type("ImageParseResult", (), {"media": media, "raw_url": raw_url, "title": "test"})()
+    return RESULT_TYPES["ImageParseResult"](media=media, raw_url=raw_url, title="test")
 
 
-class WorkerTests(unittest.TestCase):
+class WorkerTests(MockParseHubTypesMixin, unittest.TestCase):
+    def test_same_named_unregistered_types_are_rejected(self):
+        forged = type("ImageParseResult", (), {
+            "media": [ref("ImageRef")], "raw_url": SOURCE, "title": "fake",
+        })()
+        with self.assertRaisesRegex(ValueError, "^unsupported_result$"):
+            worker.normalize_result(forged, SOURCE)
+        forged_ref = type("ImageRef", (), {"url": "https://media.example/a.jpg", "ext": "jpg"})()
+        with self.assertRaisesRegex(ValueError, "^unsupported_result$"):
+            worker.normalize_result(result([forged_ref]), SOURCE)
+
     def test_exact_public_paths(self):
         for url, parser in [(SOURCE, "TieBaParser"),
                             ("https://h5.pipix.com/ppx/item/123", "PipixParser"),
@@ -172,7 +213,7 @@ class WorkerTests(unittest.TestCase):
 
 
 @override_settings(PARSEHUB_UPSTREAM_ENABLED=True, PARSEHUB_UPSTREAM_PYTHON="/isolated/python")
-class ServiceTests(SimpleTestCase):
+class ServiceTests(MockParseHubTypesMixin, SimpleTestCase):
     @override_settings(PARSEHUB_UPSTREAM_ENABLED=False)
     def test_disabled_does_not_execute(self):
         with patch.object(bridge, "run_external_command") as run:
@@ -191,7 +232,7 @@ class ServiceTests(SimpleTestCase):
         call.assert_called_once_with({"action": "identity"}, 5)
         self.assertTrue(snapshot["available"])
         self.assertEqual({r["extractor_id"] for r in snapshot["entries"]}, set(worker.PARSERS))
-        self.assertEqual(snapshot["counts"]["eligible"], 3)
+        self.assertEqual(snapshot["counts"]["eligible"], len(worker.PARSERS))
         self.assertEqual(snapshot["version"], worker.PROVIDER_VERSION)
 
     def test_coverage_invalid_or_failed_runtime_is_empty(self):

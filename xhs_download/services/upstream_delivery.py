@@ -13,7 +13,7 @@ from .assets import MediaAsset, ParseResult
 from .common import XhsParseError, clean_filename, validate_public_download_url
 from .provider_manifest import build_provider_manifest_token, provider_manifest_is_valid
 from .provider_access import UPSTREAM_PROVIDER_IDS
-from .platforms.gallerydl_generic import media_type_from_metadata, extension_from_url
+from .platforms.gallerydl_generic import media_type_from_metadata, extension_from_url, VIDEO_EXTENSIONS
 from .platforms.ytdlp_generic import (
     YtDlpResultNormalizer, format_url_is_direct_http,
     ytdlp_format_has_explicit_complete_video, ytdlp_format_score,
@@ -87,6 +87,12 @@ class UpstreamMediaError(XhsParseError):
         super().__init__(code)
 
 
+def _has_complete_bmff_tracks(probe):
+    return (isinstance(probe, dict) and probe.get('schema') == 'iso_bmff_tracks_v1'
+            and probe.get('complete_moov') is True and probe.get('audio') == 'present'
+            and probe.get('video') == 'present' and probe.get('reason') == 'complete_track_table')
+
+
 def video_evidence_state(item):
     if not isinstance(item, dict) or not item.get('url'):
         return 'no_formats'
@@ -100,9 +106,7 @@ def video_evidence_state(item):
     if ytdlp_format_has_explicit_complete_video(evidence):
         return 'complete'
     probe = item.get('upstream_bmff_track_evidence')
-    if (isinstance(probe, dict) and probe.get('schema') == 'iso_bmff_tracks_v1'
-            and probe.get('complete_moov') is True and probe.get('audio') == 'present'
-            and probe.get('video') == 'present' and probe.get('reason') == 'complete_track_table'):
+    if _has_complete_bmff_tracks(probe):
         return 'complete'
     return 'unknown_media_tracks'
 
@@ -185,8 +189,15 @@ def normalize_upstream_result(payload, *, match, source_url):
                 continue
             media_type = media_type_from_metadata(metadata, url)
             if media_type == 'video':
-                limited_media_count += 1
-                continue
+                # Evidence belongs to this message, never a nested or sibling URL.
+                candidate = {**metadata, 'url': url}
+                explicit_none = any(str(metadata.get(key) or '').lower() == 'none'
+                                    for key in ('acodec', 'vcodec'))
+                if (provider != 'parsehub_generic' or explicit_none
+                        or not _has_complete_bmff_tracks(metadata.get('upstream_bmff_track_evidence'))
+                        or video_evidence_state(candidate) != 'complete'):
+                    limited_media_count += 1
+                    continue
             if media_type not in ('image', 'video') or url in seen:
                 continue
             url = safe_resource_url(url)
@@ -195,6 +206,9 @@ def normalize_upstream_result(payload, *, match, source_url):
             seen.add(url)
             title = str(metadata.get('title') or metadata.get('filename') or title)
             ext = str(metadata.get('extension') or extension_from_url(url)).lower().lstrip('.')
+            if media_type == 'video' and f'.{ext}' not in VIDEO_EXTENSIONS:
+                url_ext = extension_from_url(url)
+                ext = url_ext if f'.{url_ext}' in VIDEO_EXTENSIONS else 'mp4'
             assets.append(MediaAsset(media_type=media_type, url=url, platform='third_party',
                                      preview_url=url if media_type == 'image' else '', ext=ext))
             if len(assets) > MAX_ASSETS:

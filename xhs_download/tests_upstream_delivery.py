@@ -1,3 +1,4 @@
+from hashlib import sha256
 from unittest.mock import patch
 
 from django.core.cache import cache
@@ -37,6 +38,29 @@ class UpstreamDeliveryTests(SimpleTestCase):
         item = self.image_result().assets[0].to_download_item()
         item.pop('provider_manifest_token')
         self.assertFalse(upstream_manifest_item_is_allowed(item))
+
+    @override_settings(PROVIDER_MANIFEST_MAX_AGE_SECONDS=60)
+    def test_signature_expires_with_cached_resource_still_present(self):
+        # Replace signing's clock object, not shared time.time used by the cache.
+        with patch('django.core.signing.time') as clock:
+            clock.time.return_value = 1700000000
+            item = self.image_result().assets[0].to_download_item()
+            key = 'upstream:asset:v1:' + sha256(item['asset_id'].encode()).hexdigest()
+            record = cache.get(key)
+            self.assertIsInstance(record, dict)
+            self.assertTrue(upstream_manifest_item_is_allowed(item))
+            clock.time.return_value = 1700000060
+            self.assertTrue(upstream_manifest_item_is_allowed(item))
+            clock.time.return_value = 1700000061
+            self.assertEqual(cache.get(key), record)
+            self.assertFalse(upstream_manifest_item_is_allowed(item))
+
+    def test_tampered_signature_rejected_with_cached_resource_present(self):
+        item = self.image_result().assets[0].to_download_item()
+        self.assertTrue(upstream_manifest_item_is_allowed(item))
+        forged = {**item, 'provider_manifest_token': item['provider_manifest_token'] + 'tampered'}
+        self.assertFalse(upstream_manifest_item_is_allowed(forged))
+        self.assertTrue(upstream_manifest_item_is_allowed(item))
 
     def test_cache_eviction_fails_closed(self):
         item = self.image_result().assets[0].to_download_item()

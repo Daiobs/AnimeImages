@@ -3,6 +3,11 @@
 Set PARSEHUB_UPSTREAM_ENABLED and PARSEHUB_UPSTREAM_PYTHON independently of XHS.
 parse_upstream_url returns gallery-style [3, url, metadata] messages. Videos carry
 media_completeness=unknown and MUST NOT be admitted as complete without evidence.
+The worker may attach upstream_bmff_track_evidence to one URL message's metadata:
+{"schema": "iso_bmff_tracks_v1", "complete_moov": True, "audio": "present",
+ "video": "present", "reason": "complete_track_table"}.
+This bridge preserves that evidence without probing or promoting completeness;
+delivery owns verification and explicit missing-track rejection.
 """
 
 import json

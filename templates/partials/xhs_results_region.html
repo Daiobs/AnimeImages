@@ -298,6 +298,14 @@
                                 </div>
                                 <span class="visually-hidden" data-livephoto-status>实况照片</span>
                                 {% endif %}
+                            {% if show_internal_diagnostics and item.source_platform == 'upstream' %}
+                                <div class="p-2">
+                                    <button type="button" class="btn btn-outline-secondary btn-sm" data-upstream-image-open>
+                                        打开直链
+                                    </button>
+                                    <span class="small text-muted" data-upstream-image-link-status role="status"></span>
+                                </div>
+                            {% endif %}
                         </div>
                     {% endfor %}
                 </div>
