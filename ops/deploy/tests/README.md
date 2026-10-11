@@ -37,6 +37,8 @@ Consumer-owned read-only files/directories and consumer-writable ancestors are
 also rejected: real consumers demonstrate chmod or directory replacement in
 those disposable negative fixtures. A positive case retains support for a
 deploy-owned candidate under root-owned sticky `/tmp`.
+Multi-hop static links and the original runtime alias are checked before their
+final targets can hide a consumer-controlled intermediate path.
 The suite asserts no switch before failed prechecks and no restart after failed
 post-switch checks, plus private record/backup isolation and 0022/0027 success.
 

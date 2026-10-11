@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import pwd
 import subprocess
 import sys
 import unittest
@@ -355,6 +356,39 @@ app.mkdir()
         self.assertEqual(self.head(), self.fixture['before'])
         self.assertNotIn('restart', command(['cat', '/permission-tests/service-events'], user='deploy').stdout)
         self.assertEqual(command(['cat', str(self.root/'events')], user='deploy').stdout, '')
+
+    def test_multihop_static_link_rejects_consumer_controlled_intermediate(self):
+        hop = self.root/'consumer-hop'
+        command(['mkdir', str(hop)])
+        command(['ln', '-s', self.fixture['app']+'/static/probe.css', str(hop/'middle')])
+        command(['chown', 'staticweb:staticweb', str(hop)])
+        command(['chmod', '555', str(hop)])
+        command(['ln', '-s', str(hop/'middle'), self.fixture['app']+'/static/alias.css'], user='deploy')
+        result = command(['/opt/permission-runtime/bin/python', '-I', '-B',
+                          self.fixture['tool']+'/scripts/check_deploy_readability.py',
+                          '--expected-uid', str(pwd.getpwnam('staticweb').pw_uid),
+                          '--root', self.fixture['app']+'/static', '--static'],
+                         user='staticweb', check=False)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('consumer owns application artifact', result.stderr)
+        command(['chmod', 'u+w', str(hop)], user='staticweb')
+        command(['rm', str(hop/'middle')], user='staticweb')
+        command(['ln', '-s', '/etc/hosts', str(hop/'middle')], user='staticweb')
+
+    def test_consumer_owned_runtime_alias_rejected(self):
+        alias = Path('/tmp')/self._testMethodName
+        command(['ln', '-s', '/opt/permission-runtime', str(alias)], user='web')
+        paths = command(['git', '-C', self.fixture['app'], 'ls-tree', '-r',
+                         '--name-only', '-z', 'HEAD'], user='deploy').stdout
+        result = command(['/opt/permission-runtime/bin/python', '-I', '-B',
+                          self.fixture['tool']+'/scripts/check_deploy_readability.py',
+                          '--expected-uid', str(pwd.getpwnam('web').pw_uid),
+                          '--root', self.fixture['app'], '--runtime-root', str(alias),
+                          '--paths-stdin'], user='web', input=paths, check=False)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('consumer owns application artifact', result.stderr)
+        command(['rm', str(alias)], user='web')
+        command(['ln', '-s', self.fixture['app'], str(alias)], user='web')
 
     def test_wrong_tool_sha_rejected_before_switch(self):
         self.assert_no_switch_or_restart(self.run_deploy(DEPLOY_TOOL_SHA='0'*40))

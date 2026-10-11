@@ -16,14 +16,26 @@ def parents_accessible(path):
 
 
 def artifact_protected(path):
-    # Check both the link path and its target; sticky /tmp protects other owners' entries.
-    for candidate in {path.absolute(), path.resolve(strict=True)}:
+    # Follow every link hop; sticky /tmp protects only other owners' entries.
+    pending = [path.absolute()]
+    checked = set()
+    while pending:
+        candidate = pending.pop()
+        if candidate in checked:
+            continue
+        checked.add(candidate)
+        resolved = candidate.resolve(strict=True)
+        if resolved not in checked:
+            pending.append(resolved)
         if os.access(candidate, os.W_OK):
             raise PermissionError(f"consumer can write application artifact: {candidate}")
         for entry in (candidate, *candidate.parents):
             metadata = entry.lstat()
             if metadata.st_uid == os.geteuid():
                 raise PermissionError(f"consumer owns application artifact: {entry}")
+            if stat.S_ISLNK(metadata.st_mode):
+                target = entry.readlink()
+                pending.append(target if target.is_absolute() else entry.parent / target)
             parent = entry.parent
             if parent == entry:
                 break
@@ -96,6 +108,7 @@ def main():
             if not path.resolve(strict=True).is_relative_to(root):
                 raise PermissionError("tracked path escapes candidate root")
             readable_file(path)
+        artifact_protected(args.runtime_root)
         runtime = args.runtime_root.resolve(strict=True)
         if runtime != Path(sys.prefix).resolve() or sys.prefix == sys.base_prefix:
             raise ValueError("probe interpreter must use the selected virtualenv")
