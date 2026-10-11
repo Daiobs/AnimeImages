@@ -1172,7 +1172,9 @@
             return "前次服务调用结果未知，尚不能确认是否已执行；请先核对原调用账本与服务状态，不能直接复测或重发。";
         }
         if (!execution.source_url) return "缺少原始来源链接，不能复测或保存路线。";
-        if (["unknown", "sent", "reserved", "in_flight", "running", "queued", "waiting"].includes(String(execution.state || "unknown").toLowerCase())) return "原调用结果未确认，请先核对账本；不能重发。";
+        if (typeof execution.state !== "string" || !["returned", "success", "failed", "timeout", "unsupported",
+            "not_executed", "planned", "skipped", "cancelled", "canceled", "not_configured", "not_authorized"]
+            .includes(execution.state.trim().toLowerCase())) return "原调用结果未确认，请先核对账本；不能重发。";
         if (execution.can_retest !== true) return "该记录当前不可复测。";
         if (!descriptor || descriptor.available !== true) return "Provider 已移除、禁用或当前不可用。";
         return "";

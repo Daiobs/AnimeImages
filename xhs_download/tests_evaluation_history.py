@@ -310,6 +310,45 @@ class EvaluationHistoryTests(TestCase):
                 self.assertEqual(response.json()["error_code"], "PROVIDER_POLICY_REJECTED")
         self.run.assert_not_called()
 
+    def test_retest_state_admission_is_normalized_and_fail_closed(self):
+        record = self.imported()
+        for state in ("queued", "waiting", "UNKNOWN", " Running ", "WAITING", "QUEUED",
+                      None, "", "  ", 1, True, [], {}, "unrecognized"):
+            with self.subTest(state=state):
+                record.summary["state"] = state
+                record.save(update_fields=["summary"])
+                before = deepcopy(record.summary)
+                self.assertFalse(history.retest_allowed(record))
+                response = self.post(self.run_payload(record.pk), reverse("provider_lab_run"))
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["error_code"], "PROVIDER_POLICY_REJECTED")
+                self.run.assert_not_called()
+                record.refresh_from_db()
+                self.assertEqual(record.summary, before)
+
+        record.summary.pop("state")
+        record.save(update_fields=["summary"])
+        before = deepcopy(record.summary)
+        self.assertFalse(history.retest_allowed(record))
+        response = self.post(self.run_payload(record.pk), reverse("provider_lab_run"))
+        self.assertEqual(response.status_code, 400)
+        self.run.assert_not_called()
+        record.refresh_from_db()
+        self.assertEqual(record.summary, before)
+
+    def test_retest_terminal_and_unexecuted_states_preserve_unknown_outcome_gate(self):
+        record = self.imported()
+        for state in ("returned", "SUCCESS", " failed ", "timeout", "unsupported",
+                      "not_executed", "planned", "skipped", "cancelled"):
+            with self.subTest(state=state):
+                record.summary["state"] = state
+                record.summary["result"] = {}
+                self.assertTrue(history.retest_allowed(record))
+                for key, value in (("error_detail", "SERVICE_PREVIOUS_OUTCOME_UNKNOWN"),
+                                   ("client_status", "OUTCOME_UNKNOWN")):
+                    record.summary["result"] = {key: value}
+                    self.assertFalse(history.retest_allowed(record))
+
     def test_retest_only_selected_provider_and_preserves_parent(self):
         parent = self.imported()
         original = deepcopy(parent.summary)

@@ -313,6 +313,29 @@ test("missing source and removed providers stay readable; uncertain executions n
     f.workspace.destroy();
 });
 
+test("retest rejects malformed and pending states even when can_retest is true", async () => {
+    for (const state of ["QUEUED", " waiting ", "UNKNOWN", " Running ", null, undefined, "", "  ", 1, true, [], {}, "unrecognized"]) {
+        const f = fixture();
+        Object.assign(f.executions[0], {state, can_retest: true});
+        await f.workspace.loadBatch(1);
+        const card = await f.inspect(10);
+        assert.equal(card.querySelector("[data-history-retest]").disabled, true);
+        await f.click(card.querySelector("[data-history-retest]"));
+        assert.equal(f.retests.length, 0);
+        f.workspace.destroy();
+    }
+});
+
+test("retest normalizes known terminal states without changing original evidence", () => {
+    const f = fixture();
+    for (const state of ["SUCCESS", " returned ", "failed", "timeout", "unsupported", "not_executed", "planned", "skipped", "cancelled"]) {
+        const record = {...f.executions[0], state, can_retest: true};
+        assert.equal(lab.historyRetestReason(record, {available: true}), "");
+        assert.equal(record.state, state);
+    }
+    f.workspace.destroy();
+});
+
 test("explicit retest calls exactly one item and persistence failure cannot trigger another call", async () => {
     const f = fixture(); await f.workspace.loadBatch(1);
     const card = await f.inspect(10);

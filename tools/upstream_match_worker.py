@@ -697,6 +697,32 @@ def parse_gallery(cls, url, timeout):
     return result
 
 
+def probe_ytdlp_result(payload, *, deadline, budget):
+    # Only the single-work result is eligible, never every entry in a collection.
+    if not isinstance(payload, dict) or payload.get('_type', 'video') not in ('video', None):
+        return
+    try:
+        from tools.upstream_metadata_probe import MAX_BYTES, MAX_REQUESTS as PROBE_REQUESTS, probe_in_guarded_child
+    except ModuleNotFoundError:
+        from upstream_metadata_probe import MAX_BYTES, MAX_REQUESTS as PROBE_REQUESTS, probe_in_guarded_child
+    if (time.monotonic() >= deadline or budget['requests'] + PROBE_REQUESTS > MAX_REQUESTS
+            or max(budget['bytes'], budget['decoded_bytes']) + PROBE_REQUESTS * MAX_BYTES > MAX_BODY):
+        return
+    candidates = []
+    for item in payload.get('formats') or [payload]:
+        evidence = item.get('upstream_track_evidence', {})
+        codecs = [str(evidence.get(key) or '').lower() for key in ('acodec', 'vcodec')]
+        if (item.get('ext') == 'mp4' and item.get('protocol') == 'https'
+                and urlsplit(item.get('url') or '').scheme == 'https'
+                and 'none' not in codecs and not all(codecs)
+                and not item.get('upstream_bmff_track_evidence')):
+            candidates.append(item)
+    if candidates:
+        candidate = max(candidates, key=lambda item: item.get('height') or 0)
+        candidate['upstream_bmff_track_evidence'] = probe_in_guarded_child(
+            candidate['url'], deadline_monotonic=deadline)
+
+
 def handle(request):
     global _STAGE
     _STAGE = "identity"
@@ -739,8 +765,13 @@ def handle(request):
     if not math.isfinite(timeout):
         raise ValueError("invalid_request")
     timeout = min(30.0, max(0.1, timeout))
-    with runtime_budget(timeout):
-        return (parse_ytdlp if provider == "yt_dlp_generic" else parse_gallery)(exact[0], url, timeout)
+    deadline = time.monotonic() + timeout
+    with runtime_budget(timeout) as budget:
+        payload = (parse_ytdlp if provider == "yt_dlp_generic" else parse_gallery)(exact[0], url, timeout)
+    if provider == "yt_dlp_generic":
+        # The probe owns its hard timer; the child network guard remains installed.
+        probe_ytdlp_result(payload, deadline=deadline, budget=budget)
+    return payload
 
 
 def main():

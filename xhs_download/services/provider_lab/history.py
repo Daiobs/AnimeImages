@@ -216,9 +216,21 @@ def finish_execution(record, result):
 def retest_allowed(record):
     from .providers import PROVIDER_REGISTRY
     s = record.summary
+    if not isinstance(s, dict):
+        return False
+    state = s.get("state")
+    if not isinstance(state, str):
+        return False
+    # Only known terminal or explicitly unexecuted records authorize a new attempt.
+    if state.strip().lower() not in {
+        "returned", "success", "failed", "timeout", "unsupported", "not_executed",
+        "planned", "skipped", "cancelled", "canceled", "not_configured", "not_authorized",
+    }:
+        return False
     result = s.get("result", {})
+    if not isinstance(result, dict):
+        return False
     return bool(s.get("source_url") and s.get("provider_id") in PROVIDER_REGISTRY
-                and s.get("state") not in {"unknown", "sent", "reserved", "in_flight", "running"}
                 and result.get("error_detail") != "SERVICE_PREVIOUS_OUTCOME_UNKNOWN"
                 and result.get("client_status") != "OUTCOME_UNKNOWN")
 

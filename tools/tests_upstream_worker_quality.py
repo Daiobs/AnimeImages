@@ -5,9 +5,10 @@ import gzip
 import io
 import json
 import socket
+import signal
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from tools import upstream_match_worker as worker
 
@@ -99,6 +100,151 @@ class WorkerQualityTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "cycle_detected"):
             worker.parse_ytdlp(CycleIE, "https://example.org/1", 3)
+
+    def test_worker_restores_one_bounded_bmff_probe(self):
+        from yt_dlp.extractor.common import InfoExtractor
+
+        class FixtureIE(InfoExtractor):
+            _VALID_URL = r"https://example.org/(?P<id>1)"
+
+            def _real_extract(self, url):
+                return {"id": "1", "title": "fixture", "formats": [
+                    {"url": "https://example.org/low.mp4", "height": 360},
+                    {"url": "https://example.org/high.mp4", "height": 1080},
+                    {"url": "https://example.org/known.mp4", "height": 2160,
+                     "vcodec": "h264", "acodec": "aac"},
+                    {"url": "https://example.org/split.mp4", "height": 4320,
+                     "vcodec": "h264", "acodec": "none"},
+                ]}
+
+        evidence = {"schema": "iso_bmff_tracks_v1", "complete_moov": True,
+                    "audio": "present", "video": "present", "reason": "complete_track_table"}
+        request = {"provider_id": "yt_dlp_generic", "version": "fixture", "action": "parse",
+                   "url": "https://example.org/1", "extractor_id": FixtureIE.ie_key(),
+                   "timeout_seconds": 3}
+        started = time.monotonic()
+        with patch.object(worker, "package_identity", return_value={"version": "fixture"}), \
+                patch.object(worker, "extractor_classes", return_value=[FixtureIE]), \
+                patch("tools.upstream_metadata_probe.probe_in_guarded_child", return_value=evidence) as probe:
+            result = worker.handle(request)
+        probe.assert_called_once()
+        self.assertEqual(probe.call_args.args, ("https://example.org/high.mp4",))
+        self.assertLessEqual(probe.call_args.kwargs["deadline_monotonic"], started + 3.1)
+        self.assertEqual(len(result["formats"]), 4)
+        enriched = [fmt for fmt in result["formats"] if "upstream_bmff_track_evidence" in fmt]
+        self.assertEqual(len(enriched), 1)
+        self.assertEqual(enriched[0]["upstream_bmff_track_evidence"], evidence)
+        self.assertIsNone(enriched[0]["upstream_track_evidence"]["acodec"])
+
+    def test_bmff_probe_skips_collections_known_tracks_and_exhausted_budgets(self):
+        def candidate(**fields):
+            return {"url": "https://example.org/movie.mp4", "ext": "mp4", "protocol": "https",
+                    "upstream_track_evidence": {"acodec": None, "vcodec": None}, **fields}
+
+        budget = {"requests": 0, "bytes": 0, "decoded_bytes": 0}
+        cases = [
+            ({"_type": "playlist", "entries": [{"formats": [candidate()]}]}, budget, 3),
+            ({"formats": [candidate(upstream_track_evidence={"acodec": "aac", "vcodec": "h264"})]}, budget, 3),
+            ({"formats": [candidate(upstream_track_evidence={"acodec": "none", "vcodec": "h264"})]}, budget, 3),
+            ({"formats": [candidate(protocol="m3u8_native")]}, budget, 3),
+            ({"formats": [candidate(url="http://example.org/movie.mp4", protocol="http")]}, budget, 3),
+            ({"formats": [candidate()]}, budget, -1),
+            ({"formats": [candidate()]}, {**budget, "requests": worker.MAX_REQUESTS - 1}, 3),
+            ({"formats": [candidate()]}, {**budget, "bytes": worker.MAX_BODY - 1}, 3),
+            ({"formats": [candidate()]}, {**budget, "decoded_bytes": worker.MAX_BODY - 1}, 3),
+        ]
+        for payload, remaining, seconds in cases:
+            with self.subTest(payload=payload, remaining=remaining, seconds=seconds), \
+                    patch("tools.upstream_metadata_probe.probe_in_guarded_child") as probe:
+                before = json.dumps(payload, sort_keys=True)
+                worker.probe_ytdlp_result(payload, deadline=time.monotonic() + seconds, budget=remaining)
+                probe.assert_not_called()
+                self.assertEqual(json.dumps(payload, sort_keys=True), before)
+
+    def test_worker_real_bmff_probe_shares_two_ranges_and_original_deadline(self):
+        from tools import upstream_metadata_probe as bmff
+        from yt_dlp.extractor.common import InfoExtractor
+
+        class FixtureIE(InfoExtractor):
+            _VALID_URL = r"https://example.org/(?P<id>1)"
+
+            def _real_extract(self, url):
+                return {"id": "1", "title": "fixture", "formats": [
+                    {"url": "https://example.org/movie.mp4"},
+                    {"url": "https://example.org/other.mp4"},
+                ]}
+
+        def box(kind, body):
+            return (len(body) + 8).to_bytes(4, "big") + kind + body
+
+        moov = box(b"moov", b"".join(box(b"trak", box(b"mdia", box(
+            b"hdlr", bytes(8) + handler + bytes(12)))) for handler in (b"vide", b"soun")))
+        data = box(b"mdat", bytes(bmff.MAX_BYTES - 8)) + moov
+        requests = []
+
+        def open_range(request, timeout):
+            requests.append((request, timeout))
+            start, end = map(int, request.get_header("Range").removeprefix("bytes=").split("-"))
+            end = min(end, len(data) - 1)
+            response = io.BytesIO(data[start:end + 1])
+            response.status = 206
+            response.headers = {"Content-Range": f"bytes {start}-{end}/{len(data)}"}
+            response.geturl = lambda: request.full_url
+            return response
+
+        def guarded_connection(*args, **kwargs):
+            raise AssertionError("offline")
+
+        guarded_connection.__qualname__ = "install_network_guard.<locals>.connect"
+        real_probe = bmff.probe_in_guarded_child
+        deadlines = []
+
+        def probe(url, *, deadline_monotonic):
+            self.assertEqual(signal.getitimer(signal.ITIMER_REAL)[0], 0)
+            deadlines.append(deadline_monotonic)
+            return real_probe(url, deadline_monotonic=deadline_monotonic)
+
+        request = {"provider_id": "yt_dlp_generic", "version": "fixture", "action": "parse",
+                   "url": "https://example.org/1", "extractor_id": FixtureIE.ie_key(),
+                   "timeout_seconds": 10}
+        started = time.monotonic()
+        with patch.object(worker, "package_identity", return_value={"version": "fixture"}), \
+                patch.object(worker, "extractor_classes", return_value=[FixtureIE]), \
+                patch.object(socket, "create_connection", guarded_connection), \
+                patch("urllib.request.build_opener", return_value=Mock(open=open_range)), \
+                patch.object(bmff, "probe_in_guarded_child", side_effect=probe):
+            result = worker.handle(request)
+        self.assertEqual(len(deadlines), 1)
+        self.assertLessEqual(deadlines[0], started + 10.1)
+        self.assertEqual(len(requests), 2)
+        self.assertEqual({req.full_url for req, _ in requests}, {"https://example.org/movie.mp4"})
+        self.assertTrue(all(0 < timeout <= 5 for _, timeout in requests))
+        self.assertTrue(all(req.get_header("Accept-encoding") == "identity" for req, _ in requests))
+        evidence = result["formats"][0]["upstream_bmff_track_evidence"]
+        self.assertTrue(evidence["complete_moov"])
+        self.assertEqual((evidence["audio"], evidence["video"], evidence["requests"]), ("present", "present", 2))
+        self.assertLessEqual(evidence["bytes_read"], 2 * bmff.MAX_BYTES)
+        self.assertNotIn("upstream_bmff_track_evidence", result["formats"][1])
+        self.assertEqual(signal.getitimer(signal.ITIMER_REAL)[0], 0)
+
+    def test_bmff_request_failure_preserves_candidates_without_retrying_another(self):
+        from tools.upstream_metadata_probe import probe_iso_bmff_tracks
+        payload = {"formats": [{"url": f"https://example.org/{i}.mp4", "ext": "mp4",
+                                "protocol": "https", "upstream_track_evidence": {}}
+                               for i in range(3)]}
+        reader = Mock(side_effect=OSError("offline fixture"))
+        def probe(url, *, deadline_monotonic):
+            return probe_iso_bmff_tracks(url, guarded_range_reader=reader,
+                                         deadline_monotonic=deadline_monotonic)
+        with patch("tools.upstream_metadata_probe.probe_in_guarded_child", side_effect=probe) as call:
+            worker.probe_ytdlp_result(payload, deadline=time.monotonic() + 3,
+                                     budget={"requests": 0, "bytes": 0, "decoded_bytes": 0})
+        call.assert_called_once()
+        reader.assert_called_once()
+        self.assertEqual(len(payload["formats"]), 3)
+        evidence = payload["formats"][0]["upstream_bmff_track_evidence"]
+        self.assertFalse(evidence["complete_moov"])
+        self.assertEqual(evidence["reason"], "request_failed")
 
     def test_ytdlp_lazy_collection_stops_and_preserves_partial(self):
         from yt_dlp.extractor.common import InfoExtractor
