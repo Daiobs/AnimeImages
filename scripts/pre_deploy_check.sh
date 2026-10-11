@@ -50,7 +50,7 @@ fail_app_dir_ownership() {
     printf '[pre-deploy] ERROR:\n' >&2
     printf 'application directory ownership must be %s:%s\n\n' "$DEPLOY_USER" "$DEPLOY_GROUP" >&2
     printf 'Current:\n%s: %s\n\n' "$APP_DIR" "$actual_owner_group" >&2
-    printf 'Fix:\nsudo chown -R %s:%s %s\n' "$DEPLOY_USER" "$DEPLOY_GROUP" "$APP_DIR" >&2
+    printf 'Inspect and repair only explicitly identified ownership errors; do not recursively change secrets or runtime data.\n' >&2
     exit 1
 }
 

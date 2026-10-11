@@ -22,7 +22,7 @@ main() {
     run_sudo systemctl status "$SERVICE_NAME" --no-pager -l
 
     if [[ "$RUN_HEALTH_CHECK" == "1" ]]; then
-        "$APP_DIR/scripts/health_check.sh"
+        bash "$SCRIPT_DIR/health_check.sh"
     fi
 }
 

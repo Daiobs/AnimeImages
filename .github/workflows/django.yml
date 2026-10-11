@@ -88,6 +88,11 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install --upgrade pip && pip install -r requirements.txt
 
+      - name: Linux deployment permission acceptance (isolated users)
+        run: |
+          docker build -t animeimages-deploy-permission-tests -f ops/deploy/tests/Dockerfile .
+          docker run --rm --network none -v "$GITHUB_WORKSPACE:/source:ro" animeimages-deploy-permission-tests
+
       - name: Install optional upstream contract test runtimes
         run: python -m pip install --no-deps yt-dlp==2026.3.17 gallery-dl==1.32.4
 
