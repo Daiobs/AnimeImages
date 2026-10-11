@@ -122,7 +122,10 @@ preconditions. Additionally:
 - Archive the pinned candidate into a fresh directory under a separate stage
   parent (default `/tmp`), with new directory mode `2755` or `2750` respectively.
   Check ancestor traversal and code, templates and virtualenv readability and
-  non-writability as the Web identity. A private recovery directory is not a
+  non-writability as the Web identity. Consumer ownership is rejected even for
+  read-only artifacts because owners can change their modes. Writable ancestors
+  must not allow consumers to replace artifacts; root-owned sticky `/tmp` remains
+  suitable for deploy-owned candidates. A private recovery directory is not a
   suitable Web-readable stage parent.
 - `DEPLOY_PREPARE_ONLY=1` fetches the branch, creates a temporary candidate archive
   and private journal/code backup, and checks candidate static assets plus both candidate and

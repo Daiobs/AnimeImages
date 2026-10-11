@@ -15,22 +15,40 @@ def parents_accessible(path):
             raise PermissionError(f"directory not traversable: {parent}")
 
 
+def artifact_protected(path):
+    # Check both the link path and its target; sticky /tmp protects other owners' entries.
+    for candidate in {path.absolute(), path.resolve(strict=True)}:
+        if os.access(candidate, os.W_OK):
+            raise PermissionError(f"consumer can write application artifact: {candidate}")
+        for entry in (candidate, *candidate.parents):
+            metadata = entry.lstat()
+            if metadata.st_uid == os.geteuid():
+                raise PermissionError(f"consumer owns application artifact: {entry}")
+            parent = entry.parent
+            if parent == entry:
+                break
+            parent_metadata = parent.stat()
+            if os.access(parent, os.W_OK | os.X_OK) and not (
+                parent_metadata.st_mode & stat.S_ISVTX
+                and os.geteuid() not in (metadata.st_uid, parent_metadata.st_uid)
+            ):
+                raise PermissionError(f"consumer can replace application artifacts via: {parent}")
+
+
 def readable_file(path):
     parents_accessible(path.parent)
+    artifact_protected(path)
     if not path.is_file():
         raise PermissionError(f"not a regular readable file: {path}")
     with path.open("rb") as stream:
         stream.read(1)
-    if os.access(path, os.W_OK):
-        raise PermissionError(f"consumer can write application artifact: {path}")
     if path.stat().st_mode & stat.S_IXUSR and not os.access(path, os.X_OK):
         raise PermissionError(f"artifact not executable: {path}")
 
 
 def readable_tree(root, *, allow_external_files=False):
     parents_accessible(root)
-    if os.access(root, os.W_OK):
-        raise PermissionError(f"consumer can write artifact directory: {root}")
+    artifact_protected(root)
     count = 0
     def failed(error):
         raise error
@@ -38,8 +56,7 @@ def readable_tree(root, *, allow_external_files=False):
         for name in dirs:
             directory = Path(current) / name
             parents_accessible(directory)
-            if os.access(directory, os.W_OK):
-                raise PermissionError(f"consumer can write artifact directory: {directory}")
+            artifact_protected(directory)
             if directory.is_symlink() and not directory.resolve().is_relative_to(root):
                 raise PermissionError(f"directory symlink needs explicit review: {directory}")
         for name in files:
@@ -61,10 +78,9 @@ def main():
     args = parser.parse_args()
     if os.geteuid() == 0 or os.geteuid() != args.expected_uid:
         raise PermissionError("probe must run as the expected non-root identity")
+    artifact_protected(args.root)
     root = args.root.resolve(strict=True)
     parents_accessible(root)
-    if os.access(root, os.W_OK):
-        raise PermissionError(f"consumer can write artifact root: {root}")
     if args.static:
         count = readable_tree(root)
         if not count:
@@ -79,11 +95,6 @@ def main():
             path = root / name
             if not path.resolve(strict=True).is_relative_to(root):
                 raise PermissionError("tracked path escapes candidate root")
-            for directory in path.parents:
-                if not directory.is_relative_to(root):
-                    break
-                if os.access(directory, os.W_OK):
-                    raise PermissionError(f"consumer can replace application artifacts: {directory}")
             readable_file(path)
         runtime = args.runtime_root.resolve(strict=True)
         if runtime != Path(sys.prefix).resolve() or sys.prefix == sys.base_prefix:

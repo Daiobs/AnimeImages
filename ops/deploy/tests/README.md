@@ -33,6 +33,10 @@ application preserves the leading slash in sqlite:///:memory:. No real env is re
 Failure cases cover existing unreadable code/directories, candidate creation and
 static identity denial, private journal creation, active services, dependency
 installation, final code/static readability, and escaping static file symlinks.
+Consumer-owned read-only files/directories and consumer-writable ancestors are
+also rejected: real consumers demonstrate chmod or directory replacement in
+those disposable negative fixtures. A positive case retains support for a
+deploy-owned candidate under root-owned sticky `/tmp`.
 The suite asserts no switch before failed prechecks and no restart after failed
 post-switch checks, plus private record/backup isolation and 0022/0027 success.
 

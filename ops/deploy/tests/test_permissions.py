@@ -313,6 +313,49 @@ class DeploymentAcceptance(unittest.TestCase):
         command(['chmod','700',self.fixture['app']+'/templates'],user='deploy')
         self.assert_no_switch_or_restart(self.run_deploy())
 
+    def test_consumer_owned_readonly_file_rejected_before_switch(self):
+        path = self.fixture['app']+'/static/probe.css'
+        command(['chown', 'web:web', path])
+        command(['chmod', '444', path])
+        result = self.run_deploy(DEPLOY_PREPARE_ONLY='1')
+        self.assert_no_switch_or_restart(result)
+        self.assertIn('consumer owns application artifact', result.stderr)
+        command(['chmod', 'u+w', path], user='web')
+        command([sys.executable, '-B', '-c',
+                 "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('consumer changed content')",
+                 path], user='web')
+
+    def test_consumer_owned_readonly_directory_rejected_before_switch(self):
+        path = self.fixture['app']+'/templates'
+        command(['chown', 'web:web', path])
+        command(['chmod', '555', path])
+        result = self.run_deploy(DEPLOY_PREPARE_ONLY='1')
+        self.assert_no_switch_or_restart(result)
+        self.assertIn('consumer owns application artifact', result.stderr)
+        command(['chmod', 'u+w', path], user='web')
+        command(['touch', path+'/consumer-created'], user='web')
+
+    def test_consumer_writable_ancestor_rejected_before_switch(self):
+        command(['chgrp', 'sharedcode', str(self.root)], user='deploy')
+        command(['chmod', '775', str(self.root)], user='deploy')
+        result = self.run_deploy(DEPLOY_PREPARE_ONLY='1')
+        self.assert_no_switch_or_restart(result)
+        self.assertIn('consumer can replace application artifacts via', result.stderr)
+        command([sys.executable, '-B', '-c', '''from pathlib import Path
+import sys
+app = Path(sys.argv[1])
+app.rename(app.with_name('replaced-app'))
+app.mkdir()
+(app/'consumer-created').write_text('replacement')
+''', self.fixture['app']], user='web')
+
+    def test_sticky_tmp_allows_deploy_owned_candidate(self):
+        result = self.run_deploy(DEPLOY_PREPARE_ONLY='1', DEPLOY_STAGE_PARENT='/tmp')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.head(), self.fixture['before'])
+        self.assertNotIn('restart', command(['cat', '/permission-tests/service-events'], user='deploy').stdout)
+        self.assertEqual(command(['cat', str(self.root/'events')], user='deploy').stdout, '')
+
     def test_wrong_tool_sha_rejected_before_switch(self):
         self.assert_no_switch_or_restart(self.run_deploy(DEPLOY_TOOL_SHA='0'*40))
 
