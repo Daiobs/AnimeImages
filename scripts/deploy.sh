@@ -19,6 +19,8 @@ STATIC_GROUP="${STATIC_GROUP:-}"
 DEPLOY_STATE_DIR="${DEPLOY_STATE_DIR:-}"
 DEPLOY_STAGE_PARENT="${DEPLOY_STAGE_PARENT:-/tmp}"
 DEPLOY_PREPARE_ONLY="${DEPLOY_PREPARE_ONLY:-0}"
+DEPLOY_CONSUMER_PROBE_MODE="${DEPLOY_CONSUMER_PROBE_MODE:-direct}"
+if [[ "$DEPLOY_CONSUMER_PROBE_MODE" == managed ]]; then export GIT_NO_REPLACE_OBJECTS=1; fi
 STAGE=""
 JOURNAL=""
 LIVE_CHANGED=0
@@ -79,11 +81,50 @@ require_tool_and_identities() {
     [[ -d "$DEPLOY_STATE_DIR" && ! -L "$DEPLOY_STATE_DIR" ]] || fail "DEPLOY_STATE_DIR must be an existing private directory"
     [[ "$(stat -c '%u:%a' "$DEPLOY_STATE_DIR")" == "$(id -u):700" ]] || fail "DEPLOY_STATE_DIR must be deploy-owned mode 0700"
     RUNTIME_ROOT="$("$PYTHON_BIN" -I -c 'import sys; print(sys.prefix)')"
+    require_consumer_probe_mode "$tool_root"
     log "release tool=$DEPLOY_TOOL_SHA; code mask=$CODE_UMASK; web=$WEB_USER; static=$STATIC_USER"
+}
+
+require_consumer_probe_mode() {
+    local tool_root="$1" path owner permissions expected installed
+    [[ "$DEPLOY_CONSUMER_PROBE_MODE" == direct || "$DEPLOY_CONSUMER_PROBE_MODE" == managed ]] || fail "unknown DEPLOY_CONSUMER_PROBE_MODE"
+    [[ "$DEPLOY_CONSUMER_PROBE_MODE" == managed ]] || return 0
+    [[ "$APP_DIR" == /srv/animeimages && "$ENV_FILE" == /srv/animeimages/.env.production &&
+       "$PYTHON_BIN" == /srv/animeimages/.venv/bin/python && "$RUNTIME_ROOT" == /srv/animeimages/.venv &&
+       "$DEPLOY_USER:$DEPLOY_GROUP:$DEPLOY_BRANCH:$SERVICE_NAME" == ubuntu:ubuntu:main:animeimages &&
+       "$WEB_USER:$WEB_GROUP:$STATIC_USER:$STATIC_GROUP" == www-data:www-data:www-data:www-data &&
+       "$DEPLOY_STAGE_PARENT" == /srv/animeimages-deploy-staging && "$CODE_UMASK" == 0022 ]] || fail "managed consumer probes require the fixed production profile"
+    for path in /usr /usr/local /usr/local/sbin /usr/local/libexec /usr/local/libexec/animeimages-release \
+        /usr/local/sbin/animeimages-consumer-probe /usr/local/libexec/animeimages-release/check_deploy_readability.py; do
+        [[ -e "$path" && ! -L "$path" ]] || fail "managed probe installation missing or symlinked: $path"
+        read -r owner permissions < <(stat -c '%u %a' -- "$path")
+        [[ "$owner" == 0 && "$permissions" =~ ^[0-7]{3,4}$ ]] || fail "managed probe installation must be root-owned: $path"
+        (( (8#$permissions & 0022) == 0 )) || fail "managed probe installation is writable by non-root: $path"
+    done
+    for path in animeimages-consumer-probe check_deploy_readability.py; do
+        if [[ "$path" == animeimages-consumer-probe ]]; then
+            expected="$tool_root/ops/managed-release/$path"
+            installed="/usr/local/sbin/$path"
+        else
+            expected="$SCRIPT_DIR/$path"
+            installed="/usr/local/libexec/animeimages-release/$path"
+        fi
+        cmp -s -- "$expected" "$installed" || fail "installed managed probe differs from reviewed tooling: $path"
+    done
+    # Loading production settings must not silently switch the reviewed channel.
+    readonly DEPLOY_CONSUMER_PROBE_MODE APP_DIR ENV_FILE PYTHON_BIN RUNTIME_ROOT SCRIPT_DIR
+    readonly DEPLOY_USER DEPLOY_GROUP DEPLOY_BRANCH SERVICE_NAME WEB_USER WEB_GROUP STATIC_USER STATIC_GROUP
+    readonly DEPLOY_STAGE_PARENT CODE_UMASK DEPLOY_TOOL_SHA DEPLOY_STATE_DIR DEPLOY_PREPARE_ONLY DRY_RUN
+    readonly GIT_NO_REPLACE_OBJECTS
 }
 
 probe_code() {
     local root="$1" sha="$2"
+    if [[ "$DEPLOY_CONSUMER_PROBE_MODE" == managed ]]; then
+        git ls-tree -r --name-only -z "$sha" | sudo -n -u www-data -g www-data -- \
+            /usr/local/sbin/animeimages-consumer-probe code "$root"
+        return
+    fi
     git ls-tree -r --name-only -z "$sha" | sudo -n -u "$WEB_USER" -g "$WEB_GROUP" -- \
         env -i PATH=/usr/local/bin:/usr/bin:/bin PYTHONDONTWRITEBYTECODE=1 \
         "$PYTHON_BIN" -I -B "$SCRIPT_DIR/check_deploy_readability.py" \
@@ -109,6 +150,10 @@ require_maintenance() {
 probe_static_root() {
     local root="$1"
     [[ -n "$root" && "$root" != / ]] || fail "invalid STATIC_ROOT"
+    if [[ "$DEPLOY_CONSUMER_PROBE_MODE" == managed ]]; then
+        sudo -n -u www-data -g www-data -- /usr/local/sbin/animeimages-consumer-probe static "$root"
+        return
+    fi
     sudo -n -u "$STATIC_USER" -g "$STATIC_GROUP" -- env -i PATH=/usr/local/bin:/usr/bin:/bin PYTHONDONTWRITEBYTECODE=1 \
         "$PYTHON_BIN" -I -B "$SCRIPT_DIR/check_deploy_readability.py" \
         --expected-uid "$(id -u "$STATIC_USER")" --root "$root" --static
@@ -241,6 +286,7 @@ resolve_deploy_target_sha() {
         fail "DEPLOY_TARGET_SHA is not reachable from origin/$DEPLOY_BRANCH: $target_sha"
     fi
     DEPLOY_TARGET_SHA="$(git rev-parse "${target_sha}^{commit}")"
+    if [[ "$DEPLOY_CONSUMER_PROBE_MODE" == managed ]]; then readonly DEPLOY_TARGET_SHA; fi
     log "pinned deployment target: $DEPLOY_TARGET_SHA"
 }
 

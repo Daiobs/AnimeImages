@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only deployment probe, executed as the actual non-root consumer."""
+"""Permission/import probe as the real non-root consumer; imports execute code."""
 import argparse
 import importlib
 import json

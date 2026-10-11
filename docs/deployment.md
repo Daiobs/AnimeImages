@@ -324,6 +324,21 @@ report, verify timezone and units, then enable the timer and only finally open
 the daily DB gate. No deployment, restart, `daemon-reload`, timer enablement or
 SMTP setup is performed by the Asset 3 development task.
 
+## SSH Managed Release Channel
+
+`ops/managed-release/README.md` defines the separately installed, manually
+approved SSH release channel. It keeps `ubuntu` as the non-root deployment user,
+adds only exact animeimages stop plus a root-owned launcher run as www-data,
+and retains the existing three exact systemctl deployment rules. The optional
+managed probe mode uses the existing reviewed `deploy.sh`; it does not grant a
+root shell, root deployment script or general run-as permission.
+
+Every release requires an approved full target SHA and a new maintenance
+window. Main merges never deploy automatically. Bootstrap requires one explicit
+administrator installation from a digest-verified frozen bundle; repository
+merge alone installs nothing. This SSH channel does not enable the Web
+executor, change `.env.production`, or install its helper/unit/sudoers.
+
 ## Admin Release Management
 
 `/admin/release-management/` shows the current Git branch, commit, matching tag, the locally cached `origin/main`, latest tags, readiness status, and recent release deployment jobs. Release Management v1 only deploys `main`; tags remain visible for planning and audit, but the UI and POST endpoint do not create tag deployment jobs.
