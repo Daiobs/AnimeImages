@@ -182,7 +182,9 @@
     </section>
 {% endblock %}
 
+{% block extra_css %}<link rel="stylesheet" href="{% static 'css/upstream_candidates.css' %}?v={{ static_asset_version }}">{% endblock %}
 {% block extra_js %}
+    <script src="{% static 'js/upstream_candidates.js' %}?v={{ static_asset_version }}"></script>
     <script src="{% static 'js/ordinary_media_streaming_protocol.js' %}?v={{ static_asset_version }}"></script>
     <script src="{% static 'js/ordinary_media_streaming.js' %}?v={{ static_asset_version }}"></script>
     <script src="{% static 'js/ordinary_media_download.js' %}?v={{ static_asset_version }}"></script>

@@ -37,6 +37,7 @@ from .kukutool_generic import (
     public_url_or_empty,
     source_key_for_url,
 )
+from .tiantian_serial import serialized, request_in_flight, TianTianAdmissionDeferred
 
 
 logger = logging.getLogger(__name__)
@@ -49,11 +50,21 @@ XHS_NOTE_ID_RE = re.compile(r"(?<![0-9a-f])([0-9a-f]{24})(?![0-9a-f])", re.IGNOR
 
 
 class TianTianJieXiApiError(RuntimeError):
-    pass
+    def __init__(self, message, *, diagnostic_detail="SERVICE_RESPONSE_REJECTED"):
+        super().__init__(message)
+        self.diagnostic_detail = diagnostic_detail
 
 
 class TianTianJieXiAuthError(TianTianJieXiApiError):
     pass
+
+
+class TianTianJieXiUncertainError(TianTianJieXiApiError):
+    """A sent transport attempt must not enter the retry loop."""
+
+
+class TianTianJieXiUnsupportedError(TianTianJieXiApiError):
+    """The service explicitly declined this source, not the account."""
 
 
 class TianTianJieXiRateLimitError(TianTianJieXiApiError):
@@ -202,13 +213,21 @@ def ensure_api_success(payload):
         return
     status_value = payload.get("status") or payload.get("code") or payload.get("success")
     message = response_message(payload)
+    if str(status_value) == "451" and "暂不支持该链接" in message:
+        raise TianTianJieXiUnsupportedError(
+            "天天解析暂不支持该链接", diagnostic_detail="SERVICE_BUSINESS_CODE_451"
+        )
     if status_value in {True, "true", "success", "ok", 0, "0", 1, "1", 200, "200"}:
         return
     if message_indicates_auth_error(message):
         raise TianTianJieXiAuthError("天天解析认证失败")
     if message_indicates_rate_limit(message):
         raise TianTianJieXiRateLimitError("天天解析调用额度或频率受限")
-    raise TianTianJieXiApiError(message or "天天解析未返回可用媒体资源")
+    code = str(status_value) if type(status_value) in (int, str) else ""
+    detail = (f"SERVICE_BUSINESS_CODE_{int(code)}"
+              if re.fullmatch(r"-?[0-9]{1,3}", code)
+              else "SERVICE_BUSINESS_CODE_UNKNOWN")
+    raise TianTianJieXiApiError(message or "天天解析未返回可用媒体资源", diagnostic_detail=detail)
 
 
 def normalize_list(value):
@@ -344,11 +363,13 @@ class TianTianJieXiApiClient:
     def password(self):
         return runtime_str("TIANTIANJIEXI_PASSWORD")
 
+    @serialized
     def parse_url(self, url, timeout_seconds=None):
         if not api_configured():
             raise TianTianJieXiAuthError("天天解析账号未配置")
         timeout = float(timeout_seconds if timeout_seconds is not None else runtime_float("TIANTIANJIEXI_TIMEOUT_SECONDS", 15) or 15)
         try:
+            request_in_flight(True)
             response = self.session.post(
                 self.base_url,
                 data={
@@ -359,14 +380,25 @@ class TianTianJieXiApiClient:
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
                 timeout=max(0.1, timeout),
             )
+            request_in_flight(False)
             response.raise_for_status()
             payload = response.json()
         except requests.Timeout as error:
             raise XhsProviderTimeoutError("天天解析接口超时") from error
+        except requests.exceptions.JSONDecodeError as error:
+            raise TianTianJieXiApiError("天天解析接口返回非 JSON", diagnostic_detail="SERVICE_INVALID_JSON") from error
+        except requests.exceptions.SSLError as error:
+            raise TianTianJieXiUncertainError("天天解析 TLS 失败", diagnostic_detail="SERVICE_TLS_ERROR") from error
+        except requests.HTTPError as error:
+            if error.response is not None:
+                request_in_flight(False)
+            status = error.response.status_code if error.response is not None else 0
+            detail = f"SERVICE_HTTP_{status}" if 400 <= status <= 599 else "SERVICE_RESPONSE_REJECTED"
+            raise TianTianJieXiApiError("天天解析 HTTP 失败", diagnostic_detail=detail) from error
         except requests.RequestException as error:
-            raise TianTianJieXiApiError("天天解析接口请求失败") from error
+            raise TianTianJieXiUncertainError("天天解析接口请求失败", diagnostic_detail="SERVICE_NETWORK_ERROR") from error
         except ValueError as error:
-            raise TianTianJieXiApiError("天天解析接口返回非 JSON") from error
+            raise TianTianJieXiApiError("天天解析接口返回非 JSON", diagnostic_detail="SERVICE_INVALID_JSON") from error
         ensure_api_success(payload)
         return TianTianJieXiResultNormalizer.normalize_payload(unwrap_api_payload(payload))
 
@@ -465,7 +497,9 @@ class TianTianJieXiGenericProvider:
         )
         valid_audio = bool(public_url_or_empty(normalized["audio_url"]))
         if not (valid_video or valid_image or valid_audio):
-            raise ProviderResultInvalidError("天天解析未返回可用媒体资源")
+            error = ProviderResultInvalidError("天天解析未返回可用媒体资源")
+            error.diagnostic_detail = "SERVICE_EMPTY_RESULT"
+            raise error
         return payload
 
     def get_cached_payload_entry(self, source_key, payload_validator=None):
@@ -709,6 +743,7 @@ class TianTianJieXiGenericProvider:
         except Exception:
             logger.exception("tiantianjiexi_single_flight_release_failed", extra={"provider": PROVIDER_ID})
 
+    @serialized
     def parse(
         self,
         url,
@@ -932,7 +967,9 @@ class TianTianJieXiGenericProvider:
                         candidate_count=len(payload.get("videos") or payload.get("images") or ()),
                     )
                     return payload
-                except (TianTianJieXiAuthError, TianTianJieXiRateLimitError):
+                except (TianTianJieXiAuthError, TianTianJieXiRateLimitError,
+                        TianTianAdmissionDeferred, TianTianJieXiUncertainError,
+                        TianTianJieXiUnsupportedError, XhsProviderTimeoutError):
                     raise
                 except Exception as error:
                     last_error = error

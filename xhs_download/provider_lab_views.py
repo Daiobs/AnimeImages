@@ -19,6 +19,7 @@ from xhs_download.services.provider_lab.providers import (
     list_videodl_backend_inventory,
     normalized_source,
     run_provider,
+    validate_confirmations,
 )
 from xhs_download.services.provider_lab.videodl_control import parse_videodl_options
 from xhs_download.services.provider_lab.resources import (
@@ -29,7 +30,7 @@ from xhs_download.services.rate_limits import consume_fixed_window
 
 
 PROVIDER_EXECUTIONS_PER_MINUTE = 20
-SINGLE_FLIGHT_SECONDS = 30
+SINGLE_FLIGHT_SECONDS = 90
 
 
 def provider_lab_enabled() -> bool:
@@ -96,7 +97,7 @@ def provider_lab_view(request):
         "provider_lab_run_url": "/admin/provider-lab/run/",
         "provider_lab_resource_url": "/admin/provider-lab/resource/",
         "provider_lab_max_concurrency": 3,
-        "provider_lab_max_providers": 5,
+        "provider_lab_max_providers": len(PROVIDER_REGISTRY),
         "videodl_backend_inventory": list_videodl_backend_inventory(),
     }
     response = render(request, "admin/provider_lab.html", context)
@@ -113,14 +114,12 @@ def provider_lab_run_view(request):
     try:
         payload = parse_json_body(request)
         payload_fields = set(payload)
-        if payload_fields not in (
-            {"source", "provider_id"},
-            {"source", "provider_id", "options"},
-        ):
+        if not {'source','provider_id'} <= payload_fields or payload_fields - {'source','provider_id','options','confirmations'}:
             raise ProviderLabError("PROVIDER_SCHEMA_INVALID")
         provider_id = safe_text(payload.get("provider_id"), 80)
         if provider_id not in PROVIDER_REGISTRY:
             raise ProviderLabError("PROVIDER_NOT_SELECTED")
+        confirmations = validate_confirmations(payload.get('confirmations'))
         options = None
         if "options" in payload:
             if provider_id != "videodl_repo":
@@ -137,12 +136,17 @@ def provider_lab_run_view(request):
             raise ProviderLabError("PROVIDER_RATE_LIMITED", http_status=429)
         if not reserve_single_flight(request.user.pk, provider_id, source):
             raise ProviderLabError("PROVIDER_RATE_LIMITED", http_status=429)
-        result = run_provider(
-            provider_id=provider_id,
-            source=source,
-            user_id=request.user.pk,
-            options=options,
-        )
+        try:
+            result = run_provider(
+                provider_id=provider_id,
+                source=source,
+                user_id=request.user.pk,
+                options=options,
+                confirmations=confirmations,
+            )
+        finally:
+            identity = execution_identity(request.user.pk, provider_id, source)
+            cache.delete(f"provider-lab:single-flight:v1:{identity}")
         return secure_json(result)
     except ProviderLabError as error:
         return secure_json(

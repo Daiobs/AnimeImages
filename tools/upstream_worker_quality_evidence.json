@@ -1,0 +1,58 @@
+{
+  "scope": "offline installed-registry matching; not live extraction or delivery acceptance",
+  "command": ".venv/bin/python -m unittest tools.tests_upstream_worker_quality -q",
+  "focused_tests_passed": 19,
+  "combined_tests_passed": 52,
+  "focused_security_status": "passed; frozen after final 52-test repeat",
+  "security_regressions": {
+    "compressed_expansion": "One-million-byte gzip expansion rejected under a 2000-byte decoded budget in urllib and urllib3; small streamed gzip preserved",
+    "nested_collections": "Total result nodes and depth independently bounded; collection metadata charged before visiting children",
+    "format_overflow": "1001 formats retain 1000 with upstream_scope totals and original unknown codec evidence"
+  },
+  "combined_test_modules": [
+    "xhs_download.tests_upstream_matching",
+    "xhs_download.tests_upstream_gallery_compat",
+    "tools.tests_upstream_worker_quality"
+  ],
+  "combined_test_environment": "quality worktree venv; local SQLite; .env reads suppressed; cache URL empty; service providers disabled; no live upstream calls",
+  "providers": {
+    "yt_dlp_generic": {
+      "version": "2026.3.17",
+      "raw_registry_classes": 1871,
+      "eligible_default_classes": 1772,
+      "eligible_lab_classes": 1840,
+      "distinct_classes_with_matching_fixture": 1791,
+      "example_source": "installed extractor _TESTS or _TEST URL; syntax validation and suitable()"
+    },
+    "gallery_dl_generic": {
+      "version": "1.32.4",
+      "raw_registry_classes": 977,
+      "eligible_default_classes": 850,
+      "eligible_lab_classes": 965,
+      "distinct_classes_with_matching_fixture": 960,
+      "example_source": "installed extractor example; syntax validation and pattern match; may contain placeholders"
+    }
+  },
+  "counting": "At most one matching example per eligible Lab class. Classes are not unique websites. Eligibility does not mean enabled, live parse success, complete media, or download success.",
+  "live_requests_performed": 0,
+  "media_downloads_performed": 0,
+  "defaults": {
+    "allow_mature": false,
+    "wikiart_wrong_source_excluded": true,
+    "max_http_requests": 40,
+    "max_http_redirects": 10,
+    "max_extractor_hops": 16,
+    "max_items": 100,
+    "max_result_nodes_including_root": 101,
+    "max_result_depth": 16,
+    "max_formats_retained_per_video": 1000,
+    "max_metadata_body_bytes": 8388608,
+    "max_decoded_body_bytes": 8388608,
+    "bounded_content_encodings": ["gzip", "deflate"],
+    "optional_address_space_limit_bytes": 1610612736,
+    "max_json_output_bytes": 4194304,
+    "max_wall_seconds": 30
+  },
+  "integration": "quality_execution._execute_upstream uses upstream_matching._call with allow_mature=true for match and parse; no separate quality_worker or execute/_parse imports required",
+  "remaining_acceptance": "PARTIAL: offline contracts only; collection upstream_scope must remain visible through normalization. Legacy matching and gallery-compat tests now assert bounded behavior and pass. Other full-suite modules are outside this scoped result."
+}

@@ -262,10 +262,10 @@ def asset(
     size_bytes: Any = 0,
     quality_label: Any = "",
     codec: Any = "",
-    requires_merge: bool = False,
+    requires_merge: bool | None = None,
     requires_cookie: bool = False,
     headers_present: bool = False,
-    audio_asset_present: bool = False,
+    audio_asset_present: bool | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     exact_url, hostname = validated_url(url)
     public = {
@@ -281,10 +281,10 @@ def asset(
         "size_bytes": safe_int(size_bytes),
         "quality_label": safe_text(quality_label, 120),
         "codec": safe_text(codec, 80),
-        "requires_merge": bool(requires_merge),
+        "requires_merge": requires_merge if type(requires_merge) is bool else None,
         "requires_cookie": bool(requires_cookie),
         "headers_present": bool(headers_present),
-        "audio_asset_present": bool(audio_asset_present),
+        "audio_asset_present": audio_asset_present if type(audio_asset_present) is bool else None,
     }
     private = {
         "asset_id": public["asset_id"],

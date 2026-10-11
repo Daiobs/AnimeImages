@@ -2,6 +2,27 @@
 
 ## Status
 
+### PR #89 local all-upstream follow-up (2026-09-08)
+
+The existing Staff Lab now checks every registered independent channel from one
+public link, without requiring a precomputed provider intersection. Disabled or
+unapproved channels remain visible and are not counted as executed. See the
+[Lab workflow and local evidence](provider-lab.md).
+
+One Coolapk sample produced one successful ParseHub result (8 images), three
+unsupported results (videodl, yt-dlp, gallery-dl), and two disabled service channels
+(TianTian, Kukutool). The composite current-route baseline was not called.
+Explicitly confirming the existing single-provider route advanced its revision
+without changing its provider/options/preferences. Subsequent homepage and Batch
+parses both displayed the manual ParseHub route and 8 items. Another real work on
+the same host was not verified this round; different-link routing is covered
+offline. Preview failures remained visible; no media was downloaded.
+
+Service routes reuse existing clients and require explicit Human configuration;
+they are not new default fallbacks. Their candidate-only bridge adds no download
+authority. This changes neither the historical automatic-delivery counts nor the
+unmet Wave 2 saving target. No production configuration or runtime was touched.
+
 **Wave 2: parser increment with delivery limits; original new-site automatic
 delivery target remains unmet.**
 PR #87's three-site browser delivery below is historical accepted evidence, not
@@ -42,6 +63,36 @@ for attempts, not 1417 independently verified sites. Unique platform count is no
 reliably deduplicated. Existing rules and the four mature routes remain in place.
 
 ## Implementation Boundary
+
+### Quality Comparison And Manual Routes (Local Increment)
+
+This increment is stacked on PR #88 and is not a production rollout. It separates
+valid parsed candidates from currently authorized downloadable assets. Unknown
+tracks, silent video, audio, HLS/DASH and HTTP references are retained within the
+candidate budget; invalid/private targets still fail closed. Candidate metadata
+does not itself create a download manifest. Bounded collection output identifies
+its incomplete scope rather than claiming an exhaustive result.
+
+The pinned ParseHub registry replaces the five-site product list. yt-dlp and
+gallery-dl use installed matching knowledge, with request/delegation/redirect,
+output and wall-time budgets instead of broad class-name bans. Mature routes and
+the known wrong-source Wikiart exception remain protected. Earlier measurements
+below describe their historical implementation, not the current matching count.
+
+Lab and ordinary parsing share execution and normalization. Lab compares all
+explicitly selected providers independently; ordinary parsing follows a saved
+Human source-host route or the permitted default order. A candidate-only success
+does not fall through to a lower-quality provider because saving is unavailable.
+Route changes are explicit, revision checked and audited. No CDN URL or temporary
+format identifier is stored as a reusable platform route.
+
+Offline installed-registry evidence is recorded in
+[the bounded-worker report](../tools/upstream_worker_quality_evidence.json):
+1,791 yt-dlp classes and 960 gallery-dl classes matched an installed example each.
+ParseHub's fixed registry has 20 entries with 400 offline matching inputs. These
+are entry/input checks, not unique-site counts or live parse/save successes.
+
+### Prior PR #87/#88 Implementation Boundary
 
 - Inventory and URL matching run offline in an isolated worker. Matching binds
   the provider, extractor ID and package version; parse revalidates that match.
@@ -407,6 +458,74 @@ Django system check, migration dry-run and diff whitespace checks pass. There
 are no model/migration/application-requirements changes. CI adds isolated pinned
 ParseHub installation and the Batch preview-error Node regression. Exact-head
 remote CI is recorded in the Draft PR after pushing.
+
+## Quality Comparison Correction (2026-09-08, Local Only)
+
+The PR #89 correction keeps compact candidate retention separate from the initial
+64-row presentation. The shared path retains up to 1,000 descriptors within
+bounded output/cache budgets; hard-limit omissions remain explicit. Tail formats
+remain available to saved preferences, while body-image order stays unchanged.
+Unknown track and pairing facts stay unknown, and embedded audio does not imply
+an independent audio asset. These facts do not grant download authority.
+
+The bounded Bilibili comparison tried three works through seven direct parse-only
+calls. ParseHub succeeded on two videos; yt-dlp did not succeed on the same works.
+The dynamic-work intersection also failed. A final Chrome ParseHub result and
+current-candidate selection passed, but this is not a dual-upstream success or
+browser-save acceptance. No new media save was attempted or claimed.
+`LIVE_COMPARISON_PENDING = YES`; see the dated [Provider Lab evidence](provider-lab.md)
+for implementation distinctions, stages and declared dimensions. Historical Wave 2
+delivery limits and its unmet automatic-save target remain unchanged.
+
+## Service Entry Repair (2026-09-29, Local Only)
+
+The closed Scout full-provider batch remains unchanged. A bounded diagnosis
+reused its original Coolapk work; it did not discover substitute works or rerun
+the batch. TianTian returned an explicit unsupported-link business message; see
+[the API notes](tiantianjiexi-api.md#service-entry-diagnosis-2026-09-29-local-only).
+No TianTian successful-media result is claimed.
+
+Kukutool had two demonstrated local compatibility defects:
+
+- The homepage listed 23 scripts and the current public protocol profile was in
+  the 14th. The old six-script discovery could not find it, and fallback recovery
+  repeated already-failed authorization profiles. Discovery now checks at most
+  24 same-origin scripts, two at a time, within existing size/time limits. It
+  reuses a cached successful profile, otherwise discovers before fallback, and
+  never retries an already-attempted profile in the same run. No new rotating
+  script filename or protocol identifier is hardcoded.
+- After current authorization and a parse business-success response, the old
+  decoder failed. The current public page decoder derives the AES key using
+  SHA-256; the helper previously used the raw public key string. Applying the
+  same derivation decoded the saved response offline. Malformed ciphertext
+  remains rejected; HTML is never accepted as a parse result.
+
+The original helper trace on this date showed old authorization routes returning
+404 JSON. Earlier `AUTH_HTTP_200_TYPE_HTML` bodies were not retained, so their
+historical HTML page category is not established. `AUTH` names the local stage,
+not proof of a bad user account. No login/captcha bypass or new credential use
+was introduced.
+
+At 2026-09-29 06:33:14 UTC, the normal authenticated Lab endpoint returned HTTP
+200, `success`, `executed=true`, one image candidate, no truncation, and 9212 ms
+for the same representative. Dimensions, codecs and pairing remained unknown;
+no quality facts were fabricated. This verifies entry, decryption and shared
+candidate normalization, not download, visual identity inspection, or support
+for every earlier failed site. Media probing, saving and ZIP were not tested.
+
+The diagnostic used one TianTian parse, nine directly observed Kukutool internal
+authorization/parse POSTs (including the old duplicate fallback attempts), then
+one normal Lab request whose successful path uses one authorization and one
+parse POST: twelve entry POSTs in total by that accounting. The final Lab call
+was not separately wire-instrumented. Public page/script GETs were separate
+bounded protocol reads, not media downloads or additional sample parses. No
+unknown request was resent. Offline decoding did not make service requests.
+
+The route revision and audit count remained 3 and 3. No route, credential,
+mail/Daily, production, runtime dependency or migration was changed. The existing
+frontend CI step now also runs the new offline Kukutool discovery/decoder tests.
+This evidence does not rewrite the historical 42-request Scout ledger or
+establish success for the seven previously failed sources.
 
 ## Source Pointers
 

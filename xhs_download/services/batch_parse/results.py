@@ -380,6 +380,7 @@ def build_batch_result_row(
         if not (
             display_context.get("video_items")
             or display_context.get("image_items")
+            or display_context.get("upstream_candidates")
         ):
             return build_batch_failed_row(
                 source_text,

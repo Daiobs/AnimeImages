@@ -320,6 +320,18 @@ test("Provider Lab template contains controlled videodl and attempt surfaces", (
     assert.equal(template.includes("WebMediaGrabber"), true);
 });
 
+test("implicit form submission defaults to test-all while consent remains explicit outside advanced details", () => {
+    const template = fs.readFileSync(path.join(__dirname, "../templates/admin/provider_lab.html"), "utf8");
+    const form = template.match(/<form\b[^>]*data-provider-lab-form[\s\S]*?<\/form>/)[0];
+    const firstSubmit = form.match(/<button\b[^>]*type="submit"[^>]*>/)[0];
+    assert.match(firstSubmit, /data-lab-all/);
+    assert.ok(form.indexOf("data-lab-all") < form.indexOf('<details class="provider-lab-advanced">'));
+    const advanced = form.match(/<details class="provider-lab-advanced">[\s\S]*?<\/details>/)[0];
+    assert.doesNotMatch(advanced, /name="provider_authorizations"/);
+    const consent = form.match(/<input\b[^>]*name="provider_authorizations"[^>]*>/)[0];
+    assert.doesNotMatch(consent, /\bchecked\b|\bhidden\b/);
+});
+
 
 test("Provider Lab frontend never persists result data", () => {
     const source = fs.readFileSync(path.join(__dirname, "../static/js/provider_lab.js"), "utf8");

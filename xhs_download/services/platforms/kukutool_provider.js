@@ -15,7 +15,7 @@ const USER_AGENT =
 const MAX_RESPONSE_CHARS = 10 * 1024 * 1024;
 const MAX_DISCOVERY_PAGE_CHARS = 1024 * 1024;
 const MAX_DISCOVERY_SCRIPT_CHARS = 2 * 1024 * 1024;
-const MAX_DISCOVERY_SCRIPTS = 6;
+const MAX_DISCOVERY_SCRIPTS = 24;
 const DISCOVERY_BATCH_SIZE = 2;
 const MAX_REDIRECTS = 3;
 const FALLBACK_PROFILES = [
@@ -54,17 +54,20 @@ async function main() {
   };
 
   const configuredProfile = readConfiguredProfile();
-  const initialProfiles = uniqueProfiles([
-    ...(configuredProfile ? [configuredProfile] : []),
-    ...FALLBACK_PROFILES,
-  ]);
+  const initialProfiles = configuredProfile
+    ? [configuredProfile]
+    : await discoverProfiles(headers);
   let ticket;
   try {
-    // The known profile avoids loading the homepage and every JS bundle on
-    // each request. Discovery remains the recovery path when the profile rotates.
+    // Reuse a successful cached profile, but discover current public config
+    // before spending authorization attempts on obsolete fallback profiles.
     ticket = await requestAuthTicket(initialProfiles, headers, requestURL);
   } catch (fallbackError) {
-    const profiles = await discoverProfiles(headers);
+    const attempted = new Set(initialProfiles.map((p) => `${p.id}:${p.authRoute}`));
+    const profiles = configuredProfile
+      ? (await discoverProfiles(headers)).filter((p) => !attempted.has(`${p.id}:${p.authRoute}`))
+      : [];
+    if (!profiles.length) throw fallbackError;
     try {
       ticket = await requestAuthTicket(profiles, headers, requestURL);
     } catch (discoveryError) {
@@ -102,7 +105,7 @@ async function main() {
     }),
     signal: AbortSignal.timeout(10000),
   });
-  const parsed = await readJson(parseResponse);
+  const parsed = await readJson(parseResponse, "PARSE");
   if (!parseResponse.ok || parsed.status !== 0) {
     throw upstreamError("parse", parseResponse.status, parsed);
   }
@@ -156,9 +159,7 @@ async function discoverProfiles(headers) {
       .filter((url) => new URL(url).origin === BASE_ORIGIN)
       .filter((url, index, values) => values.indexOf(url) === index)
       .slice(0, MAX_DISCOVERY_SCRIPTS);
-    const preferred = scriptUrls.filter((url) => /\/9802-[^/]+\.js/.test(url));
-    const remaining = scriptUrls.filter((url) => !preferred.includes(url));
-    const batches = preferred.length ? [preferred, remaining] : [scriptUrls];
+    const batches = [scriptUrls];
     for (const urls of batches) {
       if (!urls.length) {
         continue;
@@ -306,7 +307,7 @@ async function requestAuthTicket(profiles, headers, requestURL) {
           signal: AbortSignal.timeout(6000),
         }
       );
-      const auth = await readJson(response);
+      const auth = await readJson(response, "AUTH");
       const authKey = auth[profile.authResponseFields.key];
       const authSeed = auth[profile.authResponseFields.seed];
       if (!response.ok || !authKey || !authSeed) {
@@ -348,7 +349,7 @@ function decryptResponse(data, iv) {
   const decodedIv = Buffer.from(decodeCustomBase64(transform(iv)), "base64");
   const decipher = crypto.createDecipheriv(
     "aes-256-cbc",
-    Buffer.from(RESPONSE_KEY),
+    crypto.createHash("sha256").update(RESPONSE_KEY, "utf8").digest(),
     decodedIv
   );
   const plaintext = Buffer.concat([
@@ -376,12 +377,20 @@ function decodeCustomBase64(value) {
   }).join("");
 }
 
-async function readJson(response) {
+async function readJson(response, stage = "UNKNOWN") {
   const text = await readText(response);
   try {
     return JSON.parse(text);
   } catch {
-    throw new Error(`upstream returned invalid JSON (${response.status})`);
+    const error = new Error(`upstream returned invalid JSON (${response.status})`);
+    const phase = ["AUTH", "PARSE"].includes(stage) ? stage : "UNKNOWN";
+    const status = Number.isInteger(response.status) && response.status >= 100 && response.status <= 599
+      ? response.status : "UNKNOWN";
+    const mime = String(response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
+    const type = !mime ? "MISSING" : mime === "application/json" || mime.endsWith("+json") ? "JSON"
+      : ["text/html", "application/xhtml+xml"].includes(mime) ? "HTML" : mime.startsWith("text/") ? "TEXT" : "OTHER";
+    error.safeDetail = `SERVICE_JSON_${phase}_HTTP_${status}_TYPE_${type}`;
+    throw error;
   }
 }
 
@@ -486,7 +495,24 @@ function upstreamError(stage, status, payload) {
   return new Error(`${stage} failed (${status}): ${reason || "unknown error"}`);
 }
 
+function safeFailureDetail(error) {
+  if (/^SERVICE_JSON_(AUTH|PARSE|UNKNOWN)_HTTP_([1-5]\d{2}|UNKNOWN)_TYPE_(JSON|HTML|TEXT|OTHER|MISSING)$/.test(error?.safeDetail || "")) {
+    return error.safeDetail;
+  }
+  const message = String(error?.message || "");
+  const status = message.match(/^(?:auth failed|parse failed|upstream returned invalid JSON|upstream response is too large|upstream redirect rejected) \(([45]\d\d)\)/);
+  if (status) return `SERVICE_HTTP_${status[1]}`;
+  if (message.startsWith("auth failed (")) return "SERVICE_AUTH_REJECTED";
+  if (message.startsWith("parse failed (")) return "SERVICE_PARSE_REJECTED";
+  if (message.startsWith("upstream returned invalid JSON (")) return "SERVICE_INVALID_JSON";
+  if (message.startsWith("upstream response is too large (")) return "SERVICE_RESPONSE_TOO_LARGE";
+  if (message.startsWith("upstream redirect")) return "SERVICE_REDIRECT_REJECTED";
+  if (message === "fetch failed") return "SERVICE_NETWORK_ERROR";
+  return "SERVICE_HELPER_FAILED";
+}
+
 main().catch((error) => {
+  process.stderr.write(`KUKUTOOL_SAFE_ERROR:${safeFailureDetail(error)}\n`);
   process.stderr.write(`${error.message}\n`);
   process.exitCode = 1;
 });

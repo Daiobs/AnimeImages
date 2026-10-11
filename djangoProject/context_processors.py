@@ -14,6 +14,8 @@ STATIC_VERSION_FILES = (
     "static/css/provider_lab.css",
     "static/css/upstream_coverage.css",
     "static/js/provider_lab.js",
+    "static/js/upstream_candidates.js",
+    "static/css/upstream_candidates.css",
     "static/js/batch_parse.js",
     "static/js/browser_photo_archive.js",
     "static/js/xhs_download.js",

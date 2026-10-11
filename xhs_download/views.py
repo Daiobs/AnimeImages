@@ -3805,6 +3805,10 @@ def build_result_display_context(
             for asset in result.video_assets
         ],
         "metadata": result_metadata,
+        "upstream_candidates": result_metadata.get("upstream_candidates", []),
+        "upstream_route": result_metadata.get("upstream_route", {}),
+        "unexpanded_scope": result_metadata.get("unexpanded_scope", {}),
+        "candidates_truncated": result_metadata.get("candidates_truncated", 0),
     }
 
 
@@ -4334,6 +4338,10 @@ def apply_search_result_to_context(
     context["note_id"] = display_context["note_id"]
     context["metadata_source"] = display_context["metadata_source"]
     context["image_items"] = display_context["image_items"]
+    context["upstream_candidates"] = display_context.get("upstream_candidates", [])
+    context["upstream_route"] = display_context.get("upstream_route", {})
+    context["unexpanded_scope"] = display_context.get("unexpanded_scope", {})
+    context["candidates_truncated"] = display_context.get("candidates_truncated", 0)
     context["video_items"] = display_context["video_items"]
 
     if (
@@ -4375,7 +4383,7 @@ def apply_search_result_to_context(
             else "实况照片预览暂不可用，已显示普通图片结果。"
         )
 
-    if not context["image_items"] and not context["video_items"]:
+    if not context["image_items"] and not context["video_items"] and not context.get("upstream_candidates"):
         context["error_message"] = "没有解析到图片或视频。"
 
 
@@ -4853,7 +4861,7 @@ def request_wants_results_partial(request):
 
 
 def render_results_partial_response(request, context, status_code=200):
-    has_results = bool(context.get("image_items") or context.get("video_items"))
+    has_results = bool(context.get("image_items") or context.get("video_items") or context.get("upstream_candidates"))
     has_content = has_results or bool(
         context.get("error_message")
         or context.get("platform_notice")
@@ -6214,6 +6222,44 @@ def download_stream_view(request, token):
     finally:
         if not stream_owns_concurrency:
             release_stream_concurrency()
+
+
+@require_POST
+@csrf_protect
+def upstream_candidate_view(request):
+    from .services.upstream_candidates import resolve_candidate_record
+    from .services.provider_access import (
+        load_runtime_setting, request_user_is_staff, third_party_public_access_allowed,
+        upstream_match_is_blocked, upstream_match_is_public_allowed,
+    )
+    from .services.platforms.third_party import provider_is_enabled
+    from urllib.parse import urlsplit
+
+    try:
+        if len(request.body) > 8192:
+            raise ValueError()
+        data = json.loads(request.body)
+        if not isinstance(data, dict) or set(data) != {"candidate_id", "resource_token"}:
+            raise ValueError()
+        record = resolve_candidate_record(data["resource_token"], data["candidate_id"])
+        runtime = load_runtime_setting()
+        source = record["source_url"]
+        match = record["match"]
+        allowed = (provider_is_enabled(record["provider_id"])
+                   and not upstream_match_is_blocked(match, runtime)
+                   and third_party_public_access_allowed(source, request=request, runtime_setting=runtime))
+        if not request_user_is_staff(request):
+            allowed = allowed and upstream_match_is_public_allowed(match, urlsplit(source).hostname, runtime)
+        if not allowed:
+            raise ValueError()
+        response = JsonResponse({"status": "success", "url": record["url"],
+                                 "media_type": record["public"]["media_type"],
+                                 "delivery_state": record["public"]["delivery_state"]})
+    except (ValueError, KeyError, TypeError, XhsParseError):
+        response = JsonResponse({"status": "error", "message": "候选授权不可用，请重新解析。"}, status=403)
+    response["Cache-Control"] = "private, no-store"
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @require_POST

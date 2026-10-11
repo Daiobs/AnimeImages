@@ -1,0 +1,59 @@
+{% if upstream_route %}
+<p class="upstream-route-status" data-upstream-route-status>
+    {% if upstream_route.mode == 'manual' %}手动路线{% elif upstream_route.mode == 'default' %}默认路线{% else %}上游路线{% endif %}
+    {% if upstream_route.selected_provider %} · 本次上游：{{ upstream_route.selected_provider }}{% endif %}
+    {% if upstream_route.fallback_reason %} · 回退说明：{{ upstream_route.fallback_reason|truncatechars:120 }}{% endif %}
+</p>
+{% endif %}
+{% if unexpanded_scope.bounded or unexpanded_scope.completion == 'unknown' %}
+<p class="upstream-candidate-limitation" data-upstream-scope-status>范围受限，完整性未知；仅展示本次已取得的候选。</p>
+{% endif %}
+{% if upstream_candidates %}
+<details class="upstream-candidates" data-upstream-candidates data-candidate-url="/media/upstream-candidate/" {% if not image_items and not video_items %}open{% endif %}>
+    <summary>已取得的媒体与格式候选（{{ upstream_candidates|length }}）</summary>
+    <header class="upstream-candidates-heading">
+        <h3>媒体与格式候选 <small>{{ upstream_candidates|length }}</small></h3>
+        <label>格式顺序 <select data-candidates-order><option value="source">初始展示顺序</option><option value="resolution">视频分辨率降序</option></select></label>
+        {% if show_internal_diagnostics %}<a href="{% url 'provider_lab' %}" data-compare-candidate-source>比较上游</a>{% endif %}
+        {% if candidates_truncated %}<span>另有 {{ candidates_truncated }} 项未展开</span>{% endif %}
+    </header>
+    <p class="upstream-candidate-counts">返回 {{ returned_count|default_if_none:"未知"|default:"未知" }} · 保留 {% if retained_count %}{{ retained_count }}{% else %}{{ upstream_candidates|length }}{% endif %} · <span data-candidate-counts>已显示 {% if upstream_candidates|length > 64 %}64{% else %}{{ upstream_candidates|length }}{% endif %} · 待展开 {% if upstream_candidates|length > 64 %}{{ upstream_candidates|length|add:"-64" }}{% else %}0{% endif %}</span></p>
+    <p class="upstream-candidate-counts">上游未展开 {% if unexpanded_count == 0 %}0{% elif unexpanded_count %}{{ unexpanded_count }}{% else %}未知{% endif %}</p>
+    <div class="upstream-candidate-list">
+        {% for candidate in upstream_candidates %}
+        <article class="upstream-candidate" data-upstream-candidate
+                 data-candidate-id="{{ candidate.candidate_id }}" data-resource-token="{{ candidate.resource_token }}"
+                 data-media-type="{{ candidate.media_type }}" data-width="{{ candidate.width|default:0 }}" data-height="{{ candidate.height|default:0 }}"
+                 {% if forloop.counter > 64 %}hidden{% endif %}>
+            <div class="upstream-candidate-title">
+                {% if candidate.work_label %}<span>{{ candidate.work_label }}</span>{% endif %}
+                <strong>{{ candidate.ordinal|default:forloop.counter }} · {{ candidate.media_type|default:"未知媒体" }}</strong>
+                <span>{{ candidate.provider_id|default:"上游未知" }}</span>
+                <span>{{ candidate.format_label|default:"格式未知" }}</span>
+            </div>
+            <dl class="upstream-candidate-properties">
+                <div><dt>分辨率</dt><dd>{% if candidate.width or candidate.height %}{{ candidate.width|default:"未知" }} × {{ candidate.height|default:"未知" }}{% else %}未知{% endif %}</dd></div>
+                <div><dt>帧率</dt><dd>{% if candidate.fps %}{{ candidate.fps }} fps{% else %}未知{% endif %}</dd></div>
+                <div><dt>视频 / 音频编码</dt><dd>{{ candidate.vcodec|default:"未知" }} / {{ candidate.acodec|default:"未知" }}</dd></div>
+                <div><dt>码率</dt><dd>{% if candidate.bitrate %}{{ candidate.bitrate }} kbps{% else %}未知{% endif %}</dd></div>
+                <div><dt>大小</dt><dd>{% if candidate.size_bytes %}{{ candidate.size_bytes|filesizeformat }}{% if candidate.size_is_estimate %}（估计）{% endif %}{% else %}未知{% endif %}</dd></div>
+                <div><dt>时长</dt><dd>{% if candidate.duration %}{{ candidate.duration }} s{% else %}未知{% endif %}</dd></div>
+                <div><dt>协议 / 交付</dt><dd>{{ candidate.protocol|default:"未知" }} / {{ candidate.delivery_state|default:"未知" }}</dd></div>
+                <div><dt>元数据来源</dt><dd>{% if candidate.metadata_source == 'upstream_declared' %}上游声明{% else %}{{ candidate.metadata_source|default:"未知" }}{% endif %}</dd></div>
+            </dl>
+            {% if candidate.requires_context %}<p class="upstream-candidate-limitation">需来源请求上下文；仅有链接可能无法读取。</p>{% endif %}
+            <div class="upstream-candidate-actions">
+                <button type="button" class="btn btn-outline-secondary btn-sm" data-candidate-action="copy" {% if not candidate.resource_token %}disabled{% endif %}>
+                    <i class="bi bi-copy" aria-hidden="true"></i> 复制链接
+                </button>
+                <button type="button" class="btn btn-outline-secondary btn-sm" data-candidate-action="open" {% if not candidate.resource_token %}disabled{% endif %}>
+                    <i class="bi bi-box-arrow-up-right" aria-hidden="true"></i> 打开链接
+                </button>
+                <span data-candidate-status role="status" aria-live="polite"></span>
+            </div>
+        </article>
+        {% endfor %}
+    </div>
+    {% if upstream_candidates|length > 64 %}<button type="button" class="btn btn-outline-secondary btn-sm" data-candidates-expand>再显示最多 64 项</button>{% endif %}
+</details>
+{% endif %}

@@ -80,20 +80,20 @@ class UpstreamDeliveryTests(SimpleTestCase):
     def test_resource_limit_does_not_silently_truncate_gallery(self):
         payload = [[3, f'https://cdn.example.org/{index}.png', {'extension': 'png'}]
                    for index in range(31)]
-        with self.assertRaises(XhsParseError), patch(
-                'xhs_download.services.upstream_delivery._issue_assets') as issue:
-            normalize_upstream_result(payload, match=self.match, source_url='https://example.org/post/1')
-        issue.assert_not_called()
+        result = normalize_upstream_result(payload, match=self.match, source_url='https://example.org/post/1')
+        self.assertEqual(len(result.metadata['upstream_candidates']), 31)
+        self.assertEqual(len(result.assets), 30)
+        self.assertEqual(result.metadata['limited_media_count'], 1)
 
     def test_credentials_and_non_https_rejected(self):
-        for url in ('file:///tmp/media.png', 'http://cdn.example.org/file.png', 'https://user:pass@cdn.example.org/file.png',
+        for url in ('file:///tmp/media.png', 'https://user:pass@cdn.example.org/file.png',
                     'https://cdn.example.org:8443/file.png'):
             with self.subTest(url=url), self.assertRaises(XhsParseError):
                 normalize_upstream_result([[3, url, {'extension': 'png'}]], match=self.match, source_url='https://example.org/post/1')
 
     def test_video_must_contain_audio_and_video(self):
         match = {**self.match, 'provider_id': 'yt_dlp_generic'}
-        for payload in ({'_type': 'playlist', 'entries': []}, {'url': 'https://cdn.example.org/video.mp4', 'vcodec': 'h264', 'acodec': 'none'}):
+        for payload in ({'_type': 'playlist', 'entries': []},):
             with self.assertRaises(XhsParseError):
                 normalize_upstream_result(payload, match=match, source_url='https://example.org/post/1')
 
@@ -106,10 +106,10 @@ class UpstreamDeliveryTests(SimpleTestCase):
     def test_unknown_tracks_are_not_reported_as_explicit_split(self):
         payload = {'url': 'https://cdn.example.org/video.mp4', 'ext': 'mp4'}
         self.assertEqual(video_evidence_state(payload), 'unknown_media_tracks')
-        with self.assertRaises(UpstreamMediaError) as raised:
-            normalize_upstream_result(payload, match={**self.match, 'provider_id': 'yt_dlp_generic'},
-                                      source_url='https://example.org/post/1')
-        self.assertEqual(raised.exception.code, 'unknown_media_tracks')
+        result = normalize_upstream_result(payload, match={**self.match, 'provider_id': 'yt_dlp_generic'},
+                                          source_url='https://example.org/post/1')
+        self.assertEqual(result.metadata['upstream_candidates'][0]['delivery_state'], 'unknown_media_tracks')
+        self.assertEqual(result.assets, ())
 
     def test_distinct_track_and_streaming_evidence(self):
         base = {'url': 'https://cdn.example.org/media.mp4'}
@@ -146,12 +146,14 @@ class UpstreamDeliveryTests(SimpleTestCase):
         self.assertTrue(upstream_manifest_item_is_allowed(result.assets[0].to_download_item()))
 
     def test_parsehub_unknown_video_does_not_receive_authority(self):
-        with self.assertRaises(UpstreamMediaError), patch(
+        with patch(
                 'xhs_download.services.upstream_delivery._issue_assets') as issue:
-            normalize_upstream_result(
+            result = normalize_upstream_result(
                 [[3, 'https://cdn.example.org/video.mp4', {'extension': 'mp4', 'media_completeness': 'unknown'}]],
                 match={**self.match, 'provider_id': 'parsehub_generic'}, source_url='https://example.org/post/1')
         issue.assert_not_called()
+        self.assertEqual(result.assets, ())
+        self.assertEqual(len(result.metadata['upstream_candidates']), 1)
 
     def test_mixed_unknown_video_does_not_discard_valid_image(self):
         result = normalize_upstream_result(

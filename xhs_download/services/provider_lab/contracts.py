@@ -13,6 +13,7 @@ SCHEMA_VERSION = "1.0"
 MAX_SOURCE_LENGTH = 4096
 MAX_ASSETS = 64
 MAX_RELATIONSHIPS = 64
+MAX_RETAINED_CANDIDATES = 1000
 MAX_ATTEMPTS = 12
 MAX_ATTEMPT_ELAPSED_MS = 60_000
 MAX_RAW_DEPTH = 6
@@ -22,7 +23,7 @@ MAX_SAFE_STRING_LENGTH = 512
 MAX_RAW_SHAPE_BYTES = 256 * 1024
 
 RESULT_STATUSES = frozenset(
-    {"success", "unsupported", "not_configured", "timeout", "failed"}
+    {"success", "unsupported", "not_configured", "timeout", "failed", "skipped"}
 )
 RESULT_KINDS = frozenset(
     {"video", "image", "gallery", "livephoto", "multimedia", "article", "unknown"}
@@ -56,10 +57,14 @@ ERROR_CODES = frozenset(
         "PROVIDER_INVALID_JSON",
         "PROVIDER_SCHEMA_INVALID",
         "PROVIDER_PROCESS_FAILED",
+        "PROVIDER_AUTH_FAILED",
+        "PROVIDER_UPSTREAM_FAILED",
+        "PROVIDER_EXECUTOR_FAILED",
         "PROVIDER_RESULT_EMPTY",
         "PROVIDER_LICENSE_RESTRICTED",
         "PROVIDER_RATE_LIMITED",
         "PROVIDER_POLICY_REJECTED",
+        "PROVIDER_ADMISSION_DEFERRED",
     }
 )
 
@@ -78,9 +83,32 @@ ABSOLUTE_PATH_RE = re.compile(r"^(?:/|[A-Za-z]:[\\/]|~[/\\])")
 SAFE_FIELD_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
 
 
+ERROR_DETAILS = frozenset({"MATCH_DEADLINE", "PARSE_DEADLINE", "NESTED_AGGREGATOR_TLS_BYPASS_BLOCKED",
+    "SERVICE_NETWORK_ERROR", "SERVICE_TLS_ERROR", "SERVICE_INVALID_JSON",
+    "SERVICE_RESPONSE_REJECTED", "SERVICE_HELPER_FAILED", "SERVICE_REDIRECT_REJECTED",
+    "SERVICE_RESPONSE_TOO_LARGE", "SERVICE_AUTH_REJECTED", "SERVICE_PARSE_REJECTED",
+    "SERVICE_BUSINESS_CODE_UNKNOWN", "SERVICE_EMPTY_RESULT",
+    "SERVICE_QUEUE_DEFERRED", "SERVICE_QUEUE_CANCELLED",
+    "SERVICE_PREVIOUS_OUTCOME_UNKNOWN", "SERVICE_SERIAL_GUARD_UNAVAILABLE"}
+    | {f"SERVICE_HTTP_{status}" for status in range(400, 600)})
+
+
+def safe_error_detail(detail):
+    if not isinstance(detail, str):
+        return ""
+    if detail in ERROR_DETAILS or re.fullmatch(
+        r"SERVICE_BUSINESS_CODE_-?\d{1,3}|"
+        r"SERVICE_JSON_(?:AUTH|PARSE|UNKNOWN)_HTTP_(?:[1-5]\d{2}|UNKNOWN)_TYPE_(?:JSON|HTML|TEXT|OTHER|MISSING)",
+        detail, flags=re.ASCII,
+    ):
+        return detail
+    return ""
+
+
 class ProviderLabError(RuntimeError):
-    def __init__(self, code: str, *, http_status: int = 400):
+    def __init__(self, code: str, *, http_status: int = 400, detail: str = ""):
         self.code = code if code in ERROR_CODES else "PROVIDER_PROCESS_FAILED"
+        self.detail = safe_error_detail(detail)
         self.http_status = int(http_status)
         super().__init__(self.code)
 
@@ -143,6 +171,13 @@ def string_requires_redaction(value: str) -> bool:
 def safe_public_text(value: Any, limit: int = MAX_SAFE_STRING_LENGTH) -> str:
     text = safe_text(value, limit)
     return "[redacted]" if string_requires_redaction(text) else text
+
+
+def exact_public_identity(value: Any) -> str:
+    """Identity comparisons must not alias through display-text normalization."""
+    if not isinstance(value, str) or not value or len(value) > 120:
+        return ""
+    return value if safe_public_text(value, 120) == value else ""
 
 
 def _object_fields(value: Any) -> Mapping[str, Any] | None:
@@ -227,6 +262,7 @@ class LabAssetV1:
     asset_id: str
     media_type: str = "unknown"
     role: str = "unknown"
+    upstream_role: str = ""
     resource_token: str = ""
     host_class: str = ""
     declared_extension: str = ""
@@ -236,16 +272,32 @@ class LabAssetV1:
     size_bytes: int = 0
     quality_label: str = ""
     codec: str = ""
-    requires_merge: bool = False
+    requires_merge: bool | None = None
     requires_cookie: bool = False
     headers_present: bool = False
-    audio_asset_present: bool = False
+    audio_asset_present: bool | None = None
+    format_id: str = ""
+    work_label: str = ""
+    work_id: str = ""
+    upstream_asset_id: str = ""
+    fps: float | None = None
+    vcodec: str = ""
+    acodec: str = ""
+    bitrate: float | None = None
+    size_is_estimate: bool = False
+    audio_tracks: str = "unknown"
+    video_tracks: str = "unknown"
+    protocol: str = ""
+    delivery_state: str = "unknown"
+    metadata_source: str = "unknown"
+    ordinal: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "asset_id": safe_public_text(self.asset_id, 120),
             "media_type": self.media_type if self.media_type in MEDIA_TYPES else "unknown",
             "role": self.role if self.role in ASSET_ROLES else "unknown",
+            "upstream_role": safe_public_text(self.upstream_role, 120),
             "resource_token": safe_text(self.resource_token, 160),
             "host_class": safe_text(self.host_class, 253),
             "declared_extension": safe_public_text(self.declared_extension, 16).lower().lstrip("."),
@@ -255,10 +307,25 @@ class LabAssetV1:
             "size_bytes": safe_int(self.size_bytes),
             "quality_label": safe_public_text(self.quality_label, 120),
             "codec": safe_public_text(self.codec, 80),
-            "requires_merge": bool(self.requires_merge),
+            "requires_merge": self.requires_merge if type(self.requires_merge) is bool else None,
             "requires_cookie": bool(self.requires_cookie),
             "headers_present": bool(self.headers_present),
-            "audio_asset_present": bool(self.audio_asset_present),
+            "audio_asset_present": self.audio_asset_present if type(self.audio_asset_present) is bool else None,
+            "format_id": safe_public_text(self.format_id, 120),
+            "work_label": safe_public_text(self.work_label, 160),
+            "work_id": exact_public_identity(self.work_id),
+            "upstream_asset_id": exact_public_identity(self.upstream_asset_id),
+            "fps": safe_float(self.fps) if self.fps is not None else None,
+            "vcodec": safe_public_text(self.vcodec, 80),
+            "acodec": safe_public_text(self.acodec, 80),
+            "bitrate": safe_float(self.bitrate) if self.bitrate is not None else None,
+            "size_is_estimate": bool(self.size_is_estimate),
+            "audio_tracks": self.audio_tracks if self.audio_tracks in {"unknown", "present", "absent"} else "unknown",
+            "video_tracks": self.video_tracks if self.video_tracks in {"unknown", "present", "absent"} else "unknown",
+            "protocol": safe_public_text(self.protocol, 80),
+            "delivery_state": safe_public_text(self.delivery_state, 80),
+            "metadata_source": safe_public_text(self.metadata_source, 80),
+            "ordinal": safe_int(self.ordinal),
         }
 
 
@@ -271,8 +338,8 @@ class LabRelationshipV1:
     def as_dict(self) -> dict[str, str]:
         return {
             "relationship_type": safe_public_text(self.relationship_type, 80),
-            "source_asset_id": safe_public_text(self.source_asset_id, 120),
-            "target_asset_id": safe_public_text(self.target_asset_id, 120),
+            "source_asset_id": exact_public_identity(self.source_asset_id),
+            "target_asset_id": exact_public_identity(self.target_asset_id),
         }
 
 
@@ -341,6 +408,16 @@ class LabProviderResultV1:
             "title": safe_public_text(self.metadata.get("title"), 300),
             "author": safe_public_text(self.metadata.get("author"), 200),
             "content_summary": safe_public_text(self.metadata.get("content_summary"), 512),
+            "candidate_count": safe_int(self.metadata.get("candidate_count", len(self.assets))),
+            "returned_count": safe_int(self.metadata.get("returned_count", len(self.assets))),
+            "retained_count": min(len(self.assets), MAX_RETAINED_CANDIDATES),
+            "unexpanded_count": safe_int(self.metadata.get("unexpanded_count")) if self.metadata.get("unexpanded_count") is not None else None,
+            "truncated_count": safe_int(self.metadata.get("truncated_count")) + max(0, len(self.assets) - MAX_RETAINED_CANDIDATES),
+            "truncated": bool(self.metadata.get("truncated") or len(self.assets) > MAX_RETAINED_CANDIDATES),
+            "unexpanded_scope": safe_public_text(self.metadata.get("unexpanded_scope"), 240),
+            "baseline": self.metadata.get("baseline") is True,
+            "queue_wait_ms": safe_int(self.metadata.get("queue_wait_ms")) if "queue_wait_ms" in self.metadata else None,
+            "execution_ms": safe_int(self.metadata.get("execution_ms")) if "execution_ms" in self.metadata else None,
         }
         attempts = []
         selected_seen = False
@@ -365,10 +442,10 @@ class LabProviderResultV1:
             "selected_backend": safe_public_text(self.selected_backend, 160),
             "result_kind": self.result_kind if self.result_kind in RESULT_KINDS else "unknown",
             "metadata": metadata,
-            "assets": [asset.as_dict() for asset in tuple(self.assets)[:MAX_ASSETS]],
+            "assets": [asset.as_dict() for asset in tuple(self.assets)[:MAX_RETAINED_CANDIDATES]],
             "relationships": [
                 relationship.as_dict()
-                for relationship in tuple(self.relationships)[:MAX_RELATIONSHIPS]
+                for relationship in tuple(self.relationships)[:MAX_RETAINED_CANDIDATES]
             ],
             "attempts": attempts,
             "warnings": [safe_public_text(item, 240) for item in tuple(self.warnings)[:32]],

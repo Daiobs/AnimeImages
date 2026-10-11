@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -174,7 +175,7 @@ class ProviderLabAccessTests(TestCase):
         self.assertEqual(run_provider_mock.call_args.kwargs["provider_id"], "animeimages_current")
 
     @mock.patch("xhs_download.provider_lab_views.run_provider")
-    def test_11_duplicate_execution_is_single_flight_limited(self, run_provider_mock):
+    def test_11_completed_execution_can_be_retried(self, run_provider_mock):
         run_provider_mock.return_value = {"schema_version": "1.0", "status": "success"}
         self.client.force_login(self.staff)
         body = json.dumps(
@@ -183,8 +184,22 @@ class ProviderLabAccessTests(TestCase):
         first = self.client.post(reverse("provider_lab_run"), body, content_type="application/json")
         second = self.client.post(reverse("provider_lab_run"), body, content_type="application/json")
         self.assertEqual(first.status_code, 200)
-        self.assertEqual(second.status_code, 429)
-        self.assertEqual(second.json()["error_code"], "PROVIDER_RATE_LIMITED")
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(run_provider_mock.call_count, 2)
+
+    @mock.patch("xhs_download.provider_lab_views.run_provider")
+    def test_11b_inflight_execution_is_single_flight_limited(self, run_provider_mock):
+        self.client.force_login(self.staff)
+        body = json.dumps({"source": "https://example.com/same", "provider_id": "animeimages_current"})
+        def during_execution(**kwargs):
+            duplicate = self.client.post(reverse("provider_lab_run"), body, content_type="application/json")
+            self.assertEqual(duplicate.status_code, 429)
+            self.assertEqual(duplicate.json()["error_code"], "PROVIDER_RATE_LIMITED")
+            return {"schema_version": "1.0", "status": "success"}
+        run_provider_mock.side_effect = during_execution
+        response = self.client.post(reverse("provider_lab_run"), body, content_type="application/json")
+        self.assertEqual(response.status_code, 200)
+        run_provider_mock.assert_called_once()
 
     @mock.patch("xhs_download.provider_lab_views.consume_fixed_window")
     def test_12_execution_rate_limit_is_enforced(self, limit_mock):
@@ -226,7 +241,9 @@ class ProviderLabRegistryAndContractTests(SimpleTestCase):
                 "parsehub_repo",
                 "videodl_repo",
                 "yt_dlp_existing",
+                "gallery_dl_existing",
                 "tiantian_existing",
+                "kukutool_existing",
             ),
         )
 
@@ -235,8 +252,8 @@ class ProviderLabRegistryAndContractTests(SimpleTestCase):
         self.assertNotIn("import_module", source)
         self.assertNotIn("entry_points", source)
 
-    def test_18_max_provider_contract_is_five(self):
-        self.assertEqual(len(PROVIDER_REGISTRY), 5)
+    def test_18_all_seven_providers_can_be_compared(self):
+        self.assertEqual(len(PROVIDER_REGISTRY), 7)
 
     def test_19_share_text_extracts_one_url(self):
         self.assertEqual(
@@ -346,12 +363,53 @@ class ProviderLabRegistryAndContractTests(SimpleTestCase):
         tiantian_health_mock,
     ):
         descriptors = list_provider_descriptors()
-        self.assertEqual(len(descriptors), 5)
+        self.assertEqual(len(descriptors), 7)
         ytdlp_health_mock.assert_not_called()
         tiantian_health_mock.assert_not_called()
 
 
 class ProviderLabWorkerProtocolTests(SimpleTestCase):
+    def test_install_check_requires_import_and_pin_not_just_python(self):
+        from .services.provider_lab.runtime import worker_install_available
+        for payload, expected in (({"status": "ok", "provider_id": "parsehub_repo",
+                                    "provider_version": "parsehub@exact"}, True),
+                                  ({"status": "ok", "provider_id": "parsehub_repo",
+                                    "provider_version": "parsehub@wrong"}, False),
+                                  ({"error": {"code": "PROVIDER_NOT_CONFIGURED"}}, False)):
+            script = self._script("import sys\nassert sys.argv[1:] == ['--check-only']\nprint(" + repr(json.dumps(payload)) + ")\n")
+            self.assertEqual(worker_install_available(sys.executable, script,
+                             "parsehub_repo", "parsehub@exact"), expected)
+
+    def test_install_check_invalidates_on_worker_change(self):
+        from .services.provider_lab.runtime import worker_install_available
+        script = self._script('print("invalid")')
+        self.assertFalse(worker_install_available(sys.executable, script, "test", "exact"))
+        script.write_text('print(\'{"status":"ok","provider_id":"test","provider_version":"exact"}\')')
+        self.assertTrue(worker_install_available(sys.executable, script, "test", "exact"))
+
+    def test_install_check_timeout_fails_closed(self):
+        from .services.provider_lab.runtime import worker_install_available
+        script = self._script('pass')
+        with mock.patch('xhs_download.services.provider_lab.runtime._execute_external_process',
+                        side_effect=subprocess.TimeoutExpired('worker', 5)) as runner:
+            self.assertFalse(worker_install_available(sys.executable, script, "test", "exact"))
+        self.assertEqual(runner.call_args.kwargs['timeout_seconds'], 5.0)
+        self.assertNotIn('PROVIDER_COOKIE', runner.call_args.kwargs['env'])
+
+    def test_install_check_identity_tracks_in_place_package_replacement(self):
+        from .services.provider_lab.runtime import worker_install_available
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            metadata = root / 'lib/python3.14/site-packages/parsehub-2.2.0.dist-info/METADATA'
+            metadata.parent.mkdir(parents=True)
+            metadata.write_text('Version: 2.2.0')
+            with mock.patch('xhs_download.services.provider_lab.runtime._check_worker_install', return_value=True) as check:
+                worker_install_available(str(root / 'bin/python'), root / 'worker.py', 'parsehub_repo', 'exact')
+                before = check.call_args.args[4]
+                metadata.write_text('Version: 2.3.0')
+                worker_install_available(str(root / 'bin/python'), root / 'worker.py', 'parsehub_repo', 'exact')
+                self.assertNotEqual(before, check.call_args.args[4])
+
     def _script(self, source):
         directory = tempfile.TemporaryDirectory()
         path = Path(directory.name) / "worker.py"
@@ -749,21 +807,12 @@ class ProviderLabNormalizerTests(TestCase):
         self.assertIn("prefer_youtube_merge=False", lab_source)
 
     @mock.patch(
-        "xhs_download.services.provider_lab.providers.YtDlpGenericProvider.parse"
+        "xhs_download.services.quality_execution.execute_provider"
     )
-    @mock.patch(
-        "xhs_download.services.provider_lab.providers.YtDlpGenericProvider.health"
-    )
-    def test_56b_ytdlp_wrapper_issues_only_lab_tokens(self, health_mock, parse_mock):
-        health_mock.return_value = {"ready": True, "version_output": "test-version"}
-        parse_mock.return_value = {
-            "title": "Video",
-            "extractor_key": "Example",
-            "url": "https://video.example.com/video.mp4",
-            "vcodec": "h264",
-            "acodec": "aac",
-            "ext": "mp4",
-        }
+    def test_56b_ytdlp_wrapper_issues_only_lab_tokens(self, parse_mock):
+        parse_mock.return_value = ParseResult(platform="third_party", post_type="video",
+            base_filename="Video", assets=(MediaAsset(platform="third_party", url="https://video.example.com/video.mp4", media_type="video"),),
+            metadata={"title": "Video"})
         result, resources = run_ytdlp_existing(
             source="https://example.com/post",
             request_id="request_ytdlp",

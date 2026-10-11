@@ -7,6 +7,7 @@ from django.conf import settings
 
 from ..models import ProviderAccessMode, ProviderRuntimeSetting
 from .common import extract_url_from_text, host_matches, is_blocked_hostname
+from .quality_execution import PROVIDER_ALIASES
 
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,7 @@ PROVIDER_DOUYIN_ULTRA = "douyin_ultra"
 PROVIDER_YOUTUBE_MERGE = "youtube_merge"
 PROVIDER_THIRD_PARTY = "third_party"
 UPSTREAM_PROVIDER_IDS = ("yt_dlp_generic", "gallery_dl_generic", "parsehub_generic")
+UPSTREAM_ROUTE_PROVIDER_IDS = tuple(dict.fromkeys(PROVIDER_ALIASES.values()))
 UPSTREAM_PARSE_TIMEOUT_SECONDS = 30.0
 
 
@@ -30,7 +32,7 @@ def upstream_match_is_blocked(match, runtime_setting):
 
 def upstream_match_is_public_allowed(match, host, runtime_setting):
     provider = str(match.get("provider_id") or "")
-    if provider not in UPSTREAM_PROVIDER_IDS or upstream_match_is_blocked(match, runtime_setting):
+    if provider not in UPSTREAM_ROUTE_PROVIDER_IDS or upstream_match_is_blocked(match, runtime_setting):
         return False
     return third_party_platform_is_public_allowed(
         f"upstream:{provider}", host, runtime_setting,
@@ -421,7 +423,7 @@ def third_party_public_access_summary(query_url, request=None, runtime_setting=N
         matches = tuple(
             match for match in getattr(rule, "upstream_matches", ())
             if isinstance(match, dict)
-            and match.get("provider_id") in UPSTREAM_PROVIDER_IDS
+            and match.get("provider_id") in UPSTREAM_ROUTE_PROVIDER_IDS
             and match.get("provider_id") in rule.provider_ids
             and match.get("extractor_id")
             and provider_is_enabled(match["provider_id"])

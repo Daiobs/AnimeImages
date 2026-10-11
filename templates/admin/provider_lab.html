@@ -20,15 +20,15 @@
     data-provider-lab
     data-run-url="{{ provider_lab_run_url }}"
     data-resource-url="{{ provider_lab_resource_url }}"
+    data-route-url="{% url 'upstream_routes' %}"
     data-max-concurrency="{{ provider_lab_max_concurrency }}"
     data-max-providers="{{ provider_lab_max_providers }}"
 >
     <div class="provider-lab-shell">
         <header class="provider-lab-header">
             <div>
-                <span class="provider-lab-eyebrow">Staff Research Surface</span>
-                <h1>上游 Provider 测试工作台</h1>
-                <p>手动并排比较整仓库上游与当前解析结果。每个 Provider 独立执行；结果仅保留在当前页面。</p>
+                <span class="provider-lab-eyebrow">Provider Lab</span>
+                <h1>上游画质比较与路线</h1>
             </div>
             <a class="provider-lab-secondary" href="{% url 'provider_settings' %}">Provider 设置</a>
         </header>
@@ -55,8 +55,16 @@
                     ></textarea>
                 </label>
 
+                <div class="provider-lab-form-actions">
+                    <button class="provider-lab-primary" type="submit" data-lab-all>测试全部上游</button>
+                    <button class="provider-lab-secondary" type="button" data-lab-cancel disabled>取消未完成任务</button>
+                    <span class="provider-lab-form-message" data-provider-lab-form-message aria-live="polite"></span>
+                </div>
+
+                <details class="provider-lab-advanced">
+                <summary>高级：测试所选上游与执行选项</summary>
                 <fieldset class="provider-lab-provider-grid">
-                    <legend>选择上游</legend>
+                    <legend>已接入上游</legend>
                     {% for provider in provider_lab_providers %}
                         <label class="provider-lab-provider-option{% if not provider.available %} is-unavailable{% endif %}">
                             <input
@@ -67,7 +75,7 @@
                                 {% if not provider.available %}disabled{% endif %}
                             >
                             <span class="provider-lab-provider-copy">
-                                <strong>{{ provider.label }}</strong>
+                                <strong>{{ provider.label }}{% if provider.provider_id == 'animeimages_current' %} · 现有路线基线{% endif %}</strong>
                                 <small>{{ provider.provider_version }}</small>
                                 <small>{{ provider.provider_scope }}</small>
                                 {% if provider.license_scope == "noncommercial_lab_only" %}
@@ -128,23 +136,35 @@
                     </div>
 
                     <fieldset class="provider-lab-common-backends" data-videodl-common-backends>
-                        <legend>允许的 Common Backends</legend>
+                        <legend>全部 Common Backends</legend>
                         <p>默认不选择。仅 `Common Only` 或 `Reviewed Auto` 在 dedicated 无有效结果后使用。</p>
                         <div>
                             {% for backend in videodl_backend_inventory.items %}
-                                {% if backend.backend_category == "common" and backend.controlled_available %}
+                                {% if backend.backend_category == "common" %}
                                     <label>
                                         <input
                                             type="checkbox"
                                             name="videodl_common_backends"
                                             value="{{ backend.backend_id }}"
+                                            {% if not backend.controlled_available %}disabled{% endif %}
                                         >
-                                        <span>{{ backend.display_label }}</span>
+                                        <span>{{ backend.display_label }} · {{ backend.policy_description|default:backend.policy_reason }}</span>
                                     </label>
                                 {% endif %}
                             {% endfor %}
                         </div>
                     </fieldset>
+
+                    <details>
+                        <summary>完整 Backend 状态清单（{{ videodl_backend_inventory.items|length }}）</summary>
+                        <ul>
+                        {% for backend in videodl_backend_inventory.items %}
+                            <li>{{ backend.display_label }} · {{ backend.backend_category }} ·
+                                {% if not backend.controlled_available %}暂不可执行{% elif backend.external_sharing_required %}确认外部分享后可测试{% else %}可测试{% endif %}
+                                · {{ backend.policy_description|default:backend.policy_reason }}</li>
+                        {% endfor %}
+                        </ul>
+                    </details>
 
                     <label class="provider-lab-sharing-confirmation" data-videodl-sharing-confirmation hidden>
                         <input type="checkbox" name="videodl_external_sharing_confirmed">
@@ -152,12 +172,64 @@
                     </label>
                     <p>Legacy Auto 仅用于显式不透明对照，可能执行上游内部行为，且永远不是默认模式。</p>
                 </section>
+                <button class="provider-lab-secondary" type="submit" data-lab-selected>测试所选上游</button>
+                </details>
 
-                <div class="provider-lab-form-actions">
-                    <button class="provider-lab-primary" type="submit">运行上游测试</button>
-                    <span class="provider-lab-form-message" data-provider-lab-form-message aria-live="polite"></span>
+                <div class="provider-lab-call-authorizations">
+                    {% for provider in provider_lab_providers %}
+                    {% if provider.requires_confirmation %}
+                    <label class="provider-lab-sharing-confirmation">
+                        <input type="checkbox" name="provider_authorizations" value="{{ provider.provider_id }}">
+                        <span>{{ provider.label }}：{{ provider.confirmation_message|default:"确认在本次任务范围内调用外部服务并分享来源链接" }}</span>
+                    </label>
+                    {% endif %}
+                    {% endfor %}
                 </div>
+
+                <p data-lab-run-stats aria-live="polite">尚未开始本轮检查</p>
             </form>
+        </section>
+
+        <section class="provider-lab-current" aria-label="本次候选">
+            <h2>本次使用</h2>
+            <p data-lab-current-selection>尚未选择本次候选。平台路线未改变。</p>
+            <p data-lab-comparison-warning role="status"></p>
+            <button type="button" class="provider-lab-secondary" data-lab-current-inspect>查看本次候选</button>
+        </section>
+
+        <section class="provider-lab-route" data-lab-route-editor
+                 data-can-configure="{% if perms.xhs_download.change_upstreamroute %}true{% else %}false{% endif %}">
+            <div class="provider-lab-section-heading">
+                <h2>平台路线</h2>
+                <button type="button" class="provider-lab-secondary" data-route-load>读取路线</button>
+            </div>
+            <p data-route-scope>尚未读取来源范围</p>
+            <fieldset data-route-fields disabled>
+                <div class="provider-lab-route-grid">
+                    <div>
+                        <h3>执行顺序</h3>
+                        <ol data-route-order></ol>
+                        <select data-route-add aria-label="添加备选上游"><option value="">添加备选上游</option></select>
+                        <button type="button" class="provider-lab-secondary" data-route-use-current>将此上游设为该平台固定路线</button>
+                    </div>
+                    <div class="provider-lab-control-grid">
+                        <label><span>最高分辨率</span><input type="number" name="max_height" min="144" max="8640" placeholder="不限制"></label>
+                        <label><span>视频编码偏好</span><select name="preferred_video_codec"><option value="">不指定</option><option value="h264">H.264</option><option value="hevc">HEVC</option><option value="vp9">VP9</option><option value="av1">AV1</option></select></label>
+                        <label><span>容器偏好</span><select name="preferred_container"><option value="">不指定</option><option value="mp4">MP4</option><option value="webm">WebM</option><option value="mkv">MKV</option></select></label>
+                        <label><span>videodl 执行模式</span><select name="route_videodl_mode"><option value="dedicated_only">Dedicated Only</option><option value="specific_backend">Specific Backend</option></select></label>
+                        <label><span>videodl 固定 Backend</span><select name="route_videodl_backend"><option value="">不指定</option>
+                            {% for backend in videodl_backend_inventory.items %}{% if backend.backend_category == 'dedicated' and backend.controlled_available and not backend.external_sharing_required %}<option value="{{ backend.backend_id }}">{{ backend.display_label }}</option>{% endif %}{% endfor %}
+                        </select></label>
+                    </div>
+                </div>
+                <p data-route-confirmation-summary>请先读取来源站点并选择固定上游。</p>
+                <label class="provider-lab-route-confirm"><input type="checkbox" data-route-confirm>已核对来源、当前与拟保存路线、执行选项和格式偏好，确认修改后续解析</label>
+            </fieldset>
+            <div class="provider-lab-form-actions">
+                <button type="button" class="provider-lab-primary" data-route-save disabled>确认保存固定路线</button>
+                <button type="button" class="provider-lab-secondary" data-route-reset disabled>恢复默认</button>
+                <span data-route-status role="status"></span>
+            </div>
         </section>
 
         <section class="provider-lab-results" aria-labelledby="provider-lab-results-title">
@@ -185,6 +257,9 @@
                             <span>{{ provider.license_name }}</span>
                             <strong>{{ provider.license_scope }}</strong>
                         </div>
+                        {% if not provider.available %}<p class="provider-lab-availability">未执行条件：{% if provider.unexecuted_reason == 'PROVIDER_DISABLED' %}该通道已关闭{% else %}{{ provider.not_configured_hint|default:"当前环境未配置或缺少运行依赖" }}{% endif %}</p>{% endif %}
+                        {% if provider.baseline %}<p class="provider-lab-availability">复合基线：仅作对照，不计入独立上游统计，不能保存为固定上游。</p>
+                        {% elif not provider.route_selectable %}<p class="provider-lab-availability">仅可比较：尚无可用于后续解析的独立执行器。</p>{% endif %}
                         <dl class="provider-lab-summary" data-provider-summary>
                             <div><dt>平台</dt><dd data-field="claimed_platform">-</dd></div>
                             <div><dt>Backend</dt><dd data-field="selected_backend">-</dd></div>
@@ -217,11 +292,14 @@
                             </div>
                         </section>
                         <div class="provider-lab-assets" data-provider-assets></div>
+                        <p data-provider-scope-note></p>
                         <details class="provider-lab-raw" data-provider-raw hidden>
                             <summary>查看脱敏结构</summary>
                             <pre data-provider-raw-output></pre>
                         </details>
                         <footer class="provider-lab-card-actions">
+                            <label>格式顺序 <select data-lab-format-order><option value="source">上游原顺序</option><option value="resolution">分辨率降序</option></select></label>
+                            <button type="button" data-lab-retry disabled>重试此上游</button>
                             <button type="button" data-copy-json disabled>复制脱敏 JSON</button>
                             <button type="button" data-download-json disabled>下载脱敏 JSON</button>
                         </footer>

@@ -18,6 +18,9 @@
         not_configured: "NOT CONFIGURED",
         timeout: "TIMEOUT",
         failed: "FAILED",
+        queued: "QUEUED",
+        cancelled: "CANCELLED",
+        skipped: "NOT RUN",
     });
     const ERROR_MESSAGES = Object.freeze({
         PROVIDER_NOT_SELECTED: "请选择有效的 Provider。",
@@ -28,9 +31,13 @@
         PROVIDER_INVALID_JSON: "Provider 返回格式无效。",
         PROVIDER_SCHEMA_INVALID: "Provider 返回结构未通过校验。",
         PROVIDER_PROCESS_FAILED: "Provider 执行失败。",
+        PROVIDER_AUTH_FAILED: "上游认证失败，请检查该通道的账号配置。",
+        PROVIDER_UPSTREAM_FAILED: "上游接口请求或响应失败，尚未取得有效媒体。",
+        PROVIDER_EXECUTOR_FAILED: "上游辅助程序或请求执行失败，具体远端原因未确认。",
         PROVIDER_RESULT_EMPTY: "Provider 未返回可比较的资源。",
         PROVIDER_LICENSE_RESTRICTED: "该 Provider 仅限显式启用的非商业本地研究。",
         PROVIDER_RATE_LIMITED: "请求过于频繁，请稍后重试。",
+        PROVIDER_ADMISSION_DEFERRED: "天天解析正在排队，或前次调用结果尚未确认；本次未发起解析，不会自动重试。",
         PROVIDER_POLICY_REJECTED: "当前受控执行选项未通过安全策略。",
     });
     const ATTEMPT_OUTCOME_LABELS = Object.freeze({
@@ -42,10 +49,19 @@
         policy_rejected: "策略拒绝",
         skipped: "跳过",
     });
+    const ROUTE_PROVIDER_IDS = Object.freeze({yt_dlp_existing: "yt_dlp_generic",
+        gallery_dl_existing: "gallery_dl_generic", parsehub_repo: "parsehub_generic", videodl_repo: "videodl_repo"});
 
     function safeStatus(value) {
         const status = String(value || "").toLowerCase();
         return Object.prototype.hasOwnProperty.call(STATUS_LABELS, status) ? status : "failed";
+    }
+
+    function readProviderDescriptors(documentObject) {
+        try {
+            const rows = JSON.parse(documentObject.querySelector("#provider-lab-config")?.textContent || "[]");
+            return Array.isArray(rows) ? rows : [];
+        } catch (_error) { return []; }
     }
 
     function selectedProviderIds(inputs, maximum) {
@@ -161,7 +177,152 @@
         return results;
     }
 
-    function errorMessage(code) {
+    function createExecutionQueue(options) {
+        const settings = options || {};
+        const concurrency = Math.max(1, Math.min(3, Number(settings.concurrency || 3)));
+        const timeoutMs = Number(settings.timeoutMs || 45000);
+        const budgetMs = Number(settings.budgetMs || 180000);
+        const jobs = new Map();
+        const active = new Map();
+        let generation = 0;
+        let budgetTimer = null;
+        let stopped = false;
+        let context = null;
+        const emit = (job) => settings.onState?.({...job}, context);
+        const finishIfIdle = () => {
+            if (!active.size && !Array.from(jobs.values()).some((job) => job.status === "queued")) {
+                clearTimeout(budgetTimer);
+                budgetTimer = null;
+                settings.onIdle?.();
+            }
+        };
+        function pump() {
+            if (stopped) return;
+            for (const job of jobs.values()) {
+                if (active.size >= concurrency) break;
+                if (job.status !== "queued") continue;
+                const currentGeneration = generation;
+                const runContext = context;
+                const controller = new AbortController();
+                active.set(job.id, controller);
+                job.status = "running";
+                emit(job);
+                let timer;
+                let timedOut = false;
+                const aborted = new Promise((_resolve, reject) => {
+                    controller.signal.addEventListener("abort", () => reject(new Error("cancelled")), {once: true});
+                    timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+                });
+                Promise.race([
+                    Promise.resolve().then(() => {
+                        if (generation !== currentGeneration || controller.signal.aborted) throw new Error("cancelled");
+                        return settings.execute(job.id, runContext, controller.signal);
+                    }),
+                    aborted,
+                ]).then((result) => {
+                    if (generation !== currentGeneration || jobs.get(job.id) !== job) return;
+                    job.result = result;
+                    job.status = safeStatus(result?.status);
+                    emit(job);
+                }, (error) => {
+                    if (generation !== currentGeneration || jobs.get(job.id) !== job) return;
+                    job.status = timedOut ? "timeout" : controller.signal.aborted ? "cancelled" : "failed";
+                    job.result = error.payload || {provider_id: job.id, status: job.status,
+                        error_code: timedOut ? "PROVIDER_TIMEOUT" : "PROVIDER_PROCESS_FAILED"};
+                    emit(job);
+                }).finally(() => {
+                    clearTimeout(timer);
+                    if (generation !== currentGeneration) return;
+                    active.delete(job.id);
+                    pump();
+                    finishIfIdle();
+                });
+            }
+            finishIfIdle();
+        }
+        function cancel(reason) {
+            stopped = true;
+            clearTimeout(budgetTimer);
+            budgetTimer = null;
+            for (const job of jobs.values()) {
+                if (job.status === "queued") {
+                    job.status = reason === "budget" ? "skipped" : "cancelled";
+                    job.reason = reason === "budget" ? "整体预算已用尽，未执行" : "排队任务已取消";
+                    emit(job);
+                }
+            }
+            active.forEach((controller) => controller.abort());
+            finishIfIdle();
+        }
+        function start(ids, nextContext) {
+            cancel();
+            generation += 1;
+            active.clear();
+            jobs.clear();
+            stopped = false;
+            context = nextContext;
+            Array.from(new Set(ids)).forEach((id) => {
+                const job = {id, status: "queued", result: null};
+                jobs.set(id, job);
+                emit(job);
+            });
+            budgetTimer = setTimeout(() => cancel("budget"), budgetMs);
+            pump();
+        }
+        function retry(id) {
+            const previous = jobs.get(id);
+            if (!previous || active.has(id) || previous.status === "queued") return false;
+            stopped = false;
+            const job = {id, status: "queued", result: null};
+            jobs.set(id, job);
+            emit(job);
+            if (!budgetTimer) budgetTimer = setTimeout(() => cancel("budget"), budgetMs);
+            pump();
+            return true;
+        }
+        return {start, retry, cancel, jobs, get activeCount() { return active.size; },
+            invalidate() { cancel(); generation += 1; active.clear(); jobs.clear(); }};
+    }
+
+    function errorMessage(code, detail) {
+        if (code === "PROVIDER_RESULT_EMPTY" && detail === "SERVICE_EMPTY_RESULT") {
+            return "服务返回的结果没有可用媒体；不是下载失败。";
+        }
+        if (code === "PROVIDER_UPSTREAM_FAILED") {
+            const business = /^SERVICE_BUSINESS_CODE_(-?\d{1,3})$/.exec(detail || "");
+            if (business) return `服务业务响应未通过，业务码 ${business[1]}；该值不是 HTTP 状态，具体含义待核对。`;
+            if (detail === "SERVICE_BUSINESS_CODE_UNKNOWN") return "服务业务响应未通过，未提供可安全识别的业务码。";
+            const jsonFailure = /^SERVICE_JSON_(AUTH|PARSE|UNKNOWN)_HTTP_([1-5]\d{2}|UNKNOWN)_TYPE_(JSON|HTML|TEXT|OTHER|MISSING)$/.exec(detail || "");
+            if (jsonFailure) {
+                const stages = {AUTH: "上游授权", PARSE: "上游解析", UNKNOWN: "未知"};
+                const types = {JSON: "JSON", HTML: "HTML", TEXT: "文本", OTHER: "其他", MISSING: "未提供"};
+                return `${stages[jsonFailure[1]]}阶段响应不是有效 JSON；HTTP ${jsonFailure[2] === "UNKNOWN" ? "未知" : jsonFailure[2]}，Content-Type 类别：${types[jsonFailure[3]]}。`;
+            }
+            if (/^SERVICE_HTTP_[45]\d\d$/.test(detail || "")) {
+                return `服务接口返回 HTTP ${detail.slice(-3)}；这不是本地管理员权限错误。`;
+            }
+            const serviceDetails = {
+                SERVICE_NETWORK_ERROR: "服务请求网络失败，尚不能确定是连接、DNS 或其他网络原因。",
+                SERVICE_TLS_ERROR: "服务请求 TLS 校验失败；未关闭证书校验。",
+                SERVICE_INVALID_JSON: "服务响应不是有效 JSON。",
+                SERVICE_RESPONSE_REJECTED: "服务未返回可用结果，具体业务原因未确认。",
+                SERVICE_AUTH_REJECTED: "辅助程序的上游授权阶段未通过，不代表本地管理员登录失败。",
+                SERVICE_PARSE_REJECTED: "辅助程序的上游解析阶段未返回可用结果。",
+                SERVICE_REDIRECT_REJECTED: "服务重定向被现有安全规则拒绝。",
+                SERVICE_RESPONSE_TOO_LARGE: "服务响应超过读取上限。",
+                SERVICE_HELPER_FAILED: "辅助程序已运行但失败，具体原因未知；不能据此判定 Node 缺失。",
+            };
+            if (Object.prototype.hasOwnProperty.call(serviceDetails, detail)) return serviceDetails[detail];
+        }
+        if (code === "PROVIDER_POLICY_REJECTED" && detail === "NESTED_AGGREGATOR_TLS_BYPASS_BLOCKED") {
+            return "该固定版本 Backend 使用嵌套聚合服务并绕过 TLS 校验，已被安全策略禁用；不是管理员权限不足。";
+        }
+        if (code === "PROVIDER_TIMEOUT" && detail === "MATCH_DEADLINE") {
+            return "上游匹配阶段超时，尚未进入媒体解析；不是管理员权限不足。";
+        }
+        if (code === "PROVIDER_TIMEOUT" && detail === "PARSE_DEADLINE") {
+            return "上游解析阶段超时；可能涉及网络或源站响应，不能仅凭超时确定原因。";
+        }
         return ERROR_MESSAGES[String(code || "")] || "Provider 执行失败。";
     }
 
@@ -198,7 +359,7 @@
         return String(form.querySelector('[name="csrfmiddlewaretoken"]')?.value || "");
     }
 
-    async function requestJson(fetchImpl, url, token, body) {
+    async function requestJson(fetchImpl, url, token, body, options) {
         const response = await fetchImpl(url, {
             method: "POST",
             credentials: "same-origin",
@@ -208,6 +369,7 @@
                 "X-CSRFToken": token,
             },
             body: JSON.stringify(body),
+            ...(options?.signal ? {signal: options.signal} : {}),
         });
         let payload = {};
         try {
@@ -218,6 +380,7 @@
         if (!response.ok) {
             const error = new Error("provider_lab_request_failed");
             error.payload = payload;
+            error.status = response.status;
             throw error;
         }
         return payload;
@@ -257,6 +420,8 @@
         if (attempts) { attempts.hidden = true; }
         if (attemptRows) { attemptRows.replaceChildren(); }
         if (raw) { raw.hidden = true; }
+        const scopeNote = card.querySelector("[data-provider-scope-note]");
+        if (scopeNote) scopeNote.textContent = "";
         card.querySelectorAll("[data-copy-json], [data-download-json]")
             .forEach((button) => { button.disabled = true; });
     }
@@ -267,17 +432,26 @@
             ["类型", asset.media_type],
             ["角色", asset.role],
             ["格式", asset.declared_extension || "未知"],
-            ["尺寸", asset.width && asset.height ? `${asset.width}×${asset.height}` : "未知"],
+            ["尺寸", asset.width || asset.height ? `${asset.width || "未知"}×${asset.height || "未知"}` : "未知"],
             ["时长", formatDuration(asset.duration_seconds)],
-            ["大小", formatBytes(asset.size_bytes)],
+            ["大小", `${formatBytes(asset.size_bytes)}${asset.size_is_estimate === true ? "（估计）" : ""}`],
             ["质量", asset.quality_label || "未知"],
             ["Codec", asset.codec || "未知"],
+            ["视频编码", asset.vcodec || "未知"],
+            ["音频编码", asset.acodec === "none" ? "无音轨" : asset.acodec || "未知"],
+            ["帧率", asset.fps > 0 ? `${asset.fps} fps` : "未知"],
+            ["码率", asset.bitrate > 0 ? `${asset.bitrate} kbps` : "未知"],
+            ["内嵌视频轨 / 音频轨", `${trackLabel(asset.video_tracks)} / ${trackLabel(asset.audio_tracks)}`],
+            ["交付", asset.delivery_state || "未知"],
+            ["协议", asset.protocol || "未知"],
+            ["来源", asset.metadata_source === "upstream_declared" ? "上游声明" : asset.metadata_source || "未知"],
             ["Host", asset.host_class || "未知"],
-            ["合并", asset.requires_merge ? "需要" : "否"],
-            ["独立音频", asset.audio_asset_present ? "存在" : "否"],
-            ["Header", asset.headers_present ? "需要" : "否"],
-            ["Cookie", asset.requires_cookie ? "需要" : "否"],
+            ["合并", knownBoolean(asset.requires_merge, "需要")],
+            ["独立音频资源", knownBoolean(asset.audio_asset_present, "存在")],
+            ["Header", knownBoolean(asset.headers_present, "需要")],
+            ["Cookie", knownBoolean(asset.requires_cookie, "需要")],
         ];
+        if (asset.work_label) values.unshift(["作品", asset.work_label]);
         values.forEach(([label, value]) => {
             const span = documentObject.createElement("span");
             const strong = documentObject.createElement("strong");
@@ -288,11 +462,33 @@
         return fragment;
     }
 
-    function renderAssets(documentObject, container, result) {
+    function knownBoolean(value, yes) {
+        return value === true ? yes : value === false ? "否" : "未知";
+    }
+
+    function trackLabel(value) {
+        return value === "present" ? "存在" : value === "absent" ? "无" : "未知";
+    }
+
+    function qualityOrder(assets) {
+        const source = Array.from(assets || []);
+        const videos = source.filter((asset) => asset.media_type === "video").map((asset, index) => ({asset, index})).sort((left, right) => {
+            const known = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : -1;
+            return known(right.asset.height) - known(left.asset.height)
+                || known(right.asset.width) - known(left.asset.width) || left.index - right.index;
+        }).map(({asset}) => asset);
+        let index = 0;
+        return source.map((asset) => asset.media_type === "video" ? videos[index++] : asset);
+    }
+
+    function renderAssets(documentObject, container, result, ordered) {
         container.replaceChildren();
-        (result.assets || []).forEach((asset) => {
+        const assets = ordered || result.assets || [];
+        assets.forEach((asset, index) => {
             const row = documentObject.createElement("div");
             row.className = "provider-lab-asset";
+            row.dataset.assetId = String(asset.asset_id || "");
+            row.hidden = index >= 64;
             const meta = documentObject.createElement("div");
             meta.className = "provider-lab-asset-meta";
             meta.append(metaFragment(documentObject, asset));
@@ -306,13 +502,43 @@
             button.dataset.assetId = String(asset.asset_id || "");
             button.dataset.mediaType = String(asset.media_type || "unknown");
             button.disabled = !asset.resource_token;
+            const select = documentObject.createElement("button");
+            select.type = "button";
+            select.textContent = "本次使用";
+            select.dataset.labSelect = "1";
+            select.dataset.assetId = String(asset.asset_id || "");
+            select.setAttribute("aria-pressed", "false");
             const inspection = documentObject.createElement("div");
             inspection.className = "provider-lab-inspection";
             inspection.dataset.labInspection = "1";
             inspection.textContent = "尚未请求媒体描述符。";
-            row.append(meta, button, inspection);
+            row.append(meta, select, button, inspection);
             container.append(row);
         });
+        const counts = documentObject.createElement("p");
+        counts.dataset.labDisplayCounts = "1";
+        const metadata = result.metadata || {};
+        counts.dataset.returnedCount = metadata.returned_count ?? "未知";
+        counts.dataset.retainedCount = metadata.retained_count ?? assets.length;
+        counts.dataset.unexpandedCount = metadata.unexpanded_count ?? "未知";
+        container.append(counts);
+        if (assets.length > 64) {
+            const expand = documentObject.createElement("button");
+            expand.type = "button";
+            expand.dataset.labExpand = "1";
+            expand.textContent = "再显示 64 项";
+            container.append(expand);
+        }
+        updateAssetCounts(container);
+    }
+
+    function updateAssetCounts(container) {
+        const rows = Array.from(container.querySelectorAll(".provider-lab-asset"));
+        const shown = rows.filter((row) => !row.hidden).length;
+        const counts = container.querySelector("[data-lab-display-counts]");
+        if (counts) counts.textContent = `返回 ${counts.dataset.returnedCount} · 保留 ${counts.dataset.retainedCount} · 已显示 ${shown} · 待展开 ${rows.length - shown} · 上游未展开 ${counts.dataset.unexpandedCount}`;
+        const expand = container.querySelector("[data-lab-expand]");
+        if (expand) { expand.hidden = shown >= rows.length; expand.textContent = `再显示 ${Math.min(64, rows.length - shown)} 项`; }
     }
 
     function attemptDisplayRows(attempts) {
@@ -356,6 +582,19 @@
         section.hidden = rows.length === 0;
     }
 
+    function scopeMessage(metadata) {
+        const data = metadata || {};
+        const messages = [];
+        if (data.truncated_count > 0) messages.push(`另有 ${data.truncated_count} 项未展开。`);
+        const scope = data.unexpanded_scope;
+        if (scope && (typeof scope === "string" || scope.bounded || scope.completion === "unknown")) {
+            messages.push("范围受限，完整性未知；仅展示本次已取得的候选。");
+        } else if (data.truncated && !data.truncated_count) {
+            messages.push("存在未展开内容，完整性未知。");
+        }
+        return messages.join(" ");
+    }
+
     function renderResult(card, result, documentObject) {
         const status = safeStatus(result && result.status);
         setCardStatus(card, status);
@@ -363,10 +602,16 @@
         setText(card, "selected_backend", result.selected_backend || "-");
         setText(card, "result_kind", result.result_kind || "-");
         setText(card, "elapsed_ms", Number(result.elapsed_ms || 0) ? `${result.elapsed_ms} ms` : "-");
+        const queueWait = result.queue_wait_ms ?? result.metadata?.queue_wait_ms;
+        const execution = result.execution_ms ?? result.metadata?.execution_ms;
+        if (Number.isFinite(queueWait) && Number.isFinite(execution)) {
+            setText(card, "elapsed_ms", `排队 ${queueWait} ms；执行 ${execution} ms`);
+        }
         setText(card, "title", result.metadata?.title || "-");
         setText(card, "author", result.metadata?.author || "-");
         setText(card, "asset_count", String((result.assets || []).length));
         setText(card, "relationship_count", String((result.relationships || []).length));
+        if (result.provider_id === "animeimages_current") setText(card, "selected_backend", "现有路线基线（复合结果）");
         const content = card.querySelector("[data-provider-content]");
         if (content && result.metadata?.content_summary) {
             content.textContent = result.metadata.content_summary;
@@ -374,14 +619,19 @@
         }
         const error = card.querySelector("[data-provider-error]");
         if (error && status !== "success") {
-            error.textContent = errorMessage(result.error_code);
+            error.textContent = errorMessage(result.error_code, result.error_detail);
+            if (status === "cancelled") error.textContent = "已取消；其他已完成结果保留。";
+            if (status === "skipped") error.textContent = result.not_run_reason || "本次未执行：整体预算已用尽。";
             error.hidden = false;
         }
+        if (error && status === "success") { error.hidden = true; error.textContent = ""; }
         const assets = card.querySelector("[data-provider-assets]");
         if (assets) {
             renderAssets(documentObject, assets, result);
         }
         renderAttempts(documentObject, card, result);
+        const scopeNote = card.querySelector("[data-provider-scope-note]");
+        if (scopeNote) scopeNote.textContent = scopeMessage(result.metadata);
         const raw = card.querySelector("[data-provider-raw]");
         const rawOutput = card.querySelector("[data-provider-raw-output]");
         if (raw && rawOutput) {
@@ -474,7 +724,7 @@
             if (media) { container.append(media); }
             const probe = await probeRange(options.fetch, descriptor.url);
             status.textContent = [
-                `CORS: ${probe.cors}`,
+                `浏览器读取: ${probe.cors === "blocked_or_failed" ? "不可读（网络或来源限制）" : probe.cors}`,
                 `HTTP: ${probe.status || "不可读"}`,
                 `读取: ${probe.bytes || 0} B`,
                 probe.contentType ? `类型: ${probe.contentType}` : "",
@@ -488,7 +738,7 @@
     }
 
     async function copyJson(result, navigatorObject) {
-        const text = JSON.stringify(result, null, 2);
+        const text = JSON.stringify(diagnosticResult(result), null, 2);
         if (!navigatorObject?.clipboard?.writeText) {
             throw new Error("clipboard_unavailable");
         }
@@ -496,13 +746,218 @@
     }
 
     function downloadJson(result, windowObject, documentObject) {
-        const blob = new windowObject.Blob([JSON.stringify(result, null, 2)], {type: "application/json"});
+        const blob = new windowObject.Blob([JSON.stringify(diagnosticResult(result), null, 2)], {type: "application/json"});
         const objectUrl = windowObject.URL.createObjectURL(blob);
         const link = documentObject.createElement("a");
         link.href = objectUrl;
         link.download = jsonFilename(result);
         link.click();
         windowObject.setTimeout(() => windowObject.URL.revokeObjectURL(objectUrl), 0);
+    }
+
+    function diagnosticResult(result) {
+        return JSON.parse(JSON.stringify(result, (key, value) => (
+            /(?:url|token|cookie|authorization|headers|source_reference)/i.test(key) ? undefined : value
+        )));
+    }
+
+    function routeRequestBody(source, route, draft, reset) {
+        if (!route || !route.applicable || !Number.isInteger(route.revision)) throw new Error("ROUTE_NOT_APPLICABLE");
+        const body = {source_url: source, expected_revision: route.revision};
+        if (!reset) Object.assign(body, {
+            provider_order: Array.from(draft.provider_order),
+            provider_options: draft.provider_options || {}, format_preferences: draft.format_preferences || {},
+        });
+        return body;
+    }
+
+    function createRouteEditor(documentObject, options) {
+        const settings = options || {};
+        const panel = documentObject.querySelector("[data-lab-route-editor]");
+        if (!panel) return null;
+        const message = panel.querySelector("[data-route-status]");
+        const scope = panel.querySelector("[data-route-scope]");
+        const orderNode = panel.querySelector("[data-route-order]");
+        const addSelect = panel.querySelector("[data-route-add]");
+        const confirm = panel.querySelector("[data-route-confirm]");
+        const save = panel.querySelector("[data-route-save]");
+        const reset = panel.querySelector("[data-route-reset]");
+        const fields = panel.querySelector("[data-route-fields]");
+        let route = null;
+        let source = "";
+        let order = [];
+        let sequence = 0;
+        let busy = false;
+        const canConfigure = panel.dataset.canConfigure === "true";
+        const text = (value) => { if (message) message.textContent = value; };
+        function field(name) { return panel.querySelector(`[name="${name}"]`); }
+        function buttons() {
+            if (fields) fields.disabled = busy || !canConfigure || !route?.applicable;
+            if (save) save.disabled = busy || !canConfigure || !route?.applicable || !confirm?.checked || !order.length;
+            if (reset) reset.disabled = busy || !canConfigure || !route?.applicable || !route.active;
+        }
+        function draftSummary() {
+            const node = panel.querySelector("[data-route-confirmation-summary]");
+            if (!node || !route) return;
+            const current = route.active ? (route.provider_order || []).join(" → ") : "通用默认路线";
+            const preferences = ["max_height", "preferred_video_codec", "preferred_container"]
+                .filter((name) => field(name)?.value).map((name) => `${name}=${field(name).value}`).join("，") || "未指定";
+            const execution = order.includes("videodl_repo")
+                ? `${field("route_videodl_mode")?.value || "dedicated_only"} ${field("route_videodl_backend")?.value || ""}` : "该上游标准模式";
+            node.textContent = `来源站点：${route.source_host}；当前：${current}；拟固定：${order[0] || "未选择"}；执行选项：${execution}；格式偏好：${preferences}；明确备选：${order.slice(1).join(" → ") || "无，首选失败即停止"}。`;
+        }
+        function renderOrder() {
+            orderNode.replaceChildren();
+            order.forEach((id, index) => {
+                const li = documentObject.createElement("li");
+                const label = documentObject.createElement("span");
+                label.textContent = `${index === 0 ? "首选" : `备选 ${index}`} · ${id}`;
+                li.append(label);
+                for (const [action, symbol, title] of [["up", "↑", "向前"], ["down", "↓", "向后"], ["remove", "×", "移除"]]) {
+                    const button = documentObject.createElement("button");
+                    button.type = "button";
+                    button.dataset.routeMove = action;
+                    button.dataset.providerId = id;
+                    button.textContent = symbol;
+                    button.title = title;
+                    button.setAttribute("aria-label", `${title} ${id}`);
+                    button.disabled = action === "up" && index === 0 || action === "down" && index === order.length - 1;
+                    li.append(button);
+                }
+                orderNode.append(li);
+            });
+            addSelect.replaceChildren();
+            const placeholder = documentObject.createElement("option");
+            placeholder.value = "";
+            placeholder.textContent = "添加备选上游";
+            addSelect.append(placeholder);
+            (route?.allowed_provider_ids || []).filter((id) => !order.includes(id)).forEach((id) => {
+                const option = documentObject.createElement("option");
+                option.value = id; option.textContent = id; addSelect.append(option);
+            });
+            buttons();
+            draftSummary();
+        }
+        function apply(snapshot) {
+            route = snapshot;
+            order = Array.from(snapshot.active ? snapshot.provider_order : []);
+            scope.textContent = snapshot.applicable
+                ? `${snapshot.source_host} · ${snapshot.active ? "人工路线" : "默认路线，尚未人工优选"} · 版本 ${snapshot.revision}`
+                : `${snapshot.source_host} · 当前来源沿用成熟路线，保存不适用`;
+            for (const name of ["max_height", "preferred_video_codec", "preferred_container"]) {
+                const node = field(name);
+                if (node) node.value = String(snapshot.format_preferences?.[name] || "");
+            }
+            const mode = field("route_videodl_mode");
+            if (mode) mode.value = snapshot.provider_options?.videodl_repo?.mode || "dedicated_only";
+            const backend = field("route_videodl_backend");
+            if (backend) backend.value = snapshot.provider_options?.videodl_repo?.backend_id || "";
+            if (confirm) confirm.checked = false;
+            renderOrder();
+        }
+        async function load() {
+            const input = settings.getSource();
+            if (!input) { text("请先输入来源链接。"); return; }
+            const version = ++sequence;
+            busy = true; buttons(); text("正在读取平台路线...");
+            try {
+                const url = new URL(settings.url, settings.window.location.origin);
+                url.searchParams.set("source_url", input);
+                const response = await settings.fetch(url.href, {credentials: "same-origin", cache: "no-store"});
+                const payload = await response.json();
+                if (version !== sequence) return;
+                if (!response.ok || payload.ok !== true) throw new Error("ROUTE_READ_FAILED");
+                source = input;
+                apply(payload.route);
+                text(canConfigure ? "路线已读取；本次候选选择不会自动保存。" : "无路线配置权限，仅可查看和比较。");
+            } catch (_error) {
+                if (version === sequence) { route = null; text("路线读取失败，请重新读取。"); }
+            } finally { if (version === sequence) { busy = false; buttons(); } }
+        }
+        async function persist(isReset) {
+            if (busy || !canConfigure || !route?.applicable || source !== settings.getSource()) return;
+            if (!isReset && !confirm?.checked) return;
+            if (isReset && !settings.window.confirm(`恢复 ${route.source_host} 的通用默认路线？`)) return;
+            const preferences = {};
+            for (const name of ["max_height", "preferred_video_codec", "preferred_container"]) {
+                const value = field(name)?.value;
+                if (value) preferences[name] = name === "max_height" ? Number(value) : value;
+            }
+            const providerOptions = {};
+            if (order.includes("videodl_repo")) {
+                providerOptions.videodl_repo = {mode: field("route_videodl_mode")?.value || "dedicated_only"};
+                if (providerOptions.videodl_repo.mode === "specific_backend") {
+                    providerOptions.videodl_repo.backend_id = field("route_videodl_backend")?.value || "";
+                }
+            }
+            const body = routeRequestBody(source, route, {provider_order: order,
+                provider_options: providerOptions, format_preferences: preferences}, isReset);
+            const version = ++sequence;
+            busy = true; buttons();
+            try {
+                const response = await settings.fetch(settings.url, {method: isReset ? "DELETE" : "POST",
+                    credentials: "same-origin", cache: "no-store", headers: {"Content-Type": "application/json",
+                        "X-CSRFToken": settings.csrf()}, body: JSON.stringify(body)});
+                const payload = await response.json();
+                if (version !== sequence) return;
+                if (response.status === 409) {
+                    route = null;
+                    text("路线已被其他操作更新。请重新读取后核对，不会覆盖较新的版本。");
+                    return;
+                }
+                if (!response.ok || payload.ok !== true) {
+                    text(payload.error_code === "CONFIGURATION_PERMISSION_REQUIRED" ? "缺少路线配置权限。"
+                        : "路线未保存。请检查上游、Backend 和格式偏好。");
+                    return;
+                }
+                apply(payload.route);
+                text(isReset ? "已恢复默认路线。" : "平台路线已保存，后续解析使用新版本。");
+            } catch (_error) { if (version === sequence) text("保存状态未确认，请重新读取路线后核对。"); }
+            finally { if (version === sequence) { busy = false; buttons(); } }
+        }
+        function selectProvider(providerId) {
+            const descriptor = settings.descriptors?.find((item) => item.provider_id === providerId);
+            const id = descriptor ? descriptor.execution_provider_id : ROUTE_PROVIDER_IDS[providerId];
+            if (providerId === "animeimages_current" || descriptor?.baseline || descriptor?.route_selectable === false) {
+                text(descriptor?.route_unavailable_reason || "当前路线基线不是独立上游，不能保存为固定路线。");
+                return;
+            }
+            if (!route?.applicable || !id || !route.allowed_provider_ids.includes(id)) {
+                text("该候选不适用于此来源的持久路线，或路线尚未读取。");
+                return;
+            }
+            order = [id];
+            if (confirm) confirm.checked = false;
+            renderOrder(); text("已调整路线草稿；尚未保存。");
+        }
+        panel.addEventListener("click", (event) => {
+            if (event.target.closest?.("[data-route-load]")) { void load(); return; }
+            if (event.target.closest?.("[data-route-save]")) { void persist(false); return; }
+            if (event.target.closest?.("[data-route-reset]")) { void persist(true); return; }
+            if (event.target.closest?.("[data-route-use-current]")) { selectProvider(settings.getSelection()?.providerId); return; }
+            const move = event.target.closest?.("[data-route-move]");
+            if (!move || !canConfigure || !route?.applicable) return;
+            const index = order.indexOf(move.dataset.providerId);
+            if (index < 0) return;
+            if (move.dataset.routeMove === "remove") order.splice(index, 1);
+            else {
+                const target = index + (move.dataset.routeMove === "up" ? -1 : 1);
+                if (target >= 0 && target < order.length) [order[index], order[target]] = [order[target], order[index]];
+            }
+            if (confirm) confirm.checked = false;
+            renderOrder();
+        });
+        panel.addEventListener("change", (event) => {
+            if (event.target === addSelect && addSelect.value) {
+                order.push(addSelect.value); if (confirm) confirm.checked = false; renderOrder();
+            }
+            if (event.target !== confirm && confirm) confirm.checked = false;
+            draftSummary();
+            buttons();
+        });
+        buttons();
+        return {load, persist, selectProvider, get route() { return route; },
+            invalidate() { sequence += 1; route = null; source = ""; busy = false; buttons(); text("来源已改变，请重新读取路线。"); }};
     }
 
     function syncVideodlControls(form) {
@@ -560,87 +1015,211 @@
         const fetchImpl = options.fetch || globalThis.fetch.bind(globalThis);
         const windowObject = options.window || globalThis;
         const navigatorObject = options.navigator || globalThis.navigator;
+        if (windowObject.location?.hash && form.elements.source) {
+            const source = new URLSearchParams(windowObject.location.hash.slice(1)).get("source");
+            if (source && source.length <= 4096) form.elements.source.value = source;
+            windowObject.history?.replaceState(null, "", windowObject.location.pathname + windowObject.location.search);
+        }
         const runUrl = options.runUrl || root.dataset.runUrl;
         const resourceUrl = options.resourceUrl || root.dataset.resourceUrl;
         const maxConcurrency = Number(options.maxConcurrency || root.dataset.maxConcurrency || 3);
-        const maxProviders = Number(options.maxProviders || root.dataset.maxProviders || 5);
+        const maxProviders = Math.max(Number(options.maxProviders || root.dataset.maxProviders || 5),
+            form.querySelectorAll('input[name="providers"]').length);
         const videodlInventory = options.videodlInventory || readVideodlInventory(documentObject);
+        const descriptors = options.descriptors || readProviderDescriptors(documentObject);
+        const descriptorById = new Map(descriptors.map((item) => [item.provider_id, item]));
+        const executedProviders = new Set();
+        const requestedProviders = new Set();
+        let includedProviders = [];
         const resultByProvider = new Map();
         let running = false;
+        let currentSource = "";
+        let currentSelection = null;
+        const message = documentObject.querySelector("[data-provider-lab-form-message]");
+        const submitButton = form.querySelector('[data-lab-all]') || form.querySelector('[type="submit"]');
+        const cancelButton = form.querySelector("[data-lab-cancel]");
 
-        async function runOne(providerId, source, csrf, providerOptions) {
-            const card = documentObject.querySelector(`[data-provider-card="${providerId}"]`);
-            if (!card) { return null; }
-            resetCard(card);
-            setCardStatus(card, "running");
-            try {
-                const body = {
-                    source,
-                    provider_id: providerId,
-                };
-                if (providerId === "videodl_repo" && providerOptions) {
-                    body.options = providerOptions;
-                }
-                const result = await requestJson(fetchImpl, runUrl, csrf, body);
-                resultByProvider.set(providerId, result);
-                renderResult(card, result, documentObject);
-                return result;
-            } catch (error) {
-                const result = error.payload || {status: "failed", error_code: "PROVIDER_PROCESS_FAILED"};
-                result.provider_id = providerId;
-                resultByProvider.set(providerId, result);
-                renderResult(card, result, documentObject);
-                return result;
+        function updateSelection(selection) {
+            currentSelection = selection;
+            const summary = root.querySelector("[data-lab-current-selection]");
+            if (summary) summary.textContent = selection
+                ? `本次候选：${selection.providerId} · ${selection.asset.format_label || selection.asset.quality_label || selection.asset.asset_id}。未修改平台路线。`
+                : "尚未选择本次候选。平台路线未改变。";
+            root.querySelectorAll("[data-lab-select]").forEach((button) => {
+                const card = button.closest("[data-provider-card]");
+                const selected = Boolean(selection && card?.dataset.providerCard === selection.providerId
+                    && button.dataset.assetId === selection.asset.asset_id);
+                button.setAttribute("aria-pressed", String(selected));
+                button.textContent = selected ? "本次已选" : "本次使用";
+            });
+        }
+
+        function summarize() {
+            const warning = root.querySelector("[data-lab-comparison-warning]");
+            if (warning) warning.textContent = comparisonWarnings(Array.from(resultByProvider.values())).join(" ");
+        }
+
+        function runStats() {
+            const stats = {included: 0, executed: 0, success: 0, unsupported: 0, failed: 0, timeout: 0, notrun: 0};
+            for (const id of includedProviders) {
+                if (descriptorById.get(id)?.baseline || id === "animeimages_current") continue;
+                stats.included += 1;
+                const job = queue.jobs.get(id);
+                const notrun = job?.result?.executed === false || ["skipped", "not_configured"].includes(job?.status);
+                const executed = !notrun && (job?.result?.executed === true || executedProviders.has(id) && job?.result?.executed !== false);
+                if (executed) stats.executed += 1;
+                if (job?.result?.executed === false) stats.notrun += 1;
+                else if (["success", "unsupported", "failed", "timeout"].includes(job?.status)) stats[job.status] += 1;
+                else if (["skipped", "not_configured"].includes(job?.status) || job?.status === "cancelled" && !requestedProviders.has(id)) stats.notrun += 1;
             }
+            return stats;
+        }
+        function showRunStats() {
+            const node = root.querySelector("[data-lab-run-stats]");
+            if (!node) return;
+            const s = runStats();
+            node.textContent = `纳入 ${s.included} · 实际执行 ${s.executed} · 成功 ${s.success} · 不支持 ${s.unsupported} · 失败 ${s.failed} · 超时 ${s.timeout} · 未执行 ${s.notrun}`;
+            const uncertain = includedProviders.filter((id) => queue.jobs.get(id)?.status === "cancelled" && requestedProviders.has(id) && !executedProviders.has(id)).length;
+            if (uncertain) node.textContent += ` · 已取消，执行状态未确认 ${uncertain}`;
+        }
+
+        const queue = createExecutionQueue({
+            concurrency: maxConcurrency,
+            timeoutMs: Number(root.dataset.providerTimeoutMs || 45000),
+            budgetMs: Number(root.dataset.comparisonBudgetMs || 180000),
+            execute: (providerId, context, signal) => runOne(providerId, context.source, context.csrf,
+                context.providerOptions[providerId], signal),
+            onState(job) {
+                const card = documentObject.querySelector(`[data-provider-card="${job.id}"]`);
+                if (!card) return;
+                if (job.status === "queued") { resetCard(card); resultByProvider.delete(job.id); }
+                setCardStatus(card, job.status);
+                const retry = card.querySelector("[data-lab-retry]");
+                if (retry) retry.disabled = ["running", "queued"].includes(job.status);
+                if (job.result) {
+                    resultByProvider.set(job.id, job.result);
+                    renderResult(card, job.result, documentObject);
+                    summarize();
+                } else if (job.reason) {
+                    const note = card.querySelector("[data-provider-error]");
+                    if (note) { note.hidden = false; note.textContent = job.reason; }
+                }
+                if (currentSelection?.providerId === job.id && job.status === "queued") updateSelection(null);
+                showRunStats();
+            },
+            onIdle() {
+                running = false;
+                if (submitButton) submitButton.disabled = false;
+                if (cancelButton) cancelButton.disabled = true;
+                if (message) message.textContent = "本轮执行结束；已完成结果保留，未自动选择路线。";
+            },
+        });
+        const routeEditor = createRouteEditor(documentObject, {fetch: fetchImpl, window: windowObject,
+            url: root.dataset.routeUrl || "/provider-lab/routes/", csrf: () => csrfToken(form),
+            getSource: () => String(form.elements.source?.value || "").trim(),
+            getSelection: () => currentSelection, descriptors});
+
+        async function runOne(providerId, source, csrf, providerOptions, signal) {
+            const descriptor = descriptorById.get(providerId);
+            const authorized = Boolean(form.querySelector(`input[name="provider_authorizations"][value="${providerId}"]`)?.checked);
+            let reason = descriptor?.available === false ? descriptor.unexecuted_reason === "PROVIDER_DISABLED"
+                ? "该上游已关闭。" : descriptor.not_configured_hint || "当前通道未配置或缺少运行依赖。" : "";
+            const requirements = Array.isArray(descriptor?.requires_confirmation) ? descriptor.requires_confirmation : [];
+            if (!reason && requirements.length && !authorized) reason = "尚未确认本次任务的外部服务与来源分享授权。";
+            if (!reason && providerId === "videodl_repo") {
+                try { providerOptions = videodlOptions(form, videodlInventory); }
+                catch (error) { reason = error.userMessage || "受控执行选项未获授权。"; }
+            }
+            if (reason) return {provider_id: providerId, status: "skipped", executed: false, not_run_reason: reason, assets: []};
+            const body = {source, provider_id: providerId};
+            if (requirements.length) body.confirmations = Object.fromEntries(requirements.map((name) => [name, authorized]));
+            if (providerId === "videodl_repo" && providerOptions) body.options = providerOptions;
+            requestedProviders.add(providerId);
+            const result = await requestJson(fetchImpl, runUrl, csrf, body, {signal});
+            if (result.executed === true || !descriptor && result.executed !== false) executedProviders.add(providerId);
+            if (result.executed === false) return {...result, provider_id: providerId, status: "skipped",
+                not_run_reason: result.unexecuted_reason === "PROVIDER_DISABLED" ? "该上游已关闭。"
+                    : result.unexecuted_reason === "CONFIRMATION_REQUIRED" ? "缺少本次调用授权。" : "当前配置或运行条件不允许执行。"};
+            return {...result, provider_id: providerId};
         }
 
         async function submit(event) {
             event.preventDefault();
             if (running) { return; }
-            const message = documentObject.querySelector("[data-provider-lab-form-message]");
             const source = String(form.elements.source?.value || "").trim();
-            const providers = selectedProviderIds(
+            const providers = descriptors.length && !event.submitter?.hasAttribute?.("data-lab-selected")
+                ? descriptors.filter((item) => !item.baseline && item.provider_id !== "animeimages_current").map((item) => item.provider_id)
+                : selectedProviderIds(
                 form.querySelectorAll('input[name="providers"]'),
                 maxProviders,
             );
             if (!source || source.length > 4096 || !providers.length) {
-                if (message) { message.textContent = "请输入有效内容并选择 1 至 5 个可用 Provider。"; }
+                if (message) { message.textContent = `请输入有效内容并选择 1 至 ${maxProviders} 个可用 Provider。`; }
                 return;
             }
-            let controlledVideodlOptions = null;
-            if (providers.includes("videodl_repo")) {
-                try {
-                    controlledVideodlOptions = videodlOptions(form, videodlInventory);
-                } catch (error) {
-                    if (message) {
-                        message.textContent = error.userMessage || "videodl 受控执行选项无效。";
-                    }
-                    return;
-                }
-            }
             running = true;
-            const submitButton = form.querySelector('[type="submit"]');
             if (submitButton) { submitButton.disabled = true; }
+            if (cancelButton) cancelButton.disabled = false;
             if (message) { message.textContent = `正在运行 ${providers.length} 个独立测试...`; }
-            try {
-                await runWithConcurrency(
-                    providers,
-                    maxConcurrency,
-                    (providerId) => runOne(
-                        providerId,
-                        source,
-                        csrfToken(form),
-                        providerId === "videodl_repo" ? controlledVideodlOptions : null,
-                    ),
-                );
-                if (message) { message.textContent = "本轮测试已完成；结果不会持久化。"; }
-            } finally {
-                running = false;
-                if (submitButton) { submitButton.disabled = false; }
-            }
+            currentSource = source;
+            includedProviders = Array.from(new Set(providers));
+            executedProviders.clear();
+            requestedProviders.clear();
+            resultByProvider.clear();
+            updateSelection(null);
+            root.querySelectorAll("[data-provider-card]").forEach((card) => {
+                resetCard(card);
+                if (!providers.includes(card.dataset.providerCard)) setCardStatus(card, "skipped");
+            });
+            queue.start(includedProviders, {source, csrf: csrfToken(form), providerOptions: {}});
+            void routeEditor?.load();
+            running = true;
+            if (submitButton) submitButton.disabled = true;
+            if (cancelButton) cancelButton.disabled = false;
         }
 
         async function click(event) {
+            const useCurrent = event.target.closest?.("[data-lab-current-inspect]");
+            if (useCurrent && currentSelection) {
+                const card = documentObject.querySelector(`[data-provider-card="${currentSelection.providerId}"]`);
+                const button = Array.from(card?.querySelectorAll("[data-lab-inspect]") || [])
+                    .find((node) => node.dataset.assetId === currentSelection.asset.asset_id);
+                if (button) {
+                    button.closest("[data-asset-id]").hidden = false;
+                    updateAssetCounts(card.querySelector("[data-provider-assets]"));
+                    button.scrollIntoView?.({block: "nearest"});
+                    await inspectAsset(button, {document: documentObject, fetch: fetchImpl, csrf: csrfToken(form), resourceUrl});
+                }
+                return;
+            }
+            const cancel = event.target.closest?.("[data-lab-cancel]");
+            if (cancel) { event.preventDefault(); queue.cancel(); return; }
+            const retry = event.target.closest?.("[data-lab-retry]");
+            if (retry) {
+                event.preventDefault();
+                if (queue.retry(retry.closest("[data-provider-card]")?.dataset.providerCard)) {
+                    running = true;
+                    if (submitButton) submitButton.disabled = true;
+                    if (cancelButton) cancelButton.disabled = false;
+                }
+                return;
+            }
+            const expand = event.target.closest?.("[data-lab-expand]");
+            if (expand) {
+                const container = expand.closest("[data-provider-assets]");
+                Array.from(container.querySelectorAll(".provider-lab-asset")).filter((row) => row.hidden)
+                    .slice(0, 64).forEach((row) => { row.hidden = false; });
+                updateAssetCounts(container);
+                return;
+            }
+            const select = event.target.closest?.("[data-lab-select]");
+            if (select) {
+                const providerId = select.closest("[data-provider-card]")?.dataset.providerCard;
+                const result = resultByProvider.get(providerId);
+                const asset = result?.assets?.find((item) => item.asset_id === select.dataset.assetId);
+                if (asset) updateSelection({providerId, requestId: result.request_id, asset});
+                return;
+            }
             const inspect = event.target.closest?.("[data-lab-inspect]");
             if (inspect) {
                 event.preventDefault();
@@ -674,17 +1253,53 @@
 
         form.addEventListener("submit", submit);
         const change = () => syncVideodlControls(form);
+        const input = () => {
+            if (String(form.elements.source?.value || "").trim() !== currentSource) {
+                queue.invalidate();
+                routeEditor?.invalidate();
+                resultByProvider.clear();
+                includedProviders = [];
+                executedProviders.clear();
+                requestedProviders.clear();
+                showRunStats();
+                currentSource = "";
+                updateSelection(null);
+                root.querySelectorAll("[data-provider-card]").forEach(resetCard);
+                running = false;
+                if (submitButton) submitButton.disabled = false;
+                if (cancelButton) cancelButton.disabled = true;
+            }
+        };
         form.addEventListener("change", change);
+        form.elements.source?.addEventListener("input", input);
         root.addEventListener("click", click);
+        const sortFormats = (event) => {
+            if (!event.target.matches?.("[data-lab-format-order]")) return;
+            const card = event.target.closest("[data-provider-card]");
+            const result = resultByProvider.get(card?.dataset.providerCard);
+            if (!result) return;
+            renderAssets(documentObject, card.querySelector("[data-provider-assets]"), result,
+                event.target.value === "resolution" ? qualityOrder(result.assets) : result.assets);
+            updateSelection(currentSelection);
+        };
+        root.addEventListener("change", sortFormats);
         syncVideodlControls(form);
         const controller = {
             submit,
             runOne,
             resultByProvider,
+            queue,
+            routeEditor,
+            get currentSelection() { return currentSelection; },
+            get runStats() { return runStats(); },
             destroy() {
+                queue.invalidate();
+                routeEditor?.invalidate();
                 form.removeEventListener("submit", submit);
                 form.removeEventListener("change", change);
+                form.elements.source?.removeEventListener("input", input);
                 root.removeEventListener("click", click);
+                root.removeEventListener("change", sortFormats);
                 if (root.__animeImagesProviderLabController === controller) {
                     delete root.__animeImagesProviderLabController;
                 }
@@ -692,6 +1307,23 @@
         };
         root.__animeImagesProviderLabController = controller;
         return controller;
+    }
+
+    function comparisonWarnings(results) {
+        const successful = results.filter((result) => result?.status === "success");
+        if (successful.length < 2) return [];
+        const warnings = [];
+        const ids = new Set(successful.map((result) => result.metadata?.content_id).filter(Boolean));
+        if (ids.size > 1) warnings.push("作品标识不同，不能直接视为同一作品的画质对比。");
+        const durations = successful.map((result) => Math.max(0, ...(result.assets || []).map((asset) =>
+            Number(asset.duration_seconds || asset.duration || 0)))).filter((value) => value > 0);
+        if (durations.length > 1 && Math.max(...durations) - Math.min(...durations) > Math.max(5, Math.min(...durations) * .1)) {
+            warnings.push("时长明显不同，请核对内容范围。");
+        }
+        if (new Set(successful.map((result) => (result.assets || []).length)).size > 1) {
+            warnings.push("候选数量不同，可能包含分离轨、多个格式或缺项。");
+        }
+        return warnings;
     }
 
     function initializeWhenReady(documentObject, initialize) {
@@ -722,6 +1354,16 @@
         STATUS_LABELS,
         attemptDisplayRows,
         createController,
+        createExecutionQueue,
+        createRouteEditor,
+        routeRequestBody,
+        diagnosticResult,
+        comparisonWarnings,
+        knownBoolean,
+        qualityOrder,
+        metaFragment,
+        scopeMessage,
+        trackLabel,
         errorMessage,
         formatBytes,
         formatDuration,

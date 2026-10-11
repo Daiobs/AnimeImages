@@ -1,33 +1,28 @@
 """One-shot upstream API boundary. Never import this to install parent guards."""
 
 import contextlib
+import http.client
 import importlib.metadata
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
 import socket
+import signal
 import sys
 import subprocess
 import time
-from urllib.parse import urlsplit
+import zlib
+from urllib.parse import urljoin, urlsplit, urldefrag
 
 
 PROVIDERS = {"yt_dlp_generic": "yt-dlp", "gallery_dl_generic": "gallery-dl"}
-# Names are only an admission heuristic. Runtime result guards are authoritative.
-YTDLP_EXCLUDED = re.compile(
-    r"generic|unsupported|test|example|search|playlist|collection|channel|"
-    r"user|profile|feed|timeline|album|season|series|category|archive|"
-    r"favorites|favourites|bookmarks|stories|hashtag|:tab|:list|:set|:page|"
-    r"history|recommended|subscriptions|watchlater|notif|truncated|"
-    r"Tab$|List$|Set$|Page$|Base$|Embed$|Redirect$|Shortener$", re.I,
-)
-GALLERY_SINGLE = frozenset({"post", "tweet", "image", "video", "submission", "pin"})
+# Catch-all and synthetic engines are not independent site coverage.
+YTDLP_EXCLUDED = frozenset({"Generic", "UnsupportedURL", "TestURL"})
 # Its nominal image URL runs an artist/title search and can return other paintings.
 GALLERY_EXCLUDED = frozenset({"WikiartImageExtractor"})
-# This mixed extractor is admitted only for its exact File namespace in suitable().
-GALLERY_URL_SCOPED = frozenset({"WikimediaArticleExtractor"})
 # Established routes own these families; they are not newly opened dynamic coverage.
 # Keep this small override map separate from upstream's bulk extractor inventory.
 ESTABLISHED_ROUTE_PREFIXES = {
@@ -51,6 +46,53 @@ _ROUTED_PREFIXES = tuple(prefix for prefixes in ESTABLISHED_ROUTE_PREFIXES.value
 MAX_URL = 4096
 MAX_ITEMS = 100
 MAX_OUTPUT = 4 * 1024 * 1024
+MAX_REQUESTS = 40
+MAX_REDIRECTS = 10
+MAX_HOPS = 16
+MAX_FORMATS = 1000
+MAX_BODY = 8 * 1024 * 1024
+MAX_RETAINED_CANDIDATES = 1000
+DESCRIPTOR_FIELDS = frozenset({
+    "url", "id", "title", "uploader", "creator", "author", "extractor", "extractor_key",
+    "webpage_url", "original_url", "duration", "width", "height", "fps", "tbr", "abr", "vbr",
+    "bitrate", "filesize", "filesize_approx", "format_id", "format_note", "format", "resolution",
+    "vcodec", "acodec", "audio_ext", "video_ext", "ext", "extension", "protocol", "mime_type",
+    "media_type", "type", "audio_channels", "language", "quality", "preference", "source_preference",
+    "format_index", "upstream_candidate_index", "dynamic_range", "has_drm", "manifest_url",
+    "media_completeness", "candidate_kind", "work_label", "relationship_id", "relationship_role",
+    "filename", "category", "subcategory", "num", "count", "date", "description",
+    "requires_merge", "role", "audio_asset_present", "work_id", "upstream_asset_id", "asset_id",
+    "audio_tracks", "video_tracks", "upstream_role",
+})
+
+
+def compact_descriptor(value):
+    """Retain media evidence, not large extractor internals or duplicate payloads."""
+    result = {}
+    for key in DESCRIPTOR_FIELDS:
+        item = value.get(key)
+        if item is None or isinstance(item, (bool, int, float)):
+            if key in value:
+                result[key] = item
+        elif isinstance(item, str):
+            identity = key.endswith('url') or key in {
+                'id', 'format_id', 'asset_id', 'upstream_asset_id', 'work_id', 'relationship_id'}
+            result[key] = item if identity else item[:300]
+    for key in ("upstream_track_evidence", "upstream_bmff_track_evidence", "upstream_scope",
+                "http_headers", "request_context", "headers"):
+        item = value.get(key)
+        if isinstance(item, dict):
+            result[key] = {k: v
+                           for k, v in list(item.items())[:32]
+                           if isinstance(k, str) and (v is None or isinstance(v, (str, bool, int, float)))}
+    if isinstance(value.get('relationships'), (list, tuple)):
+        result['relationships'] = [
+            {key: relation[key] for key in
+             ('relationship_type', 'source_asset_id', 'target_asset_id') if isinstance(relation.get(key), str)}
+            for relation in value['relationships'][:16] if isinstance(relation, dict)
+            and all(isinstance(relation.get(key), str) and 0 < len(relation[key]) <= 120
+                    for key in ('relationship_type', 'source_asset_id', 'target_asset_id'))]
+    return result
 _STAGE = "request"
 
 
@@ -65,6 +107,10 @@ def safe_error(error, stage=None, _depth=0):
         "item_limit": "item_limit", "output_limit": "output_limit",
         "version_changed": "version_changed", "extractor_mismatch": "extractor_mismatch",
         "invalid_url": "invalid_url", "no_formats": "no_formats",
+        "request_limit": "request_limit", "redirect_limit": "redirect_limit",
+        "cycle_detected": "cycle_detected", "hop_limit": "hop_limit",
+        "body_limit": "body_limit", "invalid_request": "invalid_request",
+        "encoding_denied": "encoding_denied", "node_limit": "node_limit",
     }.get(str(error))
     cause = getattr(error, "cause", None) or error.__cause__
     if code is None and cause is not None and cause is not error and _depth < 4:
@@ -109,7 +155,15 @@ def public_ip(value):
 
 
 def validate_url(url):
-    if not isinstance(url, str) or not url or len(url) > MAX_URL:
+    return _validate_public_url(url, MAX_URL)
+
+
+def validate_media_url(url):
+    return _validate_public_url(url, 8192)
+
+
+def _validate_public_url(url, max_length):
+    if not isinstance(url, str) or not url or len(url) > max_length:
         raise ValueError("invalid_url")
     if any(ord(char) <= 32 or ord(char) == 127 for char in url) or "\\" in url:
         raise ValueError("invalid_url")
@@ -224,19 +278,16 @@ def already_routed(provider, cls):
     return any(name.lower().startswith(_ROUTED_PREFIXES) for name in names)
 
 
-def eligible(provider, cls):
-    if already_routed(provider, cls):
+def eligible(provider, cls, *, allow_mature=False):
+    if not allow_mature and already_routed(provider, cls):
         return False
     if provider == "yt_dlp_generic":
         key = cls.ie_key()
-        name = str(getattr(cls, "IE_NAME", key))
         return (getattr(cls, "IE_DESC", None) is not False and
-                not YTDLP_EXCLUDED.search(key) and
-                not YTDLP_EXCLUDED.search(name.lower()) and
-                getattr(cls, "_RETURN_TYPE", None) != "playlist" and
+                key not in YTDLP_EXCLUDED and
                 getattr(cls, "_VALID_URL", None) not in (None, False))
     return (cls.__name__ not in GALLERY_EXCLUDED and
-            (cls.subcategory in GALLERY_SINGLE or cls.__name__ in GALLERY_URL_SCOPED) and
+            bool(getattr(cls, "pattern", None)) and
             cls.category not in {"generic", "directlink", "recursive", "ytdl", "oauth"})
 
 
@@ -250,54 +301,299 @@ def entry(provider, cls, version):
 def suitable(provider, cls, url):
     if provider == "yt_dlp_generic":
         return cls.suitable(url)
-    match = re.match(cls.pattern, url)
-    if match is None:
-        return False
-    if cls.__name__ == "WikimediaArticleExtractor":
-        # Mirror upstream's namespace selection, without constructing an extractor
-        # or opening article/category generators (including recursive queues).
-        path = match.groups()[-1]
-        if len(path) > 2 and path[2] == "/":
-            path = path[3:]
-        if path.startswith("wiki/"):
-            path = path[5:]
-        elif path.startswith("index.php/"):
-            path = path[10:]
-        namespace, separator, title = path.partition(":")
-        return namespace.lower() == "file" and bool(separator and title.strip())
-    return True
+    return re.match(cls.pattern, url) is not None
+
+
+@contextlib.contextmanager
+def runtime_budget(timeout):
+    """Meter stdlib HTTP (including urllib3) below upstream retry/redirect APIs."""
+    from unittest.mock import patch
+    deadline = time.monotonic() + timeout
+    state = {"requests": 0, "redirects": 0, "bytes": 0, "decoded_bytes": 0}
+    edges = {}
+    putrequest = http.client.HTTPConnection.putrequest
+    putheader = http.client.HTTPConnection.putheader
+    getresponse = http.client.HTTPConnection.getresponse
+    readinto = http.client.HTTPResponse.readinto
+
+    def check():
+        if time.monotonic() >= deadline:
+            raise TimeoutError()
+
+    def request(conn, method, target, *args, **kwargs):
+        check()
+        scheme = "https" if isinstance(conn, http.client.HTTPSConnection) or conn.port == 443 else "http"
+        host = conn.host
+        if ":" in host and not host.startswith("["):
+            host = "[" + host + "]"
+        url = validate_url(urljoin(f"{scheme}://{host}:{conn.port}/", target))
+        state["requests"] += 1
+        if state["requests"] > MAX_REQUESTS:
+            raise ValueError("request_limit")
+        conn._upstream_url = urldefrag(url)[0]
+        return putrequest(conn, method, target, *args, **kwargs)
+
+    def header(conn, name, *values):
+        # Drop both caller-supplied credentials and ambient session cookies.
+        if (name.decode("ascii") if isinstance(name, bytes) else name).lower() in {
+                "cookie", "authorization", "proxy-authorization"}:
+            return None
+        if (name.decode("ascii") if isinstance(name, bytes) else name).lower() == "accept-encoding":
+            values = ("gzip, deflate",)
+        return putheader(conn, name, *values)
+
+    def response(conn, *args, **kwargs):
+        check()
+        result = getresponse(conn, *args, **kwargs)
+        if result.status in {301, 302, 303, 307, 308} and result.getheader("Location"):
+            state["redirects"] += 1
+            if state["redirects"] > MAX_REDIRECTS:
+                raise ValueError("redirect_limit")
+            source = conn._upstream_url
+            dest = urldefrag(validate_url(urljoin(source, result.getheader("Location"))))[0]
+            edges[source] = dest
+            seen = {source}
+            while dest in edges:
+                if dest in seen:
+                    raise ValueError("cycle_detected")
+                seen.add(dest)
+                dest = edges[dest]
+        return result
+
+    def limited_read(original):
+        def read(response, amount=None, *args, **kwargs):
+            check()
+            remaining = MAX_BODY - state["bytes"]
+            amount = min(remaining + 1, amount) if amount is not None and amount >= 0 else remaining + 1
+            result = original(response, amount, *args, **kwargs)
+            state["bytes"] += len(result)
+            if state["bytes"] > MAX_BODY:
+                raise ValueError("body_limit")
+            return result
+        return read
+
+    def expired(signum, frame):
+        raise TimeoutError()
+
+    def decoded(data):
+        check()
+        state["decoded_bytes"] += len(data)
+        if state["decoded_bytes"] > MAX_BODY:
+            raise ValueError("body_limit")
+        return data
+
+    def inflate(data, wbits):
+        check()
+        # max_length bounds allocation before checking the decoded byte count.
+        return decoded(zlib.decompressobj(wbits).decompress(
+            data, MAX_BODY - state["decoded_bytes"] + 1))
+
+    def deflate(data):
+        try:
+            return inflate(data, -zlib.MAX_WBITS)
+        except zlib.error:
+            return inflate(data, zlib.MAX_WBITS)
+
+    def unsupported_encoding(*args, **kwargs):
+        raise ValueError("encoding_denied")
+
+    try:
+        from urllib3.response import BaseHTTPResponse
+    except ImportError:
+        BaseHTTPResponse = None
+    original_decode = BaseHTTPResponse._decode if BaseHTTPResponse else None
+
+    def bounded_decode(response, data, decode_content, flush_decoder, max_length=None):
+        check()
+        encoding = response.headers.get("content-encoding", "").lower().strip()
+        if decode_content and encoding not in {"", "identity", "gzip", "x-gzip", "deflate"}:
+            raise ValueError("encoding_denied")
+        # The pinned urllib3 decoder supports max_length. Do not use its flush
+        # path, which resets max_length to unlimited; zlib emits data on decompress.
+        remaining = MAX_BODY - state["decoded_bytes"] + 1
+        if max_length is not None and max_length >= 0:
+            remaining = min(remaining, max_length)
+        return decoded(original_decode(response, data, decode_content, False, max_length=remaining))
+
+    def limited_readinto(response, buffer):
+        check()
+        # HTTPResponse.readinto bypasses read() for non-chunked bodies.
+        if response.chunked:
+            data = response.read(len(buffer))
+            buffer[:len(data)] = data
+            return len(data)
+        remaining = MAX_BODY - state["bytes"]
+        size = readinto(response, memoryview(buffer)[:remaining + 1])
+        state["bytes"] += size
+        if state["bytes"] > MAX_BODY:
+            raise ValueError("body_limit")
+        return size
+
+    with contextlib.ExitStack() as stack:
+        try:
+            from yt_dlp.networking._urllib import HTTPHandler
+        except ImportError:
+            HTTPHandler = None
+        if HTTPHandler:
+            stack.enter_context(patch.object(HTTPHandler, "gz", staticmethod(
+                lambda data: inflate(data, zlib.MAX_WBITS | 16))))
+            stack.enter_context(patch.object(HTTPHandler, "deflate", staticmethod(deflate)))
+            stack.enter_context(patch.object(HTTPHandler, "brotli", staticmethod(unsupported_encoding)))
+        if BaseHTTPResponse:
+            stack.enter_context(patch.object(BaseHTTPResponse, "_decode", bounded_decode))
+        stack.enter_context(patch.object(http.client.HTTPConnection, "putrequest", request))
+        stack.enter_context(patch.object(http.client.HTTPConnection, "putheader", header))
+        stack.enter_context(patch.object(http.client.HTTPConnection, "getresponse", response))
+        stack.enter_context(patch.object(http.client.HTTPResponse, "readinto", limited_readinto))
+        for name in ("read", "read1"):
+            stack.enter_context(patch.object(http.client.HTTPResponse, name,
+                                            limited_read(getattr(http.client.HTTPResponse, name))))
+        previous = signal.signal(signal.SIGALRM, expired)
+        signal.setitimer(signal.ITIMER_REAL, timeout)
+        try:
+            yield state
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
 
 
 def parse_ytdlp(cls, url, timeout):
     global _STAGE
-    deadline = time.monotonic() + timeout
     _STAGE = "ytdlp_import"
     from yt_dlp import YoutubeDL
-    # Lazy proxies construct a different class in __new__, bypassing overrides.
     cls = getattr(cls, "real_class", cls)
 
     class ExactYoutubeDL(YoutubeDL):
-        def extract_info(self, *args, **kwargs):
-            raise ValueError("delegation_denied")
+        hops = 0
+        items = 0
+        nodes = 0
+        depth = 0
+        limit_reason = None
+        output_bytes = 0
+        retained_formats = 0
 
-        def process_ie_result(self, *args, **kwargs):
-            raise ValueError("delegation_denied")
+        def account_output(self, result):
+            for chunk in json.JSONEncoder().iterencode(self.sanitize_info(result)):
+                self.output_bytes += len(chunk.encode())
+                if self.output_bytes > MAX_OUTPUT - 16384:
+                    self.limit_reason = "output_limit"
+                    raise ValueError("output_limit")
 
-        def get_info_extractor(self, *args, **kwargs):
-            raise ValueError("delegation_denied")
+        def extract_info(self, url, download=False, *args, **kwargs):
+            validate_url(url)
+            self.hops += 1
+            if self.hops > MAX_HOPS:
+                raise ValueError("hop_limit")
+            key = (urldefrag(url)[0], kwargs.get("ie_key"))
+            active = getattr(self, "_upstream_active", set())
+            self._upstream_active = active
+            if key in active:
+                raise ValueError("cycle_detected")
+            active.add(key)
+            try:
+                return super().extract_info(url, False, *args, **kwargs)
+            finally:
+                active.remove(key)
 
-    class ExactExtractor(cls):
-        @classmethod
-        def ie_key(inner_cls):
-            return cls.ie_key()
+        def process_ie_result(self, result, download=False, extra_info=None):
+            # One root plus MAX_ITEMS result nodes, including empty collections
+            # and delegations. Video count alone does not bound a playlist tree.
+            if self.nodes >= MAX_ITEMS + 1 or self.depth >= MAX_HOPS:
+                self.limit_reason = "node_limit" if self.nodes >= MAX_ITEMS + 1 else "hop_limit"
+                raise ValueError(self.limit_reason)
+            self.nodes += 1
+            self.depth += 1
+            try:
+                return self.process_bounded_result(result, extra_info)
+            finally:
+                self.depth -= 1
 
-        @staticmethod
-        def playlist_result(*args, **kwargs):
-            raise ValueError("collection_denied")
+        def process_bounded_result(self, result, extra_info):
+            if result.get("_type") in {"playlist", "multi_video", "compat_list"}:
+                result = {**compact_descriptor(result), '_type': result['_type'],
+                          'entries': result.get('entries')}
+                entries = []
+                reason = "item_limit"
+                self.account_output({key: value for key, value in result.items() if key != "entries"})
+                child_extra = {**(extra_info or {}), **{
+                    key: result[key] for key in ("extractor", "extractor_key", "webpage_url")
+                    if key in result}}
+                try:
+                    iterator = iter(result.get("entries") or ())
+                    for _ in range(MAX_ITEMS):
+                        if self.limit_reason or self.nodes >= MAX_ITEMS + 1:
+                            reason = self.limit_reason or "node_limit"
+                            break
+                        item = next(iterator, None)
+                        if item is None:
+                            break
+                        if item:
+                            entries.append(self.process_ie_result(item, False, child_extra))
+                except Exception as error:
+                    reason = safe_error(error)["error"]
+                    if not entries and reason not in {"node_limit", "hop_limit", "output_limit"}:
+                        raise
+                result["entries"] = entries
+                result["upstream_scope"] = {"bounded": True, "limit": MAX_ITEMS,
+                                             "node_limit": MAX_ITEMS + 1, "depth_limit": MAX_HOPS,
+                                             "returned_count": len(entries), "retained_count": len(entries),
+                                             "unexpanded_count": None,
+                                             "completion": "unknown", "reason": reason}
+                return result
+            return super().process_ie_result(result, False, extra_info)
 
-        @staticmethod
-        def url_result(*args, **kwargs):
-            raise ValueError("delegation_denied")
+        def process_video_result(self, payload, download=False):
+            self.items += 1
+            if self.items > MAX_ITEMS:
+                raise ValueError("item_limit")
+            formats = payload.get("formats") or [payload]
+            if not isinstance(formats, list):
+                raise ValueError("item_limit")
+            total = len(formats)
+            if total > MAX_FORMATS:
+                formats = payload["formats"] = formats[:MAX_FORMATS]
+                payload["upstream_scope"] = {
+                    "bounded": True, "completion": "unknown", "reason": "format_limit",
+                    "format_total": total, "format_retained": len(formats), "limit": MAX_FORMATS}
+            for index, item in enumerate(formats):
+                if isinstance(item, dict):
+                    item['upstream_candidate_index'] = index
+                    item.setdefault("upstream_track_evidence", {
+                        key: item.get(key) for key in ("acodec", "vcodec", "audio_ext", "video_ext")})
+            result = super().process_video_result(payload, download=False)
+            processed = result.get('formats') or [result]
+            retained = []
+            used = 0
+            for item in sorted(processed, key=lambda item: item.get('upstream_candidate_index', 0)):
+                if self.retained_formats + len(retained) >= MAX_RETAINED_CANDIDATES:
+                    break
+                descriptor = compact_descriptor(item)
+                size = len(json.dumps(descriptor).encode()) + 2
+                if self.output_bytes + used + size > MAX_OUTPUT - 32768:
+                    break
+                retained.append(descriptor)
+                used += size
+            result = compact_descriptor(result)
+            result['formats'] = retained
+            self.retained_formats += len(retained)
+            if not retained:
+                result.pop('url', None)
+            if len(retained) < total:
+                result['upstream_scope'] = {
+                    'bounded': True, 'completion': 'unknown',
+                    'reason': 'format_limit' if total > MAX_FORMATS else 'output_limit',
+                    'format_total': total, 'format_retained': len(retained), 'limit': MAX_FORMATS,
+                    'returned_count': total, 'retained_count': len(retained),
+                    'declared_count': total, 'examined_count': len(processed), 'rejected_count': 0,
+                    'unexpanded_count': total - len(retained)}
+            self.account_output(result)
+            return result
+
+        def process_info(self, *args, **kwargs):
+            raise ValueError("execution_denied")
+
+        def dl(self, *args, **kwargs):
+            raise ValueError("execution_denied")
 
     _STAGE = "ytdlp_initialize"
     with ExactYoutubeDL({
@@ -307,46 +603,17 @@ def parse_ytdlp(cls, url, timeout):
         "cachedir": False, "socket_timeout": timeout, "retries": 0,
         "extractor_retries": 0, "enable_file_urls": False,
         "external_downloader": None, "remote_components": set(),
-        "js_runtimes": {}, "format": "bestvideo+bestaudio/best",
-    }, auto_init=False) as ydl:
+        "js_runtimes": {}, "format": "all", "check_formats": False,
+        "ignore_no_formats_error": True,
+    }) as ydl:
+        # Force the transport metered above; native curl is outside that boundary.
+        for key in list(ydl._request_director.handlers):
+            if key != "Urllib":
+                ydl._request_director.handlers.pop(key).close()
+        ydl.add_info_extractor(cls(ydl))
         _STAGE = "ytdlp_extract"
-        payload = ExactExtractor(ydl).extract(url)
+        payload = ydl.extract_info(url, download=False, ie_key=cls.ie_key())
         _STAGE = "ytdlp_result"
-        if (not isinstance(payload, dict) or payload.get("_type", "video") != "video"
-                or "entries" in payload or payload.get("ie_key")):
-            raise ValueError("non_item_result")
-        if not payload.get("formats") and not payload.get("url"):
-            raise ValueError("no_formats")
-        formats = payload.get("formats") or [payload]
-        if not isinstance(formats, list) or len(formats) > 1000:
-            raise ValueError("item_limit")
-        # Preserve extractor evidence before yt-dlp derives extension/codec defaults.
-        for item in formats:
-            if isinstance(item, dict):
-                item["upstream_track_evidence"] = {
-                    key: item.get(key) for key in ("acodec", "vcodec", "audio_ext", "video_ext")
-                }
-        _STAGE = "ytdlp_process_video"
-        payload.setdefault("extractor", str(getattr(cls, "IE_NAME", cls.__name__)))
-        payload.setdefault("webpage_url", url)
-        payload = ydl.process_video_result(payload, download=False)
-        candidates = []
-        for item in payload.get("formats") or [payload]:
-            evidence = item.get("upstream_track_evidence", {})
-            codecs = [str(evidence.get(key) or "").lower() for key in ("acodec", "vcodec")]
-            if (item.get("ext") == "mp4" and item.get("protocol") == "https"
-                    and "none" not in codecs and not all(codecs)):
-                candidates.append(item)
-        if candidates and time.monotonic() < deadline:
-            try:
-                from tools.upstream_metadata_probe import probe_in_guarded_child
-            except ModuleNotFoundError:
-                sys.path.insert(0, str(Path(__file__).resolve().parent))
-                from upstream_metadata_probe import probe_in_guarded_child
-            # One candidate only; the probe owns a shared two-request/5s budget.
-            candidate = max(candidates, key=lambda item: item.get("height") or 0)
-            candidate["upstream_bmff_track_evidence"] = probe_in_guarded_child(
-                candidate["url"], deadline_monotonic=deadline)
         return ydl.sanitize_info(payload)
 
 
@@ -361,23 +628,70 @@ def parse_gallery(cls, url, timeout):
                        "verify": True, "timeout": timeout, "retries": 0}.items():
         config.set(("extractor",), key, value)
     _STAGE = "gallery_initialize"
-    instance = cls(re.match(cls.pattern, url))
     result = []
     output_bytes = 0
+    media_count = 0
+    hops = 0
+    seen = set()
+    registry = extractor_classes("gallery_dl_generic")
+
+    def messages(extractor_cls, target):
+        nonlocal hops
+        validate_url(target)
+        hops += 1
+        if hops > MAX_HOPS:
+            raise ValueError("hop_limit")
+        key = (extractor_cls.__name__, urldefrag(target)[0])
+        if key in seen:
+            raise ValueError("cycle_detected")
+        seen.add(key)
+        instance = extractor_cls(re.match(extractor_cls.pattern, target))
+        for message in instance:
+            if message and message[0] == Message.Queue:
+                target = validate_url(message[1])
+                hinted = message[2].get("_extractor")
+                candidates = [hinted] if hinted in registry else registry
+                child = next((candidate for candidate in candidates
+                              if eligible("gallery_dl_generic", candidate, allow_mature=True)
+                              and suitable("gallery_dl_generic", candidate, target)), None)
+                if child is None:
+                    raise ValueError("extractor_mismatch")
+                yield from messages(child, target)
+            else:
+                yield message
+
     _STAGE = "gallery_extract"
-    for message in instance:
-        if len(result) >= MAX_ITEMS:
-            raise ValueError("item_limit")
-        if not message or message[0] not in {Message.Directory, Message.Url}:
-            raise ValueError("collection_or_queue_denied")
-        if message[0] == Message.Url:
-            validate_url(message[1])
-        # Snapshot metadata because upstream generators reuse mutable dictionaries.
-        serialized = json.dumps(message, default=util.json_default)
-        output_bytes += len(serialized.encode())
-        if output_bytes > MAX_OUTPUT:
-            raise ValueError("output_limit")
-        result.append(json.loads(serialized))
+    reason = None
+    try:
+        for message in messages(cls, url):
+            if not message or message[0] not in {Message.Directory, Message.Url}:
+                raise ValueError("collection_or_queue_denied")
+            if message[0] == Message.Url:
+                validate_media_url(message[1])
+            elif len(result) - media_count >= MAX_ITEMS:
+                raise ValueError("item_limit")
+            message = [*message[:-1], compact_descriptor(message[-1])]
+            serialized = json.dumps(message, default=util.json_default)
+            output_bytes += len(serialized.encode())
+            if output_bytes > MAX_OUTPUT - 4096:
+                raise ValueError("output_limit")
+            result.append(json.loads(serialized))
+            if message[0] == Message.Url:
+                media_count += 1
+            if media_count >= MAX_RETAINED_CANDIDATES:
+                reason = "item_limit"
+                break
+    except Exception as error:
+        if not any(message[0] == Message.Url for message in result):
+            raise
+        reason = safe_error(error)["error"]
+    if reason:
+        first_media = next((message for message in result if message[0] == Message.Url), result[0])
+        for message in (result[0], first_media, result[-1]):
+            message[-1]["upstream_scope"] = {
+                "bounded": True, "completion": "unknown", "reason": reason,
+                "limit": MAX_RETAINED_CANDIDATES, "returned_count": media_count,
+                "retained_count": media_count, "unexpanded_count": None}
     if not any(message[0] == Message.Url for message in result):
         raise ValueError("no_formats")
     return result
@@ -395,9 +709,12 @@ def handle(request):
         raise ValueError("version_changed")
     _STAGE = "extractor_inventory"
     classes = extractor_classes(provider)
-    admitted = [cls for cls in classes if eligible(provider, cls)]
+    allow_mature = request.get("allow_mature", False)
+    if not isinstance(allow_mature, bool):
+        raise ValueError("invalid_request")
+    admitted = [cls for cls in classes if eligible(provider, cls, allow_mature=allow_mature)]
     if action == "coverage":
-        routed_count = sum(already_routed(provider, cls) for cls in classes)
+        routed_count = sum(already_routed(provider, cls) for cls in classes) if not allow_mature else 0
         # total is the raw installed inventory. The exclusion buckets are disjoint:
         # total = eligible + already_routed + other_excluded.
         return {"provider_id": provider, "version": identity["version"],
@@ -418,13 +735,27 @@ def handle(request):
         "extractor_id"] == request["extractor_id"]]
     if len(exact) != 1:
         raise ValueError("extractor_mismatch")
-    timeout = min(30.0, max(0.1, float(request["timeout_seconds"])))
-    return (parse_ytdlp if provider == "yt_dlp_generic" else parse_gallery)(exact[0], url, timeout)
+    timeout = float(request["timeout_seconds"])
+    if not math.isfinite(timeout):
+        raise ValueError("invalid_request")
+    timeout = min(30.0, max(0.1, timeout))
+    with runtime_budget(timeout):
+        return (parse_ytdlp if provider == "yt_dlp_generic" else parse_gallery)(exact[0], url, timeout)
 
 
 def main():
     try:
         request = json.loads(sys.stdin.read(16385))
+        try:
+            import resource
+            ceiling = 1536 * 1024 * 1024
+            soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+            ceiling = min(ceiling, hard) if hard != resource.RLIM_INFINITY else ceiling
+            ceiling = min(ceiling, soft) if soft != resource.RLIM_INFINITY else ceiling
+            resource.setrlimit(resource.RLIMIT_AS, (ceiling, hard))
+        except (ImportError, ValueError, OSError):
+            # Optional platform backstop; decoded/output/time limits stay active.
+            pass
         # No credential-bearing environment or user configuration reaches imports.
         for key in tuple(os.environ):
             if key not in {"PATH", "HOME", "LANG", "PYTHONNOUSERSITE", "YTDLP_NO_PLUGINS"}:

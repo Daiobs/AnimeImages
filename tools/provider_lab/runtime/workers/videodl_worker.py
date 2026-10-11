@@ -6,6 +6,8 @@ from importlib import metadata
 import json
 from pathlib import Path
 import re
+import sys
+from urllib.parse import parse_qs, urlsplit
 
 try:
     from .worker_common import (
@@ -17,6 +19,7 @@ try:
         parse_request,
         raw_shape,
         safe_text,
+        validated_url,
     )
 except ImportError:  # Direct execution inside the isolated venv.
     from worker_common import (
@@ -28,6 +31,7 @@ except ImportError:  # Direct execution inside the isolated venv.
         parse_request,
         raw_shape,
         safe_text,
+        validated_url,
     )
 
 
@@ -208,7 +212,14 @@ def run_exact_backend(source: str, backend_id: str, backend_category: str, work_
     builder = BuildVideoClient if backend_category == "dedicated" else BuildCommonVideoClient
     try:
         client = builder(backend_config(backend_id, work_dir))
-        infos = client.parsefromurl(source, request_overrides={})
+        if backend_id == "YouTubeVideoClient" and backend_category == "dedicated":
+            infos = run_youtube_official_only(client, source)
+        elif (backend_category, backend_id) in {
+            ("dedicated", "YinyuetaiVideoClient"), ("common", "BugPkVideoClient")
+        }:
+            infos = run_tls_guarded(client, source)
+        else:
+            infos = client.parsefromurl(source, request_overrides={})
     except Exception as error:
         raise WorkerError("PROVIDER_PROCESS_FAILED") from error
     valid_infos = [
@@ -220,6 +231,54 @@ def run_exact_backend(source: str, backend_id: str, backend_category: str, work_
     if not valid_infos:
         raise WorkerError("PROVIDER_RESULT_EMPTY")
     return valid_infos
+
+
+def run_tls_guarded(client, source):
+    """Override the exact reviewed parsers' verify=False without relaxing admission."""
+    from unittest.mock import patch
+    import requests
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from upstream_match_worker import install_network_guard, runtime_budget, validate_url
+    send = requests.Session.send
+
+    def verified_send(session, request, **kwargs):
+        validate_url(request.url)
+        if urlsplit(request.url).scheme != "https":
+            raise WorkerError("PROVIDER_POLICY_REJECTED")
+        kwargs.update(verify=True, proxies={}, timeout=8.0)
+        # Do not retain upstream-generated spoofed client-address headers.
+        for name in list(request.headers):
+            if name.lower() in {"forwarded", "x-forwarded-for", "x-real-ip", "client-ip"}:
+                del request.headers[name]
+        return send(session, request, **kwargs)
+
+    install_network_guard(offline=False)
+    with patch.object(requests.Session, "send", verified_send), runtime_budget(8.0):
+        return client.parsefromurl(source, request_overrides={})
+
+
+def run_youtube_official_only(client, source):
+    """Use the pinned official parser without its nested aggregator fallbacks."""
+    from unittest.mock import patch
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from upstream_match_worker import install_network_guard, runtime_budget, validate_url
+
+    validate_url(source)
+    parsed = urlsplit(source)
+    if parsed.hostname not in {"youtube.com", "www.youtube.com", "m.youtube.com"}:
+        raise WorkerError("PROVIDER_UNSUPPORTED")
+    parts = parsed.path.strip("/").split("/")
+    values = parse_qs(parsed.query).get("v", []) if parsed.path == "/watch" else (
+        [parts[1]] if len(parts) == 2 and parts[0] in {"shorts", "embed"} else [])
+    if len(values) != 1 or not re.fullmatch(r"[A-Za-z0-9_-]{11}", values[0]):
+        raise WorkerError("PROVIDER_UNSUPPORTED")
+    source = "https://www.youtube.com/watch?v=" + values[0]
+    # This worker exits after one request. Guards intentionally cannot be undone.
+    install_network_guard(offline=False)
+    with patch.object(client, "_parsefromurlwithytdown", return_value=[]), \
+            patch.object(client, "_parsefromurlwithdownr", return_value=[]), \
+            runtime_budget(8.0):
+        return client.parsefromurl(source, request_overrides={})
 
 
 def normalize_result(video_infos: object, request: dict) -> tuple[dict, list[dict]]:
@@ -235,7 +294,20 @@ def normalize_result(video_infos: object, request: dict) -> tuple[dict, list[dic
             return
         headers = getattr(info, f"default_{suffix}_headers", None)
         cookies = getattr(info, f"default_{suffix}_cookies", None)
-        has_audio = bool(getattr(info, "audio_download_url", ""))
+        requires_merge = None
+        audio_asset_present = None
+        if role == "primary" and media_type == "video":
+            paired = False
+            try:
+                video_url, _ = validated_url(getattr(info, "download_url", ""))
+                audio_url, _ = validated_url(getattr(info, "audio_download_url", ""))
+                paired = video_url != audio_url
+            except WorkerError:
+                pass
+            explicit_merge = getattr(info, "requires_merge", None)
+            explicit_audio = getattr(info, "audio_asset_present", None)
+            requires_merge = explicit_merge if type(explicit_merge) is bool else True if paired else None
+            audio_asset_present = explicit_audio if type(explicit_audio) is bool else True if paired else None
         public, private = asset(
             asset_id=f"videodl-{len(public_assets) + 1}-{role}",
             url=url,
@@ -244,12 +316,10 @@ def normalize_result(video_infos: object, request: dict) -> tuple[dict, list[dic
             declared_extension=(
                 getattr(info, "audio_ext", "") if role == "audio" else getattr(info, "ext", "")
             ),
-            requires_merge=bool(
-                getattr(info, "download_with_ffmpeg", False) or has_audio
-            ),
+            requires_merge=requires_merge,
             requires_cookie=bool(cookies),
             headers_present=bool(headers),
-            audio_asset_present=has_audio,
+            audio_asset_present=audio_asset_present,
         )
         public_assets.append(public)
         private_resources.append(private)

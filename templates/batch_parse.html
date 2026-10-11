@@ -2,6 +2,7 @@
 {% load static %}
 
 {% block title %}{{ page_title|default:"批量解析 · 星空的高清下载小站" }}{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{% static 'css/upstream_candidates.css' %}?v={{ static_asset_version }}">{% endblock %}
 
 {% block content %}
 <section class="xhs-download-page theme-home batch-parse-page"
@@ -254,6 +255,7 @@
 {% endblock %}
 
 {% block extra_js %}
+<script src="{% static 'js/upstream_candidates.js' %}?v={{ static_asset_version }}"></script>
 <script src="{% static 'js/ordinary_media_streaming_protocol.js' %}?v={{ static_asset_version }}"></script>
 <script src="{% static 'js/ordinary_media_streaming.js' %}?v={{ static_asset_version }}"></script>
 <script src="{% static 'js/ordinary_media_download.js' %}?v={{ static_asset_version }}"></script>

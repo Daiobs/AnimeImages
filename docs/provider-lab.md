@@ -1,8 +1,70 @@
 # Provider Lab
 
-Provider Lab 是 AnimeImages Django monolith 内的 Staff-only 上游对比工具。它用于在不改变正式平台路线的前提下，并排检查现有 Provider 与隔离的 whole-repository Provider。
+Provider Lab 是 AnimeImages Django monolith 内的 Staff-only 上游对比工具。它并排检查现有 Provider 与隔离的 whole-repository Provider；比较本身不会改变路线，具有配置权限的 Human 可以另外明确保存通用来源 Host 的路线。
 
-Provider Lab 不是公开解析产品、自动 Provider Planner、生产路由层或微服务。它不会选择赢家，也不会把实验结果写回正式 Registry。
+Provider Lab 不是公开解析产品、自动 Provider Planner 或微服务。它不会选择赢家，也不会把实验结果写回正式 Registry。人工路线不覆盖已有成熟平台的严格路线。
+
+## 本地质量比较与人工路线增量
+
+本增量依赖 PR #88，仅供独立本地体验，不表示生产已部署。
+普通通用解析和 Lab 共用 `quality_execution` 的执行与候选归一化。
+`animeimages_current` 是复合路线基线，不是额外独立上游。
+
+- 各上游独立完成，默认最多并发 3 项，而非总共只能执行 3 项；可取消、单项重试，旧请求不污染新比较。
+- 候选保留宽高、格式、帧率、编码、码率、大小与估计标记。缺失值显示未知，上游声明不等于实测画质。
+- 分离轨、音轨、流媒体、未知轨道与 HTTP 引用可以作为受限候选存在；这不授予下载权限，也不新增合流或服务器 Relay。
+- “本次选择”只改变页面当前候选。“保存为平台路线”需显式确认，写入来源 Host、上游顺序、受控 Backend 和可复用格式偏好，不保存媒体 URL 或临时 Token。
+- 路线使用数据库 revision 防止旧页面覆盖新修改，并保留基本审计。恢复默认是另一项明确操作；解析失败不删除人工配置。
+- 通用候选信息可供已获准解析的用户查看、复制或打开；候选 URL 仍由短期信息令牌和当前访问 Gate 控制，成熟平台的特殊权限不变。
+- 资源所需请求上下文只保留在受控缓存中，前端仅显示条件标记；不返回 Cookie 或 Authorization 值。
+
+迁移 `0027_upstream_manual_routes` 新增路线及修改记录，不改变邮件、Daily 或生产配置。
+未人工优选的来源仍按允许的通用默认顺序尝试；比较页面不会自动保存最快或首个成功结果。
+
+### 初始验收记录（2026-09-08，本地，修正前）
+
+- 完整 Django 2,330 项、Node 291 项、独立 Worker 安全/广度测试 19 项通过；迁移漂移与 Django check 通过。
+- 确定性测试覆盖独立结果、分离轨保留、超时隔离、选择不写路线、修订冲突、恢复默认、真实缓存失效及普通/Batch 路线消费。
+- Chrome 下酷安同一公开作品由 ParseHub 返回 8 项；所选 gallery-dl、yt-dlp 分别返回不支持，不抹除成功结果。这不是两个独立上游均成功的证据。
+- Chrome 本次选择不改变 revision；明确保存后，新首页解析返回 8 项并标明手动 ParseHub 路线。新 Django 命令亦读到保存结果，候选复制成功但不计为下载。
+- 1440/820/390 宽度检查无横向溢出，页面 JavaScript 异常为 0。
+- 本地 videodl Runtime、收费服务未配置；videodl 受控匹配和执行接线以隔离离线测试验证。新功能不构成生产启用许可。
+- `IMPLEMENTATION_READY` 与 `LIVE_COMPARISON_PENDING` 分开：同作品两个独立真实上游成功的验收仍缺失，没有新增自动保存成功统计。
+
+浏览器取消会停止排队/等待并隔离迟到结果；已经进入服务端的执行仍受其既有子进程 deadline 和清理机制约束，不声称关闭 fetch 能瞬时终止服务端进程。
+
+### 候选保真修正（2026-09-08，本地）
+
+旧实现的 64 项前缀截断已由失败测试复现：尾部 2160p、音频与编码/容器偏好候选会丢失，缓存亦只保留截断结果。
+当前共享路径在既有有界输出内保留最多 1,000 项精简描述，候选及 Lab 资源分别使用有界缓存 bundle，避免默认缓存容量淘汰同一结果的前部资源。
+每个 bundle 仍受 2 MiB、有效期、权限、资源绑定与使用次数限制；候选描述不产生下载授权。
+旧受控 Lab Worker 的 64 项硬预算没有扩大，触及该层或输出字节预算时仍须报告未展开范围。
+页面初始显示 64 项，可继续展开；视频分辨率排序在完整保留结果中进行，不重排正文图片，展开与排序不改变候选身份或本次选择。
+“返回、保留、已显示、待展开、上游未展开”分别呈现，触及硬上限不表示已经取得全量最高画质。
+
+内嵌音轨与独立音频资源分开记录。轨道未知、仅视频但配对未知时，合并需求保持未知；不由缺失值生成 false，也不将任意音频配给所有视频。
+上游明确角色、合并标记及同作品显式关系继续保留；描述性关系不扩大授权。
+
+真实比较限定为三个公开作品、七次直接 parse-only 调用，没有媒体下载：
+
+| 脱敏样本 | 独立实现 | 实际结果 |
+| --- | --- | --- |
+| BILI-VIDEO-1 | ParseHub BiliParse / yt-dlp BiliBili | ParseHub 1 项，声明 640×360；yt-dlp 在 extract 阶段 DownloadError |
+| BILI-DYNAMIC-2 | ParseHub BiliParse / yt-dlp BiliBiliDynamic / gallery-dl BilibiliArticleExtractor | 分别 ParseError / DownloadError / HttpError，没有有效候选 |
+| BILI-VIDEO-3 | ParseHub BiliParse / yt-dlp BiliBili | ParseHub 1 项，声明 3840×1920；yt-dlp 在 extract 阶段 DownloadError |
+
+直接调用观察窗口为北京时间 16:27–16:32。尺寸仅为上游声明，不是媒体实测。
+开发中两次页面调用显示通用失败，未取得内部阶段证据，不归因为 CORS 或源站拒绝。
+冻结修正后的 Chrome 再做一次 ParseHub 页面核验：BILI-VIDEO-1 成功返回并显示 1 项候选，未知轨道/合并/独立音频仍为未知；选择候选未修改路线，未点击媒体检查或下载。
+这次复核不抹除此前失败，也不将其算成第二个独立上游。
+
+`INDEPENDENT_UPSTREAM_SUCCESS_COUNT_PER_SAME_WORK = 1`，`LIVE_COMPARISON_PENDING = YES`。
+没有冒充两个包装入口为独立成功，没有继续扫描网站，没有修改本地人工路线或生产。
+
+修正后完整 Django 2,372 项、Node 295 项、独立 Worker 26 项通过；Django check、迁移漂移与 JS 语法检查通过。
+针对性回归包括 64 项后部高清/编码偏好、355 项默认缓存保留、图片顺序、未知及显式关系、资源过期/撤销和使用预算。
+资源 bundle 的并发测试复现并修正了短锁租期过期后旧请求回写的问题：过期请求不能继续授权，单资源仍最多使用十次。
+本次未新增迁移、依赖或 Workflow 改动；PR 原有路线迁移不等于本轮新增迁移。新 Head CI 以 PR 实际运行结果为准。
 
 ## 当前状态
 
@@ -54,7 +116,7 @@ Provider Lab 没有以下公开发布模式：
 
 ## 固定 Provider 清单
 
-Registry 显式列出五个 Provider：
+Registry 显式列出六个入口：
 
 | Provider ID | 类型 | 运行位置 | 用途 |
 | --- | --- | --- | --- |
@@ -62,6 +124,7 @@ Registry 显式列出五个 Provider：
 | `parsehub_repo` | whole-repository Provider | 隔离 Python Runtime | 对比 ParseHub 仓库的 parse-only 能力 |
 | `videodl_repo` | whole-repository Provider | 隔离 Python Runtime | 非商业本地 Staff Lab 对比 |
 | `yt_dlp_existing` | 现有工具包装 | 受控外部工具路径 | 观察当前 yt-dlp 行为和失败隔离 |
+| `gallery_dl_existing` | 现有工具包装 | 受控外部工具路径 | 与普通通用解析共享候选承接 |
 | `tiantian_existing` | 现有 Provider 包装 | 当前受控 Provider 路径 | 对比 TianTian 解析结果 |
 
 固定 Registry 防止用户通过请求参数加载任意 Python 包、命令或 Provider。添加新 Provider 必须经过代码审查；页面不会扫描本机环境自动发现工具。
@@ -119,7 +182,7 @@ flowchart TD
 - 服务端不自动 fan out；
 - 一个 Provider 失败不阻塞其它结果；
 - Lab 不计算全局分数，也不选择正式赢家；
-- Lab 不修改平台路线或 Runtime Setting；
+- 比较不修改平台路线；仅具有配置权限的 Human 明确保存时更新通用 Host 路线，不修改 Provider Runtime Setting；
 - 刷新页面清除结果；
 - 服务端不做完整媒体 Relay。
 
@@ -354,6 +417,43 @@ identity 和 runtime identity 缓存 10 分钟，安全失败缓存 30 秒；并
 11. 通过真实样本研究证明价值后，再创建独立的产品路线提案。
 
 Lab 集成和正式 Provider 集成必须是两个可独立审查的决定。
+
+## 一条链接、全部上游与人工固定（2026-09-08，本地）
+
+在现有 Lab 输入公开链接或分享文案后，主操作为“测试全部上游”；不预先寻找匹配交集。
+页面从现有 Provider descriptors 生成队列，默认并发 3，逐项保留成功、不支持、失败、超时及未执行原因。
+“测试所选上游”保留为高级操作。当前独立通道为 yt-dlp、gallery-dl、ParseHub、videodl、TianTian 和 Kukutool；
+`animeimages_current` 是可选复合基线，不进入独立上游统计，也不能保存为赢家。
+关闭、未配置或缺少授权的通道仍可见，但不计入实际执行。服务通道和可能调用服务的复合基线需要明确的本次调用确认；
+后端同样检查确认，不能仅靠前端限制。执行数表示进入 Provider 检查，不等于联网请求数；本地匹配可以返回不支持。
+
+成功候选的“本次选择”不修改路线。“将此上游设为该平台固定路线”仅准备单一首选草稿，
+显示真实 source host、原路线、新 Provider、执行选项、格式偏好及明确备选，再经确认保存。
+默认没有备选，首选失败即停止；有效但受限的候选不会触发降级。已有成熟平台保护不变。
+保存的不是媒体 URL、Token 或 candidate ID。排序、展开、取消和重新比较不会自动保存路线。
+
+执行 ID 复用共享执行器别名映射；新 Lab descriptor 必须对应可重复执行路径，否则标记不可保存。
+TianTian/Kukutool 复用既有客户端，仅显式人工路线可授权普通通用解析调用，不加入默认尝试顺序。
+其桥接结果当前是可比较的受限候选，不额外授予下载权限。账号未配置时只做离线接线验证。
+新增上游仍需要独立评审执行边界，不能因注册到 Lab 就自动获得公开授权。
+
+### 本轮真实浏览器证据
+
+- Origin 为本地 8003，使用现有获准管理员会话和一个公开酷安样本；未预筛双上游交集。
+- 纳入 6，实际执行 4：ParseHub 返回 8 项；videodl、yt-dlp、gallery-dl 返回不支持；失败 0、超时 0。
+- TianTian/Kukutool 本地开关关闭，未执行；复合基线未调用。真实成功上游数为 1，未观察到双成功。
+- 选择候选后 revision 仍为 2；确认保存后变为 3。原有 ParseHub 单一首选、空执行选项和格式偏好均未改变，没有添加备选。
+- 新首页解析和 Batch 均返回 8 项，并显示“手动路线 · 本次上游：parsehub_generic”。新 Django 进程读到 revision 3。
+- 图片预览仍失败，未点击下载，本轮不声明新增保存成功。同站另一作品未实测；不同链接、缓存失效及持久化由离线回归覆盖。
+- videodl 使用既有 exact-pin bootstrap 安装到本任务独立本地 Runtime；其他体验环境不变，无生产访问。
+
+之前的双上游比较失败记录继续保留；本轮验收目标已调整为全部检查和 Human 固定路线，不要求两个成功。
+
+最终本地验证：Django 2,407 项、Node 300 项、独立 Worker 26 项通过；43 个 JS 文件语法、
+Django check、迁移漂移、文档本地链接和 diff 检查通过。授权参数缺失及默认提交按钮反例已修正并回归。
+本轮没有新增迁移、依赖或 Workflow 改动；PR 原有 `0027` 不变。新 Head CI 以实际运行记录为准。
+首次 CI 中，新进程持久化测试继承非本地环境并清空缓存地址，触发现有 Redis 配置保护；
+测试子进程现显式使用本地模式及临时 SQLite/内存缓存。应用保护和 Workflow 未放宽，失败记录保留。
 
 ## 清理
 

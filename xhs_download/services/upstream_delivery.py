@@ -139,7 +139,7 @@ class _UnboundVideoNormalizer(YtDlpResultNormalizer):
         return sorted(candidates, key=lambda item: item['score'], reverse=True)
 
 
-def normalize_upstream_result(payload, *, match, source_url):
+def _normalize_downloadable_result(payload, *, match, source_url):
     provider = match.get('provider_id')
     limited_media_count = 0
     if provider not in PROVIDERS:
@@ -233,3 +233,161 @@ def normalize_upstream_result(payload, *, match, source_url):
                       canonical_source_url=source_url, coverage_status='matched_attemptable',
                       limited_media_count=limited_media_count,
                       delivery_limitation='浏览器跨域或来源限制可能阻止保存；不会自动转为服务器下载。'))
+
+
+def normalize_upstream_result(payload, *, match, source_url):
+    """Preserve bounded valid candidates even when no download asset is admitted."""
+    from .upstream_candidates import MAX_CANDIDATES, candidate_url, issue_candidates
+    from .provider_lab.contracts import safe_public_text
+
+    provider = match.get('provider_id')
+    if provider not in PROVIDERS:
+        raise XhsParseError('扩展解析器不可用。')
+    title = match.get('label') or 'media'
+    author = ''
+    rows = []
+    scope = {}
+    unexpanded_unknown = False
+    collection = False
+    if provider == 'yt_dlp_generic':
+        if not isinstance(payload, dict):
+            raise XhsParseError('扩展解析只接受单条内容。')
+        if isinstance(payload.get('upstream_scope'), dict):
+            scope = payload['upstream_scope']
+        collection = payload.get('_type') in {'playlist', 'multi_video', 'compat_list'}
+        if collection:
+            scope = payload.get('upstream_scope') or {}
+            if scope.get('bounded') is not True or not isinstance(payload.get('entries'), list):
+                raise XhsParseError('集合结果未提供有界范围。')
+        elif payload.get('_type', 'video') not in {'video', None}:
+            raise XhsParseError('扩展解析只接受有界媒体结果。')
+        title = payload.get('title') or title
+        author = payload.get('uploader') or payload.get('creator') or ''
+        input_count = 0
+        nodes = 0
+
+        def visit(node, depth=0):
+            nonlocal nodes, input_count, unexpanded_unknown, scope
+            if nodes >= 101 or depth >= 16:
+                unexpanded_unknown = True
+                return
+            nodes += 1
+            if not isinstance(node, dict):
+                return
+            node_scope = node.get('upstream_scope') or {}
+            if node_scope:
+                scope = node_scope
+            if node.get('_type') in {'playlist', 'multi_video', 'compat_list'}:
+                entries = node.get('entries')
+                if node_scope.get('bounded') is not True or not isinstance(entries, list):
+                    unexpanded_unknown = True
+                    return
+                if node_scope.get('completion') != 'complete':
+                    unexpanded_unknown = True
+                for child in entries:
+                    if nodes >= 101:
+                        unexpanded_unknown = True
+                        break
+                    visit(child, depth + 1)
+                return
+            if node.get('_type', 'video') not in {'video', None}:
+                unexpanded_unknown = True
+                return
+            formats = node.get('formats') or ([node] if node.get('url') else [])
+            if not isinstance(formats, list):
+                raise XhsParseError('上游格式结构无效。')
+            total = node_scope.get('format_total')
+            input_count += max(len(formats), total if type(total) is int and 0 <= total <= 1000000 else 0)
+            for item in formats[:max(0, MAX_CANDIDATES - len(rows))]:
+                if isinstance(item, dict):
+                    rows.append((item.get('url'), {
+                        'duration': node.get('duration'), 'work_label': node.get('title'), **item}))
+
+        visit(payload)
+    else:
+        if not isinstance(payload, list):
+            raise XhsParseError('上游媒体结构无效。')
+        rows = [(row[1], row[2]) for row in payload
+                if isinstance(row, (tuple, list)) and len(row) == 3 and row[0] == 3
+                and isinstance(row[2], dict)]
+        input_count = len(rows)
+        rows = rows[:MAX_CANDIDATES]
+    candidates = []
+    admitted_rows = []
+    rejected = 0
+    examined = 0
+    for url, metadata in rows:
+        if len(candidates) >= MAX_CANDIDATES:
+            break
+        examined += 1
+        if isinstance(metadata.get('upstream_scope'), dict):
+            scope = metadata['upstream_scope']
+            if scope.get('unexpanded_count') is None and scope.get('completion') != 'complete':
+                unexpanded_unknown = True
+        total = metadata.get('candidate_total')
+        if metadata.get('candidates_truncated') is True and type(total) is int and 0 <= total <= 1000000:
+            input_count = max(input_count, total)
+        evidence = metadata.get('upstream_track_evidence')
+        if isinstance(evidence, dict):
+            metadata = {**metadata, **{key: ('none' if str(metadata.get(key) or '').lower() == 'none'
+                else evidence.get(key)) for key in ('acodec', 'vcodec')}}
+        safe_url = candidate_url(url, validator=validate_public_download_url)
+        if not safe_url:
+            rejected += 1
+            continue
+        title = metadata.get('title') or title
+        author = metadata.get('author') or metadata.get('uploader') or author
+        media_type = str(metadata.get('media_type') or metadata.get('type') or '')
+        if media_type not in {'image', 'video', 'audio'}:
+            media_type = media_type_from_metadata(metadata, url)
+        if provider == 'yt_dlp_generic':
+            media_type = 'audio' if metadata.get('vcodec') == 'none' else 'video'
+        if media_type not in {'image', 'video', 'audio'}:
+            media_type = 'unknown'
+        state = 'image' if media_type == 'image' else video_evidence_state({**metadata, 'url': url})
+        if media_type == 'audio':
+            state = 'audio_only'
+        elif metadata.get('acodec') == 'none' and metadata.get('vcodec') not in {None, '', 'none'}:
+            state = 'silent_video'
+        if urlsplit(url).scheme == 'http':
+            state = 'insecure_reference'
+        candidates.append(dict(url=safe_url, metadata=metadata, ordinal=len(candidates) + 1,
+                                           provider=provider, source_url=source_url,
+                                           media_type=media_type, state=state, match=match))
+        admitted_rows.append((safe_url, metadata))
+    if not candidates:
+        raise XhsParseError('上游没有返回有效的公网媒体候选。')
+    candidates = issue_candidates(candidates)
+    assets = ()
+    if provider == 'yt_dlp_generic':
+        downloadable_payload = {**payload, 'formats': [dict(meta, url=url) for url, meta in admitted_rows]}
+    else:
+        downloadable_payload = [[3, url, meta] for url, meta in admitted_rows[:MAX_ASSETS]]
+    if not collection:
+        try:
+            assets = _normalize_downloadable_result(downloadable_payload, match=match, source_url=source_url).assets
+        except XhsParseError:
+            # Admission failure limits actions; it does not erase a successful parse.
+            pass
+    return ParseResult(
+        platform='third_party', post_type='video' if any(c['media_type'] == 'video' for c in candidates) else 'image',
+        base_filename=clean_filename(str(title))[:180] or 'media', assets=assets,
+        metadata=dict(
+            source_platform='upstream', source_platform_name=match.get('label', provider),
+            title=safe_public_text(title, 300), author_name=safe_public_text(author, 200),
+            selected_provider=provider, source_provider=provider, provider_label=match.get('label', provider),
+            upstream_extractor=match.get('extractor_id', ''), upstream_version=match.get('version', ''),
+            canonical_source_url=source_url, coverage_status='matched_attemptable',
+            upstream_candidates=candidates, candidates_truncated=max(0, input_count - len(candidates) - rejected),
+            candidate_count=input_count, candidate_returned_count=input_count,
+            candidate_retained_count=len(candidates),
+            candidate_unexpanded_count=None if unexpanded_unknown else max(0, input_count - len(candidates) - rejected),
+            returned_count=input_count, retained_count=len(candidates),
+            declared_count=input_count, examined_count=examined, rejected_count=rejected,
+            unexpanded_count=None if unexpanded_unknown else max(0, input_count - len(candidates) - rejected),
+            truncated_count=max(0, input_count - len(candidates) - rejected),
+            unexpanded_scope={'bounded': True, 'completion': 'unknown'} if scope else {},
+            rejected_candidate_count=rejected, limited_media_count=max(0, len(candidates) - len(assets)),
+            delivery_limitation='解析候选已保留；预览、自动保存、合流和归档能力单独判断。',
+        ),
+    )

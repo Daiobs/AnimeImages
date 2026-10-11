@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 
 VIDEODL_POLICY_PIN = "6cd1de0fe1209380b183b654c65e98a629637873"
-VIDEODL_POLICY_REVISION = "dedicated-v1-common-v1"
+VIDEODL_POLICY_REVISION = "guarded-tls-v3-full-inventory"
 CONTROLLED_STATES = frozenset(
     {"allowed", "requires_sharing_confirmation", "blocked"}
 )
@@ -123,16 +123,22 @@ _BLOCKED = {
     "MGTVVideoClient": ("BROWSER_EXECUTION_BLOCKED", True, False),
     "TencentVideoClient": ("CHILD_PROCESS_EXECUTION_BLOCKED", False, False),
     "XinpianchangVideoClient": ("BROWSER_EXECUTION_BLOCKED", True, False),
-    "YinyuetaiVideoClient": ("TLS_VERIFICATION_DISABLED_BLOCKED", False, False),
-    "YouTubeVideoClient": (
-        "NESTED_AGGREGATOR_TLS_BYPASS_BLOCKED",
-        False,
-        True,
-    ),
 }
 
 
 def _dedicated_policy(backend_id: str) -> VideodlBackendPolicy:
+    if backend_id == "YinyuetaiVideoClient":
+        return VideodlBackendPolicy(
+            backend_id=backend_id, controlled_state="allowed",
+            external_sharing_required=False, browser_execution=False,
+            policy_reason="TLS_VERIFIED_GUARDED_ADAPTER",
+        )
+    if backend_id == "YouTubeVideoClient":
+        return VideodlBackendPolicy(
+            backend_id=backend_id, controlled_state="allowed",
+            external_sharing_required=False, browser_execution=False,
+            policy_reason="OFFICIAL_ONLY_GUARDED_ADAPTER",
+        )
     if backend_id not in REVIEWED_DEDICATED_BACKEND_IDS:
         return VideodlBackendPolicy(
             backend_id=backend_id,
@@ -218,7 +224,6 @@ REVIEWED_COMMON_BACKEND_IDS = (
 
 _COMMON_BLOCKED = {
     "APICXVideoClient": ("EMBEDDED_PROVIDER_CREDENTIAL_BLOCKED", False),
-    "BugPkVideoClient": ("TLS_VERIFICATION_DISABLED_BLOCKED", False),
     "GVVIPVideoClient": ("BROWSER_EXECUTION_BLOCKED", True),
     "IIILabVideoClient": ("EMBEDDED_PROVIDER_CREDENTIAL_BLOCKED", False),
     "IM1907VideoClient": ("INTERACTIVE_EXECUTION_BLOCKED", False),
@@ -237,6 +242,12 @@ _COMMON_BLOCKED = {
 
 
 def _common_policy(backend_id: str) -> VideodlBackendPolicy:
+    if backend_id == "BugPkVideoClient":
+        return VideodlBackendPolicy(
+            backend_id=backend_id, controlled_state="requires_sharing_confirmation",
+            external_sharing_required=True, browser_execution=False,
+            policy_reason="TLS_VERIFIED_SHARING_ADAPTER",
+        )
     if backend_id not in REVIEWED_COMMON_BACKEND_IDS:
         return VideodlBackendPolicy(
             backend_id=backend_id,
