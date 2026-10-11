@@ -1,0 +1,7 @@
+# Existing animeimages-deploy rules remain separate and unchanged.
+Cmnd_Alias ANIMEIMAGES_MANAGED_STOP = /usr/bin/systemctl stop animeimages
+ubuntu ALL=(root) NOPASSWD: NOSETENV: ANIMEIMAGES_MANAGED_STOP
+
+# This root-owned launcher executes as the consumer, NOT root. It validates all
+# arguments; no general interpreter, shell or run-as permission is granted.
+ubuntu ALL=(www-data:www-data) NOPASSWD: NOSETENV: /usr/local/sbin/animeimages-consumer-probe *

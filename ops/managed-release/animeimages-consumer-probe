@@ -1,0 +1,43 @@
+#!/bin/bash -p
+set -Eeuo pipefail
+
+export PATH=/usr/bin:/bin LC_ALL=C
+readonly APP=/srv/animeimages
+readonly STAGING=/srv/animeimages-deploy-staging
+readonly GATE=/usr/local/libexec/animeimages-release/check_deploy_readability.py
+
+fail() {
+    printf '[consumer-probe] ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+[[ "$(/usr/bin/id -un)" == www-data && "$(/usr/bin/id -gn)" == www-data ]] || fail 'must run as www-data:www-data, never root'
+[[ "$#" == 2 ]] || fail 'expected code|static and one allowed root'
+mode="$1"
+root="$2"
+case "$mode:$root" in
+    code:"$APP"|static:"$APP/staticfiles") ;;
+    code:"$STAGING"/animeimages-candidate.*|static:"$STAGING"/animeimages-candidate.*/static)
+        [[ "$root" =~ ^/srv/animeimages-deploy-staging/animeimages-candidate\.[a-zA-Z0-9]{8}(/static)?$ ]] || fail 'invalid candidate root'
+        [[ "$mode" == static && "$root" == */static || "$mode" == code && "$root" != */static ]] || fail 'root does not match probe mode'
+        ;;
+    *) fail 'root or mode is not allowed' ;;
+esac
+[[ -d "$root" && "$(/usr/bin/readlink -f -- "$root")" == "$root" ]] || fail 'root must exist without symlink aliases'
+
+# Do not trust a caller-writable gate or any replaceable parent directory.
+for path in /usr /usr/local /usr/local/libexec /usr/local/libexec/animeimages-release "$GATE"; do
+    [[ ! -L "$path" && -e "$path" ]] || fail 'installed gate path is missing or a symlink'
+    read -r owner permissions < <(/usr/bin/stat -c '%u %a' -- "$path")
+    [[ "$owner" == 0 && "$permissions" =~ ^[0-7]{3,4}$ ]] || fail 'installed gate must be root-owned'
+    (( (8#$permissions & 0022) == 0 )) || fail 'installed gate path is writable by non-root'
+done
+
+args=(--expected-uid "$(/usr/bin/id -u)" --root "$root")
+if [[ "$mode" == code ]]; then
+    args+=(--runtime-root "$APP/.venv" --paths-stdin)
+else
+    args+=(--static)
+fi
+exec /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin PYTHONDONTWRITEBYTECODE=1 \
+    "$APP/.venv/bin/python" -I -B "$GATE" "${args[@]}"
