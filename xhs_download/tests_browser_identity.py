@@ -8,7 +8,7 @@ from .models import BatchParseRuntimeSetting, ProviderAccessMode
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SITE_NAME = "星空的高清下载小站"
+SITE_NAME = "DokiTool"
 
 
 class BrowserIdentityTests(TestCase):
@@ -42,9 +42,9 @@ class BrowserIdentityTests(TestCase):
 
     def test_platform_pages_use_natural_product_titles(self):
         expected = {
-            "xhs_home": "小红书高清下载 · 星空的高清下载小站",
-            "tiktok_home": "抖音高清下载 · 星空的高清下载小站",
-            "bilibili_home": "哔哩哔哩高清下载 · 星空的高清下载小站",
+            "xhs_home": "小红书高清下载 · DokiTool",
+            "tiktok_home": "抖音高清下载 · DokiTool",
+            "bilibili_home": "哔哩哔哩高清下载 · DokiTool",
         }
 
         for route_name, title in expected.items():
@@ -57,7 +57,7 @@ class BrowserIdentityTests(TestCase):
     def test_batch_uses_product_title_and_batch_description(self):
         self.assert_site_metadata(
             self.client.get(reverse("batch_parse")),
-            title="批量解析 · 星空的高清下载小站",
+            title="批量解析 · DokiTool",
             description="一行一个链接，逐条解析并保存高清图片与视频素材。",
         )
 

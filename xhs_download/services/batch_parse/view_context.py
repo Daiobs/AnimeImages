@@ -117,7 +117,7 @@ def build_batch_parse_context(
 
     return {
         "theme_class": "theme-home",
-        "page_title": "批量解析 · 星空的高清下载小站",
+        "page_title": "批量解析 · DokiTool",
         "page_description": "一行一个链接，逐条解析并保存高清图片与视频素材。",
         "links_text": raw_links,
         "links": links,

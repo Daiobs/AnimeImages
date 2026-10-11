@@ -4665,7 +4665,7 @@ class XhsDownloadViewTests(TestCase):
         response = Client().get("/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "星空的高清下载小站")
+        self.assertContains(response, "DokiTool")
         self.assertContains(response, "theme-home")
         self.assertContains(response, "nav-settings-btn")
         self.assertContains(response, "css/app.css?v=")

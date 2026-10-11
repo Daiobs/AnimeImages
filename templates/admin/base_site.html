@@ -1,7 +1,7 @@
 {% extends "admin/base.html" %}
 {% load static %}
 
-{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | 星空的高清下载小站{% endblock %}
+{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | DokiTool{% endblock %}
 
 {% block extrastyle %}
     {{ block.super }}
@@ -28,7 +28,7 @@
             <a href="{% url 'admin:index' %}" class="admin-login-brand" aria-label="Admin Console">
                 <span class="admin-sidebar-logo" aria-hidden="true">星</span>
                 <span class="admin-login-copy">
-                    <strong>星空的高清下载小站</strong>
+                    <strong>DokiTool</strong>
                     <small>Admin Console</small>
                 </span>
             </a>
