@@ -28,7 +28,7 @@ class ProductionPolishAdminShellTests(TestCase):
         html = response.content.decode()
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "星空的高清下载小站")
+        self.assertContains(response, "DokiTool")
         self.assertContains(response, "Admin Console")
         self.assertContains(response, "登录管理后台")
         self.assertContains(response, '<label for="id_username">用户名</label>')

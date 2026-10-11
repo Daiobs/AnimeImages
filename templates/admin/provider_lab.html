@@ -21,6 +21,7 @@
     data-run-url="{{ provider_lab_run_url }}"
     data-resource-url="{{ provider_lab_resource_url }}"
     data-route-url="{% url 'upstream_routes' %}"
+    data-history-url="/admin/provider-lab/history/"
     data-max-concurrency="{{ provider_lab_max_concurrency }}"
     data-max-providers="{{ provider_lab_max_providers }}"
 >
@@ -32,6 +33,26 @@
             </div>
             <a class="provider-lab-secondary" href="{% url 'provider_settings' %}">Provider 设置</a>
         </header>
+
+        <nav class="provider-lab-tabs" aria-label="评估工作区">
+            <button type="button" data-lab-tab="instant" aria-pressed="true">即时测试</button>
+            <button type="button" data-lab-tab="history" aria-pressed="false">批次与历史</button>
+        </nav>
+        <section data-lab-history hidden aria-label="批次与历史">
+            <div class="provider-lab-section-heading">
+                <h2>批次与历史</h2>
+                <button type="button" data-history-refresh>刷新批次</button>
+            </div>
+            <p data-history-status role="status"></p>
+            <div data-history-batches class="provider-lab-history-batches"></div>
+            <h3 data-history-heading>尚未选择批次</h3>
+            <div class="provider-lab-history-filters">
+                <label>来源站点 <select data-history-host><option value="">全部站点</option></select></label>
+                <label>曾有结果 <select data-history-state><option value="">全部状态</option><option value="success">成功</option><option value="failed">失败</option><option value="unsupported">不支持</option><option value="not_executed">未执行</option></select></label>
+                <label>执行顺序 <select data-history-order><option value="latest">最新在前</option><option value="oldest">最早在前</option><option value="provider">Provider</option></select></label>
+            </div>
+            <div data-history-executions></div>
+        </section>
 
         <section class="provider-lab-input-band" aria-labelledby="provider-lab-input-title">
             <div class="provider-lab-section-heading">
@@ -62,7 +83,7 @@
                 </div>
 
                 <details class="provider-lab-advanced">
-                <summary>高级：测试所选上游与执行选项</summary>
+                <summary><span class="provider-lab-instant-options-label">高级：测试所选上游与执行选项</span><span class="provider-lab-history-options-label">复测执行选项</span></summary>
                 <fieldset class="provider-lab-provider-grid">
                     <legend>已接入上游</legend>
                     {% for provider in provider_lab_providers %}
@@ -201,22 +222,29 @@
                  data-can-configure="{% if perms.xhs_download.change_upstreamroute %}true{% else %}false{% endif %}">
             <div class="provider-lab-section-heading">
                 <h2>平台路线</h2>
-                <button type="button" class="provider-lab-secondary" data-route-load>读取路线</button>
+                <button type="button" class="provider-lab-secondary" data-route-load>刷新路线</button>
             </div>
             <p data-route-scope>尚未读取来源范围</p>
+            <p data-route-current aria-live="polite">当前路线：尚未读取</p>
+            <p data-route-reference></p>
             <fieldset data-route-fields disabled>
                 <div class="provider-lab-route-grid">
                     <div>
-                        <h3>执行顺序</h3>
+                        <h3>拟保存路线</h3>
                         <ol data-route-order></ol>
                         <select data-route-add aria-label="添加备选上游"><option value="">添加备选上游</option></select>
-                        <button type="button" class="provider-lab-secondary" data-route-use-current>将此上游设为该平台固定路线</button>
+                        <button type="button" class="provider-lab-secondary" data-route-use-current>设为首选</button>
                     </div>
-                    <div class="provider-lab-control-grid">
+                    <details class="provider-lab-route-preferences">
+                        <summary>格式偏好</summary>
+                        <div class="provider-lab-control-grid">
                         <label><span>最高分辨率</span><input type="number" name="max_height" min="144" max="8640" placeholder="不限制"></label>
                         <label><span>视频编码偏好</span><select name="preferred_video_codec"><option value="">不指定</option><option value="h264">H.264</option><option value="hevc">HEVC</option><option value="vp9">VP9</option><option value="av1">AV1</option></select></label>
                         <label><span>容器偏好</span><select name="preferred_container"><option value="">不指定</option><option value="mp4">MP4</option><option value="webm">WebM</option><option value="mkv">MKV</option></select></label>
-                        <label><span>videodl 执行模式</span><select name="route_videodl_mode"><option value="dedicated_only">Dedicated Only</option><option value="specific_backend">Specific Backend</option></select></label>
+                        </div>
+                    </details>
+                    <div class="provider-lab-control-grid" data-route-videodl hidden>
+                        <label><span>videodl 执行模式</span><select name="route_videodl_mode"><option value="">请显式设置执行模式</option><option value="dedicated_only">Dedicated Only</option><option value="specific_backend">Specific Backend</option></select></label>
                         <label><span>videodl 固定 Backend</span><select name="route_videodl_backend"><option value="">不指定</option>
                             {% for backend in videodl_backend_inventory.items %}{% if backend.backend_category == 'dedicated' and backend.controlled_available and not backend.external_sharing_required %}<option value="{{ backend.backend_id }}">{{ backend.display_label }}</option>{% endif %}{% endfor %}
                         </select></label>
@@ -226,7 +254,8 @@
                 <label class="provider-lab-route-confirm"><input type="checkbox" data-route-confirm>已核对来源、当前与拟保存路线、执行选项和格式偏好，确认修改后续解析</label>
             </fieldset>
             <div class="provider-lab-form-actions">
-                <button type="button" class="provider-lab-primary" data-route-save disabled>确认保存固定路线</button>
+                <button type="button" class="provider-lab-primary" data-route-save disabled>保存路线</button>
+                <button type="button" class="provider-lab-secondary" data-route-cancel>取消草稿</button>
                 <button type="button" class="provider-lab-secondary" data-route-reset disabled>恢复默认</button>
                 <span data-route-status role="status"></span>
             </div>

@@ -113,7 +113,7 @@ def validate_preferences(provider_order, provider_options, format_preferences):
 
 
 def write_route(source_url, *, expected_revision, actor, provider_order=None,
-                provider_options=None, format_preferences=None, reset=False):
+                provider_options=None, format_preferences=None, reset=False, reference_execution_id=None):
     scope = source_scope(source_url)
     if not scope["applicable"]:
         raise UpstreamRouteError("ROUTE_NOT_APPLICABLE", 422)
@@ -123,6 +123,22 @@ def write_route(source_url, *, expected_revision, actor, provider_order=None,
         provider_order, provider_options if provider_options is not None else {},
         format_preferences if format_preferences is not None else {},
     )
+    reference = None
+    if reference_execution_id is not None:
+        if type(reference_execution_id) is not int:
+            raise UpstreamRouteError("INVALID_HISTORY_REFERENCE")
+        from xhs_download.models import EvaluationExecution
+        record = EvaluationExecution.objects.filter(pk=reference_execution_id).first()
+        if not record or record.summary.get("source_host") != scope["source_host"]:
+            raise UpstreamRouteError("INVALID_HISTORY_REFERENCE")
+        from .provider_lab.providers import list_provider_descriptors
+        current = {d["execution_provider_id"]: d for d in list_provider_descriptors()
+                   if d.get("execution_provider_id")}
+        if any(not current.get(pid, {}).get("available") or not current.get(pid, {}).get("route_selectable")
+               for pid in values[0]):
+            raise UpstreamRouteError("HISTORY_PROVIDER_UNAVAILABLE", 422)
+        reference = {"execution_id": record.pk, "batch_id": record.batch_id,
+                     "execution_fingerprint": record.fingerprint}
     with transaction.atomic():
         route, _ = UpstreamRoute.objects.select_for_update().get_or_create(source_host=scope["source_host"])
         before = _snapshot(route)
@@ -133,9 +149,12 @@ def write_route(source_url, *, expected_revision, actor, provider_order=None,
         if changed != 1:
             raise UpstreamRouteError("REVISION_CONFLICT", 409)
         route.refresh_from_db()
+        after = _snapshot(route)
+        if reference:
+            after["evaluation_reference"] = reference
         UpstreamRouteAudit.objects.create(
             route=route, revision=route.revision, action="reset" if reset else "save",
-            before=before, after=_snapshot(route), actor_id=getattr(actor, "pk", None),
+            before=before, after=after, actor_id=getattr(actor, "pk", None),
             actor_username=str(getattr(actor, "username", ""))[:150],
         )
     return read_route(source_url)

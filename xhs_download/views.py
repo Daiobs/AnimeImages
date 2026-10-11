@@ -446,7 +446,7 @@ def build_provider_preview_item(request, url):
 
 PLATFORM_PAGE_CONFIG = {
     "home": {
-        "title": "星空的高清下载小站",
+        "title": "DokiTool",
         "display_name": "首页",
         "platform_id": "",
         "theme": "home",
@@ -458,7 +458,7 @@ PLATFORM_PAGE_CONFIG = {
         "results_route": "home_results",
     },
     "xhs": {
-        "title": "小红书高清下载 · 星空的高清下载小站",
+        "title": "小红书高清下载 · DokiTool",
         "display_name": "小红书",
         "platform_id": "xiaohongshu",
         "theme": "xhs",
@@ -470,7 +470,7 @@ PLATFORM_PAGE_CONFIG = {
         "results_route": "xhs_results",
     },
     "tiktok": {
-        "title": "抖音高清下载 · 星空的高清下载小站",
+        "title": "抖音高清下载 · DokiTool",
         "display_name": "抖音",
         "platform_id": "douyin",
         "theme": "tiktok",
@@ -482,7 +482,7 @@ PLATFORM_PAGE_CONFIG = {
         "results_route": "tiktok_results",
     },
     "bilibili": {
-        "title": "哔哩哔哩高清下载 · 星空的高清下载小站",
+        "title": "哔哩哔哩高清下载 · DokiTool",
         "display_name": "哔哩哔哩",
         "platform_id": "bilibili",
         "theme": "bilibili",

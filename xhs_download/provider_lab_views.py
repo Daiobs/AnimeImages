@@ -9,7 +9,7 @@ from django.http import Http404, JsonResponse
 from django.shortcuts import render
 from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_protect
-from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.http import require_GET, require_POST, require_http_methods
 
 from xhs_download.services.env_config import runtime_bool
 from xhs_download.services.provider_lab.contracts import ProviderLabError, safe_text
@@ -27,6 +27,8 @@ from xhs_download.services.provider_lab.resources import (
     public_resource_descriptor,
 )
 from xhs_download.services.rate_limits import consume_fixed_window
+from xhs_download.models import EvaluationBatch, EvaluationExecution
+from xhs_download.services.provider_lab import history
 
 
 PROVIDER_EXECUTIONS_PER_MINUTE = 20
@@ -114,7 +116,7 @@ def provider_lab_run_view(request):
     try:
         payload = parse_json_body(request)
         payload_fields = set(payload)
-        if not {'source','provider_id'} <= payload_fields or payload_fields - {'source','provider_id','options','confirmations'}:
+        if not {'source','provider_id'} <= payload_fields or payload_fields - {'source','provider_id','options','confirmations','history_execution_id'}:
             raise ProviderLabError("PROVIDER_SCHEMA_INVALID")
         provider_id = safe_text(payload.get("provider_id"), 80)
         if provider_id not in PROVIDER_REGISTRY:
@@ -126,6 +128,14 @@ def provider_lab_run_view(request):
                 raise ProviderLabError("PROVIDER_SCHEMA_INVALID")
             options = parse_videodl_options(payload.get("options"))
         source = normalized_source(payload.get("source"))
+        parent = None
+        if payload.get("history_execution_id") is not None:
+            if type(payload["history_execution_id"]) is not int:
+                raise ProviderLabError("PROVIDER_SCHEMA_INVALID")
+            parent = EvaluationExecution.objects.filter(pk=payload["history_execution_id"]).first()
+            if (not parent or not history.retest_allowed(parent)
+                    or parent.summary["source_url"] != source or parent.summary["provider_id"] != provider_id):
+                raise ProviderLabError("PROVIDER_POLICY_REJECTED")
         limit = consume_fixed_window(
             "provider-lab-execution",
             str(request.user.pk),
@@ -136,6 +146,11 @@ def provider_lab_run_view(request):
             raise ProviderLabError("PROVIDER_RATE_LIMITED", http_status=429)
         if not reserve_single_flight(request.user.pk, provider_id, source):
             raise ProviderLabError("PROVIDER_RATE_LIMITED", http_status=429)
+        record = None
+        try:
+            record = history.begin_execution(source, provider_id, payload.get("options"), parent.pk if parent else None)
+        except Exception:
+            pass  # A persistence failure must never cause a second parse.
         try:
             result = run_provider(
                 provider_id=provider_id,
@@ -144,10 +159,25 @@ def provider_lab_run_view(request):
                 options=options,
                 confirmations=confirmations,
             )
+        except ProviderLabError as error:
+            if record:
+                try:
+                    history.finish_execution(record, {"status": "failed", "error_code": error.code,
+                                                       "error_detail": error.detail})
+                except Exception:
+                    pass
+            raise
         finally:
             identity = execution_identity(request.user.pk, provider_id, source)
             cache.delete(f"provider-lab:single-flight:v1:{identity}")
-        return secure_json(result)
+        receipt = {"saved": False, "error_code": "HISTORY_SAVE_FAILED"}
+        if record:
+            try:
+                history.finish_execution(record, result)
+                receipt = {"saved": True, "id": record.pk}
+            except Exception:
+                pass
+        return secure_json({**result, "history": receipt})
     except ProviderLabError as error:
         return secure_json(
             {
@@ -190,3 +220,28 @@ def provider_lab_resource_view(request):
             },
             status=error.http_status,
         )
+
+
+@never_cache
+@require_http_methods(["GET", "POST"])
+@csrf_protect
+def provider_lab_history_view(request):
+    require_provider_lab_access(request)
+    try:
+        if request.method == "POST":
+            if len(request.body) > history.MAX_IMPORT_BYTES:
+                raise history.HistoryError("HISTORY_INPUT_TOO_LARGE", 413)
+            return secure_json(history.import_batch(parse_json_body(request)))
+        batch_id = request.GET.get("batch_id")
+        if batch_id:
+            batch = EvaluationBatch.objects.filter(pk=int(batch_id)).first()
+            if not batch:
+                raise history.HistoryError("HISTORY_NOT_FOUND", 404)
+            return secure_json({"ok": True, "batch": history.batch_dict(batch),
+                                "executions": [history.execution_dict(r) for r in batch.executions.order_by("pk")]})
+        return secure_json({"ok": True, "batches": [history.batch_dict(b) for b in
+                            EvaluationBatch.objects.order_by("-created_at")[:100]]})
+    except history.HistoryError as error:
+        return secure_json({"ok": False, "error_code": error.code}, status=error.status)
+    except (ValueError, TypeError, ProviderLabError):
+        return secure_json({"ok": False, "error_code": "HISTORY_INPUT_INVALID"}, status=400)

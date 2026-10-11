@@ -18,8 +18,16 @@ class Node {
     }
     getAttribute(name) { return (name.startsWith("data-") ? this.dataset[dataKey(name)] : this.attributes[name]) ?? null; }
     append(...nodes) { nodes.forEach((node) => { if (typeof node === "string") return; node.remove(); node.parentNode = this; this.children.push(node); }); }
+    insertBefore(node, reference) {
+        if (node === reference) return node;
+        if (reference && reference.parentNode !== this) throw new Error("Reference is not a child");
+        node.remove(); node.parentNode = this;
+        this.children.splice(reference ? this.children.indexOf(reference) : this.children.length, 0, node);
+        return node;
+    }
+    get nextSibling() { return this.parentNode?.children[this.parentNode.children.indexOf(this) + 1] || null; }
     replaceChildren(...nodes) { this.children.forEach((node) => { node.parentNode = null; }); this.children = []; this.append(...nodes); }
-    remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter((node) => node !== this); }
+    remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter((node) => node !== this); this.parentNode = null; }
     matches(selector) {
         const tag = selector.match(/^[a-z]+/i)?.[0];
         if (tag && this.tagName !== tag.toUpperCase()) return false;
