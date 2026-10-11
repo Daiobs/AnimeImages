@@ -57,37 +57,106 @@ The production Git working tree must have one owner:
 
 Do not run `git fetch`, `git pull`, `git reset`, `git checkout`, or other Git commands as `root` inside `/srv/animeimages`. Mixing `root` and `ubuntu` ownership can leave `.git/index.lock` or index files unreadable by the deploy user.
 
-Use the deploy script from the `ubuntu` account:
+### Pinned Tools and Permission Gates
+
+The permission-fix deployment contract below requires the reviewed fixed tools;
+an older copy of `deploy.sh` does not implement these gates. This draft is not
+authorization to deploy and does not claim production validation.
+
+Run as `ubuntu` from a separate, clean Git checkout outside `APP_DIR`. Require
+`DEPLOY_TOOL_SHA` to match that tool checkout's HEAD and `DEPLOY_TARGET_SHA` to
+be the full intended application commit SHA. Record both; never execute the
+deployment controller from the application tree it will replace.
+
+Preparation example (replace the paths and both SHA placeholders):
 
 ```bash
-cd /srv/animeimages
-./scripts/deploy.sh
+cd /path/to/reviewed-deploy-tools
+APP_DIR=/srv/animeimages \
+DEPLOY_TOOL_SHA=<full-reviewed-tool-commit> \
+DEPLOY_TARGET_SHA=<full-release-commit> \
+DEPLOY_STATE_DIR=/path/to/existing-private-release-state \
+WEB_USER=www-data STATIC_USER=<actual-nginx-worker-user> \
+STATIC_GROUP=<actual-nginx-worker-group> \
+CODE_UMASK=0022 DEPLOY_PREPARE_ONLY=1 ./scripts/deploy.sh
 ```
 
-`scripts/deploy.sh` will:
+Keep the existing ownership, branch, clean-tree, settings and readable-env
+preconditions. Additionally:
 
-1. Refuse to run as root.
-2. Require `/srv/animeimages` itself to be owned by `ubuntu:ubuntu`.
-3. Remove a stale `.git/index.lock` only when no `git` process is active for the deploy user.
-4. Run `scripts/pre_deploy_check.sh`.
-5. Fetch and reset to `origin/main`.
-6. Install dependencies, run migrations, collect static files, and restart `animeimages`.
+- `WEB_USER` must match the systemd service's actual `User`, be non-root and
+  differ from the deploy user. Set `STATIC_USER` explicitly to the actual Nginx
+  worker identity; do not infer it from the deploy or Web account. The Web probe
+  uses systemd `Group`, falling back to the Web user's primary group when unset.
+  Set `STATIC_GROUP` to the actual Nginx worker group; its default is the static
+  user's primary group. Operator verification of the Nginx identity is required;
+  the script does not discover it from Nginx configuration. Supplemental groups
+  and service sandbox restrictions still need to match the intended deployment.
+- Permission probes run as those real identities using `sudo -n -u ... -g ...` and require
+  existing, approved identity-execution privileges for the actual probe command.
+  The previously observed restart-only passwordless permissions are insufficient;
+  the next release needs approved Web/static identity execution before scheduling
+  maintenance. Do not expand sudoers or substitute deploy-user checks to bypass
+  failures. Preparation exercises both identities: Web against candidate and
+  existing code/runtime paths, and the static identity against the candidate's
+  `static/` directory. Authorization failure blocks before checkout replacement.
+- `DEPLOY_STATE_DIR` must already exist, be deploy-owned and mode `0700`.
+  Keep recovery logs and secret artifacts private (`0600` files). Never apply
+  the application's permissions policy to this directory or the env/key files.
+  The script creates a private release journal recording tool, target and previous
+  SHA, plus `code-before.tar.gz`. This limited code backup uses current HEAD's
+  tracked-path list and preserves those paths' actual working-tree bytes and
+  modes; it is not a reconstructed Git archive. It runs before candidate checks
+  or checkout replacement. A Git-listing or tar failure aborts deployment; any
+  partial archive from a failed run is invalid and must never be restored.
+  Archive existence alone is not proof of success, and successful creation is
+  not a checksum verification or restore drill. Inspect and verify recovery
+  material before use; preserved bad permissions are not automatically repaired.
+  This is not a general backup engine: it excludes the database and untracked
+  collected static files, env/key material and virtualenv. Independently verified
+  database/static backups and required dependency/env/key recovery material remain
+  prerequisites for apply; this script does not enforce their verification.
+- Use `CODE_UMASK=0022` for the current disjoint `ubuntu`/`www-data` identities.
+  `0027` is allowed only with a preprovisioned shared read group and setgid
+  directories. It is not a way to retrofit access: no chmod of existing paths.
+- Archive the pinned candidate into a fresh directory under a separate stage
+  parent (default `/tmp`), with new directory mode `2755` or `2750` respectively.
+  Check ancestor traversal and code, templates and virtualenv readability and
+  non-writability as the Web identity. Consumer ownership is rejected even for
+  read-only artifacts because owners can change their modes. Writable ancestors
+  must not allow consumers to replace artifacts; root-owned sticky `/tmp` remains
+  suitable for deploy-owned candidates. A private recovery directory is not a
+  suitable Web-readable stage parent.
+- `DEPLOY_PREPARE_ONLY=1` fetches the branch, creates a temporary candidate archive
+  and private journal/code backup, and checks candidate static assets plus both candidate and
+  existing code/runtime paths. Static file links escaping the checked root fail.
+  It does not switch the application checkout or run dependency installation,
+  migrations, collectstatic or restart. It can remove a detected stale Git lock;
+  it is not a zero-write Git inspection. The temporary stage is removed on exit.
+  A successful staged check does not replace checks on the final live paths.
 
-`scripts/pre_deploy_check.sh` requires:
+For an authorized apply, use the same pinned tools and settings with
+`DEPLOY_PREPARE_ONLY=0`. The operator must first stop Web through the approved
+maintenance procedure. Apply requires both `ActiveState=inactive` and
+`MainPID=0`; the script never stops the service itself. `activating` with PID 0
+is not stopped. Check final code permissions immediately after reset, before
+migrations, and again after dependency work. Check collected static assets as
+`STATIC_USER` before the existing restart step. Existing incorrect `0600`
+application files must fail the checks, not be automatically repaired.
 
-- `/srv/animeimages` itself is owned by `ubuntu:ubuntu`.
-- Current branch is `main`.
-- `git status` is clean.
-- `djangoProject/settings.py` has no uncommitted changes.
-- `/srv/animeimages/.env.production` exists and is readable.
+Do not use blanket recursive chown/chmod on `/srv/animeimages`. Investigate the
+specific failed path, its ancestors, owner, group and consumer identity; any
+repair requires a separately reviewed, narrowly scoped operator action. Static
+files must remain readable by Nginx, and application assets must not be writable
+by their serving identities.
 
-Deploy scripts do not recursively repair ownership. If permissions are already mixed, fix them outside Git first:
-
-```bash
-sudo chown -R ubuntu:ubuntu /srv/animeimages
-```
-
-`staticfiles/` is generated by `collectstatic` and only needs to remain readable by Nginx. It is not part of the deployment ownership gate.
+The 2026-10-11 incident was caused by the task-created wrapper's global umask
+`077` being inherited by Git reset. Direct observations included `0600` on
+`xhs_download/quality_route_views.py`, `xhs_download/upstream_routes.py` and
+`templates/base.html`; `staticfiles/js/provider_lab.js` was `0644`. Do not infer
+other exact modes from those examples. That deployment wrapper did not call
+pip; earlier preparation ran `pip check` and a zero-install pip dry-run. The
+failure was an operational permissions error, not evidence of dependency changes.
 
 Production configuration belongs in `.env.production` or systemd environment variables. Do not edit `djangoProject/settings.py` on the server. A CI guard blocks `djangoProject/settings.py` changes on feature branches so production-only settings do not leak into code review.
 
@@ -335,18 +404,28 @@ Run these after deployment:
 
 Every deployment should record:
 
-- Git commit.
-- Python version.
+- Previous and target application Git commits, and the separate tool commit.
+- Python and deployment-tool versions.
 - Installed package snapshot.
 - Migration state.
 - Static asset collection time.
 - Environment file checksum without secret values.
 
-Rollback steps:
+If an apply fails after reset, stop the deployment sequence and keep Web in
+maintenance; do not restart from the failure handler. Preserve the recorded old
+SHA, failed step and private logs. If Web has already restarted, obtain an
+operator-confirmed stop before changing files again.
 
-1. Switch the server checkout to the previous known-good commit.
-2. Reinstall requirements if needed.
-3. Run migrations only if the rollback path is safe.
-4. Run `collectstatic --noinput`.
-5. Restart Gunicorn/systemd.
-6. Confirm `/health/live/`, `/health/ready/`, home page, and one stable adapter smoke.
+The operator restores known-good code and the verified static backup, preserving
+its exact modes and contents, then repeats final identity-based permission
+checks before an authorized restart. Umask only affects newly created files;
+reset alone does not repair every existing bad mode. Restore dependencies only
+when they changed, using the recorded recovery material, not an unreviewed
+upgrade. Preserve env and key permissions.
+
+Do not automatically reverse migrations or overwrite the live database with a
+backup. Confirm old-code compatibility with the upgraded schema and retain new
+tables/data; a database rollback needs its own reviewed recovery procedure.
+After restart, verify `/health/live/`, `/health/ready/`, home page and worker
+stability. Real provider parsing, downloads, mail and Daily execution remain
+separately authorized smoke tests, not permission checks.
