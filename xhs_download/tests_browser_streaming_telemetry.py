@@ -89,6 +89,28 @@ class BrowserStreamingTelemetryEndpointTests(TestCase):
         self.assertNotIn("path/video.mp4", serialized)
         self.assertNotIn("super-secret", serialized)
 
+    def test_existing_xhs_stream_hosts_accept_cancel_telemetry(self):
+        for host in ("sns-video-hw.xhscdn.com", "sns-video-bd.xhscdn.com", "sns-video-v6.xhscdn.com"):
+            with self.subTest(host=host):
+                response = self.post(self.payload(
+                    media_host=host, state="cancelled", error_code="DOWNLOAD_MANAGER_CANCELLED",
+                    failure_class="NOT_APPLICABLE", failure_stage="DOWNLOAD_MANAGER_CANCELLED",
+                ))
+                self.assertEqual(response.status_code, 204)
+        for host in ("sns-video-zl.xhscdn.com", "sns-video-v0.xhscdn.com", "sns-video-hw.xhscdn.com.evil.test"):
+            with self.subTest(host=host):
+                self.assertEqual(self.post(self.payload(media_host=host)).status_code, 400)
+
+    def test_existing_xhs_family_is_preserved_in_rejection_observation(self):
+        for host, family in (("sns-video-hw.xhscdn.com", "XHS_TIANTIAN_HW_EXACT"),
+                             ("sns-video-v6.xhscdn.com", "XHS_NATIVE_REVIEWED")):
+            with self.subTest(host=host):
+                payload = self.payload(media_host=host, **self.response_fields(), **self.redirect_fields(
+                    initial_media_host=host, initial_media_family=family))
+                self.assertEqual(self.post(payload).status_code, 204)
+                payload["initial_media_family"] = "DOUYIN_365YG"
+                self.assertEqual(self.post(payload).status_code, 400)
+
     def test_new_response_rejection_fields_are_accepted_and_sanitized(self):
         payload = self.payload(
             error_code="UPSTREAM_MEDIA_INVALID",

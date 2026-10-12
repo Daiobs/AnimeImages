@@ -11,6 +11,75 @@ from .services.upstream_public_errors import UPSTREAM_PUBLIC_MESSAGES, public_up
 
 
 class UpstreamPublicErrorTests(SimpleTestCase):
+    def test_shared_service_timeout_counts_as_batch_timeout(self):
+        from .services.platforms.third_party import GenericThirdPartyAdapter
+        from .services.provider_lab.contracts import ProviderLabError
+        match = {"provider_id": "kukutool_generic"}
+        route = {"mode": "default", "effective_provider_order": ["kukutool_generic"]}
+        with ExitStack() as stack:
+            stack.enter_context(patch("xhs_download.services.common.validate_public_download_url"))
+            stack.enter_context(patch("xhs_download.services.upstream_routes.route_matches", return_value=([match], route)))
+            stack.enter_context(patch("xhs_download.services.upstream_routes.parse_cache_key", return_value="fixture"))
+            stack.enter_context(patch("xhs_download.services.upstream_routes.cached_parse_result", return_value=None))
+            stack.enter_context(patch("xhs_download.services.platforms.third_party.provider_is_enabled", return_value=True))
+            stack.enter_context(patch("xhs_download.services.quality_execution.execute_provider",
+                                     side_effect=ProviderLabError("PROVIDER_TIMEOUT", detail="PARSE_DEADLINE")))
+            stack.enter_context(patch("xhs_download.services.batch_parse.results.third_party_public_access_summary",
+                return_value={"allowed": True, "platform_id": "upstream", "upstream_provider_ids": (), "upstream_matches": ()}))
+            def parser(source, **kwargs):
+                return GenericThirdPartyAdapter().parse_upstream_rule(
+                    source, SimpleNamespace(upstream_matches=(match,)), 30, None)
+            row = build_batch_result_row(RequestFactory().get("/"), "https://example.org/post/1",
+                prefer_ultra_hd=False, prefer_youtube_merge=False, per_link_timeout_seconds=30,
+                query_uses_third_party_provider_func=lambda _: True,
+                third_party_provider_is_available_func=lambda _: True, parser=parser)
+        self.assertEqual(row["status"], "timeout", row)
+
+    def test_ordinary_service_logs_only_fixed_failure_facts(self):
+        from .services.platforms.third_party import GenericThirdPartyAdapter
+        from .services.provider_lab.contracts import ProviderLabError
+        match = {"provider_id": "kukutool_generic"}
+        route = {"mode": "default", "effective_provider_order": ["kukutool_generic"]}
+        unknown = XhsParseError("https://secret.example/?token=private")
+        unknown.code = unknown.detail = str(unknown)
+        cases = ((ProviderLabError("PROVIDER_UPSTREAM_FAILED", detail="SERVICE_HTTP_500"), "SERVICE_HTTP_500"),
+                 (unknown, "unsupported_result"))
+        for error, expected in cases:
+            with self.subTest(expected=expected), ExitStack() as stack:
+                stack.enter_context(patch("xhs_download.services.common.validate_public_download_url"))
+                stack.enter_context(patch("xhs_download.services.upstream_routes.route_matches", return_value=([match], route)))
+                stack.enter_context(patch("xhs_download.services.upstream_routes.parse_cache_key", return_value="fixture"))
+                stack.enter_context(patch("xhs_download.services.upstream_routes.cached_parse_result", return_value=None))
+                stack.enter_context(patch("xhs_download.services.platforms.third_party.provider_is_enabled", return_value=True))
+                stack.enter_context(patch("xhs_download.services.quality_execution.execute_provider", side_effect=error))
+                with self.assertLogs("xhs_download.services.platforms.third_party", level="INFO") as logs:
+                    with self.assertRaises(XhsParseError):
+                        GenericThirdPartyAdapter().parse_upstream_rule(
+                            "https://example.org/post/1", SimpleNamespace(upstream_matches=(match,)), 30, None)
+                self.assertIn(expected, " ".join(logs.output))
+                self.assertNotIn("secret.example", " ".join(logs.output))
+                self.assertNotIn("token=", " ".join(logs.output))
+
+    def test_shared_worker_reason_survives_ordinary_route(self):
+        from .services.platforms.third_party import GenericThirdPartyAdapter
+        from .services.provider_lab.contracts import ProviderLabError
+        match = {"provider_id": "parsehub_generic"}
+        route = {"mode": "default", "effective_provider_order": ["parsehub_generic"]}
+        for code in ("UPSTREAM_ACCESS_DENIED", "UPSTREAM_AUTH_REQUIRED", "UPSTREAM_TLS_ERROR",
+                     "UPSTREAM_NETWORK_DENIED", "UPSTREAM_IDENTITY_MISMATCH"):
+            with self.subTest(code=code), ExitStack() as stack:
+                stack.enter_context(patch("xhs_download.services.common.validate_public_download_url"))
+                stack.enter_context(patch("xhs_download.services.upstream_routes.route_matches", return_value=([match], route)))
+                stack.enter_context(patch("xhs_download.services.upstream_routes.parse_cache_key", return_value="fixture"))
+                stack.enter_context(patch("xhs_download.services.upstream_routes.cached_parse_result", return_value=None))
+                stack.enter_context(patch("xhs_download.services.platforms.third_party.provider_is_enabled", return_value=True))
+                stack.enter_context(patch("xhs_download.services.quality_execution.execute_provider",
+                                         side_effect=ProviderLabError("PROVIDER_PROCESS_FAILED", detail=code)))
+                with self.assertRaises(XhsParseError) as caught:
+                    GenericThirdPartyAdapter().parse_upstream_rule(
+                        "https://example.org/post/1", SimpleNamespace(upstream_matches=(match,)), 30, None)
+                self.assertEqual(str(caught.exception), "扩展解析失败：" + UPSTREAM_PUBLIC_MESSAGES[code])
+
     def test_known_codes_and_exact_legacy_messages_are_safe(self):
         for code, message in UPSTREAM_PUBLIC_MESSAGES.items():
             with self.subTest(code=code):

@@ -373,6 +373,7 @@ function chunkedUpstream(chunks, options) {
     });
     const response = {
         ok: true,
+        status: 200,
         url: settings.url || "https://v11-default.365yg.com/media/video.mp4?fixture=signed",
         headers: new Headers({
             "Content-Type": "video/mp4",
@@ -1723,6 +1724,8 @@ test("downstream Download Manager cancel aborts the upstream stream and cleans s
     const status = await runtime.send({type: "GET_DOWNLOAD_STATUS", downloadId});
     assert.equal(status.status.state, "cancelled");
     assert.equal(status.status.errorCode, "DOWNLOAD_MANAGER_CANCELLED");
+    assert.equal(status.status.httpStatus, 200);
+    assert.equal(status.status.contentTypeClass, "VIDEO");
     assert.equal(upstreamCancelled, true);
 });
 

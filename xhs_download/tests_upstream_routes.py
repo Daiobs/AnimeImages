@@ -262,18 +262,61 @@ class SavedServiceRouteTests(RouteFixtures, TestCase):
         return PlatformRegistry().parse_url(source, upstream_provider_ids=gate["upstream_provider_ids"],
                                            upstream_matches=gate["upstream_matches"])
 
-    def test_route_ids_derive_aliases_but_services_do_not_enter_default_order(self):
+    def test_default_services_execute_only_after_public_admission_without_writing_routes(self):
+        self.clients[self.service_ids[0]].side_effect = XhsParseError("unsupported fixture")
+        result = self.parse()
+        self.assertEqual(result.metadata["selected_provider"], self.service_ids[1])
+        self.assertEqual(result.metadata["upstream_route"]["mode"], "default")
+        self.clients[self.service_ids[0]].assert_called_once()
+        self.clients[self.service_ids[1]].assert_called_once()
+        self.assertEqual(UpstreamRoute.objects.count(), 0)
+        self.assertEqual(UpstreamRouteAudit.objects.count(), 0)
+
+    def test_default_service_discovery_does_not_bypass_access_or_source_blocks(self):
+        from .models import ProviderRuntimeSetting, ProviderAccessMode
+        from .services.provider_access import third_party_public_access_summary
+        for values in ({}, {"third_party_allowed_public_hosts": "other.example"},
+                       {"third_party_allowed_public_hosts": "www.douban.com", "third_party_blocked_hosts": "www.douban.com"}):
+            with self.subTest(values=values):
+                runtime = ProviderRuntimeSetting(third_party_mode=ProviderAccessMode.PUBLIC, **values)
+                self.assertFalse(third_party_public_access_summary(SOURCE, runtime_setting=runtime)["allowed"])
+        for client in self.clients.values():
+            client.assert_not_called()
+
+    def test_default_service_batch_retains_candidates_and_does_not_save_route(self):
+        from django.contrib.auth.models import AnonymousUser
+        from .models import ProviderRuntimeSetting, ProviderAccessMode
+        from .services.batch_parse.results import build_batch_result_row
+        runtime = ProviderRuntimeSetting(third_party_mode=ProviderAccessMode.PUBLIC,
+            third_party_allowed_public_platforms="upstream:kukutool_generic")
+        request = RequestFactory().get("/")
+        request.user = AnonymousUser()
+        with patch("xhs_download.services.provider_access.load_runtime_setting", return_value=runtime):
+            row = build_batch_result_row(request, SOURCE, prefer_ultra_hd=False, prefer_youtube_merge=False,
+                per_link_timeout_seconds=30, query_uses_third_party_provider_func=lambda _: True,
+                third_party_provider_is_available_func=lambda _: True,
+                display_context_builder=lambda result, **kwargs: {"upstream_candidates": result.metadata["upstream_candidates"]})
+        self.assertEqual(row["status"], "success", row)
+        self.assertEqual(row["selected_provider"], "kukutool_generic")
+        self.assertTrue(row["upstream_candidates"])
+        self.clients[self.service_ids[0]].assert_not_called()
+        self.clients[self.service_ids[1]].assert_called_once()
+        self.assertFalse(UpstreamRoute.objects.exists())
+        self.assertFalse(UpstreamRouteAudit.objects.exists())
+
+    def test_default_order_includes_services_without_composite_baseline(self):
         from .services.quality_execution import PROVIDER_ALIASES
         from .services.upstream_routes import PROVIDER_IDS, DEFAULT_PROVIDER_ORDER
         self.assertEqual(set(PROVIDER_IDS), set(PROVIDER_ALIASES.values()))
         self.assertNotIn("animeimages_current", PROVIDER_IDS)
-        self.assertEqual(tuple(DEFAULT_PROVIDER_ORDER), tuple(PIDS))
+        self.assertEqual(tuple(DEFAULT_PROVIDER_ORDER), tuple(PIDS) + self.service_ids)
         self.assertTrue(set(self.service_ids).issubset(PROVIDER_IDS))
 
-    def test_default_unselected_and_mature_sources_never_probe_services(self):
+    def test_default_discovery_does_not_call_services_and_manual_order_remains_exclusive(self):
         from .services.upstream_routes import saved_service_matches
-        self.assertEqual(saved_service_matches(SOURCE), ())
-        self.assertIsNone(GenericThirdPartyAdapter().get_rule_for_url(SOURCE))
+        self.assertEqual([m['provider_id'] for m in saved_service_matches(SOURCE)], list(self.service_ids))
+        self.assertIsNotNone(GenericThirdPartyAdapter().get_rule_for_url(SOURCE))
+        self.matcher.reset_mock()
         self.save(["parsehub_generic"])
         self.assertEqual(saved_service_matches(SOURCE), ())
         self.assertEqual(saved_service_matches("https://www.youtube.com/watch?v=test"), ())
@@ -359,9 +402,11 @@ class SavedServiceRouteTests(RouteFixtures, TestCase):
         wrong_version = [{**fresh.upstream_matches[0], "version": "stale-version"}]
         self.assertEqual(route_matches(SOURCE, wrong_version)[0], ())
         write_route(SOURCE, expected_revision=2, actor=self.user, reset=True)
-        self.assertEqual(route_matches(SOURCE, fresh.upstream_matches)[0], ())
-        with self.assertRaises(XhsParseError):
-            adapter.parse_upstream_rule(SOURCE, fresh, 30, None)
+        # Reset means current defaults, not revoking otherwise admitted capabilities.
+        matches, route = route_matches(SOURCE, fresh.upstream_matches)
+        self.assertEqual([m['provider_id'] for m in matches], [self.service_ids[1]])
+        self.assertEqual(route['mode'], 'default')
+        self.assertEqual(route['revision'], 3)
         for client in self.clients.values():
             client.assert_not_called()
 
@@ -814,6 +859,13 @@ class SavedVideodlAdmissionTests(RouteFixtures, TestCase):
             third_party_allowed_public_platforms="upstream:videodl_repo", **values)
         return third_party_public_access_summary(self.source, runtime_setting=runtime)
 
+    def test_default_videodl_uses_reviewed_match_without_a_saved_route(self):
+        gate = self.gate()
+        self.assertTrue(gate["allowed"], gate)
+        self.assertEqual(gate["upstream_matches"][0]["extractor_id"], "ZhihuVideoClient")
+        self.assertEqual(UpstreamRoute.objects.count(), 0)
+        self.assertEqual(UpstreamRouteAudit.objects.count(), 0)
+
     def test_real_registry_discovery_admits_saved_route_and_executes_exact_backend(self):
         self.save_videodl()
         gate = self.gate()
@@ -853,11 +905,8 @@ class SavedVideodlAdmissionTests(RouteFixtures, TestCase):
         execute.assert_called_once()
         self.assertEqual(execute.call_args.kwargs["backend"], "ZhihuVideoClient")
 
-    def test_no_saved_route_or_other_host_does_not_grant_discovery(self):
+    def test_mature_source_does_not_use_default_videodl_discovery(self):
         from .services.upstream_routes import saved_videodl_matches
-        self.assertEqual(saved_videodl_matches(self.source), ())
-        self.save_videodl()
-        self.assertEqual(saved_videodl_matches("https://zhihu.com/question/123/answer/456"), ())
         self.assertEqual(saved_videodl_matches("https://www.youtube.com/watch?v=123"), ())
         self.worker.assert_not_called()
 
@@ -886,11 +935,13 @@ class SavedVideodlAdmissionTests(RouteFixtures, TestCase):
             self.assertFalse(self.gate(third_party_blocked_platforms=value)["allowed"])
         self.assertFalse(self.gate(third_party_blocked_hosts="www.zhihu.com")["allowed"])
 
-    def test_reset_removes_videodl_admission_despite_cached_match(self):
+    def test_reset_restores_default_reviewed_matching_without_erasing_public_gate(self):
         self.save_videodl()
         self.assertTrue(self.gate()["allowed"])
         write_route(self.source, expected_revision=1, actor=self.user, reset=True)
-        self.assertFalse(self.gate()["allowed"])
+        self.assertTrue(self.gate()["allowed"])
+        self.assertEqual(read_route(self.source)["mode"], "default")
+        self.assertFalse(self.gate(third_party_blocked_platforms="upstream:videodl_repo")["allowed"])
 
     def test_stale_backend_a_is_not_executed_under_new_backend_b_revision(self):
         self.matched = ["ZhihuVideoClient", "ABCVideoClient"]
@@ -914,12 +965,14 @@ class SavedVideodlAdmissionTests(RouteFixtures, TestCase):
         self.assertEqual(route_matches(self.source, fresh)[0][0]["extractor_id"], "ABCVideoClient")
         self.assertEqual(route_matches(self.source, [{**fresh[0], "version": "stale-pin"}])[0], ())
 
-    def test_stale_videodl_rule_cannot_execute_after_reset(self):
+    def test_reset_revalidates_videodl_against_current_default_match(self):
         self.save_videodl()
         adapter = GenericThirdPartyAdapter()
         stale_rule = adapter.get_rule_for_url(self.source)
         self.assertTrue(stale_rule.upstream_matches)
         write_route(self.source, expected_revision=1, actor=self.user, reset=True)
+        # A reset can change the effective backend. Do not trust an old match.
+        self.matched = ["ABCVideoClient"]
         matches, route = route_matches(self.source, stale_rule.upstream_matches)
         self.assertEqual(route["revision"], 2)
         self.assertFalse(route["active"])

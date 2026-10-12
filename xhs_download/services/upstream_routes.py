@@ -21,8 +21,9 @@ from .quality_execution import PROVIDER_ALIASES
 
 
 PROVIDER_IDS = tuple(dict.fromkeys(PROVIDER_ALIASES.values()))
-# New service channels require an explicit Human route, not automatic default calls.
-DEFAULT_PROVIDER_ORDER = ("yt_dlp_generic", "gallery_dl_generic", "parsehub_generic", "videodl_repo")
+# Request admission and runtime readiness apply independently of Human preference.
+DEFAULT_PROVIDER_ORDER = ("yt_dlp_generic", "gallery_dl_generic", "parsehub_generic", "videodl_repo",
+                          "tiantianjiexi_generic", "kukutool_generic")
 
 
 class UpstreamRouteError(ValueError):
@@ -180,7 +181,7 @@ def route_matches(source_url, matches):
                     or (match.get('provider_id'), match.get('extractor_id'), match.get('version')) in current_services)
     if any(match.get("provider_id") == "videodl_repo" for match in matches):
         current = (videodl_route_availability(source_url, route)["matches"]
-                   if route["applicable"] and route["active"] and "videodl_repo" in route["provider_order"] else ())
+                   if route["applicable"] and "videodl_repo" in route["effective_provider_order"] else ())
         allowed = {(match.get("provider_id"), match.get("extractor_id"), match.get("version"))
                    for match in current}
         matches = tuple(match for match in matches if match.get("provider_id") != "videodl_repo"
@@ -191,17 +192,21 @@ def route_matches(source_url, matches):
 
 
 def saved_service_matches(source_url):
-    """An explicit saved route permits a service to decide support at parse time."""
+    """Match configured services in the effective route, without a remote call.
+
+    The legacy function name is retained for callers. Default routes are eligible;
+    source/access gates still decide which matches an ordinary request may use.
+    """
     from .quality_execution import SERVICE_PROVIDER_IDS, service_match, provider_available
     from .provider_lab.contracts import ProviderLabError
     if not any(provider_available(provider) for provider in SERVICE_PROVIDER_IDS):
         return ()
     try:
         route = read_route(source_url)
-        if not route['applicable'] or not route['active']:
+        if not route['applicable']:
             return ()
         matches = []
-        for provider in route['provider_order']:
+        for provider in route['effective_provider_order']:
             if provider not in SERVICE_PROVIDER_IDS:
                 continue
             try:
@@ -214,7 +219,7 @@ def saved_service_matches(source_url):
 
 
 def saved_videodl_matches(source_url):
-    """Only an active host route plus installed, reviewed source matches grants eligibility."""
+    """Match the effective route against installed, reviewed dedicated backends."""
     from .quality_execution import provider_available
     if not provider_available("videodl_repo"):
         return ()
@@ -230,7 +235,7 @@ def videodl_route_availability(source_url, route):
     from .quality_execution import match_saved_videodl, provider_available
     from .provider_lab.contracts import ProviderLabError
     from .provider_lab.videodl_policy import backend_policy, VIDEODL_POLICY_PIN, VIDEODL_POLICY_REVISION
-    if not route["applicable"] or not route["active"] or "videodl_repo" not in route["provider_order"]:
+    if not route["applicable"] or "videodl_repo" not in route["effective_provider_order"]:
         return {"status": "not_selected", "reason": "", "matches": []}
     unavailable = {"status": "unavailable", "reason": "PROVIDER_NOT_CONFIGURED", "matches": []}
     if not provider_available("videodl_repo"):

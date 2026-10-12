@@ -145,6 +145,23 @@ class SharedQualityExecutionTests(SimpleTestCase):
             execution._execute_upstream('parsehub_generic',SOURCE,10,expected_match=admitted)
         self.assertEqual(parse.call_args.args[0],admitted)
 
+    def test_worker_rejection_keeps_safe_reason_for_product_and_lab(self):
+        from .services.upstream_parsehub import ParseHubBridgeError
+        from .services.upstream_matching import UpstreamMatchingError
+        for provider, target, error_type in (
+            ('parsehub_generic', 'xhs_download.services.upstream_parsehub._call', ParseHubBridgeError),
+            ('yt_dlp_generic', 'xhs_download.services.upstream_matching._context', UpstreamMatchingError),
+        ):
+            for code in ('access_denied', 'auth_required', 'tls_error', 'identity_mismatch'):
+                with self.subTest(provider=provider, code=code), patch(target, side_effect=error_type(code)):
+                    with self.assertRaises(ProviderLabError) as caught:
+                        execution._execute_upstream(provider, SOURCE, 10)
+                    self.assertEqual(caught.exception.detail, 'UPSTREAM_' + code.upper())
+            with patch(target, side_effect=error_type('https://private.example/?token=secret')):
+                with self.assertRaises(ProviderLabError) as caught:
+                    execution._execute_upstream(provider, SOURCE, 10)
+                self.assertEqual(caught.exception.detail, '')
+
     def test_unknown_metadata_has_explicit_unknown_not_missing_tracks(self):
         asset=LabAssetV1(asset_id='a').as_dict()
         self.assertEqual(asset['audio_tracks'],'unknown')

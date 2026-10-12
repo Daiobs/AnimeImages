@@ -12,6 +12,9 @@ UPSTREAM_PUBLIC_MESSAGES = {
     "UPSTREAM_UNKNOWN_MEDIA_TRACKS": "上游未提供足够的音视频轨道信息，暂时无法确认这是完整视频。",
     "UPSTREAM_SEPARATE_MEDIA_TRACKS": "上游仅提供分离音轨或视频轨，本入口暂不支持合流。",
     "UPSTREAM_STREAMING_MEDIA": "上游仅提供 HLS/DASH 流媒体，本入口暂不支持保存该格式。",
+    "UPSTREAM_TLS_ERROR": "连接上游时证书验证失败；安全校验未被关闭。",
+    "UPSTREAM_NETWORK_DENIED": "上游访问目标未通过网络安全检查。",
+    "UPSTREAM_IDENTITY_MISMATCH": "上游页面与请求的作品身份不一致，未采用该结果。",
     "UPSTREAM_UNAVAILABLE": "当前上游不可用，请稍后重试。",
 }
 _LEGACY_MESSAGES = {

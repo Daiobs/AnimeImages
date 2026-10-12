@@ -596,8 +596,8 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
         if any(adapter.platform_id != self.platform_id and adapter.supports_url(url)
                for adapter in DEFAULT_ADAPTERS):
             return None
-        # Mature rules retain precedence. Paid services are eligible only through
-        # a saved Human route; matching itself never calls their remote APIs.
+        # Mature rules retain precedence. Service matches describe eligibility,
+        # not proven support; matching never calls their remote APIs.
         if host_matches(hostname, BLOCKED_PUBLIC_HOST_SUFFIXES):
             return None
         from ..upstream_matching import match_upstream_url
@@ -608,7 +608,7 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
                 platform_id="upstream", display_name=matches[0]["label"],
                 host_suffixes=(hostname,),
                 provider_ids=tuple(dict.fromkeys(m["provider_id"] for m in matches)),
-                upstream_matches=matches, notes="上游专用解析器匹配，可尝试；未逐站验证。",
+                upstream_matches=matches, notes="已有上游可尝试；支持情况以本次结果为准，未逐站验证。",
             )
         return None
 
@@ -913,6 +913,7 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
 
     def parse_upstream_rule(self, source_url, rule, timeout_seconds, deadline_monotonic):
         from ..quality_execution import execute_provider, SERVICE_PROVIDER_IDS
+        from ..provider_lab.contracts import ERROR_CODES, safe_error_detail
         from ..common import validate_public_download_url
         from ..upstream_routes import (route_matches, parse_cache_key, cached_parse_result,
                                        cache_parse_result, apply_format_preferences)
@@ -944,7 +945,9 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
                 else:
                     execution["expected_match"] = match
                 if provider in SERVICE_PROVIDER_IDS:
-                    execution['service_authorized'] = route['mode'] == 'manual'
+                    # The caller's admitted matches have been intersected with the
+                    # current effective route. Human preference is not permission.
+                    execution['service_authorized'] = True
                 cache_key = parse_cache_key(source_url, route, provider)
                 result = cached_parse_result(cache_key, source_url, provider)
                 cache_hit = result is not None
@@ -965,11 +968,18 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
                 return result_with_provider_diagnostics(result, provider, elapsed_ms(attempt_start), attempts,
                                                         total_duration_ms=elapsed_ms(started))
             except Exception as error:
-                # Upstream errors can contain signed URLs/credentials. Keep only class.
+                # Never propagate raw extractor messages, even from unexpected errors.
                 attempts.append(provider_attempt_record(provider, "failed", elapsed_ms(attempt_start)))
-                failure_code = str(getattr(error, 'code', 'unsupported_result'))
-                logger.info("upstream_parse_failed", extra={"provider": provider, "error_type": type(error).__name__,
-                                                          "error_code": failure_code})
+                detail = safe_error_detail(getattr(error, 'detail', ''))
+                error_code = getattr(error, 'code', '')
+                failure_code = (detail.removeprefix('UPSTREAM_').lower()
+                                if detail.startswith('UPSTREAM_') else
+                                'execution_timeout' if error_code == 'PROVIDER_TIMEOUT'
+                                else error_code if isinstance(error_code, str) and error_code in ERROR_CODES
+                                else 'unsupported_result')
+                logger.info("upstream_parse_failed code=%s detail=%s", failure_code, detail,
+                            extra={"provider": provider, "error_type": type(error).__name__,
+                                   "error_code": failure_code})
         if not attempts:
             raise XhsParseError("匹配的扩展解析器当前未启用或不可执行。")
         if route["mode"] == "manual" and all(a["status"] == "unavailable" for a in attempts):
@@ -986,8 +996,12 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
             'unknown_media_tracks': '上游未提供足够的音视频轨道信息，暂时无法确认这是完整视频。',
             'separate_media_tracks': '上游仅提供分离音轨或视频轨，本入口暂不支持合流。',
             'streaming_media': '上游仅提供 HLS/DASH 流媒体，本入口暂不支持保存该格式。',
+            'tls_error': '连接上游时证书验证失败；安全校验未被关闭。',
+            'network_denied': '上游访问目标未通过网络安全检查。',
+            'identity_mismatch': '上游页面与请求的作品身份不一致，未采用该结果。',
         }
-        raise XhsParseError('扩展解析失败：' + messages.get(failure_code, '当前上游不可用，请稍后重试。'))
+        error_class = XhsProviderTimeoutError if failure_code in {'execution_timeout', 'network_timeout'} else XhsParseError
+        raise error_class('扩展解析失败：' + messages.get(failure_code, '当前上游不可用，请稍后重试。'))
 
     def describe(self):
         description = super().describe()
