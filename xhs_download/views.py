@@ -4626,6 +4626,11 @@ def build_search_results_context(request, platform_key="home"):
             and getattr(request.user, "is_staff", False)
         )
         parse_options = {"prefer_ultra_hd": prefer_ultra_hd}
+        if query_platform_id == "xiaohongshu":
+            from .services.platforms.xhs_independent import authorized_services
+            xhs_services = authorized_services(request, query)
+            if xhs_services:
+                parse_options["xhs_service_provider_ids"] = xhs_services
         if third_party_gate.get("platform_id") == "upstream":
             parse_options.update(
                 upstream_provider_ids=third_party_gate["upstream_provider_ids"],
@@ -6245,9 +6250,16 @@ def upstream_candidate_view(request):
         runtime = load_runtime_setting()
         source = record["source_url"]
         match = record["match"]
+        from .services.platforms.xiaohongshu import XiaohongshuAdapter
+        from .services.platforms.xhs_independent import authorized_services
+        source_allowed = (
+            record["provider_id"] in authorized_services(request, source, reserve_limits=False)
+            if XiaohongshuAdapter().supports_url(source)
+            else third_party_public_access_allowed(source, request=request, runtime_setting=runtime)
+        )
         allowed = (provider_is_enabled(record["provider_id"])
                    and not upstream_match_is_blocked(match, runtime)
-                   and third_party_public_access_allowed(source, request=request, runtime_setting=runtime))
+                   and source_allowed)
         if not request_user_is_staff(request):
             allowed = allowed and upstream_match_is_public_allowed(match, urlsplit(source).hostname, runtime)
         if not allowed:
