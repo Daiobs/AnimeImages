@@ -25,6 +25,7 @@
     <link rel="stylesheet" href="{% static 'css/app.css' %}?v={{ static_asset_version }}">
 
     {% block extra_css %}{% endblock %}
+    <link rel="stylesheet" href="{% static 'css/upstream_coverage.css' %}?v={{ static_asset_version }}">
 </head>
 
 <body class="{{ theme_class|default:'theme-home' }}">
@@ -68,6 +69,10 @@
 
         <div class="ms-auto d-flex align-items-center gap-2 site-nav-actions">
             {% block nav_leading_actions %}
+                <a href="{% url 'home' %}?coverage=1" class="btn btn-outline-secondary nav-feedback-btn"
+                   data-bs-toggle="modal" data-bs-target="#platformCoverageModal" title="平台覆盖" aria-label="平台覆盖">
+                    <i class="bi bi-list-check" aria-hidden="true"></i>
+                </a>
                 <button type="button"
                         class="btn btn-outline-secondary nav-feedback-btn"
                         data-bs-toggle="modal"
@@ -95,6 +100,18 @@
 </main>
 
 {% include "partials/project_settings_modal.html" %}
+
+<div class="modal fade" id="platformCoverageModal" tabindex="-1" aria-labelledby="platformCoverageModalLabel" aria-hidden="true" data-coverage-url="{% url 'home' %}?coverage=1">
+    <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable modal-fullscreen-sm-down">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title fs-5" id="platformCoverageModalLabel">平台覆盖</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body" data-coverage-content aria-live="polite"></div>
+        </div>
+    </div>
+</div>
 
 <div class="modal fade feedback-modal"
      id="userFeedbackModal"
@@ -222,6 +239,7 @@
 <script src="{% static 'js/parse_preferences.js' %}?v={{ static_asset_version }}"></script>
 <script src="{% static 'js/project_settings.js' %}?v={{ static_asset_version }}"></script>
 <script src="{% static 'js/user_feedback.js' %}?v={{ static_asset_version }}"></script>
+<script src="{% static 'js/platform_coverage_modal.js' %}?v={{ static_asset_version }}"></script>
 
 {% block extra_js %}{% endblock %}
 </body>
