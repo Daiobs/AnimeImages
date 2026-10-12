@@ -10,7 +10,7 @@ from .services.batch_parse.results import (
     BATCH_NO_MEDIA_MESSAGE,
     build_batch_result_row,
 )
-from .services.common import XhsParseError
+from .services.common import HEADERS, XhsParseError
 from .services.platforms.xiaohongshu import (
     XiaohongshuAdapter,
     normalize_video_url,
@@ -711,6 +711,34 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
         self.assertEqual(
             result.metadata["fallback_policy"],
             "source_identity_unverified",
+        )
+        response.close.assert_called_once()
+
+    @patch("xhs_download.services.platforms.xiaohongshu.request_get_with_retry")
+    def test_parse_url_uses_document_accept_without_changing_media_headers(self, mock_get):
+        original_headers = HEADERS.copy()
+        response = Mock()
+        response.url = NOTE_URL
+        response.text = GENERIC_SHELL_FIXTURE.read_text(encoding="utf-8")
+        mock_get.return_value = response
+
+        self.adapter.parse_url(NOTE_URL)
+
+        mock_get.assert_called_once()
+        page_headers = mock_get.call_args.kwargs["headers"]
+        self.assertEqual(
+            page_headers["Accept"],
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        )
+        self.assertIsNot(page_headers, HEADERS)
+        self.assertEqual(HEADERS, original_headers)
+        self.assertEqual(
+            HEADERS["Accept"],
+            "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        )
+        self.assertEqual(
+            {key: value for key, value in page_headers.items() if key != "Accept"},
+            {key: value for key, value in HEADERS.items() if key != "Accept"},
         )
         response.close.assert_called_once()
 

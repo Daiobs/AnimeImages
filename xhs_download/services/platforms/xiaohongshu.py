@@ -438,7 +438,10 @@ class XiaohongshuAdapter(BasePlatformAdapter):
     display_name = "小红书"
     page_host_suffixes = XHS_PAGE_HOST_SUFFIXES
     media_host_suffixes = XHS_MEDIA_HOST_SUFFIXES
-    headers = HEADERS
+    headers = {
+        **HEADERS,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    }
     capabilities = PlatformCapabilities(
         media_types=("image", "video"),
         batch_download=True,
