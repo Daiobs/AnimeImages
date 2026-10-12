@@ -393,7 +393,7 @@ class PublicPresentationBoundaryTests(TestCase):
             render_to_string("xhs_download.html", staff_context, request=staff_request)
         )
 
-        for claim in ("公开内容可尝试解析", "具体可用范围见", "平台覆盖", "保持原始画质", "最高画质"):
+        for claim in ("公开内容可尝试解析", "部分源站内容可能有访问限制", "平台覆盖", "保持原始画质", "最高画质"):
             self.assertIn(claim, public_text)
         self.assertNotIn("无使用限制", public_text)
         for diagnostic in ("天天解析", "KuKuTool", "超高清 Provider", "本地解析"):
