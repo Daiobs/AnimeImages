@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 from bs4 import BeautifulSoup
 from django.test import SimpleTestCase
 
+from .services.assets import ParseResult
 from .services.batch_parse.results import (
     BATCH_NO_MEDIA_MESSAGE,
     build_batch_result_row,
@@ -712,6 +713,24 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
             "source_identity_unverified",
         )
         response.close.assert_called_once()
+
+    @patch("xhs_download.services.platforms.xiaohongshu.request_get_with_retry")
+    def test_login_redirect_is_terminal_even_without_dom_login_markers(self, mock_get):
+        for source_url in ("https://xhslink.cn/o/synthetic", NOTE_URL):
+            for login_path in ("/login", "/login/?redirect=synthetic"):
+                with self.subTest(source_url=source_url, login_path=login_path):
+                    response = Mock()
+                    response.url = "https://www.xiaohongshu.com" + login_path
+                    response.text = GENERIC_SHELL_FIXTURE.read_text(encoding="utf-8")
+                    mock_get.return_value = response
+                    empty_result = ParseResult(
+                        platform="xiaohongshu", post_type="image", base_filename="synthetic", assets=(),
+                    )
+                    with patch.object(self.adapter, "parse_html", return_value=empty_result) as parse_html:
+                        with self.assertRaisesMessage(XhsParseError, "当前页面需要登录后访问"):
+                            self.adapter.parse_url(source_url, prefer_ultra_hd=True)
+                        parse_html.assert_not_called()
+                    response.close.assert_called_once()
 
     def test_unrelated_json_ld_without_note_id_keeps_legacy_image_fallback(self):
         html = f'''

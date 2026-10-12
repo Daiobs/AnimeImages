@@ -859,6 +859,9 @@ class XiaohongshuAdapter(BasePlatformAdapter):
             deadline_monotonic=deadline or None,
         )
         try:
+            # A successful HTTP response can be the login shell, not the requested note.
+            if urlparse(response.url).path.rstrip("/") == "/login":
+                raise XhsParseError(XHS_PAGE_STATE_MESSAGES["login_required"])
             page_fetch_duration_ms = round((time.monotonic() - parse_started_at) * 1000)
             identity_url = url if extract_xhs_note_id(url) else response.url
             result = self.parse_html(
