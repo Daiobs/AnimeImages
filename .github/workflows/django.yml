@@ -150,6 +150,7 @@ jobs:
           node --check static/js/xhs_livephoto_preview.js
           node --check static/js/xhs_livephoto_pair_download.js
           node --check static/js/xhs_download.js
+          node --test tests_js/audit_frontend_fixes.test.js
           node --test tests_js/batch_download_access.test.js
           node --test tests_js/browser_photo_archive.test.js
           node --test tests_js/xhs_livephoto_pair_download.test.js

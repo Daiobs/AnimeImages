@@ -247,7 +247,6 @@
             return false;
         }
     }
-
     function removeActiveDownloadMarker(storage) {
         if (!storage || typeof storage.removeItem !== "function") {
             return false;
@@ -710,7 +709,7 @@
             return "文件接收不完整，请重试下载。";
         }
         if (errorCode === "BROWSER_BLOB_TOO_LARGE") {
-            return "文件较大，当前浏览器暂时无法直接保存，请重新解析后再试。";
+            return "资源超过当前浏览器缓存保存方式的大小上限，本次未保存。请改选较小的可用格式；重复解析不会解除该限制，也不会自动改用服务器下载。";
         }
         if (errorCode === "BROWSER_DOWNLOAD_UNSUPPORTED_CONTENT") {
             return "没有获取到可保存的视频文件，请重新解析后再试。";

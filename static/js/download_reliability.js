@@ -34,6 +34,7 @@
     const MAX_STATUS_POLL_INTERVAL_MS = 1000;
     const MAX_STATUS_POLL_DURATION_MS = 15000;
     const MAX_STATUS_POLL_COUNT = 30;
+    const MAX_BUSY_BACKOFF_MS = 4000;
 
     function booleanValue(value) {
         return value === true || String(value || "").toLowerCase() === "true";
@@ -144,6 +145,32 @@
         };
     }
 
+    function retryAfterDelayMs(response, epochMs) {
+        const raw = response && response.headers && typeof response.headers.get === "function"
+            ? response.headers.get("Retry-After") : null;
+        if (typeof raw !== "string") return null;
+        const value = raw.trim();
+        if (!value || value.length > 128) return null;
+        if (/^\d+$/.test(value)) {
+            // Saturate huge values; never wrap a long delay into an immediate retry.
+            return Math.min(Number(value) * 1000, Number.MAX_SAFE_INTEGER);
+        }
+        // Do not let Date.parse interpret negative/decimal seconds as calendar dates.
+        if (!/^[A-Za-z]{3,9},?\s.*\sGMT$/i.test(value)) return null;
+        const date = Date.parse(value);
+        return Number.isFinite(date) ? Math.max(0, date - epochMs) : null;
+    }
+
+    function statusPollBackoffResult(httpStatus, retryAfterMs) {
+        return {
+            ...statusPollTimeoutResult(),
+            httpStatus,
+            retryAfterMs,
+            message: "下载状态查询暂时繁忙，本次自动查询已暂停。"
+                + "请先查看浏览器下载栏，稍后再查询；请勿反复点击下载。",
+        };
+    }
+
     function downloadStartDisposition(result) {
         const status = String(result && result.status || "");
         if (result && result.streamStarted) {
@@ -216,6 +243,7 @@
             (delay) => new Promise((resolve) => setTimeout(resolve, delay))
         );
         const now = settings.now || (() => Date.now());
+        const epochNow = settings.epochNow || (() => Date.now());
         const intervalMs = boundedInteger(
             settings.pollAfterMs,
             DEFAULT_STATUS_POLL_INTERVAL_MS,
@@ -235,13 +263,20 @@
             MAX_STATUS_POLL_COUNT,
         );
         const startedAt = now();
+        let nextDelayMs = intervalMs;
+        let busyCount = 0;
+        let busyResult = null;
 
         for (let attempt = 0; attempt < maxPolls; attempt += 1) {
             if (attempt > 0) {
-                await wait(intervalMs);
+                const remainingMs = maxDurationMs - (now() - startedAt);
+                if (nextDelayMs >= remainingMs) {
+                    return busyResult || statusPollTimeoutResult();
+                }
+                await wait(nextDelayMs);
             }
             if ((now() - startedAt) >= maxDurationMs) {
-                return statusPollTimeoutResult();
+                return busyResult || statusPollTimeoutResult();
             }
 
             const remainingDurationMs = Math.max(
@@ -255,19 +290,29 @@
             );
             if (!response) {
                 if ((now() - startedAt) >= maxDurationMs) {
-                    return statusPollTimeoutResult();
+                    return busyResult || statusPollTimeoutResult();
                 }
                 continue;
             }
 
+            if (response.status === 429 || response.status === 503) {
+                busyCount += 1;
+                const retryAfterMs = retryAfterDelayMs(response, epochNow());
+                const fallbackMs = Math.min(MAX_BUSY_BACKOFF_MS, 1000 * (2 ** Math.min(busyCount - 1, 2)));
+                nextDelayMs = Math.max(intervalMs, retryAfterMs === null ? fallbackMs : retryAfterMs);
+                busyResult = statusPollBackoffResult(response.status, nextDelayMs);
+                // Only query status again within this poll's original time/count budget.
+                // Never retry earlier than the server asks or restart a download.
+                continue;
+            }
+            nextDelayMs = intervalMs;
+            busyCount = 0;
+            busyResult = null;
             let payload = {};
             try {
                 payload = await response.json();
             } catch (error) {
                 payload = {};
-            }
-            if (response.status === 429 || response.status === 503) {
-                continue;
             }
 
             const parsed = parseDownloadStatusPayload(
@@ -297,7 +342,7 @@
                 };
             }
         }
-        return statusPollTimeoutResult();
+        return busyResult || statusPollTimeoutResult();
     }
 
     return Object.freeze({
@@ -314,6 +359,7 @@
         parseDownloadStatusPayload,
         parsePreparePayload,
         pollDownloadStatus,
+        retryAfterDelayMs,
         shouldUsePreparedServerDownload,
     });
 }));

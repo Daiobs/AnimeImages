@@ -1,31 +1,23 @@
 import os
 from functools import lru_cache
+from pathlib import Path
 
 from django.conf import settings
 
 
+# Inventory first-party script/style files at process startup. Keep the existing
+# version scheme, but do not require every new page script to be added by hand.
+_STATIC_SOURCE_ROOT = Path(__file__).resolve().parent.parent
 STATIC_VERSION_FILES = (
     "static/brand/favicon.svg",
     "static/brand/favicon-32.png",
     "static/brand/apple-touch-icon.png",
-    "static/css/app.css",
-    "static/js/app.js",
-    "static/js/user_feedback.js",
-    "static/css/provider_lab.css",
-    "static/css/upstream_coverage.css",
-    "static/js/provider_lab.js",
-    "static/js/upstream_candidates.js",
-    "static/css/upstream_candidates.css",
-    "static/js/batch_parse.js",
-    "static/js/browser_photo_archive.js",
-    "static/js/xhs_download.js",
-    "static/js/xhs_livephoto_pair_download.js",
-    "static/js/xhs_livephoto_preview.js",
-    "static/js/ordinary_media_download.js",
-    "static/js/ordinary_media_streaming.js",
-    "static/js/ordinary_media_streaming_protocol.js",
-    "static/js/ordinary_media_download_sw.js",
-    "static/js/result_url_safety.js",
+    *sorted(
+        path.relative_to(_STATIC_SOURCE_ROOT).as_posix()
+        for directory, pattern in (("static/js", "*.js"), ("static/css", "*.css"))
+        for path in (_STATIC_SOURCE_ROOT / directory).rglob(pattern)
+        if path.is_file()
+    ),
 )
 
 
