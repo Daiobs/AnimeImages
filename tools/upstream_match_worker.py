@@ -513,7 +513,8 @@ def parse_ytdlp(cls, url, timeout, observe=None):
         def process_bounded_result(self, result, extra_info):
             if result.get("_type") in {"playlist", "multi_video", "compat_list"}:
                 if observe is not None:
-                    observe({key: value for key, value in result.items() if key != 'entries'})
+                    # Preserve already-returned descriptors; Capture never advances lazy entries.
+                    observe(result)
                     raise ValueError('collection_denied')
                 result = {**compact_descriptor(result), '_type': result['_type'],
                           'entries': result.get('entries')}

@@ -78,6 +78,27 @@ class CensusCaptureTests(SimpleTestCase):
         with self.assertRaises(CommandError):
             Command().handle(authorization='wrong', describe=True)
 
+    def test_returned_nested_entries_retained_without_following_collection(self):
+        from yt_dlp.extractor.common import InfoExtractor
+        class FixtureIE(InfoExtractor):
+            _VALID_URL = r'https://example.org/(?P<id>1)'
+            def _real_extract(self, url):
+                return {'_type':'multi_video', 'id':'1', 'entries':[
+                    {'_type':'url', 'url':'https://example.org/child/2', 'unknown':{'role':'attachment'}}]}
+        capture = Capture()
+        with self.assertRaisesRegex(ValueError, 'collection_denied'):
+            worker.parse_ytdlp(FixtureIE, 'https://example.org/1', 1, observe=capture)
+        self.assertEqual(capture.attempts, 1)
+        self.assertEqual(capture.records[0]['entries'][0]['unknown']['role'], 'attachment')
+
+    def test_lazy_native_entries_are_not_evaluated(self):
+        def entries():
+            raise AssertionError('must not expand collection')
+            yield None
+        capture = Capture()
+        capture({'entries':entries()})
+        self.assertEqual(capture.records[0]['entries'], {'_not_exported_type':'generator'})
+
     def test_internal_census_does_not_consult_public_route_filter(self):
         from tools import upstream_census_worker as census
         capture = Capture()
