@@ -55,18 +55,28 @@ def collect(request, capture):
                 raise ValueError('version_changed')
             classes = boundary.extractor_classes(provider)
             # Census admits native Generic but still excludes synthetic / known wrong-work paths.
-            matches = [cls for cls in classes if boundary.suitable(provider, cls, source)
-                       and (cls.ie_key() not in {'TestURL', 'UnsupportedURL'} if provider == 'yt_dlp_generic'
+            native_matches = [cls for cls in classes if boundary.suitable(provider, cls, source)]
+            matches = [cls for cls in native_matches
+                       if (cls.ie_key() not in {'TestURL', 'UnsupportedURL'} if provider == 'yt_dlp_generic'
                             else cls.__name__ not in boundary.GALLERY_EXCLUDED)]
             if not matches:
-                result['status'] = 'UPSTREAM_NO_MATCH'
+                result['status'] = 'NOT_EXECUTED' if native_matches else 'UPSTREAM_NO_MATCH'
+                if native_matches:
+                    result.update(matched=True, error='KNOWN_WRONG_WORK_OR_UNSUPPORTED_EXTRACTOR_EXCLUDED')
                 return result
             cls = matches[0]
             result.update(matched=True, backend=boundary.entry(provider, cls, identity['version'])['extractor_id'])
             boundary.install_network_guard(offline=False)
             result['executed'] = True
             with boundary.runtime_budget(timeout) as budget:
-                (boundary.parse_ytdlp if provider == 'yt_dlp_generic' else boundary.parse_gallery)(cls, source, timeout, observe=capture)
+                output = (boundary.parse_ytdlp if provider == 'yt_dlp_generic' else boundary.parse_gallery)(cls, source, timeout, observe=capture)
+                if provider == 'gallery_dl_generic':
+                    scopes = [item[-1]['upstream_scope'] for item in output
+                              if isinstance(item[-1], dict) and 'upstream_scope' in item[-1]]
+                    if scopes:
+                        result['worker_iteration_scope'] = scopes[0]
+                        capture.truncated = True
+                        capture.omissions.append('bounded_upstream_iteration')
             result['internal_http'] = budget['requests']
             result['network_bytes'] = budget['bytes']
         elif provider == 'parsehub_generic':
