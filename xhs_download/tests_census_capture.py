@@ -9,6 +9,12 @@ from django.core.management.base import CommandError
 
 
 class CensusCaptureTests(SimpleTestCase):
+    def test_policy_import_does_not_initialize_django_package(self):
+        from tools.upstream_census_worker import videodl_policy
+        policy = videodl_policy()
+        self.assertEqual(policy('ABCVideoClient', 'dedicated', registry_present=True).controlled_state, 'allowed')
+        self.assertEqual(policy('UnreviewedClient', 'dedicated', registry_present=True).controlled_state, 'blocked')
+
     def test_nested_unknown_formats_and_secrets(self):
         capture = Capture(secrets=('synthetic-private-key',))
         capture({'formats': [{'url': f'https://example.org/{i}.mp4?sig=expiry',

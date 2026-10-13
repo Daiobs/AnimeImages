@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,16 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from census_capture import Capture, MAX_BYTES
 import upstream_match_worker as boundary
+
+
+def videodl_policy():
+    # Load the pure policy file without importing the Django Lab package in its venv.
+    path = Path(__file__).resolve().parents[1] / 'xhs_download/services/provider_lab/videodl_policy.py'
+    spec = importlib.util.spec_from_file_location('_census_videodl_policy', path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.backend_policy
 
 
 def collect(request, capture):
@@ -59,7 +70,7 @@ def collect(request, capture):
         elif provider == 'videodl_repo':
             sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
             from tools.provider_lab.runtime.workers import videodl_worker as vd
-            from xhs_download.services.provider_lab.videodl_policy import backend_policy
+            backend_policy = videodl_policy()
             vd.verify_install()
             backend = request['backend']
             if backend_policy(backend, 'dedicated', registry_present=True).controlled_state != 'allowed':
