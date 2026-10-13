@@ -4,6 +4,8 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import json
+import requests
 import threading
 import time
 from unittest.mock import Mock, patch
@@ -99,6 +101,61 @@ os.close(fd)
         with self.assertRaisesRegex(serial.TianTianAdmissionDeferred, 'PREVIOUS_OUTCOME_UNKNOWN'):
             with serial.account_slot():
                 self.fail('unknown is not permission to overlap')
+
+    def test_recovery_keeps_inode_and_old_unknown_evidence(self):
+        with serial.account_slot():
+            serial.request_in_flight(True)
+        before = serial.inspect_or_recover()
+        operation = before['metadata']['operation_id']
+        restored = serial.inspect_or_recover(expected_state=before['state_fingerprint'],
+            evidence='human_risk_acceptance', reference='phase1b-human-conversation')
+        self.assertTrue(restored['recovered'])
+        after = serial.inspect_or_recover()
+        self.assertEqual(after['inode'], before['inode'])
+        self.assertEqual(after['marker'], 'C')
+        self.assertEqual(after['metadata']['previous_operation_id'], operation)
+        self.assertEqual(after['metadata']['old_outcome'], 'UNKNOWN_NOT_REPLAYED')
+        with serial.account_slot():
+            serial.request_in_flight(True)
+            serial.request_in_flight(False)
+        self.assertEqual(len(next(self.root.glob('*.events.jsonl')).read_text().splitlines()),4)
+
+    def test_active_lock_and_stale_recovery_cannot_clear_new_state(self):
+        with serial.account_slot():
+            serial.request_in_flight(True)
+            with self.assertRaisesRegex(serial.TianTianAdmissionDeferred,'ACCOUNT_ACTIVE'):
+                serial.inspect_or_recover()
+        before=serial.inspect_or_recover()
+        serial.inspect_or_recover(expected_state=before['state_fingerprint'],
+            evidence='human_risk_acceptance',reference='first')
+        with serial.account_slot():
+            serial.request_in_flight(True)
+        with self.assertRaisesRegex(serial.TianTianAdmissionDeferred,'STATE_CHANGED'):
+            serial.inspect_or_recover(expected_state=before['state_fingerprint'],
+                evidence='human_risk_acceptance',reference='stale')
+        self.assertEqual(serial.inspect_or_recover()['marker'],'U')
+
+    def test_legacy_unknown_and_clear_are_compatible(self):
+        with serial.account_slot(): pass
+        path=next(self.root.glob('*.lock'))
+        path.write_bytes(b'U')
+        before=serial.inspect_or_recover()
+        self.assertTrue(before['legacy_unattributed'])
+        with self.assertRaisesRegex(serial.TianTianAdmissionDeferred,'PREVIOUS_OUTCOME_UNKNOWN'):
+            with serial.account_slot(): self.fail('legacy U')
+        serial.inspect_or_recover(expected_state=before['state_fingerprint'],
+            evidence='human_risk_acceptance',reference='legacy-human')
+        path.write_bytes(b'C')
+        with serial.account_slot(): pass
+
+    def test_pre_send_invalid_url_releases_but_timeout_stays_unknown(self):
+        with patch('xhs_download.services.platforms.tiantianjiexi_generic.api_configured', return_value=True):
+            with self.assertRaises(Exception):
+                TianTianJieXiApiClient(Mock(post=Mock(side_effect=requests.exceptions.InvalidURL()))).parse_url('bad')
+            self.assertEqual(serial.inspect_or_recover()['metadata']['reason'],'LOCAL_REQUEST_NOT_SENT')
+            with self.assertRaises(Exception):
+                TianTianJieXiApiClient(Mock(post=Mock(side_effect=requests.Timeout()))).parse_url('https://example.org/work')
+            self.assertEqual(serial.inspect_or_recover()['marker'],'U')
 
     def test_deferred_result_is_unexecuted_not_parse_failure(self):
         from .services.provider_reliability import classify_provider_failure, ProviderOutcome, ProviderFailureClass

@@ -9,6 +9,15 @@ from django.core.management.base import CommandError
 
 
 class CensusCaptureTests(SimpleTestCase):
+    def test_explicit_common_authorization_stays_with_frozen_reviewed_policy(self):
+        from tools.upstream_census_worker import authorized_videodl_selection
+        options={'backend':'BugPkVideoClient','category':'common','external_sharing':True,
+                 'pin':'6cd1de0fe1209380b183b654c65e98a629637873','policy_revision':'guarded-tls-v3-full-inventory'}
+        self.assertEqual(authorized_videodl_selection(options),('BugPkVideoClient','common'))
+        for changed in ({'external_sharing':False},{'backend':'UnknownClient'},
+                        {'backend':'SnapAnyVideoClient'},{'pin':'different'},{'category':'browser'}):
+            with self.assertRaises(ValueError): authorized_videodl_selection({**options,**changed})
+
     def test_videodl_census_never_inherits_system_proxy_or_disables_tls(self):
         import requests
         from tools.upstream_census_worker import direct_verified_requests

@@ -994,6 +994,7 @@ def run_kukutool_url_helper(
     timeout_seconds=12.0,
     profile_cache_ttl_seconds=86400,
     profile_cache_key=None,
+    observe_diagnostics=None,
 ):
     request_url = str(request_url or "").strip()
     if len(request_url) > 2048:
@@ -1021,6 +1022,8 @@ def run_kukutool_url_helper(
         )
         cached_profile = None
     process_env = build_kukutool_safe_env(cached_profile)
+    if observe_diagnostics is not None:
+        process_env['KUKUTOOL_DIAGNOSTICS'] = '1'
 
     process = subprocess.run(
         [node_runtime, str(KUKUTOOL_HELPER), request_url],
@@ -1032,6 +1035,15 @@ def run_kukutool_url_helper(
         check=False,
         env=process_env,
     )
+    if observe_diagnostics is not None:
+        for line in process.stderr.splitlines():
+            if line.startswith('KUKUTOOL_DIAGNOSTICS:') and len(line) < 65536:
+                try:
+                    diagnostics = json.loads(line.split(':', 1)[1])
+                    if isinstance(diagnostics, list):
+                        observe_diagnostics(diagnostics[:80])
+                except (ValueError, TypeError):
+                    pass
     if process.returncode != 0:
         message = (process.stderr or process.stdout or "KuKuTool request failed").strip()
         raise KukutoolHelperError(message[:2000], kukutool_failure_detail(process.stderr))

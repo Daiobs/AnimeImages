@@ -24,6 +24,18 @@ def videodl_policy():
     return module.backend_policy
 
 
+def authorized_videodl_selection(options):
+    if not isinstance(options, dict) or set(options) != {'backend', 'category', 'external_sharing', 'policy_revision', 'pin'}:
+        raise ValueError('execution_denied')
+    if options['policy_revision'] != 'guarded-tls-v3-full-inventory' or options['pin'] != '6cd1de0fe1209380b183b654c65e98a629637873':
+        raise ValueError('policy_version_changed')
+    backend, category = options['backend'], options['category']
+    policy = videodl_policy()(backend, category, registry_present=True)
+    if policy.controlled_state == 'blocked' or (policy.external_sharing_required and options['external_sharing'] is not True):
+        raise ValueError('execution_denied')
+    return backend, category
+
+
 @contextlib.contextmanager
 def direct_verified_requests(errors):
     import requests
@@ -101,14 +113,17 @@ def collect(request, capture):
             backend_policy = videodl_policy()
             vd.verify_install()
             backend = request['backend']
-            if backend_policy(backend, 'dedicated', registry_present=True).controlled_state != 'allowed':
+            category = 'dedicated'
+            if request.get('execution_options'):
+                backend, category = authorized_videodl_selection(request['execution_options'])
+            elif backend_policy(backend, 'dedicated', registry_present=True).controlled_state != 'allowed':
                 raise ValueError('execution_denied')
-            result.update(matched=True, backend=backend, mode='dedicated_only',
+            result.update(matched=True, backend=backend, mode=category+'_explicit',
                           other_modes='NOT_ATTEMPTED', executed=True)
             boundary.install_network_guard(offline=False)
             result['transport_errors'] = []
             with direct_verified_requests(result['transport_errors']), boundary.runtime_budget(timeout) as budget:
-                vd.run_exact_backend(source, backend, 'dedicated', str(Path.cwd()/'provider-work'), observe=capture)
+                vd.run_exact_backend(source, backend, category, str(Path.cwd()/'provider-work'), observe=capture)
         else:
             raise ValueError('invalid_request')
         result['status'] = 'RETURNED'

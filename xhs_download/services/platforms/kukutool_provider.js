@@ -18,6 +18,15 @@ const MAX_DISCOVERY_SCRIPT_CHARS = 2 * 1024 * 1024;
 const MAX_DISCOVERY_SCRIPTS = 24;
 const DISCOVERY_BATCH_SIZE = 2;
 const MAX_REDIRECTS = 3;
+const diagnostics = [];
+function recordDiagnostic(row) {
+  if (process.env.KUKUTOOL_DIAGNOSTICS === "1" && diagnostics.length < 80) diagnostics.push(row);
+}
+function emitDiagnostics() {
+  if (process.env.KUKUTOOL_DIAGNOSTICS === "1") {
+    process.stderr.write(`KUKUTOOL_DIAGNOSTICS:${JSON.stringify(diagnostics)}\n`);
+  }
+}
 const FALLBACK_PROFILES = [
   {
     id: "2026060303",
@@ -54,6 +63,7 @@ async function main() {
   };
 
   const configuredProfile = readConfiguredProfile();
+  recordDiagnostic({kind:"profile", source:configuredProfile ? "configured_cache" : "public_discovery"});
   const initialProfiles = configuredProfile
     ? [configuredProfile]
     : await discoverProfiles(headers);
@@ -114,6 +124,7 @@ async function main() {
     ? decryptResponse(parsed.data, parsed.iv)
     : parsed.data;
   process.stdout.write(JSON.stringify({ result, profile }));
+  emitDiagnostics();
 }
 
 function normalizeRequestURL(value) {
@@ -457,6 +468,11 @@ async function fetchSameOrigin(input, options = {}) {
     }
 
     const response = await fetch(currentURL, requestOptions);
+    const role = currentURL.pathname === "/api/parse" ? "parse" : currentURL.pathname.startsWith("/api/auth-") ? "auth"
+      : currentURL.pathname.endsWith(".js") ? "discovery_script" : "discovery_page";
+    const mime = String(response.headers.get("content-type") || "").split(";",1)[0];
+    recordDiagnostic({kind:"http", role, method:String(requestOptions.method || "GET"),
+      status:response.status, content_type:["application/json","text/html","text/javascript","application/javascript","text/plain"].includes(mime)?mime:"other"});
     if (response.status < 300 || response.status >= 400) {
       return response;
     }
@@ -492,6 +508,10 @@ async function fetchSameOrigin(input, options = {}) {
 
 function upstreamError(stage, status, payload) {
   const reason = payload?.reason || payload?.message || payload?.error;
+  recordDiagnostic({kind:"business_rejection",role:stage,status,
+    category:/captcha|验证码/i.test(String(reason))?"verification_required":/login|auth|登录|授权/i.test(String(reason))?"authentication_related"
+      :/unsupported|不支持/i.test(String(reason))?"unsupported":/limit|频繁|额度/i.test(String(reason))?"limit_related":"unclassified",
+    reason_hash:crypto.createHash("sha256").update(String(reason || "")).digest("hex")});
   return new Error(`${stage} failed (${status}): ${reason || "unknown error"}`);
 }
 
@@ -512,6 +532,7 @@ function safeFailureDetail(error) {
 }
 
 main().catch((error) => {
+  emitDiagnostics();
   process.stderr.write(`KUKUTOOL_SAFE_ERROR:${safeFailureDetail(error)}\n`);
   process.stderr.write(`${error.message}\n`);
   process.exitCode = 1;

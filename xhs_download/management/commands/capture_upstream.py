@@ -16,11 +16,12 @@ from tools.census_capture import Capture, MAX_BYTES
 from xhs_download.services.quality_execution import _python_for, EXPECTED_VERSIONS
 
 AUTHORIZATION = 'UPSTREAM_CAPABILITY_CENSUS_PHASE1_V1'
+PHASE1B_AUTHORIZATION = 'CENSUS_PHASE1B_COVERAGE_AND_PROVIDER_RECOVERY_V1'
 PROVIDERS = ('yt_dlp_generic', 'gallery_dl_generic', 'parsehub_generic', 'videodl_repo',
              'tiantianjiexi_generic', 'kukutool_generic')
 
 
-def collect(provider, source, timeout=60):
+def collect(provider, source, timeout=60, execution_options=None):
     from xhs_download.services.common import validate_public_url
     from tools.upstream_match_worker import validate_url
     from xhs_download.services.platforms.external_tools import run_external_command
@@ -68,7 +69,11 @@ def collect(provider, source, timeout=60):
         elif provider == 'kukutool_generic':
             from xhs_download.services.platforms.douyin_kukutool import run_kukutool_url_helper
             result.update(executed=True, capture_source='API decrypted business response')
-            capture(run_kukutool_url_helper(source, timeout_seconds=timeout))
+            def diagnostic(rows):
+                result['service_diagnostics'] = rows
+                result['internal_http'] = sum(r.get('kind') == 'http' for r in rows)
+                result['authorization_attempts'] = sum(r.get('kind') == 'http' and r.get('role') == 'auth' for r in rows)
+            capture(run_kukutool_url_helper(source, timeout_seconds=timeout, observe_diagnostics=diagnostic))
         elif provider == 'videodl_repo':
             from xhs_download.services.provider_lab.providers import WORKER_ROOT
             from xhs_download.services.provider_lab.videodl_control import (
@@ -78,10 +83,19 @@ def collect(provider, source, timeout=60):
             kwargs = dict(python=python, worker=WORKER_ROOT/'videodl_worker.py',
                           request_id=uuid4().hex, timeout_seconds=5)
             inventory = load_videodl_inventory(**kwargs)
-            matched = execute_provider_worker(**kwargs, source=source, operation='match_dedicated')['backend_ids']
-            allowed = {item.backend_id for item in inventory if item.controlled_state == 'allowed'
-                       and item.backend_category == 'dedicated'}
-            selected = next((name for name in matched if name in allowed), None)
+            selected = None
+            category = 'dedicated'
+            if execution_options:
+                from tools.upstream_census_worker import authorized_videodl_selection
+                selected, category = authorized_videodl_selection(execution_options)
+                if not any(item.backend_id == selected and item.backend_category == category for item in inventory):
+                    raise ValueError('unreviewed_backend')
+                matched = [selected]
+            else:
+                matched = execute_provider_worker(**kwargs, source=source, operation='match_dedicated')['backend_ids']
+                allowed = {item.backend_id for item in inventory if item.controlled_state == 'allowed'
+                           and item.backend_category == 'dedicated'}
+                selected = next((name for name in matched if name in allowed), None)
             result.update(mode='dedicated_only', other_modes='NOT_ATTEMPTED', matched=bool(matched))
             if selected is None:
                 result.update(status='NOT_EXECUTED', error='POLICY_LIMITED' if matched else 'NO_DEDICATED_MATCH')
@@ -89,6 +103,7 @@ def collect(provider, source, timeout=60):
             completed = run_external_command(
                 [python, '-I', '-B', str(Path(settings.BASE_DIR)/'tools/upstream_census_worker.py')],
                 input_text=json.dumps({'provider': provider, 'url': source, 'backend': selected,
+                                      'execution_options':execution_options or {},
                                       'timeout': timeout}), timeout_seconds=timeout+5,
                 max_stdout_bytes=MAX_BYTES, max_stderr_bytes=65536)
             return json.loads(completed.stdout)
@@ -129,7 +144,7 @@ class Command(BaseCommand):
         parser.add_argument('--describe', action='store_true')
 
     def handle(self, *args, **options):
-        if options['authorization'] != AUTHORIZATION:
+        if options['authorization'] not in (AUTHORIZATION, PHASE1B_AUTHORIZATION):
             raise CommandError('Explicit census task authorization required')
         logging.disable(logging.CRITICAL)
         if options['describe']:
@@ -152,14 +167,18 @@ class Command(BaseCommand):
             self.stdout.write(json.dumps(data))
             return
         request = json.loads(sys.stdin.read(16385))
-        if (not isinstance(request, dict) or set(request) != {'provider', 'url', 'timeout'}
+        if (not isinstance(request, dict) or not {'provider', 'url', 'timeout'} <= set(request)
+                or set(request) - {'provider', 'url', 'timeout', 'execution_options'}
                 or request['provider'] not in PROVIDERS or type(request['timeout']) not in (int, float)
                 or not .1 <= request['timeout'] <= 60):
             raise CommandError('Invalid census request')
+        if 'execution_options' in request and (request['provider'] != 'videodl_repo'
+                or options['authorization'] != PHASE1B_AUTHORIZATION):
+            raise CommandError('Explicit phase1B videodl authorization required')
         # Suppress third-party stdout and exceptions; raw observations only leave via private JSON.
         with contextlib.redirect_stdout(sys.stderr):
             try:
-                result = collect(request['provider'], request['url'], request['timeout'])
+                result = collect(request['provider'], request['url'], request['timeout'], request.get('execution_options'))
             except Exception as error:
                 result = {'status': 'NOT_EXECUTED', 'executed': False,
                           'error': getattr(error, 'code', 'ADMISSION_FAILED'),

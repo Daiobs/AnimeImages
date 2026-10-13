@@ -369,21 +369,24 @@ class TianTianJieXiApiClient:
         if not api_configured():
             raise TianTianJieXiAuthError("天天解析账号未配置")
         timeout = float(timeout_seconds if timeout_seconds is not None else runtime_float("TIANTIANJIEXI_TIMEOUT_SECONDS", 15) or 15)
+        # Resolve configuration before marking a request as potentially sent.
+        endpoint = self.base_url
+        fields = {"phone": self.phone, "password": self.password, "link": url}
         try:
             request_in_flight(True)
             response = self.session.post(
-                self.base_url,
-                data={
-                    "phone": self.phone,
-                    "password": self.password,
-                    "link": url,
-                },
+                endpoint,
+                data=fields,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
                 timeout=max(0.1, timeout),
             )
             request_in_flight(False)
             response.raise_for_status()
             payload = response.json()
+        except (requests.exceptions.InvalidURL, requests.exceptions.MissingSchema,
+                requests.exceptions.InvalidSchema) as error:
+            request_in_flight(False, "LOCAL_REQUEST_NOT_SENT")
+            raise TianTianJieXiApiError("天天解析请求配置无效", diagnostic_detail="SERVICE_REQUEST_NOT_SENT") from error
         except requests.Timeout as error:
             raise XhsProviderTimeoutError("天天解析接口超时") from error
         except requests.exceptions.JSONDecodeError as error:
