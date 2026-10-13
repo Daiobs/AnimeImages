@@ -9,6 +9,22 @@ from django.core.management.base import CommandError
 
 
 class CensusCaptureTests(SimpleTestCase):
+    def test_videodl_census_never_inherits_system_proxy_or_disables_tls(self):
+        import requests
+        from tools.upstream_census_worker import direct_verified_requests
+        observed = []
+        def original(session, method, url, **kwargs):
+            observed.append((session.trust_env, kwargs))
+            raise ValueError('network_denied')
+        errors = []
+        with patch.object(requests.Session, 'request', original), direct_verified_requests(errors):
+            with self.assertRaises(ValueError):
+                requests.Session().get('https://example.org/1', verify=False, proxies={'http':'http://127.0.0.1:9'})
+        self.assertFalse(observed[0][0])
+        self.assertTrue(observed[0][1]['verify'])
+        self.assertEqual(observed[0][1]['proxies'], {})
+        self.assertEqual(errors[0]['error'], 'network_denied')
+
     def test_policy_import_does_not_initialize_django_package(self):
         from tools.upstream_census_worker import videodl_policy
         policy = videodl_policy()

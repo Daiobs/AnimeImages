@@ -24,6 +24,24 @@ def videodl_policy():
     return module.backend_policy
 
 
+@contextlib.contextmanager
+def direct_verified_requests(errors):
+    import requests
+    from unittest.mock import patch
+    original = requests.Session.request
+    def request(session, method, url, **kwargs):
+        session.trust_env = False
+        kwargs.update(verify=True, proxies={})
+        try:
+            return original(session, method, url, **kwargs)
+        except Exception as error:
+            if len(errors) < 40:
+                errors.append(boundary.safe_error(error, stage='videodl_http'))
+            raise
+    with patch.object(requests.Session, 'request', request):
+        yield
+
+
 def collect(request, capture):
     provider, source = request['provider'], boundary.validate_url(request['url'])
     timeout = min(60.0, max(.1, float(request.get('timeout', 60))))
@@ -78,7 +96,8 @@ def collect(request, capture):
             result.update(matched=True, backend=backend, mode='dedicated_only',
                           other_modes='NOT_ATTEMPTED', executed=True)
             boundary.install_network_guard(offline=False)
-            with boundary.runtime_budget(timeout) as budget:
+            result['transport_errors'] = []
+            with direct_verified_requests(result['transport_errors']), boundary.runtime_budget(timeout) as budget:
                 vd.run_exact_backend(source, backend, 'dedicated', str(Path.cwd()/'provider-work'), observe=capture)
         else:
             raise ValueError('invalid_request')
