@@ -187,7 +187,7 @@ def backend_config(backend_id: str, work_dir: str) -> dict:
     }
 
 
-def run_exact_backend(source: str, backend_id: str, backend_category: str, work_dir: str):
+def run_exact_backend(source: str, backend_id: str, backend_category: str, work_dir: str, observe=None):
     from videodl.modules import (
         BuildCommonVideoClient,
         BuildVideoClient,
@@ -222,6 +222,8 @@ def run_exact_backend(source: str, backend_id: str, backend_category: str, work_
             infos = client.parsefromurl(source, request_overrides={})
     except Exception as error:
         raise WorkerError("PROVIDER_PROCESS_FAILED") from error
+    if observe is not None:
+        observe(infos)
     valid_infos = [
         info
         for info in list(infos or ())

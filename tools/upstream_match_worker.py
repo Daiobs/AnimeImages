@@ -457,7 +457,7 @@ def runtime_budget(timeout):
             signal.signal(signal.SIGALRM, previous)
 
 
-def parse_ytdlp(cls, url, timeout):
+def parse_ytdlp(cls, url, timeout, observe=None):
     global _STAGE
     _STAGE = "ytdlp_import"
     from yt_dlp import YoutubeDL
@@ -484,6 +484,8 @@ def parse_ytdlp(cls, url, timeout):
             self.hops += 1
             if self.hops > MAX_HOPS:
                 raise ValueError("hop_limit")
+            if callable(getattr(observe, 'attempt', None)):
+                observe.attempt()
             key = (urldefrag(url)[0], kwargs.get("ie_key"))
             active = getattr(self, "_upstream_active", set())
             self._upstream_active = active
@@ -510,6 +512,9 @@ def parse_ytdlp(cls, url, timeout):
 
         def process_bounded_result(self, result, extra_info):
             if result.get("_type") in {"playlist", "multi_video", "compat_list"}:
+                if observe is not None:
+                    observe({key: value for key, value in result.items() if key != 'entries'})
+                    raise ValueError('collection_denied')
                 result = {**compact_descriptor(result), '_type': result['_type'],
                           'entries': result.get('entries')}
                 entries = []
@@ -543,6 +548,8 @@ def parse_ytdlp(cls, url, timeout):
             return super().process_ie_result(result, False, extra_info)
 
         def process_video_result(self, payload, download=False):
+            if observe is not None:
+                observe(payload)
             self.items += 1
             if self.items > MAX_ITEMS:
                 raise ValueError("item_limit")
@@ -617,7 +624,7 @@ def parse_ytdlp(cls, url, timeout):
         return ydl.sanitize_info(payload)
 
 
-def parse_gallery(cls, url, timeout):
+def parse_gallery(cls, url, timeout, observe=None):
     global _STAGE
     _STAGE = "gallery_import"
     from gallery_dl import config, util
@@ -641,6 +648,8 @@ def parse_gallery(cls, url, timeout):
         hops += 1
         if hops > MAX_HOPS:
             raise ValueError("hop_limit")
+        if callable(getattr(observe, 'attempt', None)):
+            observe.attempt()
         key = (extractor_cls.__name__, urldefrag(target)[0])
         if key in seen:
             raise ValueError("cycle_detected")
@@ -664,6 +673,8 @@ def parse_gallery(cls, url, timeout):
     reason = None
     try:
         for message in messages(cls, url):
+            if observe is not None:
+                observe(message)
             if not message or message[0] not in {Message.Directory, Message.Url}:
                 raise ValueError("collection_or_queue_denied")
             if message[0] == Message.Url:

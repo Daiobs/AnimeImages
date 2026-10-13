@@ -348,8 +348,9 @@ def safe_metadata_value(value):
 
 
 class TianTianJieXiApiClient:
-    def __init__(self, session=None):
+    def __init__(self, session=None, observe=None):
         self.session = session or requests
+        self.observe = observe
 
     @property
     def base_url(self):
@@ -399,6 +400,8 @@ class TianTianJieXiApiClient:
             raise TianTianJieXiUncertainError("天天解析接口请求失败", diagnostic_detail="SERVICE_NETWORK_ERROR") from error
         except ValueError as error:
             raise TianTianJieXiApiError("天天解析接口返回非 JSON", diagnostic_detail="SERVICE_INVALID_JSON") from error
+        if self.observe is not None:
+            self.observe(payload)
         ensure_api_success(payload)
         return TianTianJieXiResultNormalizer.normalize_payload(unwrap_api_payload(payload))
 
