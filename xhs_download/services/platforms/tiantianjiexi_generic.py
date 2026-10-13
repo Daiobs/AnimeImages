@@ -372,21 +372,26 @@ class TianTianJieXiApiClient:
         # Resolve configuration before marking a request as potentially sent.
         endpoint = self.base_url
         fields = {"phone": self.phone, "password": self.password, "link": url}
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        try:
+            if urlsplit(endpoint).scheme.lower() not in {"http", "https"}:
+                raise requests.exceptions.InvalidSchema("unsupported service scheme")
+            requests.Request("POST", endpoint, data=fields, headers=headers).prepare()
+        except (requests.exceptions.InvalidURL, requests.exceptions.MissingSchema,
+                requests.exceptions.InvalidSchema) as error:
+            request_in_flight(False, "LOCAL_REQUEST_NOT_SENT")
+            raise TianTianJieXiApiError("天天解析请求配置无效", diagnostic_detail="SERVICE_REQUEST_NOT_SENT") from error
         try:
             request_in_flight(True)
             response = self.session.post(
                 endpoint,
                 data=fields,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                headers=headers,
                 timeout=max(0.1, timeout),
             )
             request_in_flight(False)
             response.raise_for_status()
             payload = response.json()
-        except (requests.exceptions.InvalidURL, requests.exceptions.MissingSchema,
-                requests.exceptions.InvalidSchema) as error:
-            request_in_flight(False, "LOCAL_REQUEST_NOT_SENT")
-            raise TianTianJieXiApiError("天天解析请求配置无效", diagnostic_detail="SERVICE_REQUEST_NOT_SENT") from error
         except requests.Timeout as error:
             raise XhsProviderTimeoutError("天天解析接口超时") from error
         except requests.exceptions.JSONDecodeError as error:

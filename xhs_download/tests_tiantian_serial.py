@@ -150,12 +150,21 @@ os.close(fd)
 
     def test_pre_send_invalid_url_releases_but_timeout_stays_unknown(self):
         with patch('xhs_download.services.platforms.tiantianjiexi_generic.api_configured', return_value=True):
-            with self.assertRaises(Exception):
-                TianTianJieXiApiClient(Mock(post=Mock(side_effect=requests.exceptions.InvalidURL()))).parse_url('bad')
+            session=Mock()
+            with override_settings(TIANTIANJIEXI_API_BASE_URL='ftp://example.org/invalid'):
+                with self.assertRaises(Exception):
+                    TianTianJieXiApiClient(session).parse_url('https://example.org/work')
+            session.post.assert_not_called()
             self.assertEqual(serial.inspect_or_recover()['metadata']['reason'],'LOCAL_REQUEST_NOT_SENT')
             with self.assertRaises(Exception):
                 TianTianJieXiApiClient(Mock(post=Mock(side_effect=requests.Timeout()))).parse_url('https://example.org/work')
             self.assertEqual(serial.inspect_or_recover()['marker'],'U')
+
+    def test_invalid_redirect_after_dispatch_stays_unknown(self):
+        with patch('xhs_download.services.platforms.tiantianjiexi_generic.api_configured', return_value=True):
+            with self.assertRaises(Exception):
+                TianTianJieXiApiClient(Mock(post=Mock(side_effect=requests.exceptions.InvalidURL()))).parse_url('https://example.org/work')
+        self.assertEqual(serial.inspect_or_recover()['marker'],'U')
 
     def test_deferred_result_is_unexecuted_not_parse_failure(self):
         from .services.provider_reliability import classify_provider_failure, ProviderOutcome, ProviderFailureClass
