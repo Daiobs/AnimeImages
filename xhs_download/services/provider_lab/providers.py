@@ -303,6 +303,7 @@ def parse_result_to_lab(result, *, provider_id, user_id, request_id, provider_ve
                 codec=candidate.get('vcodec') or candidate.get('acodec') or '',
                 bitrate=candidate.get('bitrate'), audio_tracks=audio, video_tracks=video,
                 protocol=candidate.get('protocol', ''),
+                language=candidate.get('language'),
                 delivery_state=candidate.get('delivery_state', 'unknown'),
                 metadata_source=candidate.get('metadata_source', 'unknown'),
                 ordinal=candidate.get('ordinal', len(assets) + 1),

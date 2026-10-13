@@ -30,6 +30,7 @@
                 <strong>{{ candidate.ordinal|default:forloop.counter }} · {{ candidate.media_type|default:"未知媒体" }}</strong>
                 <span>{{ candidate.provider_id|default:"上游未知" }}</span>
                 <span>{{ candidate.format_label|default:"格式未知" }}</span>
+                <span>语言：{{ candidate.language|default:"未知" }}</span>
             </div>
             <dl class="upstream-candidate-properties">
                 <div><dt>分辨率</dt><dd>{% if candidate.width or candidate.height %}{{ candidate.width|default:"未知" }} × {{ candidate.height|default:"未知" }}{% else %}未知{% endif %}</dd></div>

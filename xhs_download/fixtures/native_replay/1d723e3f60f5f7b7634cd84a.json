@@ -1,0 +1,65 @@
+{
+  "archive_key": "census-phase1b-v1:1d723e3f60f5f7b7634cd84a",
+  "sample_id": "372d7e846fa8cd46",
+  "provider": "kukutool_generic",
+  "source": "https://source.example/work/1",
+  "identity": "TARGET_CONFIRMED",
+  "execution_status": "RETURNED",
+  "records": [
+    {
+      "title": "redacted-text",
+      "type": "video",
+      "cover": "https://media.example/asset-1.jpeg",
+      "url": "https://media.example/asset-2.mp4",
+      "videos": [
+        {
+          "url": "https://media.example/asset-2.mp4",
+          "video_fullinfo": [
+            {
+              "url": "https://media.example/asset-3.mp4",
+              "size": 256504206,
+              "type": "360P"
+            },
+            {
+              "url": "https://media.example/asset-4.mp4",
+              "size": 441223813,
+              "type": "480P"
+            },
+            {
+              "url": "https://media.example/asset-5.mp4",
+              "size": 441223813,
+              "type": "540P"
+            },
+            {
+              "url": "https://media.example/asset-6.mp4",
+              "size": 940515424,
+              "type": "720P"
+            },
+            {
+              "url": "https://media.example/asset-7.mp4",
+              "size": 1454895518,
+              "type": "1080P"
+            },
+            {
+              "url": "https://media.example/asset-8.mp4",
+              "size": 2705867906,
+              "type": "1080P+"
+            },
+            {
+              "url": "https://media.example/asset-2.mp4",
+              "size": 4428698300,
+              "type": "2160P"
+            }
+          ]
+        }
+      ],
+      "pics": [
+        "https://media.example/asset-1.jpeg"
+      ]
+    }
+  ],
+  "limitations": [
+    "URLs and prose replaced; secret markers retained; unused native internals omitted",
+    "No current resource authorization or delivery claim"
+  ]
+}

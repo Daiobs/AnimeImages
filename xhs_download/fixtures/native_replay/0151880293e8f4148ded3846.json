@@ -1,0 +1,56 @@
+{
+  "archive_key": "census-phase1b-v1:0151880293e8f4148ded3846",
+  "sample_id": "c51a332abacfc7a4",
+  "provider": "videodl_repo",
+  "source": "https://source.example/work/1",
+  "identity": "OBSERVED_TARGET_MEDIA",
+  "execution_status": "RETURNED",
+  "records": [
+    [
+      {
+        "_class": "VideoInfo",
+        "fields": {
+          "source": "HuanQiuVideoClient",
+          "title": "redacted-text",
+          "cover_url": "",
+          "err_msg": "",
+          "download_url": "http://media.example/asset-1.mp4",
+          "default_download_headers": {
+            "_redacted": "NoneType"
+          },
+          "default_download_cookies": {
+            "_redacted": "NoneType"
+          },
+          "audio_download_url": "",
+          "default_audio_download_headers": {
+            "_redacted": "NoneType"
+          },
+          "default_audio_download_cookies": {
+            "_redacted": "NoneType"
+          },
+          "ext": "mp4",
+          "save_path": "redacted-text",
+          "guess_video_ext_result": {
+            "ext": "mp4",
+            "sniffer": "urllib.parse",
+            "ok": true
+          },
+          "audio_ext": "m4a",
+          "audio_save_path": "",
+          "guess_audio_ext_result": {},
+          "download_with_ffmpeg": false,
+          "ffmpeg_settings": {},
+          "enable_nm3u8dlre": null,
+          "nm3u8dlre_settings": {},
+          "download_with_aria2c": false,
+          "aria2c_settings": {},
+          "identifier": "redacted-text"
+        }
+      }
+    ]
+  ],
+  "limitations": [
+    "URLs and prose replaced; secret markers retained; unused native internals omitted",
+    "No current resource authorization or delivery claim"
+  ]
+}

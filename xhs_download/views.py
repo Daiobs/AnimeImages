@@ -3806,6 +3806,9 @@ def build_result_display_context(
         ],
         "metadata": result_metadata,
         "upstream_candidates": result_metadata.get("upstream_candidates", []),
+        "returned_count": result_metadata.get("returned_count"),
+        "retained_count": result_metadata.get("retained_count"),
+        "unexpanded_count": result_metadata.get("unexpanded_count"),
         "upstream_route": result_metadata.get("upstream_route", {}),
         "unexpanded_scope": result_metadata.get("unexpanded_scope", {}),
         "candidates_truncated": result_metadata.get("candidates_truncated", 0),
@@ -4339,6 +4342,8 @@ def apply_search_result_to_context(
     context["metadata_source"] = display_context["metadata_source"]
     context["image_items"] = display_context["image_items"]
     context["upstream_candidates"] = display_context.get("upstream_candidates", [])
+    for field in ("returned_count", "retained_count", "unexpanded_count"):
+        context[field] = display_context.get(field)
     context["upstream_route"] = display_context.get("upstream_route", {})
     context["unexpanded_scope"] = display_context.get("unexpanded_scope", {})
     context["candidates_truncated"] = display_context.get("candidates_truncated", 0)

@@ -340,8 +340,16 @@ def normalize_upstream_result(payload, *, match, source_url):
         media_type = str(metadata.get('media_type') or metadata.get('type') or '')
         if media_type not in {'image', 'video', 'audio'}:
             media_type = media_type_from_metadata(metadata, url)
+        if not media_type and (
+                str(metadata.get('extension') or metadata.get('ext') or '').lower().lstrip('.')
+                in {'m4a', 'mp3', 'aac', 'ogg', 'opus', 'flac', 'wav'}
+                or str(metadata.get('mime_type') or metadata.get('mime') or '').lower().startswith('audio/')):
+            media_type = 'audio'
         if provider == 'yt_dlp_generic':
-            media_type = 'audio' if metadata.get('vcodec') == 'none' else 'video'
+            if metadata.get('vcodec') == 'none':
+                media_type = 'audio'
+            elif media_type not in {'image', 'audio'}:
+                media_type = 'video'
         if media_type not in {'image', 'video', 'audio'}:
             media_type = 'unknown'
         state = 'image' if media_type == 'image' else video_evidence_state({**metadata, 'url': url})

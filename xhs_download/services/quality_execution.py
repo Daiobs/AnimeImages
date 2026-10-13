@@ -392,7 +392,8 @@ def _execute_service(provider, source, timeout_seconds, expected_match):
     if payload.get('audio_url'):
         declared += 1
         add(payload['audio_url'], 'audio')
-    if any(payload.get(key) for key in ('url', 'download_url', 'play_url')):
+    primary_url = next((payload.get(key) for key in ('url', 'download_url', 'play_url') if payload.get(key)), None)
+    if primary_url and not any(row[1] == primary_url for row in rows):
         declared += 1
         add(payload, 'unknown')
     return rows, match, {'service_declared_count': declared,

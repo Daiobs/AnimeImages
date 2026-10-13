@@ -1,0 +1,36 @@
+{
+  "archive_key": "census-phase1-v1:3f3b2e281194564de69755e1",
+  "sample_id": "362b87b6bb8d9cae",
+  "provider": "gallery_dl_generic",
+  "source": "https://source.example/work/1",
+  "identity": "MEDIA_IDENTITY_PENDING",
+  "execution_status": "RETURNED",
+  "records": [
+    [
+      2,
+      "",
+      {
+        "slug": "redacted-text",
+        "title": "redacted-text",
+        "description": "redacted-text",
+        "url": "https://media.example/asset-1.m4a"
+      }
+    ],
+    [
+      3,
+      "https://media.example/asset-1.m4a",
+      {
+        "slug": "redacted-text",
+        "title": "redacted-text",
+        "description": "redacted-text",
+        "url": "https://media.example/asset-1.m4a",
+        "filename": "redacted-text",
+        "extension": "m4a"
+      }
+    ]
+  ],
+  "limitations": [
+    "URLs and prose replaced; secret markers retained; unused native internals omitted",
+    "No current resource authorization or delivery claim"
+  ]
+}

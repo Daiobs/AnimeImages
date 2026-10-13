@@ -162,6 +162,36 @@ def scalar_fields(obj):
     return fields
 
 
+def explicit_richtext_media(result, media, canonical):
+    from parsehub.types.result import RichTextParseResult
+    if not isinstance(result, RichTextParseResult):
+        return media, set()
+    from bs4 import BeautifulSoup
+    from markdown import markdown
+    from parsehub.types.media_ref import ImageRef
+    body = getattr(result, 'markdown_content', '') or ''
+    if len(body.encode()) > MAX_BYTES:
+        raise ValueError('output_limit')
+    soup = BeautifulSoup(markdown(body), 'html.parser')
+    for node in soup(['script', 'style', 'template']):
+        node.decompose()
+    # Only explicit images in returned body content. Never follow page links or
+    # recurse into arbitrary metadata; retain body order and typed references.
+    typed = {getattr(item, 'url', ''): item for item in media}
+    ordered, seen = [], set()
+    for node in soup.find_all('img', src=True):
+        url = urljoin(canonical, str(node['src']))
+        validate_media_url(url)
+        if url in seen:
+            continue
+        seen.add(url)
+        ext = Path(urlsplit(url).path).suffix.lower().lstrip('.')
+        item = typed.get(url) or ImageRef(url=url, ext=ext if ext in IMAGE_EXTENSIONS else '')
+        ordered.append(item)
+    ordered.extend(item for item in media if getattr(item, 'url', '') not in seen)
+    return ordered, seen
+
+
 def normalize_result(result, source, *, extractor=None, identity_evidence="upstream_parser_result"):
     from parsehub.types.media_ref import AniRef, ImageRef, LivePhotoRef, MediaRef, VideoRef
     from parsehub.types.result import ParseResult
@@ -182,6 +212,7 @@ def normalize_result(result, source, *, extractor=None, identity_evidence="upstr
               "result_type": type(result).__name__, "candidate_schema": "upstream_candidate_v1"}
     media = getattr(result, "media", None)
     media = list(media) if isinstance(media, (list, tuple)) else [media] if media else []
+    media, body_image_urls = explicit_richtext_media(result, media, canonical)
     info = getattr(getattr(result, "dl", None), "info_json", None)
     formats = None
     if isinstance(info, dict):
@@ -202,6 +233,9 @@ def normalize_result(result, source, *, extractor=None, identity_evidence="upstr
         if isinstance(item, AniRef) and (ext in VIDEO_EXTENSIONS or path_ext in VIDEO_EXTENSIONS):
             kind, ext = "video", ext if ext in VIDEO_EXTENSIONS else path_ext
         details = scalar_fields(item)
+        if kind == 'image' and item.url in body_image_urls:
+            details.setdefault('role', 'gallery')
+            details.setdefault('upstream_role', 'body_media')
         if isinstance(item, LivePhotoRef):
             details.update(relationship_id=f"livephoto-{len(candidates)}", relationship_role="still")
         candidates.append((item.url, kind, ext, details))

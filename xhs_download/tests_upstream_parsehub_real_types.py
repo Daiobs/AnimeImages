@@ -179,12 +179,20 @@ def isolated_suite():
             self.assertTrue(all("media_type_conflict" in r[2]["operation_restrictions"] for r in rows))
 
         def test_summary_has_no_html_or_recursive_urls(self):
-            value = RichTextParseResult(markdown_content="hello <script>secret()</script> ![](https://media.example/hidden.jpg)")
+            value = RichTextParseResult(markdown_content="hello <script>secret()</script> ![](https://media.example/hidden.jpg) [page](https://media.example/page)")
+            rows = self.normalize(value)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0][:2], [3, "https://media.example/hidden.jpg"])
+            self.assertNotIn("secret()", rows[0][2]["content_summary"])
+            self.assertNotIn("https://", rows[0][2]["content_summary"])
+            self.assertNotIn("<script", json.dumps(rows))
+
+        def test_body_image_extraction_does_not_execute_or_follow_links(self):
+            value = RichTextParseResult(markdown_content='<script><img src="https://media.example/script.jpg"></script><template><img src="https://media.example/template.jpg"></template>[page](https://media.example/page)')
             rows = self.normalize(value)
             self.assertEqual(rows[0][0], 2)
-            self.assertNotIn("secret()", rows[0][1]["content_summary"])
-            self.assertNotIn("https://", rows[0][1]["content_summary"])
-            self.assertNotIn("<script", json.dumps(rows))
+            with self.assertRaises(ValueError):
+                self.normalize(RichTextParseResult(markdown_content='![](http://127.0.0.1/private)'))
 
         def test_limits_keep_prefix_and_validate_unsafe_tail(self):
             photos = [ImageRef(url=image, width=index + 1) for index in range(worker.MAX_ASSETS + 1)]

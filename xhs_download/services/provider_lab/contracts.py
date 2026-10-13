@@ -297,6 +297,7 @@ class LabAssetV1:
     audio_tracks: str = "unknown"
     video_tracks: str = "unknown"
     protocol: str = ""
+    language: str | None = None
     delivery_state: str = "unknown"
     metadata_source: str = "unknown"
     ordinal: int = 0
@@ -332,6 +333,7 @@ class LabAssetV1:
             "audio_tracks": self.audio_tracks if self.audio_tracks in {"unknown", "present", "absent"} else "unknown",
             "video_tracks": self.video_tracks if self.video_tracks in {"unknown", "present", "absent"} else "unknown",
             "protocol": safe_public_text(self.protocol, 80),
+            "language": safe_public_text(self.language, 80) or None,
             "delivery_state": safe_public_text(self.delivery_state, 80),
             "metadata_source": safe_public_text(self.metadata_source, 80),
             "ordinal": safe_int(self.ordinal),

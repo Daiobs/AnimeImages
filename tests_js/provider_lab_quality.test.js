@@ -160,4 +160,9 @@ test("nullable merge and independent audio are not inferred from embedded tracks
     assert.match(text, /未知×2160/);
     assert.match(text, /独立音频资源 未知/);
     assert.match(text, /内嵌视频轨 \/ 音频轨 存在 \/ 存在/);
+    assert.match(text, /语言 未知/);
+    assert.match(textOf(lab.metaFragment(doc, {language: 'deu'})), /语言 deu/);
+    const hostile = lab.metaFragment(doc, {language: '<script>not executable</script>'});
+    assert.match(textOf(hostile), /语言 <script>not executable<\/script>/);
+    assert.equal(hostile.querySelector('script'), null);
 });

@@ -1,0 +1,138 @@
+{
+  "archive_key": "census-phase1-v1:5d6c88d0a3cb75de9a7b28d4",
+  "sample_id": "07bb7bd36a94f974",
+  "provider": "gallery_dl_generic",
+  "source": "https://source.example/work/1",
+  "identity": "OBSERVED_TARGET_MEDIA",
+  "execution_status": "RETURNED",
+  "records": [
+    [
+      2,
+      "",
+      {
+        "count": 1,
+        "_http_headers": {
+          "_redacted": "dict"
+        }
+      }
+    ],
+    [
+      3,
+      "https://media.example/asset-1",
+      {
+        "count": 1,
+        "_http_headers": {
+          "_redacted": "dict"
+        },
+        "num": 1,
+        "file": {
+          "viewsCounter": 242,
+          "timeCode": 0,
+          "vid": "3492066831044",
+          "duration": 105,
+          "playerUrls": [
+            {
+              "type": "live_hls",
+              "url": ""
+            },
+            {
+              "url": "",
+              "type": "dash_uni"
+            },
+            {
+              "type": "ondemand_dash",
+              "url": ""
+            },
+            {
+              "url": "",
+              "type": "live_ondemand_hls"
+            },
+            {
+              "url": "https://media.example/asset-2",
+              "type": "low"
+            },
+            {
+              "url": "https://media.example/asset-3",
+              "type": "tiny"
+            },
+            {
+              "url": "",
+              "type": "live_dash"
+            },
+            {
+              "type": "live_playback_hls",
+              "url": ""
+            },
+            {
+              "type": "dash",
+              "url": "https://media.example/asset-4"
+            },
+            {
+              "type": "hls",
+              "url": "https://media.example/asset-5.m3u8"
+            },
+            {
+              "type": "lowest",
+              "url": "https://media.example/asset-6"
+            },
+            {
+              "type": "quad_hd",
+              "url": ""
+            },
+            {
+              "url": "",
+              "type": "live_cmaf"
+            },
+            {
+              "url": "https://media.example/asset-7",
+              "type": "medium"
+            },
+            {
+              "url": "https://media.example/asset-8",
+              "type": "high"
+            },
+            {
+              "url": "",
+              "type": "ultra_hd"
+            },
+            {
+              "url": "",
+              "type": "live_playback_dash"
+            },
+            {
+              "type": "full_hd",
+              "url": "https://media.example/asset-1"
+            },
+            {
+              "type": "ondemand_hls",
+              "url": ""
+            }
+          ],
+          "failoverHost": "vd369.okcdn.ru",
+          "isInvalid": null,
+          "uploadStatus": "ok",
+          "height": 1080,
+          "preview": "https://media.example/asset-9",
+          "complete": true,
+          "defaultPreview": "https://media.example/asset-9",
+          "title": "redacted-text",
+          "showViewsCounter": false,
+          "url": "https://media.example/asset-1",
+          "type": "ok_video",
+          "id": "redacted-text",
+          "status": "ok",
+          "width": 1920,
+          "_fallback": {
+            "_not_exported_type": "list_iterator"
+          }
+        },
+        "filename": "",
+        "extension": ""
+      }
+    ]
+  ],
+  "limitations": [
+    "URLs and prose replaced; secret markers retained; unused native internals omitted",
+    "No current resource authorization or delivery claim"
+  ]
+}

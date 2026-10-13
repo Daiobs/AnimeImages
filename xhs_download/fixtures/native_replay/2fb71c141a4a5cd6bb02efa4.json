@@ -1,0 +1,32 @@
+{
+  "archive_key": "census-phase1b-v1:2fb71c141a4a5cd6bb02efa4",
+  "sample_id": "a7eb50888e47acb0",
+  "provider": "parsehub_generic",
+  "source": "https://source.example/work/1",
+  "identity": "OBSERVED_TARGET_MEDIA",
+  "execution_status": "RETURNED",
+  "records": [
+    {
+      "_class": "RichTextParseResult",
+      "fields": {
+        "markdown_content": "![](https://media.example/asset-1)\n![](https://media.example/asset-2)\n![](https://media.example/asset-3)\n![](https://media.example/asset-4)",
+        "raw_url": "https://media.example/asset-5",
+        "title": "redacted-text",
+        "content": "redacted body",
+        "media": [],
+        "platform": {
+          "_class": "Platform",
+          "fields": {
+            "id": "redacted-text",
+            "display_name": "\u5fae\u4fe1\u516c\u4f17\u53f7"
+          }
+        },
+        "name": "redacted-text"
+      }
+    }
+  ],
+  "limitations": [
+    "URLs and prose replaced; secret markers retained; unused native internals omitted",
+    "No current resource authorization or delivery claim"
+  ]
+}

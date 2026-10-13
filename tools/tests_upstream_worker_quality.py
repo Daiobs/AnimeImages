@@ -429,7 +429,8 @@ class WorkerQualityTests(unittest.TestCase):
                                 AniRef=type('AniRef', (MediaRef,), {}),
                                 LivePhotoRef=type('LivePhotoRef', (MediaRef,), {}))
         with patch.dict(sys.modules, {'parsehub.types.media_ref': types,
-                                      'parsehub.types.result': SimpleNamespace(ParseResult=ParseResult)}):
+                                      'parsehub.types.result': SimpleNamespace(ParseResult=ParseResult,
+                                          RichTextParseResult=type('RichTextParseResult', (ParseResult,), {}))}):
             result = parsehub.normalize_result(ParseResult(), ParseResult.raw_url)
             with patch.object(parsehub, 'MAX_BYTES', 20000):
                 small = parsehub.normalize_result(ParseResult(), ParseResult.raw_url)

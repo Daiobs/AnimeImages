@@ -551,6 +551,12 @@ def parse_ytdlp(cls, url, timeout, observe=None):
         def process_video_result(self, payload, download=False):
             if observe is not None:
                 observe(payload)
+            # Some native extractors return a list-valued optional thumbnail URL.
+            # It is not a media format; preserve the capture but do not let this
+            # malformed decoration abort otherwise valid media processing.
+            if isinstance(payload.get('thumbnails'), list):
+                payload = {**payload, 'thumbnails': [item for item in payload['thumbnails']
+                    if isinstance(item, dict) and isinstance(item.get('url'), str) and item['url']]}
             self.items += 1
             if self.items > MAX_ITEMS:
                 raise ValueError("item_limit")
@@ -682,7 +688,17 @@ def parse_gallery(cls, url, timeout, observe=None):
                 validate_media_url(message[1])
             elif len(result) - media_count >= MAX_ITEMS:
                 raise ValueError("item_limit")
-            message = [*message[:-1], compact_descriptor(message[-1])]
+            metadata = message[-1]
+            if message[0] == Message.Url and isinstance(metadata, dict):
+                file = metadata.get('file')
+                if isinstance(file, dict) and file.get('url') == message[1]:
+                    # A scoped file descriptor belongs to this exact message,
+                    # unlike siblings, thumbnails or lazy fallback variants.
+                    metadata = {**{key: file[key] for key in
+                        ('width', 'height', 'duration', 'ext', 'extension', 'mime_type',
+                         'vcodec', 'acodec', 'language', 'filesize', 'filesize_approx', 'protocol')
+                        if key in file}, **metadata}
+            message = [*message[:-1], compact_descriptor(metadata)]
             serialized = json.dumps(message, default=util.json_default)
             output_bytes += len(serialized.encode())
             if output_bytes > MAX_OUTPUT - 4096:
