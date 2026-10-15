@@ -53,13 +53,13 @@ class PlatformRegistry:
         enable_xhs_livephoto_staff_preview=False,
         upstream_provider_ids=None,
         upstream_matches=None,
+        xhs_service_provider_ids=(),
     ):
         url = extract_url_from_text(url)
         adapter = self.get_adapter_for_url(url)
         if upstream_matches is not None and "upstream_matches" not in adapter.parse_option_names:
             raise XhsParseError("上游解析权限接口暂不可用。")
-        return adapter.parse(
-            url,
+        options = dict(
             prefer_ultra_hd=prefer_ultra_hd,
             client_country_code=client_country_code,
             prefer_youtube_merge=prefer_youtube_merge,
@@ -75,6 +75,21 @@ class PlatformRegistry:
             upstream_provider_ids=upstream_provider_ids,
             upstream_matches=upstream_matches,
         )
+        if adapter.platform_id == "xiaohongshu" and xhs_service_provider_ids:
+            from .platforms.xhs_independent import parse_independent
+
+            def native_parse(deadline):
+                native_options = {**options, "deadline_monotonic": deadline}
+                # The independent service branch already owns the TianTian attempt.
+                if "tiantianjiexi_generic" in xhs_service_provider_ids:
+                    native_options["prefer_ultra_hd"] = False
+                return adapter.parse(url, **native_options)
+
+            return parse_independent(
+                url, native_parse=native_parse, provider_ids=xhs_service_provider_ids,
+                timeout_seconds=timeout_seconds, deadline_monotonic=deadline_monotonic,
+            )
+        return adapter.parse(url, **options)
 
 
 default_registry = PlatformRegistry()
@@ -108,6 +123,7 @@ def parse_media_page(
     enable_xhs_livephoto_staff_preview=False,
     upstream_provider_ids=None,
     upstream_matches=None,
+    xhs_service_provider_ids=(),
 ):
     return default_registry.parse_url(
         url,
@@ -125,4 +141,5 @@ def parse_media_page(
         enable_xhs_livephoto_staff_preview=enable_xhs_livephoto_staff_preview,
         upstream_provider_ids=upstream_provider_ids,
         upstream_matches=upstream_matches,
+        xhs_service_provider_ids=xhs_service_provider_ids,
     )

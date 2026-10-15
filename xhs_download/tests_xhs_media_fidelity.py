@@ -5,11 +5,12 @@ from unittest.mock import Mock, patch
 from bs4 import BeautifulSoup
 from django.test import SimpleTestCase
 
+from .services.assets import ParseResult
 from .services.batch_parse.results import (
     BATCH_NO_MEDIA_MESSAGE,
     build_batch_result_row,
 )
-from .services.common import XhsParseError
+from .services.common import HEADERS, XhsParseError
 from .services.platforms.xiaohongshu import (
     XiaohongshuAdapter,
     normalize_video_url,
@@ -712,6 +713,52 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
             "source_identity_unverified",
         )
         response.close.assert_called_once()
+
+    @patch("xhs_download.services.platforms.xiaohongshu.request_get_with_retry")
+    def test_parse_url_uses_document_accept_without_changing_media_headers(self, mock_get):
+        original_headers = HEADERS.copy()
+        response = Mock()
+        response.url = NOTE_URL
+        response.text = GENERIC_SHELL_FIXTURE.read_text(encoding="utf-8")
+        mock_get.return_value = response
+
+        self.adapter.parse_url(NOTE_URL)
+
+        mock_get.assert_called_once()
+        page_headers = mock_get.call_args.kwargs["headers"]
+        self.assertEqual(
+            page_headers["Accept"],
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        )
+        self.assertIsNot(page_headers, HEADERS)
+        self.assertEqual(HEADERS, original_headers)
+        self.assertEqual(
+            HEADERS["Accept"],
+            "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        )
+        self.assertEqual(
+            {key: value for key, value in page_headers.items() if key != "Accept"},
+            {key: value for key, value in HEADERS.items() if key != "Accept"},
+        )
+        response.close.assert_called_once()
+
+    @patch("xhs_download.services.platforms.xiaohongshu.request_get_with_retry")
+    def test_login_redirect_is_terminal_even_without_dom_login_markers(self, mock_get):
+        for source_url in ("https://xhslink.cn/o/synthetic", NOTE_URL):
+            for login_path in ("/login", "/login/?redirect=synthetic"):
+                with self.subTest(source_url=source_url, login_path=login_path):
+                    response = Mock()
+                    response.url = "https://www.xiaohongshu.com" + login_path
+                    response.text = GENERIC_SHELL_FIXTURE.read_text(encoding="utf-8")
+                    mock_get.return_value = response
+                    empty_result = ParseResult(
+                        platform="xiaohongshu", post_type="image", base_filename="synthetic", assets=(),
+                    )
+                    with patch.object(self.adapter, "parse_html", return_value=empty_result) as parse_html:
+                        with self.assertRaisesMessage(XhsParseError, "当前页面需要登录后访问"):
+                            self.adapter.parse_url(source_url, prefer_ultra_hd=True)
+                        parse_html.assert_not_called()
+                    response.close.assert_called_once()
 
     def test_unrelated_json_ld_without_note_id_keeps_legacy_image_fallback(self):
         html = f'''

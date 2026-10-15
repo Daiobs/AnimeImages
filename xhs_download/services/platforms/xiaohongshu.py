@@ -438,7 +438,10 @@ class XiaohongshuAdapter(BasePlatformAdapter):
     display_name = "小红书"
     page_host_suffixes = XHS_PAGE_HOST_SUFFIXES
     media_host_suffixes = XHS_MEDIA_HOST_SUFFIXES
-    headers = HEADERS
+    headers = {
+        **HEADERS,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    }
     capabilities = PlatformCapabilities(
         media_types=("image", "video"),
         batch_download=True,
@@ -859,6 +862,9 @@ class XiaohongshuAdapter(BasePlatformAdapter):
             deadline_monotonic=deadline or None,
         )
         try:
+            # A successful HTTP response can be the login shell, not the requested note.
+            if urlparse(response.url).path.rstrip("/") == "/login":
+                raise XhsParseError(XHS_PAGE_STATE_MESSAGES["login_required"])
             page_fetch_duration_ms = round((time.monotonic() - parse_started_at) * 1000)
             identity_url = url if extract_xhs_note_id(url) else response.url
             result = self.parse_html(

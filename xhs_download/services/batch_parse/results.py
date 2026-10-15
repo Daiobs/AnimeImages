@@ -363,6 +363,11 @@ def build_batch_result_row(
                 upstream_provider_ids=third_party_gate["upstream_provider_ids"],
                 upstream_matches=third_party_gate["upstream_matches"],
             )
+        if batch_platform_for_source(source_text) == "xiaohongshu":
+            from ..platforms.xhs_independent import authorized_services
+            xhs_services = authorized_services(request, source_text)
+            if xhs_services:
+                parser_kwargs["xhs_service_provider_ids"] = xhs_services
         if prefer_ultra_hd and batch_platform_for_source(source_text) == "xiaohongshu":
             parser_kwargs["ultra_attempt_controller"] = XhsUltraAttemptController(
                 client_identity=get_client_identity(request),
