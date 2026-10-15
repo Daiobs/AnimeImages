@@ -1,5 +1,6 @@
 """Offline authorization and orchestration checks; never contact providers."""
 from contextlib import ExitStack
+from concurrent.futures import ThreadPoolExecutor
 import json
 from dataclasses import dataclass, field
 from threading import Event
@@ -152,7 +153,8 @@ class IndependentExecutionTests(SimpleTestCase):
         self.execute.return_value = Result()
         try:
             start = time.monotonic()
-            result = self.parse(native, timeout_seconds=.1)
+            # Leave more than the service client's existing 100ms timeout floor.
+            result = self.parse(native, timeout_seconds=.3)
             self.assertLess(time.monotonic() - start, 1)
             self.assertEqual(result.metadata["xhs_native_status"], "deadline")
         finally:
@@ -165,6 +167,106 @@ class IndependentExecutionTests(SimpleTestCase):
             self.parse(native, deadline_monotonic=time.monotonic() - 1)
         native.assert_not_called()
         self.execute.assert_not_called()
+
+    def test_empty_native_object_is_not_a_successful_fallback(self):
+        self.execute.return_value = Result(assets=())
+        with self.assertRaises(XhsParseError):
+            self.parse(lambda deadline: Result(assets=()))
+
+    def test_short_budget_does_not_start_a_service_below_its_timeout_floor(self):
+        native = Mock(return_value=Result())
+        with patch.object(subject, "time", SimpleNamespace(monotonic=lambda: 100.0)):
+            result = self.parse(native, deadline_monotonic=100.05)
+        self.assertEqual(result.metadata["xhs_independent_source"], "native")
+        self.assertEqual(result.metadata["xhs_service_status"], "not_started_budget")
+        self.assertAlmostEqual(native.call_args.args[0], 100.04)
+        self.execute.assert_not_called()
+
+    def test_short_budget_without_media_does_not_manufacture_success(self):
+        with patch.object(subject, "time", SimpleNamespace(monotonic=lambda: 100.0)):
+            with self.assertRaises(XhsParseError):
+                self.parse(lambda deadline: Result(assets=()), deadline_monotonic=100.05)
+        self.execute.assert_not_called()
+
+    def test_disabled_service_leaves_native_only_deadline_unchanged(self):
+        native = Mock(return_value=Result())
+        with patch.object(subject, "service_configured", return_value=False), patch.object(
+                subject, "time", SimpleNamespace(monotonic=lambda: 100.0)):
+            result = self.parse(native, deadline_monotonic=101.0)
+        self.assertIs(result, native.return_value)
+        native.assert_called_once_with(101.0)
+        self.execute.assert_not_called()
+
+    def test_both_timely_results_keep_service_asset_precedence(self):
+        native = Result(assets=("native",))
+        service = Result(assets=("service",))
+        self.execute.return_value = service
+        result = self.parse(lambda deadline: native)
+        self.assertEqual(result.assets, service.assets)
+        self.assertEqual(result.metadata["xhs_independent_source"], "service")
+        self.assertEqual(result.metadata["xhs_native_status"], "completed")
+
+    def test_inner_deadline_bounds_each_service_attempt_and_native(self):
+        clock = [100.0]
+        deadlines, budgets = [], []
+
+        def native(deadline):
+            deadlines.append(deadline)
+            return Result()
+
+        def service(*args, **kwargs):
+            budgets.append(kwargs["timeout_seconds"])
+            clock[0] += .1
+            raise XhsParseError("synthetic service failure")
+
+        self.execute.side_effect = service
+        with patch.object(subject, "time", SimpleNamespace(monotonic=lambda: clock[0])):
+            self.parse(native, subject.SERVICE_ORDER, deadline_monotonic=101.0)
+        self.assertEqual(deadlines, [100.8])
+        self.assertEqual(len(budgets), 2)
+        self.assertAlmostEqual(budgets[0], .8)
+        self.assertAlmostEqual(budgets[1], .7)
+
+    def test_late_service_cannot_start_fallback_or_replace_returned_native(self):
+        for late_success in (False, True):
+            with self.subTest(late_success=late_success):
+                release, started = Event(), Event()
+                futures = []
+
+                class ObservedExecutor(ThreadPoolExecutor):
+                    def submit(self, *args, **kwargs):
+                        future = super().submit(*args, **kwargs)
+                        futures.append(future)
+                        return future
+
+                def service(*args, **kwargs):
+                    started.set()
+                    if not release.wait(3):
+                        raise AssertionError("test did not release service boundary")
+                    if late_success:
+                        return Result(assets=("late-service",))
+                    raise XhsParseError("synthetic late failure")
+
+                self.execute.reset_mock()
+                self.execute.side_effect = service
+                native = Result(assets=("native",))
+                try:
+                    with patch.object(subject, "ThreadPoolExecutor", ObservedExecutor):
+                        result = self.parse(lambda deadline: native,
+                                            subject.SERVICE_ORDER, timeout_seconds=.3)
+                    self.assertTrue(started.is_set())
+                    self.assertFalse(futures[1].done())
+                    self.assertEqual(result.assets, native.assets)
+                    self.assertEqual(result.metadata["xhs_service_status"], "deadline")
+                    snapshot = dict(result.metadata)
+                finally:
+                    release.set()
+                    for future in futures:
+                        future.result(timeout=3)
+                self.execute.assert_called_once()
+                self.assertEqual(result.metadata, snapshot)
+                self.assertEqual(result.assets, native.assets)
+                self.assertEqual(native.metadata, {})
 
 
 @override_settings(THIRD_PARTY_RATE_LIMIT_PER_MINUTE=10,
