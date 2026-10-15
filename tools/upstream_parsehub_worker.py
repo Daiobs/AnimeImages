@@ -180,7 +180,11 @@ def explicit_richtext_media(result, media, canonical):
     typed = {getattr(item, 'url', ''): item for item in media}
     ordered, seen = [], set()
     for node in soup.find_all('img', src=True):
-        url = urljoin(canonical, str(node['src']))
+        reference = str(node['src']).strip()
+        # Placeholders are not remote media; never resolve them to the article or decode them.
+        if not reference or reference.startswith('#') or reference.lower().startswith('data:image/'):
+            continue
+        url = urljoin(canonical, reference)
         validate_media_url(url)
         if url in seen:
             continue

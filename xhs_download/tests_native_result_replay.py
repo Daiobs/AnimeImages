@@ -93,6 +93,36 @@ class NativeReplayTests(SimpleTestCase):
         self.assertEqual(lab['assets'][0]['declared_extension'],'')
         self.assertTrue(all(a['requires_merge'] is None for a in lab['assets']))
 
+    def test_richtext_placeholders_do_not_reach_shared_consumers(self):
+        from .services.upstream_candidates import resolve_candidate_record
+        from .views import build_result_display_context
+        data = self.fixture('2fb71c141a4a5cd6bb02efa4')
+        fields = data['records'][0]['fields']
+        fields['raw_url'] = data['source']
+        fields['markdown_content'] = (
+            'article <img src=""> <img src="   "> ![]() ![](#placeholder) '
+            '<img src="data:image/gif;base64,not-base64"> '
+            '![](/body.jpg) ![](https://media.example/shared.jpg) ![](/body.jpg)')
+        fields['media'] = [
+            {'_class': 'ImageRef', 'fields': {'url': 'https://media.example/typed.jpg', 'ext': 'jpg'}},
+            {'_class': 'ImageRef', 'fields': {'url': 'https://media.example/shared.jpg',
+                                           'ext': 'jpg', 'width': 1200, 'role': 'cover'}},
+        ]
+        with patch.object(self, 'fixture', return_value=data):
+            result, lab, _ = self.run_fixture('2fb71c141a4a5cd6bb02efa4')
+        candidates = result.metadata['upstream_candidates']
+        with offline_network():
+            urls = [resolve_candidate_record(row['resource_token'], row['candidate_id'])['url']
+                    for row in candidates]
+            context = build_result_display_context(result)
+        self.assertEqual(urls, ['https://source.example/body.jpg',
+                               'https://media.example/shared.jpg', 'https://media.example/typed.jpg'])
+        self.assertEqual(context['upstream_candidates'], candidates)
+        self.assertEqual((context['returned_count'], context['retained_count']), (3, 3))
+        self.assertEqual([row['ordinal'] for row in candidates], [1, 2, 3])
+        self.assertEqual((candidates[1]['role'], candidates[1]['width']), ('cover', 1200))
+        self.assertEqual([row['role'] for row in lab['assets']], ['gallery', 'cover', 'unknown'])
+
     def test_real_gallery_audio_is_not_unknown_video(self):
         result, lab, _ = self.run_fixture('3f3b2e281194564de69755e1')
         candidate = result.metadata['upstream_candidates'][0]
