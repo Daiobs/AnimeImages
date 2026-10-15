@@ -90,7 +90,8 @@ def _call(command, request, timeout=5.0):
             codes = {"network_denied", "execution_guard", "delegation_denied", "playlist_denied",
                      "item_limit", "output_limit", "version_changed", "extractor_mismatch",
                      "invalid_url", "no_formats", "network_timeout", "unavailable", "tls_error",
-                     "auth_required", "access_denied", "upstream_unavailable", "worker_error"}
+                     "auth_required", "access_denied", "upstream_unavailable", "worker_error",
+                     "runtime_import_error"}
             code = response.get("error")
             stage = response.get("stage", "worker")
             error_class = response.get("error_class", "")

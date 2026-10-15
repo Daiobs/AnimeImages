@@ -190,6 +190,10 @@ def payload_has_media(payload):
         "image_urls",
         "pics",
         "photos",
+        "audio",
+        "audio_url",
+        "music",
+        "music_url",
     }
     return any(payload.get(key) for key in keys)
 

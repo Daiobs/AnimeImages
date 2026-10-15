@@ -122,7 +122,12 @@ def safe_error(error, stage=None, _depth=0):
         if isinstance(error, (TimeoutError, subprocess.TimeoutExpired)) or "Timeout" in name:
             code = "network_timeout"
         elif isinstance(error, (ImportError, importlib.metadata.PackageNotFoundError)):
-            code = "unavailable"
+            # Identity/package availability is not a successful runtime check.
+            # Imports reached during extraction/postprocessing are local execution
+            # failures, not evidence that the configured provider is absent.
+            code = ("runtime_import_error" if stage in {
+                "ytdlp_extract", "ytdlp_result", "ytdlp_probe", "gallery_extract", "parse"
+            } else "unavailable")
         elif name in {"SSLError", "SSLCertVerificationError", "CertificateVerifyError"}:
             code = "tls_error"
         elif name in {"LoginRequired", "AuthenticationError", "AuthorizationError"}:
@@ -806,6 +811,7 @@ def handle(request):
         payload = (parse_ytdlp if provider == "yt_dlp_generic" else parse_gallery)(exact[0], url, timeout)
     if provider == "yt_dlp_generic":
         # The probe owns its hard timer; the child network guard remains installed.
+        _STAGE = "ytdlp_probe"
         probe_ytdlp_result(payload, deadline=deadline, budget=budget)
     return payload
 

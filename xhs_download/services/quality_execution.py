@@ -279,6 +279,7 @@ def _execute_upstream(provider, source, timeout_seconds, *, expected_match=None)
         logger.warning('upstream_worker_rejected provider=%s code=%s stage=%s exception_class=%s pid=%s',
                        provider, diagnostic, stage, error_class, os.getpid())
         lab_code = ('PROVIDER_TIMEOUT' if 'timeout' in code else
+                    'PROVIDER_EXECUTOR_FAILED' if code == 'runtime_import_error' else
                     'PROVIDER_NOT_CONFIGURED' if code in {'disabled','unavailable','executor_unavailable','version_changed'} else
                     'PROVIDER_UNSUPPORTED' if code == 'extractor_mismatch' else
                     'PROVIDER_RESULT_EMPTY' if code == 'no_formats' else 'PROVIDER_PROCESS_FAILED')
@@ -311,7 +312,9 @@ def _normalize_videodl_candidates(payload, match, source):
     candidates = issue_candidates(candidates)
     from .provider_lab.contracts import safe_public_text
     title = safe_public_text(payload[0][2].get('title') or provider, 300)
-    return ParseResult(platform='third_party',post_type='video' if any(c['media_type']=='video' for c in candidates) else 'image',
+    kinds = {candidate['media_type'] for candidate in candidates}
+    post_type = 'video' if 'video' in kinds else 'audio' if kinds == {'audio'} else 'image'
+    return ParseResult(platform='third_party',post_type=post_type,
         base_filename='videodl' if provider == 'videodl_repo' else provider,assets=(),metadata={
             'title':title,'upstream_candidates':candidates,'source_provider':provider,
             'selected_provider':provider,'source_platform':'upstream','canonical_source_url':source,

@@ -134,3 +134,151 @@ mail/provider credentials. Full private archives, before/after outputs, HTML/CSV
 indices and the read-only batch replay driver remain outside Git. The private
 driver rejects an existing run label rather than overwriting historical output.
 CI uses the small sanitized fixtures, not the original corpus.
+
+## Execution-path review, 2026-10-15
+
+This is a later observation, not a rewrite of the Phase 2A acceptance above.
+The reviewed starting Head is `045dffdec2a726cefd39c3b9d210da4115779df6`.
+Previously recorded WeChat browser acceptance and Audius live Batch audio success
+remain valid within their stated limits. They are not repeated in this review.
+
+### Actual paths
+
+Home/Batch use shared execution after matching, route selection and admission.
+Lab executes the selected provider through the same shared conversion, without
+saving a route. Matching/version checks alone do not prove extraction works.
+
+| Provider | Home / Batch and Lab | Native census | Offline replay |
+| --- | --- | --- | --- |
+| yt-dlp | Configured Python resolved from the approved command; `-I -B upstream_match_worker.py`; JSON identity/match/parse; bounded `parse_ytdlp`, metadata processing, optional `probe_ytdlp_result`, JSON, parent error mapping, candidates. | Same configured Python and isolation, but `upstream_census_worker.py` calls `parse_ytdlp(observe=...)` directly. It does not enter product `handle` or its post-extraction probe. | Captured extractor return enters real `parse_ytdlp` processing and shared conversion, not Worker main or post-extraction probe. |
+| gallery-dl | Same isolated match Worker/JSON transport, then real message iteration and compaction; no yt-dlp probe. | Census Worker observes messages before the same compactor. | Stored messages replace iteration; real compaction and shared conversion. No identity/launch evidence. |
+| ParseHub | Separate pinned Python, `-I -B upstream_parsehub_worker.py`; pin check, registry/match, parser call, body/type normalization, JSON. Lab uses this shared product bridge, not the legacy Lab parser path. | Separate pinned Python/census Worker; native observation precedes normalization. | Explicit allowlisted object reconstruction and normalization; no parser request or runtime handshake. |
+| videodl | Controlled Lab Worker via `[python, worker]` (not `-I`), exact pin/license checks, selected allowed Backend, bounded output, Worker normalization and shared mapping. | Explicit Backend in census Worker, native observation; not product admission/resource authorization. | Stored exported fields into real normalization and shared mapping; no Backend construction. |
+| TianTian | In-process client, actual configuration, account serial guard, POST/business unwrap, service normalization, shared candidates; Lab still requires service authorization. | Native capture uses a controlled Session with `trust_env=False`, TLS verification and raw-response observation. Product Session/environment handling is not identical. | Business validation/unwrap/normalization from saved data; no authentication, lock or live POST. |
+| Kukutool | Approved Node plus absolute helper and source argument; protocol discovery/auth/encryption/parse/decryption; bounded parent process and service normalization. | Same helper with capture/diagnostic output before product normalization. | Already decoded captured data; skips helper discovery, auth and decryption. |
+
+Python product/census subprocesses receive bounded stdin/stdout/stderr and time,
+temporary working directory/HOME and an allowlisted environment. Lab repository
+Workers additionally use temporary XDG directories. Kukutool has its existing
+allowlisted helper environment/profile cache. In-process TianTian is not claimed
+to have subprocess isolation. No paths were made artificially identical.
+
+The known sibling-import defect was introduced by `c74663de` (also present as
+`1d6e62c8`), reached main in squash `163119cb`, and was repaired by `045dffde`.
+Only the yt-dlp product parse path reaching the optional-probe loader crosses
+that location. Identity/version, gallery-dl, native census and offline conversion
+do not. Missing historical stack/path information is not reconstructed from a
+matching error code or version alone.
+
+### Additional counterexamples and minimal corrections
+
+1. An import failure after identity/matching, during extraction or postprocessing,
+   was mapped to `unavailable` and then `PROVIDER_NOT_CONFIGURED`. Actual isolated
+   yt-dlp and ParseHub child failures now preserve a fixed
+   `UPSTREAM_RUNTIME_IMPORT_ERROR` reason under `PROVIDER_EXECUTOR_FAILED`.
+   Initial missing-package checks remain `unavailable`. This classifies an error;
+   it does not repair an absent dependency or swallow the failure.
+2. A TianTian success wrapper containing only `data.audio_url` was not unwrapped:
+   the media-presence predicate omitted the audio aliases already handled by its
+   normalizer. The predicate now recognizes those four existing aliases.
+   Recognized business 451 without media still fails as unsupported.
+3. Shared videodl/service candidates could be audio while the outer ParseResult
+   claimed image. An all-audio result now has `post_type=audio`; video precedence
+   and ordered mixed/image candidates are unchanged. TianTian and Kukutool real
+   client/helper-boundary tests exercise this shared consumer path.
+
+The wrapper predicate dates to the existing TianTian client, while the shared
+non-video/image default is present in `720399ac` and merged in `e92bcb33`.
+These synthetic before/after counterexamples establish current code defects,
+not a count of historical real works affected by them. Existing captured service
+image/video returns remain in regression. No source/route/authorization is changed.
+
+### Process regression and evidence limits
+
+`xhs_download.tests_execution_path_parity` adds 15 cases to the existing full
+Django test entry, without Workflow changes: 13 launch subprocesses, one exercises
+the in-process TianTian client, and one checks safe error classification directly.
+A test-only bootstrap installs
+synthetic native extractors or final HTTP responses, then runs the actual Worker
+file as `__main__`. It does not pre-import the Worker/probe, inject the repository
+root, remove `-I/-B`, or replace handle/probe/serialization. DNS/connect denial
+is independent and scoped to test processes, never the daily 8000 process.
+
+Coverage includes audio, complete video, unknown-track probing, HTTP probe
+rejection retaining unknown facts, manifests/separate tracks, malformed optional
+metadata, real reduced gallery/ParseHub body fixtures, empty results, business
+refusal, local late import failure, timeout, clean temporary CWD and paths with
+spaces. An unmodified identity command is also run from two CWDs and explicitly
+does not count as extraction acceptance. Timeout/output/resource protections
+remain intact; no historical media URL is fetched.
+
+TianTian replaces only Session transport. Kukutool executes its real Node CLI
+with a test preload replacing final HTTP transport; the synthetic runtime-status
+selection is not a Node-version discovery test. CI has no videodl install, so its
+test stubs package identity and native Backend output while executing the actual
+Worker/protocol/normalizer; this is not proof of a real Backend implementation.
+Separate local check-only observations passed for both existing pinned ParseHub
+and videodl runtimes, without a source URL or parse.
+
+Full local validation: 2,551 Django tests, 372 Node tests and 30 independent
+Worker tests passed. Django check and migration drift passed (no migration).
+New remote parses, Provider attempts, downloads and mail sends: **0**.
+This review adds no new visual or live-service acceptance claim.
+
+Reproduce with the existing isolated test environment and pinned runtimes:
+
+```sh
+python manage.py test xhs_download.tests_execution_path_parity --noinput
+python manage.py test --noinput
+python -m unittest tools.tests_upstream_worker_quality -q
+node --test tests_js/*.test.js
+```
+
+Private historical review is a separate read-only `review_history.py` beside the
+existing replay evidence, not a new application or Scout interface. Its output
+must be a fresh directory; it verifies source hashes before/after, rejects a
+nonempty SQLite WAL/journal rather than ignoring it, and exports no source/media
+URLs, titles, credentials or response bodies. The local HTML/CSV are derived
+evidence, not replacement historical ledgers.
+
+### Historical failure review
+
+The current review reads all 5,627 census state rows, not only the 1,349 native
+archives. It includes 1,958 failed rows, of which 895 lack nonempty native input,
+377 state-only entries and two unresolved outcomes. Original status and time are
+not rewritten. All 5,357 original evidence-file hashes still match the freeze.
+The local history DB has 167 physical entries; 25 explicit imported links collapse
+to 142 logical records. Cross-source overlap alone is not used to merge calls.
+
+The failure/timeout/unknown subset contains 1,995 records under these explicit
+deduplication rules. Two independent evidence axes must not be conflated:
+
+| Evidence category | Records | Distinct source candidates | Recorded platform groups |
+| --- | ---: | ---: | ---: |
+| Specific probe-import defect: confirmed | 0 | 0 | 0 |
+| Specific probe-import defect: suspected with enough path evidence | 0 | 0 | 0 |
+| Specific probe-import defect: excluded by native-census path | 1,960 | 1,007 | 962 |
+| Specific probe-import defect: insufficient historical evidence | 35 | 14 | 10 |
+| Broader local execution problem: confirmed | 7 | 7 | 7 |
+| Broader local execution problem: suspected | 11 | 11 | 9 |
+| External error response observed, root cause not established | 1,039 | 997 | 955 |
+| Broader cause still insufficient | 938 | 807 | 765 |
+
+The first four rows form the specific-defect axis; the last four form a separate
+broader-evidence axis. Source/platform counts can overlap between categories and
+are not additive. Two failure-subset rows lack a source identity. Source hashes
+represent candidate works, not verified distinct works; platform groups can be
+recorded targets/aliases/hosts, not independently validated supported platforms.
+
+The seven confirmed local records comprise six recorded module-resolution
+failures (the missing module and ultimate installation/root cause remain unknown)
+and the preserved same-archive Audius optional-thumbnail counterexample. None is
+silently relabeled as the specific sibling-import incident. Eleven TypeError or
+AttributeError records are only suspected local failures. External business/HTTP
+errors prove an observed response, not permanent lack of platform support.
+The two original outcome-unknown calls remain unknown and are not resent.
+
+Theoretical exposure is the product yt-dlp post-extraction probe path during the
+identified commit interval, including Home/Batch and Lab consumers. It is not a
+historically confirmed affected-work count. The previous live Audius incident is
+documented separately from this census/history-ledger denominator.
