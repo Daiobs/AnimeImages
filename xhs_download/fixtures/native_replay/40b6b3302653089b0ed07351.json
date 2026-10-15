@@ -1,0 +1,66 @@
+{
+  "archive_key": "census-phase1b-v1:40b6b3302653089b0ed07351",
+  "sample_id": "372d7e846fa8cd46",
+  "provider": "tiantianjiexi_generic",
+  "source": "https://source.example/work/1",
+  "identity": "TARGET_CONFIRMED",
+  "execution_status": "RETURNED",
+  "records": [
+    {
+      "code": 200,
+      "data": {
+        "desc": "redacted-text",
+        "images": [
+          "https://media.example/asset-1.jpeg"
+        ],
+        "videos": [
+          {
+            "url": "http://media.example/asset-2.mp4",
+            "streams": [
+              {
+                "url": "http://media.example/asset-3.mp4",
+                "sizeInBytes": 256504206,
+                "qualityLabel": "360P"
+              },
+              {
+                "url": "http://media.example/asset-4.mp4",
+                "sizeInBytes": 441223813,
+                "qualityLabel": "480P"
+              },
+              {
+                "url": "http://media.example/asset-5.mp4",
+                "sizeInBytes": 441223813,
+                "qualityLabel": "540P"
+              },
+              {
+                "url": "http://media.example/asset-6.mp4",
+                "sizeInBytes": 940515424,
+                "qualityLabel": "720P"
+              },
+              {
+                "url": "http://media.example/asset-7.mp4",
+                "sizeInBytes": 1454895518,
+                "qualityLabel": "1080P"
+              },
+              {
+                "url": "http://media.example/asset-8.mp4",
+                "sizeInBytes": 2705867906,
+                "qualityLabel": "1080P+"
+              },
+              {
+                "url": "http://media.example/asset-2.mp4",
+                "sizeInBytes": 4428698300,
+                "qualityLabel": "2160P"
+              }
+            ]
+          }
+        ]
+      },
+      "msg": "success"
+    }
+  ],
+  "limitations": [
+    "URLs and prose replaced; secret markers retained; unused native internals omitted",
+    "No current resource authorization or delivery claim"
+  ]
+}

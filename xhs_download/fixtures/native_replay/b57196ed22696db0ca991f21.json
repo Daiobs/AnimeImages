@@ -1,0 +1,32 @@
+{
+  "archive_key": "census-phase1b-v1:b57196ed22696db0ca991f21",
+  "sample_id": "314d5a9c524290c2",
+  "provider": "parsehub_generic",
+  "source": "https://source.example/work/1",
+  "identity": "OBSERVED_TARGET_MEDIA",
+  "execution_status": "RETURNED",
+  "records": [
+    {
+      "_class": "RichTextParseResult",
+      "fields": {
+        "markdown_content": "![](https://media.example/asset-2)\n![](https://media.example/asset-3)\n![](https://media.example/asset-4)\n![](https://media.example/asset-5)\n![](https://media.example/asset-6)\n![](https://media.example/asset-7)\n![](https://media.example/asset-8)\n![](https://media.example/asset-9)\n![](https://media.example/asset-10)\n![](https://media.example/asset-11)\n![](https://media.example/asset-12)\n![](https://media.example/asset-13)\n![](https://media.example/asset-14)\n![](https://media.example/asset-15)\n![](https://media.example/asset-16)\n![](https://media.example/asset-17)\n![](https://media.example/asset-18)\n![](https://media.example/asset-19)\n![](https://media.example/asset-20)\n![](https://media.example/asset-21)\n![](https://media.example/asset-22)\n![](https://media.example/asset-23)\n![](https://media.example/asset-24)\n![](https://media.example/asset-25)\n![](https://media.example/asset-26)\n![](https://media.example/asset-27)\n![](https://media.example/asset-28)\n![](https://media.example/asset-29)\n![](https://media.example/asset-30)\n![](https://media.example/asset-31)",
+        "raw_url": "https://media.example/asset-32",
+        "title": "redacted-text",
+        "content": "redacted body",
+        "media": [],
+        "platform": {
+          "_class": "Platform",
+          "fields": {
+            "id": "redacted-text",
+            "display_name": "\u5fae\u4fe1\u516c\u4f17\u53f7"
+          }
+        },
+        "name": "redacted-text"
+      }
+    }
+  ],
+  "limitations": [
+    "URLs and prose replaced; secret markers retained; unused native internals omitted",
+    "No current resource authorization or delivery claim"
+  ]
+}

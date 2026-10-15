@@ -449,6 +449,7 @@
             ["音频编码", asset.acodec === "none" ? "无音轨" : asset.acodec || "未知"],
             ["帧率", asset.fps > 0 ? `${asset.fps} fps` : "未知"],
             ["码率", asset.bitrate > 0 ? `${asset.bitrate} kbps` : "未知"],
+            ["语言", asset.language || "未知"],
             ["内嵌视频轨 / 音频轨", `${trackLabel(asset.video_tracks)} / ${trackLabel(asset.audio_tracks)}`],
             ["交付", asset.delivery_state || "未知"],
             ["协议", asset.protocol || "未知"],

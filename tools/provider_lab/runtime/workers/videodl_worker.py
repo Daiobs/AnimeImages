@@ -310,14 +310,16 @@ def normalize_result(video_infos: object, request: dict) -> tuple[dict, list[dic
             explicit_audio = getattr(info, "audio_asset_present", None)
             requires_merge = explicit_merge if type(explicit_merge) is bool else True if paired else None
             audio_asset_present = explicit_audio if type(explicit_audio) is bool else True if paired else None
+        extension = getattr(info, "audio_ext", "") if role == "audio" else getattr(info, "ext", "")
+        if role == "cover":
+            path_extension = Path(urlsplit(url).path).suffix.lower().lstrip('.')
+            extension = path_extension if path_extension in {"jpg", "jpeg", "png", "webp", "gif", "avif"} else ""
         public, private = asset(
             asset_id=f"videodl-{len(public_assets) + 1}-{role}",
             url=url,
             media_type=media_type,
             role=role,
-            declared_extension=(
-                getattr(info, "audio_ext", "") if role == "audio" else getattr(info, "ext", "")
-            ),
+            declared_extension=extension,
             requires_merge=requires_merge,
             requires_cookie=bool(cookies),
             headers_present=bool(headers),

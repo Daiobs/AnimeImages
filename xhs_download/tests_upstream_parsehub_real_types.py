@@ -179,12 +179,58 @@ def isolated_suite():
             self.assertTrue(all("media_type_conflict" in r[2]["operation_restrictions"] for r in rows))
 
         def test_summary_has_no_html_or_recursive_urls(self):
-            value = RichTextParseResult(markdown_content="hello <script>secret()</script> ![](https://media.example/hidden.jpg)")
+            value = RichTextParseResult(markdown_content="hello <script>secret()</script> ![](https://media.example/hidden.jpg) [page](https://media.example/page)")
+            rows = self.normalize(value)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0][:2], [3, "https://media.example/hidden.jpg"])
+            self.assertNotIn("secret()", rows[0][2]["content_summary"])
+            self.assertNotIn("https://", rows[0][2]["content_summary"])
+            self.assertNotIn("<script", json.dumps(rows))
+
+        def test_body_image_extraction_does_not_execute_or_follow_links(self):
+            value = RichTextParseResult(markdown_content='<script><img src="https://media.example/script.jpg"></script><template><img src="https://media.example/template.jpg"></template>[page](https://media.example/page)')
             rows = self.normalize(value)
             self.assertEqual(rows[0][0], 2)
-            self.assertNotIn("secret()", rows[0][1]["content_summary"])
-            self.assertNotIn("https://", rows[0][1]["content_summary"])
-            self.assertNotIn("<script", json.dumps(rows))
+            with self.assertRaises(ValueError):
+                self.normalize(RichTextParseResult(markdown_content='![](http://127.0.0.1/private)'))
+
+        def test_body_image_placeholders_do_not_become_article_media(self):
+            from tools.native_result_replay import offline_network
+            for reference in ('', '   ', '#', '#placeholder', '  #placeholder  ',
+                              'data:image/gif;base64,not-base64', 'DATA:IMAGE/PNG;base64,not-base64'):
+                with self.subTest(reference=reference), offline_network():
+                    rows = self.normalize(RichTextParseResult(
+                        markdown_content=f'article <img src="{reference}">'))
+                    self.assertEqual([row[0] for row in rows], [2])
+            with offline_network():
+                rows = self.normalize(RichTextParseResult(markdown_content='article ![]() ![](#)'))
+            self.assertEqual([row[0] for row in rows], [2])
+
+        def test_body_placeholders_preserve_typed_media_order_and_identity(self):
+            from tools.native_result_replay import offline_network
+            shared = ImageRef(url=image, width=1200)
+            shared.role = 'cover'
+            trailing = [ImageRef(url='https://media.example/typed-1.jpg'),
+                        ImageRef(url='https://media.example/typed-2.jpg')]
+            value = RichTextParseResult(media=[trailing[0], shared, trailing[1]],
+                markdown_content=f'article <img src="data:image/gif;base64,not-base64"> '
+                    f'![](/body.jpg) ![]({image}) ![]() ![](#placeholder) '
+                    f'![](/body.jpg) ![]({image})')
+            with offline_network():
+                rows = self.normalize(value)
+            self.assertEqual([row[1] for row in rows],
+                             ['https://example.com/body.jpg', image, *[item.url for item in trailing]])
+            self.assertEqual(rows[1][2]['width'], 1200)
+            self.assertEqual(rows[1][2]['role'], 'cover')
+
+        def test_body_placeholder_filter_does_not_swallow_unsafe_urls(self):
+            from tools.native_result_replay import offline_network
+            for url in ('http://127.0.0.1/private', 'https://169.254.169.254/private',
+                        'http://[::1]/private', 'https://user:password@example.com/image.jpg',
+                        'data:text/html,not-an-image', 'file:///etc/passwd'):
+                with self.subTest(url=url), offline_network(), self.assertRaises(ValueError):
+                    self.normalize(RichTextParseResult(media=[ImageRef(url=image)],
+                        markdown_content=f'<img src="data:image/gif;base64,placeholder"> ![]({url})'))
 
         def test_limits_keep_prefix_and_validate_unsafe_tail(self):
             photos = [ImageRef(url=image, width=index + 1) for index in range(worker.MAX_ASSETS + 1)]

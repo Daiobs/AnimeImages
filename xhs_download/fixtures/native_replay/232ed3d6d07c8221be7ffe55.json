@@ -1,0 +1,146 @@
+{
+  "archive_key": "census-phase1b-v1:232ed3d6d07c8221be7ffe55",
+  "sample_id": "5e903f41c74bf6ae",
+  "provider": "gallery_dl_generic",
+  "source": "https://source.example/work/1",
+  "identity": "OBSERVED_TARGET_MEDIA",
+  "execution_status": "RETURNED",
+  "records": [
+    [
+      2,
+      "",
+      {
+        "challenges_won": null,
+        "id": 39965158,
+        "slug": "redacted-text",
+        "description": "redacted-text",
+        "width": 4096,
+        "height": 2304,
+        "status": "approved",
+        "created_at": "2026-10-01T20:30:11.000Z",
+        "updated_at": "2026-10-02T07:18:18.000Z",
+        "publish_at": "2026-10-02T08:00:28.965Z",
+        "feed_at": null,
+        "title": "redacted-text",
+        "aspect_ratio": 1.7777777777777777,
+        "license": "Pexels",
+        "published": true,
+        "starred": true,
+        "pending": false,
+        "liked": false,
+        "collection_ids": [],
+        "donate_url": "https://media.example/asset-1",
+        "reactions": {
+          "emotional": {
+            "reacted": false,
+            "count": 0,
+            "highlighted_reactors": []
+          },
+          "technical": {
+            "reacted": false,
+            "count": 0,
+            "highlighted_reactors": []
+          },
+          "stylistic": {
+            "reacted": false,
+            "count": 0,
+            "highlighted_reactors": []
+          }
+        },
+        "main_color": [
+          141,
+          153,
+          153
+        ],
+        "image": {
+          "small": "https://media.example/asset-2.jpeg",
+          "medium": "https://media.example/asset-3.jpeg",
+          "large": "https://media.example/asset-4.jpeg",
+          "download": "https://media.example/asset-5",
+          "download_link": "https://media.example/asset-6.jpeg"
+        },
+        "alt": "Tranquil lake reflecting lush landscape and mountainous terrain under cloudy sky.",
+        "colors": [
+          "#262c18",
+          "#66632c",
+          "#778082",
+          "#bfced9"
+        ],
+        "canva_tools": null,
+        "type": "photo",
+        "date": "2026-10-01T20:30:11"
+      }
+    ],
+    [
+      3,
+      "https://media.example/asset-7.jpeg",
+      {
+        "challenges_won": null,
+        "id": 39965158,
+        "slug": "redacted-text",
+        "description": "redacted-text",
+        "width": 4096,
+        "height": 2304,
+        "status": "approved",
+        "created_at": "2026-10-01T20:30:11.000Z",
+        "updated_at": "2026-10-02T07:18:18.000Z",
+        "publish_at": "2026-10-02T08:00:28.965Z",
+        "feed_at": null,
+        "title": "redacted-text",
+        "aspect_ratio": 1.7777777777777777,
+        "license": "Pexels",
+        "published": true,
+        "starred": true,
+        "pending": false,
+        "liked": false,
+        "collection_ids": [],
+        "donate_url": "https://media.example/asset-1",
+        "reactions": {
+          "emotional": {
+            "reacted": false,
+            "count": 0,
+            "highlighted_reactors": []
+          },
+          "technical": {
+            "reacted": false,
+            "count": 0,
+            "highlighted_reactors": []
+          },
+          "stylistic": {
+            "reacted": false,
+            "count": 0,
+            "highlighted_reactors": []
+          }
+        },
+        "main_color": [
+          141,
+          153,
+          153
+        ],
+        "image": {
+          "small": "https://media.example/asset-2.jpeg",
+          "medium": "https://media.example/asset-3.jpeg",
+          "large": "https://media.example/asset-4.jpeg",
+          "download": "https://media.example/asset-5",
+          "download_link": "https://media.example/asset-6.jpeg"
+        },
+        "alt": "Tranquil lake reflecting lush landscape and mountainous terrain under cloudy sky.",
+        "colors": [
+          "#262c18",
+          "#66632c",
+          "#778082",
+          "#bfced9"
+        ],
+        "canva_tools": null,
+        "type": "photo",
+        "date": "2026-10-01T20:30:11",
+        "filename": "redacted-text",
+        "extension": "jpg"
+      }
+    ]
+  ],
+  "limitations": [
+    "URLs and prose replaced; secret markers retained; unused native internals omitted",
+    "No current resource authorization or delivery claim"
+  ]
+}

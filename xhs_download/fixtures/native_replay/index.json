@@ -1,0 +1,92 @@
+[
+  {
+    "file": "421dcc02aca139ef0727c86a.json",
+    "provider": "yt_dlp_generic",
+    "archive_key": "census-phase1-v1:421dcc02aca139ef0727c86a",
+    "sample_id": "5113fd817e1d0f9e"
+  },
+  {
+    "file": "5d6c88d0a3cb75de9a7b28d4.json",
+    "provider": "gallery_dl_generic",
+    "archive_key": "census-phase1-v1:5d6c88d0a3cb75de9a7b28d4",
+    "sample_id": "07bb7bd36a94f974"
+  },
+  {
+    "file": "88e9b92a7c517fb33ce435a4.json",
+    "provider": "yt_dlp_generic",
+    "archive_key": "census-phase1-v1:88e9b92a7c517fb33ce435a4",
+    "sample_id": "f208799074e8388e"
+  },
+  {
+    "file": "996ddbca94d3f56df92eba8d.json",
+    "provider": "videodl_repo",
+    "archive_key": "census-phase1-v1:996ddbca94d3f56df92eba8d",
+    "sample_id": "dabf44819acca428"
+  },
+  {
+    "file": "3f3b2e281194564de69755e1.json",
+    "provider": "gallery_dl_generic",
+    "archive_key": "census-phase1-v1:3f3b2e281194564de69755e1",
+    "sample_id": "362b87b6bb8d9cae"
+  },
+  {
+    "file": "50db251dc5c7b043b8feb342.json",
+    "provider": "videodl_repo",
+    "archive_key": "census-phase1-v1:50db251dc5c7b043b8feb342",
+    "sample_id": "6fe36f412d0a7fc9"
+  },
+  {
+    "file": "40b6b3302653089b0ed07351.json",
+    "provider": "tiantianjiexi_generic",
+    "archive_key": "census-phase1b-v1:40b6b3302653089b0ed07351",
+    "sample_id": "372d7e846fa8cd46"
+  },
+  {
+    "file": "1d723e3f60f5f7b7634cd84a.json",
+    "provider": "kukutool_generic",
+    "archive_key": "census-phase1b-v1:1d723e3f60f5f7b7634cd84a",
+    "sample_id": "372d7e846fa8cd46"
+  },
+  {
+    "file": "9e5cb53d95362646ed898dd6.json",
+    "provider": "videodl_repo",
+    "archive_key": "census-phase1b-v1:9e5cb53d95362646ed898dd6",
+    "sample_id": "859b9f1d61a1d625"
+  },
+  {
+    "file": "f0464caa40e3f2debb792893.json",
+    "provider": "videodl_repo",
+    "archive_key": "census-phase1b-v1:f0464caa40e3f2debb792893",
+    "sample_id": "c23ad3f38388b03a"
+  },
+  {
+    "file": "e162b21c7cd6812ff941e9cc.json",
+    "provider": "tiantianjiexi_generic",
+    "archive_key": "census-phase1b-v1:e162b21c7cd6812ff941e9cc",
+    "sample_id": "c23ad3f38388b03a"
+  },
+  {
+    "file": "b57196ed22696db0ca991f21.json",
+    "provider": "parsehub_generic",
+    "archive_key": "census-phase1b-v1:b57196ed22696db0ca991f21",
+    "sample_id": "314d5a9c524290c2"
+  },
+  {
+    "file": "2fb71c141a4a5cd6bb02efa4.json",
+    "provider": "parsehub_generic",
+    "archive_key": "census-phase1b-v1:2fb71c141a4a5cd6bb02efa4",
+    "sample_id": "a7eb50888e47acb0"
+  },
+  {
+    "file": "232ed3d6d07c8221be7ffe55.json",
+    "provider": "gallery_dl_generic",
+    "archive_key": "census-phase1b-v1:232ed3d6d07c8221be7ffe55",
+    "sample_id": "5e903f41c74bf6ae"
+  },
+  {
+    "file": "0151880293e8f4148ded3846.json",
+    "provider": "videodl_repo",
+    "archive_key": "census-phase1b-v1:0151880293e8f4148ded3846",
+    "sample_id": "c51a332abacfc7a4"
+  }
+]

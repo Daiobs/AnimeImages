@@ -1,0 +1,33 @@
+{
+  "archive_key": "census-phase1b-v1:e162b21c7cd6812ff941e9cc",
+  "sample_id": "c23ad3f38388b03a",
+  "provider": "tiantianjiexi_generic",
+  "source": "https://source.example/work/1",
+  "identity": "TARGET_CONFIRMED",
+  "execution_status": "RETURNED",
+  "records": [
+    {
+      "code": 200,
+      "data": {
+        "desc": "redacted-text",
+        "images": [
+          "https://media.example/asset-1.jpg",
+          "https://media.example/asset-2.jpg",
+          "https://media.example/asset-3.jpg",
+          "https://media.example/asset-4.jpg",
+          "https://media.example/asset-5.jpg",
+          "https://media.example/asset-6.jpg",
+          "https://media.example/asset-7.jpg",
+          "https://media.example/asset-8.jpg",
+          "https://media.example/asset-9.jpg"
+        ],
+        "videos": []
+      },
+      "msg": "success"
+    }
+  ],
+  "limitations": [
+    "URLs and prose replaced; secret markers retained; unused native internals omitted",
+    "No current resource authorization or delivery claim"
+  ]
+}

@@ -340,8 +340,16 @@ def normalize_upstream_result(payload, *, match, source_url):
         media_type = str(metadata.get('media_type') or metadata.get('type') or '')
         if media_type not in {'image', 'video', 'audio'}:
             media_type = media_type_from_metadata(metadata, url)
+        if not media_type and (
+                str(metadata.get('extension') or metadata.get('ext') or '').lower().lstrip('.')
+                in {'m4a', 'mp3', 'aac', 'ogg', 'opus', 'flac', 'wav'}
+                or str(metadata.get('mime_type') or metadata.get('mime') or '').lower().startswith('audio/')):
+            media_type = 'audio'
         if provider == 'yt_dlp_generic':
-            media_type = 'audio' if metadata.get('vcodec') == 'none' else 'video'
+            if metadata.get('vcodec') == 'none':
+                media_type = 'audio'
+            elif media_type not in {'image', 'audio'}:
+                media_type = 'video'
         if media_type not in {'image', 'video', 'audio'}:
             media_type = 'unknown'
         state = 'image' if media_type == 'image' else video_evidence_state({**metadata, 'url': url})
@@ -370,7 +378,9 @@ def normalize_upstream_result(payload, *, match, source_url):
             # Admission failure limits actions; it does not erase a successful parse.
             pass
     return ParseResult(
-        platform='third_party', post_type='video' if any(c['media_type'] == 'video' for c in candidates) else 'image',
+        platform='third_party', post_type=('video' if any(c['media_type'] == 'video' for c in candidates)
+                                          else 'audio' if all(c['media_type'] == 'audio' for c in candidates)
+                                          else 'image'),
         base_filename=clean_filename(str(title))[:180] or 'media', assets=assets,
         metadata=dict(
             source_platform='upstream', source_platform_name=match.get('label', provider),

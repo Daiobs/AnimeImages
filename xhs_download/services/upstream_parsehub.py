@@ -48,7 +48,8 @@ def _call(request, timeout):
                    "execution_guard", "extractor_mismatch", "identity_mismatch", "no_formats",
                    "output_limit", "request_limit", "insecure_media", "unsupported_result", "media_type_conflict",
                    "auth_required", "access_denied", "tls_error", "upstream_unavailable",
-                   "delegation_limit", "redirect_limit", "scope_limited", "invalid_url"}
+                   "delegation_limit", "redirect_limit", "scope_limited", "invalid_url",
+                   "runtime_import_error"}
         code = data.get("error") if isinstance(data, dict) else None
         stage = data.get("stage") if isinstance(data, dict) else None
         error_class = data.get("error_class", "") if isinstance(data, dict) else ""

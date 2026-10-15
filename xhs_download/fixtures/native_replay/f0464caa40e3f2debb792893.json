@@ -1,0 +1,52 @@
+{
+  "archive_key": "census-phase1b-v1:f0464caa40e3f2debb792893",
+  "sample_id": "c23ad3f38388b03a",
+  "provider": "videodl_repo",
+  "source": "https://source.example/work/1",
+  "identity": "OBSERVED_TARGET_MEDIA",
+  "execution_status": "FAILED",
+  "records": [
+    [
+      {
+        "_class": "VideoInfo",
+        "fields": {
+          "source": "WeiboVideoClient",
+          "title": "",
+          "cover_url": null,
+          "err_msg": "WeiboVideoClient._parsefromurlwithmweibo >>> RkWevk3D3 (Error: 'urls')",
+          "download_url": "",
+          "default_download_headers": {
+            "_redacted": "NoneType"
+          },
+          "default_download_cookies": {
+            "_redacted": "NoneType"
+          },
+          "audio_download_url": "",
+          "default_audio_download_headers": {
+            "_redacted": "NoneType"
+          },
+          "default_audio_download_cookies": {
+            "_redacted": "NoneType"
+          },
+          "ext": "mp4",
+          "save_path": "",
+          "guess_video_ext_result": {},
+          "audio_ext": "m4a",
+          "audio_save_path": "",
+          "guess_audio_ext_result": {},
+          "download_with_ffmpeg": false,
+          "ffmpeg_settings": {},
+          "enable_nm3u8dlre": null,
+          "nm3u8dlre_settings": {},
+          "download_with_aria2c": false,
+          "aria2c_settings": {},
+          "identifier": ""
+        }
+      }
+    ]
+  ],
+  "limitations": [
+    "URLs and prose replaced; secret markers retained; unused native internals omitted",
+    "No current resource authorization or delivery claim"
+  ]
+}

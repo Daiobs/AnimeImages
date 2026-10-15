@@ -62,10 +62,18 @@ def _candidate_record(url, metadata, *, ordinal, provider, source_url, media_typ
             headers[name] = value
     headers_present = bool(supplied_headers) or metadata.get('headers_present') is True
     requires_cookie = metadata.get('requires_cookie') is True or any(name.lower() == 'cookie' for name in headers)
+    protocol = metadata.get('protocol')
+    path = urlsplit(url).path.lower()
+    if not protocol:
+        protocol = ('m3u8' if path.endswith('.m3u8') else 'dash' if path.endswith('.mpd')
+                    else urlsplit(url).scheme)
+    if state == 'candidate_only' and ('m3u8' in str(protocol) or 'dash' in str(protocol)):
+        state = 'streaming_media'
     public = {
         'candidate_id': key, 'ordinal': ordinal, 'provider_id': provider,
         'media_type': media_type, 'delivery_state': state,
-        'protocol': safe_public_text(metadata.get('protocol') or urlsplit(url).scheme, 40),
+        'protocol': safe_public_text(protocol, 40),
+        'language': safe_public_text(metadata.get('language'), 80) or None,
         'format_label': safe_public_text(metadata.get('format_note') or metadata.get('quality_label')
                                          or metadata.get('format_id'), 120),
         'extension': safe_public_text(metadata.get('ext') or metadata.get('extension'), 16),

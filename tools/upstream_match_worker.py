@@ -3,6 +3,7 @@
 import contextlib
 import http.client
 import importlib.metadata
+import importlib.util
 import ipaddress
 import json
 import math
@@ -121,7 +122,12 @@ def safe_error(error, stage=None, _depth=0):
         if isinstance(error, (TimeoutError, subprocess.TimeoutExpired)) or "Timeout" in name:
             code = "network_timeout"
         elif isinstance(error, (ImportError, importlib.metadata.PackageNotFoundError)):
-            code = "unavailable"
+            # Identity/package availability is not a successful runtime check.
+            # Imports reached during extraction/postprocessing are local execution
+            # failures, not evidence that the configured provider is absent.
+            code = ("runtime_import_error" if stage in {
+                "ytdlp_extract", "ytdlp_result", "ytdlp_probe", "gallery_extract", "parse"
+            } else "unavailable")
         elif name in {"SSLError", "SSLCertVerificationError", "CertificateVerifyError"}:
             code = "tls_error"
         elif name in {"LoginRequired", "AuthenticationError", "AuthorizationError"}:
@@ -551,6 +557,12 @@ def parse_ytdlp(cls, url, timeout, observe=None):
         def process_video_result(self, payload, download=False):
             if observe is not None:
                 observe(payload)
+            # Some native extractors return a list-valued optional thumbnail URL.
+            # It is not a media format; preserve the capture but do not let this
+            # malformed decoration abort otherwise valid media processing.
+            if isinstance(payload.get('thumbnails'), list):
+                payload = {**payload, 'thumbnails': [item for item in payload['thumbnails']
+                    if isinstance(item, dict) and isinstance(item.get('url'), str) and item['url']]}
             self.items += 1
             if self.items > MAX_ITEMS:
                 raise ValueError("item_limit")
@@ -682,7 +694,17 @@ def parse_gallery(cls, url, timeout, observe=None):
                 validate_media_url(message[1])
             elif len(result) - media_count >= MAX_ITEMS:
                 raise ValueError("item_limit")
-            message = [*message[:-1], compact_descriptor(message[-1])]
+            metadata = message[-1]
+            if message[0] == Message.Url and isinstance(metadata, dict):
+                file = metadata.get('file')
+                if isinstance(file, dict) and file.get('url') == message[1]:
+                    # A scoped file descriptor belongs to this exact message,
+                    # unlike siblings, thumbnails or lazy fallback variants.
+                    metadata = {**{key: file[key] for key in
+                        ('width', 'height', 'duration', 'ext', 'extension', 'mime_type',
+                         'vcodec', 'acodec', 'language', 'filesize', 'filesize_approx', 'protocol')
+                        if key in file}, **metadata}
+            message = [*message[:-1], compact_descriptor(metadata)]
             serialized = json.dumps(message, default=util.json_default)
             output_bytes += len(serialized.encode())
             if output_bytes > MAX_OUTPUT - 4096:
@@ -714,11 +736,18 @@ def probe_ytdlp_result(payload, *, deadline, budget):
     if not isinstance(payload, dict) or payload.get('_type', 'video') not in ('video', None):
         return
     try:
-        from tools.upstream_metadata_probe import MAX_BYTES, MAX_REQUESTS as PROBE_REQUESTS, probe_in_guarded_child
-    except ModuleNotFoundError:
-        from upstream_metadata_probe import MAX_BYTES, MAX_REQUESTS as PROBE_REQUESTS, probe_in_guarded_child
-    if (time.monotonic() >= deadline or budget['requests'] + PROBE_REQUESTS > MAX_REQUESTS
-            or max(budget['bytes'], budget['decoded_bytes']) + PROBE_REQUESTS * MAX_BYTES > MAX_BODY):
+        from tools import upstream_metadata_probe as probe
+    except ModuleNotFoundError as error:
+        if error.name not in {'tools', 'tools.upstream_metadata_probe'}:
+            raise
+        # -I excludes both the project and script directory from sys.path.
+        # Load only this trusted sibling, without broadening the import path.
+        spec = importlib.util.spec_from_file_location(
+            'upstream_metadata_probe', Path(__file__).resolve().with_name('upstream_metadata_probe.py'))
+        probe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(probe)
+    if (time.monotonic() >= deadline or budget['requests'] + probe.MAX_REQUESTS > MAX_REQUESTS
+            or max(budget['bytes'], budget['decoded_bytes']) + probe.MAX_REQUESTS * probe.MAX_BYTES > MAX_BODY):
         return
     candidates = []
     for item in payload.get('formats') or [payload]:
@@ -731,7 +760,7 @@ def probe_ytdlp_result(payload, *, deadline, budget):
             candidates.append(item)
     if candidates:
         candidate = max(candidates, key=lambda item: item.get('height') or 0)
-        candidate['upstream_bmff_track_evidence'] = probe_in_guarded_child(
+        candidate['upstream_bmff_track_evidence'] = probe.probe_in_guarded_child(
             candidate['url'], deadline_monotonic=deadline)
 
 
@@ -782,6 +811,7 @@ def handle(request):
         payload = (parse_ytdlp if provider == "yt_dlp_generic" else parse_gallery)(exact[0], url, timeout)
     if provider == "yt_dlp_generic":
         # The probe owns its hard timer; the child network guard remains installed.
+        _STAGE = "ytdlp_probe"
         probe_ytdlp_result(payload, deadline=deadline, budget=budget)
     return payload
 

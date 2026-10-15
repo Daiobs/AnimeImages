@@ -1,0 +1,55 @@
+{
+  "archive_key": "census-phase1-v1:88e9b92a7c517fb33ce435a4",
+  "sample_id": "f208799074e8388e",
+  "provider": "yt_dlp_generic",
+  "source": "https://source.example/work/1",
+  "identity": "OBSERVED_TARGET_MEDIA",
+  "execution_status": "FAILED",
+  "records": [
+    {
+      "id": "redacted-text",
+      "title": "redacted-text",
+      "url": "https://media.example/asset-1",
+      "ext": "mp3",
+      "description": "redacted-text",
+      "duration": 30,
+      "track": "[redacted]",
+      "artist": "test",
+      "genre": "Electronic",
+      "thumbnails": [
+        {
+          "url": "https://media.example/asset-2.jpg",
+          "preference": 150
+        },
+        {
+          "url": "https://media.example/asset-3.jpg",
+          "preference": 480
+        },
+        {
+          "url": "https://media.example/asset-4.jpg",
+          "preference": 1000
+        },
+        {
+          "url": [
+            "https://media.example/asset-5",
+            "https://media.example/asset-6",
+            "https://media.example/asset-7"
+          ]
+        }
+      ],
+      "view_count": 9015,
+      "like_count": 3,
+      "repost_count": 1,
+      "webpage_url": "https://media.example/asset-8",
+      "original_url": "https://media.example/asset-8",
+      "webpage_url_basename": "redacted-text",
+      "webpage_url_domain": "redacted-text",
+      "extractor": "redacted-text",
+      "extractor_key": "redacted-text"
+    }
+  ],
+  "limitations": [
+    "URLs and prose replaced; secret markers retained; unused native internals omitted",
+    "No current resource authorization or delivery claim"
+  ]
+}

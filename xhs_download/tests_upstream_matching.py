@@ -351,6 +351,57 @@ class IsolatedGuardTests(SimpleTestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return completed.stdout
 
+    def test_isolated_ytdlp_audio_result_does_not_fail_optional_probe_import(self):
+        self.child("""
+import json, time
+w.install_network_guard(offline=True)
+payload = {'id': 'audio', 'formats': [{'url': 'https://example.org/audio.mp3',
+    'ext': 'mp3', 'protocol': 'https', 'acodec': 'mp3', 'vcodec': 'none'}]}
+before = json.dumps(payload, sort_keys=True)
+w.probe_ytdlp_result(payload, deadline=time.monotonic() + 3,
+    budget={'requests': 0, 'bytes': 0, 'decoded_bytes': 0})
+assert json.dumps(payload, sort_keys=True) == before
+""")
+
+    def test_isolated_optional_probe_loads_trusted_sibling_with_network_guard(self):
+        self.child("""
+import time
+w.install_network_guard(offline=True)
+payload = {'id': 'video', 'formats': [{'url': 'https://example.org/video.mp4',
+    'ext': 'mp4', 'protocol': 'https',
+    'upstream_track_evidence': {'acodec': None, 'vcodec': None}}]}
+w.probe_ytdlp_result(payload, deadline=time.monotonic() + 3,
+    budget={'requests': 0, 'bytes': 0, 'decoded_bytes': 0})
+evidence = payload['formats'][0]['upstream_bmff_track_evidence']
+assert evidence['complete_moov'] is False
+assert evidence['audio'] == evidence['video'] == 'unknown'
+assert evidence['bytes_read'] == 0
+assert payload['formats'][0]['upstream_track_evidence']['acodec'] is None
+""")
+
+    def test_isolated_handle_preserves_audio_after_ytdlp_processing(self):
+        self.child("""
+from yt_dlp.extractor.common import InfoExtractor
+class FixtureIE(InfoExtractor):
+    _VALID_URL = r'https://example.org/(?P<id>audio)'
+    def _real_extract(self, url):
+        return {'id': 'audio', 'title': 'Synthetic audio', 'formats': [{
+            'url': 'https://example.org/audio.mp3', 'ext': 'mp3',
+            'vcodec': 'none', 'acodec': 'mp3', 'language': 'en'}]}
+w.package_identity = lambda provider: {'version': 'fixture'}
+w.extractor_classes = lambda provider: [FixtureIE]
+w.install_network_guard(offline=True)
+result = w.handle({'action': 'parse', 'provider_id': 'yt_dlp_generic',
+    'version': 'fixture', 'extractor_id': FixtureIE.ie_key(),
+    'url': 'https://example.org/audio', 'timeout_seconds': 3})
+assert result['id'] == 'audio'
+assert len(result['formats']) == 1
+assert result['formats'][0]['ext'] == 'mp3'
+assert result['formats'][0]['language'] == 'en'
+assert result['formats'][0]['upstream_track_evidence']['vcodec'] == 'none'
+assert 'upstream_bmff_track_evidence' not in result['formats'][0]
+""")
+
     def test_offline_denies_socket_and_dns_without_touching_parent(self):
         import socket
         before = socket.socket.connect
