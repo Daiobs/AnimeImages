@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import replace
+from threading import Event
 import time
 
 from ..common import XhsParseError
@@ -71,15 +72,28 @@ def parse_independent(url, *, native_parse, provider_ids, deadline_monotonic=Non
     if not providers:
         return native_parse(deadline)
 
+    # Leave selection/display assembly time inside the existing hard deadline.
+    # Short budgets scale down; long requests reserve at most 250ms.
+    work_deadline = deadline - min(.25, (deadline - started) * .2)
+    stop_waiting = Event()
+    service_started = Event()
+
+    def has_media(result):
+        return result is not None and bool(
+            result.assets or (result.metadata or {}).get("upstream_candidates"))
+
     def service_parse():
         for provider in providers:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            remaining = work_deadline - time.monotonic()
+            # _execute_service clamps smaller timeouts to 100ms. Do not start
+            # an attempt that would exceed its allotted remaining budget.
+            if stop_waiting.is_set() or remaining < .1:
                 break
             try:
+                service_started.set()
                 result = execute_provider(provider, url, timeout_seconds=min(20, remaining),
                                           service_authorized=True)
-                if result.assets or (result.metadata or {}).get("upstream_candidates"):
+                if has_media(result):
                     return result
             except Exception:
                 # Never expose signed URLs or service exceptions to the public page.
@@ -87,16 +101,19 @@ def parse_independent(url, *, native_parse, provider_ids, deadline_monotonic=Non
         return None
 
     executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="xhs-independent")
-    native = executor.submit(native_parse, deadline)
+    native = executor.submit(native_parse, work_deadline)
     service = executor.submit(service_parse)
     try:
-        done, _ = wait((native, service), timeout=max(0, deadline - time.monotonic()))
+        done, _ = wait((native, service), timeout=max(0, work_deadline - time.monotonic()))
+        stop_waiting.set()
         native_result, native_error = None, None
         if native in done:
             try:
                 native_result = native.result()
             except Exception as error:
                 native_error = error
+        if not has_media(native_result):
+            native_result = None
         service_result = service.result() if service in done else None
         # Only Native's exact item snapshot can establish a LivePhoto pair.
         selected = (native_result if native_result is not None and (
@@ -124,11 +141,18 @@ def parse_independent(url, *, native_parse, provider_ids, deadline_monotonic=Non
             return replace(selected, metadata={**metadata,
                 "xhs_independent_source": "service" if selected is service_result else "native",
                 "xhs_native_status": "failed" if native_error else "completed" if native in done else "deadline",
-                "xhs_service_status": "candidates" if service_result else "unavailable" if service in done else "deadline"})
+                "xhs_service_status": ("candidates" if service_result else
+                    "not_started_budget" if not service_started.is_set() else
+                    "unavailable" if service in done else "deadline")})
         if native_error is not None:
             raise native_error
+        if native in done and service in done:
+            raise XhsParseError("小红书未返回可用素材。")
         raise XhsParseError("小红书解析超时，请稍后再试。")
     finally:
+        # Stopping this request's wait does not terminate an in-flight HTTP call.
+        # Its own timeout/account lock remains in charge; no next service starts.
+        stop_waiting.set()
         native.cancel()
         service.cancel()
         executor.shutdown(wait=False, cancel_futures=True)
