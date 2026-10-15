@@ -4233,11 +4233,11 @@ def apply_search_result_to_context(
         )
         set_result_provider_notice(
             context,
-            ("已保留可用图片；另有视频因轨道信息不足暂不提供下载。"
+            ("已保留媒体与格式候选；保存限制以各候选状态为准。"
              if result_metadata.get("limited_media_count") else
              "本次已解析到可用资源，资源可用性取决于原始页面。"),
             (
-                ("已保留可用图片；另有视频因轨道信息不足暂不提供下载。" if result_metadata.get("limited_media_count") else "")
+                ("已保留媒体与格式候选；保存限制以各候选状态为准。" if result_metadata.get("limited_media_count") else "")
                 + f"本次由 {provider_label} 第三方解析，"
                 "资源可用性取决于上游平台。"
             ),

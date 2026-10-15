@@ -3,6 +3,7 @@
 import contextlib
 import http.client
 import importlib.metadata
+import importlib.util
 import ipaddress
 import json
 import math
@@ -730,11 +731,18 @@ def probe_ytdlp_result(payload, *, deadline, budget):
     if not isinstance(payload, dict) or payload.get('_type', 'video') not in ('video', None):
         return
     try:
-        from tools.upstream_metadata_probe import MAX_BYTES, MAX_REQUESTS as PROBE_REQUESTS, probe_in_guarded_child
-    except ModuleNotFoundError:
-        from upstream_metadata_probe import MAX_BYTES, MAX_REQUESTS as PROBE_REQUESTS, probe_in_guarded_child
-    if (time.monotonic() >= deadline or budget['requests'] + PROBE_REQUESTS > MAX_REQUESTS
-            or max(budget['bytes'], budget['decoded_bytes']) + PROBE_REQUESTS * MAX_BYTES > MAX_BODY):
+        from tools import upstream_metadata_probe as probe
+    except ModuleNotFoundError as error:
+        if error.name not in {'tools', 'tools.upstream_metadata_probe'}:
+            raise
+        # -I excludes both the project and script directory from sys.path.
+        # Load only this trusted sibling, without broadening the import path.
+        spec = importlib.util.spec_from_file_location(
+            'upstream_metadata_probe', Path(__file__).resolve().with_name('upstream_metadata_probe.py'))
+        probe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(probe)
+    if (time.monotonic() >= deadline or budget['requests'] + probe.MAX_REQUESTS > MAX_REQUESTS
+            or max(budget['bytes'], budget['decoded_bytes']) + probe.MAX_REQUESTS * probe.MAX_BYTES > MAX_BODY):
         return
     candidates = []
     for item in payload.get('formats') or [payload]:
@@ -747,7 +755,7 @@ def probe_ytdlp_result(payload, *, deadline, budget):
             candidates.append(item)
     if candidates:
         candidate = max(candidates, key=lambda item: item.get('height') or 0)
-        candidate['upstream_bmff_track_evidence'] = probe_in_guarded_child(
+        candidate['upstream_bmff_track_evidence'] = probe.probe_in_guarded_child(
             candidate['url'], deadline_monotonic=deadline)
 
 

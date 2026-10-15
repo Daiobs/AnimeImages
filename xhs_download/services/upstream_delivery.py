@@ -378,7 +378,9 @@ def normalize_upstream_result(payload, *, match, source_url):
             # Admission failure limits actions; it does not erase a successful parse.
             pass
     return ParseResult(
-        platform='third_party', post_type='video' if any(c['media_type'] == 'video' for c in candidates) else 'image',
+        platform='third_party', post_type=('video' if any(c['media_type'] == 'video' for c in candidates)
+                                          else 'audio' if all(c['media_type'] == 'audio' for c in candidates)
+                                          else 'image'),
         base_filename=clean_filename(str(title))[:180] or 'media', assets=assets,
         metadata=dict(
             source_platform='upstream', source_platform_name=match.get('label', provider),

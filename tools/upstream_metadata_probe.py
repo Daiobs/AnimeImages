@@ -1,6 +1,8 @@
 """Optional ISO BMFF track evidence; networking is child-only and never relays media."""
 
 from dataclasses import dataclass
+import importlib.util
+from pathlib import Path
 import re
 import signal
 import socket
@@ -141,8 +143,14 @@ def probe_in_guarded_child(url, *, deadline_monotonic):
     import urllib.error
     try:
         from tools.upstream_match_worker import validate_url
-    except ModuleNotFoundError:
-        from upstream_match_worker import validate_url
+    except ModuleNotFoundError as error:
+        if error.name not in {'tools', 'tools.upstream_match_worker'}:
+            raise
+        spec = importlib.util.spec_from_file_location(
+            'upstream_match_worker', Path(__file__).resolve().with_name('upstream_match_worker.py'))
+        worker = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(worker)
+        validate_url = worker.validate_url
 
     if threading.current_thread() is not threading.main_thread():
         raise RuntimeError("probe_requires_child_main_thread")

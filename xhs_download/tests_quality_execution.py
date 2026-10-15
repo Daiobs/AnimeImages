@@ -152,15 +152,31 @@ class SharedQualityExecutionTests(SimpleTestCase):
             ('parsehub_generic', 'xhs_download.services.upstream_parsehub._call', ParseHubBridgeError),
             ('yt_dlp_generic', 'xhs_download.services.upstream_matching._context', UpstreamMatchingError),
         ):
-            for code in ('access_denied', 'auth_required', 'tls_error', 'identity_mismatch'):
+            for code in ('access_denied', 'auth_required', 'tls_error', 'identity_mismatch',
+                         'unavailable', 'version_changed', 'executor_unavailable', 'disabled'):
                 with self.subTest(provider=provider, code=code), patch(target, side_effect=error_type(code)):
                     with self.assertRaises(ProviderLabError) as caught:
                         execution._execute_upstream(provider, SOURCE, 10)
                     self.assertEqual(caught.exception.detail, 'UPSTREAM_' + code.upper())
-            with patch(target, side_effect=error_type('https://private.example/?token=secret')):
+            with patch(target, side_effect=error_type('https://private.example/?token=secret')), \
+                    self.assertLogs(execution.logger, level='WARNING') as logged:
                 with self.assertRaises(ProviderLabError) as caught:
                     execution._execute_upstream(provider, SOURCE, 10)
                 self.assertEqual(caught.exception.detail, '')
+            self.assertNotIn('private.example', ' '.join(logged.output))
+            self.assertNotIn('token=secret', ' '.join(logged.output))
+
+    def test_worker_import_failure_stage_is_logged_without_exception_text(self):
+        from .services.upstream_matching import UpstreamMatchingError
+        error = UpstreamMatchingError('unavailable', stage='ytdlp_result',
+                                      error_class='ModuleNotFoundError')
+        with patch('xhs_download.services.upstream_matching._context', side_effect=error), \
+                self.assertLogs(execution.logger, level='WARNING') as logged:
+            with self.assertRaises(ProviderLabError) as caught:
+                execution._execute_upstream('yt_dlp_generic', SOURCE, 10)
+        self.assertEqual(caught.exception.detail, 'UPSTREAM_UNAVAILABLE')
+        self.assertIn('stage=ytdlp_result', logged.output[0])
+        self.assertIn('exception_class=ModuleNotFoundError', logged.output[0])
 
     def test_unknown_metadata_has_explicit_unknown_not_missing_tracks(self):
         asset=LabAssetV1(asset_id='a').as_dict()

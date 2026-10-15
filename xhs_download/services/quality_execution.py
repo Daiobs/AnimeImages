@@ -2,12 +2,14 @@
 
 from dataclasses import replace
 from pathlib import Path
+import logging
+import os
 import time
 import subprocess
 from uuid import uuid4
 
 from .env_config import runtime_bool, runtime_str
-from .provider_lab.contracts import ProviderLabError
+from .provider_lab.contracts import ProviderLabError, safe_error_detail
 
 PROVIDER_ALIASES = {
     'yt_dlp_existing': 'yt_dlp_generic', 'yt_dlp_generic': 'yt_dlp_generic',
@@ -21,6 +23,7 @@ EXPECTED_VERSIONS = {'yt_dlp_generic':'2026.3.17', 'gallery_dl_generic':'1.32.4'
 SERVICE_VERSIONS = {'tiantianjiexi_generic': 'tiantian-existing',
                     'kukutool_generic': 'kukutool-existing-v1'}
 SERVICE_PROVIDER_IDS = tuple(SERVICE_VERSIONS)
+logger = logging.getLogger(__name__)
 
 
 def service_configured(provider_id):
@@ -80,12 +83,16 @@ def _python_for(provider_id):
         return python
     enabled = 'YTDLP_PROVIDER_ENABLED' if provider_id == 'yt_dlp_generic' else 'GALLERYDL_PROVIDER_ENABLED'
     if not runtime_bool(enabled, False):
+        logger.warning('upstream_runtime_rejected provider=%s stage=enabled_gate pid=%s',
+                       provider_id, os.getpid())
         raise ProviderLabError('PROVIDER_NOT_CONFIGURED')
     from .upstream_matching import _executor
     try:
         command, _ = _executor(provider_id)
         return command[0]
-    except Exception:
+    except Exception as error:
+        logger.warning('upstream_runtime_rejected provider=%s stage=executor_construction exception_class=%s pid=%s',
+                       provider_id, type(error).__name__, os.getpid())
         raise ProviderLabError('PROVIDER_NOT_CONFIGURED') from None
 
 
@@ -247,6 +254,8 @@ def _execute_upstream(provider, source, timeout_seconds, *, expected_match=None)
         else:
             command, version, _ = upstream_matching._context(provider)
             if version != EXPECTED_VERSIONS[provider]:
+                logger.warning('upstream_runtime_rejected provider=%s stage=version_policy pid=%s',
+                               provider, os.getpid())
                 raise ProviderLabError('PROVIDER_NOT_CONFIGURED')
             request = {'provider_id':provider,'version':version,'url':source,'allow_mature':True}
             matches = upstream_matching._call(command, {**request,'action':'match'}, remaining())
@@ -262,6 +271,13 @@ def _execute_upstream(provider, source, timeout_seconds, *, expected_match=None)
         return payload, match, {}
     except (upstream_matching.UpstreamMatchingError, upstream_parsehub.ParseHubBridgeError) as error:
         code = error.code
+        diagnostic = safe_error_detail('UPSTREAM_' + str(code).upper()) or 'unknown'
+        stage, error_class = (getattr(error, field, '') for field in ('stage', 'error_class'))
+        stage, error_class = (value if isinstance(value, str) and value.isascii()
+                              and value.isidentifier() and len(value) <= 80 else 'unknown'
+                              for value in (stage, error_class))
+        logger.warning('upstream_worker_rejected provider=%s code=%s stage=%s exception_class=%s pid=%s',
+                       provider, diagnostic, stage, error_class, os.getpid())
         lab_code = ('PROVIDER_TIMEOUT' if 'timeout' in code else
                     'PROVIDER_NOT_CONFIGURED' if code in {'disabled','unavailable','executor_unavailable','version_changed'} else
                     'PROVIDER_UNSUPPORTED' if code == 'extractor_mismatch' else

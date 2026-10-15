@@ -147,6 +147,7 @@ class NativeReplayTests(SimpleTestCase):
         self.assertTrue(any(isinstance(t['url'],list) for t in data['records'][0]['thumbnails']))
         self.assertEqual(len(result.metadata['upstream_candidates']),1)
         self.assertEqual(result.metadata['upstream_candidates'][0]['extension'],'mp3')
+        self.assertEqual(result.post_type, 'audio')
         self.assertEqual(lab['assets'][0]['media_type'],'audio')
         self.assertEqual(lab['assets'][0]['audio_tracks'],'unknown')
         self.assertIsNone(lab['assets'][0]['requires_merge'])
@@ -178,7 +179,8 @@ class NativeReplayTests(SimpleTestCase):
     def test_shared_display_context_and_both_real_templates(self):
         from .views import apply_search_result_to_context, build_result_display_context
         from .services.batch_parse.results import build_batch_result_row
-        for uid in ('b57196ed22696db0ca991f21','421dcc02aca139ef0727c86a','1d723e3f60f5f7b7634cd84a'):
+        for uid in ('b57196ed22696db0ca991f21','421dcc02aca139ef0727c86a',
+                    '1d723e3f60f5f7b7634cd84a','88e9b92a7c517fb33ce435a4'):
             result, lab, _ = self.run_fixture(uid)
             with offline_network():
                 context = {'page_platform_id':'', 'show_internal_diagnostics':False}
@@ -207,6 +209,14 @@ class NativeReplayTests(SimpleTestCase):
             if uid.startswith('421'):
                 self.assertIn('deu',home)
                 self.assertIn('deu',batch)
+            if uid.startswith('88e9'):
+                self.assertEqual(context['post_type'], 'audio')
+                self.assertEqual(row['post_type'], 'audio')
+                for notice in (context['provider_notice'], row['provider_notice']):
+                    self.assertNotIn('已保留可用图片', notice)
+                    self.assertNotIn('另有视频', notice)
+                    self.assertIn('候选', notice)
+                self.assertIn('data-post-type="audio"', batch)
 
     def test_synthetic_unknown_language_and_escaping_remain_safe(self):
         from .services.upstream_candidates import _candidate_record
