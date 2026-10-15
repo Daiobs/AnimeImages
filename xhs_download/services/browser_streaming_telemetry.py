@@ -6,6 +6,11 @@ import re
 from django.conf import settings
 
 from .platforms.douyin_media_policy import DOUYIN_REVIEWED_EXACT_MEDIA_HOSTS
+from .platforms.xhs_tiantian_media_policy import XHS_TIANTIAN_VIDEO_HOSTS
+from .platforms.xiaohongshu import (
+    XHS_NATIVE_BROWSER_VIDEO_HOSTS,
+    XHS_NATIVE_BROWSER_VIDEO_HOST_PATTERN,
+)
 
 
 logger = logging.getLogger("xhs_download.browser_streaming_telemetry")
@@ -130,6 +135,8 @@ ALLOWED_INITIAL_MEDIA_FAMILIES = frozenset(
         "DOUYIN_365YG",
         "DOUYIN_DOUYINVOD",
         "DOUYIN_IXIGUA_EXACT",
+        "XHS_TIANTIAN_HW_EXACT",
+        "XHS_NATIVE_REVIEWED",
         "LOOPBACK_TEST",
         "UNKNOWN",
     }
@@ -225,6 +232,9 @@ def _media_host(value):
     hostname = _validated_public_hostname(hostname, allow_unknown=False)
     if (
         hostname in ALLOWED_EXACT_MEDIA_HOSTS
+        or hostname in XHS_TIANTIAN_VIDEO_HOSTS
+        or hostname in XHS_NATIVE_BROWSER_VIDEO_HOSTS
+        or XHS_NATIVE_BROWSER_VIDEO_HOST_PATTERN.fullmatch(hostname)
         or any(
             _hostname_matches_suffix(hostname, suffix)
             for suffix in ALLOWED_MEDIA_HOST_SUFFIXES
@@ -245,6 +255,11 @@ def _initial_media_family_for_host(hostname):
         return "DOUYIN_DOUYINVOD"
     if hostname in ALLOWED_EXACT_MEDIA_HOSTS:
         return "DOUYIN_IXIGUA_EXACT"
+    if hostname in XHS_TIANTIAN_VIDEO_HOSTS:
+        return "XHS_TIANTIAN_HW_EXACT"
+    if (hostname in XHS_NATIVE_BROWSER_VIDEO_HOSTS
+            or XHS_NATIVE_BROWSER_VIDEO_HOST_PATTERN.fullmatch(hostname)):
+        return "XHS_NATIVE_REVIEWED"
     return "UNKNOWN"
 
 
@@ -257,6 +272,9 @@ def _observed_final_host_class(hostname):
         return "INVALID"
     if (
         hostname in ALLOWED_EXACT_MEDIA_HOSTS
+        or hostname in XHS_TIANTIAN_VIDEO_HOSTS
+        or hostname in XHS_NATIVE_BROWSER_VIDEO_HOSTS
+        or XHS_NATIVE_BROWSER_VIDEO_HOST_PATTERN.fullmatch(hostname)
         or any(
             _hostname_matches_suffix(hostname, suffix)
             for suffix in ALLOWED_MEDIA_HOST_SUFFIXES

@@ -581,7 +581,7 @@ def execution_boundary(budget, source, extractor):
         yield
 
 
-async def parse(source, timeout, parser_cls, budget=None):
+async def parse(source, timeout, parser_cls, budget=None, observe=None):
     from parsehub.utils.helpers import SecretCookie
     source = upstream_source(source)
     budget = budget or Budget(timeout)
@@ -592,6 +592,8 @@ async def parse(source, timeout, parser_cls, budget=None):
     with execution_boundary(budget, source, parser_cls.__name__):
         async with asyncio.timeout(timeout):
             result = await parser_cls(proxy=None, cookie=SecretCookie(None)).parse(source)
+        if observe is not None:
+            observe(result)
         budget.check()
         if parser_cls.__name__ in {"CoolapkParser", "DoubanParser"}:
             actual_parser, actual_id = source_identity(getattr(result, "raw_url", ""))

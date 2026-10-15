@@ -107,7 +107,7 @@ def provider_available(provider_id):
 
 
 def match_saved_videodl(source_url, options=None, *, timeout_seconds=5.0):
-    """Match an explicit saved route using reviewed, isolated dedicated backends.
+    """Match an effective route using reviewed, isolated dedicated backends.
 
     This is route execution capability, never download-host authorization.
     Configuration/policy failures are explicit; a supported empty match is ().
@@ -266,7 +266,9 @@ def _execute_upstream(provider, source, timeout_seconds, *, expected_match=None)
                     'PROVIDER_NOT_CONFIGURED' if code in {'disabled','unavailable','executor_unavailable','version_changed'} else
                     'PROVIDER_UNSUPPORTED' if code == 'extractor_mismatch' else
                     'PROVIDER_RESULT_EMPTY' if code == 'no_formats' else 'PROVIDER_PROCESS_FAILED')
-        raise ProviderLabError(lab_code, detail=phase if lab_code == 'PROVIDER_TIMEOUT' else '') from None
+        # Preserve only the fixed worker reason vocabulary, never exception text.
+        detail = phase if lab_code == 'PROVIDER_TIMEOUT' else 'UPSTREAM_' + str(code).upper()
+        raise ProviderLabError(lab_code, detail=detail) from None
 
 
 def _normalize_videodl_candidates(payload, match, source):

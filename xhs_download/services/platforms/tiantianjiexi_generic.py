@@ -348,8 +348,9 @@ def safe_metadata_value(value):
 
 
 class TianTianJieXiApiClient:
-    def __init__(self, session=None):
+    def __init__(self, session=None, observe=None):
         self.session = session or requests
+        self.observe = observe
 
     @property
     def base_url(self):
@@ -368,16 +369,24 @@ class TianTianJieXiApiClient:
         if not api_configured():
             raise TianTianJieXiAuthError("天天解析账号未配置")
         timeout = float(timeout_seconds if timeout_seconds is not None else runtime_float("TIANTIANJIEXI_TIMEOUT_SECONDS", 15) or 15)
+        # Resolve configuration before marking a request as potentially sent.
+        endpoint = self.base_url
+        fields = {"phone": self.phone, "password": self.password, "link": url}
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        try:
+            if urlsplit(endpoint).scheme.lower() not in {"http", "https"}:
+                raise requests.exceptions.InvalidSchema("unsupported service scheme")
+            requests.Request("POST", endpoint, data=fields, headers=headers).prepare()
+        except (requests.exceptions.InvalidURL, requests.exceptions.MissingSchema,
+                requests.exceptions.InvalidSchema) as error:
+            request_in_flight(False, "LOCAL_REQUEST_NOT_SENT")
+            raise TianTianJieXiApiError("天天解析请求配置无效", diagnostic_detail="SERVICE_REQUEST_NOT_SENT") from error
         try:
             request_in_flight(True)
             response = self.session.post(
-                self.base_url,
-                data={
-                    "phone": self.phone,
-                    "password": self.password,
-                    "link": url,
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                endpoint,
+                data=fields,
+                headers=headers,
                 timeout=max(0.1, timeout),
             )
             request_in_flight(False)
@@ -399,6 +408,8 @@ class TianTianJieXiApiClient:
             raise TianTianJieXiUncertainError("天天解析接口请求失败", diagnostic_detail="SERVICE_NETWORK_ERROR") from error
         except ValueError as error:
             raise TianTianJieXiApiError("天天解析接口返回非 JSON", diagnostic_detail="SERVICE_INVALID_JSON") from error
+        if self.observe is not None:
+            self.observe(payload)
         ensure_api_success(payload)
         return TianTianJieXiResultNormalizer.normalize_payload(unwrap_api_payload(payload))
 

@@ -2,6 +2,108 @@
 
 ## Status
 
+### Product activation observation (2026-10-12/13, local only)
+
+This bounded run is **PARTIAL**, based on PR #93 commit `be47e9904f41`.
+It adds safe failure propagation, streaming diagnostics and a default-selection
+correction, not a new provider or production opening. Human clarified that a
+manual route is a preference, not a prerequisite for using configured services.
+The default order is yt-dlp, gallery-dl, ParseHub, videodl, TianTian, Kukutool;
+an existing explicit order still wins unchanged. Matching, source/access gates,
+runtime readiness, dedicated-backend policy and the shared execution deadline
+still apply. This does not run every provider concurrently or guarantee every
+eligible provider will execute before the deadline. Mature Native/platform
+routes retain precedence. TianTian account serialization remains intact.
+
+Existing local configuration allowed the three generic extractor providers.
+Three selected source hosts were temporarily admitted for ordinary-service
+acceptance; only Pexels remains as a local runtime increment after successful
+product/save acceptance. Archive and Dailymotion temporary host additions were
+removed. No global service allowlist or Human route was saved. Removing Pexels
+from the existing allowed-host field restores the prior local access policy;
+its gallery-dl capability remains covered by the pre-existing provider allowlist.
+
+The five initial targets were Coolapk, Douban, Pexels, Archive and Dailymotion.
+Wikimedia was one additional catalog-matched candidate; XHS was a previously
+known video-download control, not a newly supported platform. Historical failure
+and success records below remain valid for their original samples and dates.
+
+| Platform / content | Prior gap and route | Anonymous product observation | Preview / browser save | Remaining limit |
+| --- | --- | --- | --- | --- |
+| Wikimedia / image | Catalog matching, no save evidence in this run; default route | New work A on homepage and work B in Batch each return one image through gallery-dl after yt-dlp fails | Both previews work; normal download controls save valid JPEGs, 3220x2415 / 4,418,089 bytes and 1920x1080 / 483,800 bytes | Newly verified existing capability, not enabled by the diagnostic patch; no all-site guarantee |
+| Douban / body images | Historical parse increment with delivery limits; default ParseHub | New work A returns 7 images on homepage; work B returns 4 in Batch | Preview fails; fresh authorized image fetch cannot be read by the browser; no file saved | Script-visible failure does not prove a specific HTTP status or CORS cause; no relay |
+| Coolapk / body images | Historical ParseHub success; existing manual route preserved | Two new Scout works fail; one Batch representative now reports identity mismatch instead of generic failure | No valid product media from these works | Identity safeguard retained; a separate public-page diagnostic returned 403, not proof of the worker's exact response |
+| Pexels / image | Historical gallery-dl parse success; default route | Earlier homepage/Batch fail; after the default correction homepage actually attempts gallery-dl, TianTian and Kukutool but has no media. The following Batch returns the same work through gallery-dl | Normal Batch download saves a valid 4240x2832 JPEG, 1,105,970 bytes; inline preview was not independently established | Response variation is not attributed to the default patch; no second work was fabricated from search listings |
+| Archive / video | Historical single-work format candidates; default route | After correction the original Batch work reaches yt-dlp (worker error), TianTian (business 451) and Kukutool (parse deadline) | Not saved | Collection entries excluded; no valid result, temporary host addition restored |
+| Dailymotion / video | Specific extractor matching only; default route | Two Scout works time out through yt-dlp. After correction the original Batch representative reaches yt-dlp (worker error), TianTian (business 451) and Kukutool (parse deadline) | Not saved | No complete-video result; temporary host addition restored |
+| XHS / video control | Previously known download-manager cancellation; existing mature route | Homepage returns a 27.8 MB video through TianTian | One browser save attempt ends as cancelled; no completed file established | Normal Chrome control unavailable; controlled-browser cancellation remains unresolved and is not attributed to Human |
+
+Inherited defects had offline failing counterexamples before correction:
+
+- Shared worker rejection reasons were discarded while converting to Lab errors,
+  so normal homepage/Batch reported a generic failure. Only an explicit fixed
+  reason vocabulary now survives; raw messages, signed URLs and credentials do
+  not. Same-work product observations distinguish access rejection, identity
+  mismatch and timeout. This improves accuracy, not upstream success.
+- Accepted streaming responses did not retain HTTP status/content type in the
+  terminal snapshot. These bounded facts now survive downstream cancellation.
+  The server telemetry validator also rejected existing XHS video host families,
+  demonstrated by a real 400 and synthetic endpoint counterexamples. It now
+  reuses the already-admitted XHS host constants; unknown/lookalike hosts remain
+  rejected. This does not grant media authority or fix browser cancellation.
+- Configured services and reviewed videodl matches were excluded without a saved
+  manual route. Default discovery now admits them without writing preferences;
+  ordinary execution intersects fresh matches with the existing request gate.
+  Offline counterexamples cover default service fallback and reviewed videodl,
+  while manual exclusivity, blocked sources and backend/version changes remain
+  enforced. Anonymous homepage and Batch made real service calls after this fix.
+- A final shared-provider timeout was converted into an ordinary parse exception,
+  so Batch displayed timeout text but counted failure. The reproduced row now
+  retains the timeout exception type. No real timeout was automatically retried
+  merely to change the displayed count. Fixed service/error codes are logged;
+  arbitrary exception messages or unknown code strings are not.
+
+Scout `778031443de6` was unchanged. The first cohort executed 24 sample/provider
+API requests across four works and six channels: 14 unsupported, 6 failed and
+4 timeout; four composite baselines were skipped. Services participated, but
+TianTian returned business 451 and Kukutool returned HTTP 500 or timed out for
+these works. The later XHS control did return TianTian media; these observations
+must not be generalized into an account-wide failure or success. Independent
+implementation counts are not inferred from the six wrapper channels.
+
+All six channels participated in that comparison. In ordinary acceptance,
+gallery-dl returned Wikimedia and Pexels images, ParseHub returned Douban images,
+yt-dlp executed but returned no usable result, and TianTian returned the XHS video
+control through the existing mature path. TianTian and Kukutool also executed in
+the new default product path, without valid media for those representatives.
+Videodl had no admitted dedicated match for these ordinary works; its two
+Dailymotion Lab attempts were policy-rejected and two Coolapk checks unsupported.
+Native precedence was retained and regression-tested, not separately counted as
+a newly successful provider. Six product channels do not mean six independent
+underlying implementations; ParseHub can delegate to yt-dlp.
+
+Total task usage: 9 searches, 6 bounded public-page reads, 24 comparison requests,
+16 homepage/Batch/control parses (40 application parses total), 11 distinct
+works across seven source platforms including the control. Three actual browser
+files total 6,007,859 bytes; ZIP was not tested. There were also two unsuccessful
+Douban save actions (the first hit authorization invalidated by development
+autoreload, the second reached browser-read failure) and one cancelled video
+attempt. No automatic retry or server full-media relay was used. Internal
+provider HTTP counts are unknown; these are application request counts.
+
+The live 24 Lab execution records and 28 corresponding Scout-import records
+represent the same first cohort plus four skipped baselines, not 52 calls.
+All pre-existing execution rows remain unchanged. Route revision/audit count
+remain 3/3; mail/Daily settings and environment-file digests are unchanged.
+Runtime differences are only the allowed-host field and its update timestamp.
+The administrator's normal login timestamp changed; no account was reset.
+
+No three-platform new activation claim is made. No manual service route was
+silently saved, no Runtime was upgraded, and no production access/deployment
+occurred. Full validation and exact-head CI results are recorded in the dependent
+Draft PR. The private local batch retains actual links, timings and fingerprints;
+they are intentionally absent from this public document.
+
 ### PR #89 local all-upstream follow-up (2026-09-08)
 
 The existing Staff Lab now checks every registered independent channel from one

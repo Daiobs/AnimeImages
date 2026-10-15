@@ -62,3 +62,21 @@ test('response decoding follows the public SHA256 key derivation',()=>{
   assert.equal(JSON.stringify(context.decryptResponse(encode(ciphertext),encode(iv))),JSON.stringify(payload));
   assert.throws(()=>context.decryptResponse('invalid','invalid'));
 });
+
+test('diagnostics classify parse HTTP failure without emitting source or credential values',async()=>{
+  const {context}=fixture();
+  let output='';
+  context.process.env.KUKUTOOL_DIAGNOSTICS='1';
+  context.process.stderr={write(value){output+=value;}};
+  const original=context.fetch;
+  context.fetch=async(url,options)=>new URL(url).pathname==='/api/parse'
+    ?new Response(JSON.stringify({message:'secret source https://private.example/token'}),{status:500,headers:{'content-type':'application/json'}})
+    :original(url,options);
+  await assert.rejects(context.main());
+  context.emitDiagnostics();
+  const data=JSON.parse(output.split('KUKUTOOL_DIAGNOSTICS:')[1]);
+  assert.ok(data.some(row=>row.role==='parse' && row.status===500));
+  assert.ok(data.some(row=>row.role==='auth' && row.status===200));
+  assert.ok(!output.includes('private.example'));
+  assert.ok(!output.includes('fixture-key'));
+});

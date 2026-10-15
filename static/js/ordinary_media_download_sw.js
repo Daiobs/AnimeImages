@@ -394,6 +394,8 @@ async function streamDownload(state) {
     state.observedFinalHost = responseGate.observedFinalHost;
     state.observedFinalHostClass = responseGate.observedFinalHostClass;
     state.redirected = responseGate.redirected;
+    state.httpStatus = responseGate.httpStatus;
+    state.contentTypeClass = responseGate.contentTypeClass;
     if (responseGate.rejected) {
         if (upstream.body && typeof upstream.body.cancel === "function") {
             await upstream.body.cancel().catch(() => {});
