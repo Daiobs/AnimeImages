@@ -16,6 +16,47 @@ test("unknown and blocked sources do not masquerade as mature routes", () => {
     assert.equal(ledger.routeText({applicable: false, reason: "source_blocked"}), "当前来源不适用通用路线");
     assert.equal(ledger.routeText({applicable: false, reason: "existing_route_not_overridden"}), "沿用成熟路线");
 });
+
+test("oversized record and asset projections disclose omitted display fields", async () => {
+    const f = fixture({read: (q) => q.has("execution_id") ? {ok: true, execution: record(1, A,
+        {summary_truncated: true, asset_count: 1, result: {status: "success", assets: [
+            {asset_id: "a", media_type: "video", summary_truncated: true}]}})} : undefined});
+    await f.workspace.activate(true); await f.workspace.open(A); await f.workspace.inspect(1);
+    assert.match(text(f.detail), /大记录轻量摘要/);
+    assert.match(text(f.detail), /候选摘要已缩减/);
+    assert.match(text(f.detail), /原始历史未修改/);
+});
+
+test("large provider summaries have independent pages without skipping executions", async () => {
+    const f = fixture({read: (q) => {
+        if (q.get("view") === "platforms") return tablePayload(1, {platforms: [platform(A, {providers_truncated: true, provider_total: 5000})]});
+        if (q.get("view") !== "platform") return undefined;
+        const page = Number(q.get("provider_page") || 1);
+        return {...detailPayload(A), provider_paging: {page, page_size: 20, pages: 250, total: 5000}};
+    }});
+    await f.workspace.activate(true);
+    assert.match(text(f.overview), /上游摘要 1 \/ 5000/);
+    await f.workspace.open(A); await f.click('[data-ledger-provider-page="2"]');
+    assert.equal(f.calls.at(-1).url.searchParams.get("provider_page"), "2");
+    assert.equal(f.calls.at(-1).url.searchParams.get("page"), "1");
+    assert.ok(f.detail.querySelector('[data-ledger-inspect="1"]'));
+    await f.workspace.open(B);
+    assert.equal(f.calls.at(-1).url.searchParams.get("provider_page"), "1");
+});
+
+test("refresh reflects external route revision changes instead of stale editor state", async () => {
+    let revision = 3;
+    const f = fixture({read: (q) => q.get("view") === "platform" ? {...detailPayload(A),
+        platform: platform(A, {current_route: snapshot(A, revision, {provider_order: ["gallery_dl_generic"]})})} : undefined});
+    await f.workspace.activate(true); await f.workspace.open(A, true);
+    assert.equal(f.editor.route.revision, 3);
+    revision = 4;
+    await f.workspace.refresh();
+    assert.equal(f.editor.route, null);
+    assert.match(text(f.detail.querySelector('[data-ledger-current-route]')), /gallery-dl/);
+    assert.match(text(f.detail), /服务端路线版本已变化/);
+    assert.equal(f.routeCalls.filter((c) => c.init.method).length, 0);
+});
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return {promise, resolve, reject}; };
 const text = (node) => [node.textContent, ...node.children.map(text)].join(" ");
 const descriptors = [

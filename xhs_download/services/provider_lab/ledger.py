@@ -22,6 +22,12 @@ from . import history
 
 
 MAX_BYTES = 2 * 1024 * 1024
+MAX_ROW_BYTES = 12 * 1024
+MAX_ASSET_BYTES = 1500
+MAX_SOURCE_BYTES = 2048
+MAX_ROUTE_SUMMARY_BYTES = 4096
+MAX_PLATFORM_PREVIEW_BYTES = 16 * 1024
+PROVIDER_PREVIEW_SIZE = 10
 CONTENT_TYPES = {"video", "image", "gallery", "audio", "livephoto", "multimedia", "article", "unknown"}
 EVIDENCE = {"none": 0, "declared": 1, "unconfirmed": 2, "confirmed": 3}
 EVIDENCE_ALIASES = {"no_valid_media": "none", "declared_only": "declared",
@@ -96,6 +102,16 @@ def _safe_source(value, host, *, retest=False):
         return source
     except history.HistoryError:
         return ""
+
+
+def _json_size(value):
+    return len(json.dumps(value, ensure_ascii=True).encode())
+
+
+def _source_projection(value, host):
+    source = _safe_source(value, host, retest=True) if host else ""
+    omitted = _json_size(source) > MAX_SOURCE_BYTES
+    return ("" if omitted else source), omitted
 
 
 SUMMARY_FIELDS = ("source_host", "source_url", "provider_id", "state", "started_at", "finished_at",
@@ -315,6 +331,29 @@ def snapshot():
     return {host: _summarize(platform) for host, platform in platforms.items()}, rows
 
 
+def _provider_projection(platform, *, start=0, size=PROVIDER_PREVIEW_SIZE, preferred="", preview=False):
+    providers = platform["providers"]
+    if preferred:
+        providers = sorted(providers, key=lambda p: p["provider_id"] != preferred)
+    selected = providers[start:start + size]
+    projected = {**platform, "providers": selected, "provider_total": len(providers),
+                 "providers_truncated": len(selected) < len(providers)}
+    route = dict(platform["current_route"])
+    if _json_size(route) > MAX_ROUTE_SUMMARY_BYTES:
+        route["summary_truncated"] = projected["summary_truncated"] = True
+        optional = ("provider_options", "format_preferences", "provider_order", "effective_provider_order")
+        for key in sorted(optional, key=lambda k: _json_size(route.get(k)), reverse=True):
+            if _json_size(route) <= MAX_ROUTE_SUMMARY_BYTES:
+                break
+            route.pop(key, None)
+    projected["current_route"] = route
+    if preview:
+        while selected and _json_size(projected) > MAX_PLATFORM_PREVIEW_BYTES:
+            selected.pop()
+            projected["providers_truncated"] = True
+    return projected
+
+
 def platforms_payload(params):
     query = params.get("q", "").strip().lower()
     kind, pid = params.get("content_type", ""), params.get("provider_id", "")
@@ -363,7 +402,8 @@ def platforms_payload(params):
         rows.sort(key=lambda p: max((EVIDENCE[x["evidence"]] for x in p["providers"]), default=0), reverse=True)
     page = paging(params, len(rows))
     start = (page["page"] - 1) * page["page_size"]
-    return bounded_payload({"ok": True, "platforms": rows[start:start + page["page_size"]], **page,
+    previews = [_provider_projection(p, preferred=pid, preview=True) for p in rows[start:start + page["page_size"]]]
+    return bounded_payload({"ok": True, "platforms": previews, **page,
             "unknown_source_count": unknown["record_count"], "record_count": records,
             "unique_observation_count": observations, "scope": dict(SCOPE),
             "filtered_record_count": sum(p["record_count"] for p in rows),
@@ -371,7 +411,7 @@ def platforms_payload(params):
 
 
 def bounded_payload(payload):
-    if len(json.dumps(payload, ensure_ascii=True).encode()) > MAX_BYTES:
+    if _json_size(payload) > MAX_BYTES:
         raise history.HistoryError("HISTORY_RESPONSE_TOO_LARGE", 413)
     return payload
 
@@ -396,6 +436,64 @@ def _bounded(value, depth=0, budget=None):
     return None
 
 
+def _trim_execution_row(row):
+    if _json_size(row) <= MAX_ROW_BYTES:
+        return
+    row["summary_truncated"] = True
+    for key in ("version", "options"):
+        row.pop(key, None)
+    asset_count_present = "asset_count" in row["result"]
+    row["result"] = {k: v if type(v) is bool else _text(v, 160)
+                     for k, v in row["result"].items()
+                     if k in {"status", "executed", "error_code", "error_detail", "result_kind"}
+                     and (isinstance(v, str) or type(v) is bool)}
+    if asset_count_present:
+        row["result"]["asset_count"] = row["asset_count"]
+    row["batch"]["metadata"] = {}
+    # Legacy scalar fields can together exceed the budget even after metadata
+    # is removed. Retain identity, counts and comparison keys; omit display text.
+    optional = ("title", "target_id", "source_status", "source_state", "replay_of",
+                "replay_batch_key", "sample_key", "execution_key")
+    for key in sorted(optional, key=lambda k: _json_size(row.get(k)), reverse=True):
+        if _json_size(row) <= MAX_ROW_BYTES:
+            break
+        row.pop(key, None)
+    for key in ("error_detail", "error_code", "result_kind"):
+        if _json_size(row) <= MAX_ROW_BYTES:
+            break
+        row["result"].pop(key, None)
+    for key in ("label", "batch_key", "origin"):
+        if _json_size(row) <= MAX_ROW_BYTES:
+            break
+        row["batch"].pop(key, None)
+
+
+def _asset_projection(asset):
+    item = {k: _bounded(v) for k, v in _dict(asset).items() if k in history.ASSET_FIELDS}
+    identity = {"asset_id": (120, 768), "media_type": (32, 192), "role": (32, 192)}
+    for key, (limit, byte_limit) in identity.items():
+        if key not in item:
+            continue
+        original = item[key]
+        if isinstance(original, str):
+            item[key] = _text(original, limit)
+            while _json_size(item[key]) > byte_limit:
+                item[key] = item[key][:-1]
+            if item[key] != original:
+                item["summary_truncated"] = True
+        else:
+            del item[key]
+            item["summary_truncated"] = True
+    if _json_size(item) > MAX_ASSET_BYTES:
+        item["summary_truncated"] = True
+        optional = set(item) - set(identity) - {"summary_truncated"}
+        for key in sorted(optional, key=lambda k: (-_json_size(item[k]), k)):
+            if _json_size(item) <= MAX_ASSET_BYTES:
+                break
+            del item[key]
+    return item
+
+
 def execution_row(record, *, full=False, params=None):
     s = _dict(record.summary)
     result = _dict(s.get("result"))
@@ -403,7 +501,7 @@ def execution_row(record, *, full=False, params=None):
     assets_known = isinstance(stored_assets, list)
     assets = stored_assets if assets_known else []
     host = canonical_host(s.get("source_host"))
-    safe_source = _safe_source(s.get("source_url"), host, retest=True) if host else ""
+    safe_source, source_omitted = _source_projection(s.get("source_url"), host)
     source = _safe_source(s.get("source_url"), host) if host else ""
     projected = {"id": record.pk, "batch_id": record.batch_id, "batch__batch_key": record.batch.batch_key,
                  "application_record_id": record.application_record_id,
@@ -412,16 +510,18 @@ def execution_row(record, *, full=False, params=None):
     projected.update({"summary__result__" + key: result.get(key) for key in RESULT_FIELDS})
     projected.update({"summary__result__metadata__" + key: _dict(result.get("metadata")).get(key) for key in META_FIELDS})
     observation = _observation(projected)
-    row = {key: _bounded(s[key]) if key in {"version", "options"} else _text(s[key], 300)
+    row = {key: _bounded(s[key]) if key in {"version", "options"}
+        else _text(s[key], {"provider_id": 80, "state": 40}.get(key, 300))
         for key in ("execution_key", "sample_key", "provider_id", "state", "title",
         "source_status", "source_state", "target_id", "version", "options", "replay_of", "replay_batch_key") if key in s}
     row.update(id=record.pk, source_host=host or "unknown", source_url=safe_source,
         started_at=timestamp(s.get("started_at")), finished_at=timestamp(s.get("finished_at")),
-        application_record_id=record.application_record_id, origin=record.batch.origin,
+        application_record_id=record.application_record_id, origin=_text(record.batch.origin, 16),
         can_retest=bool(safe_source and history.retest_allowed(record)), asset_count=len(assets) if assets_known else None,
         content_types=observation["content_types"], evidence_kind=observation["evidence_kind"],
         latest_status=observation["status"], evidence=observation["evidence"],
         work_key=sha256(source.encode()).hexdigest() if source else "", can_compare_work=bool(source),
+        source_projection_omitted=source_omitted,
         assets_omitted=not full and assets_known and bool(assets), batch={"id": record.batch_id, "batch_key": _text(record.batch.batch_key, 160),
             "label": _text(record.batch.label, 200), "origin": _text(record.batch.origin, 16),
             "created_at": record.batch.created_at.isoformat(), "metadata": {
@@ -429,38 +529,20 @@ def execution_row(record, *, full=False, params=None):
     fields = history.RESULT_FIELDS if full else {"status", "executed", "error_code", "error_detail", "client_status",
         "provider_id", "result_kind", "provider_version", "selected_backend", "backend_id", "metadata"}
     row["result"] = {k: _bounded(v) for k, v in result.items() if k in fields}
-    # Bound each row independently, so even a huge legacy record cannot stop pagination.
-    if len(json.dumps(row, ensure_ascii=True).encode()) > 12 * 1024:
-        for key in ("version", "options"):
-            row.pop(key, None)
-        row["result"] = {k: result[k] if type(result[k]) is bool else _text(result[k], 160)
-                         for k in ("status", "executed", "error_code", "error_detail", "result_kind") if k in result}
+    if not full:
+        row["result"]["asset_count"] = row["asset_count"]
+    if source_omitted:
         row["summary_truncated"] = True
-        row["batch"]["metadata"] = {}
+    # Bound each row independently, so even a huge legacy record cannot stop pagination.
+    _trim_execution_row(row)
     if full and assets_known:
         asset_page = paging(params or {}, len(assets), prefix="asset_", default=100, maximum=1000)
         start = (asset_page["page"] - 1) * asset_page["page_size"]
-        # At most 1500 bytes per asset, with a conservative ASCII JSON budget.
-        selected = []
-        for asset in assets[start:start + asset_page["page_size"]]:
-            item = {k: _bounded(v) for k, v in _dict(asset).items() if k in history.ASSET_FIELDS}
-            if len(json.dumps(item, ensure_ascii=True).encode()) > 1500:
-                item = {k: item[k] for k in ("asset_id", "media_type", "role", "width", "height", "format_id",
-                    "vcodec", "acodec", "video_tracks", "audio_tracks", "requires_merge", "delivery_state") if k in item}
-                item["summary_truncated"] = True
-            # Hostile legacy strings must not make even the fallback unbounded.
-            if len(json.dumps(item, ensure_ascii=True).encode()) > 1500:
-                item = {k: item[k] for k in ("asset_id", "media_type", "role", "width", "height") if k in item}
-                item = {k: v[:80] if isinstance(v, str) else v if type(v) in {int, float, bool} else None
-                        for k, v in item.items()}
-                item["summary_truncated"] = True
-            selected.append(item)
+        selected = [_asset_projection(asset) for asset in assets[start:start + asset_page["page_size"]]]
         row["result"]["assets"] = selected
         row["assets_omitted"] = len(selected) < len(assets)
         row["asset_paging"] = {**asset_page, "returned": len(selected)}
-    elif not full:
-        row["result"]["asset_count"] = len(assets) if assets_known else None
-    elif not assets_known:
+    elif full and not assets_known:
         row["asset_paging"] = None
         row["assets_omitted"] = False
     return row
@@ -491,14 +573,25 @@ def platform_payload(params):
     records = {r.pk: r for r in EvaluationExecution.objects.filter(pk__in=ids).select_related("batch")}
     executions = [execution_row(records[pk]) for pk in ids if pk in records]
     platform = platforms[host]
+    provider_page = paging(params, len(platform["providers"]), prefix="provider_", default=20, maximum=50)
+    provider_start = (provider_page["page"] - 1) * provider_page["page_size"]
+    platform = _provider_projection(platform, start=provider_start, size=provider_page["page_size"])
+    provider_page.update(returned=len(platform["providers"]),
+        has_next=provider_page["page"] < provider_page["pages"], has_previous=provider_page["page"] > 1,
+        next_page=provider_page["page"] + 1 if provider_page["page"] < provider_page["pages"] else None)
+    platform["source_projection_omitted"] = False
     for r in selected:
-        safe_source = _safe_source(r["source"], host, retest=True)
+        safe_source, source_omitted = _source_projection(r["source"], host)
+        if source_omitted:
+            platform["source_projection_omitted"] = True
+            platform["summary_truncated"] = True
         if safe_source:
             platform["safe_source_url"] = safe_source
             break
     page.update(returned=len(executions), has_next=page["page"] < page["pages"],
                 has_previous=page["page"] > 1, next_page=page["page"] + 1 if page["page"] < page["pages"] else None)
     return bounded_payload({"ok": True, "platform": platform, "executions": executions, "paging": page, **page,
+            "provider_paging": provider_page,
             "scope": {**SCOPE, "work_id": work_id or None, "comparison": "exact_retained_source" if work_id else "hostname"}})
 
 

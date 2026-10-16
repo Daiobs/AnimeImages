@@ -1,5 +1,6 @@
 """Synthetic, isolated ledger acceptance tests. No live provider requests."""
 from contextlib import ExitStack
+from copy import deepcopy
 import json
 import re
 from time import perf_counter
@@ -349,6 +350,172 @@ class PlatformLedgerTests(TestCase):
             with self.assertRaises(RuntimeError):
                 ledger.platforms_payload({})
 
+    def test_5000_providers_have_bounded_preview_and_independent_detail_pages(self):
+        batch = EvaluationBatch.objects.create(batch_key="provider-budget", label="Synthetic", origin="scout")
+        records = []
+        for i in range(5000):
+            provider = f"legacy_{i:04d}" if i < 4999 else "yt_dlp_existing"
+            summary = history.execution_summary(execution(str(i), provider_id=provider))
+            records.append(EvaluationExecution(batch=batch, execution_key=str(i), summary=summary, fingerprint="test"))
+        EvaluationExecution.objects.bulk_create(records, batch_size=200)
+        before = list(EvaluationExecution.objects.order_by("pk").values_list("pk", "fingerprint"))
+        response = self.client.get(self.url, {"view": "platforms", "page_size": 1})
+        self.assertEqual(response.status_code, 200, response.content)
+        overview = response.json()["platforms"][0]
+        self.assertEqual(overview["provider_total"], 5000)
+        self.assertTrue(overview["providers_truncated"])
+        self.assertEqual(len(overview["providers"]), 10)
+        self.assertEqual((overview["record_count"], overview["observation_count"]), (5000, 5000))
+        self.assertEqual(overview["route_hint"], "comparable")
+        filtered = self.get(view="platforms", provider_id="yt_dlp_existing", evidence="confirmed")
+        self.assertEqual(filtered["total"], 1)
+        self.assertEqual(filtered["platforms"][0]["providers"][0]["provider_id"], "yt_dlp_generic")
+        self.assertEqual(filtered["filtered_record_count"], 5000)
+        first = self.get(view="platform", source_host="media-ledger.org", page_size=1)
+        self.assertEqual(first["provider_paging"]["page_size"], 20)
+        self.assertEqual(first["provider_paging"]["total"], 5000)
+        self.assertEqual(first["provider_paging"]["next_page"], 2)
+        second = self.get(view="platform", source_host="media-ledger.org", page_size=1, provider_page=2)
+        self.assertEqual(first["executions"], second["executions"])
+        self.assertEqual(second["platform"]["providers"][0]["provider_id"], "legacy_0020")
+        self.assertTrue(set(p["provider_id"] for p in first["platform"]["providers"]).isdisjoint(
+            p["provider_id"] for p in second["platform"]["providers"]))
+        last_response = self.client.get(self.url, {"view": "platform", "source_host": "media-ledger.org",
+            "page_size": 1, "page": 5000, "provider_page": 100, "provider_page_size": 50})
+        self.assertEqual(last_response.status_code, 200, last_response.content)
+        last = last_response.json()
+        self.assertEqual(last["platform"]["providers"][-1]["provider_id"], "yt_dlp_generic")
+        self.assertEqual(last["provider_paging"]["returned"], 50)
+        self.assertFalse(last["provider_paging"]["has_next"])
+        self.assertIsNone(last["provider_paging"]["next_page"])
+        self.assertEqual(last["executions"][0]["id"], records[0].pk)
+        self.assertEqual(last["paging"]["total"], 5000)
+        self.assertEqual(before, list(EvaluationExecution.objects.order_by("pk").values_list("pk", "fingerprint")))
+        self.assertLess(len(response.content), ledger.MAX_BYTES)
+        self.assertLess(len(last_response.content), ledger.MAX_BYTES)
+        print(f"LEDGER_PROVIDER_BUDGET providers=5000 overview_bytes={len(response.content)} detail_bytes={len(last_response.content)}")
+
+    def test_unicode_source_projection_is_bounded_without_losing_work_comparison(self):
+        source = "https://media-ledger.org/" + "\u4e2d" * 4000
+        record = self.add(execution(source_url=source))
+        original = deepcopy(record.summary)
+        rows = []
+        for i in range(100):
+            summary = history.execution_summary(execution(f"unicode-{i}", source_url=source))
+            rows.append(EvaluationExecution(batch=record.batch, execution_key=f"unicode-{i}", summary=summary, fingerprint="test"))
+        EvaluationExecution.objects.bulk_create(rows, batch_size=100)
+        response = self.client.get(self.url, {"view": "platform", "source_host": "media-ledger.org", "page_size": 100})
+        self.assertEqual(response.status_code, 200, response.content)
+        data = response.json()
+        self.assertEqual((data["total"], data["returned"], data["paging"]["next_page"]), (101, 100, 2))
+        self.assertEqual(data["platform"]["safe_source_url"], "")
+        self.assertTrue(data["platform"]["source_projection_omitted"])
+        self.assertTrue(data["platform"]["summary_truncated"])
+        for row in data["executions"]:
+            self.assertLessEqual(ledger._json_size(row), ledger.MAX_ROW_BYTES)
+            self.assertTrue(row["source_projection_omitted"])
+            self.assertTrue(row["summary_truncated"])
+            self.assertTrue(row["can_compare_work"])
+            self.assertFalse(row["can_retest"])
+            self.assertEqual(row["source_url"], "")
+            self.assertEqual(row["asset_count"], 1)
+        next_page = self.get(view="platform", source_host="media-ledger.org", page_size=100, page=2, work_id=record.pk)
+        self.assertEqual(next_page["returned"], 1)
+        self.assertEqual(next_page["executions"][0]["id"], record.pk)
+        self.assertEqual(next_page["executions"][0]["work_key"], data["executions"][0]["work_key"])
+        full = self.get(execution_id=record.pk)["execution"]
+        self.assertEqual(full["work_key"], next_page["executions"][0]["work_key"])
+        self.assertTrue(full["source_projection_omitted"])
+        self.assertTrue(full["can_compare_work"])
+        record.refresh_from_db()
+        self.assertEqual(record.summary, original)
+        self.assertLess(len(response.content), ledger.MAX_BYTES)
+        print(f"LEDGER_UNICODE_BUDGET rows=100 bytes={len(response.content)} max_row_bytes={max(ledger._json_size(r) for r in data['executions'])}")
+
+    def test_giant_asset_numbers_are_omitted_not_invented_and_pages_never_skip(self):
+        large = 10 ** 1200
+        assets = [{"asset_id": f"a-{i}", "media_type": "video", "role": "primary", "width": large,
+                   "height": large, "duration_seconds": 12} for i in range(1000)]
+        record = self.add(execution(result=result(assets=assets)))
+        original = deepcopy(record.summary)
+        response = self.client.get(self.url, {"execution_id": record.pk, "asset_page_size": 1000})
+        self.assertEqual(response.status_code, 200, response.content)
+        full = response.json()["execution"]
+        self.assertEqual((full["asset_count"], full["asset_paging"]["total"], full["asset_paging"]["returned"]), (1000, 1000, 1000))
+        self.assertEqual([a["asset_id"] for a in full["result"]["assets"]], [a["asset_id"] for a in assets])
+        for asset in full["result"]["assets"]:
+            self.assertLessEqual(ledger._json_size(asset), ledger.MAX_ASSET_BYTES)
+            self.assertTrue(asset["summary_truncated"])
+            self.assertEqual((asset["media_type"], asset["role"], asset["duration_seconds"]), ("video", "primary", 12))
+            self.assertTrue("width" not in asset or "height" not in asset)
+            for key in ("width", "height"):
+                if key in asset:
+                    self.assertEqual(asset[key], large)
+        first = self.get(execution_id=record.pk, asset_page_size=500)["execution"]
+        second = self.get(execution_id=record.pk, asset_page_size=500, asset_page=2)["execution"]
+        self.assertEqual([a["asset_id"] for a in first["result"]["assets"] + second["result"]["assets"]],
+                         [a["asset_id"] for a in assets])
+        record.refresh_from_db()
+        self.assertEqual(record.summary, original)
+        self.assertLess(len(response.content), ledger.MAX_BYTES)
+        print(f"LEDGER_ASSET_BUDGET assets=1000 bytes={len(response.content)} max_asset_bytes={max(ledger._json_size(a) for a in full['result']['assets'])}")
+
+    def test_oversized_identity_and_legacy_row_text_have_final_byte_caps(self):
+        asset = {"asset_id": "\U0001f600" * 512, "media_type": "\U0001f600" * 512,
+                 "role": "\U0001f600" * 512, "width": 10 ** 1200}
+        projected = ledger._asset_projection(asset)
+        self.assertEqual(projected, ledger._asset_projection(asset))
+        self.assertLessEqual(ledger._json_size(projected), ledger.MAX_ASSET_BYTES)
+        self.assertTrue(projected["summary_truncated"])
+        self.assertTrue(all(key in projected for key in ("asset_id", "media_type", "role")))
+        record = self.add()
+        original = deepcopy(record.summary)
+        for key in ("title", "target_id", "source_status", "source_state", "replay_of", "replay_batch_key"):
+            record.summary[key] = "\U0001f600" * 300
+        record.summary["result"].update(metadata={"long": ["\U0001f600" * 512] * 32},
+            error_code="\U0001f600" * 512, error_detail="\U0001f600" * 512)
+        record.save(update_fields=["summary"])
+        row = self.get(view="platform", source_host="media-ledger.org")["executions"][0]
+        self.assertLessEqual(ledger._json_size(row), ledger.MAX_ROW_BYTES)
+        self.assertTrue(row["summary_truncated"])
+        self.assertEqual(row["asset_count"], 1)
+        self.assertEqual(row["result"]["asset_count"], 1)
+        self.assertEqual(row["provider_id"], original["provider_id"])
+        self.assertEqual(row["state"], original["state"])
+
+    def test_legacy_route_projection_and_provider_previews_keep_factual_aggregates(self):
+        self.add()
+        large_options = {f"legacy_{i}": "\U0001f600" * 512 for i in range(32)}
+        route = UpstreamRoute.objects.create(source_host="media-ledger.org", active=True, revision=7,
+            provider_order=["parsehub_generic"], provider_options=large_options, format_preferences=large_options)
+        original_options = deepcopy(route.provider_options)
+        overview = self.get()["platforms"][0]
+        detail = self.get(view="platform", source_host="media-ledger.org")["platform"]
+        for platform in (overview, detail):
+            self.assertEqual((platform["record_count"], platform["observation_count"], platform["provider_total"]), (1, 1, 1))
+            self.assertEqual(platform["providers"][0]["positive_count"], 1)
+            self.assertEqual(platform["providers"][0]["adoptability"], "existing_route")
+            self.assertEqual(platform["current_route"]["revision"], 7)
+            self.assertTrue(platform["current_route"]["active"])
+            self.assertTrue(platform["summary_truncated"])
+            self.assertTrue(platform["current_route"]["summary_truncated"])
+            self.assertEqual(platform["current_route"]["provider_order"], ["parsehub_generic"])
+            self.assertLessEqual(ledger._json_size(platform["current_route"]), ledger.MAX_ROUTE_SUMMARY_BYTES)
+        route.refresh_from_db()
+        self.assertEqual(route.provider_options, original_options)
+        self.assertEqual(route.format_preferences, original_options)
+        platform = deepcopy(detail)
+        platform["providers"] = [{**detail["providers"][0], "provider_id": f"legacy_{i:02d}",
+                                  "latest_error": "\U0001f600" * 160} for i in range(50)]
+        original = deepcopy(platform)
+        preview = ledger._provider_projection(platform, preferred="legacy_49", preview=True)
+        self.assertEqual(platform, original)
+        self.assertEqual(preview["provider_total"], 50)
+        self.assertTrue(preview["providers_truncated"])
+        self.assertEqual(preview["providers"][0]["provider_id"], "legacy_49")
+        self.assertLessEqual(ledger._json_size(preview), ledger.MAX_PLATFORM_PREVIEW_BYTES)
+        self.assertLess(ledger._json_size({"platforms": [preview] * 100}), ledger.MAX_BYTES)
+
     def test_gets_never_write_history_routes_audits_or_probe(self):
         record = self.add()
         with CaptureQueriesContext(connection) as queries:
@@ -374,6 +541,9 @@ class PlatformLedgerTests(TestCase):
             {"view": "platforms", "sort": "arbitrary"}, {"view": "platform", "source_host": "127.0.0.1"},
             {"view": "platform", "source_host": "MEDIA-LEDGER.ORG"}, {"view": "platform", "source_host": ""},
             {"execution_id": record.pk, "asset_page_size": "1001"}, {"view": ["platforms", "platform"]}):
+            self.assertEqual(self.client.get(self.url, value).status_code, 400, value)
+        for value in ({"view": "platform", "source_host": "media-ledger.org", "provider_page": 0},
+                      {"view": "platform", "source_host": "media-ledger.org", "provider_page_size": 51}):
             self.assertEqual(self.client.get(self.url, value).status_code, 400, value)
         with override_settings(UPSTREAM_PROVIDER_LAB_ENABLED=False):
             self.assertEqual(self.client.get(self.url, params[0]).status_code, 404)

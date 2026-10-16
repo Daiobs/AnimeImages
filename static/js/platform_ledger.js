@@ -26,7 +26,8 @@
         if (route.applicable === false) return route.reason === "unknown_source" ? "来源未知，无法确定路线"
             : route.reason === "source_blocked" ? "当前来源不适用通用路线" : "沿用成熟路线";
         const ids = route.active ? route.provider_order : route.effective_provider_order;
-        return `${route.active ? "人工" : "默认"} · ${(ids || []).map((id) => EXECUTORS[id] || id).join(" → ") || "未记录"}`;
+        const missing = route.summary_truncated ? "摘要已缩减，编辑时读取完整配置" : "未记录";
+        return `${route.active ? "人工" : "默认"} · ${(ids || []).map((id) => EXECUTORS[id] || id).join(" → ") || missing}`;
     }
     function groupWorks(rows) {
         const groups = new Map();
@@ -52,7 +53,7 @@
         const overview = panel.querySelector("[data-ledger-overview]"), detail = panel.querySelector("[data-ledger-detail]");
         const filters = panel.querySelector("[data-ledger-filters]"), status = panel.querySelector("[data-ledger-status]");
         const tableNode = panel.querySelector("[data-ledger-table]"), paging = panel.querySelector("[data-ledger-pagination]");
-        let active = false, page = 1, host = "", detailPage = 1, workId = null, sequence = 0, recordSequence = 0;
+        let active = false, page = 1, host = "", detailPage = 1, providerPage = 1, workId = null, sequence = 0, recordSequence = 0;
         let data = null, detailData = null, selectedRecord = null, loadedAssets = 64;
         const state = Object.fromEntries(["q", "content_type", "provider_id", "evidence", "route_state", "sort"].map((key) => [key, ""]));
         state.sort = "latest";
@@ -109,7 +110,8 @@
                 values[0].append(n("small", `${item.observation_count ?? 0} 次独立观察 · ${item.record_count ?? 0} 条记录`));
                 values[1].textContent = (item.content_types || []).map((type) => TYPES[type] || type).join(" / ") || "未知";
                 for (const p of item.providers || []) values[2].append(providerSummary(p, true));
-                if (!(item.providers || []).length) values[2].textContent = "暂无执行记录";
+                if (!(item.providers || []).length) values[2].textContent = "暂无独立上游记录";
+                if (item.providers_truncated) values[2].append(n("small", `上游摘要 ${item.providers.length} / ${item.provider_total}，详情可翻页`));
                 values[3].textContent = routeText(item.current_route);
                 values[4].textContent = HINTS[item.route_hint] || item.route_hint || "尚无可比较的目标媒体证据";
                 values[5].textContent = time(item.latest_at);
@@ -161,6 +163,10 @@
                     evidence.append(block);
                 }
                 detail.append(evidence);
+                if (detailData.provider_paging?.pages > 1) {
+                    const nav = n("nav", undefined, "aria-label", "上游摘要分页");
+                    paginate(nav, detailData.provider_paging, "data-ledger-provider-page"); detail.append(nav);
+                }
             }
             if (workId) detail.append(n("button", "返回该平台全部作品", "data-ledger-all-works"));
             detail.append(n("p", `跨批次共 ${detailData.total} 条记录 · 当前加载 ${(detailData.executions || []).length} 条；关联副本保留来源，统计只计一次。`));
@@ -180,6 +186,7 @@
                         n("span", e.asset_count == null && e.result?.candidate_count == null ? "候选数量未知" : `${e.asset_count ?? e.result.candidate_count} 个已保留候选`), n("small", time(e.started_at || e.finished_at)),
                         n("small", `${e.origin === "scout" ? "Scout" : e.origin === "lab" ? "Provider Lab" : e.origin || "来源未知"} · ${e.batch?.label || e.batch?.batch_key || "批次未知"}`));
                     if (e.evidence) button.append(n("small", EVIDENCE[e.evidence] || e.evidence));
+                    if (e.summary_truncated) button.append(n("small", "大记录轻量摘要，部分展示字段已省略"));
                     if (e.application_record_id) button.append(n("small", `关联调用 #${e.application_record_id}，不重复计数`));
                     if (copies.length > 1) button.append(n("small", `另有 ${copies.length - 1} 条关联副本，不重复计数`));
                     if (e.evidence_kind) button.append(n("small", {product_execution: "产品执行记录", native_capture_replay: "原生观察 / 离线转换", offline_replay: "离线回放"}[e.evidence_kind] || e.evidence_kind));
@@ -203,14 +210,19 @@
             overview.hidden = true; detail.hidden = false;
             settings.routeEditor.restore(); detail.replaceChildren(n("p", "正在读取跨批次记录…"));
             try {
-                const payload = await read({view: "platform", source_host: host, page: detailPage, page_size: 20, work_id: workId});
+                const payload = await read({view: "platform", source_host: host, page: detailPage, page_size: 20, provider_page: providerPage, work_id: workId});
                 if (version !== sequence || !active) return;
+                const loadedRoute = settings.routeEditor.route;
+                const routeChanged = loadedRoute?.source_host === host && payload.platform?.current_route
+                    && loadedRoute.revision !== payload.platform.current_route.revision;
+                if (routeChanged) settings.routeEditor.invalidate();
                 detailData = {...payload, ...payload.paging}; detailPage = detailData.page; renderDetail();
+                if (routeChanged) detail.append(n("p", "服务端路线版本已变化，旧版本草稿不再适用；编辑前将读取最新路线。"));
                 if (edit) await showRoute();
             } catch (error) { if (version === sequence) detail.replaceChildren(n("button", "← 平台总表", "data-ledger-back"), n("p", `详情读取失败：${error.message}`)); }
         }
         async function open(nextHost, edit = false) {
-            if (host !== nextHost) { settings.routeEditor.invalidate(); detailPage = 1; workId = null; }
+            if (host !== nextHost) { settings.routeEditor.invalidate(); detailPage = 1; providerPage = 1; workId = null; }
             host = nextHost; await loadDetail({edit});
         }
         async function showRoute(evidence, position) {
@@ -235,6 +247,8 @@
                 source: e.origin, batch: e.batch, metadata: result.metadata, retention: result.retention || result.upstream_retention,
                 relationships: result.relationships, limitations: result.limitations, cache: result.cache_status ?? result.cache_hit}, null, 2)));
             container.append(metadata, n("p", "候选仅供比较，无资源授权；分辨率与格式是记录值，未据此验证实际画质或下载。"));
+            if (e.summary_truncated) container.append(n("p", "大记录轻量摘要：部分展示字段已省略，原始历史未修改。"));
+            if (e.source_projection_omitted) container.append(n("p", "作品引用超出展示预算，未带入测试输入；保留的作品身份仍可用于比较。"));
             const descriptor = settings.descriptors.find((x) => x.provider_id === e.provider_id);
             const actions = n("div"); actions.className = "platform-ledger-actions";
             for (const [value, label] of [["primary", "设为首选"], ["fallback", "加入备选"]]) {
@@ -253,6 +267,7 @@
             ordered.slice(0, loadedAssets).forEach((asset) => {
                 const row = n("div"); row.className = "provider-lab-asset";
                 row.append(settings.lab.metaFragment(doc, asset)); list.append(row);
+                if (asset.summary_truncated) row.append(n("small", "候选摘要已缩减，部分字段未知；原始历史未修改。"));
             });
             container.append(n("p", `已显示 ${Math.min(loadedAssets, assets.length)} / 已加载 ${assets.length} / 已保留 ${e.asset_count ?? (Array.isArray(result.assets) ? assets.length : "未知")} 项；上游返回总量 ${result.metadata?.returned_count ?? result.candidate_count ?? "未知"}`), list);
             if (loadedAssets < assets.length || e.asset_paging?.page < e.asset_paging?.pages) container.append(n("button", "再显示候选", "data-ledger-expand"));
@@ -311,6 +326,7 @@
             const supplement = target.closest?.("[data-ledger-test]"); if (supplement) return supplementary(supplement.dataset.ledgerTest);
             const pageButton = target.closest?.("[data-ledger-page]"); if (pageButton && !pageButton.disabled) { page = Number(pageButton.dataset.ledgerPage); return loadTable(); }
             const detailPaging = target.closest?.("[data-ledger-detail-page]"); if (detailPaging && !detailPaging.disabled) { detailPage = Number(detailPaging.dataset.ledgerDetailPage); return loadDetail(); }
+            const providerPaging = target.closest?.("[data-ledger-provider-page]"); if (providerPaging && !providerPaging.disabled) { providerPage = Number(providerPaging.dataset.ledgerProviderPage); return loadDetail(); }
             const work = target.closest?.("[data-ledger-work]"); if (work) { workId = Number(work.dataset.ledgerWork); detailPage = 1; return loadDetail(); }
             if (target.closest?.("[data-ledger-all-works]")) { workId = null; detailPage = 1; return loadDetail(); }
             const record = target.closest?.("[data-ledger-inspect]"); if (record) return inspect(record.dataset.ledgerInspect);
