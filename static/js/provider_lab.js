@@ -838,6 +838,14 @@
         let sequence = 0;
         let busy = false;
         let reference = null;
+        const drafts = new Map();
+        let sourceField = "source_url";
+        const draftFields = ["max_height", "preferred_video_codec", "preferred_container", "route_videodl_mode", "route_videodl_backend"];
+        function retainDraft() {
+            if (!route || busy) return;
+            drafts.set(route.source_host, {revision: route.revision, order: [...order], reference,
+                values: Object.fromEntries(draftFields.map((name) => [name, field(name)?.value || ""]))});
+        }
         const canConfigure = panel.dataset.canConfigure === "true";
         const text = (value) => { if (message) message.textContent = value; };
         function field(name) { return panel.querySelector(`[name="${name}"]`); }
@@ -918,15 +926,18 @@
         }
         async function load({preserveDraft = false} = {}) {
             const input = settings.getSource();
-            if (!input) { text("请先输入来源链接。"); return; }
+            const hostOnly = Boolean(settings.getHost?.());
+            if (!input) { text("请先选择平台或输入来源链接。"); return; }
             if (preserveDraft && route && source) {
                 try {
-                    if (new URL(input).hostname.toLowerCase().replace(/\.$/, "") === route.source_host) {
+                    if ((hostOnly ? input : new URL(input).hostname.toLowerCase().replace(/\.$/, "")) === route.source_host) {
                         source = input;
+                        sourceField = hostOnly ? "source_host" : "source_url";
                         return;
                     }
                 } catch (_error) { /* The route endpoint remains the source validator. */ }
             }
+            retainDraft();
             const version = ++sequence;
             route = null; source = ""; order = []; reference = null;
             const referenceNode = panel.querySelector("[data-route-reference]");
@@ -935,13 +946,21 @@
             busy = true; buttons(); text("正在读取平台路线...");
             try {
                 const url = new URL(settings.url, settings.window.location.origin);
-                url.searchParams.set("source_url", input);
+                url.searchParams.set(hostOnly ? "source_host" : "source_url", input);
                 const response = await settings.fetch(url.href, {credentials: "same-origin", cache: "no-store"});
                 const payload = await response.json();
                 if (version !== sequence) return;
                 if (!response.ok || payload.ok !== true) throw new Error("ROUTE_READ_FAILED");
                 source = input;
+                sourceField = hostOnly ? "source_host" : "source_url";
                 apply(payload.route);
+                const draft = drafts.get(route.source_host);
+                if (draft && draft.revision === route.revision) {
+                    order = [...draft.order]; reference = draft.reference;
+                    draftFields.forEach((name) => { if (field(name)) field(name).value = draft.values[name]; });
+                    if (referenceNode) referenceNode.textContent = reference ? historyEvidence(reference) : "";
+                    renderOrder();
+                } else if (draft) drafts.delete(route.source_host);
                 text(canConfigure ? "路线已读取；本次候选选择不会自动保存。" : "无路线配置权限，仅可查看和比较。");
             } catch (_error) {
                 if (version === sequence) { route = null; text("路线读取失败，请重新读取。"); }
@@ -966,6 +985,7 @@
             }
             const body = routeRequestBody(source, route, {provider_order: order,
                 provider_options: providerOptions, format_preferences: preferences}, isReset);
+            if (sourceField === "source_host") { delete body.source_url; body.source_host = source; }
             if (!isReset && reference) body.reference_execution_id = reference.id;
             const version = ++sequence;
             busy = true; buttons();
@@ -987,7 +1007,9 @@
                         : "路线未保存。请检查上游、Backend 和格式偏好。");
                     return;
                 }
+                drafts.delete(payload.route.source_host);
                 apply(payload.route);
+                settings.onSaved?.();
                 text(isReset ? "已恢复默认路线。" : `已保存 ${route.source_host} 的 hostname 路线，后续解析使用新版本。`);
             } catch (_error) { if (version === sequence) text("保存状态未确认，请重新读取路线后核对。"); }
             finally { if (version === sequence) { busy = false; buttons(); } }
@@ -1038,6 +1060,7 @@
         }
         panel.addEventListener("click", (event) => {
             if (event.target.closest?.("[data-route-cancel]")) {
+                if (route) drafts.delete(route.source_host);
                 reference = null;
                 const node = panel.querySelector("[data-route-reference]"); if (node) node.textContent = "";
                 if (route) apply(route); text("已取消草稿，平台路线未改变。"); return;
@@ -1072,7 +1095,7 @@
         buttons();
         return {load, persist, selectProvider, restore, mount(container) { container.append(panel); }, get route() { return route; },
             get currentSummary() { return panel.querySelector("[data-route-current]")?.textContent || ""; },
-            invalidate() { sequence += 1; route = null; source = ""; reference = null; order = []; busy = false;
+            invalidate() { retainDraft(); sequence += 1; route = null; source = ""; reference = null; order = []; busy = false;
                 const node = panel.querySelector("[data-route-reference]"); if (node) node.textContent = "";
                 scope.textContent = "尚未读取来源范围";
                 const summary = panel.querySelector("[data-route-confirmation-summary]");
@@ -1709,6 +1732,7 @@
         let currentSource = "";
         let currentSelection = null;
         let historyWorkspace = null;
+        let platformWorkspace = null;
         const message = documentObject.querySelector("[data-provider-lab-form-message]");
         const submitButton = form.querySelector('[data-lab-all]') || form.querySelector('[type="submit"]');
         const cancelButton = form.querySelector("[data-lab-cancel]");
@@ -1786,12 +1810,15 @@
                 if (submitButton) submitButton.disabled = false;
                 if (cancelButton) cancelButton.disabled = true;
                 if (message) message.textContent = "本轮执行结束；已完成结果保留，未自动选择路线。";
+                void platformWorkspace?.refresh();
             },
         });
         const routeEditor = createRouteEditor(documentObject, {fetch: fetchImpl, window: windowObject,
             url: root.dataset.routeUrl || "/provider-lab/routes/", csrf: () => csrfToken(form),
-            getSource: () => historyWorkspace?.active ? historyWorkspace.source : String(form.elements.source?.value || "").trim(),
-            getSelection: () => currentSelection, descriptors, onChange: () => historyWorkspace?.refreshCurrentRoute()});
+            getSource: () => platformWorkspace?.active ? platformWorkspace.host : historyWorkspace?.active ? historyWorkspace.source : String(form.elements.source?.value || "").trim(),
+            getHost: () => platformWorkspace?.active ? platformWorkspace.host : "",
+            getSelection: () => currentSelection, descriptors, onChange: () => { historyWorkspace?.refreshCurrentRoute(); platformWorkspace?.currentRoute(); },
+            onSaved: () => { void platformWorkspace?.refresh(); }});
         const inputBand = root.querySelector(".provider-lab-input-band");
         const inputAnchor = inputBand ? documentObject.createElement("div") : null;
         if (inputBand) inputBand.parentNode.insertBefore(inputAnchor, inputBand);
@@ -1823,6 +1850,25 @@
                 if (running) return Promise.resolve({executed: false, not_run_reason: "即时任务仍在执行，请结束后复测。"});
                 return runOne(execution.provider_id, execution.source_url, csrfToken(form), null, undefined, execution.id);
             }});
+        const ledgerApi = overrides?.ledgerApi || windowObject.AnimeImagesPlatformLedger;
+        platformWorkspace = ledgerApi?.createWorkspace(documentObject, {root, descriptors, routeEditor,
+            fetch: fetchImpl, window: windowObject, url: root.dataset.historyUrl || "/admin/provider-lab/history/",
+            lab: {historyTime, historyEvidence, historyRelation, qualityOrder, metaFragment},
+            openInstant(source, host) {
+                setView("instant");
+                form.elements.source.value = source;
+                input();
+                if (message) message.textContent = source ? `${host}：作品已带入，尚未发送请求。`
+                    : `${host}：没有保留安全作品链接，请输入公开作品；尚未发送请求。`;
+                form.elements.source.focus?.();
+            }});
+        function setView(view) {
+            routeEditor?.invalidate();
+            root.dataset.labView = view;
+            root.querySelectorAll("[data-lab-tab]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.labTab === view)));
+            historyWorkspace?.activate(view === "history");
+            void platformWorkspace?.activate(view === "platforms");
+        }
 
         async function runOne(providerId, source, csrf, providerOptions, signal, historyExecutionId) {
             const descriptor = descriptorById.get(providerId);
@@ -1851,7 +1897,7 @@
 
         async function submit(event) {
             event.preventDefault();
-            if (historyWorkspace?.active) return;
+            if (historyWorkspace?.active || platformWorkspace?.active) return;
             if (historyWorkspace?.busy) { if (message) message.textContent = "指定项复测仍在执行，请等待结果。"; return; }
             if (running) { return; }
             const source = String(form.elements.source?.value || "").trim();
@@ -1889,12 +1935,9 @@
         async function click(event) {
             const tab = event.target.closest?.("[data-lab-tab]");
             if (tab) {
-                const historical = tab.dataset.labTab === "history";
-                root.dataset.labView = historical ? "history" : "instant";
-                root.querySelectorAll("[data-lab-tab]").forEach((button) => button.setAttribute("aria-pressed", String(button === tab)));
-                historyWorkspace?.activate(historical); return;
+                setView(tab.dataset.labTab); return;
             }
-            if (event.target.closest?.("[data-lab-history]")) return;
+            if (event.target.closest?.("[data-lab-history], [data-platform-ledger]")) return;
             const useCurrent = event.target.closest?.("[data-lab-current-inspect]");
             if (useCurrent && currentSelection?.historyExecution) return;
             if (useCurrent && currentSelection) {
@@ -2010,10 +2053,12 @@
             queue,
             routeEditor,
             historyWorkspace,
+            platformWorkspace,
             get currentSelection() { return currentSelection; },
             get runStats() { return runStats(); },
             destroy() {
                 historyWorkspace?.destroy();
+                platformWorkspace?.destroy();
                 queue.invalidate();
                 routeEditor?.invalidate();
                 form.removeEventListener("submit", submit);
@@ -2026,6 +2071,7 @@
                 }
             },
         };
+        if (platformWorkspace) setView("platforms");
         root.__animeImagesProviderLabController = controller;
         return controller;
     }

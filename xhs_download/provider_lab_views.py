@@ -30,7 +30,7 @@ from xhs_download.services.provider_lab.resources import (
 )
 from xhs_download.services.rate_limits import consume_fixed_window
 from xhs_download.models import EvaluationBatch, EvaluationExecution
-from xhs_download.services.provider_lab import history
+from xhs_download.services.provider_lab import history, ledger
 
 
 PROVIDER_EXECUTIONS_PER_MINUTE = 20
@@ -143,7 +143,7 @@ def provider_lab_view(request):
     require_provider_lab_access(request)
     context = {
         **admin.site.each_context(request),
-        "title": "上游 Provider 测试工作台",
+        "title": "平台能力与路线",
         "provider_lab_providers": list_provider_descriptors(),
         "provider_lab_run_url": "/admin/provider-lab/run/",
         "provider_lab_resource_url": "/admin/provider-lab/resource/",
@@ -281,6 +281,17 @@ def provider_lab_history_view(request):
             if len(request.body) > history.MAX_IMPORT_BYTES:
                 raise history.HistoryError("HISTORY_INPUT_TOO_LARGE", 413)
             return secure_json(history.import_batch(parse_json_body(request)))
+        view = request.GET.get("view")
+        if view or "execution_id" in request.GET:
+            if any(len(request.GET.getlist(key)) != 1 for key in request.GET):
+                raise history.HistoryError("HISTORY_INPUT_INVALID")
+            if view == "platforms" and "execution_id" not in request.GET:
+                return secure_json(ledger.platforms_payload(request.GET))
+            if view == "platform" and "execution_id" not in request.GET:
+                return secure_json(ledger.platform_payload(request.GET))
+            if not view and "execution_id" in request.GET:
+                return secure_json(ledger.execution_payload(request.GET))
+            raise history.HistoryError("HISTORY_INPUT_INVALID")
         batch_id = request.GET.get("batch_id")
         if "source_host" in request.GET:
             if "batch_id" in request.GET or len(request.GET.getlist("source_host")) != 1:

@@ -144,6 +144,7 @@ jobs:
           node --check static/js/ordinary_media_streaming_protocol.js
           node --check static/js/parse_preferences.js
           node --check static/js/provider_lab.js
+          node --check static/js/platform_ledger.js
           node --check static/js/upstream_candidates.js
           node --check static/js/project_settings.js
           node --check static/js/platform_coverage_modal.js
@@ -165,6 +166,7 @@ jobs:
           node --test tests_js/parse_preferences.test.js
           node --test tests_js/provider_lab.test.js
           node --test tests_js/provider_lab_history.test.js
+          node --test tests_js/platform_ledger.test.js
           node --test tests_js/provider_lab_quality.test.js
           node --test tests_js/provider_lab_controller_quality.test.js
           node --test tests_js/upstream_candidates.test.js

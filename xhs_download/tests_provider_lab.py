@@ -108,7 +108,8 @@ class ProviderLabAccessTests(TestCase):
         self.client.force_login(self.staff)
         response = self.client.get(reverse("provider_lab"))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "上游 Provider 测试工作台")
+        self.assertContains(response, "平台能力与路线")
+        self.assertContains(response, 'data-lab-view="platforms"')
 
     def test_06_page_is_no_store_and_nosniff(self):
         self.client.force_login(self.staff)
