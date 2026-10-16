@@ -243,13 +243,19 @@ def execution_dict(record):
 def batch_dict(batch):
     rows = list(batch.executions.values_list("summary", flat=True))
     counts = {"planned": 0, "executed": 0, "success": 0, "unsupported": 0,
-              "failed": 0, "not_executed": 0, "unknown": 0}
+              "failed": 0, "not_executed": 0, "unknown": 0, "native_observed": 0}
     superseded = {r.get("replay_of") for r in rows if not r.get("replay_batch_key")
                   and isinstance(r.get("replay_of"), str)}
     for row in rows:
         if row.get("execution_key") in superseded:
             continue
         state, result = row.get("state"), row.get("result", {})
+        metadata = result.get("metadata")
+        if (result.get("status") == "native_observed"
+                or (isinstance(metadata, dict) and metadata.get("evidence_kind") == "native_capture_replay")
+                or batch.metadata.get("evidence_kind") == "native_capture_replay"):
+            counts["native_observed"] += 1
+            continue
         if state in {"unknown", "sent", "reserved", "in_flight", "running"}:
             counts["unknown"] += 1
         elif state == "planned":

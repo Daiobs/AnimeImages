@@ -713,7 +713,13 @@ class RouteConsumptionTests(RouteFixtures, TestCase):
         from .services.batch_parse.results import build_batch_result_row
         from .services.upstream_candidates import issue_candidate
         self.enable_real_cache()
-        self.save(["parsehub_generic"])
+        self.client.force_login(self.user)
+        saved = self.client.post(reverse("upstream_routes"), json.dumps({
+            "source_url": SOURCE, "expected_revision": 0,
+            "provider_order": ["parsehub_generic"],
+        }), content_type="application/json")
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(saved.json()["route"]["provider_order"], ["parsehub_generic"])
 
         def execute(provider, source, **kwargs):
             candidate = issue_candidate("https://media.example/video.mp4", {"height": 2160}, ordinal=1,

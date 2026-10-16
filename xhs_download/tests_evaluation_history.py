@@ -2,14 +2,16 @@
 
 from contextlib import ExitStack
 from copy import deepcopy
+from datetime import datetime, timezone
 import json
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
-from django.test import Client, TestCase, TransactionTestCase, override_settings
+from django.test import Client, SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 
 from .models import EvaluationBatch, EvaluationExecution, UpstreamRoute, UpstreamRouteAudit
@@ -39,6 +41,39 @@ def execution(key="exec-1", **changes):
 def envelope(*rows, key="fixture-batch"):
     return {"schema_version": 1, "batch": {"batch_key": key, "label": "Offline batch",
             "metadata": {"scout_head": "old-head"}}, "executions": list(rows or [execution()])}
+
+
+class NativeEvidenceSummaryTests(SimpleTestCase):
+    def test_native_summary_retains_267_candidates_and_metadata_without_resource_authority(self):
+        metadata = {"evidence_kind": "native_capture_replay", "target_identity": {"id": "fixture-note"},
+                    "identity_confirmed": False, "capture_status": "captured", "conversion_status": "converted",
+                    "integrity": {"complete": False}, "scope": "captured subset", "limitations": ["offline only"]}
+        row = execution(result={"status": "native_observed", "metadata": metadata,
+            "assets": [{"asset_id": f"native-{i}", "media_type": "image", "resource_token": "not-authority",
+                        "url": "https://media.example/private"} for i in range(267)]})
+        result = history.execution_summary(row)["result"]
+        self.assertEqual(result["status"], "native_observed")
+        self.assertEqual(result["metadata"], metadata)
+        self.assertEqual(len(result["assets"]), 267)
+        self.assertTrue(all(set(asset) == {"asset_id", "media_type"} for asset in result["assets"]))
+
+    def test_native_counts_are_separate_from_product_success_and_execution(self):
+        for marker in ("status", "result_metadata", "batch_metadata"):
+            with self.subTest(marker=marker):
+                native = execution("native", result={"status": "native_observed" if marker == "status" else "success",
+                    "executed": True, "metadata": {"evidence_kind": "native_capture_replay"} if marker == "result_metadata" else {}})
+                rows = [native] if marker == "batch_metadata" else [native, execution("product")]
+                manager = Mock()
+                manager.values_list.return_value = rows
+                batch = SimpleNamespace(pk=1, batch_key="fixture", label="Fixture", origin="scout",
+                    metadata={"evidence_kind": "native_capture_replay"} if marker == "batch_metadata" else {},
+                    created_at=datetime(2026, 10, 16, tzinfo=timezone.utc), executions=manager)
+                counts = history.batch_dict(batch)["counts"]
+                self.assertEqual(counts["native_observed"], 1)
+                self.assertEqual(counts["success"], 0 if marker == "batch_metadata" else 1)
+                self.assertEqual(counts["executed"], counts["success"])
+                self.assertEqual(counts["failed"], 0)
+                self.assertEqual(counts["not_executed"], 0)
 
 
 @override_settings(UPSTREAM_PROVIDER_LAB_ENABLED=True, CACHES=LOCAL_CACHE)
@@ -241,7 +276,7 @@ class EvaluationHistoryTests(TestCase):
         batch_id = self.post(envelope(*rows)).json()["batch_id"]
         data = self.client.get(self.url, {"batch_id": batch_id}).json()
         self.assertEqual(data["batch"]["counts"], {"planned": 1, "not_executed": 1, "unknown": 1,
-            "executed": 3, "success": 1, "unsupported": 1, "failed": 1})
+            "executed": 3, "success": 1, "unsupported": 1, "failed": 1, "native_observed": 0})
         self.assertEqual(data["executions"][-1]["result"]["error_detail"], "AUTH HTML")
 
     def test_actual_lab_contract_preserves_backend_relationships_without_raw_shape(self):

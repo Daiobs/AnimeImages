@@ -240,6 +240,206 @@ test("large metadata stays outside batch buttons and execution versions use fact
     f.workspace.destroy();
 });
 
+test("native replay displays identity and limitations while 267 candidates remain view-only", async () => {
+    const f = fixture();
+    const record = f.executions[0];
+    record.result = {status: "native_observed", metadata: {evidence_kind: "native_capture_replay",
+        target_identity: {platform: "xiaohongshu", id: "fixture-note"}, identity_confirmed: false,
+        capture_status: "captured", conversion_status: "converted", integrity: {complete: false},
+        scope: "captured subset", limitations: ["not live acceptance"]},
+        assets: Array.from({length: 267}, (_, i) => ({asset_id: `native-${i}`, media_type: "image", resource_token: "not-authority"}))};
+    const original = JSON.stringify(record);
+    f.workspace.activate(true); await f.workspace.loadBatch(1);
+    const cell = f.panel.querySelector('[data-history-inspect="10"]');
+    assert.equal(cell.getAttribute("data-state"), "native_observed");
+    let card = await f.inspect(10);
+    assert.equal(card.querySelector("[data-provider-status-label]").textContent, "原生媒体证据（离线转换，非实时产品验收）");
+    assert.equal(card.querySelector("[data-provider-error]").hidden, true);
+    assert.equal(card.querySelector("[data-provider-error]").textContent, "");
+    assert.match(card.querySelector("[data-native-identity]").textContent, /fixture-note.*身份状态：未确认/);
+    assert.match(card.querySelector("[data-native-conversion]").textContent, /captured.*converted/);
+    assert.match(card.querySelector("[data-native-limitation]").textContent, /不代表实时产品解析/);
+    const metadata = card.querySelectorAll("pre").map((node) => node.textContent).join(" ");
+    assert.match(metadata, /captured subset/); assert.match(metadata, /not live acceptance/);
+    const resources = card.querySelectorAll("[data-lab-inspect]");
+    assert.equal(resources.length, 267);
+    assert.ok(resources.every((button) => button.disabled && button.dataset.resourceToken === ""));
+    await f.click(resources[0]);
+    assert.equal(f.retests.length, 0); assert.equal(f.drafts.length, 0);
+    assert.ok(f.calls.every(({options}) => !options.method));
+    await f.change(f.panel.querySelector("[data-history-state]"), "success");
+    assert.equal(f.panel.querySelector('[data-history-inspect="10"]'), null);
+    await f.change(f.panel.querySelector("[data-history-state]"), "native_observed");
+    card = await f.inspect(10);
+    assert.match(lab.historyEvidence(record), /原生媒体证据/);
+    assert.equal(JSON.stringify(record), original);
+    f.workspace.destroy();
+});
+
+test("native batch marker is visible and missing identity is unknown, never product success", async () => {
+    for (const confirmed of [undefined, true, "true"]) {
+        const batch = {id: 1, metadata: {evidence_kind: "native_capture_replay"}, counts: {success: 0, native_observed: 1}};
+        const record = {id: 10, provider_id: "native_capture", state: "success", result: {status: "success",
+            metadata: {identity_confirmed: confirmed}}};
+        const f = fixture({fetch: async (url) => ({ok: true, json: async () => new URL(url).searchParams.has("batch_id")
+            ? {ok: true, batch, executions: [record]} : {ok: true, batches: [batch]}})});
+        await f.workspace.loadBatches();
+        const labels = f.panel.querySelector("[data-history-batch]").querySelectorAll("span").map((node) => node.textContent).join(" ");
+        assert.match(labels, /产品成功 0.*原生离线证据 1/);
+        assert.match(labels, /原生媒体证据（离线转换，非实时产品验收）/);
+        await f.workspace.loadBatch(1);
+        const card = await f.inspect(10);
+        assert.match(card.querySelector("[data-native-identity]").textContent, /目标身份："未知"/);
+        assert.ok(card.querySelector("[data-native-identity]").textContent.endsWith(`身份状态：${confirmed === true ? "已确认" : "未知"}`));
+        assert.equal(card.dataset.providerStatus, "native_observed");
+        assert.equal(card.querySelector("[data-history-retest]").disabled, true);
+        f.workspace.destroy();
+    }
+});
+
+test("host route reference groups returned successes by content without ranking different works or requests", async () => {
+    const f = fixture({descriptors: [{provider_id: "A", label: "Alpha", available: true, route_selectable: true},
+        {provider_id: "B", label: "Beta", available: true, route_selectable: true}]});
+    const seed = {...f.executions[0], state: "returned"};
+    const row = (id, provider, kind, changes = {}) => ({...seed, id, provider_id: provider, sample_key: `work-${id}`,
+        result: {status: "success", result_kind: kind, assets: [{media_type: kind === "gallery" ? "image" : "video", height: id * 1000}]}, ...changes});
+    f.executions.splice(0, f.executions.length,
+        row(10, "A", "video"), row(20, "B", "video"), row(30, "A", "gallery"),
+        row(40, "A", "article", {state: "sent"}), row(50, "A", "article", {result: {status: "failed", result_kind: "article"}}),
+        row(60, "A", "article", {result: {status: "success", executed: false, result_kind: "article"}}),
+        row(70, "B", "gallery", {source_host: "other.example"}),
+        row(80, "A", "article", {result: {status: "success", client_status: "OUTCOME_UNKNOWN", result_kind: "article"}}));
+    const original = JSON.stringify(f.executions);
+    await f.workspace.loadBatch(1);
+    assert.equal(f.panel.querySelector("[data-history-route-reference]"), null);
+    const requests = f.calls.length;
+    await f.change(f.panel.querySelector("[data-history-host]"), "source.example");
+    const reference = f.panel.querySelector("[data-history-route-reference]");
+    const lines = reference.querySelectorAll("li").map((node) => node.textContent);
+    assert.equal(lines.length, 2);
+    assert.match(lines.find((line) => line.startsWith("视频")), /Alpha.*#10.*Beta.*#20.*多家记录不排名.*需同作品比较/);
+    assert.match(lines.find((line) => line.startsWith("图集")), /Alpha.*#30.*唯一已验证参考/);
+    assert.doesNotMatch(lines.join(" "), /#40|#50|#60|#70|#80|10000|20000|最高|最佳上游/);
+    const notes = reference.querySelectorAll("p").map((node) => node.textContent).join(" ");
+    assert.match(notes, /尺寸非目视画质/);
+    assert.match(notes, /实际 hostname：source.example.*不按内容类型持久化/);
+    assert.match(notes, /成熟平台继续沿用既有路线/);
+    assert.equal(reference.querySelectorAll("button, select, input").length, 0);
+    await f.change(f.panel.querySelector("[data-history-order]"), "oldest");
+    await f.change(f.panel.querySelector("[data-history-state]"), "failed");
+    assert.deepEqual(f.panel.querySelector("[data-history-route-reference]").querySelectorAll("li").map((node) => node.textContent), lines);
+    assert.equal(f.calls.length, requests);
+    assert.equal(f.retests.length, 0); assert.equal(f.drafts.length, 0);
+    assert.equal(f.selections.filter(Boolean).length, 0);
+    assert.equal(JSON.stringify(f.executions), original);
+    f.workspace.destroy();
+});
+
+test("native route reference requires boolean confirmed identity and RETURNED capture", async () => {
+    const f = fixture();
+    const seed = {...f.executions[0], state: "returned"};
+    f.executions.splice(0, f.executions.length, ...[
+        [10, true, "RETURNED"], [20, false, "RETURNED"], [30, "true", "RETURNED"],
+        [40, undefined, "RETURNED"], [50, true, "RESERVED"], [60, true, "UNKNOWN"],
+    ].map(([id, confirmed, capture]) => ({...seed, id, result: {status: "native_observed", result_kind: "gallery", assets: [{media_type: "image"}],
+        metadata: {evidence_kind: "native_capture_replay", identity_confirmed: confirmed, capture_status: capture}}})));
+    await f.workspace.loadBatch(1);
+    const requests = f.calls.length;
+    await f.change(f.panel.querySelector("[data-history-host]"), "source.example");
+    const line = f.panel.querySelector("[data-history-route-reference]").querySelector("li").textContent;
+    assert.match(line, /1 条，记录 #10.*身份已确认的原生离线证据.*不证明产品通道可执行.*唯一已验证参考/);
+    assert.doesNotMatch(line, /#20|#30|#40|#50|#60/);
+    f.executions[0].result.metadata.identity_confirmed = false;
+    await f.change(f.panel.querySelector("[data-history-order]"), "oldest");
+    const reference = f.panel.querySelector("[data-history-route-reference]");
+    assert.equal(reference.querySelectorAll("li").length, 0);
+    assert.ok(reference.querySelectorAll("p").some((node) => node.textContent.includes("暂无满足条件")));
+    assert.equal(f.calls.length, requests);
+    assert.equal(f.retests.length, 0); assert.equal(f.drafts.length, 0);
+    f.workspace.destroy();
+});
+
+test("route reference separates Common and unknown evidence from executable routes and respects mature scope", async () => {
+    const routeEditor = {invalidate() {}, restore() {}, route: {source_host: "source.example", applicable: false}};
+    const f = fixture({routeEditor, descriptors: [{provider_id: "videodl_repo", execution_provider_id: "videodl_repo",
+        available: true, route_selectable: true}]});
+    const seed = {...f.executions[0], state: "returned", provider_id: "videodl_repo", result: {status: "success", result_kind: "video", assets: [{media_type: "video"}]}};
+    f.executions.splice(0, f.executions.length,
+        {...seed, id: 10, options: {mode: "common_only", backend_category: "common"}},
+        {...seed, id: 20, options: null}, {...seed, id: 30, options: {mode: "dedicated_only"}},
+        {...seed, id: 40, provider_id: "unknown_provider"});
+    await f.workspace.loadBatch(1);
+    const requests = f.calls.length;
+    await f.change(f.panel.querySelector("[data-history-host]"), "source.example");
+    const reference = f.panel.querySelector("[data-history-route-reference]");
+    const line = reference.querySelector("li").textContent;
+    assert.match(line, /Common 或未知执行选项：仅采集证据，不可直接作为可执行路线/);
+    assert.match(line, /Dedicated 历史证据，仍需核对当前 backend 与来源适用性/);
+    assert.match(line, /unknown_provider.*不能视为可执行路线/);
+    assert.match(reference.querySelector("[data-route-reference-scope]").textContent, /当前来源受既有路线保护，不适用通用路线保存/);
+    routeEditor.route = null;
+    f.workspace.refreshCurrentRoute();
+    assert.match(reference.querySelector("[data-route-reference-scope]").textContent, /可否保存以路线编辑器读取的范围为准/);
+    assert.equal(f.calls.length, requests);
+    assert.equal(f.drafts.length, 0); assert.equal(f.retests.length, 0);
+    f.workspace.destroy();
+});
+
+test("native reference infers media kinds without covers and independently labels Common limitations", async () => {
+    const f = fixture({descriptors: [{provider_id: "videodl_repo", execution_provider_id: "videodl_repo", available: true, route_selectable: true}]});
+    const seed = {...f.executions[0], state: "returned", provider_id: "videodl_repo", options: {mode: "common_only"}};
+    const metadata = {evidence_kind: "native_capture_replay", identity_confirmed: true, capture_status: "RETURNED"};
+    const covers = ["cover", "thumbnail", "poster"].map((role) => ({role, media_type: "image"}));
+    f.executions.splice(0, f.executions.length, ...[
+        [10, [{media_type: "audio"}]], [20, [{media_type: "video"}]],
+        [30, [{media_type: "image"}, {media_type: "image"}]],
+        [40, [{media_type: "audio"}, {media_type: "video"}]],
+    ].map(([id, assets]) => ({...seed, id, result: {status: "native_observed", result_kind: "unknown", metadata, assets: [...covers, ...assets]}})),
+        {...seed, id: 50, result: {status: "native_observed", metadata, asset_count: 2}},
+        {...seed, id: 60, result: {status: "native_observed", metadata, assets: covers, asset_count: 3}});
+    await f.workspace.loadBatch(1);
+    const requests = f.calls.length;
+    await f.change(f.panel.querySelector("[data-history-host]"), "source.example");
+    const lines = f.panel.querySelector("[data-history-route-reference]").querySelectorAll("li").map((node) => node.textContent);
+    for (const [kind, id] of [["音频", 10], ["视频", 20], ["图集", 30], ["混合媒体", 40], ["内容类型未知", 50]]) {
+        const line = lines.find((value) => value.startsWith(`${kind}：`));
+        assert.ok(line, kind); assert.ok(line.includes(`#${id}`));
+        assert.match(line, /身份已确认的原生离线证据.*Common 或未知执行选项.*不可直接作为可执行路线/);
+    }
+    assert.equal(lines.length, 5); assert.doesNotMatch(lines.join(" "), /#60/);
+    assert.equal(f.calls.length, requests); assert.equal(f.drafts.length, 0); assert.equal(f.retests.length, 0);
+    f.workspace.destroy();
+});
+
+test("success reference requires media evidence and explicit assets override counts including covers", async () => {
+    const f = fixture();
+    const seed = {...f.executions[0], state: "returned"};
+    const payloads = [
+        {}, {asset_count: 0}, {asset_count: -1}, {asset_count: 1.5}, {asset_count: "2"}, {asset_count: true},
+        {assets: [], asset_count: 9}, {assets: [{media_type: "image", role: "cover"}], asset_count: 9},
+        {assets: [{media_type: "video", role: "poster"}], metadata: {asset_count: 9}},
+        {assets: [{media_type: "image", role: "thumbnail"}]}, {assets: null, asset_count: 9},
+    ];
+    f.executions.splice(0, f.executions.length, ...payloads.map((payload, index) => ({...seed, id: index + 100,
+        result: {status: "success", result_kind: "video", ...payload}})));
+    await f.workspace.loadBatch(1);
+    await f.change(f.panel.querySelector("[data-history-host]"), "source.example");
+    assert.equal(f.panel.querySelector("[data-history-route-reference]").querySelectorAll("li").length, 0);
+    // A later batch with missing asset details may use a positive integer count, not a coerced value.
+    f.executions.splice(0, f.executions.length,
+        {...seed, id: 201, result: {status: "success", metadata: {asset_count: 2}}},
+        {...seed, id: 202, result: {status: "success", assets: [{media_type: "video"}], asset_count: 0}});
+    await f.workspace.loadBatch(1);
+    const requests = f.calls.length;
+    await f.change(f.panel.querySelector("[data-history-host]"), "source.example");
+    const lines = f.panel.querySelector("[data-history-route-reference]").querySelectorAll("li").map((node) => node.textContent);
+    assert.equal(lines.length, 2);
+    assert.match(lines.find((line) => line.startsWith("内容类型未知")), /#201.*唯一已验证参考/);
+    assert.match(lines.find((line) => line.startsWith("视频")), /#202.*唯一已验证参考/);
+    assert.equal(f.calls.length, requests); assert.equal(f.drafts.length, 0); assert.equal(f.retests.length, 0);
+    f.workspace.destroy();
+});
+
 test("history selection uses original source and prepares a draft without a provider call", async () => {
     const f = fixture(); f.workspace.activate(true);
     await f.workspace.loadBatch(1);

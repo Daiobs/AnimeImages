@@ -14,6 +14,7 @@
         waiting: "WAITING",
         running: "RUNNING",
         success: "SUCCESS",
+        native_observed: "原生媒体证据（离线转换，非实时产品验收）",
         unsupported: "UNSUPPORTED",
         not_configured: "NOT CONFIGURED",
         timeout: "TIMEOUT",
@@ -650,7 +651,7 @@
             content.hidden = false;
         }
         const error = card.querySelector("[data-provider-error]");
-        if (error && status !== "success") {
+        if (error && !["success", "native_observed"].includes(status)) {
             error.textContent = errorMessage(result.error_code, result.error_detail);
             if (status === "cancelled") error.textContent = "已取消；其他已完成结果保留。";
             if (status === "skipped") error.textContent = result.not_run_reason || "本次未执行：整体预算已用尽。";
@@ -658,7 +659,7 @@
             if (["planned", "not_executed"].includes(status)) error.textContent = "原记录：未执行。";
             error.hidden = false;
         }
-        if (error && status === "success") { error.hidden = true; error.textContent = ""; }
+        if (error && ["success", "native_observed"].includes(status)) { error.hidden = true; error.textContent = ""; }
         let receipt = card.querySelector("[data-history-receipt]");
         if (result.history && !receipt) {
             receipt = documentObject.createElement("p"); receipt.dataset.historyReceipt = "1"; card.append(receipt);
@@ -861,7 +862,7 @@
                 .filter((name) => field(name)?.value).map((name) => `${name}=${field(name).value}`).join("，") || "未指定";
             const execution = order.includes("videodl_repo")
                 ? `${field("route_videodl_mode")?.value || "未知，请显式设置"} ${field("route_videodl_backend")?.value || ""}` : "该上游标准模式";
-            node.textContent = `来源站点：${route.source_host}；revision ${route.revision}；当前：${current}；拟固定：${order[0] ? providerName(order[0]) : "未选择"}；执行选项：${execution}；格式偏好：${preferences}；明确备选：${routeNames(order.slice(1)) || "无，首选失败即停止"}。`;
+            node.textContent = `实际 hostname 范围：${route.source_host}（不区分内容类型，不自动合并别名或短链域名）；revision ${route.revision}；当前：${current}；拟固定：${order[0] ? providerName(order[0]) : "未选择"}；执行选项：${execution}；格式偏好：${preferences}；明确备选：${routeNames(order.slice(1)) || "无，首选失败即停止"}。`;
         }
         function renderOrder() {
             orderNode.replaceChildren();
@@ -902,7 +903,7 @@
             route = snapshot;
             order = Array.from(snapshot.active ? snapshot.provider_order : []);
             scope.textContent = snapshot.applicable
-                ? `${snapshot.source_host} · ${snapshot.active ? "人工路线" : "默认路线，尚未人工优选"} · 版本 ${snapshot.revision}`
+                ? `实际 hostname 范围：${snapshot.source_host} · 不区分内容类型 · ${snapshot.active ? "人工路线" : "默认路线，尚未人工优选"} · 版本 ${snapshot.revision}`
                 : `${snapshot.source_host} · 当前来源沿用成熟路线，保存不适用`;
             for (const name of ["max_height", "preferred_video_codec", "preferred_container"]) {
                 const node = field(name);
@@ -987,7 +988,7 @@
                     return;
                 }
                 apply(payload.route);
-                text(isReset ? "已恢复默认路线。" : "平台路线已保存，后续解析使用新版本。");
+                text(isReset ? "已恢复默认路线。" : `已保存 ${route.source_host} 的 hostname 路线，后续解析使用新版本。`);
             } catch (_error) { if (version === sequence) text("保存状态未确认，请重新读取路线后核对。"); }
             finally { if (version === sequence) { busy = false; buttons(); } }
         }
@@ -1011,13 +1012,13 @@
             if (placement === "fallback" && !order.length) {
                 text("请先设置首选上游，再加入备选；尚未保存。"); return;
             }
-            const alreadyIncluded = order.includes(id);
             if (placement === "fallback") order = Array.from(new Set([...order, id]));
             else order = placement === "primary" ? [id, ...order.filter((item) => item !== id)] : [id];
             reference = evidence || null;
             const referenceNode = panel.querySelector("[data-route-reference]");
             if (referenceNode) referenceNode.textContent = reference ? historyEvidence(reference) : "即时选择；无历史引用。";
-            if (reference && id === "videodl_repo" && !alreadyIncluded) {
+            // Every explicit evidence selection replaces options, even for an existing provider.
+            if (reference && id === "videodl_repo") {
                 const recorded = reference.options?.videodl_repo || reference.options || {};
                 const mode = field("route_videodl_mode");
                 const backend = field("route_videodl_backend");
@@ -1032,7 +1033,8 @@
             }
             if (confirm) confirm.checked = false;
             renderOrder(); text(reference && id === "videodl_repo" && !field("route_videodl_mode")?.value
-                ? "历史 videodl 选项未知或当前不支持，请显式设置；尚未保存。" : "已调整路线草稿；尚未保存。");
+                ? "历史 videodl 为 Common、未知或当前不支持的选项；已清空旧执行模式，不能沿用旧 Dedicated 配置，请显式设置；尚未保存。"
+                : reference && id === "videodl_repo" ? "已按所选历史重新设置 Dedicated 执行选项；尚未保存。" : "已调整路线草稿；尚未保存。");
         }
         panel.addEventListener("click", (event) => {
             if (event.target.closest?.("[data-route-cancel]")) {
@@ -1168,9 +1170,16 @@
         return Number.isFinite(time) ? time : null;
     }
 
+    function isNativeHistoryEvidence(execution) {
+        return execution.result?.status === "native_observed"
+            || execution.result?.metadata?.evidence_kind === "native_capture_replay"
+            || execution.batch?.metadata?.evidence_kind === "native_capture_replay";
+    }
+
     function historyEvidence(execution) {
         const batch = execution.batch || {};
-        return `参考批次：${batch.label || batch.batch_key || "未知"}；建档时间：${historyTime(batch.created_at)}；执行时间：${historyTime(execution.started_at)} → ${historyTime(execution.finished_at)}；版本：${historyVersionSummary(execution.version ?? batch.metadata?.version)}；来源：${historyOrigin(execution.origin || batch.origin)}；原状态：${execution.state || "未知"}`;
+        const kind = isNativeHistoryEvidence(execution) ? `${STATUS_LABELS.native_observed}；` : "";
+        return `${kind}参考批次：${batch.label || batch.batch_key || "未知"}；建档时间：${historyTime(batch.created_at)}；执行时间：${historyTime(execution.started_at)} → ${historyTime(execution.finished_at)}；版本：${historyVersionSummary(execution.version ?? batch.metadata?.version)}；来源：${historyOrigin(execution.origin || batch.origin)}；原状态：${execution.state || "未知"}`;
     }
 
     function historyRetestReason(execution, descriptor) {
@@ -1202,8 +1211,9 @@
         const pageSize = 10;
         const providers = {parsehub_repo: "ParseHub", videodl_repo: "videodl", yt_dlp_existing: "yt-dlp", gallery_dl_existing: "gallery-dl", tiantian_existing: "天天解析", kukutool_existing: "Kukutool"};
         const sampleIdentity = (e) => `${e.source_host || ""}:${e.sample_key || e.source_url || e.id}`;
-        const outcome = (e) => ["not_executed", "planned", "skipped"].includes(e.state) ? "not_executed" : e.result?.status || e.state || "unknown";
-        const outcomeLabel = (e) => ({success: "成功", failed: "失败", timeout: "超时", unsupported: "不支持", not_executed: "未执行", unknown: "未知", queued: "排队中", running: "执行中"}[outcome(e)] || "待核对");
+        const outcome = (e) => isNativeHistoryEvidence(e) ? "native_observed"
+            : ["not_executed", "planned", "skipped"].includes(e.state) ? "not_executed" : e.result?.status || e.state || "unknown";
+        const outcomeLabel = (e) => ({native_observed: "原生离线证据", success: "成功", failed: "失败", timeout: "超时", unsupported: "不支持", not_executed: "未执行", unknown: "未知", queued: "排队中", running: "执行中"}[outcome(e)] || "待核对");
         function cancelPending() { pending = null; settings.configureRetest?.(null); }
         function clearSelection(preserveRoute = false) {
             selected = null; selectedAsset = null;
@@ -1212,6 +1222,8 @@
             if (!preserveRoute) settings.routeEditor?.invalidate();
         }
         function refreshCurrentRoute() {
+            const referenceScope = panel.querySelector("[data-route-reference-scope]");
+            if (referenceScope) referenceScope.textContent = routeReferenceScope();
             const summary = panel.querySelector("[data-history-current-route]");
             if (!summary) return;
             const execution = executions.find((item) => String(item.id) === String(inspected));
@@ -1238,6 +1250,72 @@
             details.append(node("summary", label), node("pre", JSON.stringify(value ?? "未知", null, 2)));
             return details;
         }
+        function routeReferenceScope() {
+            const route = settings.routeEditor?.route;
+            const scope = host.value === "未知站点" ? "来源 hostname 未保留，不能确定路线保存范围。"
+                : `实际 hostname：${host.value}；路线不按内容类型持久化，不自动合并别名或短链域名。`;
+            return scope + (route?.source_host === host.value && route.applicable === false
+                ? "当前来源受既有路线保护，不适用通用路线保存。"
+                : "成熟平台继续沿用既有路线；可否保存以路线编辑器读取的范围为准。参考不自动选择或保存路线。");
+        }
+        function renderRouteReference(rows) {
+            if (!host.value) return;
+            const reference = node("section", undefined, "data-history-route-reference");
+            reference.append(node("h3", "选路参考"), node("p", routeReferenceScope(), "data-route-reference-scope"),
+                node("p", "仅依据本批次所选 hostname 的已保留记录；尺寸非目视画质，不据此判断最佳。原生媒体证据是离线观察，非实时产品验收。"));
+            const kinds = {video: "视频", image: "单图", gallery: "图集", livephoto: "实况照片", multimedia: "混合媒体", article: "文章", audio: "音频"};
+            const groups = new Map();
+            for (const e of rows) {
+                const native = isNativeHistoryEvidence(e), result = e.result || {}, metadata = result.metadata || {};
+                const media = Array.isArray(result.assets) ? result.assets.filter((asset) => asset
+                    && !["cover", "thumbnail", "poster"].includes(String(asset.role || "").toLowerCase())
+                    && ["image", "video", "audio"].includes(asset.media_type)) : [];
+                const count = result.asset_count ?? metadata.asset_count;
+                const hasMedia = Object.prototype.hasOwnProperty.call(result, "assets") ? media.length > 0
+                    : Number.isSafeInteger(count) && count > 0;
+                const returned = String(e.state || "").toLowerCase();
+                const eligible = native ? metadata.identity_confirmed === true
+                    && String(metadata.capture_status ?? e.state ?? "").toUpperCase() === "RETURNED"
+                    : result.status === "success" && ["returned", "success"].includes(returned) && result.executed !== false
+                        && result.error_detail !== "SERVICE_PREVIOUS_OUTCOME_UNKNOWN" && result.client_status !== "OUTCOME_UNKNOWN";
+                if (!eligible || !hasMedia || !e.provider_id) continue;
+                const types = new Set(media.map((asset) => asset.media_type));
+                const inferredKind = types.size > 1 ? "multimedia" : types.has("image")
+                    ? (media.length > 1 ? "gallery" : "image") : types.values().next().value;
+                const kind = kinds[result.result_kind] || kinds[inferredKind] || "内容类型未知";
+                if (!groups.has(kind)) groups.set(kind, new Map());
+                const descriptor = settings.descriptors.find((item) => item.provider_id === e.provider_id);
+                const id = descriptor?.execution_provider_id || ROUTE_PROVIDER_IDS[e.provider_id] || e.provider_id;
+                const providersForKind = groups.get(kind);
+                if (!providersForKind.has(id)) providersForKind.set(id, {label: providers[e.provider_id] || descriptor?.label || e.provider_id, ids: [], notes: new Set()});
+                const entry = providersForKind.get(id);
+                entry.ids.push(e.id);
+                let note = "可供人工核对路线，非当前可执行保证";
+                if (native) note = "身份已确认的原生离线证据，不证明产品通道可执行";
+                else if (!descriptor || descriptor.baseline || descriptor.route_selectable !== true || descriptor.available !== true)
+                    note = "仅历史证据：未知、基线或当前不可选 Provider，不能视为可执行路线";
+                entry.notes.add(note);
+                if (id === "videodl_repo") {
+                    const options = e.options?.videodl_repo || e.options || {};
+                    if (options.mode !== "dedicated_only" && !(options.mode === "specific_backend"
+                            && options.backend_category === "dedicated"
+                            && (options.backend_id || options.backend_ids?.length === 1)))
+                        note = "Common 或未知执行选项：仅采集证据，不可直接作为可执行路线";
+                    else note = "Dedicated 历史证据，仍需核对当前 backend 与来源适用性";
+                    entry.notes.add(note);
+                }
+            }
+            const list = node("ul");
+            for (const [kind, entries] of groups) {
+                const items = Array.from(entries.values()).sort((a, b) => a.label.localeCompare(b.label));
+                const summary = items.map((entry) => `${entry.label}（${entry.ids.length} 条，记录 ${entry.ids.slice(0, 3).map((id) => `#${id}`).join("、")}${entry.ids.length > 3 ? " 等" : ""}；${Array.from(entry.notes).join("；")}）`).join("；");
+                list.append(node("li", `${kind}：${summary}。${items.length === 1
+                    ? "唯一已验证参考（限本批次该内容类型，不代表最佳或路线已验收）。"
+                    : "多家记录不排名；不同作品不能直接比较，需同作品比较。"}`));
+            }
+            reference.append(groups.size ? list : node("p", "暂无满足条件的选路参考；失败、未返回、身份未确认或缺少非封面媒体依据的记录不形成建议。"));
+            executionsNode.append(reference);
+        }
         async function read(params) {
             const url = new URL(settings.url, settings.window.location.origin);
             if (params) url.searchParams.set("batch_id", params);
@@ -1261,7 +1339,8 @@
                         node("span", historyOrigin(item.origin), "data-history-origin", item.origin || "unknown"),
                         node("span", `建档时间：${historyTime(item.created_at)}`),
                         node("span", `样本 ${item.sample_count ?? "未知"} · 记录 ${item.execution_count ?? "未知"}`),
-                        node("span", [["success", "成功"], ["unsupported", "不支持"], ["failed", "失败"], ["not_executed", "未执行"]].map(([key, label]) => `${label} ${item.counts?.[key] ?? "未知"}`).join(" · ")));
+                        node("span", [["success", "产品成功"], ["native_observed", "原生离线证据"], ["unsupported", "不支持"], ["failed", "失败"], ["not_executed", "未执行"]].map(([key, label]) => `${label} ${item.counts?.[key] ?? "未知"}`).join(" · ")));
+                    if (item.metadata?.evidence_kind === "native_capture_replay") button.append(node("span", STATUS_LABELS.native_observed));
                     const entry = node("div"); entry.className = "provider-lab-history-batch";
                     const info = metadataDetails("批次详情与原始元数据", item.metadata);
                     info.append(node("span", `同步状态：${item.sync_status === "stored" ? "已入库" : "未知"}`),
@@ -1297,6 +1376,7 @@
             settings.routeEditor?.restore?.();
             executionsNode.replaceChildren();
             const rows = executions.filter((item) => !host.value || (item.source_host || "未知站点") === host.value).slice();
+            renderRouteReference(rows);
             rows.sort((a, b) => order.value === "provider" ? String(a.provider_id).localeCompare(String(b.provider_id))
                 : ((historyTimestamp(a.started_at) ?? -Infinity) - (historyTimestamp(b.started_at) ?? -Infinity)) * (order.value === "oldest" ? 1 : -1));
             const groups = new Map();
@@ -1368,6 +1448,19 @@
                     node("p", `执行时间：${historyTime(execution.started_at)}`),
                     node("p", historyRelation(execution)),
                     node("span", "", "data-provider-status-label"), node("p", "", "data-provider-error"));
+                if (isNativeHistoryEvidence(execution)) {
+                    const metadata = execution.result?.metadata || {};
+                    const identity = metadata.identity_confirmed === true ? "已确认"
+                        : metadata.identity_confirmed === false ? "未确认" : "未知";
+                    card.append(node("p", `目标身份：${JSON.stringify(metadata.target_identity ?? "未知")}；身份状态：${identity}`, "data-native-identity"),
+                        node("p", `采集状态：${JSON.stringify(metadata.capture_status ?? "未知")}；转换状态：${JSON.stringify(metadata.conversion_status ?? "未知")}`, "data-native-conversion"),
+                        node("p", "仅证明所记录的原生媒体观察与离线转换，不代表实时产品解析、预览或下载验收通过。", "data-native-limitation"));
+                    card.append(metadataDetails("原生证据完整性、范围与限制", {
+                        integrity: metadata.integrity ?? "未知", scope: metadata.scope ?? "未知",
+                        limitations: metadata.limitations ?? execution.result?.limitations ?? "未知",
+                        metadata,
+                    }));
+                }
                 const details = node("details");
                 const observations = rows.filter((e) => sampleIdentity(e) === sampleIdentity(execution) && e.provider_id === execution.provider_id);
                 if (observations.length > 1) {
@@ -1423,7 +1516,7 @@
         }
         function summary(execution) {
             return {...execution.result, provider_id: execution.provider_id,
-                status: Object.prototype.hasOwnProperty.call(STATUS_LABELS, execution.state)
+                status: isNativeHistoryEvidence(execution) ? "native_observed" : Object.prototype.hasOwnProperty.call(STATUS_LABELS, execution.state)
                     ? execution.state : execution.result?.status || "unknown", history_summary: true,
                 history_execution_id: execution.id};
         }

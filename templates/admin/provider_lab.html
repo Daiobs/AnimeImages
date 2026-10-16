@@ -48,7 +48,7 @@
             <h3 data-history-heading>尚未选择批次</h3>
             <div class="provider-lab-history-filters">
                 <label>来源站点 <select data-history-host><option value="">全部站点</option></select></label>
-                <label>曾有结果 <select data-history-state><option value="">全部状态</option><option value="success">成功</option><option value="failed">失败</option><option value="unsupported">不支持</option><option value="not_executed">未执行</option></select></label>
+                <label>曾有结果 <select data-history-state><option value="">全部状态</option><option value="success">产品成功</option><option value="native_observed">原生离线证据</option><option value="failed">失败</option><option value="unsupported">不支持</option><option value="not_executed">未执行</option></select></label>
                 <label>执行顺序 <select data-history-order><option value="latest">最新在前</option><option value="oldest">最早在前</option><option value="provider">Provider</option></select></label>
             </div>
             <div data-history-executions></div>
@@ -221,7 +221,7 @@
         <section class="provider-lab-route" data-lab-route-editor
                  data-can-configure="{% if perms.xhs_download.change_upstreamroute %}true{% else %}false{% endif %}">
             <div class="provider-lab-section-heading">
-                <h2>平台路线</h2>
+                <h2>来源 hostname 路线</h2>
                 <button type="button" class="provider-lab-secondary" data-route-load>刷新路线</button>
             </div>
             <p data-route-scope>尚未读取来源范围</p>
