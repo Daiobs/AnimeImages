@@ -1207,10 +1207,16 @@
         const order = panel.querySelector("[data-history-order]");
         const stateFilter = panel.querySelector("[data-history-state]");
         let batches = [], executions = [], batch = null, selected = null;
+        let hostScope = null;
         let inspected = null, pending = null, page = 0;
         const pageSize = 10;
         const providers = {parsehub_repo: "ParseHub", videodl_repo: "videodl", yt_dlp_existing: "yt-dlp", gallery_dl_existing: "gallery-dl", tiantian_existing: "天天解析", kukutool_existing: "Kukutool"};
-        const sampleIdentity = (e) => `${e.source_host || ""}:${e.sample_key || e.source_url || e.id}`;
+        const sampleIdentity = (e) => e.source_url ? `url:${e.source_url}`
+            : `batch:${e.batch?.id ?? batch?.id}:${e.sample_key || e.id}`;
+        const batchLabel = (e) => {
+            const label = e.batch?.label, key = e.batch?.batch_key;
+            return label && key && label !== key ? `${label}（${key}）` : label || key || "批次未记录";
+        };
         const outcome = (e) => isNativeHistoryEvidence(e) ? "native_observed"
             : ["not_executed", "planned", "skipped"].includes(e.state) ? "not_executed" : e.result?.status || e.state || "unknown";
         const outcomeLabel = (e) => ({native_observed: "原生离线证据", success: "成功", failed: "失败", timeout: "超时", unsupported: "不支持", not_executed: "未执行", unknown: "未知", queued: "排队中", running: "执行中"}[outcome(e)] || "待核对");
@@ -1262,7 +1268,7 @@
             if (!host.value) return;
             const reference = node("section", undefined, "data-history-route-reference");
             reference.append(node("h3", "选路参考"), node("p", routeReferenceScope(), "data-route-reference-scope"),
-                node("p", "仅依据本批次所选 hostname 的已保留记录；尺寸非目视画质，不据此判断最佳。原生媒体证据是离线观察，非实时产品验收。"));
+                node("p", `${hostScope ? "查询全部批次，仅依据本次返回的记录" : "仅依据本批次所选 hostname 的已保留记录"}；尺寸非目视画质，不据此判断最佳。原生媒体证据是离线观察，非实时产品验收。`));
             const kinds = {video: "视频", image: "单图", gallery: "图集", livephoto: "实况照片", multimedia: "混合媒体", article: "文章", audio: "音频"};
             const groups = new Map();
             for (const e of rows) {
@@ -1287,9 +1293,10 @@
                 const descriptor = settings.descriptors.find((item) => item.provider_id === e.provider_id);
                 const id = descriptor?.execution_provider_id || ROUTE_PROVIDER_IDS[e.provider_id] || e.provider_id;
                 const providersForKind = groups.get(kind);
-                if (!providersForKind.has(id)) providersForKind.set(id, {label: providers[e.provider_id] || descriptor?.label || e.provider_id, ids: [], notes: new Set()});
+                if (!providersForKind.has(id)) providersForKind.set(id, {label: providers[e.provider_id] || descriptor?.label || e.provider_id, ids: [], observations: new Set(), notes: new Set()});
                 const entry = providersForKind.get(id);
                 entry.ids.push(e.id);
+                entry.observations.add(`${e.source_url || sampleIdentity(e)}:${e.provider_id}:${e.application_record_id || e.id}`);
                 let note = "可供人工核对路线，非当前可执行保证";
                 if (native) note = "身份已确认的原生离线证据，不证明产品通道可执行";
                 else if (!descriptor || descriptor.baseline || descriptor.route_selectable !== true || descriptor.available !== true)
@@ -1308,8 +1315,10 @@
             const list = node("ul");
             for (const [kind, entries] of groups) {
                 const items = Array.from(entries.values()).sort((a, b) => a.label.localeCompare(b.label));
-                const summary = items.map((entry) => `${entry.label}（${entry.ids.length} 条，记录 ${entry.ids.slice(0, 3).map((id) => `#${id}`).join("、")}${entry.ids.length > 3 ? " 等" : ""}；${Array.from(entry.notes).join("；")}）`).join("；");
-                list.append(node("li", `${kind}：${summary}。${items.length === 1
+                const summary = items.map((entry) => `${entry.label}（${entry.observations.size} 条，记录 ${entry.ids.slice(0, 3).map((id) => `#${id}`).join("、")}${entry.ids.length > 3 ? " 等" : ""}；${Array.from(entry.notes).join("；")}）`).join("；");
+                list.append(node("li", `${kind}：${summary}。${hostScope
+                    ? "关联导入副本不重复计数；仅为返回范围内的证据，不代表最佳或路线已验收。"
+                    : items.length === 1
                     ? "唯一已验证参考（限本批次该内容类型，不代表最佳或路线已验收）。"
                     : "多家记录不排名；不同作品不能直接比较，需同作品比较。"}`));
             }
@@ -1318,7 +1327,7 @@
         }
         async function read(params) {
             const url = new URL(settings.url, settings.window.location.origin);
-            if (params) url.searchParams.set("batch_id", params);
+            for (const [key, value] of Object.entries(params || {})) url.searchParams.set(key, value);
             const response = await settings.fetch(url.href, {credentials: "same-origin", cache: "no-store"});
             const payload = await response.json();
             if (!response.ok || payload.ok !== true) throw new Error("HISTORY_READ_FAILED");
@@ -1357,10 +1366,10 @@
             settings.routeEditor?.restore?.();
             cancelPending(); inspected = null; page = 0;
             clearSelection();
-            batch = null; executions = []; executionsNode.replaceChildren();
+            hostScope = null; batch = null; executions = []; executionsNode.replaceChildren();
             status.textContent = "正在读取批次执行记录...";
             try {
-                const payload = await read(id);
+                const payload = await read({batch_id: id});
                 if (version !== sequence) return;
                 batch = payload.batch;
                 batchesNode.querySelectorAll("[data-history-batch]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.historyBatch === String(batch.id))));
@@ -1371,10 +1380,39 @@
                 render(); status.textContent = `${executions.length} 条执行/计划记录；仅查看已保存摘要。`;
             } catch (_error) { if (version === sequence) status.textContent = "批次读取失败，请重新选择；未发起解析。"; }
         }
+        async function loadHost() {
+            const sourceHost = host.value;
+            if (!sourceHost || sourceHost === "未知站点" || busy) return;
+            const version = ++sequence;
+            cancelPending(); clearSelection(); inspected = null; page = 0;
+            settings.routeEditor?.restore?.();
+            executions = []; hostScope = {source_host: sourceHost, loading: true}; render();
+            status.textContent = "正在跨批次读取此主机...";
+            try {
+                const payload = await read({source_host: sourceHost});
+                if (version !== sequence) return;
+                hostScope = payload;
+                executions = Array.isArray(payload.executions) ? payload.executions : [];
+                host.replaceChildren(node("option", sourceHost, "value", sourceHost)); host.value = sourceHost;
+                render(); status.textContent = "已读取跨批次历史摘要；未发起解析。";
+            } catch (_error) {
+                if (version === sequence) { hostScope = {...hostScope, loading: false, failed: true}; render(); status.textContent = "跨批次读取失败；可重试或返回原批次，未发起解析。"; }
+            }
+        }
         function render() {
             settings.configureRetest?.(null);
             settings.routeEditor?.restore?.();
             executionsNode.replaceChildren();
+            const allHost = panel.querySelector("[data-history-host-all]");
+            if (allHost) { allHost.hidden = !host.value || host.value === "未知站点"; allHost.disabled = busy || hostScope?.loading === true; }
+            const back = panel.querySelector("[data-history-back-batch]");
+            if (back) { back.hidden = !hostScope || !batch; back.disabled = busy; }
+            host.disabled = Boolean(hostScope);
+            if (hostScope) {
+                panel.querySelector("[data-history-heading]").textContent = `全部批次 · ${hostScope.source_host}`;
+                executionsNode.append(node("p", hostScope.loading ? "正在查询全部批次。" : hostScope.failed ? "查询失败，证据尚未加载。"
+                    : `查询范围：全部批次 · ${hostScope.source_host}；返回 ${hostScope.returned} / ${hostScope.total} 条原始记录。${hostScope.truncated ? "已截断，证据不全（最多 200 条 / 约 2 MiB），不能据此认定唯一上游。" : "本次查询未截断。"}`, "data-history-query-scope"));
+            }
             const rows = executions.filter((item) => !host.value || (item.source_host || "未知站点") === host.value).slice();
             renderRouteReference(rows);
             rows.sort((a, b) => order.value === "provider" ? String(a.provider_id).localeCompare(String(b.provider_id))
@@ -1432,7 +1470,7 @@
             }
             const samples = new Map();
             rows.filter((execution) => String(execution.id) === String(inspected)).forEach((execution) => {
-                const key = `${execution.source_host || ""}:${execution.sample_key || execution.source_url || execution.id}`;
+                const key = sampleIdentity(execution);
                 let sample = samples.get(key);
                 if (!sample) {
                     sample = node("section", undefined, "data-history-sample", key);
@@ -1444,10 +1482,11 @@
                 card.className = "provider-lab-card";
                 const descriptor = settings.descriptors.find((item) => item.provider_id === execution.provider_id);
                 card.append(node("h4", providers[execution.provider_id] || descriptor?.label || execution.provider_id || "未知 Provider"),
-                    node("span", historyOrigin(execution.origin || batch?.origin), "data-history-origin", execution.origin || batch?.origin || "unknown"),
+                    node("span", historyOrigin(execution.origin || execution.batch?.origin), "data-history-origin", execution.origin || execution.batch?.origin || "unknown"),
                     node("p", `执行时间：${historyTime(execution.started_at)}`),
                     node("p", historyRelation(execution)),
                     node("span", "", "data-provider-status-label"), node("p", "", "data-provider-error"));
+                if (hostScope) card.append(node("p", `所属批次：${batchLabel(execution)}`, "data-history-execution-batch"));
                 if (isNativeHistoryEvidence(execution)) {
                     const metadata = execution.result?.metadata || {};
                     const identity = metadata.identity_confirmed === true ? "已确认"
@@ -1465,7 +1504,7 @@
                 const observations = rows.filter((e) => sampleIdentity(e) === sampleIdentity(execution) && e.provider_id === execution.provider_id);
                 if (observations.length > 1) {
                     const chooser = node("select", undefined, "data-history-observation"); chooser.setAttribute("aria-label", "执行记录");
-                    observations.forEach((e) => chooser.append(node("option", `#${e.id} · ${historyTime(e.started_at)} · ${outcomeLabel(e)}`, "value", e.id)));
+                    observations.forEach((e) => chooser.append(node("option", `#${e.id}${hostScope ? ` · ${batchLabel(e)}` : ""} · ${historyTime(e.started_at)} · ${outcomeLabel(e)}`, "value", e.id)));
                     chooser.value = String(execution.id); card.append(chooser);
                 }
                 details.append(node("summary", `候选与执行详情（${Array.isArray(execution.result?.assets) ? `${execution.result.assets.length} 项` : "候选未知 / 未保留"}）`));
@@ -1543,6 +1582,8 @@
         }
         async function click(event) {
             const target = event.target;
+            if (target.closest?.("[data-history-host-all]")) return loadHost();
+            if (target.closest?.("[data-history-back-batch]") && !busy && batch) return loadBatch(batch.id);
             if (target.closest?.("[data-history-cancel]")) { cancelPending(); render(); return; }
             const inspection = target.closest?.("[data-history-inspect]");
             if (inspection) {
@@ -1626,7 +1667,9 @@
         }
         panel.addEventListener("click", click); panel.addEventListener("change", change);
         return {loadBatches, loadBatch, refreshCurrentRoute, get source() { return selected?.source_url || executions.find((item) => String(item.id) === String(inspected))?.source_url || ""; }, get active() { return active; }, get busy() { return busy; },
-            activate(value) { cancelPending(); settings.routeEditor?.restore?.(); active = value; panel.hidden = !value; clearSelection(); markSelection(); if (value) void loadBatches(); },
+            activate(value) { sequence += 1; cancelPending(); settings.routeEditor?.restore?.(); active = value; panel.hidden = !value; clearSelection();
+                if (hostScope?.loading) { hostScope = {...hostScope, loading: false, failed: true}; render(); }
+                markSelection(); if (value) void loadBatches(); },
             destroy() { sequence += 1; listSequence += 1; settings.routeEditor?.restore?.(); panel.removeEventListener("click", click); panel.removeEventListener("change", change); }};
     }
 

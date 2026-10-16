@@ -11,6 +11,7 @@ function fixture(overrides = {}) {
     for (const name of ["batches", "executions", "status", "heading", "host", "order", "state"]) {
         panel.append(new Node(["host", "order", "state"].includes(name) ? "select" : "div", {[`data-history-${name}`]: ""}));
     }
+    panel.append(new Node("button", {"data-history-host-all": ""}), new Node("button", {"data-history-back-batch": ""}));
     const batch = {id: 1, label: "<img src=x onerror=alert(1)>", created_at: "2026-09-01", sync_status: "stored",
         metadata: {version: "old", planned_at: "2026-08-20"}};
     const executions = [{id: 10, sample_key: "sample", source_url: "https://source.example/work", source_host: "source.example",
@@ -27,7 +28,10 @@ function fixture(overrides = {}) {
         descriptors: [{provider_id: "A", available: true, route_selectable: true}],
         window: {location: {origin: "http://local.example"}, confirm: () => assert.fail("History must use inline confirmation")},
         fetch: async (url, options) => { calls.push({url, options}); return {ok: true,
-            json: async () => new URL(url).searchParams.has("batch_id") ? {ok: true, batch, executions} : {ok: true, batches: [batch]}}; },
+            json: async () => new URL(url).searchParams.has("source_host")
+                ? {ok: true, source_host: new URL(url).searchParams.get("source_host"), total: executions.length,
+                    returned: executions.length, truncated: false, executions: executions.map((e) => ({...e, batch: e.batch || batch})), ...overrides.hostPayload}
+                : new URL(url).searchParams.has("batch_id") ? {ok: true, batch, executions} : {ok: true, batches: [batch]}}; },
         onSelection: (selection) => selections.push(selection),
         routeEditor: {invalidate() {}, async load() {}, selectProvider: (...args) => drafts.push(args)},
         retest: async (execution) => { retests.push(execution); return {status: "success", executed: true, history: {saved: false, error_code: "SAVE_FAILED"}, assets: []}; },
@@ -51,7 +55,7 @@ function fixture(overrides = {}) {
     return {root, panel, doc, workspace, calls, selections, drafts, retests, click, inspect, change, executions};
 }
 
-function routeHistoryFixture(read) {
+function routeHistoryFixture(read, canConfigure = true) {
     const bridge = {};
     const descriptors = [
         {provider_id: "parsehub_repo", execution_provider_id: "parsehub_generic", label: "ParseHub"},
@@ -60,7 +64,7 @@ function routeHistoryFixture(read) {
         {provider_id: "videodl_repo", execution_provider_id: "videodl_repo", label: "videodl"},
     ].map((item) => ({...item, available: true, route_selectable: true}));
     const f = fixture({routeEditor: bridge, descriptors});
-    const routePanel = new Node("section", {"data-lab-route-editor": "", "data-can-configure": "true"});
+    const routePanel = new Node("section", {"data-lab-route-editor": "", "data-can-configure": String(canConfigure)});
     for (const name of ["status", "scope", "current", "order", "add", "confirm", "save", "reset", "fields", "reference", "confirmation-summary", "videodl"]) {
         routePanel.append(new Node("div", {[`data-route-${name}`]: ""}));
     }
@@ -157,6 +161,169 @@ test("late history route GET cannot overwrite a new host and default order is sh
     assert.equal(f.routePanel.closest("[data-history-sample]").querySelector("[data-history-execution]").dataset.historyExecution, "12");
     assert.equal(f.retests.length, 0);
     assert.equal(f.routeCalls.length, 2);
+    f.workspace.destroy();
+});
+
+test("explicit host browsing preserves provenance, exact source groups and the batch return entry", async () => {
+    const f = fixture();
+    const seed = {...f.executions[0], result: {status: "success", assets: []}};
+    f.executions.splice(0, f.executions.length,
+        {...seed, id: 10, sample_key: "one", batch: {id: 1, label: "first", origin: "lab"}},
+        {...seed, id: 20, sample_key: "different-key", batch: {id: 2, label: "second", origin: "scout"}},
+        {...seed, id: 30, sample_key: "one", source_url: "https://source.example/other", batch: {id: 2}},
+        {...seed, id: 40, source_url: "", sample_key: "missing", batch: {id: 1}},
+        {...seed, id: 50, source_url: "", sample_key: "missing", batch: {id: 2}});
+    f.workspace.activate(true); await f.workspace.loadBatch(1);
+    const all = f.panel.querySelector("[data-history-host-all]");
+    assert.equal(all.hidden, true);
+    await f.change(f.panel.querySelector("[data-history-host]"), "source.example");
+    assert.equal(all.hidden, false);
+    const count = f.calls.length;
+    await f.click(all);
+    assert.equal(f.calls.length, count + 1);
+    assert.deepEqual([...new URL(f.calls.at(-1).url).searchParams], [["source_host", "source.example"]]);
+    assert.match(f.panel.querySelector("[data-history-query-scope]").textContent, /全部批次.*5 \/ 5.*未截断/);
+    assert.equal(f.panel.querySelector("tbody").querySelectorAll("tr").length, 4);
+    const card = await f.inspect(20);
+    assert.ok(card.querySelectorAll("p").some((node) => /参考批次：second/.test(node.textContent)));
+    assert.ok(card.querySelectorAll("[data-history-origin]").some((node) => node.dataset.historyOrigin === "scout"));
+    const back = f.panel.querySelector("[data-history-back-batch]");
+    assert.equal(back.hidden, false);
+    await f.click(back);
+    assert.equal(new URL(f.calls.at(-1).url).searchParams.get("batch_id"), "1");
+    assert.equal(f.panel.querySelector("[data-history-query-scope]"), null);
+    assert.equal(f.panel.querySelector("[data-history-host]").disabled, false);
+    assert.ok(f.calls.every(({options}) => !options.method));
+    assert.equal(f.retests.length, 0);
+    f.workspace.destroy();
+});
+
+test("cross-batch detail and observation labels identify each batch despite identical times and differing sources", async () => {
+    const f = fixture();
+    const seed = {...f.executions[0], started_at: "2026-10-16T12:00:00Z", result: {status: "success", assets: []}};
+    const first = {id: 1, label: "First capture", batch_key: "lab:first", origin: "lab"};
+    const second = {id: 2, label: "Second capture", batch_key: "scout:second", origin: "scout"};
+    f.executions.splice(0, f.executions.length,
+        {...seed, id: 10, batch: first},
+        {...seed, id: 20, batch: second},
+        {...seed, id: 30, source_url: "https://source.example/other", batch: second},
+        {...seed, id: 40, batch: {}},
+        {...seed, id: 50, batch: {batch_key: "scout:key-only"}});
+    await f.workspace.loadBatch(1);
+    await f.change(f.panel.querySelector("[data-history-host]"), "source.example");
+    await f.click(f.panel.querySelector("[data-history-host-all]"));
+    let card = await f.inspect(50);
+    await f.change(card.querySelector("[data-history-observation]"), 20);
+    card = f.panel.querySelector('[data-history-execution="20"]');
+    const badge = () => card.querySelector("[data-history-execution-batch]");
+    assert.equal(badge().textContent, "所属批次：Second capture（scout:second）");
+    assert.equal(badge().closest("details"), null, "Batch must be visible without expanding details");
+    const chooser = card.querySelector("[data-history-observation]");
+    const labels = Object.fromEntries(chooser.querySelectorAll("option").map((option) => [option.value, option.textContent]));
+    assert.match(labels[10], /First capture（lab:first）/);
+    assert.match(labels[20], /Second capture（scout:second）/);
+    assert.match(labels[40], /批次未记录/);
+    assert.doesNotMatch(labels[40], /First capture|Second capture/);
+    assert.match(labels[50], /scout:key-only/);
+    assert.equal(labels[30], undefined, "Different source URLs remain separate works");
+    await f.change(chooser, 10);
+    card = f.panel.querySelector('[data-history-execution="10"]');
+    assert.equal(badge().textContent, "所属批次：First capture（lab:first）");
+    card = await f.inspect(30);
+    assert.equal(badge().textContent, "所属批次：Second capture（scout:second）");
+    card = await f.inspect(50);
+    await f.change(card.querySelector("[data-history-observation]"), 40);
+    card = f.panel.querySelector('[data-history-execution="40"]');
+    assert.equal(badge().textContent, "所属批次：批次未记录");
+    assert.ok(f.calls.every(({options}) => !options.method));
+    assert.equal(f.retests.length, 0);
+    f.workspace.destroy();
+});
+
+test("host references deduplicate application copies but retain retests and truncated provenance", async () => {
+    const f = fixture({hostPayload: {total: 201, returned: 3, truncated: true}});
+    const seed = {...f.executions[0], state: "returned", result: {status: "success", assets: [{media_type: "video"}]}};
+    f.executions.splice(0, f.executions.length,
+        {...seed, id: 10, origin: "lab"},
+        {...seed, id: 20, origin: "scout", application_record_id: 10},
+        {...seed, id: 30, origin: "lab", replay_of: "10"});
+    await f.workspace.loadBatch(1);
+    await f.change(f.panel.querySelector("[data-history-host]"), "source.example");
+    await f.click(f.panel.querySelector("[data-history-host-all]"));
+    assert.match(f.panel.querySelector("[data-history-query-scope]").textContent, /3 \/ 201.*已截断，证据不全/);
+    const line = f.panel.querySelector("[data-history-route-reference]").querySelector("li").textContent;
+    assert.match(line, /2 条，记录 #10、#20、#30/);
+    assert.doesNotMatch(line, /唯一已验证/);
+    const card = await f.inspect(30);
+    assert.deepEqual(card.querySelector("[data-history-observation]").querySelectorAll("option").map((node) => node.value).sort(), ["10", "20", "30"]);
+    f.workspace.destroy();
+});
+
+test("switching to host clears pending retest and prepares only the selected historical draft", async () => {
+    const f = routeHistoryFixture();
+    f.workspace.activate(true); await f.workspace.loadBatch(1);
+    await f.change(f.panel.querySelector("[data-history-host]"), "source.example");
+    await f.inspect(10);
+    await f.click(f.panel.querySelector("[data-history-retest]"));
+    const stale = f.panel.querySelector("[data-history-confirm]");
+    assert.ok(stale);
+    await f.click(f.panel.querySelector("[data-history-host-all]"));
+    assert.equal(f.panel.querySelector("[data-history-confirm]"), null);
+    await f.click(stale);
+    await f.inspect(11);
+    await f.click(f.panel.querySelector('[data-history-route="primary"]'));
+    assert.equal(f.workspace.source, "https://source.example/another");
+    assert.deepEqual(f.draftOrder(), ["videodl_repo", "yt_dlp_generic", "gallery_dl_generic"]);
+    const cancel = new Node("button", {"data-route-cancel": ""}); f.routePanel.append(cancel);
+    f.routePanel.listeners.click({target: cancel});
+    assert.deepEqual(f.draftOrder(), ["yt_dlp_generic", "gallery_dl_generic"]);
+    assert.equal(f.retests.length, 0);
+    assert.ok([...f.calls, ...f.routeCalls].every(({options}) => !options.method));
+    f.workspace.destroy();
+});
+
+test("readonly staff can inspect host evidence without configuring routes", async () => {
+    const f = routeHistoryFixture(undefined, false);
+    f.workspace.activate(true); await f.workspace.loadBatch(1);
+    await f.change(f.panel.querySelector("[data-history-host]"), "source.example");
+    await f.click(f.panel.querySelector("[data-history-host-all]"));
+    await f.inspect(10);
+    await f.click(f.panel.querySelector('[data-history-route="primary"]'));
+    assert.deepEqual(f.draftOrder(), ["yt_dlp_generic", "gallery_dl_generic"]);
+    assert.equal(f.routePanel.querySelector("[data-route-save]").disabled, true);
+    assert.ok([...f.calls, ...f.routeCalls].every(({options}) => !options.method));
+    f.workspace.destroy();
+});
+
+test("late host response cannot replace a returned batch and failed host reads remain retryable", async () => {
+    let resolveHost;
+    const f = fixture({fetch: async (url) => ({ok: true, json: async () => {
+        if (new URL(url).searchParams.has("source_host")) return new Promise((resolve) => { resolveHost = resolve; });
+        return {ok: true, batch: {id: 1, label: "original"}, executions: f.executions};
+    }})});
+    await f.workspace.loadBatch(1);
+    await f.change(f.panel.querySelector("[data-history-host]"), "source.example");
+    const reading = f.click(f.panel.querySelector("[data-history-host-all]"));
+    await new Promise((resolve) => setImmediate(resolve));
+    await f.click(f.panel.querySelector("[data-history-back-batch]"));
+    resolveHost({ok: true, source_host: "source.example", total: 0, returned: 0, truncated: false, executions: []});
+    await reading;
+    assert.equal(f.panel.querySelector("[data-history-heading]").textContent, "original");
+    assert.equal(f.panel.querySelector("[data-history-query-scope]"), null);
+    await f.change(f.panel.querySelector("[data-history-host]"), "source.example");
+    const failed = f.click(f.panel.querySelector("[data-history-host-all]"));
+    await new Promise((resolve) => setImmediate(resolve));
+    resolveHost({ok: false}); await failed;
+    assert.match(f.panel.querySelector("[data-history-status]").textContent, /读取失败/);
+    assert.equal(f.panel.querySelector("[data-history-host-all]").disabled, false);
+    assert.equal(f.panel.querySelector("[data-history-back-batch]").hidden, false);
+    const leaving = f.click(f.panel.querySelector("[data-history-host-all]"));
+    await new Promise((resolve) => setImmediate(resolve));
+    f.workspace.activate(false);
+    resolveHost({ok: true, source_host: "wrong.example", total: 0, returned: 0, truncated: false, executions: []});
+    await leaving;
+    assert.doesNotMatch(f.panel.querySelector("[data-history-heading]").textContent, /wrong.example/);
+    assert.equal(f.panel.querySelector("[data-history-host-all]").disabled, false);
     f.workspace.destroy();
 });
 
@@ -607,7 +774,7 @@ test("matrix sorts mixed timezones by actual time and picks the genuinely latest
     f.executions.splice(0, f.executions.length,
         {...seed, id: 10, started_at: "2026-09-29T09:00:00+08:00"},
         {...seed, id: 20, started_at: "2026-09-29T02:00:00Z"},
-        {...seed, id: 30, sample_key: "earlier", started_at: "2026-09-29T00:30:00Z"});
+        {...seed, id: 30, sample_key: "earlier", source_url: "https://source.example/earlier", started_at: "2026-09-29T00:30:00Z"});
     await f.workspace.loadBatch(1);
     const buttons = () => f.panel.querySelector(".provider-lab-history-matrix").querySelectorAll("[data-history-inspect]");
     assert.deepEqual(buttons().map((button) => button.dataset.historyInspect), ["20", "30"]);
@@ -656,7 +823,7 @@ test("matrix has one row per sample, six fixed providers, unknown columns and a 
     f.executions.splice(0, f.executions.length,
         ...providers.map((provider_id, index) => ({...seed, id: 100 + index, provider_id})),
         {...seed, id: 200, provider_id: "removed-provider"},
-        {...seed, id: 201, provider_id: "parsehub_repo", sample_key: "second", title: "Another sample"},
+        {...seed, id: 201, provider_id: "parsehub_repo", sample_key: "second", source_url: "https://source.example/second", title: "Another sample"},
         {...seed, id: 300, provider_id: "animeimages_current"});
     await f.workspace.loadBatch(1);
     const matrix = f.panel.querySelector(".provider-lab-history-matrix");
@@ -685,7 +852,7 @@ test("matrix paginates ten samples and state filtering resets page and detail wi
     const f = fixture();
     const seed = f.executions[0];
     f.executions.splice(0, f.executions.length, ...Array.from({length: 23}, (_, index) => ({
-        ...seed, id: 100 + index, sample_key: `sample-${index}`, state: "returned",
+        ...seed, id: 100 + index, sample_key: `sample-${index}`, source_url: `https://source.example/work/${index}`, state: "returned",
         started_at: `2026-09-${String(index + 1).padStart(2, "0")}T00:00:00Z`,
         result: {status: index === 1 ? "timeout" : index % 2 ? "failed" : "success", assets: []},
     })));

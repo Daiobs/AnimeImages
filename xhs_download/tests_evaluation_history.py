@@ -334,6 +334,94 @@ class EvaluationHistoryTests(TestCase):
         self.assertEqual(imported.application_record_id, app_record.pk)
         self.assertEqual(history.execution_dict(imported)["origin"], "scout")
 
+    def test_host_history_covers_batches_and_new_lab_without_writes_or_authority(self):
+        for key in ("older", "newer"):
+            self.assertEqual(self.post(envelope(execution(key), key=key)).status_code, 200)
+        self.post(envelope(execution("other", source_url="https://douban.com/work"), key="other"))
+        app = history.begin_execution(SOURCE, PROVIDER, None)
+        history.finish_execution(app, {"request_id": "shared", "status": "success",
+            "assets": [{"asset_id": "one", "resource_token": "secret", "url": "https://media.invalid/private"}]})
+        self.post(envelope(execution("copy", result={"request_id": "shared", "status": "success"}), key="copy"))
+        before = (EvaluationBatch.objects.count(), EvaluationExecution.objects.count())
+        response = self.client.get(self.url, {"source_host": "www.douban.com"})
+        data = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual((data["total"], data["returned"], data["truncated"]), (4, 4, False))
+        self.assertEqual([r["id"] for r in data["executions"]],
+                         list(EvaluationExecution.objects.filter(summary__source_host="www.douban.com").order_by("-pk").values_list("pk", flat=True)))
+        copy = data["executions"][0]
+        self.assertEqual((copy["origin"], copy["batch"]["origin"], copy["application_record_id"]), ("scout", "scout", app.pk))
+        self.assertEqual(set(copy["batch"]), {"id", "batch_key", "label", "origin", "created_at", "metadata"})
+        self.assertNotIn("resource_token", response.content.decode())
+        self.assertNotIn("media.invalid", response.content.decode())
+        self.assertIn("no-store", response["Cache-Control"])
+        self.assertEqual(response["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(before, (EvaluationBatch.objects.count(), EvaluationExecution.objects.count()))
+        self.assertFalse(UpstreamRoute.objects.exists())
+        self.assertFalse(UpstreamRouteAudit.objects.exists())
+        self.run.assert_not_called()
+        self.execute.assert_not_called()
+        self.issue.assert_not_called()
+        fresh = history.begin_execution(SOURCE, PROVIDER, None, replay_of=app.pk)
+        refreshed = self.client.get(self.url, {"source_host": "www.douban.com"}).json()
+        self.assertEqual(refreshed["total"], 5)
+        self.assertEqual(refreshed["executions"][0]["id"], fresh.pk)
+
+    def test_host_history_rejects_noncanonical_private_and_ambiguous_hosts(self):
+        for host in ("", "WWW.douban.com", "www.douban.com.", "https://www.douban.com", "www.douban.com/path",
+                     "www.douban.com:443", "user@www.douban.com", "www.douban.com?x=1", "localhost",
+                     "a.localhost", "a.local", "a.internal", "a.invalid", "127.0.0.1", "8.8.8.8", "[::1]",
+                     "a..com", "-a.com", "a-.com", "a_foo.com", "a.123", "xn--.com", "a" * 64 + ".com"):
+            with self.subTest(host=host):
+                self.assertEqual(self.client.get(self.url, {"source_host": host}).status_code, 400)
+        for batch_id in ("", "1"):
+            self.assertEqual(self.client.get(self.url, {"source_host": "www.douban.com", "batch_id": batch_id}).status_code, 400)
+        self.assertEqual(self.client.get(self.url, {"source_host": ["www.douban.com", "douban.com"]}).status_code, 400)
+        self.assertEqual(self.client.get(self.url, {"source_host": "xn--bcher-kva.de"}).status_code, 200)
+        self.assertEqual(self.client.get(self.url, {"source_host": "empty.douban.com"}).json()["total"], 0)
+
+    def test_host_history_access_gate_includes_readonly_staff(self):
+        self.assertFalse(self.staff.has_perm("xhs_download.change_upstreamroute"))
+        self.assertEqual(self.client.get(self.url, {"source_host": "www.douban.com"}).status_code, 200)
+        with override_settings(UPSTREAM_PROVIDER_LAB_ENABLED=False):
+            self.assertEqual(self.client.get(self.url, {"source_host": "www.douban.com"}).status_code, 404)
+        self.client.logout()
+        self.assertEqual(self.client.get(self.url, {"source_host": "www.douban.com"}).status_code, 404)
+        for active, staff in ((True, False), (False, True)):
+            user = get_user_model().objects.create_user(username=f"host-{active}", is_active=active, is_staff=staff)
+            self.client.force_login(user)
+            self.assertEqual(self.client.get(self.url, {"source_host": "www.douban.com"}).status_code, 404)
+
+    def test_host_history_row_limit_and_light_batch_metadata(self):
+        batch = EvaluationBatch.objects.create(batch_key="large", origin="scout", metadata={
+            "targets": ["omitted"], "evidence_kind": "native_capture_replay", "version": "v1"})
+        EvaluationExecution.objects.bulk_create([EvaluationExecution(batch=batch, execution_key=str(i),
+            summary=history.execution_summary(execution(str(i))), fingerprint="test") for i in range(201)])
+        response = self.client.get(self.url, {"source_host": "www.douban.com"})
+        data = response.json()
+        self.assertEqual((data["total"], data["returned"], data["truncated"]), (201, 200, True))
+        self.assertLessEqual(len(response.content), 2 * 1024 * 1024)
+        self.assertEqual(data["executions"][0]["batch"]["metadata"], {"version": "v1", "evidence_kind": "native_capture_replay"})
+        with patch.object(history, "batch_dict", side_effect=AssertionError("No whole-batch aggregation")):
+            self.assertEqual(self.client.get(self.url, {"source_host": "www.douban.com"}).status_code, 200)
+        batch.executions.order_by("pk").first().delete()
+        self.assertFalse(self.client.get(self.url, {"source_host": "www.douban.com"}).json()["truncated"])
+
+    def test_host_history_byte_limit_keeps_whole_records_and_explicit_empty_truncation(self):
+        record = self.imported()
+        summary = deepcopy(record.summary)
+        summary["result"]["assets"] = [{"asset_id": "large", "metadata": "x" * (1024 * 1024)}]
+        record.summary = summary
+        record.save(update_fields=["summary"])
+        EvaluationExecution.objects.create(batch=record.batch, execution_key="second", summary=summary, fingerprint="test")
+        response = self.client.get(self.url, {"source_host": "www.douban.com"})
+        self.assertLessEqual(len(response.content), 2 * 1024 * 1024)
+        self.assertEqual((response.json()["total"], response.json()["returned"], response.json()["truncated"]), (2, 1, True))
+        self.assertEqual(response.json()["executions"][0]["result"]["assets"], summary["result"]["assets"])
+        with patch("xhs_download.provider_lab_views.HOST_HISTORY_MAX_BYTES", 2048):
+            data = self.client.get(self.url, {"source_host": "www.douban.com"}).json()
+        self.assertEqual((data["total"], data["returned"], data["truncated"]), (2, 0, True))
+
     def test_unknown_retest_is_rejected_without_provider_call(self):
         for state in ("unknown", "sent", "reserved", "in_flight", "running"):
             with self.subTest(state=state):

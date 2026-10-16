@@ -48,6 +48,8 @@
             <h3 data-history-heading>尚未选择批次</h3>
             <div class="provider-lab-history-filters">
                 <label>来源站点 <select data-history-host><option value="">全部站点</option></select></label>
+                <button type="button" data-history-host-all hidden>跨批次查看此主机</button>
+                <button type="button" data-history-back-batch hidden>返回原批次</button>
                 <label>曾有结果 <select data-history-state><option value="">全部状态</option><option value="success">产品成功</option><option value="native_observed">原生离线证据</option><option value="failed">失败</option><option value="unsupported">不支持</option><option value="not_executed">未执行</option></select></label>
                 <label>执行顺序 <select data-history-order><option value="latest">最新在前</option><option value="oldest">最早在前</option><option value="provider">Provider</option></select></label>
             </div>
