@@ -73,6 +73,8 @@ test("one provider failure does not block other provider results", async () => {
 test("timeout and failure text use fixed safe messages", () => {
     assert.equal(lab.errorMessage("PROVIDER_TIMEOUT"), "该 Provider 在限定时间内未返回。");
     assert.equal(lab.errorMessage("traceback with secret"), "Provider 执行失败。");
+    assert.match(lab.errorMessage("PROVIDER_POLICY_REJECTED", "UPSTREAM_VERSION_UNSUPPORTED"), /兼容验证/);
+    assert.match(lab.errorMessage("PROVIDER_SCHEMA_INVALID", "UPSTREAM_VERSION_CHANGED"), /版本.*变化/);
 });
 
 

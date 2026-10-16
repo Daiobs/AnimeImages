@@ -28,6 +28,23 @@ from .services.platforms.external_tools import run_external_command
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = 'https://example.org/work/audio'
 
+
+def runtime_python(provider):
+    return (os.environ.get('YTDLP_COMPAT_PYTHON') or sys.executable
+            if provider == 'yt_dlp_generic' else sys.executable)
+
+
+def runtime_identity(python):
+    data = json.loads(subprocess.check_output([python, '-I', '-B', '-c',
+        'import sys,json,importlib.metadata,yt_dlp,yt_dlp.version; '
+        'print(json.dumps(dict(python=sys.version,executable=sys.executable,'
+        'distribution=importlib.metadata.version("yt-dlp"),module=yt_dlp.version.__version__,'
+        'path=yt_dlp.__file__)))'], text=True))
+    expected = os.environ.get('YTDLP_COMPAT_EXPECTED_VERSION')
+    if expected and python == runtime_python('yt_dlp_generic'):
+        assert data['distribution'] == expected, data
+    return data
+
 # DNS/connect denial is independent of the production guard and remains active
 # throughout import, extraction and optional probing. No archived URL is used.
 BOOTSTRAP = r'''
@@ -58,6 +75,12 @@ if provider in ('yt_dlp_generic', 'gallery_dl_generic'):
                     return json.loads((fixtures/'88e9b92a7c517fb33ce435a4.json').read_text())['records'][0]
                 if scenario == 'timeout': time.sleep(2)
                 if scenario == 'local_import': raise ModuleNotFoundError('private-token')
+                if scenario in ('auth', 'unsupported', 'no_formats'):
+                    from yt_dlp.utils import ExtractorError
+                    messages = {'auth':'login required private-token',
+                                'unsupported':'work unavailable private-token',
+                                'no_formats':'no video formats private-token'}
+                    raise ExtractorError(messages[scenario], expected=True)
                 if scenario == 'empty': return {'id':'audio','title':'fixture','formats':[]}
                 item = {'url':'https://media.example/audio.mp3','ext':'mp3',
                         'vcodec':'none','acodec':'mp3','language':'en'}
@@ -70,6 +93,15 @@ if provider in ('yt_dlp_generic', 'gallery_dl_generic'):
                         {'url':'https://media.example/a.m3u8','ext':'mp4','protocol':'m3u8_native'},
                         {'url':'https://media.example/a.mpd','ext':'mp4','protocol':'http_dash_segments',
                          'vcodec':'avc1','acodec':'none'}, item]
+                if scenario == 'multilingual':
+                    formats = [
+                        {'url':'https://media.example/en.m4a','format_id':'en',
+                         'ext':'m4a','vcodec':'none','acodec':'aac','language':'en'},
+                        {'url':'https://media.example/zh.m4a','format_id':'zh',
+                         'ext':'m4a','vcodec':'none','acodec':'aac','language':'zh'},
+                        {'url':'https://media.example/v.mp4','format_id':'1080',
+                         'ext':'mp4','height':1080,'vcodec':'avc1','acodec':'none'},
+                        {'url':'https://media.example/unknown.webm','ext':'webm'}]
                 return {'id':'audio','title':'fixture','formats':formats,
                         'thumbnails':[{'url':['invalid optional decoration']}]}
         yt_dlp.extractor.gen_extractor_classes = lambda: [FixtureIE]
@@ -137,7 +169,7 @@ class WorkerEntryParityTests(SimpleTestCase):
         calls = []
         setting = 'YTDLP_BINARY' if provider == 'yt_dlp_generic' else 'GALLERYDL_BINARY'
         module = 'yt_dlp' if provider == 'yt_dlp_generic' else 'gallery_dl'
-        with override_settings(**{setting: shlex.quote(sys.executable) + ' -m ' + module}), \
+        with override_settings(**{setting: shlex.quote(runtime_python(provider)) + ' -m ' + module}), \
                 patch.object(matching, 'run_external_command', side_effect=self.transport(provider, scenario, calls)):
             result = _execute_upstream(provider, SOURCE, timeout)
         self.assertEqual(calls, ['identity', 'match', 'parse'])
@@ -183,8 +215,9 @@ class WorkerEntryParityTests(SimpleTestCase):
         with tempfile.TemporaryDirectory(prefix='parity paths ') as directory:
             root = Path(directory)
             runtime = root / 'runtime alias'
-            runtime.symlink_to(Path(sys.executable).parent.parent, target_is_directory=True)
-            python = runtime / 'bin' / Path(sys.executable).name
+            selected = Path(runtime_python('yt_dlp_generic'))
+            runtime.symlink_to(selected.parent.parent, target_is_directory=True)
+            python = runtime / 'bin' / selected.name
             worker = root / 'upstream_match_worker.py'
             shutil.copyfile(matching.WORKER, worker)
             shutil.copyfile(matching.WORKER.with_name('upstream_metadata_probe.py'),
@@ -209,7 +242,7 @@ class WorkerEntryParityTests(SimpleTestCase):
 
     def test_empty_extraction_is_not_an_executor_configuration_failure(self):
         with override_settings(YTDLP_PROVIDER_ENABLED=True,
-                YTDLP_BINARY=shlex.quote(sys.executable)+' -m yt_dlp'), \
+                YTDLP_BINARY=shlex.quote(runtime_python('yt_dlp_generic'))+' -m yt_dlp'), \
                 patch.object(matching,'run_external_command',
                              side_effect=self.transport('yt_dlp_generic','empty',[])), \
                 patch('socket.getaddrinfo',return_value=[(2,1,6,'',('8.8.8.8',443))]), \
@@ -248,7 +281,10 @@ class WorkerEntryParityTests(SimpleTestCase):
 
     def test_unmodified_worker_identity_from_project_and_temporary_cwd(self):
         # No bootstrap on this case. Identity alone does not prove extraction.
-        with override_settings(YTDLP_BINARY=shlex.quote(sys.executable) + ' -m yt_dlp'):
+        python = runtime_python('yt_dlp_generic')
+        expected = runtime_identity(python)['distribution']
+        self.assertIn(expected, ('2026.3.17', '2026.6.9'))
+        with override_settings(YTDLP_BINARY=shlex.quote(python) + ' -m yt_dlp'):
             command, _ = matching._executor('yt_dlp_generic')
         with tempfile.TemporaryDirectory(prefix='parity cwd ') as directory:
             for cwd in (ROOT, Path(directory)):
@@ -256,14 +292,14 @@ class WorkerEntryParityTests(SimpleTestCase):
                     cwd=cwd, capture_output=True, text=True, timeout=10,
                     env={'PATH':os.environ.get('PATH',''), 'HOME':directory, 'YTDLP_NO_PLUGINS':'1'})
                 self.assertEqual(done.returncode, 0)
-                self.assertEqual(json.loads(done.stdout)['payload']['version'], '2026.3.17')
+                self.assertEqual(json.loads(done.stdout)['payload']['version'], expected)
 
     def test_native_census_entry_preserves_observations_without_product_probe(self):
         from .management.commands.capture_upstream import collect
         from .services.platforms import external_tools
         python = os.environ['PARSEHUB_COMPAT_PYTHON']
         with override_settings(YTDLP_PROVIDER_ENABLED=True, GALLERYDL_PROVIDER_ENABLED=True,
-                YTDLP_BINARY=shlex.quote(sys.executable)+' -m yt_dlp',
+                YTDLP_BINARY=shlex.quote(runtime_python('yt_dlp_generic'))+' -m yt_dlp',
                 GALLERYDL_BINARY=shlex.quote(sys.executable)+' -m gallery_dl',
                 PARSEHUB_UPSTREAM_ENABLED=True, PARSEHUB_UPSTREAM_PYTHON=python), \
                 patch('socket.getaddrinfo', return_value=[(2,1,6,'',('8.8.8.8',443))]), \

@@ -102,7 +102,9 @@ jobs:
           docker run --rm --network none -v "$GITHUB_WORKSPACE:/source:ro" --entrypoint python animeimages-deploy-permission-tests -B /source/ops/managed-release/tests/test_channel.py
 
       - name: Install optional upstream contract test runtimes
-        run: python -m pip install --no-deps yt-dlp==2026.3.17 gallery-dl==1.32.4
+        run: |
+          python -m pip install --no-deps yt-dlp==2026.6.9 gallery-dl==1.32.4
+          echo "YTDLP_COMPAT_EXPECTED_VERSION=2026.6.9" >> "$GITHUB_ENV"
 
       - name: Install isolated pinned ParseHub contract runtime
         run: |
@@ -173,3 +175,37 @@ jobs:
           node --test tests_js/batch_preview_failure.test.js
           node --test tests_js/upstream_image_failure_ui.test.js
           node --test tests_js/xhs_livephoto_staff_preview.test.js
+
+  ytdlp-python312:
+    runs-on: ubuntu-latest
+    env:
+      DJANGO_ENV: development
+      DJANGO_SECRET_KEY: isolated-runtime-test-key-not-for-production
+      DJANGO_DATABASE_URL: "sqlite:///:memory:"
+      THIRD_PARTY_PROVIDER_ENABLED: "False"
+      ULTRA_HD_PROVIDER_ENABLED: "False"
+      KUKUTOOL_PROVIDER_ENABLED: "False"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install target and previous optional runtime
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install --no-deps yt-dlp==2026.6.9 gallery-dl==1.32.4
+          python -m venv "$RUNNER_TEMP/ytdlp-previous"
+          "$RUNNER_TEMP/ytdlp-previous/bin/python" -m pip install --no-deps yt-dlp==2026.3.17
+      - name: Target real isolated worker and shared candidate regression
+        run: |
+          YTDLP_COMPAT_EXPECTED_VERSION=2026.6.9 \
+          YTDLP_COMPAT_ALTERNATE_PYTHON="$RUNNER_TEMP/ytdlp-previous/bin/python" \
+          python manage.py test xhs_download.tests_ytdlp_runtime_compatibility --noinput
+          python -m unittest tools.tests_upstream_worker_quality -q
+      - name: Previous runtime offline shared-path compatibility
+        run: |
+          YTDLP_COMPAT_PYTHON="$RUNNER_TEMP/ytdlp-previous/bin/python" \
+          YTDLP_COMPAT_EXPECTED_VERSION=2026.3.17 \
+          YTDLP_COMPAT_ALTERNATE_PYTHON="$(command -v python)" \
+          python manage.py test xhs_download.tests_ytdlp_runtime_compatibility --noinput

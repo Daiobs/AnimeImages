@@ -13,7 +13,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from tools.census_capture import Capture, MAX_BYTES
-from xhs_download.services.quality_execution import _python_for, EXPECTED_VERSIONS
+from xhs_download.services.quality_execution import _python_for, verified_runtime_context
 
 AUTHORIZATION = 'UPSTREAM_CAPABILITY_CENSUS_PHASE1_V1'
 PHASE1B_AUTHORIZATION = 'CENSUS_PHASE1B_COVERAGE_AND_PROVIDER_RECOVERY_V1'
@@ -34,10 +34,12 @@ def collect(provider, source, timeout=60, execution_options=None):
     started = time.monotonic()
     try:
         if provider in {'yt_dlp_generic', 'gallery_dl_generic', 'parsehub_generic'}:
+            version = (verified_runtime_context(provider)[1]
+                       if provider != 'parsehub_generic' else '')
             completed = run_external_command(
                 [python, '-I', '-B', str(Path(settings.BASE_DIR) / 'tools/upstream_census_worker.py')],
                 input_text=json.dumps({'provider': provider, 'url': source, 'timeout': timeout,
-                    'version': EXPECTED_VERSIONS.get(provider, '')}), timeout_seconds=timeout+5,
+                    'version': version}), timeout_seconds=timeout+5,
                 max_stdout_bytes=MAX_BYTES, max_stderr_bytes=65536)
             result = json.loads(completed.stdout)
             if completed.returncode:
@@ -153,7 +155,8 @@ class Command(BaseCommand):
                 try:
                     python = _python_for(provider)
                     data[provider] = {'configured': True, 'python': python,
-                                      'version': EXPECTED_VERSIONS.get(provider, '')}
+                                      'version': (verified_runtime_context(provider)[1]
+                                          if provider in {'yt_dlp_generic', 'gallery_dl_generic'} else '')}
                     if provider == 'parsehub_generic':
                         from tools.upstream_parsehub_worker import PIN, VERSION
                         data[provider].update(pin=PIN, version=VERSION)

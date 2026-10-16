@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 import logging
 import os
+import re
 import time
 import subprocess
 from uuid import uuid4
@@ -19,11 +20,35 @@ PROVIDER_ALIASES = {
     'tiantian_existing': 'tiantianjiexi_generic', 'tiantianjiexi_generic': 'tiantianjiexi_generic',
     'kukutool_existing': 'kukutool_generic', 'kukutool_generic': 'kukutool_generic',
 }
-EXPECTED_VERSIONS = {'yt_dlp_generic':'2026.3.17', 'gallery_dl_generic':'1.32.4'}
+# Compatibility admission, not a replacement for exact per-request identity.
+VERIFIED_RUNTIME_VERSIONS = {
+    'yt_dlp_generic': frozenset({'2026.3.17', '2026.6.9'}),
+    'gallery_dl_generic': frozenset({'1.32.4'}),
+}
 SERVICE_VERSIONS = {'tiantianjiexi_generic': 'tiantian-existing',
                     'kukutool_generic': 'kukutool-existing-v1'}
 SERVICE_PROVIDER_IDS = tuple(SERVICE_VERSIONS)
 logger = logging.getLogger(__name__)
+
+
+def runtime_version_supported(provider, version):
+    if (not isinstance(version, str) or len(version) > 32
+            or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version)):
+        return False
+    # PyPI normalizes release integers (2026.06.09 -> 2026.6.9). Keep the
+    # original Worker value in requests, matches, cache keys and evidence.
+    normalized = '.'.join(str(int(part)) for part in version.split('.'))
+    return normalized in VERIFIED_RUNTIME_VERSIONS.get(provider, ())
+
+
+def verified_runtime_context(provider):
+    from .upstream_matching import _context
+    context = _context(provider)
+    if not runtime_version_supported(provider, context[1]):
+        logger.warning('upstream_runtime_rejected provider=%s stage=version_policy pid=%s',
+                       provider, os.getpid())
+        raise ProviderLabError('PROVIDER_POLICY_REJECTED', detail='UPSTREAM_VERSION_UNSUPPORTED')
+    return context
 
 
 def service_configured(provider_id):
@@ -85,7 +110,7 @@ def _python_for(provider_id):
     if not runtime_bool(enabled, False):
         logger.warning('upstream_runtime_rejected provider=%s stage=enabled_gate pid=%s',
                        provider_id, os.getpid())
-        raise ProviderLabError('PROVIDER_NOT_CONFIGURED')
+        raise ProviderLabError('PROVIDER_NOT_CONFIGURED', detail='UPSTREAM_DISABLED')
     from .upstream_matching import _executor
     try:
         command, _ = _executor(provider_id)
@@ -252,11 +277,9 @@ def _execute_upstream(provider, source, timeout_seconds, *, expected_match=None)
             phase = 'PARSE_DEADLINE'
             payload = upstream_parsehub.parse_upstream_url(match, source, remaining())
         else:
-            command, version, _ = upstream_matching._context(provider)
-            if version != EXPECTED_VERSIONS[provider]:
-                logger.warning('upstream_runtime_rejected provider=%s stage=version_policy pid=%s',
-                               provider, os.getpid())
-                raise ProviderLabError('PROVIDER_NOT_CONFIGURED')
+            command, version, _ = verified_runtime_context(provider)
+            if isinstance(expected_match, dict) and expected_match.get('version') != version:
+                raise ProviderLabError('PROVIDER_SCHEMA_INVALID', detail='UPSTREAM_VERSION_CHANGED')
             request = {'provider_id':provider,'version':version,'url':source,'allow_mature':True}
             matches = upstream_matching._call(command, {**request,'action':'match'}, remaining())
             if not isinstance(matches,list):
@@ -280,7 +303,8 @@ def _execute_upstream(provider, source, timeout_seconds, *, expected_match=None)
                        provider, diagnostic, stage, error_class, os.getpid())
         lab_code = ('PROVIDER_TIMEOUT' if 'timeout' in code else
                     'PROVIDER_EXECUTOR_FAILED' if code == 'runtime_import_error' else
-                    'PROVIDER_NOT_CONFIGURED' if code in {'disabled','unavailable','executor_unavailable','version_changed'} else
+                    'PROVIDER_SCHEMA_INVALID' if code in {'version_changed', 'invalid_protocol', 'invalid_identity'} else
+                    'PROVIDER_NOT_CONFIGURED' if code in {'disabled','unavailable','executor_unavailable'} else
                     'PROVIDER_UNSUPPORTED' if code == 'extractor_mismatch' else
                     'PROVIDER_RESULT_EMPTY' if code == 'no_formats' else 'PROVIDER_PROCESS_FAILED')
         # Preserve only the fixed worker reason vocabulary, never exception text.

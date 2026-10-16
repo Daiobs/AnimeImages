@@ -320,6 +320,12 @@
             };
             if (Object.prototype.hasOwnProperty.call(serviceDetails, detail)) return serviceDetails[detail];
         }
+        if (code === "PROVIDER_POLICY_REJECTED" && detail === "UPSTREAM_VERSION_UNSUPPORTED") {
+            return "当前上游运行版本尚未通过本应用兼容验证；不是账号未配置或作品不支持。";
+        }
+        if (code === "PROVIDER_SCHEMA_INVALID" && detail === "UPSTREAM_VERSION_CHANGED") {
+            return "上游运行版本在本次请求中发生变化，请核对运行环境；本次未自动重试。";
+        }
         if (code === "PROVIDER_POLICY_REJECTED" && detail === "NESTED_AGGREGATOR_TLS_BYPASS_BLOCKED") {
             return "该固定版本 Backend 使用嵌套聚合服务并绕过 TLS 校验，已被安全策略禁用；不是管理员权限不足。";
         }

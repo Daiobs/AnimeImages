@@ -86,6 +86,8 @@ def _call(command, request, timeout=5.0):
         response = json.loads(completed.stdout)
         if completed.returncode:
             raise UpstreamMatchingError("worker_exit", stage="process")
+        if not isinstance(response, dict) or not isinstance(response.get("ok"), bool):
+            raise UpstreamMatchingError("invalid_protocol", stage="protocol")
         if response.get("ok") is not True:
             codes = {"network_denied", "execution_guard", "delegation_denied", "playlist_denied",
                      "item_limit", "output_limit", "version_changed", "extractor_mismatch",
@@ -95,14 +97,18 @@ def _call(command, request, timeout=5.0):
             code = response.get("error")
             stage = response.get("stage", "worker")
             error_class = response.get("error_class", "")
-            if code not in codes or not isinstance(stage, str) or not stage.replace("_", "").isalnum():
-                raise ValueError()
+            if not isinstance(code, str) or code not in codes or not isinstance(stage, str) or not stage.replace("_", "").isalnum():
+                raise UpstreamMatchingError("invalid_protocol", stage="protocol")
             if not isinstance(error_class, str) or not error_class.replace("_", "").isalnum():
-                raise ValueError()
+                raise UpstreamMatchingError("invalid_protocol", stage="protocol")
             raise UpstreamMatchingError(code, stage=stage[:80], error_class=error_class[:80])
+        if "payload" not in response:
+            raise UpstreamMatchingError("invalid_protocol", stage="protocol")
         return response["payload"]
     except UpstreamMatchingError:
         raise
+    except json.JSONDecodeError:
+        raise UpstreamMatchingError("invalid_protocol", stage="protocol") from None
     except subprocess.TimeoutExpired:
         raise UpstreamMatchingError("execution_timeout", stage="process") from None
     except ExternalCommandOutputTooLarge:
@@ -125,7 +131,7 @@ def _context(provider):
         if now < expiry and _watch_signature(identity.get("watch_paths", [])) == watched:
             return command, identity["version"], fingerprint
     identity = _call(command, {"action": "identity", "provider_id": provider})
-    if not isinstance(identity.get("version"), str) or not identity["version"]:
+    if not isinstance(identity, dict) or not isinstance(identity.get("version"), str) or not identity["version"]:
         raise UpstreamMatchingError("invalid_identity")
     watched = _watch_signature(identity.get("watch_paths", []))
     fingerprint = sha256(json.dumps([signature, identity, watched], sort_keys=True).encode()).hexdigest()

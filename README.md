@@ -282,6 +282,23 @@ git diff --check
 
 不要把 Provider-specific venv 安装进应用 `.venv`。Provider Lab 的初始化命令和 exact pins 见[稳定指南](docs/provider-lab.md)。
 
+### yt-dlp 共享路径兼容版本
+
+`xhs_download/services/quality_execution.py::VERIFIED_RUNTIME_VERSIONS` 是应用兼容集合的唯一来源；目前接受 `2026.3.17` 和 `2026.6.9`，不自动接受更高版本。PyPI 的 `2026.6.9` 与模块版本 `2026.06.09` 是同一发行的整数归一化表示。兼容准入不会替代同次 identity、match、parse 的精确版本核对；Worker 原始版本和运行环境指纹仍参与缓存隔离。
+
+可选 Runtime 单独安装，不加入应用必装依赖：
+
+```bash
+python3.12 -m venv /absolute/local/path/ytdlp-2026.6.9
+/absolute/local/path/ytdlp-2026.6.9/bin/python -m pip install --index-url https://pypi.org/simple --no-deps yt-dlp==2026.6.9
+```
+
+在原本已启用 yt-dlp 的本地配置中，将 `YTDLP_BINARY` 设为 `/absolute/local/path/ytdlp-2026.6.9/bin/python -m yt_dlp`，通过既有启动方式重载。更换前保留原值，不改人工路线。配置可用不等于版本已验证：未验证版本在共享执行时返回 `PROVIDER_POLICY_REJECTED / UPSTREAM_VERSION_UNSUPPORTED`；请求中版本变化返回协议错误，不能当成作品不支持或自动重试。
+
+新增兼容版本必须先用真实安装包复现并运行 `xhs_download.tests_ytdlp_runtime_compatibility`、`xhs_download.tests_execution_path_parity` 和 `tools.tests_upstream_worker_quality`，再运行完整 Django/Node 检查。前两项通过 `YTDLP_COMPAT_PYTHON` 选择隔离解释器，`YTDLP_COMPAT_EXPECTED_VERSION` 断言实际安装版本；`YTDLP_COMPAT_ALTERNATE_PYTHON` 指向另一已安装版本，验证缓存隔离和执行中换包拒绝。原生提取/最终 HTTP 使用离线替身，真实 Worker、隔离参数、后处理及共享映射不替换；这些测试不代表远端站点当前成功。
+
+现有 Django CI 的完整套件安装 `2026.6.9`；另有 Python 3.12 专项执行新版与旧版离线共享路径，不固定生产的 3.12.3 补丁版本。日志记录实际解释器、包版本、模块版本和导入位置。安装选择位于 `.github/workflows/django.yml`，改兼容集合时必须同步验证入口，不能只替换版本字符串。生产升级另行授权，本地选择不会修改生产 Runtime。
+
 ## 后台入口
 
 常用 Staff 运维页面：
