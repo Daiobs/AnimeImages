@@ -24,6 +24,7 @@ LOCAL_CACHE = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemC
 
 def result(**changes):
     value = {"status": "success", "executed": True, "result_kind": "video",
+             "metadata": {"identity_confirmed": True},
              "assets": [{"asset_id": "video-1", "media_type": "video", "role": "primary", "height": 1080}]}
     value.update(changes)
     return value
@@ -89,6 +90,20 @@ class PlatformLedgerTests(TestCase):
         row = self.get(view="platform", source_host="media-ledger.org")["executions"][0]
         self.assertIsNone(row["finished_at"])
         self.assertIsNotNone(row["batch"]["created_at"])
+
+    def test_product_success_is_not_implicit_target_identity_confirmation(self):
+        for identity in (None, False, True):
+            metadata = {} if identity is None else {"identity_confirmed": identity}
+            host = {None: "unknown-ledger.org", False: "unconfirmed-ledger.org", True: "confirmed-ledger.org"}[identity]
+            self.add(execution(str(identity), source_url=f"https://{host}/work/1",
+                               result=result(metadata=metadata)))
+            platform = self.platform(host)
+            provider = platform["providers"][0]
+            self.assertEqual(provider["latest_status"], "success")
+            self.assertIsNotNone(provider["last_success_at"])
+            self.assertEqual(provider["evidence"], "confirmed" if identity is True else "unconfirmed")
+            self.assertEqual(provider["positive_count"], 1 if identity is True else 0)
+            self.assertEqual(platform["route_hint"], "unique_positive" if identity is True else "unconfirmed_media")
 
     def test_early_success_beyond_100_batches_and_200_rows(self):
         self.add(execution(result=result(result_kind="gallery", assets=[

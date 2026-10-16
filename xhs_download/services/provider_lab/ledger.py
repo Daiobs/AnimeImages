@@ -131,7 +131,7 @@ def _observation(row):
     uncertain = r["client_status"] == "OUTCOME_UNKNOWN" or r["error_detail"] == "SERVICE_PREVIOUS_OUTCOME_UNKNOWN"
     success = (not native and not offline and not not_run and not uncertain
                and status == "success" and state in {"returned", "success"})
-    confirmed = has_media and (m["identity_confirmed"] is not False) and (
+    confirmed = has_media and m["identity_confirmed"] is True and (
         (native and m["identity_confirmed"] is True
          and str(m["capture_status"] or s["state"] or "").upper() == "RETURNED")
         or (not native and not offline and not not_run and not uncertain
@@ -291,7 +291,9 @@ def _summarize(platform):
     platform["route_hint"] = ("unknown_source" if platform["source_host"] == "unknown" else
         "no_records" if not rows else "content_conflict" if conflict
         else "reference_only" if positive and all(p["adoptability"] == "reference_only" for p in positive)
-        else "comparable" if len(positive) > 1 else "unique_positive" if positive else "no_positive_evidence")
+        else "comparable" if len(positive) > 1 else "unique_positive" if positive
+        else "unconfirmed_media" if any(p["evidence"] == "unconfirmed" for p in platform["providers"])
+        else "no_positive_evidence")
     return platform
 
 

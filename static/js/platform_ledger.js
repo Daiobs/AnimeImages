@@ -15,9 +15,9 @@
         confirmed_media: "已确认目标媒体", unconfirmed_media: "未确认媒体", declared_only: "仅声明", no_valid_media: "尚无有效媒体"};
     const HINTS = {unknown_source: "来源未保留，仅供追溯，不形成平台路线建议", no_records: "已配置 / 暂无记录", content_conflict: "不同内容的候选有差异；保存将作用于整个 host",
         reference_only: "有媒体参考，暂不可固定", comparable: "多家有正向证据，需核对同作品与质量字段",
-        unique_positive: "唯一已验证候选，非最佳画质结论", no_positive_evidence: "尚无已确认目标媒体"};
+        unique_positive: "唯一已验证候选，非最佳画质结论", unconfirmed_media: "有媒体返回，目标身份待核对", no_positive_evidence: "尚无已确认目标媒体"};
     const ADOPT = {unknown_source: "来源未知，无法进入路线草稿", protected: "沿用成熟路线，不适用通用路线保存", existing_route: "沿用既有人工路线", draft_candidate: "可进入草稿，保存前核对当前配置",
-        reference_only: "仅供参考；Common / 未知选项暂不可固定", no_evidence: "暂无正向媒体参考"};
+        reference_only: "仅供参考，目标身份或执行选项需核对；Common / 未知选项暂不可固定", no_evidence: "暂无正向媒体参考"};
     const STATES = {success: "成功", failed: "失败", timeout: "超时", unsupported: "不支持", not_executed: "未执行",
         skipped: "未执行", planned: "未执行", running: "执行中", unknown: "未知", native_observed: "原生观察",
         partial: "失败含部分媒体", offline: "离线回放", returned: "已返回"};
@@ -179,6 +179,7 @@
                     button.append(n("strong", providerName(e.provider_id)), n("span", STATES[outcome] || outcome),
                         n("span", e.asset_count == null && e.result?.candidate_count == null ? "候选数量未知" : `${e.asset_count ?? e.result.candidate_count} 个已保留候选`), n("small", time(e.started_at || e.finished_at)),
                         n("small", `${e.origin === "scout" ? "Scout" : e.origin === "lab" ? "Provider Lab" : e.origin || "来源未知"} · ${e.batch?.label || e.batch?.batch_key || "批次未知"}`));
+                    if (e.evidence) button.append(n("small", EVIDENCE[e.evidence] || e.evidence));
                     if (e.application_record_id) button.append(n("small", `关联调用 #${e.application_record_id}，不重复计数`));
                     if (copies.length > 1) button.append(n("small", `另有 ${copies.length - 1} 条关联副本，不重复计数`));
                     if (e.evidence_kind) button.append(n("small", {product_execution: "产品执行记录", native_capture_replay: "原生观察 / 离线转换", offline_replay: "离线回放"}[e.evidence_kind] || e.evidence_kind));
