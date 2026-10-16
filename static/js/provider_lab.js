@@ -1269,7 +1269,7 @@
             const reference = node("section", undefined, "data-history-route-reference");
             reference.append(node("h3", "选路参考"), node("p", routeReferenceScope(), "data-route-reference-scope"),
                 node("p", `${hostScope ? "查询全部批次，仅依据本次返回的记录" : "仅依据本批次所选 hostname 的已保留记录"}；尺寸非目视画质，不据此判断最佳。原生媒体证据是离线观察，非实时产品验收。`));
-            const kinds = {video: "视频", image: "单图", gallery: "图集", livephoto: "实况照片", multimedia: "混合媒体", article: "文章", audio: "音频"};
+            const kinds = {video: "视频", image: "图片", gallery: "图集", livephoto: "实况照片", multimedia: "混合媒体", article: "文章", audio: "音频"};
             const groups = new Map();
             for (const e of rows) {
                 const native = isNativeHistoryEvidence(e), result = e.result || {}, metadata = result.metadata || {};
