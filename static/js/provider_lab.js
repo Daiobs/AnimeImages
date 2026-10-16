@@ -1432,8 +1432,10 @@
             const tbody = node("tbody");
             for (const items of visibleGroups.slice(page * pageSize, (page + 1) * pageSize)) {
                 const first = items[0], row = node("tr"), label = node("th");
+                const titled = items.filter((e) => typeof e.title === "string" && e.title.trim()).sort((a, b) =>
+                    ((historyTimestamp(b.started_at) ?? -Infinity) - (historyTimestamp(a.started_at) ?? -Infinity)) || Number(b.id) - Number(a.id));
                 label.setAttribute("scope", "row");
-                label.append(node("strong", first.source_host || "来源站点未保留"), node("p", first.title || "未记录作品标题"));
+                label.append(node("strong", first.source_host || "来源站点未保留"), node("p", titled[0]?.title || "未记录作品标题"));
                 if (!first.source_url) label.append(node("small", "来源链接未保留"));
                 row.append(label);
                 columns.forEach((id) => {

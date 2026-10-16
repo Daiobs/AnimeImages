@@ -240,6 +240,38 @@ test("cross-batch detail and observation labels identify each batch despite iden
     f.workspace.destroy();
 });
 
+test("matrix uses newest nonempty title within exact source URL across sort modes without changing provenance", async () => {
+    const f = fixture();
+    const seed = {...f.executions[0], result: {status: "success", assets: []}};
+    const scout = {id: 2, label: "Scout batch", origin: "scout"};
+    const labBatch = {id: 3, label: "Lab batch", origin: "lab"};
+    f.executions.splice(0, f.executions.length,
+        {...seed, id: 10, title: "Old Scout title", started_at: "2026-10-01T00:00:00Z", batch: scout},
+        {...seed, id: 20, title: "Newest Scout title", started_at: "2026-10-02T00:00:00Z", batch: scout},
+        {...seed, id: 30, title: "  ", started_at: "2026-10-03T00:00:00Z", batch: labBatch},
+        {...seed, id: 40, started_at: "2026-10-04T00:00:00Z", batch: labBatch},
+        {...seed, id: 60, source_url: "https://source.example/other", title: "Other work title", started_at: "2026-10-05T00:00:00Z", batch: scout},
+        {...seed, id: 70, source_url: "https://source.example/untitled", started_at: "2026-10-06T00:00:00Z", batch: labBatch});
+    const original = JSON.stringify(f.executions);
+    await f.workspace.loadBatch(1);
+    await f.change(f.panel.querySelector("[data-history-host]"), "source.example");
+    await f.click(f.panel.querySelector("[data-history-host-all]"));
+    for (const order of ["latest", "oldest", "provider"]) {
+        await f.change(f.panel.querySelector("[data-history-order]"), order);
+        const matrix = f.panel.querySelector(".provider-lab-history-matrix");
+        const title = (id) => matrix.querySelector(`[data-history-inspect="${id}"]`).closest("tr").querySelector("th").querySelector("p").textContent;
+        assert.equal(title(40), "Newest Scout title", order);
+        assert.equal(title(60), "Other work title", order);
+        assert.equal(title(70), "未记录作品标题", order);
+    }
+    const card = await f.inspect(40);
+    assert.match(card.closest("[data-history-sample]").children.find((node) => node.tagName === "H3").textContent, /未记录作品标题/);
+    assert.equal(card.querySelector("[data-history-execution-batch]").textContent, "所属批次：Lab batch");
+    assert.equal(JSON.stringify(f.executions), original);
+    assert.equal(f.retests.length, 0);
+    f.workspace.destroy();
+});
+
 test("host references deduplicate application copies but retain retests and truncated provenance", async () => {
     const f = fixture({hostPayload: {total: 201, returned: 3, truncated: true}});
     const seed = {...f.executions[0], state: "returned", result: {status: "success", assets: [{media_type: "video"}]}};
