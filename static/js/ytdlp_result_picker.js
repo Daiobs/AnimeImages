@@ -20,6 +20,7 @@
         if (!radio) return null;
         return Object.freeze({id: radio.value, token: radio.dataset.token, kind: radio.dataset.kind,
             provider: (root.dataset || {}).provider || "yt_dlp_generic", schema: (root.dataset || {}).selectionSchema || SCHEMA,
+            canLegacy: radio.dataset.canLegacy === "true", legacyAssetId: radio.dataset.legacyAssetId || "",
             formatId: radio.dataset.formatId,
             label: radio.dataset.label || "", size: radio.dataset.sizeLabel || "大小未知",
             canDownload: radio.dataset.canDownload === "true", canPreview: radio.dataset.canPreview === "true",
@@ -41,8 +42,10 @@
         return value;
     }
     function sameOriginPath(value, windowObject) {
+        if (typeof value !== "string" || !value.trim()) throw new Error("操作入口无效。");
         const url = new URL(value, windowObject.location.href);
-        if (url.origin !== windowObject.location.origin || !["http:", "https:"].includes(url.protocol)) throw new Error("操作入口无效。");
+        if (url.origin !== windowObject.location.origin || !["http:", "https:"].includes(url.protocol)
+                || url.username || url.password || url.hash) throw new Error("操作入口无效。");
         return url.href;
     }
     function csrf(documentObject) {
@@ -51,7 +54,22 @@
         const match = String(documentObject.cookie || "").match(/(?:^|;\s*)csrftoken=([^;]+)/);
         return match ? decodeURIComponent(match[1]) : "";
     }
-    function validateItem(item, selection) {
+    function validateItem(item, selection, delivery = "direct") {
+        if (!item || (item.selection_delivery || "direct") !== delivery) throw new Error("返回交付方式与本次选择不一致，未开始下载。");
+        if (delivery === "legacy_manifest") {
+            validateLinkItem(item, selection);
+            if (selection.schema !== "service_selected_format_v1"
+                    || !["tiantianjiexi_generic", "kukutool_generic"].includes(selection.provider)
+                    || selection.canLegacy !== true || !selection.legacyAssetId || item.asset_id !== selection.legacyAssetId
+                    || selection.kind !== "video" || typeof selection.formatId !== "string"
+                    || item.browser_upstream_bound === true || item.browser_direct_fetch_safe === true
+                    || item.requires_merge === true || item.requires_cookie === true
+                    || ["asset_id", "provider_resource_id", "provider_cache_key", "provider_manifest_token", "source_platform"]
+                        .some(key => typeof item[key] !== "string" || !item[key].trim() || /[\u0000-\u001f\u007f]/.test(item[key]))
+                    || item.asset_id.startsWith("upstream:")) throw new Error("旧资源交付授权不完整，未开始下载。");
+            return item;
+        }
+        if (delivery !== "direct") throw new Error("交付方式无效，未开始下载。");
         if (!item || item.selection_schema !== (selection.schema || SCHEMA) || item.provider !== (selection.provider || "yt_dlp_generic")
                 || item.candidate_id !== selection.id || item.type !== selection.kind
                 || (selection.formatId !== undefined && item.selected_format_id !== selection.formatId)
@@ -95,7 +113,7 @@
             }
             return {candidate, check: payload.check};
         }
-        return validateItem(payload.item, selection);
+        return validateItem(payload.item, selection, action === "legacy" ? "legacy_manifest" : "direct");
     }
     async function resolveLink(root, selection, environment, signal) {
         if (!selection || !selection.id || !selection.token) throw new Error("未选择可核验的格式，请重新解析。");
@@ -112,10 +130,11 @@
         const fetchImpl = settings.fetchImpl || windowObject.fetch.bind(windowObject);
         const ordinary = settings.ordinary || windowObject.AnimeImagesOrdinaryMediaDownload;
         const environment = {documentObject, windowObject, fetchImpl};
-        let status, download, copy, cancel, progress, playerRegion, playerSlot;
+        let status, download, legacy, copy, cancel, progress, playerRegion, playerSlot;
         function bindControls() {
             status = root.querySelector("[data-picker-status]");
             download = root.querySelector('[data-ytdlp-action="download"]');
+            legacy = root.querySelector('[data-ytdlp-action="legacy"]');
             copy = root.querySelector('[data-ytdlp-action="copy"]');
             cancel = root.querySelector('[data-ytdlp-action="cancel"]');
             progress = root.querySelector("[data-picker-progress]");
@@ -125,6 +144,7 @@
         bindControls();
         let generation = 0, busy = false, destroyed = false, activeController = null;
         let activeCheck = null;
+        let activeLegacy = false;
         let coverController = null, coverObjectUrl = "", player = null;
         const groupName = `doki-ytdlp-instance-${++instanceSequence}`;
         let knownRadios = [], rememberedId = null;
@@ -162,6 +182,9 @@
         }
         function refresh() {
             const selection = selected(root);
+            const legacyAvailable = selection && selection.canLegacy
+                && typeof windowObject.AnimeImagesLegacySelectionDownload === "function";
+            const legacyPrimary = legacyAvailable && !selection.canDownload;
             if (selection) rememberedId = selection.id;
             revealSelection();
             root.querySelectorAll("[data-picker-radio]").forEach(radio => {
@@ -169,22 +192,37 @@
                 radio.closest("[data-picker-option]").classList.toggle("is-selected", radio.checked);
             });
             if (download) {
-                const checkable = selection && !selection.canDownload && selection.kind === "video" && selection.canCheck;
-                download.disabled = busy || !selection || !(selection.canDownload && ordinary || checkable);
+                const checkable = selection && !selection.canDownload && !legacyAvailable && selection.kind === "video" && selection.canCheck;
+                download.disabled = busy || !selection || !(selection.canDownload && ordinary || !selection.canDownload && legacyAvailable || checkable);
                 download.textContent = busy ? "正在处理…" : checkable ? "检查所选视频"
+                    : legacyPrimary ? "原有方式保存所选资源"
                     : `↓ 下载所选${selection && selection.kind === "audio" ? "音频" : "视频"}`;
+            }
+            if (legacy) {
+                legacy.hidden = !(selection && selection.canDownload && legacyAvailable);
+                legacy.disabled = busy || legacy.hidden;
+                legacy.textContent = "原有方式保存所选资源";
             }
             if (copy) copy.disabled = busy || !selection;
             root.querySelectorAll('[data-ytdlp-action="preview"]').forEach(button => { button.disabled = busy; });
-            if (cancel) cancel.hidden = !busy;
+            if (cancel) {
+                cancel.hidden = !busy;
+                cancel.textContent = activeLegacy ? "停止等待" : "取消当前下载";
+            }
             const label = root.querySelector("[data-picker-size]");
             if (label) label.textContent = selection ? selection.size : "大小未知";
             const limitation = root.querySelector("[data-picker-limitation]");
-            if (limitation) limitation.textContent = selection && selection.limitation
-                || "保留源文件，不转码。实际保存取决于来源的浏览器访问条件。";
+            if (limitation) {
+                const directLimitation = selection && selection.limitation
+                    || "保留源文件，不转码。实际保存取决于来源的浏览器访问条件。";
+                limitation.textContent = legacyPrimary
+                    ? `${directLimitation} 可用原有方式保存所选资源；传输方式由原下载流程决定。`
+                    : directLimitation;
+            }
         }
-        function start() {
+        function start(legacyOperation = false) {
             if (busy || destroyed) return null;
+            activeLegacy = legacyOperation;
             busy = true; generation += 1;
             activeController = new windowObject.AbortController();
             refresh();
@@ -193,7 +231,7 @@
         function current(operation) { return !destroyed && operation.generation === generation; }
         function finish(operation) {
             if (!current(operation)) return;
-            busy = false; activeController = null; activeCheck = null; refresh();
+            busy = false; activeController = null; activeCheck = null; activeLegacy = false; refresh();
         }
         function sameSelection(selection) {
             const now = selected(root);
@@ -246,13 +284,19 @@
                 if (applicable()) say(error.message || "检查未完成，未开始下载。");
             } finally { finish(operation); }
         }
-        async function save() {
+        async function save(forceLegacy = false) {
             const selection = selected(root);
+            if (!selection || busy) return;
+            const handler = windowObject.AnimeImagesLegacySelectionDownload;
+            if (forceLegacy || !selection.canDownload && selection.canLegacy && typeof handler === "function") {
+                if (selection.canLegacy && typeof handler === "function") await saveLegacy(selection, handler);
+                return;
+            }
             if (selection && !selection.canDownload && selection.kind === "video" && selection.canCheck && !busy) {
                 await checkSelected(selection);
                 return;
             }
-            if (!selection || !selection.canDownload || !ordinary || busy) return;
+            if (!selection.canDownload || !ordinary) return;
             closePreview();
             const operation = start();
             if (!operation) return;
@@ -283,6 +327,33 @@
                 if (progress && current(operation)) progress.hidden = true;
                 finish(operation);
             }
+        }
+        function waitWhileActive(promise, signal) {
+            return new Promise((resolve, reject) => {
+                const abort = () => { const error = new Error("已停止等待。"); error.name = "AbortError"; reject(error); };
+                signal.addEventListener("abort", abort, {once: true});
+                Promise.resolve(promise).then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+                if (signal.aborted) abort();
+            });
+        }
+        async function saveLegacy(selection, handler) {
+            closePreview();
+            const operation = start(true);
+            if (!operation) return;
+            const signal = operation.signal;
+            const applicable = () => current(operation) && !signal.aborted && sameSelection(selection);
+            say("正在核验所选资源的原有交付授权…");
+            try {
+                const item = await waitWhileActive(descriptor(root, selection, "legacy", environment, signal), signal);
+                if (!applicable()) return;
+                // The home controller owns routing and status; this bridge never starts another transport.
+                await waitWhileActive(handler(item, root), signal);
+                if (applicable()) say("已交由原有保存流程处理，请查看该流程的状态提示。");
+            } catch (error) {
+                if (current(operation) && sameSelection(selection)) say(signal.aborted
+                    ? "已停止等待；原有保存流程可能仍在进行，请查看该流程的状态提示。未自动重试。"
+                    : error.message || "原有保存流程未完成，未自动重试。");
+            } finally { finish(operation); }
         }
         async function preview() {
             if (busy) return;
@@ -367,6 +438,7 @@
             if (!button || !root.contains(button) || button.disabled) return;
             event.preventDefault();
             if (button.dataset.ytdlpAction === "download") save();
+            else if (button.dataset.ytdlpAction === "legacy") save(true);
             else if (button.dataset.ytdlpAction === "preview") preview();
             else if (button.dataset.ytdlpAction === "copy") copySelected();
             else if (button.dataset.ytdlpAction === "close-preview") closePreview();

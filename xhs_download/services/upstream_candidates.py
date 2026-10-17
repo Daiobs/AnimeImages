@@ -133,6 +133,8 @@ def _candidate_record(url, metadata, *, ordinal, provider, source_url, media_typ
     if provider in {'tiantianjiexi_generic', 'kukutool_generic'}:
         from .service_format_selection import candidate_facts
         public.update(candidate_facts(metadata, url, media_type))
+        if metadata.get('_service_legacy_item'):
+            record['service_legacy_item'] = dict(metadata['_service_legacy_item'])
     return public, record
 
 

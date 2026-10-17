@@ -35,6 +35,71 @@ function response(content, source, type = "video/mp4", overrides = {}) {
 }
 
 for (const provider of SERVICE_PROVIDERS) {
+    test(`${provider} legacy delivery is exact-candidate video only and never an ordinary fetch grant`, async () => {
+        const selection = {...serviceSelection(provider), canLegacy: true, legacyAssetId: "third_party:source:video:1"};
+        const media = serviceItem(provider, "service720", "video", {
+            selection_delivery: "legacy_manifest", browser_upstream_bound: false, browser_direct_fetch_safe: false,
+            asset_id: "third_party:source:video:1", provider_resource_id: "source", provider_cache_key: "cache-source",
+            provider_manifest_token: "signed-legacy", source_platform: "third_party", url: "http://cdn.example/video720.mp4",
+            size_bytes: 1024,
+        });
+        assert.equal(picker.validateItem(media, selection, "legacy_manifest"), media);
+        const emptyFormatSelection = {...selection, formatId: ""};
+        const emptyFormatItem = {...media, selected_format_id: ""};
+        assert.equal(picker.validateItem(emptyFormatItem, emptyFormatSelection, "legacy_manifest"), emptyFormatItem);
+        for (const change of [{selected_format_id: "other"}, {selected_format_id: undefined}, {selected_format_id: null},
+            {candidate_id: "other"}, {asset_id: "other"}]) {
+            assert.throws(() => picker.validateItem({...emptyFormatItem, ...change}, emptyFormatSelection, "legacy_manifest"));
+        }
+        assert.equal(ordinary.isOrdinaryMediaItem(media), false);
+        assert.equal(picker.validateLinkItem(media, selection).url, media.url);
+        const changes = [{candidate_id: "other"}, {selected_format_id: "other"}, {type: "audio"},
+            {provider: SERVICE_PROVIDERS.find(value => value !== provider)}, {selection_schema: picker.SCHEMA},
+            {selection_delivery: "direct"}, {selection_delivery: undefined}, {browser_upstream_bound: true},
+            {browser_direct_fetch_safe: true}, {requires_merge: true}, {requires_cookie: true},
+            {asset_id: "upstream:selection:service720"}, {url: "javascript:alert(1)"},
+            {url: "https://user:pass@cdn.example/video.mp4"}, {url: "https://cdn.example/video.mp4#x"},
+            {filename: ""}, {filename: "video\n.mp4"}];
+        for (const field of ["asset_id", "provider_resource_id", "provider_cache_key", "provider_manifest_token", "source_platform"]) {
+            changes.push({[field]: undefined}, {[field]: " "}, {[field]: "bad\nvalue"});
+        }
+        for (const change of changes) assert.throws(() => picker.validateItem({...media, ...change}, selection, "legacy_manifest"), JSON.stringify(change));
+        assert.throws(() => picker.validateItem(media, selection));
+        for (const change of [{canLegacy: false}, {legacyAssetId: "other"}, {legacyAssetId: ""}, {formatId: undefined}]) {
+            assert.throws(() => picker.validateItem(media, {...selection, ...change}, "legacy_manifest"));
+        }
+        assert.throws(() => picker.validateItem({...media, provider: "yt_dlp_generic", selection_schema: picker.SCHEMA},
+            {...selection, provider: "yt_dlp_generic", schema: picker.SCHEMA}, "legacy_manifest"));
+        assert.throws(() => picker.validateItem({...media, type: "audio"}, {...selection, kind: "audio"}, "legacy_manifest"));
+        let calls = 0;
+        const environment = {documentObject, windowObject: win, fetchImpl: async (_url, options) => {
+            calls += 1;
+            assert.deepEqual(JSON.parse(options.body), {candidate_id: selection.id, resource_token: selection.token,
+                action: ["legacy", "preview", "download"][calls - 1]});
+            return {ok: true, json: async () => ({status: "success", item: media})};
+        }};
+        assert.equal((await picker.descriptor(root, selection, "legacy", environment)).url, media.url);
+        await assert.rejects(picker.descriptor(root, selection, "preview", environment));
+        await assert.rejects(picker.descriptor(root, selection, "download", environment));
+        assert.equal(calls, 3);
+    });
+}
+
+test("selection snapshots independent legacy capability and same-origin endpoints reject invalid destinations", () => {
+    const radio = {value: "v", dataset: {token: "signed-v", kind: "video", canLegacy: "true", legacyAssetId: "old-v"}};
+    const selection = picker.selected({dataset: {}, querySelector: () => radio});
+    radio.dataset.canLegacy = "false";
+    radio.dataset.legacyAssetId = "other";
+    assert.equal(selection.canLegacy, true);
+    assert.equal(selection.legacyAssetId, "old-v");
+    for (const url of [undefined, "", " ", "https://evil.example/download", "//evil.example/status",
+        "http://user:pass@localhost:8000/download", "/download#fragment", "javascript:alert(1)"]) {
+        assert.throws(() => picker.sameOriginPath(url, win));
+    }
+    assert.equal(picker.sameOriginPath("/download?token=exact", win), "http://localhost:8000/download?token=exact");
+});
+
+for (const provider of SERVICE_PROVIDERS) {
     test(`${provider} selected download and link descriptors preserve provider and resource identity`, async () => {
         const serviceRoot = {dataset: {selectionUrl: "/media/service-selected-format/",
             provider, selectionSchema: SERVICE_SCHEMA}};

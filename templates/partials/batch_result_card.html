@@ -1,5 +1,6 @@
 {% load ytdlp_picker %}
 {% ytdlp_presentation row.upstream_candidates row.upstream_route row.video_items as ytdlp_picker %}
+{% remaining_picker_videos ytdlp_picker row.video_items as remaining_video_items %}
 <article class="batch-result-card batch-status-card-{{ row.status }}"
          data-status="{{ row.status }}"
          data-platform="{{ row.platform|default:'' }}"
@@ -61,7 +62,7 @@
                 </div>
             </div>
         </div>
-    {% elif ytdlp_picker and not row.image_items %}
+    {% elif ytdlp_picker and not row.image_items and not remaining_video_items %}
         <div class="batch-result-main"><div class="batch-result-info">
             {% include "partials/ytdlp_result_picker.html" %}
             {% include "partials/upstream_candidates.html" with upstream_candidates=row.upstream_candidates candidates_truncated=row.candidates_truncated upstream_route=row.upstream_route unexpanded_scope=row.unexpanded_scope returned_count=row.returned_count retained_count=row.retained_count unexpanded_count=row.unexpanded_count image_items=row.image_items video_items=row.video_items %}
@@ -258,14 +259,15 @@
                     </section>
                 {% endif %}
 
-                {% if row.video_items and not ytdlp_picker %}
+                {% if remaining_video_items %}
+                {% if ytdlp_picker %}<h3 class="h6">其他视频资源（未参与格式选择）</h3>{% endif %}
                 <div class="batch-media-tools batch-media-tools-video"
                      data-batch-media-tools>
                     <div class="batch-result-cover">
-                        {% if row.video_items and row.video_items.0.cover_url %}
+                        {% if remaining_video_items.0.cover_url %}
                             <img
-                                    src="{% if row.video_items.0.source_platform == 'upstream' %}{{ row.video_items.0.cover_url }}{% else %}{{ proxy_image_url }}?u={{ row.video_items.0.encoded_preview_cover_url|default:row.video_items.0.encoded_cover_url }}{% if row.video_items.0.cover_preview_provider_query %}&{{ row.video_items.0.cover_preview_provider_query }}{% endif %}{% endif %}"
-                                    {% if row.video_items.0.source_platform == 'upstream' %}referrerpolicy="no-referrer"{% endif %}
+                                    src="{% if remaining_video_items.0.source_platform == 'upstream' %}{{ remaining_video_items.0.cover_url }}{% else %}{{ proxy_image_url }}?u={{ remaining_video_items.0.encoded_preview_cover_url|default:remaining_video_items.0.encoded_cover_url }}{% if remaining_video_items.0.cover_preview_provider_query %}&{{ remaining_video_items.0.cover_preview_provider_query }}{% endif %}{% endif %}"
+                                    {% if remaining_video_items.0.source_platform == 'upstream' %}referrerpolicy="no-referrer"{% endif %}
                                     alt="视频封面"
                                     loading="lazy"
                                     decoding="async"
@@ -281,7 +283,7 @@
                     <div class="batch-media-actions">
                     {% if row.video_items %}
                         <div class="batch-direct-tools">
-                            {% for item in row.video_items %}
+                            {% for item in remaining_video_items %}
                                 <div class="batch-direct-item"
                                  data-batch-download-item
                                  data-type="video"

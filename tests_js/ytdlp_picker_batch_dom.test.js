@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const vm = require("node:vm");
 const {Node} = require("./helpers/lab_dom.js");
 const picker = require("../static/js/ytdlp_result_picker.js");
 const batch = require("../static/js/batch_parse.js");
@@ -93,6 +94,10 @@ function card(root, status = "success") {
 function legacy(type, url, filename) {
     return el("div", {"data-batch-download-item": "", "data-type": type, "data-url": url, "data-download-filename": filename});
 }
+function technicalCandidate(url) {
+    // Represented resources remain in technical details, not legacy download rows.
+    return el("article", {"data-upstream-candidate": "", "data-url": url});
+}
 function linkItem(id, type = "video", extra = {}) {
     return {candidate_id: id, selected_format_id: `format-${id}`, url: `https://cdn.example/${id}.${type === "audio" ? "m4a" : "mp4"}`,
         type, filename: `${id}.${type === "audio" ? "m4a" : "mp4"}`, selection_schema: picker.SCHEMA,
@@ -119,6 +124,395 @@ function serviceGrant(provider, id, type = "video", extra = {}) {
         browser_upstream_bound: true, browser_direct_fetch_safe: true, requires_cookie: false, requires_merge: false,
         ...extra});
 }
+
+function legacyPicker(provider) {
+    const root = servicePicker(provider);
+    radios(root)[0].dataset.canDownload = "false";
+    radios(root)[0].dataset.canLegacy = "true";
+    radios(root)[0].dataset.legacyAssetId = "third_party:source:video:high";
+    radios(root)[0].dataset.limitation = "此链接为 HTTP，不能直接保存；可复制链接。";
+    root.append(el("p", {"data-picker-limitation": ""}), el("button", {"data-ytdlp-action": "legacy"}));
+    return root;
+}
+function legacyGrant(provider, id = "high") {
+    return serviceGrant(provider, id, "video", {selection_delivery: "legacy_manifest",
+        browser_upstream_bound: false, browser_direct_fetch_safe: false,
+        asset_id: `third_party:source:video:${id}`, provider_resource_id: "resource", provider_cache_key: "cache",
+        provider_manifest_token: `manifest-${id}`, source_platform: "third_party",
+        url: `http://cdn.example/${id}.mp4`, size_bytes: 2048});
+}
+function jsonResponse(payload, status = 200) {
+    return {ok: status < 400, status, json: async () => payload};
+}
+
+function homeLegacyController(fetchImpl, existingPickerRoot) {
+    const nodes = new Map();
+    function node(id) {
+        if (!nodes.has(id)) nodes.set(id, {dataset: {}, style: {}, isConnected: true, innerHTML: "保存",
+            innerText: "", hidden: false, classList: {add() {}, remove() {}, toggle() {}},
+            setAttribute(name, value) { this[name] = value; }, removeAttribute(name) { delete this[name]; },
+            querySelector() { return null; }});
+        return nodes.get(id);
+    }
+    const oldCard = node("old-card");
+    oldCard.dataset = {type: "video", assetId: "third_party:old:video:1", provider: "kukutool_generic",
+        sourcePlatform: "third_party", url: "http://cdn.example/old.mp4", providerResourceId: "old-resource",
+        providerCacheKey: "old-cache", providerManifestToken: "old-manifest", downloadFilename: "old.mp4"};
+    const pickerRoot = existingPickerRoot || node("picker"), otherPicker = node("other-picker");
+    node("[data-legacy-download-status]").hidden = true;
+    let regionClick, ready;
+    const region = {
+        contains(value) { return [oldCard, pickerRoot, node("#download-btn"), node("#select-all-btn")].includes(value); },
+        querySelector(selector) { return ["#status", "#download-btn", "#select-all-btn", "[data-legacy-download-status]"].includes(selector) ? node(selector) : null; },
+        querySelectorAll(selector) { return selector === ".asset-card" ? [oldCard] : []; },
+        addEventListener(name, callback) { if (name === "click") regionClick = callback; },
+    };
+    const page = {dataset: {downloadUrl: "/download", downloadTaskUrl: "/tasks", downloadAsyncEnabled: "true",
+        baseFilename: "original-page-title"}, querySelector() { return null; }};
+    const saved = [];
+    class BrowserURL extends URL {
+        static createObjectURL() { return "blob:https://product.example/zip"; }
+        static revokeObjectURL() {}
+    }
+    const document = {
+        cookie: "csrftoken=fixture-csrf",
+        querySelector(selector) { return selector === ".xhs-download-page" ? page : null; },
+        getElementById(id) { return id === "parse-results-region" ? region : null; },
+        addEventListener(name, callback) { if (name === "DOMContentLoaded") ready = callback; },
+        createElement(tag) { return {tagName: tag, style: {}, setAttribute() {}, remove() {}, click() { saved.push(this.download); }}; },
+        body: {appendChild() {}, removeChild() {}},
+    };
+    const window = {location: {origin: "https://product.example"}, localStorage: {getItem() { return "{}"; }},
+        addEventListener() {}, setTimeout, clearTimeout, alert: message => assert.fail(message), URL: BrowserURL};
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../static/js/xhs_download.js"), "utf8"), {
+        window, document, URL: BrowserURL, AbortController, Blob, fetch: fetchImpl,
+        console: {warn() {}, error() {}},
+    });
+    ready();
+    function clickRegion(target, selector) {
+        regionClick({target: {closest(value) { return value === selector ? target : null; }}, preventDefault() {}});
+    }
+    clickRegion(oldCard, ".asset-card");
+    assert.match(node("#status").innerText, /已选择 1 个资源/);
+    return {bridge: window.AnimeImagesLegacySelectionDownload, pickerRoot, otherPicker, saved, node, page,
+        clickOldDownload: () => clickRegion(node("#download-btn"), "#download-btn")};
+}
+
+test("real home bridge snapshots the candidate, rejects concurrency and preserves the previous selection through the ZIP workflow", async () => {
+    const requests = [];
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const home = homeLegacyController(async (url, options) => {
+        const payload = options.body ? JSON.parse(options.body) : null;
+        requests.push({url, payload});
+        if (url === "/download") {
+            assert.equal(home.node("[data-legacy-download-status]").hidden, false, "status must be visible before the first route request");
+            if (payload.media_items[0].asset_id === "third_party:old:video:1") return new Response(JSON.stringify({message: "old selected item"}), {status: 403});
+            await gate;
+            return new Response(JSON.stringify({status: "routed", route_type: "zip", download_strategy: "server_zip"}));
+        }
+        if (url === "/tasks") return new Response(JSON.stringify({status_url: "/task-status", file_url: "/task-file"}));
+        if (url === "/task-status") return new Response(JSON.stringify({status: "completed", saved_count: 1}));
+        assert.equal(url, "/task-file");
+        return new Response(new Blob(["mock zip bytes"]), {headers: {"Content-Type": "application/zip",
+            "Content-Disposition": 'attachment; filename="high.zip"', "X-Saved-Count": "1"}});
+    });
+    const item = legacyGrant("kukutool_generic");
+    const expected = {...item};
+    assert.equal(home.node("[data-legacy-download-status]").hidden, true);
+    const first = home.bridge(item, home.pickerRoot);
+    assert.equal(home.node("[data-legacy-download-status]").hidden, false);
+    assert.equal(requests.length, 1);
+    await assert.rejects(home.bridge(legacyGrant("kukutool_generic", "other"), home.pickerRoot), /等待已有任务/);
+    assert.equal(requests.length, 1);
+    item.url = "https://cdn.example/substituted.mp4"; item.filename = "substituted.mp4";
+    release(); await first;
+    assert.deepEqual(requests.map(request => request.url), ["/download", "/tasks", "/task-status", "/task-file"]);
+    for (const request of requests.slice(0, 2)) {
+        assert.deepEqual(request.payload.media_items, [expected]);
+        assert.equal(request.payload.base_filename, "high");
+        assert.equal(request.payload.download_mode, "auto");
+    }
+    assert.equal(requests[0].payload.route_only, true);
+    assert.equal(requests[1].payload.route_only, undefined);
+    assert.deepEqual(home.saved, ["high.zip"]);
+    assert.equal(home.page.dataset.baseFilename, "original-page-title");
+    home.clickOldDownload(); await settle();
+    assert.equal(requests.length, 5);
+    assert.equal(requests[4].payload.media_items.length, 1);
+    assert.equal(requests[4].payload.media_items[0].asset_id, "third_party:old:video:1");
+});
+
+test("real home bridge refuses foreign roots and propagates route, task and network failures without retries", async () => {
+    for (const failure of ["route", "task", "network"]) {
+        const requests = [];
+        const home = homeLegacyController(async (url, options) => {
+            requests.push({url, payload: options.body && JSON.parse(options.body)});
+            if (failure === "network") throw new Error("network failed");
+            if (failure === "route") return new Response(JSON.stringify({message: "route denied"}), {status: 403});
+            if (url === "/download") return new Response(JSON.stringify({status: "routed", route_type: "zip", download_strategy: "server_zip"}));
+            assert.equal(url, "/tasks");
+            return new Response(JSON.stringify({message: "task denied"}), {status: 503});
+        });
+        await assert.rejects(home.bridge(legacyGrant("kukutool_generic"), home.otherPicker), /当前无法/);
+        assert.equal(requests.length, 0);
+        assert.equal(home.node("[data-legacy-download-status]").hidden, true, "a rejected foreign picker must not reveal status");
+        await assert.rejects(home.bridge(legacyGrant("kukutool_generic"), home.pickerRoot), new RegExp(failure === "network" ? "network failed" : `${failure} denied`));
+        assert.equal(requests.length, failure === "task" ? 2 : 1);
+        assert.equal(home.node("#download-btn").disabled, false);
+        assert.deepEqual(home.saved, []);
+    }
+});
+
+test("real home bridge propagates an HTTP 200 logical failure instead of reporting a successful handoff", async () => {
+    let calls = 0;
+    const home = homeLegacyController(async () => {
+        calls += 1;
+        return new Response(JSON.stringify(calls === 1
+            ? {status: "routed", route_type: "zip", download_strategy: "server_zip"}
+            : {status: "error", message: "legacy logical failure"}), {headers: {"Content-Type": "application/json"}});
+    });
+    await assert.rejects(home.bridge(legacyGrant("tiantianjiexi_generic"), home.pickerRoot), /legacy logical failure/);
+    assert.equal(calls, 2);
+    assert.deepEqual(home.saved, []);
+});
+
+test("real home bridge ZIP filename fallback uses the candidate rather than the original page title", async () => {
+    const home = homeLegacyController(async url => {
+        if (url === "/download") return new Response(JSON.stringify({status: "routed", route_type: "zip", download_strategy: "server_zip"}));
+        if (url === "/tasks") return new Response(JSON.stringify({status_url: "/task-status", file_url: "/task-file"}));
+        if (url === "/task-status") return new Response(JSON.stringify({status: "completed", saved_count: 1}));
+        assert.equal(url, "/task-file");
+        return new Response(new Blob(["mock zip bytes"]), {headers: {"Content-Type": "application/zip"}});
+    });
+    await home.bridge(legacyGrant("kukutool_generic"), home.pickerRoot);
+    assert.deepEqual(home.saved, ["high.zip"]);
+});
+
+test("empty native format ID reaches the real home ZIP bridge while keeping HTTP restriction and legacy action explicit", async () => {
+    const {doc, win} = fixture(); const root = legacyPicker("kukutool_generic"); doc.body.append(root);
+    radios(root)[0].setAttribute("data-format-id", "");
+    const grant = {...legacyGrant("kukutool_generic"), selected_format_id: ""};
+    const calls = [];
+    const home = homeLegacyController(async (url, options) => {
+        const payload = options.body && JSON.parse(options.body); calls.push({url, payload});
+        if (url === "/download") {
+            assert.deepEqual(payload.media_items, [grant]);
+            return new Response(JSON.stringify({status: "routed", route_type: "zip", download_strategy: "server_zip"}));
+        }
+        if (url === "/tasks") {
+            assert.deepEqual(payload.media_items, [grant]);
+            return new Response(JSON.stringify({status_url: "/task-status", file_url: "/task-file"}));
+        }
+        if (url === "/task-status") return new Response(JSON.stringify({status: "completed", saved_count: 1}));
+        assert.equal(url, "/task-file");
+        return new Response(new Blob(["mock zip bytes"]), {headers: {"Content-Type": "application/zip",
+            "Content-Disposition": 'attachment; filename="high.zip"'}});
+    }, root);
+    win.AnimeImagesLegacySelectionDownload = home.bridge;
+    picker.mount(root, doc, win, {fetchImpl: async (url, options) => {
+        const payload = JSON.parse(options.body); calls.push({url, payload});
+        assert.equal(payload.action, "legacy");
+        assert.equal(payload.candidate_id, "high");
+        return jsonResponse({status: "success", item: grant});
+    }});
+    assert.equal(picker.selected(root).formatId, "");
+    const restriction = radios(root)[0].dataset.limitation;
+    assert.equal(root.querySelector("[data-ytdlp-action='download']").textContent, "原有方式保存所选资源");
+    assert.equal(root.querySelector("[data-picker-limitation]").textContent,
+        `${restriction} 可用原有方式保存所选资源；传输方式由原下载流程决定。`);
+    click(root); await settle();
+    assert.deepEqual(calls.slice(1).map(call => call.url), ["/download", "/tasks", "/task-status", "/task-file"]);
+    assert.deepEqual(home.saved, ["high.zip"]);
+    choose(root, 1);
+    assert.equal(root.querySelector("[data-ytdlp-action='download']").textContent, "↓ 下载所选视频");
+    assert.doesNotMatch(root.querySelector("[data-picker-limitation]").textContent, /原有方式/);
+});
+for (const provider of SERVICE_PROVIDERS) {
+    test(`${provider} legacy bridge receives only the selected grant and originating picker once`, async () => {
+        const {doc, win} = fixture(); const first = legacyPicker(provider), second = legacyPicker(provider);
+        doc.body.append(card(first), card(second));
+        const calls = [], saves = [], handoffs = [];
+        win.AnimeImagesLegacySelectionDownload = async (item, root) => handoffs.push({item, root});
+        picker.attach(doc, win, {ordinary: {download: async item => saves.push(item)},
+            fetchImpl: async (url, options) => {
+                assert.match(url, /service-selected-format/);
+                const request = JSON.parse(options.body); calls.push(request);
+                return jsonResponse({status: "success", item: request.action === "legacy"
+                    ? legacyGrant(provider) : serviceGrant(provider, request.candidate_id)});
+            }});
+        choose(second, 1);
+        click(first); click(first); await settle();
+        assert.deepEqual(calls, [{candidate_id: "high", resource_token: "signed-high", action: "legacy"}]);
+        assert.equal(handoffs.length, 1);
+        assert.deepEqual(handoffs[0].item, legacyGrant(provider));
+        assert.equal(handoffs[0].root, first);
+        assert.equal(doc.body.querySelectorAll("iframe").length, 0);
+        assert.equal(saves.length, 0);
+        assert.match(first.querySelector("[data-picker-status]").textContent, /原有保存流程.*状态提示/);
+        assert.doesNotMatch(first.querySelector("[data-picker-status]").textContent, /开始接收|已保存|保存成功/);
+        assert.equal(first.querySelector("[data-ytdlp-action='download']").textContent, "原有方式保存所选资源");
+        assert.equal(first.querySelector("[data-picker-limitation]").textContent,
+            `${radios(first)[0].dataset.limitation} 可用原有方式保存所选资源；传输方式由原下载流程决定。`);
+        assert.equal(first.querySelector("[data-ytdlp-action='legacy']").hidden, true);
+        click(second); await settle();
+        assert.deepEqual(saves.map(item => item.candidate_id), ["low"]);
+        assert.equal(handoffs.length, 1);
+        assert.equal(picker.selected(first).id, "high");
+    });
+}
+
+test("direct capability stays primary and legacy is a separate explicit secondary action", async () => {
+    const {doc, win} = fixture(); const root = legacyPicker(SERVICE_PROVIDERS[0]); doc.body.append(root);
+    radios(root)[0].dataset.canDownload = "true";
+    const calls = [], saves = [], handoffs = [];
+    win.AnimeImagesLegacySelectionDownload = async item => handoffs.push(item);
+    picker.mount(root, doc, win, {ordinary: {download: async item => saves.push(item)},
+        fetchImpl: async (_url, options) => {
+            const request = JSON.parse(options.body); calls.push(request.action);
+            return jsonResponse({status: "success", item: request.action === "legacy"
+                ? legacyGrant(SERVICE_PROVIDERS[0]) : serviceGrant(SERVICE_PROVIDERS[0], "high")});
+        }});
+    const secondary = root.querySelector("[data-ytdlp-action='legacy']");
+    assert.equal(secondary.hidden, false);
+    assert.equal(secondary.textContent, "原有方式保存所选资源");
+    click(root); await settle();
+    assert.deepEqual(calls, ["download"]); assert.equal(saves.length, 1); assert.equal(handoffs.length, 0);
+    click(root, "legacy"); await settle();
+    assert.deepEqual(calls, ["download", "legacy"]); assert.equal(handoffs.length, 1);
+    choose(root, 1);
+    assert.equal(secondary.hidden, true); assert.equal(secondary.disabled, true);
+});
+
+test("Batch without a home bridge keeps HTTP legacy-only selection copy-only and direct downloads unchanged", async () => {
+    const {doc, win} = fixture(); const root = legacyPicker(SERVICE_PROVIDERS[0]); doc.body.append(card(root));
+    const calls = [], copied = [], saved = [];
+    win.navigator = {clipboard: {writeText: async value => copied.push(value)}};
+    picker.mount(root, doc, win, {ordinary: {download: async item => saved.push(item)}, fetchImpl: async (_url, options) => {
+        const request = JSON.parse(options.body); calls.push(request.action);
+        return jsonResponse({status: "success", item: request.action === "link"
+            ? legacyGrant(SERVICE_PROVIDERS[0]) : serviceGrant(SERVICE_PROVIDERS[0], "low")});
+    }});
+    assert.equal(root.querySelector("[data-ytdlp-action='download']").disabled, true);
+    assert.equal(root.querySelector("[data-picker-limitation]").textContent, radios(root)[0].dataset.limitation);
+    assert.equal(root.querySelector("[data-ytdlp-action='legacy']").hidden, true);
+    click(root); click(root, "legacy"); await settle(); assert.equal(calls.length, 0);
+    click(root, "copy"); await settle(); assert.deepEqual(copied, ["http://cdn.example/high.mp4"]);
+    choose(root, 1); click(root); await settle();
+    assert.deepEqual(calls, ["link", "download"]); assert.equal(saved.length, 1);
+});
+
+test("a failed direct download never invokes the available legacy bridge automatically", async () => {
+    const {doc, win} = fixture(); const root = legacyPicker(SERVICE_PROVIDERS[0]); doc.body.append(root);
+    radios(root)[0].dataset.canDownload = "true";
+    let calls = 0;
+    win.AnimeImagesLegacySelectionDownload = () => assert.fail("legacy must require its own explicit action");
+    picker.mount(root, doc, win, {ordinary: {download: async () => { throw new Error("direct failed"); }},
+        fetchImpl: async (_url, options) => {
+            calls += 1; assert.equal(JSON.parse(options.body).action, "download");
+            return jsonResponse({status: "success", item: serviceGrant(SERVICE_PROVIDERS[0], "high")});
+        }});
+    click(root); await settle();
+    assert.equal(calls, 1);
+    assert.equal(root.querySelector("[data-picker-status]").textContent, "direct failed");
+});
+
+test("legacy descriptor and controller failures propagate without retries or direct fallback", async () => {
+    for (const variant of ["denied", "malformed", "delivery-swap", "asset-swap", "controller-failure"]) {
+        const {doc, win} = fixture(); const root = legacyPicker(SERVICE_PROVIDERS[0]); doc.body.append(root);
+        let calls = 0, handoffs = 0;
+        win.AnimeImagesLegacySelectionDownload = async () => { handoffs += 1; throw new Error("old route failed"); };
+        picker.mount(root, doc, win, {ordinary: {download: () => assert.fail("no direct fallback")},
+            fetchImpl: async (_url, options) => {
+                calls += 1; assert.equal(JSON.parse(options.body).action, "legacy");
+                if (variant === "denied") return jsonResponse({message: "legacy denied"}, 403);
+                if (variant === "malformed") return {ok: true, json: async () => { throw new Error("invalid JSON"); }};
+                const item = variant === "delivery-swap" ? serviceGrant(SERVICE_PROVIDERS[0], "high") : legacyGrant(SERVICE_PROVIDERS[0]);
+                if (variant === "asset-swap") item.asset_id = "another-asset";
+                return jsonResponse({status: "success", item});
+            }});
+        click(root); await settle();
+        assert.equal(calls, 1); assert.equal(handoffs, variant === "controller-failure" ? 1 : 0);
+        if (variant === "controller-failure") assert.equal(root.querySelector("[data-picker-status]").textContent, "old route failed");
+        assert.equal(doc.body.querySelectorAll("iframe").length, 0);
+    }
+});
+
+for (const phase of ["descriptor", "controller"]) {
+    test(`legacy stop-waiting during ${phase} ignores late completion without cancelling the old workflow`, async () => {
+        const {doc, win} = fixture(); const root = legacyPicker(SERVICE_PROVIDERS[0]); doc.body.append(root);
+        let release, signal; let calls = 0, handoffs = 0;
+        win.AnimeImagesLegacySelectionDownload = async () => {
+            handoffs += 1;
+            if (phase === "controller") await new Promise(resolve => { release = resolve; });
+        };
+        picker.mount(root, doc, win, {fetchImpl: async (_url, options) => {
+            calls += 1; signal = options.signal;
+            if (phase === "descriptor") await new Promise(resolve => { release = resolve; });
+            return jsonResponse({status: "success", item: legacyGrant(SERVICE_PROVIDERS[0])});
+        }});
+        click(root); await settle();
+        assert.ok(release);
+        assert.equal(root.querySelector("[data-ytdlp-action='cancel']").textContent, "停止等待");
+        click(root, "cancel"); await settle();
+        assert.equal(signal.aborted, true);
+        assert.match(root.querySelector("[data-picker-status]").textContent, /已停止等待.*可能仍在进行/);
+        choose(root, 1); const changedMessage = root.querySelector("[data-picker-status]").textContent;
+        release(); await settle();
+        assert.equal(root.querySelector("[data-picker-status]").textContent, changedMessage);
+        assert.equal(picker.selected(root).id, "low"); assert.equal(calls, 1);
+        assert.equal(handoffs, phase === "controller" ? 1 : 0);
+    });
+}
+
+for (const mode of ["copy-links", "links", "aria2"]) {
+    test(`legacy-selected Batch ${mode} resolves links only and retains independent legacy resources on expiry`, async () => {
+        const {doc, win} = fixture(); const page = el("main"); doc.body.append(page);
+        const button = el("button", {"data-batch-export": mode}); page.append(button);
+        const first = legacyPicker(SERVICE_PROVIDERS[0]), second = legacyPicker(SERVICE_PROVIDERS[0]);
+        const expired = legacyPicker(SERVICE_PROVIDERS[1]);
+        const expiredCard = card(expired);
+        expiredCard.append(legacy("video", "http://cdn.example/unmatched.mp4", "unmatched.mp4"));
+        page.append(card(first), card(second), expiredCard);
+        picker.attach(doc, win); choose(second, 1);
+        const calls = [], outputs = [];
+        const result = await batch.exportBatchResourceLinks(page, button, {windowObject: win, documentObject: doc,
+            pickerApi: picker, fetchImpl: async (url, options) => {
+                assert.match(url, /service-selected-format/);
+                const request = JSON.parse(options.body); calls.push(request);
+                assert.equal(request.action, "link");
+                if (url.includes(SERVICE_PROVIDERS[1])) return jsonResponse({message: "legacy candidate expired"}, 403);
+                return jsonResponse({status: "success", item: request.candidate_id === "high"
+                    ? legacyGrant(SERVICE_PROVIDERS[0]) : serviceGrant(SERVICE_PROVIDERS[0], "low")});
+            }, copyText: async text => outputs.push(text), downloadTextFile: (_name, text) => outputs.push(text)});
+        assert.deepEqual(calls.map(request => request.candidate_id), ["high", "low", "high"]);
+        assert.deepEqual(result.resources.map(item => item.url),
+            ["http://cdn.example/high.mp4", "https://cdn.example/low.mp4", "http://cdn.example/unmatched.mp4"]);
+        assert.deepEqual(result.skipped, ["legacy candidate expired"]);
+        assert.equal(outputs.length, 1);
+        assert.equal(doc.body.querySelectorAll("iframe").length, 0);
+        if (mode === "aria2") assert.match(outputs[0], /out=high.mp4/);
+    });
+}
+
+test("legacy redraw or removal before descriptor returns cannot hand off a stale selection", async () => {
+    for (const change of ["redraw", "remove"]) {
+        const {doc, win} = fixture(); const root = legacyPicker(SERVICE_PROVIDERS[0]); doc.body.append(root);
+        let release; let requests = 0, handoffs = 0;
+        win.AnimeImagesLegacySelectionDownload = async () => { handoffs += 1; };
+        picker.mount(root, doc, win, {fetchImpl: async () => {
+            requests += 1;
+            return new Promise(resolve => { release = () => resolve(jsonResponse({status: "success", item: legacyGrant(SERVICE_PROVIDERS[0])})); });
+        }});
+        click(root); await settle();
+        if (change === "redraw") root.replaceChildren(...legacyPicker(SERVICE_PROVIDERS[0]).children.slice());
+        else root.remove();
+        release(); await settle();
+        assert.equal(requests, 1);
+        assert.equal(handoffs, 0);
+        assert.equal(doc.body.querySelectorAll("iframe").length, 0);
+    }
+});
 
 for (const provider of SERVICE_PROVIDERS) {
     test(`${provider} cached service cards keep actions isolated through insertion, sorting and redraw`, async () => {
@@ -210,7 +604,7 @@ for (const provider of SERVICE_PROVIDERS) {
 
 for (const mode of ["copy-links", "links", "aria2"]) {
     for (const provider of SERVICE_PROVIDERS) {
-        test(`${provider} one multi-video card ${mode} exports both selections and legacy images`, async () => {
+        test(`${provider} one multi-video card ${mode} exports selections and unrepresented legacy resources`, async () => {
             const {doc, win} = fixture(); const page = el("main"); doc.body.append(page);
             const button = el("button", {"data-batch-export": mode}); page.append(button);
             const first = servicePicker(provider, ["work-one-high", "work-one-low"]);
@@ -220,11 +614,12 @@ for (const mode of ["copy-links", "links", "aria2"]) {
             mixed.append(second, image,
                 legacy("image", "https://cdn.example/photo-two.png", "photo-two.png"),
                 legacy("image", "https://cdn.example/photo-one.jpg", "duplicate.jpg"),
-                legacy("video", "https://cdn.example/obsolete-main.mp4", "obsolete-main.mp4"));
+                technicalCandidate("https://cdn.example/obsolete-main.mp4"),
+                legacy("video", "https://cdn.example/unrepresented.mp4", "unrepresented.mp4"));
             page.append(mixed);
             picker.attach(doc, win); choose(first, 1);
             const snapshot = batch.collectBatchResourceLinks(page, picker);
-            assert.equal(snapshot.length, 4, "both selected videos and both unique images must survive collection");
+            assert.equal(snapshot.length, 5, "selected videos, unmatched legacy video and both unique images must survive collection");
             assert.deepEqual(snapshot.slice(0, 2).map(entry => entry.selection),
                 ["work-one-low", "work-two-high"].map(id => ({id, token: `signed-${id}`, kind: "video",
                     formatId: `format-${id}`, provider, schema: SERVICE_SCHEMA})));
@@ -246,6 +641,7 @@ for (const mode of ["copy-links", "links", "aria2"]) {
             const expected = [
                 {type: "video", url: "https://cdn.example/work-one-low.mp4", filename: "work-one-low.mp4"},
                 {type: "video", url: "https://cdn.example/work-two-high.mp4", filename: "work-two-high.mp4"},
+                {type: "video", url: "https://cdn.example/unrepresented.mp4", filename: "unrepresented.mp4"},
                 {type: "image", url: "https://cdn.example/photo-one.jpg", filename: "photo-one.jpg"},
                 {type: "image", url: "https://cdn.example/photo-two.png", filename: "photo-two.png"},
             ];
@@ -597,7 +993,7 @@ test("layered selections keep all three Batch export modes bound to each duplica
 test("Batch collects new selected video/audio without hidden raw URL fallback", async () => {
     const {doc, win} = fixture(); const current = newPicker(); doc.body.append(card(current));
     picker.mount(current, doc, win); choose(current, 1);
-    current.append(legacy("video", "https://cdn.example/wrong.mp4", "wrong.mp4"));
+    current.append(technicalCandidate("https://cdn.example/wrong.mp4"));
     const snapshot = batch.collectBatchResourceLinks(doc, picker);
     assert.equal(snapshot.length, 1);
     assert.equal(snapshot[0].selection.id, "audio");
@@ -635,7 +1031,7 @@ for (const mode of ["copy-links", "links", "aria2"]) {
         page.append(card(oldItems), card(video), card(audio), card(dash), card(duplicate), card(expired), card(denied),
             card(newPicker(["failed"]), "failed"));
         picker.attach(doc, win); choose(audio, 1);
-        expired.append(legacy("video", "https://cdn.example/raw-bypass.mp4", "raw-bypass.mp4"));
+        expired.append(technicalCandidate("https://cdn.example/raw-bypass.mp4"));
         const grants = {
             video: linkItem("video", "video", {url: "http://cdn.example/movie.m3u8?sig=exact%2Fvalue", filename: "movie.m3u8"}),
             audio: linkItem("audio", "audio", {url: "https://cdn.example/voice.webm", filename: "voice.webm"}),
@@ -712,7 +1108,7 @@ test("all expired or missing selections give persistent skipped counts and produ
 
 test("missing picker API never exports a new card's raw URL", async () => {
     const {doc} = fixture(); const current = newPicker(); doc.body.append(card(current));
-    current.append(legacy("video", "https://cdn.example/unsafe-fallback.mp4", "unsafe.mp4"));
+    current.append(technicalCandidate("https://cdn.example/unsafe-fallback.mp4"));
     const result = await batch.resolveBatchResourceLinks(batch.collectBatchResourceLinks(doc), null, {});
     assert.deepEqual(result.resources, []);
     assert.equal(result.skipped.length, 1);

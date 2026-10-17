@@ -1,5 +1,6 @@
 {% load static ytdlp_picker %}
 {% ytdlp_presentation upstream_candidates upstream_route video_items as ytdlp_picker %}
+{% remaining_picker_videos ytdlp_picker video_items as remaining_video_items %}
 {% if error_message or platform_notice or provider_notice or image_items or video_items or upstream_candidates %}
 <div class="results-scroll-anchor">
     {% if error_message %}
@@ -25,11 +26,15 @@
 
     {% if image_items or video_items or upstream_candidates %}
         <div class="card result-card {% if ytdlp_picker %}ytdlp-result-card{% endif %} result-theme-{{ result_theme|default:'home' }} border-0 shadow-sm mb-4">
-        {% if not ytdlp_picker %}
+        {% if not ytdlp_picker or remaining_video_items or image_items %}
         <div class="card-header bg-white result-card-header py-3">
             <div class="result-summary">
                 <div class="fw-bold result-title">
-                    {% if not image_items and not video_items %}
+                    {% if ytdlp_picker %}
+                        {% if image_items %}图片与其他资源（独立选择）{% else %}
+                        其他视频资源（未参与格式选择）
+                        {% endif %}
+                    {% elif not image_items and not video_items %}
                         媒体候选
                     {% elif post_type == "video" %}
                         <i class="bi bi-play-circle result-icon me-1"></i>
@@ -48,7 +53,9 @@
                     {% if display_author %}
                         <span>作者 {{ display_author }}</span>
                     {% endif %}
-                    {% if not image_items and not video_items %}
+                    {% if ytdlp_picker %}
+                        {{ image_items|length }} 张图片 · {{ remaining_video_items|length }} 个其他视频资源
+                    {% elif not image_items and not video_items %}
                         已解析到 {{ upstream_candidates|length }} 个候选
                     {% elif post_type == "video" %}
                         已解析到 {{ video_items|length }} 个视频资源
@@ -99,14 +106,14 @@
                 </div>
             {% endif %}
 
-            {% if video_items and not ytdlp_picker %}
+            {% if remaining_video_items %}
                 <h5 class="fw-bold mb-3">
                     <i class="bi bi-play-circle result-icon me-1"></i>
                     视频资源
                 </h5>
 
                 <div class="asset-grid">
-                    {% for item in video_items %}
+                    {% for item in remaining_video_items %}
                         <div class="asset-card"
                              data-type="video"
                              data-source-platform="{{ item.source_platform|default:'' }}"
@@ -323,7 +330,8 @@
             {% endif %}
         </div>
 
-        <div {% if ytdlp_picker %}hidden{% endif %} class="card-footer bg-white">
+        <div {% if ytdlp_picker and not remaining_video_items and not image_items %}hidden{% endif %}
+             class="card-footer bg-white" data-legacy-download-status>
             <div class="download-progress-wrap mb-2" id="download-progress-wrap" hidden>
                 <div class="download-progress-main">
                     <div class="download-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">

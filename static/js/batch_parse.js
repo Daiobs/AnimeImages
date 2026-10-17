@@ -368,7 +368,8 @@
             });
             nodes.forEach((node) => {
                 const type = normalizeBatchValue(node.dataset.type);
-                if (selectedPickers.length && type === "video") return;
+                // Templates omit only assets already represented by a picker.
+                // Unmatched legacy resources remain independently exportable.
                 const url = String(node.dataset.url || "").trim();
                 if (!url || seenUrls.has(url) || (type !== "video" && type !== "image")) {
                     return;

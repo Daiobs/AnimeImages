@@ -1,4 +1,4 @@
-"""Resolve a selected issued yt-dlp candidate for browser-only use.
+"""Resolve issued candidates for browser actions or their original delivery.
 
 Not a media proxy, extractor, format-selector interpreter or persistent grant.
 Every action rechecks current source/Provider admission and the private cache.
@@ -68,7 +68,7 @@ def _admitted(request, record, *, provider=PROVIDER, service=False):
 def ytdlp_selected_format_view(request, *, service=False):
     if service:
         from .services import service_format_selection as selection
-        allowed_actions = {'download', 'preview', 'cover', 'link'}
+        allowed_actions = {'download', 'preview', 'cover', 'link', 'legacy'}
     else:
         from .services import ytdlp_selection as selection
         allowed_actions = {'download', 'preview', 'cover', 'link', 'check'}
@@ -152,7 +152,8 @@ def ytdlp_selected_format_view(request, *, service=False):
             if not url:
                 return _response({'status': 'error', 'message': '暂无可用封面。'}, 409)
             return _response({'status': 'success', 'url': url})
-        item = selection.selected_descriptor(record)
+        item = (selection.selected_legacy_descriptor(record) if service and data['action'] == 'legacy'
+                else selection.selected_descriptor(record))
         guard = views.check_download_cost_preflight(request, [item], views.get_download_runtime_setting())
         if guard:
             code, message, status = guard
@@ -166,7 +167,8 @@ def ytdlp_selected_format_view(request, *, service=False):
                 return _response({'status': 'error', 'message': '此格式暂不支持内嵌预览。'}, 409)
         # Issuing information is not proof that a file was downloaded or saved.
         logger.info('ytdlp_selected_descriptor_issued action=%s candidate_id=%s', data['action'], record['candidate_id'])
-        return _response({'status': 'success', 'item': item, 'server_media_relay': False})
+        return _response({'status': 'success', 'item': item,
+                          'server_media_relay': None if item.get('selection_delivery') == 'legacy_manifest' else False})
     except (ValueError, KeyError, TypeError, XhsParseError):
         return _response({'status': 'error', 'message': '此格式暂不能直接保存；请查看格式限制或选择其他格式。'}, 409)
     except Exception as error:

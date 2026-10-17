@@ -264,7 +264,8 @@ test("Single pure-image routing has no silent server fallback when Browser Photo
         path.join(__dirname, "../static/js/xhs_download.js"),
         "utf8",
     );
-    assert.match(source, /selectedSupportsBrowserPhoto\(selected, payload\.save_format\)/);
+    assert.match(source, /handleDownloadClick\(downloadBtn, forceAutoMode, options, chosenItems = selected\)/);
+    assert.match(source, /selectedSupportsBrowserPhoto\(chosenItems, payload\.save_format\)/);
     assert.match(source, /if \(!browserPhotoApi\)/);
     assert.match(source, /浏览器图片下载组件不可用，可明确选择/);
     assert.match(source, /forceServerPhotoArchive/);

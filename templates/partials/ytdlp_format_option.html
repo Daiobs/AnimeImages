@@ -3,6 +3,8 @@
            data-picker-radio data-token="{{ format.resource_token }}"
            data-format-id="{{ format.format_id }}"
            data-kind="{{ format.media_type }}" data-can-download="{{ format.can_download|yesno:'true,false' }}"
+           data-can-legacy="{{ format.can_legacy_download|yesno:'true,false' }}"
+           data-legacy-asset-id="{{ format.legacy_asset_id|default:'' }}"
            data-can-preview="{{ format.can_preview|yesno:'true,false' }}"
            data-can-check="{{ format.can_check|yesno:'true,false' }}"
            data-size-label="{{ format.size_label }}" data-label="{{ format.label }}"

@@ -1917,7 +1917,7 @@
                 throw new Error(await parseErrorResponse(fileResponse));
             }
 
-            const filename = getDownloadFilename(fileResponse, getBaseFilename());
+            const filename = getDownloadFilename(fileResponse, payload.base_filename || getBaseFilename());
             const blob = await readResponseBlobWithProgress(fileResponse, 95, 100);
             const savedMessage = await saveZipBlob(blob, filename, useFilePicker);
             const savedCount = fileResponse.headers.get("X-Saved-Count") || completed.saved_count || "?";
@@ -1928,8 +1928,8 @@
             setStatus(getStatusElement(), `${savedMessage}：${filename}，成功 ${savedCount} 个，失败 ${failedCount} 个`, variant);
         }
 
-        async function handleDownloadClick(downloadBtn, forceAutoMode, options) {
-            if (selected.length === 0) {
+        async function handleDownloadClick(downloadBtn, forceAutoMode, options, chosenItems = selected) {
+            if (chosenItems.length === 0) {
                 window.alert("请先选择需要保存的资源");
                 return;
             }
@@ -1943,14 +1943,15 @@
             const busyLabel = forceAutoMode ? "智能处理中" : "保存中";
             setDownloadButtonsBusy(true, downloadBtn, busyLabel);
             setStatus(getStatusElement(), "正在准备下载...");
+            const filenameBase = options && options.baseFilename || getBaseFilename();
 
             try {
                 const forceServerPhotoArchive = Boolean(
                     options && options.forceServerPhotoArchive
                 );
                 const payload = {
-                    media_items: selected,
-                    base_filename: getBaseFilename(),
+                    media_items: chosenItems,
+                    base_filename: filenameBase,
                     download_mode: forceAutoMode ? "auto" : "browser",
                     save_dir: String(savedSettings.save_dir || "xhs").trim(),
                     save_format: savedSettings.save_format || "original",
@@ -1967,7 +1968,7 @@
                     );
                 }
 
-                if (selected.some((item) => String(item.asset_id || "").startsWith("upstream:"))) {
+                if (chosenItems.some((item) => String(item.asset_id || "").startsWith("upstream:"))) {
                     const route = await fetchRouteOnly(payload);
                     if (!route || route.route_type !== "direct"
                         || !route.items || !route.items.every((item) => item.browser_upstream_bound === true)) {
@@ -1986,11 +1987,11 @@
 
                 if (
                     !forceServerPhotoArchive
-                    && selectedSupportsBrowserPhoto(selected, payload.save_format)
+                    && selectedSupportsBrowserPhoto(chosenItems, payload.save_format)
                 ) {
                     if (!browserPhotoApi) {
-                        const zeroRelay = selectionRequiresZeroRelay(selected);
-                        pendingPhotoServerFallback = !zeroRelay && selected.length > 1;
+                        const zeroRelay = selectionRequiresZeroRelay(chosenItems);
+                        pendingPhotoServerFallback = !zeroRelay && chosenItems.length > 1;
                         setPhotoActionVisibility({serverFallback: pendingPhotoServerFallback});
                         setStatus(
                             getStatusElement(),
@@ -2010,7 +2011,7 @@
                     return;
                 }
 
-                if (selectedSingleItem(selected)) {
+                if (selectedSingleItem(chosenItems)) {
                     const routePreview = await fetchRouteOnly(payload);
                     if (
                         routePreview
@@ -2037,19 +2038,19 @@
                 if (
                     downloadAsyncEnabled
                     && downloadTaskUrl
-                    && selectedNeedsZipTask(selected)
+                    && selectedNeedsZipTask(chosenItems)
                 ) {
                     await downloadWithTask(payload);
                     return;
                 }
 
-                const requiresProviderProcessing = selectedRequiresProviderProcessing(selected);
+                const requiresProviderProcessing = selectedRequiresProviderProcessing(chosenItems);
                 const pendingLabel = requiresProviderProcessing
                     ? presentationText("准备文件", "服务端处理")
                     : (
                         payload.download_mode === "auto"
                             ? "判断中"
-                            : (selectedSingleItem(selected) ? "准备下载" : "打包中")
+                            : (selectedSingleItem(chosenItems) ? "准备下载" : "打包中")
                     );
                 setProgressPending(pendingLabel);
                 if (requiresProviderProcessing) {
@@ -2059,7 +2060,7 @@
                             ? "Provider 资源正在服务端校验、恢复或合并，完成后会开始传输..."
                             : "正在准备所需文件，完成后会开始下载...",
                     );
-                } else if (!selectedSingleItem(selected)) {
+                } else if (!selectedSingleItem(chosenItems)) {
                     setStatus(
                         getStatusElement(),
                         forceServerPhotoArchive
@@ -2101,17 +2102,15 @@
                         setStatus(getStatusElement(), data.message, "text-success");
                         return;
                     }
-                    setStatus(
-                        getStatusElement(),
-                        data.message
+                    const failureMessage = data.message
                         || (
                             showInternalDiagnostics
                                 ? data.route_reason
                                 : "下载请求未返回可保存的文件，请刷新页面后重试。"
                         )
-                        || "下载请求未返回可保存的文件，请刷新页面后重试。",
-                        "text-danger",
-                    );
+                        || "下载请求未返回可保存的文件，请刷新页面后重试。";
+                    setStatus(getStatusElement(), failureMessage, "text-danger");
+                    if (options && options.propagateError) throw new Error(failureMessage);
                     return;
                 }
 
@@ -2124,7 +2123,7 @@
                     getStatusElement(),
                     presentationText("文件准备完成，正在下载...", "服务器处理完成，正在下载文件..."),
                 );
-                const result = await saveDownloadResponse(response, getBaseFilename(), 0, 100);
+                const result = await saveDownloadResponse(response, filenameBase, 0, 100);
                 setStatus(getStatusElement(), serverDownloadStatusMessage(result), result.variant);
             } catch (error) {
                 if (error && error.name === "AbortError") {
@@ -2153,12 +2152,31 @@
                         "text-danger",
                     );
                 }
+                if (options && options.propagateError) throw error;
             } finally {
                 downloadInProgress = false;
                 setDownloadButtonsBusy(false);
                 applyPendingProjectSettings();
             }
         }
+
+        window.AnimeImagesLegacySelectionDownload = async function (item, pickerRoot) {
+            if (!resultsRegion || !pickerRoot || !resultsRegion.contains(pickerRoot)
+                || downloadInProgress || !item || item.selection_schema !== "service_selected_format_v1"
+                || item.selection_delivery !== "legacy_manifest" || item.type !== "video"
+                || !["tiantianjiexi_generic", "kukutool_generic"].includes(item.provider)
+                || !item.provider_manifest_token || !item.asset_id) {
+                throw new Error("当前无法使用原有资源操作，请等待已有任务结束或重新解析。");
+            }
+            // A private candidate descriptor supplies the original manifest.
+            // Snapshot it without changing the user's other selected assets.
+            const legacyStatus = resultsRegion.querySelector("[data-legacy-download-status]");
+            if (legacyStatus) legacyStatus.hidden = false;
+            return handleDownloadClick(null, true, {
+                propagateError: true,
+                baseFilename: String(item.filename || "video").replace(/\.[^.]+$/, ""),
+            }, [Object.freeze({...item})]);
+        };
 
         function toggleAssetCard(card) {
             clearPhotoServerFallback();

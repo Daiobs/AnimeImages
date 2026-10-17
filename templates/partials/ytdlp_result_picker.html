@@ -51,6 +51,7 @@
     <p class="ytdlp-selection-note" data-picker-limitation>{{ ytdlp_picker.selected.limitation|default:'保留源文件，不转码。实际保存取决于来源的浏览器访问条件。' }}</p>
     <button type="button" class="ytdlp-download-button" data-ytdlp-action="download" disabled>↓ 下载所选{% if ytdlp_picker.is_audio %}音频{% else %}视频{% endif %}</button>
     <div class="ytdlp-secondary-actions">
+        {% if ytdlp_picker.service_picker %}<button type="button" class="ytdlp-text-button" data-ytdlp-action="legacy" hidden>原有方式保存所选资源</button>{% endif %}
         <button type="button" class="ytdlp-text-button" data-ytdlp-action="copy" disabled>复制所选链接</button>
         <button type="button" class="ytdlp-text-button" data-ytdlp-action="cancel" hidden>取消当前下载</button>
         <span class="ytdlp-secondary-text">不需要选择解析通道</span>

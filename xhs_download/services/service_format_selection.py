@@ -19,6 +19,7 @@ def public_service_work(work):
 
 
 def candidate_facts(metadata, url, kind):
+    legacy = metadata.get('_service_legacy_item') or {}
     return {
         'service_file_eligible': metadata.get('_service_picker_issued') is True,
         'download_context_required': metadata.get('requires_context') is True or picker.context_required(
@@ -27,6 +28,8 @@ def candidate_facts(metadata, url, kind):
             requires_cookie=metadata.get('requires_cookie') is True),
         'has_drm': metadata.get('has_drm') is True,
         'same_resource_labels': metadata.get('_same_resource_labels') is True,
+        'legacy_asset_id': legacy.get('asset_id', ''),
+        'legacy_delivery': 'existing_manifest' if legacy else '',
     }
 
 
@@ -53,8 +56,25 @@ def capability(candidate):
     return result
 
 
+def legacy_item_for_asset(asset, result, provider, source_url):
+    from .provider_strategy import build_download_strategy
+    from .downloads import provider_manifest_allows_public_download
+    from .platforms.kukutool_generic import source_key_for_url
+    if (asset.provider != provider or asset.media_type != 'video'
+            or asset.provider_resource_id != source_key_for_url(source_url)):
+        return None
+    item = {**asset.to_download_item(), 'source_platform': result.platform}
+    strategy = build_download_strategy(asset, result_platform=result.platform, result_metadata=result.metadata)
+    if (strategy['download_strategy'] != 'server_attachment'
+            or not provider_manifest_allows_public_download(item)):
+        return None
+    return {**item, 'size_bytes': asset.size_bytes, 'size_is_estimate': asset.size_is_estimate}
+
+
 def choice(candidate):
     result = {**picker.choice(candidate), **capability(candidate)}
+    result['can_legacy_download'] = bool(candidate.get('legacy_asset_id')
+                                       and candidate.get('legacy_delivery') == 'existing_manifest')
     if candidate.get('format_label'):
         result['label'] = candidate['format_label']
         result['detail_label'] += ' · 上游标注'
@@ -115,6 +135,17 @@ def attach_service_picker(result, *, payload, provider, source_url, match=None):
     for row in rows:
         if isinstance(row, dict) and row.get('url'):
             counts[row['url']] = counts.get(row['url'], 0) + 1
+    legacy_by_url = {}
+    for asset in result.video_assets:
+        item = legacy_item_for_asset(asset, result, provider, source_url)
+        if item:
+            legacy_by_url.setdefault(asset.url, []).append(item)
+    # Repeated labels of one file may share its authority. Ambiguous work groups
+    # or multiple old identities must retain their independent legacy controls.
+    work_ids_by_url = {}
+    for row in rows:
+        if isinstance(row, dict) and row.get('url'):
+            work_ids_by_url.setdefault(row['url'], set()).add(row.get('work_id'))
     groups = {}
     for row in rows[:MAX_CANDIDATES]:
         if not isinstance(row, dict):
@@ -123,7 +154,18 @@ def attach_service_picker(result, *, payload, provider, source_url, match=None):
         if not url:
             continue
         metadata = {**row, '_service_picker_issued': True,
-                    '_same_resource_labels': counts.get(row['url'], 0) > 1}
+                    '_same_resource_labels': counts.get(row['url'], 0) > 1,
+                    '_service_legacy_item': None}
+        old_items = legacy_by_url.get(url, [])
+        facts = candidate_facts(metadata, url, row.get('media_type'))
+        protocol = str(row.get('protocol') or urlsplit(url).scheme)
+        if (len(old_items) == 1 and len(work_ids_by_url.get(url, ())) == 1
+                and row.get('work_id') and row.get('media_type') == 'video'
+                and protocol in {'http', 'https'}
+                and not urlsplit(url).path.lower().endswith(('.m3u8', '.mpd'))
+                and not facts['download_context_required'] and not facts['has_drm']
+                and not row.get('requires_merge')):
+            metadata['_service_legacy_item'] = old_items[0]
         metadata['extension'] = row.get('extension') or row.get('ext') or extension_from_url(url)
         metadata.setdefault('work_label', payload.get('title') or result.base_filename)
         groups.setdefault(row.get('work_id') or '', []).append((url, metadata))
@@ -154,6 +196,24 @@ def selected_link_descriptor(record):
     if provider not in PROVIDERS or record.get('public', {}).get('work', {}).get('schema') != SCHEMA:
         raise ValueError('service_selection_invalid')
     return picker.selected_link_descriptor(record, provider=provider, schema=SCHEMA)
+
+
+def selected_legacy_descriptor(record):
+    public = record.get('public', {})
+    if public.get('legacy_delivery') == 'existing_manifest':
+        from .downloads import provider_manifest_allows_public_download
+        from .platforms.kukutool_generic import source_key_for_url
+        item = record.get('service_legacy_item') or {}
+        if (not item or item.get('url') != record.get('url')
+                or item.get('provider') != record.get('provider_id')
+                or item.get('type') != public.get('media_type')
+                or item.get('asset_id') != public.get('legacy_asset_id')
+                or item.get('provider_resource_id') != source_key_for_url(record['source_url'])
+                or not provider_manifest_allows_public_download(item)):
+            raise ValueError('service_legacy_binding_invalid')
+        link = selected_link_descriptor(record)
+        return {**item, **link, 'selection_delivery': 'legacy_manifest'}
+    raise ValueError('service_legacy_binding_missing')
 
 
 def selected_descriptor(record):

@@ -1,18 +1,21 @@
 """Service-native results through normalizers, issuance, HTML and action checks."""
 import json
 from pathlib import Path
+import shutil
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from bs4 import BeautifulSoup
+from django.core import signing
 from django.core.cache import cache
 from django.template.loader import render_to_string
-from django.test import SimpleTestCase, Client, override_settings
+from django.test import SimpleTestCase, Client, RequestFactory, override_settings
 from django.urls import reverse
 
 from .services.platforms.kukutool_generic import KukutoolResultNormalizer
 from .services.platforms.tiantianjiexi_generic import TianTianJieXiResultNormalizer
-from .services.service_format_selection import build_service_picker, capability, selected_descriptor
+from .services.service_format_selection import build_service_picker, capability, selected_descriptor, selected_legacy_descriptor
 from .services.upstream_candidates import resolve_candidate_record
 
 
@@ -173,9 +176,211 @@ class ServiceFormatSelectionTests(SimpleTestCase):
         context = {**build_result_display_context(result, probe_missing_video_sizes=False),
                    'status': 'success', 'index': 0}
         home = BeautifulSoup(render_to_string('partials/xhs_results_region.html', context), 'html.parser')
-        self.assertFalse(home.select('[data-ytdlp-picker]'))
+        self.assertTrue(home.select('[data-ytdlp-picker]'))
         self.assertEqual(len(home.select('.asset-card[data-type="video"]')), 1)
         self.assertEqual(home.select_one('.asset-card')['data-provider-manifest-token'], asset.provider_manifest_token)
         batch = BeautifulSoup(render_to_string('partials/batch_result_card.html', {'row': context}), 'html.parser')
-        self.assertFalse(batch.select('[data-ytdlp-picker]'))
+        self.assertTrue(batch.select('[data-ytdlp-picker]'))
         self.assertTrue(batch.select('[data-batch-download-item][data-type="video"]'))
+
+    def test_ordinary_normalizer_assets_do_not_hide_usable_format_choices(self):
+        from .views import build_result_display_context
+        from .services.batch_parse.results import enrich_batch_media_items
+        result = self.result(payload={'videos': [{'video_fullinfo': [
+            {'url': 'https://media.example/high.mp4', 'type': '720P'},
+            {'url': 'https://media.example/low.mp4', 'type': '540P'},
+        ]}]})
+        self.assertTrue(result.video_assets)
+        context = {**build_result_display_context(result, probe_missing_video_sizes=False),
+                   'status': 'success', 'index': 0}
+        enrich_batch_media_items(context)
+        for template, values in (
+            ('partials/xhs_results_region.html', context),
+            ('partials/batch_result_card.html', {'row': context}),
+        ):
+            with self.subTest(template=template):
+                soup = BeautifulSoup(render_to_string(template, values), 'html.parser')
+                self.assertEqual(len(soup.select('[data-picker-radio]')), 2)
+
+    def allow_fixture_manifest(self):
+        self.rule.provider_ids = ('tiantianjiexi_generic', 'kukutool_generic')
+        self.rule.media_types = ('video', 'image')
+        active = patch('xhs_download.services.platforms.third_party.get_third_party_rule',
+                       return_value=self.rule)
+        active.start(); self.addCleanup(active.stop)
+
+    def test_manifest_is_bound_only_to_its_exact_candidate_in_both_ordinary_templates(self):
+        from .views import build_result_display_context
+        from .services.batch_parse.results import enrich_batch_media_items
+        from .services.provider_manifest import provider_manifest_is_valid
+        self.allow_fixture_manifest(); self.gates()
+        for provider, key in (('tiantianjiexi_generic', 'streams'), ('kukutool_generic', 'video_fullinfo')):
+            result = self.result(provider, {'videos': [{key: [
+                {'url': 'http://media.example/original.mp4', 'type': '720P', 'qualityLabel': '720P'},
+                {'url': 'https://media.example/other.mp4', 'type': '540P', 'qualityLabel': '540P'},
+            ]}]})
+            rows = result.metadata['upstream_candidates']
+            old = next(c for c in rows if c.get('legacy_asset_id'))
+            other = next(c for c in rows if c['candidate_id'] != old['candidate_id'])
+            legacy_response = self.post(old, 'legacy').json()
+            self.assertIsNone(legacy_response['server_media_relay'], 'The original route has not run yet')
+            descriptor = legacy_response['item']
+            self.assertEqual(descriptor['selection_delivery'], 'legacy_manifest')
+            self.assertTrue(provider_manifest_is_valid(descriptor))
+            self.assertEqual(descriptor['asset_id'], result.video_assets[0].asset_id)
+            direct = self.post(other).json()['item']
+            self.assertTrue(direct['browser_upstream_bound'])
+            self.assertNotIn('provider_manifest_token', direct)
+            self.assertFalse(provider_manifest_is_valid({**descriptor, 'url': direct['url']}))
+            self.assertEqual(self.post(other, 'link').json()['item']['url'], direct['url'])
+            context = {**build_result_display_context(result, probe_missing_video_sizes=False), 'status': 'success'}
+            enrich_batch_media_items(context)
+            self.assertEqual(len(context['video_items']), 1, 'Do not remove the original asset')
+            for template, values in (('partials/xhs_results_region.html', context),
+                                     ('partials/batch_result_card.html', {'row': context})):
+                soup = BeautifulSoup(render_to_string(template, values), 'html.parser')
+                self.assertEqual(len(soup.select('[data-picker-radio]')), 2)
+                self.assertEqual(len(soup.select('[data-can-legacy="true"]')), 1)
+                self.assertEqual(soup.select_one('[data-can-legacy="true"]')['data-legacy-asset-id'],
+                                 result.video_assets[0].asset_id)
+                self.assertFalse(soup.select('.asset-card[data-type="video"], [data-batch-download-item][data-type="video"]'))
+                self.assertNotIn(result.video_assets[0].provider_manifest_token, str(soup))
+
+    def test_existing_download_route_rechecks_manifest_without_fetching_media(self):
+        from download_console.models import DownloadRuntimeSetting
+        from django.contrib.auth.models import AnonymousUser
+        from .services.download_routing import decide_download_route
+        self.allow_fixture_manifest(); self.gates()
+        result = self.result(payload={'videos': [{'url': 'http://media.example/file.mp4'}]})
+        c = result.metadata['upstream_candidates'][0]
+        item = self.post(c, 'legacy').json()['item']
+        runtime = DownloadRuntimeSetting(visitor_video_download_enabled=True)
+        request = RequestFactory().post('/download/')
+        request.user = AnonymousUser()
+        with patch.object(DownloadRuntimeSetting, 'load', return_value=runtime):
+            original = decide_download_route(request, [result.video_assets[0].to_download_item()], requested_mode='auto')
+            selected = decide_download_route(request, [item], requested_mode='auto')
+            self.assertEqual(selected['route_type'], original['route_type'])
+            self.assertEqual(selected['download_strategy'], original['download_strategy'])
+            self.assertEqual(selected['route_type'], 'zip', 'Keep the real old route, not the strategy hint')
+            tampered = {**item, 'url': 'https://media.example/another.mp4'}
+            rejected = self.client.post(reverse('media_download_prepare'),
+                {'media_items': [tampered]}, content_type='application/json')
+            self.assertEqual(rejected.status_code, 400)
+            self.assertEqual(rejected.json()['error_code'], 'PROVIDER_MANIFEST_REJECTED')
+
+    def test_manifest_expiry_and_private_binding_mismatch_do_not_fall_back_to_another_file(self):
+        self.allow_fixture_manifest(); self.gates()
+        c = self.result(payload={'videos': [{'url': 'http://media.example/v.mp4'}]}).metadata['upstream_candidates'][0]
+        record = resolve_candidate_record(c['resource_token'], c['candidate_id'])
+        wrong = {**record, 'service_legacy_item': {**record['service_legacy_item'], 'url': 'https://media.example/wrong.mp4'}}
+        with self.assertRaises(ValueError):
+            selected_legacy_descriptor(wrong)
+        with patch('xhs_download.services.provider_manifest.signing.loads', side_effect=signing.BadSignature('expired')):
+            with self.assertRaises(ValueError):
+                selected_legacy_descriptor(record)
+
+    def test_unmatched_and_ambiguous_assets_keep_old_controls_beside_independent_pickers(self):
+        from .views import build_result_display_context
+        self.allow_fixture_manifest()
+        payload = {'videos': [
+            {'video_fullinfo': [{'url': 'https://media.example/same.mp4', 'type': '720P'}]},
+            {'video_fullinfo': [{'url': 'https://media.example/same.mp4', 'type': '720P'}]},
+        ], 'images': ['https://media.example/image.jpg']}
+        result = self.result(payload=payload)
+        self.assertFalse(any(c.get('legacy_asset_id') for c in result.metadata['upstream_candidates']))
+        context = build_result_display_context(result, probe_missing_video_sizes=False)
+        soup = BeautifulSoup(render_to_string('partials/xhs_results_region.html', context), 'html.parser')
+        self.assertEqual(len(soup.select('[data-ytdlp-picker]')), 2)
+        self.assertEqual(len(soup.select('.asset-card[data-type="video"]')), 1)
+        self.assertEqual(len(soup.select('.asset-card[data-type="image"]')), 1)
+        self.assertTrue(soup.select_one('#download-btn'))
+        self.assertIn('其他视频资源', soup.get_text())
+
+    def test_mixed_images_keep_their_selection_actions_when_video_is_represented(self):
+        from .views import build_result_display_context
+        self.allow_fixture_manifest()
+        result = self.result(payload={'videos': [{'url': 'https://media.example/video.mp4'}],
+                                    'images': ['https://media.example/body.jpg']})
+        context = build_result_display_context(result, probe_missing_video_sizes=False)
+        self.assertEqual(len(context['image_items']), 1)
+        soup = BeautifulSoup(render_to_string('partials/xhs_results_region.html', context), 'html.parser')
+        self.assertEqual(len(soup.select('[data-ytdlp-picker]')), 1)
+        self.assertFalse(soup.select('.asset-card[data-type="video"]'))
+        self.assertEqual(len(soup.select('.asset-card[data-type="image"]')), 1)
+        self.assertTrue(soup.select_one('#download-btn'))
+        self.assertTrue(soup.select_one('#select-all-btn'))
+        self.assertNotIn('hidden', soup.select_one('[data-legacy-download-status]').attrs)
+        self.assertIn('图片与其他资源（独立选择）', soup.get_text())
+
+    def test_single_lab_or_unbound_candidate_does_not_get_legacy_authority(self):
+        from .services.upstream_candidates import issue_candidate
+        c = issue_candidate('http://media.example/unbound.mp4', {'work_id': 'one'}, ordinal=1,
+            provider='kukutool_generic', source_url='https://source.example/work/one',
+            media_type='video', state='candidate_only')
+        self.assertFalse(c.get('legacy_asset_id'))
+        self.assertFalse(capability(c)['can_download'])
+
+    def test_legacy_action_keeps_anonymous_admission_and_token_checks(self):
+        self.allow_fixture_manifest(); self.gates(False)
+        rows = self.result(payload={'videos': [{'video_fullinfo': [
+            {'url': 'http://media.example/a.mp4', 'type': '720P'},
+            {'url': 'https://media.example/b.mp4', 'type': '540P'},
+        ]}]}).metadata['upstream_candidates']
+        self.assertTrue(rows[0]['legacy_asset_id'])
+        self.assertEqual(self.post(rows[0], 'legacy').status_code, 403)
+        self.assertEqual(self.post(rows[0], 'legacy', resource_token=rows[1]['resource_token']).status_code, 403)
+        cache.clear()
+        self.assertEqual(self.post(rows[0], 'legacy').status_code, 403)
+
+    def test_same_resource_labels_share_only_their_exact_old_asset(self):
+        self.allow_fixture_manifest(); self.gates()
+        rows = self.result(payload={'videos': [{'video_fullinfo': [
+            {'url': 'http://media.example/a.mp4', 'type': '720P'},
+            {'url': 'http://media.example/a.mp4', 'type': 'Original'},
+        ]}]}).metadata['upstream_candidates']
+        self.assertEqual(len(rows), 2)
+        self.assertNotEqual(rows[0]['candidate_id'], rows[1]['candidate_id'])
+        self.assertEqual(rows[0]['legacy_asset_id'], rows[1]['legacy_asset_id'])
+        for row in rows:
+            self.assertTrue(row['same_resource_labels'])
+            self.assertEqual(self.post(row, 'legacy').json()['item']['url'], 'http://media.example/a.mp4')
+
+    def test_restricted_candidates_do_not_inherit_an_old_manifest_operation(self):
+        self.allow_fixture_manifest()
+        for extra in ({'http_headers': {'Cookie': 'synthetic-only'}},
+                      {'requires_merge': True}, {'has_drm': True}, {'protocol': 'm3u8_native'}):
+            with self.subTest(extra=extra):
+                result = self.result(payload={'videos': [{'video_fullinfo': [
+                    {'url': 'https://media.example/a.mp4', 'type': '720P', **extra},
+                ]}]})
+                row = result.metadata['upstream_candidates'][0]
+                self.assertFalse(row.get('legacy_asset_id'))
+                self.assertFalse(capability(row)['can_download'])
+
+    def test_real_template_and_descriptor_pass_the_existing_js_identity_validator(self):
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('Node is required for the cross-language action contract; installed in CI')
+        self.allow_fixture_manifest(); self.gates()
+        for provider in ('tiantianjiexi_generic', 'kukutool_generic'):
+            result = self.result(provider, {'videos': [{'url': 'http://media.example/main.mp4'}]})
+            rows = result.metadata['upstream_candidates']
+            html = render_to_string('partials/ytdlp_result_picker.html', {'ytdlp_picker': build_service_picker(rows)})
+            radio = BeautifulSoup(html, 'html.parser').select_one('[data-can-legacy="true"]')
+            selection = {'id': radio['value'], 'provider': provider, 'schema': 'service_selected_format_v1',
+                         'kind': radio['data-kind'], 'canLegacy': radio['data-can-legacy'] == 'true',
+                         'legacyAssetId': radio['data-legacy-asset-id'], 'formatId': radio['data-format-id']}
+            self.assertEqual(selection['formatId'], '', 'Do not invent a native service format ID')
+            response = self.post(rows[0], 'legacy')
+            self.assertEqual(response.status_code, 200)
+            script = """const fs = require('node:fs');
+const picker = require('./static/js/ytdlp_result_picker.js');
+const data = JSON.parse(fs.readFileSync(0, 'utf8'));
+const item = picker.validateItem(data.item, data.selection, 'legacy_manifest');
+if (item.asset_id !== data.selection.legacyAssetId) process.exit(2);
+"""
+            checked = subprocess.run([node, '-e', script], input=json.dumps({
+                'item': response.json()['item'], 'selection': selection}), text=True,
+                capture_output=True, timeout=10, cwd=Path(__file__).resolve().parent.parent)
+            self.assertEqual(checked.returncode, 0, checked.stderr)
