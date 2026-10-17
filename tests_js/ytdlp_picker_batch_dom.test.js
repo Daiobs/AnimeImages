@@ -99,6 +99,213 @@ function linkItem(id, type = "video", extra = {}) {
         provider: "yt_dlp_generic", ...extra};
 }
 
+const SERVICE_SCHEMA = "service_selected_format_v1";
+const SERVICE_PROVIDERS = ["tiantianjiexi_generic", "kukutool_generic"];
+function servicePicker(provider, ids = ["high", "low"]) {
+    const root = newPicker(ids);
+    root.dataset.provider = provider;
+    root.dataset.selectionSchema = SERVICE_SCHEMA;
+    root.dataset.selectionUrl = `/media/service-selected-format/?fixture=${provider}`;
+    radios(root).forEach((radio, index) => {
+        radio.dataset.canDownload = "true";
+        radio.dataset.sizeLabel = `${index + 1} MB`;
+    });
+    root.append(el("button", {"data-ytdlp-action": "download"}), el("button", {"data-ytdlp-action": "cancel"}),
+        el("span", {"data-picker-size": ""}));
+    return root;
+}
+function serviceGrant(provider, id, type = "video", extra = {}) {
+    return linkItem(id, type, {provider, selection_schema: SERVICE_SCHEMA,
+        browser_upstream_bound: true, browser_direct_fetch_safe: true, requires_cookie: false, requires_merge: false,
+        ...extra});
+}
+
+for (const provider of SERVICE_PROVIDERS) {
+    test(`${provider} cached service cards keep actions isolated through insertion, sorting and redraw`, async () => {
+        const {doc, win, scan} = fixture();
+        const first = servicePicker(provider), second = servicePicker(provider);
+        doc.body.append(card(first), card(second));
+        const requests = [], copied = [], saved = [];
+        win.navigator = {clipboard: {writeText: async value => copied.push(value)}};
+        picker.attach(doc, win, {ordinary: {download: async media => saved.push(media)},
+            fetchImpl: async (_url, options) => {
+                const body = JSON.parse(options.body); requests.push(body);
+                return {ok: true, json: async () => ({status: "success", item: serviceGrant(provider, body.candidate_id)})};
+            }});
+        choose(first, 1); choose(second, 0);
+        const third = servicePicker(provider); doc.body.append(card(third)); scan();
+        choose(third, 1);
+        assert.equal(new Set([first, second, third].map(r => radios(r)[0].name)).size, 3);
+        assert.deepEqual([first, second, third].map(r => picker.selected(r).id), ["low", "high", "low"]);
+        assert.deepEqual([first, second, third].map(r => r.querySelector("[data-picker-size]").textContent), ["2 MB", "1 MB", "2 MB"]);
+        first.insertBefore(radios(first)[1].parentNode, radios(first)[0].parentNode); scan();
+        first.replaceChildren(...servicePicker(provider).children.slice()); scan();
+        picker.mount(first, doc, win);
+        assert.equal(picker.selected(first).id, "low");
+        assert.equal(picker.selected(first).provider, provider);
+        assert.equal(picker.selected(first).schema, SERVICE_SCHEMA);
+        assert.equal(requests.length, 0, "mount, selection, sorting and redraw never parse or authorize");
+        click(first, "copy"); await settle();
+        click(second); await settle();
+        click(third); await settle();
+        assert.deepEqual(requests.map(r => [r.candidate_id, r.resource_token, r.action]),
+            [["low", "signed-low", "link"], ["high", "signed-high", "download"], ["low", "signed-low", "download"]]);
+        assert.deepEqual(copied, ["https://cdn.example/low.mp4"]);
+        assert.deepEqual(saved.map(media => [media.provider, media.candidate_id, media.selected_format_id, media.filename]),
+            [[provider, "high", "format-high", "high.mp4"], [provider, "low", "format-low", "low.mp4"]]);
+    });
+
+    test(`${provider} alternate preview retains service identity without changing the save selection`, async () => {
+        const {doc, win} = fixture(); const root = servicePicker(provider);
+        doc.body.append(root);
+        root.dataset.previewId = "high";
+        radios(root)[0].dataset.canPreview = "true";
+        radios(root)[1].dataset.canPreview = "false";
+        const region = el("div", {"data-picker-player-region": ""}); region.hidden = true;
+        const slot = el("div", {"data-picker-player": ""}); region.append(slot);
+        root.append(region, el("p", {"data-picker-preview-note": ""}), el("button", {"data-ytdlp-action": "preview"}));
+        const calls = [];
+        picker.mount(root, doc, win, {fetchImpl: async (_url, options) => {
+            calls.push(JSON.parse(options.body));
+            return {ok: true, json: async () => ({status: "success", item: serviceGrant(provider, "high")})};
+        }});
+        choose(root, 1); click(root, "preview"); await settle();
+        assert.deepEqual(calls, [{candidate_id: "high", resource_token: "signed-high", action: "preview"}]);
+        assert.equal(picker.selected(root).id, "low");
+        assert.equal(picker.selected(root).provider, provider);
+        assert.equal(root.querySelector("[data-picker-size]").textContent, "2 MB");
+        assert.equal(slot.children.length, 1, root.querySelector("[data-picker-status]").textContent);
+        assert.equal(slot.children[0].src, "https://cdn.example/high.mp4");
+        assert.equal(slot.children[0].preload, "none");
+        assert.equal(region.hidden, false);
+    });
+
+    for (const action of ["copy", "download"]) {
+        test(`${provider} cancelled late ${action} response cannot affect another card or retry`, async () => {
+            const {doc, win} = fixture(); const first = servicePicker(provider), second = servicePicker(provider);
+            doc.body.append(card(first), card(second));
+            const pending = [], saves = [], copies = [];
+            win.navigator = {clipboard: {writeText: async value => copies.push(value)}};
+            picker.attach(doc, win, {ordinary: {download: async media => saves.push(media)},
+                fetchImpl: async (_url, options) => new Promise(resolve => pending.push({resolve, options}))});
+            click(first, action); click(first, action);
+            assert.equal(pending.length, 1, "double click is single flight");
+            click(first, "cancel");
+            assert.equal(pending[0].options.signal.aborted, true);
+            choose(first, 1); click(second, action);
+            pending[1].resolve({ok: true, json: async () => ({status: "success", item: serviceGrant(provider, "high")})});
+            await settle();
+            const message = first.querySelector("[data-picker-status]").textContent;
+            pending[0].resolve({ok: true, json: async () => ({status: "success", item: serviceGrant(provider, "high")})});
+            await settle();
+            assert.equal(picker.selected(first).id, "low");
+            assert.equal(first.querySelector("[data-picker-size]").textContent, "2 MB");
+            assert.equal(first.querySelector("[data-picker-status]").textContent, message);
+            assert.equal(pending.length, 2);
+            assert.equal(saves.length, action === "download" ? 1 : 0);
+            assert.deepEqual(copies, action === "copy" ? ["https://cdn.example/high.mp4"] : []);
+        });
+    }
+}
+
+for (const mode of ["copy-links", "links", "aria2"]) {
+    for (const provider of SERVICE_PROVIDERS) {
+        test(`${provider} one multi-video card ${mode} exports both selections and legacy images`, async () => {
+            const {doc, win} = fixture(); const page = el("main"); doc.body.append(page);
+            const button = el("button", {"data-batch-export": mode}); page.append(button);
+            const first = servicePicker(provider, ["work-one-high", "work-one-low"]);
+            const second = servicePicker(provider, ["work-two-high", "work-two-low"]);
+            const image = legacy("image", "https://cdn.example/photo-one.jpg", "photo-one.jpg");
+            const mixed = card(first);
+            mixed.append(second, image,
+                legacy("image", "https://cdn.example/photo-two.png", "photo-two.png"),
+                legacy("image", "https://cdn.example/photo-one.jpg", "duplicate.jpg"),
+                legacy("video", "https://cdn.example/obsolete-main.mp4", "obsolete-main.mp4"));
+            page.append(mixed);
+            picker.attach(doc, win); choose(first, 1);
+            const snapshot = batch.collectBatchResourceLinks(page, picker);
+            assert.equal(snapshot.length, 4, "both selected videos and both unique images must survive collection");
+            assert.deepEqual(snapshot.slice(0, 2).map(entry => entry.selection),
+                ["work-one-low", "work-two-high"].map(id => ({id, token: `signed-${id}`, kind: "video",
+                    formatId: `format-${id}`, provider, schema: SERVICE_SCHEMA})));
+            let release; const gate = new Promise(resolve => { release = resolve; });
+            const calls = [], outputs = [];
+            const task = batch.exportBatchResourceLinks(page, button, {windowObject: win, documentObject: doc,
+                pickerApi: picker, fetchImpl: async (_url, options) => {
+                    const body = JSON.parse(options.body); calls.push(body);
+                    if (calls.length === 1) await gate;
+                    return {ok: true, json: async () => ({status: "success", item: serviceGrant(provider, body.candidate_id)})};
+                }, copyText: async text => outputs.push(text), downloadTextFile: (_name, text) => outputs.push(text)});
+            assert.equal(calls.length, 1);
+            choose(first, 0); choose(second, 1);
+            image.dataset.url = "https://cdn.example/changed.jpg";
+            image.dataset.downloadFilename = "changed.jpg";
+            release(); const result = await task;
+            assert.deepEqual(calls, ["work-one-low", "work-two-high"].map(id =>
+                ({candidate_id: id, resource_token: `signed-${id}`, action: "link"})));
+            const expected = [
+                {type: "video", url: "https://cdn.example/work-one-low.mp4", filename: "work-one-low.mp4"},
+                {type: "video", url: "https://cdn.example/work-two-high.mp4", filename: "work-two-high.mp4"},
+                {type: "image", url: "https://cdn.example/photo-one.jpg", filename: "photo-one.jpg"},
+                {type: "image", url: "https://cdn.example/photo-two.png", filename: "photo-two.png"},
+            ];
+            assert.deepEqual(result.resources, expected);
+            assert.deepEqual(result.skipped, []);
+            assert.deepEqual(outputs, [expected.map(resource => mode === "aria2"
+                ? `${resource.url}\n  out=${resource.filename}` : resource.url).join("\n")]);
+            assert.doesNotMatch(outputs[0], /obsolete-main|changed|duplicate/);
+            assert.equal(button.disabled, false);
+        });
+    }
+
+    test(`mixed YT/service/legacy Batch ${mode} freezes provider, schema and selections before authorization`, async () => {
+        const {doc, win} = fixture(); const page = el("main"); doc.body.append(page);
+        const button = el("button", {"data-batch-export": mode}); page.append(button);
+        const yt = newPicker(["yt-video", "yt-audio"]);
+        const tt = servicePicker(SERVICE_PROVIDERS[0], ["tt-high", "tt-low"]);
+        const kuku = servicePicker(SERVICE_PROVIDERS[1], ["kuku-video", "kuku-audio"]);
+        const duplicate = servicePicker(SERVICE_PROVIDERS[0], ["tt-low"]);
+        const expired = servicePicker(SERVICE_PROVIDERS[1], ["expired"]);
+        page.append(card(legacy("image", "https://cdn.example/old.jpg", "old.jpg")), card(yt), card(tt), card(kuku),
+            card(duplicate), card(expired), card(servicePicker(SERVICE_PROVIDERS[0], ["failed"]), "failed"));
+        picker.attach(doc, win); choose(tt, 1); choose(kuku, 1);
+        const snapshot = batch.collectBatchResourceLinks(page, picker);
+        assert.equal(Object.isFrozen(snapshot[2].selection), true);
+        const grants = {"yt-video": linkItem("yt-video"),
+            "tt-low": serviceGrant(SERVICE_PROVIDERS[0], "tt-low"),
+            "kuku-audio": serviceGrant(SERVICE_PROVIDERS[1], "kuku-audio", "audio", {
+                url: "https://cdn.example/kuku-audio.webm", filename: "kuku-audio.webm"})};
+        let release; const gate = new Promise(resolve => { release = resolve; });
+        const calls = [], outputs = [];
+        const task = batch.exportBatchResourceLinks(page, button, {windowObject: win, documentObject: doc, pickerApi: picker,
+            fetchImpl: async (url, options) => {
+                const body = JSON.parse(options.body); calls.push({url, body});
+                if (calls.length === 1) await gate;
+                return grants[body.candidate_id]
+                    ? {ok: true, json: async () => ({status: "success", item: grants[body.candidate_id]})}
+                    : {ok: false, status: 403, json: async () => ({status: "error", message: "expired service candidate"})};
+            }, copyText: async text => outputs.push(text), downloadTextFile: (_name, text) => outputs.push(text)});
+        assert.equal(calls.length, 1);
+        choose(tt, 0); choose(kuku, 0); choose(yt, 1);
+        tt.dataset.provider = SERVICE_PROVIDERS[1]; tt.dataset.selectionSchema = picker.SCHEMA;
+        kuku.dataset.selectionUrl = "https://wrong.example/api";
+        radios(kuku)[1].dataset.token = "changed";
+        release(); const result = await task;
+        assert.deepEqual(calls.map(c => c.body), ["yt-video", "tt-low", "kuku-audio", "tt-low", "expired"].map(id =>
+            ({candidate_id: id, resource_token: `signed-${id}`, action: "link"})));
+        assert.equal(calls[2].url, `https://product.example/media/service-selected-format/?fixture=${SERVICE_PROVIDERS[1]}`);
+        const expected = [{type: "image", url: "https://cdn.example/old.jpg", filename: "old.jpg"},
+            ...Object.values(grants).map(({type, url, filename}) => ({type, url, filename}))];
+        assert.deepEqual(result.resources, expected);
+        assert.deepEqual(result.skipped, ["expired service candidate"]);
+        assert.equal(snapshot[2].selection.provider, SERVICE_PROVIDERS[0]);
+        assert.equal(snapshot[2].selection.schema, SERVICE_SCHEMA);
+        assert.deepEqual(outputs, [expected.map(r => mode === "aria2" ? `${r.url}\n  out=${r.filename}` : r.url).join("\n")]);
+        assert.match(page.querySelector("[data-batch-export-status]").textContent, /跳过 1 项/);
+        assert.equal(button.disabled, false);
+    });
+}
+
 test("cached template radios have no shared name before async mounting", () => {
     const source = fs.readFileSync(path.join(__dirname, "../templates/partials/ytdlp_format_option.html"), "utf8");
     assert.doesNotMatch(source, /\bname\s*=/);
@@ -164,7 +371,8 @@ test("check is opt-in, fires once while busy, then needs a second click for the 
     assert.equal(root.querySelector("[data-picker-option-size]").textContent, "12 MB");
     assert.equal(root.querySelector("[data-picker-size]").textContent, "12 MB");
     assert.equal(root.querySelector("[data-picker-option-limitation]").hidden, true);
-    assert.deepEqual(snapshot[0].selection, {id: "video", token: "signed-video", kind: "video", formatId: "format-video"});
+    assert.deepEqual(snapshot[0].selection, {id: "video", token: "signed-video", kind: "video", formatId: "format-video",
+        provider: "yt_dlp_generic", schema: picker.SCHEMA});
     assert.equal(Object.isFrozen(snapshot[0].selection), true);
     assert.equal(selectionBeforeCheck.canDownload, false);
     assert.equal(selectionBeforeCheck.canCheck, true);

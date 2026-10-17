@@ -8,6 +8,15 @@ const ordinary = require("../static/js/ordinary_media_download.js");
 const win = {location: {href: "http://localhost:8000/results/", origin: "http://localhost:8000"}};
 const documentObject = {querySelector: () => ({value: "csrf-fixture"}), cookie: ""};
 const root = {dataset: {selectionUrl: "/media/ytdlp-selected-format/"}};
+const SERVICE_SCHEMA = "service_selected_format_v1";
+const SERVICE_PROVIDERS = ["tiantianjiexi_generic", "kukutool_generic"];
+function serviceSelection(provider, id = "service720", kind = "video") {
+    return {...selected(id, kind), provider, schema: SERVICE_SCHEMA, formatId: id};
+}
+function serviceItem(provider, id = "service720", kind = "video", extra = {}) {
+    return item(id, kind, {provider, selection_schema: SERVICE_SCHEMA,
+        audio_tracks: "unknown", video_tracks: "unknown", ...extra});
+}
 function selected(id = "fmt720", kind = "video") { return {id, kind, token: `signed-${id}`}; }
 function item(id = "fmt720", type = "video", extra = {}) {
     return {selection_schema: picker.SCHEMA, candidate_id: id, selected_format_id: id,
@@ -23,6 +32,96 @@ function response(content, source, type = "video/mp4", overrides = {}) {
     return {ok: true, type: "cors", status: 200, url: source, redirected: false,
         headers: {get(name) { return ({"content-type": type, "content-length": String(bytes.size)})[name.toLowerCase()] || null; }},
         body: bytes.stream(), blob: async () => bytes, ...overrides};
+}
+
+for (const provider of SERVICE_PROVIDERS) {
+    test(`${provider} selected download and link descriptors preserve provider and resource identity`, async () => {
+        const serviceRoot = {dataset: {selectionUrl: "/media/service-selected-format/",
+            provider, selectionSchema: SERVICE_SCHEMA}};
+        const calls = [], saved = [];
+        const environment = {documentObject, windowObject: win, fetchImpl: async (url, options) => {
+            const body = JSON.parse(options.body); calls.push(body);
+            assert.equal(url, "http://localhost:8000/media/service-selected-format/");
+            assert.equal(options.credentials, "same-origin");
+            assert.equal(options.headers["X-CSRFToken"], "csrf-fixture");
+            return {ok: true, json: async () => ({status: "success", item: serviceItem(provider, body.candidate_id)})};
+        }};
+        for (const id of ["service1080", "service720"]) {
+            const selection = serviceSelection(provider, id);
+            const media = await picker.descriptor(serviceRoot, selection, "download", environment);
+            const link = await picker.resolveLink(serviceRoot, selection, environment);
+            assert.equal(link.url, media.url);
+            assert.equal(link.filename, media.filename);
+            assert.equal(media.provider, provider);
+            assert.equal(media.audio_tracks, "unknown", "UI must not fabricate optional track facts");
+            await ordinary.download(media, {filename: media.filename,
+                fetchImpl: async url => { assert.equal(url, link.url); return response(id, url); },
+                handoffBlob: async (blob, filename) => saved.push([await blob.text(), filename]),
+            });
+        }
+        assert.deepEqual(calls, ["service1080", "service720"].flatMap(id => ["download", "link"].map(action =>
+            ({candidate_id: id, resource_token: `signed-${id}`, action}))));
+        assert.deepEqual(saved, [["service1080", "service1080.mp4"], ["service720", "service720.mp4"]]);
+    });
+
+    test(`${provider} rejects swapped provider/schema/token identity without media fallback`, async () => {
+        const selection = serviceSelection(provider);
+        for (const change of [{provider: "yt_dlp_generic"}, {provider: SERVICE_PROVIDERS.find(p => p !== provider)},
+            {provider: "videodl_repo"}, {selection_schema: picker.SCHEMA}, {selection_schema: ""},
+            {candidate_id: "other"}, {selected_format_id: "other"}]) {
+            for (const action of ["download", "preview", "link"]) {
+                let calls = 0;
+                await assert.rejects(picker.descriptor(root, selection, action, {documentObject, windowObject: win,
+                    fetchImpl: async () => { calls += 1; return {ok: true, json: async () => ({status: "success",
+                        item: serviceItem(provider, "service720", "video", change)})}; }}));
+                assert.equal(calls, 1);
+            }
+        }
+        for (const change of [{selection_schema: picker.SCHEMA}, {selection_schema: ""},
+            {candidate_id: ""}, {browser_upstream_bound: false}, {source_platform: ""},
+            {requires_cookie: true}, {requires_merge: true}, {browser_direct_fetch_safe: false}]) {
+            assert.equal(ordinary.isOrdinaryMediaItem(serviceItem(provider, "service720", "video", change)), false);
+        }
+    });
+
+    test(`${provider} audio authorization retains unknown track facts and rejects HTML`, async () => {
+        const media = serviceItem(provider, "voice", "audio", {service_audio_file: true});
+        const before = JSON.stringify(media);
+        assert.equal(ordinary.isOrdinaryMediaItem(media), true);
+        assert.equal(ordinary.isOrdinaryMediaItem({...media, service_audio_file: false}), false);
+        let handoffs = 0;
+        await ordinary.download(media, {filename: media.filename,
+            fetchImpl: async url => response("service-audio", url, "audio/mp4"),
+            handoffBlob: async (blob, filename) => {
+                handoffs += 1; assert.equal(await blob.text(), "service-audio"); assert.equal(filename, "voice.m4a");
+            }});
+        assert.equal(handoffs, 1);
+        assert.equal(JSON.stringify(media), before);
+        for (const mime of ["text/html", "video/mp4", "application/vnd.apple.mpegurl"]) {
+            await assert.rejects(ordinary.download(media, {filename: media.filename,
+                fetchImpl: async url => response("not audio", url, mime),
+                handoffBlob: () => assert.fail("invalid MIME cannot save"),
+            }), error => error.errorCode === "BROWSER_DOWNLOAD_UNSUPPORTED_CONTENT");
+        }
+    });
+
+    test(`${provider} HTTP and HLS remain link-only and video HTML never reaches save`, async () => {
+        const selection = serviceSelection(provider);
+        for (const url of ["http://cdn.example.org/video.mp4", "https://cdn.example.org/master.m3u8"]) {
+            const media = serviceItem(provider, "service720", "video", {url, browser_direct_fetch_safe: false,
+                filename: url.endsWith("m3u8") ? "master.m3u8" : "video.mp4"});
+            assert.equal(picker.validateLinkItem(media, selection).url, url);
+            assert.throws(() => picker.validateItem(media, selection));
+            assert.equal(ordinary.isOrdinaryMediaItem(media), false);
+        }
+        const media = serviceItem(provider);
+        for (const mime of ["text/html", "application/vnd.apple.mpegurl"]) {
+            await assert.rejects(ordinary.download(media, {filename: media.filename,
+                fetchImpl: async url => response("not video", url, mime),
+                handoffBlob: () => assert.fail("no HTML or manifest handoff"),
+            }), error => error.errorCode === "BROWSER_DOWNLOAD_UNSUPPORTED_CONTENT");
+        }
+    });
 }
 
 test("selection captures one immutable candidate identity and its exact token", () => {

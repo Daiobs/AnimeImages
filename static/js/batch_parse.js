@@ -350,17 +350,17 @@
             if (normalizeBatchValue(card.dataset.status) !== "success") {
                 return;
             }
-            const selectedPicker = card.querySelector && card.querySelector("[data-ytdlp-picker]");
-            if (selectedPicker) {
+            const selectedPickers = Array.from(card.querySelectorAll("[data-ytdlp-picker]"));
+            selectedPickers.forEach((selectedPicker) => {
                 const selection = picker && picker.selected(selectedPicker);
                 // Snapshot all cards before any authorization request; never fall back to raw candidate rows.
                 resources.push(Object.freeze({
                     pickerRoot: Object.freeze({dataset: Object.freeze({selectionUrl: selectedPicker.dataset.selectionUrl})}),
                     selection: selection ? Object.freeze({id: selection.id, token: selection.token,
-                        kind: selection.kind, formatId: selection.formatId}) : null,
+                        kind: selection.kind, formatId: selection.formatId,
+                        provider: selection.provider, schema: selection.schema}) : null,
                 }));
-                return;
-            }
+            });
             const nodes = Array.from(card.querySelectorAll("[data-batch-download-item]"));
             nodes.sort((left, right) => {
                 const rank = (node) => normalizeBatchValue(node.dataset.type) === "video" ? 0 : 1;
@@ -368,6 +368,7 @@
             });
             nodes.forEach((node) => {
                 const type = normalizeBatchValue(node.dataset.type);
+                if (selectedPickers.length && type === "video") return;
                 const url = String(node.dataset.url || "").trim();
                 if (!url || seenUrls.has(url) || (type !== "video" && type !== "image")) {
                     return;

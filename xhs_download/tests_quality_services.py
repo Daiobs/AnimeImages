@@ -287,7 +287,8 @@ class SharedServiceExecutionTests(SimpleTestCase):
                 {'url': MEDIA, 'format_id': 'alt', 'upstream_role': 'original', 'vcodec': 'none'}]}]}
             result = execution.execute_provider('kukutool_existing', SOURCE, service_authorized=True)
         self.assertEqual(result.metadata['retained_count'], 1)
-        self.assertEqual(result.metadata['rejected_count'], 1)
+        # The enclosing object has no URL; it is a group, not a rejected asset.
+        self.assertEqual(result.metadata['rejected_count'], 0)
         self.assertEqual(result.metadata['upstream_candidates'][0]['format_id'], 'alt')
         self.assertEqual(result.assets, ())
 

@@ -409,9 +409,12 @@
     }
 
     function isBoundUpstreamItem(item) {
+        const serviceSelection = item && item.selection_schema === "service_selected_format_v1"
+            && ["tiantianjiexi_generic", "kukutool_generic"].includes(item.provider)
+            && typeof item.candidate_id === "string" && item.candidate_id.length > 0;
         if (!isUpstreamItem(item) || item.browser_upstream_bound !== true
             || item.source_platform !== "upstream"
-            || !["yt_dlp_generic", "gallery_dl_generic", "parsehub_generic"].includes(item.provider)) {
+            || (!serviceSelection && !["yt_dlp_generic", "gallery_dl_generic", "parsehub_generic"].includes(item.provider))) {
             return false;
         }
         try {
@@ -424,6 +427,9 @@
     }
 
     function isSelectedYtdlpAudio(item) {
+        if (item && item.type === "audio" && item.selection_schema === "service_selected_format_v1"
+                && ["tiantianjiexi_generic", "kukutool_generic"].includes(item.provider)
+                && item.service_audio_file === true && isBoundUpstreamItem(item)) return true;
         return Boolean(item && item.type === "audio"
             && item.selection_schema === "ytdlp_selected_format_v1"
             && item.provider === "yt_dlp_generic" && isBoundUpstreamItem(item)
@@ -1028,7 +1034,7 @@
 
         const declaredSize = positiveInteger(item.size_bytes || item.sizeBytes);
         const maxBytes = positiveInteger(settings.maxBytes) || MAX_BROWSER_BLOB_BYTES;
-        const filename = sanitizeFilename(settings.filename || item.filename);
+        let filename = sanitizeFilename(settings.filename || item.filename);
         const downloadId = createDownloadId(settings);
         const sourceUrl = String(item.url || item.video_url || "");
         const upstreamBound = isBoundUpstreamItem(item);
@@ -1227,6 +1233,13 @@
 
         emitProgress("fetching", receivedBytes, true);
         clearActiveProtection();
+        // A service URL need not expose a suffix. Only a validated response
+        // MIME can replace the honest .bin fallback, never a quality label.
+        if (item.selection_schema === "service_selected_format_v1" && /\.bin$/i.test(filename)) {
+            const suffix = {"video/mp4": "mp4", "video/webm": "webm", "audio/mp4": "m4a",
+                "audio/mpeg": "mp3", "audio/webm": "webm", "audio/ogg": "ogg"}[contentType];
+            if (suffix) filename = filename.replace(/\.bin$/i, "." + suffix);
+        }
         onStage("saving", STAGE_MESSAGES.saving);
         emitProgress("saving", receivedBytes, true);
         const handoffBlob = settings.handoffBlob || defaultBlobHandoff;

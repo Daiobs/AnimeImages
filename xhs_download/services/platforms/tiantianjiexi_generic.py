@@ -33,6 +33,11 @@ from ..provider_reliability import (
 from ..rate_limits import acquire_concurrency, release_concurrency, reserve_fixed_window
 from .kukutool_generic import (
     canonicalize_source_url,
+    collect_service_video_resources,
+    filter_service_format_rows,
+    ServiceFormatPayload,
+    service_context,
+    mixed_image_asset_allowed,
     integer_value,
     public_url_or_empty,
     source_key_for_url,
@@ -205,6 +210,7 @@ def unwrap_api_payload(payload):
         nested = payload.get(key)
         if isinstance(nested, dict) and payload_has_media(nested):
             merged = dict(nested)
+            merged.update(service_context(nested, service_context(payload)))
             for meta_key in ("title", "desc", "description", "cover", "nickname"):
                 if meta_key not in merged and payload.get(meta_key):
                     merged[meta_key] = payload.get(meta_key)
@@ -1134,6 +1140,8 @@ class TianTianJieXiResultNormalizer:
     def normalize_payload(cls, payload):
         if not isinstance(payload, dict):
             raise TianTianJieXiApiError("天天解析返回格式无效")
+        if isinstance(payload, ServiceFormatPayload):
+            return payload
         title = first_text(payload, ("title", "name"))
         nickname = first_text(payload, ("nickname", "author", "user"))
         description = first_text(payload, ("desc", "description"))
@@ -1149,10 +1157,16 @@ class TianTianJieXiResultNormalizer:
             "images": cls.collect_image_urls(payload),
             "audio_url": audio_url,
         }
+        normalized["_service_format_rows"] = [
+            *normalized["videos"],
+            *({**service_context(payload), "url": url, "media_type": "image"} for url in normalized["images"]),
+            *([{**service_context(payload), "url": audio_url, "media_type": "audio", "work_id": "native-audio-primary",
+                "work_label": "Audio"}] if audio_url else []),
+        ]
         identity_signals = cls.collect_source_identity_signals(payload)
         if identity_signals:
             normalized["_source_identity_signals"] = identity_signals
-        return normalized
+        return ServiceFormatPayload(normalized)
 
     @classmethod
     def collect_source_identity_signals(cls, payload):
@@ -1185,74 +1199,16 @@ class TianTianJieXiResultNormalizer:
 
     @classmethod
     def collect_video_resources(cls, payload):
-        resources = []
-
-        def add(raw):
-            if isinstance(raw, str):
-                resources.append({"url": raw, "quality": "video", "size": 0})
-                return
-            if not isinstance(raw, dict):
-                return
-            url = field_value(
-                raw,
-                ("url", "video_url", "videoUrl", "download_url", "downloadUrl", "play_url", "playUrl"),
-            )
-            if not url:
-                return
-            quality = field_value(
-                raw,
-                (
-                    "quality",
-                    "quality_label",
-                    "qualityLabel",
-                    "type",
-                    "name",
-                    "resolution",
-                    "clarity",
-                ),
-            ) or infer_quality_from_url(url) or "video"
-            size = field_value(
-                raw,
-                (
-                    "size",
-                    "file_size",
-                    "fileSize",
-                    "filesize",
-                    "size_in_bytes",
-                    "sizeInBytes",
-                    "bytes",
-                ),
-            )
-            resources.append({"url": url, "quality": str(quality), "size": size_value(size)})
-            for nested_key in (
-                "streams",
-                "stream",
-                "video_list",
-                "videoList",
-                "download_url_list",
-                "downloadUrlList",
-                "url_list",
-                "urlList",
-                "play_addr",
-                "playAddr",
-            ):
-                for nested_item in normalize_list(raw.get(nested_key)):
-                    add(nested_item)
-
-        for key in ("videos", "video", "video_url", "videoUrl", "url", "download_url", "downloadUrl", "play_url", "playUrl"):
-            value = payload.get(key)
-            for item in normalize_list(value):
-                add(item)
-        add(payload)
-        deduped = {}
-        for resource in resources:
-            current = deduped.get(resource["url"])
-            score = (quality_rank(resource["quality"]), resource["size"])
-            if current is None or score > (quality_rank(current["quality"]), current["size"]):
-                deduped[resource["url"]] = resource
+        existing = payload.get("_service_format_rows") if isinstance(payload, ServiceFormatPayload) else None
+        resources = ([row for row in existing if row.get("media_type") == "video"]
+                     if isinstance(existing, (list, tuple)) else
+                     collect_service_video_resources(payload, nested_keys=(
+                         "streams", "stream", "video_list", "videoList", "download_url_list",
+                         "downloadUrlList", "url_list", "urlList", "play_addr", "playAddr"),
+                         infer_quality=infer_quality_from_url))
         return tuple(
             sorted(
-                deduped.values(),
+                resources,
                 key=lambda item: (quality_rank(item["quality"]), item["size"]),
                 reverse=True,
             )
@@ -1310,8 +1266,10 @@ class TianTianJieXiResultNormalizer:
         return metadata
 
     def normalize(self, *, rule, platform_name, source_url, payload):
+        from ..service_format_selection import attach_service_picker
         if not isinstance(payload, dict):
             raise ValueError("天天解析结果格式无效")
+        payload = filter_service_format_rows(self.normalize_payload(payload), rule)
         title = clean_filename(str(payload.get("title") or platform_name))
         platform_id = getattr(rule, "platform_id", "")
         cover_url = public_url_or_empty(
@@ -1339,6 +1297,17 @@ class TianTianJieXiResultNormalizer:
             key=lambda item: (quality_rank(item["quality"]), item["size"]),
             reverse=True,
         )
+        image_suffixes = getattr(rule, "image_media_host_suffixes", ()) or getattr(rule, "media_host_suffixes", ())
+        image_urls = []
+        for image_url in payload.get("images") or ():
+            url = public_url_or_empty(image_url, image_suffixes, platform_id, "images")
+            if url and (not valid_videos or (url != cover_url and mixed_image_asset_allowed(payload, url))):
+                image_urls.append(url)
+        image_assets = tuple(
+            MediaAsset(media_type="image", url=url, platform=self.platform_id, preview_url=url,
+                       **self.build_provider_asset_fields(rule, source_url, "image", index, url))
+            for index, url in enumerate(image_urls, 1)
+        )
         if valid_videos:
             assets = tuple(
                 MediaAsset(
@@ -1359,42 +1328,35 @@ class TianTianJieXiResultNormalizer:
                 )
                 for index, resource in enumerate(valid_videos[:1], start=1)
             )
-            return ParseResult(
+            result = ParseResult(
                 platform=self.platform_id,
                 post_type="video",
                 base_filename=title or "third_party",
-                assets=assets,
+                assets=assets + image_assets,
                 metadata=self.build_metadata(rule, platform_name, len(valid_videos), source_url, payload),
             )
+            return attach_service_picker(result, payload=payload, provider=PROVIDER_ID,
+                                         source_url=source_url)
 
-        image_suffixes = getattr(rule, "image_media_host_suffixes", ()) or getattr(rule, "media_host_suffixes", ())
-        image_urls = []
-        for image_url in payload.get("images") or ():
-            url = public_url_or_empty(image_url, image_suffixes, platform_id, "images")
-            if url:
-                image_urls.append(url)
         if image_urls:
-            assets = tuple(
-                MediaAsset(
-                    media_type="image",
-                    url=image_url,
-                    platform=self.platform_id,
-                    preview_url=image_url,
-                    **self.build_provider_asset_fields(
-                        rule,
-                        source_url,
-                        "image",
-                        index,
-                        image_url,
-                    ),
-                )
-                for index, image_url in enumerate(image_urls, start=1)
-            )
-            return ParseResult(
+            result = ParseResult(
                 platform=self.platform_id,
                 post_type="image",
                 base_filename=title or "third_party",
-                assets=assets,
+                assets=image_assets,
                 metadata=self.build_metadata(rule, platform_name, len(image_urls), source_url, payload),
             )
+            return attach_service_picker(result, payload=payload, provider=PROVIDER_ID,
+                                         source_url=source_url)
+        audio_rows = [row for row in payload['_service_format_rows'] if row.get('media_type') == 'audio']
+        if audio_rows:
+            result = ParseResult(
+                platform=self.platform_id,
+                post_type="audio",
+                base_filename=title or "third_party",
+                assets=(),
+                metadata=self.build_metadata(rule, platform_name, len(audio_rows), source_url, payload),
+            )
+            return attach_service_picker(result, payload=payload, provider=PROVIDER_ID,
+                                         source_url=source_url)
         raise ValueError("天天解析结果不包含允许的媒体资源")

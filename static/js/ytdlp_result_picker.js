@@ -19,6 +19,7 @@
         const radio = root.querySelector("[data-picker-radio]:checked");
         if (!radio) return null;
         return Object.freeze({id: radio.value, token: radio.dataset.token, kind: radio.dataset.kind,
+            provider: (root.dataset || {}).provider || "yt_dlp_generic", schema: (root.dataset || {}).selectionSchema || SCHEMA,
             formatId: radio.dataset.formatId,
             label: radio.dataset.label || "", size: radio.dataset.sizeLabel || "大小未知",
             canDownload: radio.dataset.canDownload === "true", canPreview: radio.dataset.canPreview === "true",
@@ -51,7 +52,7 @@
         return match ? decodeURIComponent(match[1]) : "";
     }
     function validateItem(item, selection) {
-        if (!item || item.selection_schema !== SCHEMA || item.provider !== "yt_dlp_generic"
+        if (!item || item.selection_schema !== (selection.schema || SCHEMA) || item.provider !== (selection.provider || "yt_dlp_generic")
                 || item.candidate_id !== selection.id || item.type !== selection.kind
                 || (selection.formatId !== undefined && item.selected_format_id !== selection.formatId)
                 || item.browser_upstream_bound !== true || item.browser_direct_fetch_safe !== true
@@ -60,7 +61,7 @@
         return item;
     }
     function validateLinkItem(item, selection) {
-        if (!item || item.selection_schema !== SCHEMA || item.provider !== "yt_dlp_generic"
+        if (!item || item.selection_schema !== (selection.schema || SCHEMA) || item.provider !== (selection.provider || "yt_dlp_generic")
                 || item.candidate_id !== selection.id || item.type !== selection.kind
                 || !["video", "audio"].includes(item.type)
                 || typeof item.selected_format_id !== "string"
@@ -290,7 +291,9 @@
                 const radio = Array.from(root.querySelectorAll("[data-picker-radio]")).find(r => r.value === root.dataset.previewId);
                 if (!radio) { say("暂无可直接预览的格式；下载选择未改变。"); return; }
                 selection = {id: radio.value, token: radio.dataset.token, kind: radio.dataset.kind,
-                    formatId: radio.dataset.formatId, label: radio.dataset.label};
+                    formatId: radio.dataset.formatId, label: radio.dataset.label,
+                    provider: root.dataset.provider || "yt_dlp_generic",
+                    schema: root.dataset.selectionSchema || SCHEMA};
             }
             const operation = start();
             if (!operation) return;

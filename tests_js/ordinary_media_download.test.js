@@ -633,6 +633,105 @@ test("video and binary media content types remain supported", () => {
     assert.equal(ordinary.contentTypeAllowsOrdinaryVideo("text/html"), false);
 });
 
+function unknownServiceFile(provider, type = "video", overrides = {}) {
+    return ordinaryItem({provider, type, selection_schema: "service_selected_format_v1",
+        candidate_id: "service-selected-candidate", selected_format_id: "",
+        asset_id: "upstream:selection:service-selected-candidate", source_platform: "upstream",
+        browser_upstream_bound: true, service_audio_file: type === "audio",
+        url: "https://cdn.example.org/opaque-resource", filename: "upstream-quality.bin",
+        audio_tracks: "unknown", video_tracks: "unknown", ...overrides});
+}
+
+for (const provider of ["tiantianjiexi_generic", "kukutool_generic"]) {
+    test(`${provider} unknown suffix uses validated HTTP media MIME without changing its descriptor`, async () => {
+        for (const [type, contentType, suffix] of [
+            ["video", "video/mp4; codecs=avc1", "mp4"], ["video", "video/webm", "webm"],
+            ["audio", "audio/mp4", "m4a"], ["audio", "audio/mpeg", "mp3"],
+            ["audio", "audio/webm", "webm"], ["audio", "audio/ogg", "ogg"],
+        ]) {
+            const descriptor = unknownServiceFile(provider, type);
+            const before = JSON.stringify(descriptor);
+            const handoffs = [];
+            const result = await ordinary.download(descriptor, {
+                fetchImpl: async url => {
+                    assert.equal(url, descriptor.url);
+                    return responseFor("12345", {contentType, url});
+                },
+                handoffBlob: async (blob, filename) => handoffs.push({filename, body: await blob.text()}),
+            });
+            assert.deepEqual(handoffs, [{filename: `upstream-quality.${suffix}`, body: "12345"}]);
+            assert.equal(result.filename, `upstream-quality.${suffix}`);
+            assert.equal(result.receivedBytes, 5);
+            assert.equal(JSON.stringify(descriptor), before, "MIME improves only the save filename, not format or track facts");
+            assert.equal(descriptor.filename, "upstream-quality.bin");
+            assert.equal(descriptor.selected_format_id, "");
+        }
+    });
+
+    test(`${provider} MIME suffix inference never overwrites known or nonterminal suffixes`, async () => {
+        for (const [type, filename, contentType] of [
+            ["video", "original.mov", "video/mp4"], ["video", "original.webm", "video/mp4"],
+            ["audio", "original.aac", "audio/mp4"], ["audio", "original.ogg", "audio/mpeg"],
+            ["video", "original.bin.backup", "video/mp4"],
+        ]) {
+            const descriptor = unknownServiceFile(provider, type, {filename});
+            const result = await ordinary.download(descriptor, {
+                fetchImpl: async () => responseFor("12345", {contentType, url: descriptor.url}),
+                handoffBlob: async (_blob, actualName) => assert.equal(actualName, filename),
+            });
+            assert.equal(result.filename, filename);
+            assert.equal(descriptor.filename, filename);
+        }
+        const descriptor = unknownServiceFile(provider);
+        const result = await ordinary.download(descriptor, {filename: "user-choice.mp4",
+            fetchImpl: async () => responseFor("12345", {contentType: "video/webm", url: descriptor.url}),
+            handoffBlob: async (_blob, filename) => assert.equal(filename, "user-choice.mp4"),
+        });
+        assert.equal(result.filename, "user-choice.mp4");
+    });
+
+    test(`${provider} generic MIME leaves unknown suffix honest instead of guessing from URL or label`, async () => {
+        for (const type of ["video", "audio"]) {
+            const descriptor = unknownServiceFile(provider, type, {url: "https://cdn.example.org/looks-like-1080p.mp4",
+                filename: "upstream-1080P.BIN", quality_label: "1080P"});
+            const result = await ordinary.download(descriptor, {
+                fetchImpl: async () => responseFor("12345", {contentType: "application/octet-stream", url: descriptor.url}),
+                handoffBlob: async (_blob, filename) => assert.equal(filename, "upstream-1080P.BIN"),
+            });
+            assert.equal(result.filename, "upstream-1080P.BIN");
+        }
+    });
+
+    test(`${provider} HTML and invalid blobs cannot reach MIME-based rename or save`, async () => {
+        for (const type of ["video", "audio"]) {
+            for (const [content, options, errorCode] of [
+                ["<html>login</html>", {contentType: "text/html; charset=utf-8"}, "BROWSER_DOWNLOAD_UNSUPPORTED_CONTENT"],
+                ["", {contentType: type === "audio" ? "audio/mp4" : "video/mp4", contentLength: 0}, "BROWSER_DOWNLOAD_EMPTY"],
+                ["12345", {contentType: type === "audio" ? "audio/mp4" : "video/mp4", contentLength: 8}, "BROWSER_DOWNLOAD_SIZE_MISMATCH"],
+            ]) {
+                const descriptor = unknownServiceFile(provider, type);
+                const before = JSON.stringify(descriptor);
+                await assert.rejects(ordinary.download(descriptor, {
+                    fetchImpl: async () => responseFor(content, {...options, url: descriptor.url}),
+                    handoffBlob: () => assert.fail("rejected bytes must never reach save handoff"),
+                }), error => error.errorCode === errorCode);
+                assert.equal(JSON.stringify(descriptor), before);
+            }
+        }
+    });
+}
+
+test("MIME suffix inference does not extend to yt-dlp or legacy ordinary video", async () => {
+    for (const descriptor of [ordinaryItem({filename: "legacy.bin"}),
+        unknownServiceFile("yt_dlp_generic", "video", {selection_schema: "ytdlp_selected_format_v1", filename: "ytdlp.bin"})]) {
+        const result = await ordinary.download(descriptor, {
+            fetchImpl: async () => responseFor("12345", {contentType: "video/mp4", url: descriptor.url}),
+            handoffBlob: async (_blob, filename) => assert.equal(filename, descriptor.filename),
+        });
+        assert.equal(result.filename, descriptor.filename);
+    }
+});
+
 test("declared or response size above the bounded Blob limit is rejected", async () => {
     await assert.rejects(
         ordinary.download(ordinaryItem({size_bytes: 11}), {

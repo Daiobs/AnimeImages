@@ -130,6 +130,9 @@ def _candidate_record(url, metadata, *, ordinal, provider, source_url, media_typ
         'headers': headers, 'headers_present': headers_present, 'requires_cookie': requires_cookie,
         'expires_at': time.time() + TTL,
     }
+    if provider in {'tiantianjiexi_generic', 'kukutool_generic'}:
+        from .service_format_selection import candidate_facts
+        public.update(candidate_facts(metadata, url, media_type))
     return public, record
 
 
@@ -147,6 +150,10 @@ def issue_candidates(specs, *, work=None):
             if projection:
                 public['work'] = projection
                 record['work'] = dict(work)
+        elif work and public['provider_id'] in {'tiantianjiexi_generic', 'kukutool_generic'}:
+            from .service_format_selection import public_service_work
+            public['work'] = public_service_work(work)
+            record['work'] = dict(work)
         key = public['candidate_id']
         public['resource_token'] = signing.dumps({'id':key,'bundle':bundle_id}, salt=SALT)
         entry_bytes = len(json.dumps({key:record}, ensure_ascii=True, separators=(',', ':')).encode()) - 2

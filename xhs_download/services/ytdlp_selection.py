@@ -164,21 +164,21 @@ def choice(candidate):
             'detail_label': ' · '.join(facts), 'size_label': size_label(candidate)}
 
 
-def build_picker(candidates, preferences=None):
+def build_picker(candidates, preferences=None, *, provider=PROVIDER, schema=SCHEMA, choice_factory=choice):
     if not isinstance(candidates, (list, tuple)) or not candidates:
         return None
-    if any(not isinstance(c, dict) or c.get('provider_id') != PROVIDER for c in candidates):
+    if any(not isinstance(c, dict) or c.get('provider_id') != provider for c in candidates):
         return None
     work_candidate = next((c for c in candidates if isinstance(c.get('work'), dict)
-                           and c['work'].get('schema') == SCHEMA), candidates[0])
+                           and c['work'].get('schema') == schema), candidates[0])
     work = work_candidate.get('work', {})
-    if not isinstance(work, dict) or work.get('schema') != SCHEMA:
+    if not isinstance(work, dict) or work.get('schema') != schema:
         return None  # Old cached/multiwork/other-provider results keep their UI.
     groups = {str(c.get('work_id') or c.get('work_label') or '') for c in candidates}
     if len(groups - {''}) > 1:
         return None
-    videos = [choice(c) for c in candidates if c.get('media_type') == 'video' and c.get('role') not in {'cover', 'thumbnail', 'poster'}]
-    audios = [choice(c) for c in candidates if c.get('media_type') == 'audio']
+    videos = [choice_factory(c) for c in candidates if c.get('media_type') == 'video' and c.get('role') not in {'cover', 'thumbnail', 'poster'}]
+    audios = [choice_factory(c) for c in candidates if c.get('media_type') == 'audio']
     if not videos and not audios:
         return None
     videos.sort(key=lambda c: (number(c.get('height')) or 0, number(c.get('fps')) or 0,
@@ -218,6 +218,7 @@ def build_picker(candidates, preferences=None):
     previews = [c for c in primary if c['can_preview']]
     preview = min(previews, key=lambda c: (number(c.get('height')) or 0, number(c.get('size_bytes')) or float('inf'))) if previews else None
     return {'work': work, 'videos': videos, 'audios': audios, 'selected': selected,
+            'provider_id': provider, 'selection_schema': schema,
             'preview': preview, 'first': work_candidate, 'is_audio': not videos,
             'duration_label': duration_label(work.get('duration')),
             'video_primary': [c for c in videos if c['initial_visible']],
@@ -229,12 +230,12 @@ def build_picker(candidates, preferences=None):
             'format_count': len(videos) + len(audios)}
 
 
-def selected_link_descriptor(record):
+def selected_link_descriptor(record, *, provider=PROVIDER, schema=SCHEMA):
     """Authorized link metadata, not a media fetch or download grant."""
     from .upstream_candidates import candidate_url
     public = record.get('public', {})
-    if (record.get('provider_id') != PROVIDER or not isinstance(public, dict)
-            or public.get('provider_id') != PROVIDER
+    if (record.get('provider_id') != provider or not isinstance(public, dict)
+            or public.get('provider_id') != provider
             or public.get('media_type') not in {'video', 'audio'}):
         raise ValueError('selected_link_invalid')
     url = candidate_url(record.get('url'))
@@ -249,10 +250,10 @@ def selected_link_descriptor(record):
     if not re.fullmatch(r'[a-z0-9]{1,12}', extension):
         extension = 'bin'
     name = clean_filename(public.get('work_label') or 'media').strip(' .')[:160] or 'media'
-    format_id = re.sub(r'[^A-Za-z0-9_-]', '_', str(public.get('format_id') or 'original'))[:80]
-    return {'selection_schema': SCHEMA, 'candidate_id': record['candidate_id'],
+    format_id = re.sub(r'[^A-Za-z0-9_-]', '_', str(public.get('format_id') or record['candidate_id']))[:80]
+    return {'selection_schema': schema, 'candidate_id': record['candidate_id'],
             'selected_format_id': public.get('format_id') or '', 'url': url,
-            'type': public['media_type'], 'provider': PROVIDER,
+            'type': public['media_type'], 'provider': provider,
             'filename': f'{name}_{format_id}.{extension}'}
 
 

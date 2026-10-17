@@ -269,6 +269,7 @@ function fakeResultCard(status, items) {
     return {
         dataset: {status},
         querySelectorAll(selector) {
+            if (selector === "[data-ytdlp-picker]") return [];
             assert.equal(selector, "[data-batch-download-item]");
             return items;
         },

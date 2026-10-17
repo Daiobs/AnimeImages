@@ -1,5 +1,5 @@
 {% load static ytdlp_picker %}
-{% ytdlp_presentation upstream_candidates upstream_route as ytdlp_picker %}
+{% ytdlp_presentation upstream_candidates upstream_route video_items as ytdlp_picker %}
 {% if error_message or platform_notice or provider_notice or image_items or video_items or upstream_candidates %}
 <div class="results-scroll-anchor">
     {% if error_message %}

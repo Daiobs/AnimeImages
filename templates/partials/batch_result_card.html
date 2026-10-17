@@ -1,5 +1,5 @@
 {% load ytdlp_picker %}
-{% ytdlp_presentation row.upstream_candidates row.upstream_route as ytdlp_picker %}
+{% ytdlp_presentation row.upstream_candidates row.upstream_route row.video_items as ytdlp_picker %}
 <article class="batch-result-card batch-status-card-{{ row.status }}"
          data-status="{{ row.status }}"
          data-platform="{{ row.platform|default:'' }}"
@@ -61,7 +61,7 @@
                 </div>
             </div>
         </div>
-    {% elif ytdlp_picker %}
+    {% elif ytdlp_picker and not row.image_items %}
         <div class="batch-result-main"><div class="batch-result-info">
             {% include "partials/ytdlp_result_picker.html" %}
             {% include "partials/upstream_candidates.html" with upstream_candidates=row.upstream_candidates candidates_truncated=row.candidates_truncated upstream_route=row.upstream_route unexpanded_scope=row.unexpanded_scope returned_count=row.returned_count retained_count=row.retained_count unexpanded_count=row.unexpanded_count image_items=row.image_items video_items=row.video_items %}
@@ -69,6 +69,7 @@
     {% else %}
         <div class="batch-result-main">
             <div class="batch-result-info">
+                {% if ytdlp_picker %}{% include "partials/ytdlp_result_picker.html" %}{% else %}
                 <div class="batch-result-header">
                     <div>
                         <div class="batch-result-title">{{ row.display_title|default:row.base_filename|default:"已解析素材" }}</div>
@@ -114,6 +115,7 @@
 
                 <div class="alert alert-danger mb-3 d-none"
                      data-batch-retry-request-error></div>
+                {% endif %}
 
                 {% if row.image_items %}
                     <section class="batch-photo-section"
@@ -256,7 +258,7 @@
                     </section>
                 {% endif %}
 
-                {% if row.video_items %}
+                {% if row.video_items and not ytdlp_picker %}
                 <div class="batch-media-tools batch-media-tools-video"
                      data-batch-media-tools>
                     <div class="batch-result-cover">
