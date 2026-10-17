@@ -1,0 +1,13 @@
+<label class="ytdlp-format-option{% if format.selected %} is-selected{% endif %}" data-picker-option
+       {% if not format.initial_visible %}hidden{% endif %}>
+    <input type="radio" name="{{ ytdlp_picker.group_id }}" value="{{ format.candidate_id }}"
+           data-picker-radio data-token="{{ format.resource_token }}"
+           data-kind="{{ format.media_type }}" data-can-download="{{ format.can_download|yesno:'true,false' }}"
+           data-can-preview="{{ format.can_preview|yesno:'true,false' }}"
+           data-size-label="{{ format.size_label }}" data-label="{{ format.label }}"
+           data-limitation="{{ format.limitation }}" {% if format.selected %}checked{% endif %}>
+    <span class="ytdlp-format-copy"><strong>{{ format.label }}</strong><small>{{ format.detail_label }}</small>
+        {% if not format.can_download %}<small class="ytdlp-format-restricted">仅保留格式信息 · 查看选择说明</small>{% endif %}
+    </span>
+    <span class="ytdlp-format-size">{{ format.size_label }}</span>
+</label>

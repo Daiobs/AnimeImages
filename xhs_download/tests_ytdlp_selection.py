@@ -1,0 +1,268 @@
+"""Result selector and fresh selected-format authorization, without Provider I/O."""
+import json
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from django.core.cache import cache
+from django.template.loader import render_to_string
+from django.test import Client, SimpleTestCase, override_settings
+from django.urls import reverse
+
+from tools.upstream_match_worker import compact_descriptor
+from .services.upstream_candidates import resolve_candidate_record
+from .services.upstream_delivery import normalize_upstream_result
+from .services.ytdlp_selection import build_picker, capability, context_required, selected_descriptor
+
+
+@override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}})
+class YtdlpSelectionTests(SimpleTestCase):
+    def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+        for name, result in (
+            ('xhs_download.services.upstream_delivery.validate_public_download_url', None),
+            ('xhs_download.services.upstream_candidates.validate_public_download_url', None),
+        ):
+            guard = patch(name, side_effect=lambda url: url)
+            guard.start(); self.addCleanup(guard.stop)
+        no_network = patch('requests.sessions.Session.request', side_effect=AssertionError('unexpected network'))
+        no_network.start(); self.addCleanup(no_network.stop)
+        self.match = {'provider_id': 'yt_dlp_generic', 'extractor_id': 'Fixture', 'version': '2026.6.9', 'label': 'Fixture'}
+
+    def result(self, formats=None, **changes):
+        payload = {'id': 'work-one', 'title': 'A useful work', 'uploader': 'Author', 'duration': 60,
+                   'thumbnail': 'https://cdn.example.org/cover.jpg',
+                   'formats': formats or [self.video('1080', 1080), self.video('720', 720)]}
+        payload.update(changes)
+        return normalize_upstream_result(payload, match=self.match, source_url='https://site.example.org/watch/one')
+
+    def video(self, identity, height=1080, **changes):
+        return {'format_id': identity, 'url': f'https://cdn.example.org/{identity}.mp4', 'height': height,
+                'width': height * 16 // 9 if height is not None else None, 'ext': 'mp4', 'protocol': 'https', 'vcodec': 'h264', 'acodec': 'aac',
+                'http_headers': {'User-Agent': 'normal agent', 'Accept': '*/*'}, **changes}
+
+    def candidate(self, **changes):
+        return self.result([self.video('one', **changes)]).metadata['upstream_candidates'][0]
+
+    def gates(self):
+        for name, value in (
+            ('xhs_download.services.provider_access.load_runtime_setting', SimpleNamespace()),
+            ('xhs_download.services.platforms.third_party.provider_is_enabled', True),
+            ('xhs_download.services.provider_access.upstream_match_is_blocked', False),
+            ('xhs_download.services.provider_access.third_party_public_access_allowed', True),
+            ('xhs_download.services.provider_access.upstream_match_is_public_allowed', True),
+            ('xhs_download.views.get_download_runtime_setting', SimpleNamespace()),
+            ('xhs_download.views.check_download_cost_preflight', None),
+            ('xhs_download.views.check_download_request_limits', ('client', None)),
+        ):
+            active = patch(name, return_value=value)
+            active.start(); self.addCleanup(active.stop)
+
+    def post(self, candidate, action='download', **changes):
+        data = {key: candidate[key] for key in ('candidate_id', 'resource_token')}
+        data.update(action=action); data.update(changes)
+        return self.client.post(reverse('ytdlp_selected_format'), data, content_type='application/json')
+
+    def test_thumbnail_survives_compaction_without_300_character_url_truncation(self):
+        url = 'https://cdn.example.org/cover.jpg?x=' + 'a' * 400
+        self.assertEqual(compact_descriptor({'thumbnail': url})['thumbnail'], url)
+        self.assertEqual(compact_descriptor({'thumbnails': [{'url': []}, {'url': url}]})['thumbnail'], url)
+        self.assertNotIn('thumbnail', compact_descriptor({'thumbnails': [{'url': []}]}))
+
+    def test_single_work_information_is_not_a_public_signed_url_or_header(self):
+        candidates = self.result().metadata['upstream_candidates']
+        work = candidates[0]['work']
+        self.assertEqual(work['title'], 'A useful work')
+        self.assertEqual(work['author'], 'Author')
+        self.assertEqual(work['duration'], 60)
+        self.assertTrue(work['cover_available'])
+        self.assertNotIn('https://', json.dumps(work))
+        self.assertNotIn('work', candidates[1])
+        record = resolve_candidate_record(candidates[0]['resource_token'], candidates[0]['candidate_id'])
+        self.assertEqual(record['work']['cover_url'], 'https://cdn.example.org/cover.jpg')
+
+    def test_highest_direct_video_selected_but_higher_split_variant_preserved(self):
+        candidates = self.result([self.video('4k', 2160, acodec='none'), self.video('1080', 1080),
+                                  self.video('720', 720)]).metadata['upstream_candidates']
+        picker = build_picker(candidates)
+        self.assertEqual(picker['selected']['format_id'], '1080')
+        self.assertEqual(len(picker['videos']), 3)
+        self.assertEqual(picker['videos'][0]['format_id'], '4k')
+        self.assertFalse(picker['videos'][0]['can_download'])
+        self.assertIn('合并', picker['videos'][0]['limitation'])
+
+    def test_duplicate_quality_different_fps_codec_language_are_retained(self):
+        candidates = self.result([self.video('a', fps=30), self.video('b', fps=60),
+                                  self.video('c', vcodec='av1'), self.video('d', language='ja')]).metadata['upstream_candidates']
+        self.assertEqual({r['format_id'] for r in build_picker(candidates)['videos']}, {'a', 'b', 'c', 'd'})
+
+    def test_sizes_are_estimated_only_when_the_input_says_so(self):
+        candidates = self.result([self.video('exact', filesize=1024), self.video('approx', filesize_approx=2048),
+                                  self.video('unknown')]).metadata['upstream_candidates']
+        rows = {r['format_id']: r for r in build_picker(candidates)['videos']}
+        self.assertFalse(rows['exact']['size_label'].startswith('约'))
+        self.assertTrue(rows['approx']['size_label'].startswith('约'))
+        self.assertEqual(rows['unknown']['size_label'], '大小未知')
+
+    def test_audio_only_is_the_primary_result_on_non_youtube_sources(self):
+        candidate = self.candidate(ext='m4a', vcodec='none', acodec='aac', abr=64, height=None,
+                                   url='https://cdn.example.org/voice.m4a')
+        picker = build_picker([candidate])
+        self.assertTrue(picker['is_audio'])
+        self.assertEqual(picker['audios'][0]['label'], '64 kbps')
+        self.assertTrue(picker['selected']['can_download'])
+        html = render_to_string('partials/ytdlp_result_picker.html', {'ytdlp_picker': picker})
+        self.assertNotIn('视频格式', html)
+        self.assertIn('下载所选音频', html)
+        self.assertNotIn('Hi-Res', html)
+
+    def test_streams_drm_insecure_context_and_unknown_are_not_downloadable(self):
+        for changes in (
+            {'protocol': 'm3u8_native'}, {'protocol': 'http_dash_segments'}, {'has_drm': True},
+            {'url': 'http://cdn.example.org/file.mp4', 'protocol': 'http'},
+            {'http_headers': {'Referer': 'https://site.example.org/'}},
+            {'http_headers': {'Authorization': 'Bearer secret'}}, {'acodec': None, 'vcodec': None},
+        ):
+            with self.subTest(changes=changes):
+                candidate = self.candidate(**changes)
+                self.assertFalse(capability(candidate)['can_download'])
+                with self.assertRaises(ValueError):
+                    selected_descriptor(resolve_candidate_record(candidate['resource_token'], candidate['candidate_id']))
+
+    def test_non_sensitive_preferences_do_not_become_fabricated_cookie_requirements(self):
+        self.assertFalse(context_required({'User-Agent': 'x', 'Accept': '*/*'}, headers_present=True))
+        self.assertTrue(context_required({}, headers_present=True))
+        self.assertTrue(context_required({'Origin': 'https://site.example.org'}))
+        self.assertTrue(context_required({'User-Agent': 'x'}, requires_cookie=True))
+        headers = {f'x-test-{i}': 'x' for i in range(33)}
+        self.assertTrue(self.candidate(http_headers=headers)['download_context_required'])
+
+    def test_other_providers_and_collections_keep_existing_presentation(self):
+        candidate = self.candidate()
+        self.assertIsNone(build_picker([{**candidate, 'provider_id': 'gallery_dl_generic'}]))
+        self.assertIsNone(build_picker([{k: v for k, v in candidate.items() if k != 'work'}]))
+        result = self.result(_type='playlist', entries=[{'title': 'child', **self.video('child')}],
+                             upstream_scope={'bounded': True})
+        self.assertNotIn('work', result.metadata['upstream_candidates'][0])
+
+    def test_home_and_batch_render_selector_not_old_default_download_button(self):
+        result = self.result()
+        candidates = result.metadata['upstream_candidates']
+        html = render_to_string('partials/xhs_results_region.html', {'upstream_candidates': candidates,
+            'video_items': [{'video_url': 'https://cdn.example.org/old.mp4'}], 'base_filename': 'sample'})
+        self.assertIn('data-ytdlp-picker', html)
+        self.assertNotIn('id="download-btn"', html)
+        self.assertNotIn('data-url="https://cdn.example.org/old.mp4"', html)
+        self.assertNotIn('src="https://cdn.example.org/', html)
+        batch = render_to_string('partials/batch_result_card.html', {'row': {'status': 'success',
+            'upstream_candidates': candidates, 'video_items': [], 'image_items': []}})
+        self.assertIn('data-ytdlp-picker', batch)
+        self.assertIn('下载所选视频', batch)
+
+    def test_more_than_64_formats_remain_selectable_without_dedup_by_resolution(self):
+        candidates = self.result([self.video(f'fmt-{i}', height=1080) for i in range(90)]).metadata['upstream_candidates']
+        picker = build_picker(candidates)
+        self.assertEqual(picker['format_count'], 90)
+        html = render_to_string('partials/ytdlp_result_picker.html', {'ytdlp_picker': picker})
+        self.assertEqual(html.count('data-picker-radio'), 90)
+        self.assertIn('更多视频格式', html)
+
+    def test_selected_action_returns_the_selected_resource_not_first_default(self):
+        self.gates()
+        candidates = self.result().metadata['upstream_candidates']
+        first = self.post(candidates[0]); second = self.post(candidates[1])
+        self.assertEqual(first.status_code, 200, first.content)
+        self.assertEqual(second.status_code, 200, second.content)
+        self.assertEqual(first.json()['item']['url'], 'https://cdn.example.org/1080.mp4')
+        self.assertEqual(second.json()['item']['url'], 'https://cdn.example.org/720.mp4')
+        self.assertEqual(second.json()['item']['selected_format_id'], '720')
+        self.assertEqual(second.json()['item']['candidate_id'], candidates[1]['candidate_id'])
+        self.assertNotIn('headers', second.json()['item'])
+        self.assertIn('no-store', second['Cache-Control'])
+        self.assertFalse(second.json()['server_media_relay'])
+
+    def test_audio_descriptor_keeps_type_extension_and_no_transcoding(self):
+        self.gates()
+        candidate = self.candidate(ext='m4a', acodec='aac', vcodec='none', url='https://cdn.example.org/song.m4a')
+        response = self.post(candidate)
+        self.assertEqual(response.status_code, 200, response.content)
+        item = response.json()['item']
+        self.assertEqual(item['type'], 'audio')
+        self.assertTrue(item['filename'].endswith('.m4a'))
+        self.assertEqual(item['video_tracks'], 'absent')
+
+    def test_action_requires_current_admission_even_after_parse(self):
+        self.gates(); candidate = self.candidate()
+        for name in ('xhs_download.services.platforms.third_party.provider_is_enabled',
+                     'xhs_download.services.provider_access.upstream_match_is_public_allowed',
+                     'xhs_download.services.provider_access.third_party_public_access_allowed'):
+            with patch(name, return_value=False):
+                self.assertEqual(self.post(candidate).status_code, 403)
+        with patch('xhs_download.services.provider_access.upstream_match_is_blocked', return_value=True):
+            self.assertEqual(self.post(candidate).status_code, 403)
+
+    def test_tampering_extra_urls_and_expired_cache_are_rejected(self):
+        self.gates(); candidate = self.candidate()
+        self.assertEqual(self.post(candidate, url='https://wrong.example/a.mp4').status_code, 400)
+        self.assertEqual(self.post(candidate, format_id='best').status_code, 400)
+        self.assertEqual(self.post(candidate, candidate_id='different').status_code, 403)
+        self.assertEqual(self.post(candidate, resource_token=candidate['resource_token'] + 'x').status_code, 403)
+        cache.clear()
+        self.assertEqual(self.post(candidate).status_code, 403)
+
+    def test_cost_and_rate_limits_are_not_bypassed(self):
+        self.gates(); candidate = self.candidate()
+        with patch('xhs_download.views.check_download_cost_preflight', return_value=('LIMIT', '太大', 413)):
+            self.assertEqual(self.post(candidate).status_code, 413)
+        from django.http import JsonResponse
+        with patch('xhs_download.views.check_download_request_limits', return_value=('client', JsonResponse({'status': 'error'}, status=429))):
+            self.assertEqual(self.post(candidate).status_code, 429)
+
+    def test_cover_is_bound_to_cached_work_and_does_not_create_download_authority(self):
+        self.gates(); candidate = self.candidate()
+        with patch('xhs_download.services.rate_limits.consume_fixed_window', return_value=SimpleNamespace(allowed=True)), \
+                patch('xhs_download.views.check_download_request_limits') as download:
+            response = self.post(candidate, 'cover')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()['url'], 'https://cdn.example.org/cover.jpg')
+        self.assertNotIn('item', response.json())
+        download.assert_not_called()
+
+    def test_csrf_and_method_protection(self):
+        self.assertEqual(Client(enforce_csrf_checks=True).post(reverse('ytdlp_selected_format'), {}, content_type='application/json').status_code, 403)
+        self.assertEqual(self.client.get(reverse('ytdlp_selected_format')).status_code, 405)
+
+    def test_route_preference_reordering_does_not_lose_work_card_or_cover_binding(self):
+        from .services.upstream_routes import apply_format_preferences
+        original = self.result()
+        first = original.metadata['upstream_candidates'][0]
+        reordered = apply_format_preferences(original, {'max_height': 720})
+        picker = build_picker(reordered.metadata['upstream_candidates'], {'max_height': 720})
+        self.assertEqual(picker['work']['title'], 'A useful work')
+        self.assertEqual(picker['work']['source_host'], 'site.example.org')
+        self.assertEqual(picker['first']['candidate_id'], first['candidate_id'])
+        self.assertEqual(picker['selected']['format_id'], '720')
+        self.assertEqual(len(picker['videos']), 2)
+
+    def test_initial_choices_group_resolution_but_all_variants_remain_available(self):
+        candidates = self.result([self.video('a'), self.video('b', fps=60), self.video('c', 720)]).metadata['upstream_candidates']
+        picker = build_picker(candidates)
+        self.assertEqual(len(picker['videos']), 3)
+        self.assertEqual(sum(c['initial_visible'] for c in picker['videos']), 2)
+        self.assertTrue(picker['video_more'])
+
+    def test_private_descriptor_revalidation_rejects_required_context_even_after_truncation(self):
+        self.gates()
+        headers = {'User-Agent': 'x'}
+        headers.update({f'Accept-{i}': 'x' for i in range(35)})
+        headers['Cookie'] = 'not-public'
+        candidate = self.candidate(http_headers=headers)
+        self.assertEqual(self.post(candidate).status_code, 409)
+
+    def test_admission_service_failure_is_not_a_success_or_unhandled_exception(self):
+        self.gates()
+        candidate = self.candidate()
+        with patch('xhs_download.services.provider_access.load_runtime_setting', side_effect=RuntimeError('private message')):
+            response = self.post(candidate)
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn('private message', response.content.decode())

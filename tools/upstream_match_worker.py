@@ -63,7 +63,7 @@ DESCRIPTOR_FIELDS = frozenset({
     "media_completeness", "candidate_kind", "work_label", "relationship_id", "relationship_role",
     "filename", "category", "subcategory", "num", "count", "date", "description",
     "requires_merge", "role", "audio_asset_present", "work_id", "upstream_asset_id", "asset_id",
-    "audio_tracks", "video_tracks", "upstream_role",
+    "audio_tracks", "video_tracks", "upstream_role", "thumbnail",
 })
 
 
@@ -76,7 +76,7 @@ def compact_descriptor(value):
             if key in value:
                 result[key] = item
         elif isinstance(item, str):
-            identity = key.endswith('url') or key in {
+            identity = key.endswith('url') or key == 'thumbnail' or key in {
                 'id', 'format_id', 'asset_id', 'upstream_asset_id', 'work_id', 'relationship_id'}
             result[key] = item if identity else item[:300]
     for key in ("upstream_track_evidence", "upstream_bmff_track_evidence", "upstream_scope",
@@ -93,6 +93,11 @@ def compact_descriptor(value):
             for relation in value['relationships'][:16] if isinstance(relation, dict)
             and all(isinstance(relation.get(key), str) and 0 < len(relation[key]) <= 120
                     for key in ('relationship_type', 'source_asset_id', 'target_asset_id'))]
+    if not isinstance(result.get('thumbnail'), str) and isinstance(value.get('thumbnails'), list):
+        for item in reversed(value['thumbnails'][:32]):
+            if isinstance(item, dict) and isinstance(item.get('url'), str) and item['url']:
+                result['thumbnail'] = item['url']
+                break
     return result
 _STAGE = "request"
 

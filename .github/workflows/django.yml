@@ -146,6 +146,8 @@ jobs:
           node --check static/js/provider_lab.js
           node --check static/js/platform_ledger.js
           node --check static/js/upstream_candidates.js
+          node --check static/js/ytdlp_result_picker.js
+          node --test tests_js/ytdlp_result_picker.test.js
           node --check static/js/project_settings.js
           node --check static/js/platform_coverage_modal.js
           node --check static/js/mail_settings.js

@@ -1,3 +1,4 @@
+{% if ytdlp_picker %}<details class="ytdlp-technical"><summary>查看技术信息与全部原始候选</summary>{% endif %}
 {% if upstream_route %}
 <p class="upstream-route-status" data-upstream-route-status>
     {% if upstream_route.mode == 'manual' %}手动路线{% elif upstream_route.mode == 'default' %}默认路线{% else %}上游路线{% endif %}
@@ -9,7 +10,7 @@
 <p class="upstream-candidate-limitation" data-upstream-scope-status>范围受限，完整性未知；仅展示本次已取得的候选。</p>
 {% endif %}
 {% if upstream_candidates %}
-<details class="upstream-candidates" data-upstream-candidates data-candidate-url="/media/upstream-candidate/" {% if not image_items and not video_items %}open{% endif %}>
+<details class="upstream-candidates" data-upstream-candidates data-candidate-url="/media/upstream-candidate/" {% if not image_items and not video_items and not ytdlp_picker %}open{% endif %}>
     <summary>已取得的媒体与格式候选（{{ upstream_candidates|length }}）</summary>
     <header class="upstream-candidates-heading">
         <h3>媒体与格式候选 <small>{{ upstream_candidates|length }}</small></h3>
@@ -58,3 +59,4 @@
     {% if upstream_candidates|length > 64 %}<button type="button" class="btn btn-outline-secondary btn-sm" data-candidates-expand>再显示最多 64 项</button>{% endif %}
 </details>
 {% endif %}
+{% if ytdlp_picker %}</details>{% endif %}

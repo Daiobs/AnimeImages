@@ -1,0 +1,238 @@
+"""User-facing yt-dlp choices, built from issued evidence rather than client URLs.
+
+This projection never extracts media or changes provider selection. It keeps all
+format identities, including formats this browser-only delivery path cannot save.
+"""
+import math
+import re
+from urllib.parse import urlsplit
+
+from .common import clean_filename
+from .provider_lab.contracts import safe_public_text
+
+PROVIDER = 'yt_dlp_generic'
+SCHEMA = 'ytdlp_selected_format_v1'
+VIDEO_EXTENSIONS = frozenset({'mp4', 'webm', 'mov', 'm4v', 'mkv'})
+AUDIO_EXTENSIONS = frozenset({'m4a', 'mp3', 'aac', 'ogg', 'opus', 'flac', 'wav', 'weba'})
+# These preferences can be omitted on a credential-free browser attempt. In
+# particular Referer, Origin, Cookie and Authorization are NOT in this set.
+OPTIONAL_HEADERS = frozenset({'user-agent', 'accept', 'accept-language', 'accept-encoding', 'connection'})
+LIMITATIONS = {
+    'stream': '这是流媒体格式，当前选择器不合并分片；可在技术详情中复制来源。',
+    'merge': '此格式需要合并音视频；当前选择器不将它当作完整文件下载。',
+    'context': '此资源需要额外请求上下文，暂不能由浏览器直接保存。',
+    'insecure': '这是 HTTP 资源，当前页面不直接下载；可复制来源链接。',
+    'unknown': '媒体信息不足，暂不能确认可直接保存的文件。',
+    'drm': '此格式标有 DRM，不提供下载操作。',
+}
+
+
+def number(value):
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+        return result if math.isfinite(result) and result >= 0 else None
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def text(value, length=200):
+    return safe_public_text(value, length) if isinstance(value, str) else ''
+
+
+def display_host(value):
+    # This value comes from the validated work URL, not arbitrary display text.
+    # Preserve the domain without publishing a path, query or signed reference.
+    if (not isinstance(value, str) or len(value) > 253 or '.' not in value
+            or any(not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label)
+                   for label in value.split('.'))):
+        return ''
+    return value
+
+
+def public_work(work):
+    if not isinstance(work, dict) or work.get('collection'):
+        return {}
+    return {'schema': SCHEMA, 'title': text(work.get('title'), 300),
+            'author': text(work.get('author'), 200), 'duration': number(work.get('duration')),
+            'source_host': display_host(work.get('source_host')),
+            'cover_available': bool(work.get('cover_url'))}
+
+
+def context_required(headers, *, headers_present=False, requires_cookie=False):
+    if requires_cookie:
+        return True
+    if headers_present and not headers:
+        return True  # The importer knows headers exist but did not retain them.
+    return bool(headers and (not isinstance(headers, dict)
+                or any(str(key).lower() not in OPTIONAL_HEADERS for key in headers)))
+
+
+def capability(candidate):
+    """UI hint only; the action endpoint revalidates the private issued record."""
+    protocol = str(candidate.get('protocol') or '').lower()
+    state = str(candidate.get('delivery_state') or '')
+    kind = candidate.get('media_type')
+    ext = str(candidate.get('extension') or '').lower().lstrip('.')
+    reason = ''
+    if candidate.get('has_drm') is True:
+        reason = 'drm'
+    elif protocol == 'http' or state == 'insecure_reference':
+        reason = 'insecure'
+    elif any(marker in protocol for marker in ('m3u8', 'dash', 'm3u')) or state == 'streaming_media':
+        reason = 'stream'
+    elif candidate.get('requires_merge') is True or (kind == 'video' and (
+            state in {'silent_video', 'separate_media_tracks'} or candidate.get('audio_tracks') == 'absent')):
+        reason = 'merge'
+    elif candidate.get('download_context_required', candidate.get('requires_context', False)):
+        reason = 'context'
+    elif protocol != 'https':
+        reason = 'unknown'
+    elif kind == 'video':
+        if state != 'complete' or ext not in VIDEO_EXTENSIONS:
+            reason = 'unknown'
+    elif kind == 'audio':
+        if (state != 'audio_only' or candidate.get('audio_tracks') != 'present'
+                or candidate.get('video_tracks') != 'absent' or ext not in AUDIO_EXTENSIONS):
+            reason = 'unknown'
+    else:
+        reason = 'unknown'
+    return {'can_download': not reason, 'limitation': LIMITATIONS.get(reason, ''),
+            'can_preview': not reason and ext in {'mp4', 'webm', 'm4v', 'm4a', 'mp3', 'ogg', 'opus', 'wav'}}
+
+
+def size_label(candidate):
+    size = number(candidate.get('size_bytes'))
+    if not size:
+        return '大小未知'
+    units = ('B', 'KiB', 'MiB', 'GiB')
+    unit = 0
+    while size >= 1024 and unit < len(units) - 1:
+        size /= 1024
+        unit += 1
+    return ('约 ' if candidate.get('size_is_estimate') else '') + f'{size:.1f} {units[unit]}'
+
+
+def duration_label(value):
+    value = number(value)
+    if value is None:
+        return ''
+    seconds = int(value)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return f'{hours}:{minutes:02}:{seconds:02}' if hours else f'{minutes}:{seconds:02}'
+
+
+def choice(candidate):
+    kind = candidate.get('media_type')
+    height = number(candidate.get('height'))
+    abr = number(candidate.get('audio_bitrate')) or number(candidate.get('bitrate'))
+    label = (f'{int(height)}p' if height else text(candidate.get('format_label'), 80) or '视频格式') if kind == 'video' else (
+        f'{abr:g} kbps' if abr else text(candidate.get('format_label'), 80) or '原始音频')
+    facts = [str(candidate.get('extension') or '格式未知').upper()]
+    fps = number(candidate.get('fps'))
+    if kind == 'video' and fps:
+        facts.append(f'{fps:g} fps')
+    if kind == 'video':
+        facts.append({'present': '含音频', 'absent': '无音频'}.get(candidate.get('audio_tracks'), '音轨未知'))
+    language = text(candidate.get('language'), 50)
+    if language:
+        facts.append(language)
+    dynamic_range = text(candidate.get('dynamic_range'), 30)
+    if dynamic_range and dynamic_range.upper() != 'SDR':
+        facts.append(dynamic_range)
+    codec = text(candidate.get('vcodec' if kind == 'video' else 'acodec'), 60)
+    if codec and codec not in {'none', 'unknown'}:
+        facts.append(codec)
+    return {**candidate, **capability(candidate), 'label': label,
+            'detail_label': ' · '.join(facts), 'size_label': size_label(candidate)}
+
+
+def build_picker(candidates, preferences=None):
+    if not isinstance(candidates, (list, tuple)) or not candidates:
+        return None
+    if any(not isinstance(c, dict) or c.get('provider_id') != PROVIDER for c in candidates):
+        return None
+    work_candidate = next((c for c in candidates if isinstance(c.get('work'), dict)
+                           and c['work'].get('schema') == SCHEMA), candidates[0])
+    work = work_candidate.get('work', {})
+    if not isinstance(work, dict) or work.get('schema') != SCHEMA:
+        return None  # Old cached/multiwork/other-provider results keep their UI.
+    groups = {str(c.get('work_id') or c.get('work_label') or '') for c in candidates}
+    if len(groups - {''}) > 1:
+        return None
+    videos = [choice(c) for c in candidates if c.get('media_type') == 'video' and c.get('role') not in {'cover', 'thumbnail', 'poster'}]
+    audios = [choice(c) for c in candidates if c.get('media_type') == 'audio']
+    if not videos and not audios:
+        return None
+    videos.sort(key=lambda c: (number(c.get('height')) or 0, number(c.get('fps')) or 0,
+                              number(c.get('bitrate')) or 0), reverse=True)
+    audios.sort(key=lambda c: (number(c.get('audio_bitrate')) or number(c.get('bitrate')) or 0), reverse=True)
+    primary = videos or audios
+    direct = [c for c in primary if c['can_download']]
+    preferred = []
+    if videos and isinstance(preferences, dict) and preferences:
+        prefixes = {'h264': ('h264', 'avc1', 'avc3'), 'hevc': ('hevc', 'h265', 'hev1', 'hvc1'),
+                    'vp9': ('vp9', 'vp09'), 'av1': ('av1', 'av01')}
+        for c in direct:
+            ceiling = number(preferences.get('max_height'))
+            height = number(c.get('height'))
+            codec = preferences.get('preferred_video_codec')
+            ext = preferences.get('preferred_container')
+            if ceiling and (not height or height > ceiling):
+                continue
+            if codec and not str(c.get('vcodec') or '').lower().startswith(prefixes.get(codec, ('__unknown__',))):
+                continue
+            if ext and str(c.get('extension') or '').lower() != ext:
+                continue
+            preferred.append(c)
+    selected = (preferred or direct or primary)[0]
+    for group in (videos, audios):
+        seen = set()
+        visible = 0
+        for c in group:
+            c['selected'] = c['candidate_id'] == selected['candidate_id']
+            # One initial representative per resolution/bitrate; never delete
+            # alternate codecs, languages, frame rates or unknown descriptors.
+            key = c.get('height') if c['media_type'] == 'video' else c.get('audio_bitrate') or c.get('bitrate')
+            c['initial_visible'] = c['selected'] or (key not in seen and visible < 6)
+            if c['initial_visible']:
+                seen.add(key)
+                visible += 1
+    previews = [c for c in primary if c['can_preview']]
+    preview = min(previews, key=lambda c: (number(c.get('height')) or 0, number(c.get('size_bytes')) or float('inf'))) if previews else None
+    return {'work': work, 'videos': videos, 'audios': audios, 'selected': selected,
+            'preview': preview, 'first': work_candidate, 'is_audio': not videos,
+            'duration_label': duration_label(work.get('duration')),
+            'video_more': any(not c['initial_visible'] for c in videos),
+            'audio_more': any(not c['initial_visible'] for c in audios),
+            'group_id': 'ytfmt-' + re.sub('[^a-zA-Z0-9_-]', '', str(work_candidate.get('candidate_id', '')))[:80],
+            'format_count': len(videos) + len(audios)}
+
+
+def selected_descriptor(record):
+    """Fresh browser-only authority: no caller-supplied URL or format facts."""
+    from .upstream_delivery import safe_resource_url
+    public = record.get('public', {})
+    if (record.get('provider_id') != PROVIDER or not isinstance(public, dict)
+            or public.get('provider_id') != PROVIDER or not capability(public)['can_download']
+            or context_required(record.get('headers'), headers_present=record.get('headers_present'),
+                                requires_cookie=record.get('requires_cookie'))):
+        raise ValueError('selected_format_not_direct')
+    url = safe_resource_url(record.get('url'))
+    if not url:
+        raise ValueError('selected_format_url_invalid')
+    extension = str(public.get('extension') or '').lower().lstrip('.')
+    name = clean_filename(public.get('work_label') or 'media').strip(' .')[:160] or 'media'
+    format_id = re.sub(r'[^A-Za-z0-9_-]', '_', str(public.get('format_id') or 'original'))[:80]
+    return {'selection_schema': SCHEMA, 'candidate_id': record['candidate_id'],
+            'selected_format_id': public.get('format_id') or '', 'url': url,
+            'type': public['media_type'], 'provider': PROVIDER, 'source_platform': 'upstream',
+            'asset_id': 'upstream:selection:' + record['candidate_id'],
+            'browser_upstream_bound': True, 'browser_direct_fetch_safe': True,
+            'requires_merge': False, 'requires_cookie': False,
+            'audio_tracks': public.get('audio_tracks'), 'video_tracks': public.get('video_tracks'),
+            'filename': f'{name}_{format_id}.{extension}',
+            'size_bytes': number(public.get('size_bytes')) or 0,
+            'size_is_estimate': bool(public.get('size_is_estimate'))}

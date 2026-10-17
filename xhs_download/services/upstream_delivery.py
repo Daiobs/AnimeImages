@@ -365,7 +365,12 @@ def normalize_upstream_result(payload, *, match, source_url):
         admitted_rows.append((safe_url, metadata))
     if not candidates:
         raise XhsParseError('上游没有返回有效的公网媒体候选。')
-    candidates = issue_candidates(candidates)
+    work = None
+    if provider == 'yt_dlp_generic' and not collection:
+        work = {'title': str(title), 'author': str(author), 'duration': payload.get('duration'),
+                'source_host': urlsplit(source_url).hostname or '', 'collection': False,
+                'cover_url': safe_resource_url(payload.get('thumbnail'))}
+    candidates = issue_candidates(candidates, work=work)
     assets = ()
     if provider == 'yt_dlp_generic':
         downloadable_payload = {**payload, 'formats': [dict(meta, url=url) for url, meta in admitted_rows]}
