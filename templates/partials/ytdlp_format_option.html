@@ -4,11 +4,12 @@
            data-format-id="{{ format.format_id }}"
            data-kind="{{ format.media_type }}" data-can-download="{{ format.can_download|yesno:'true,false' }}"
            data-can-preview="{{ format.can_preview|yesno:'true,false' }}"
+           data-can-check="{{ format.can_check|yesno:'true,false' }}"
            data-size-label="{{ format.size_label }}" data-label="{{ format.label }}"
            data-limitation="{{ format.limitation }}" {% if format.selected %}checked{% endif %}>
-    <span class="ytdlp-format-copy"><strong>{{ format.label }}</strong><small>{{ format.detail_label }}</small>
+    <span class="ytdlp-format-copy"><strong>{{ format.label }}</strong><small data-picker-detail>{{ format.detail_label }}</small>
         {% if format.format_id %}<small>格式 {{ format.format_id }}</small>{% endif %}
-        {% if not format.can_download %}<small class="ytdlp-format-restricted">{{ format.limitation }}</small>{% endif %}
+        <small class="ytdlp-format-restricted" data-picker-option-limitation{% if not format.limitation %} hidden{% endif %}>{{ format.limitation }}</small>
     </span>
-    <span class="ytdlp-format-size">{{ format.size_label }}</span>
+    <span class="ytdlp-format-size" data-picker-option-size>{{ format.size_label }}</span>
 </label>

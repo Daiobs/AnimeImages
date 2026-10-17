@@ -26,12 +26,54 @@ function response(content, source, type = "video/mp4", overrides = {}) {
 }
 
 test("selection captures one immutable candidate identity and its exact token", () => {
-    const radio = {value: "b", dataset: {token: "signed-b", kind: "video", canDownload: "true", canPreview: "false", label: "720p"}};
+    const radio = {value: "b", dataset: {token: "signed-b", kind: "video", canDownload: "true", canPreview: "false", canCheck: "true", label: "720p"}};
     const result = picker.selected({querySelector: () => radio});
     radio.value = "c"; radio.dataset.token = "signed-c";
     assert.equal(result.id, "b"); assert.equal(result.token, "signed-b");
     assert.equal(result.canDownload, true); assert.equal(result.canPreview, false);
+    assert.equal(result.canCheck, true);
     assert.equal(Object.isFrozen(result), true);
+});
+
+test("check descriptor posts only the selected identity and returns no download grant", async () => {
+    const selection = {...selected(), formatId: "format-720"};
+    const payload = {status: "success", candidate: {candidate_id: selection.id, format_id: selection.formatId,
+        can_download: true, can_preview: true, can_check: false},
+        check: {reason: "complete", requests: 2, bytes_read: 4096, complete_moov: true, video: "present", audio: "present"}};
+    const controller = new AbortController(); let calls = 0;
+    const result = await picker.descriptor(root, selection, "check", {documentObject, windowObject: win,
+        fetchImpl: async (_url, options) => {
+            calls += 1;
+            assert.deepEqual(JSON.parse(options.body), {candidate_id: selection.id, resource_token: selection.token, action: "check"});
+            assert.equal(options.signal, controller.signal);
+            return {ok: true, json: async () => payload};
+        }}, controller.signal);
+    assert.equal(calls, 1);
+    assert.deepEqual(result, {candidate: payload.candidate, check: payload.check});
+    assert.equal(result.url, undefined);
+});
+
+test("check rejects substituted identities, malformed flags and all error statuses without retry", async () => {
+    const selection = {...selected(), formatId: "format-720"};
+    const candidate = {candidate_id: selection.id, format_id: selection.formatId,
+        can_download: true, can_preview: true, can_check: false};
+    const payloads = [null, {status: "success"}, ...[
+        {candidate_id: "other"}, {format_id: "other"}, {format_id: undefined},
+        {can_download: "true"}, {can_preview: undefined}, {can_check: "false"},
+    ].map(change => ({status: "success", candidate: {...candidate, ...change}, check: {reason: "complete"}})),
+    {status: "success", candidate, check: {}}, {status: "success", candidate}];
+    for (const payload of payloads) {
+        await assert.rejects(picker.descriptor(root, selection, "check", {documentObject, windowObject: win,
+            fetchImpl: async () => ({ok: true, json: async () => payload})}));
+    }
+    for (const status of [403, 409, 429, 503]) {
+        let calls = 0;
+        await assert.rejects(picker.descriptor(root, selection, "check", {documentObject, windowObject: win,
+            fetchImpl: async () => { calls += 1; return {ok: false, status,
+                json: async () => ({status: "error", message: `check-error-${status}`})}; }}),
+        {message: `check-error-${status}`});
+        assert.equal(calls, 1);
+    }
 });
 
 test("selected descriptor posts candidate identity, never a client URL or format expression", async () => {

@@ -102,6 +102,199 @@ function linkItem(id, type = "video", extra = {}) {
 test("cached template radios have no shared name before async mounting", () => {
     const source = fs.readFileSync(path.join(__dirname, "../templates/partials/ytdlp_format_option.html"), "utf8");
     assert.doesNotMatch(source, /\bname\s*=/);
+    assert.match(source, /data-can-check=/);
+    assert.match(source, /data-picker-detail/);
+});
+
+function checkPicker() {
+    const root = newPicker(["video", "other"]);
+    radios(root).forEach(radio => {
+        radio.dataset.canCheck = "true";
+        radio.dataset.canPreview = "false";
+        radio.dataset.limitation = "unknown tracks";
+        radio.parentNode.append(el("small", {"data-picker-detail": ""}),
+            el("small", {"data-picker-option-limitation": ""}), el("span", {"data-picker-option-size": ""}));
+    });
+    root.append(el("button", {"data-ytdlp-action": "download"}), el("button", {"data-ytdlp-action": "cancel"}),
+        el("p", {"data-picker-limitation": ""}), el("span", {"data-picker-size": ""}));
+    return root;
+}
+function click(root, action = "download") {
+    root.listeners.click({target: root.querySelector(`[data-ytdlp-action="${action}"]`), preventDefault() {}});
+}
+function checkResult(id = "video", changes = {}, reason = "complete") {
+    return {status: "success", candidate: {candidate_id: id, format_id: `format-${id}`,
+        can_download: true, can_preview: true, can_check: false, limitation: "",
+        detail_label: "MP4 / video + audio", size_label: "12 MB", ...changes},
+        check: {reason, requests: 2, bytes_read: 4096, complete_moov: true, video: "present", audio: "present"}};
+}
+const settle = () => new Promise(resolve => setImmediate(resolve));
+
+test("check is opt-in, fires once while busy, then needs a second click for the same resource download", async () => {
+    const {doc, win} = fixture(); const root = checkPicker(); doc.body.append(card(root));
+    const calls = [], saves = []; let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    picker.mount(root, doc, win, {ordinary: {download: async item => saves.push(item)},
+        fetchImpl: async (_url, options) => {
+            const body = JSON.parse(options.body); calls.push(body);
+            if (body.action === "check") {
+                await gate;
+                return {ok: true, json: async () => checkResult()};
+            }
+            return {ok: true, json: async () => ({status: "success", item: linkItem("video", "video", {
+                browser_upstream_bound: true, browser_direct_fetch_safe: true, requires_merge: false, requires_cookie: false})})};
+        }});
+    const button = root.querySelector('[data-ytdlp-action="download"]');
+    assert.equal(button.textContent, "检查所选视频");
+    assert.equal(button.disabled, false);
+    const snapshot = batch.collectBatchResourceLinks(doc, picker);
+    const selectionBeforeCheck = picker.selected(root);
+    await settle();
+    assert.equal(calls.length, 0, "mount and batch collection never probe formats");
+    click(root); click(root);
+    assert.equal(calls.length, 1);
+    assert.equal(button.disabled, true);
+    release(); await settle();
+    assert.equal(saves.length, 0, "check never automatically downloads");
+    assert.equal(button.disabled, false);
+    assert.match(button.textContent, /下载所选视频/);
+    assert.equal(picker.selected(root).canDownload, true);
+    assert.equal(picker.selected(root).canPreview, true);
+    assert.equal(root.querySelector("[data-picker-detail]").textContent, "MP4 / video + audio");
+    assert.equal(root.querySelector("[data-picker-option-size]").textContent, "12 MB");
+    assert.equal(root.querySelector("[data-picker-size]").textContent, "12 MB");
+    assert.equal(root.querySelector("[data-picker-option-limitation]").hidden, true);
+    assert.deepEqual(snapshot[0].selection, {id: "video", token: "signed-video", kind: "video", formatId: "format-video"});
+    assert.equal(Object.isFrozen(snapshot[0].selection), true);
+    assert.equal(selectionBeforeCheck.canDownload, false);
+    assert.equal(selectionBeforeCheck.canCheck, true);
+    click(root); await settle();
+    assert.deepEqual(calls, [
+        {candidate_id: "video", resource_token: "signed-video", action: "check"},
+        {candidate_id: "video", resource_token: "signed-video", action: "download"},
+    ]);
+    assert.equal(saves.length, 1);
+    assert.equal(saves[0].candidate_id, "video");
+    assert.equal(saves[0].selected_format_id, "format-video");
+});
+
+test("downloadable selections skip checking, and restricted or audio selections never check", async () => {
+    for (const state of ["downloadable", "restricted", "audio"]) {
+        const {doc, win} = fixture(); const root = checkPicker(); doc.body.append(root);
+        const radio = radios(root)[0];
+        if (state === "downloadable") radio.dataset.canDownload = "true";
+        if (state === "restricted") radio.dataset.canCheck = "false";
+        if (state === "audio") radio.dataset.kind = "audio";
+        const actions = [];
+        picker.mount(root, doc, win, {ordinary: {download: async () => {}},
+            fetchImpl: async (_url, options) => {
+                actions.push(JSON.parse(options.body).action);
+                return {ok: false, json: async () => ({status: "error", message: "download denied"})};
+            }});
+        await settle(); assert.deepEqual(actions, []);
+        click(root); await settle();
+        assert.deepEqual(actions, state === "downloadable" ? ["download"] : []);
+    }
+});
+
+test("inconclusive or restricted checks show reasons without enabling retries or changing selection", async () => {
+    for (const limitation of ["", "此格式需要合并音视频；当前选择器不将它当作完整文件下载。"]) {
+        const {doc, win} = fixture(); const root = checkPicker(); doc.body.append(root);
+        let calls = 0;
+        picker.mount(root, doc, win, {ordinary: {download: () => assert.fail("no download")},
+            fetchImpl: async () => {
+                calls += 1;
+                return {ok: true, json: async () => checkResult("video", {can_download: false, can_preview: false,
+                    can_check: true, limitation, detail_label: "tracks unknown"}, "incomplete_moov")};
+            }});
+        click(root); await settle(); click(root); await settle();
+        assert.equal(calls, 1);
+        assert.equal(picker.selected(root).id, "video");
+        assert.equal(picker.selected(root).token, "signed-video");
+        assert.equal(picker.selected(root).canCheck, false);
+        assert.equal(picker.selected(root).canDownload, false);
+        assert.equal(root.querySelector('[data-ytdlp-action="download"]').disabled, true);
+        const expected = limitation || "检查未确认可下载，未开始下载。";
+        assert.equal(root.querySelector("[data-picker-status]").textContent, expected);
+        assert.doesNotMatch(root.querySelector("[data-picker-status]").textContent, /incomplete_moov/);
+        assert.equal(root.querySelector("[data-picker-limitation]").textContent, expected);
+        assert.equal(root.querySelector("[data-picker-detail]").textContent, "tracks unknown");
+    }
+});
+
+test("cancel stops local waiting and rejects late success even when fetch ignores abort", async () => {
+    const {doc, win} = fixture(); const root = checkPicker(); doc.body.append(root);
+    radios(root)[0].dataset.limitation = "尚未检查此格式的完整音视频，可检查所选视频后再保存。";
+    let release, signal, calls = 0;
+    const gate = new Promise(resolve => { release = resolve; });
+    picker.mount(root, doc, win, {ordinary: {download: () => assert.fail("no late download")},
+        fetchImpl: async (_url, options) => {
+            calls += 1; signal = options.signal; await gate;
+            return {ok: true, json: async () => checkResult()};
+        }});
+    click(root); click(root, "cancel");
+    assert.equal(signal.aborted, true);
+    assert.equal(radios(root)[0].disabled, false);
+    const message = root.querySelector("[data-picker-status]").textContent;
+    assert.match(message, /远端检查可能仍在进行/);
+    assert.match(message, /本页不再重复检查此格式，请重新解析后再试/);
+    assert.equal(picker.selected(root).canCheck, false);
+    assert.equal(picker.selected(root).limitation, message);
+    assert.equal(root.querySelector("[data-picker-limitation]").textContent, message);
+    assert.equal(root.querySelector("[data-picker-option-limitation]").textContent, message);
+    assert.equal(root.querySelector("[data-picker-option-limitation]").hidden, false);
+    assert.equal(root.querySelector('[data-ytdlp-action="download"]').disabled, true);
+    release(); await settle(); click(root); await settle();
+    assert.equal(calls, 1);
+    assert.equal(picker.selected(root).canDownload, false);
+    assert.equal(root.querySelector("[data-picker-status]").textContent, message);
+});
+
+for (const change of ["selection", "away-and-back", "token", "format", "redraw", "redraw-before-scan", "detach", "destroy"]) {
+    test(`late check cannot update another selection or card after ${change}`, async () => {
+        const {doc, win, scan} = fixture(); const first = checkPicker(), second = checkPicker();
+        doc.body.append(card(first), card(second));
+        const pending = [];
+        picker.attach(doc, win, {ordinary: {download: () => assert.fail("no automatic download")},
+            fetchImpl: async () => new Promise(resolve => pending.push(resolve))});
+        click(first);
+        const original = radios(first)[0];
+        if (change === "selection" || change === "away-and-back") choose(first, 1);
+        if (change === "away-and-back") choose(first, 0);
+        if (change === "token") original.dataset.token = "replacement-token";
+        if (change === "format") original.dataset.formatId = "replacement-format";
+        if (change.startsWith("redraw")) {
+            first.replaceChildren(...checkPicker().children.slice());
+            if (change === "redraw") scan();
+        }
+        if (change === "detach") first.remove();
+        if (change === "destroy") picker.mount(first, doc, win).destroy();
+        click(second);
+        pending[1]({ok: true, json: async () => checkResult("video", {detail_label: "second card"})});
+        await settle();
+        pending[0]({ok: true, json: async () => checkResult("video", {detail_label: "stale first card"})});
+        await settle();
+        assert.equal(picker.selected(first).canDownload, false);
+        assert.equal(first.querySelector("[data-picker-detail]").textContent, "");
+        assert.equal(picker.selected(second).canDownload, true);
+        assert.equal(second.querySelector("[data-picker-detail]").textContent, "second card");
+    });
+}
+
+test("check HTTP errors keep denial reasons and never auto retry or enable download", async () => {
+    for (const code of [403, 409, 429, 503]) {
+        const {doc, win} = fixture(); const root = checkPicker(); doc.body.append(root);
+        let calls = 0;
+        picker.mount(root, doc, win, {fetchImpl: async () => {
+            calls += 1;
+            return {ok: false, status: code, json: async () => ({status: "error", message: `denied-${code}`})};
+        }});
+        click(root); await settle();
+        assert.equal(calls, 1);
+        assert.equal(picker.selected(root).canDownload, false);
+        assert.equal(root.querySelector("[data-picker-status]").textContent, `denied-${code}`);
+        assert.equal(radios(root)[0].disabled, false);
+    }
 });
 
 test("independent cached copies survive delayed insertion, reinit, sorting and redraw", () => {

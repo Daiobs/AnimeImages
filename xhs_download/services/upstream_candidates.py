@@ -4,6 +4,7 @@ from hashlib import sha256
 from itertools import islice
 import json
 import math
+import time
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -127,6 +128,7 @@ def _candidate_record(url, metadata, *, ordinal, provider, source_url, media_typ
         'source_digest': sha256(source_url.encode()).hexdigest(),
         'provider_id': provider, 'public': public, 'match': dict(match or {'provider_id': provider}),
         'headers': headers, 'headers_present': headers_present, 'requires_cookie': requires_cookie,
+        'expires_at': time.time() + TTL,
     }
     return public, record
 
@@ -178,6 +180,9 @@ def resolve_candidate_record(token, candidate_id):
             raise ValueError()
         if not isinstance(record, dict) or not candidate_url(record.get('url')):
             raise ValueError()
+        if record.get('provider_id') == 'yt_dlp_generic':
+            from .ytdlp_format_check import apply_check_evidence
+            return apply_check_evidence(record)
         return record
     except (signing.BadSignature, ValueError, TypeError):
         raise XhsParseError('候选资源已失效，请重新解析。') from None

@@ -22,6 +22,7 @@
             formatId: radio.dataset.formatId,
             label: radio.dataset.label || "", size: radio.dataset.sizeLabel || "大小未知",
             canDownload: radio.dataset.canDownload === "true", canPreview: radio.dataset.canPreview === "true",
+            canCheck: radio.dataset.canCheck === "true",
             limitation: radio.dataset.limitation || "", radio});
     }
     function sourceLink(value) {
@@ -83,6 +84,16 @@
             payload && typeof payload.message === "string" ? payload.message : "资源授权已失效或访问受限，请重新解析。");
         if (action === "cover") return sourceHttps(payload.url);
         if (action === "link") return validateLinkItem(payload.item, selection);
+        if (action === "check") {
+            const candidate = payload.candidate;
+            if (!candidate || candidate.candidate_id !== selection.id || candidate.format_id !== selection.formatId
+                    || typeof candidate.format_id !== "string"
+                    || ![candidate.can_download, candidate.can_preview, candidate.can_check].every(value => typeof value === "boolean")
+                    || !payload.check || typeof payload.check.reason !== "string") {
+                throw new Error("检查结果与本次选择不一致，未更新格式。");
+            }
+            return {candidate, check: payload.check};
+        }
         return validateItem(payload.item, selection);
     }
     async function resolveLink(root, selection, environment, signal) {
@@ -112,6 +123,7 @@
         }
         bindControls();
         let generation = 0, busy = false, destroyed = false, activeController = null;
+        let activeCheck = null;
         let coverController = null, coverObjectUrl = "", player = null;
         const groupName = `doki-ytdlp-instance-${++instanceSequence}`;
         let knownRadios = [], rememberedId = null;
@@ -132,6 +144,7 @@
             }
             const choice = radios.find(radio => radio.value === rememberedId)
                 || radios.find(radio => radio.checked) || radios.find(radio => radio.defaultChecked) || radios[0];
+            if (activeCheck) abandonCheck();
             // Templates intentionally have no name: cached copies cannot disturb live groups before mounting.
             radios.forEach(radio => { radio.name = groupName; radio.checked = false; });
             if (choice) { choice.checked = true; rememberedId = choice.value; }
@@ -155,8 +168,10 @@
                 radio.closest("[data-picker-option]").classList.toggle("is-selected", radio.checked);
             });
             if (download) {
-                download.disabled = busy || !selection || !selection.canDownload || !ordinary;
-                download.textContent = busy ? "正在处理…" : `↓ 下载所选${selection && selection.kind === "audio" ? "音频" : "视频"}`;
+                const checkable = selection && !selection.canDownload && selection.kind === "video" && selection.canCheck;
+                download.disabled = busy || !selection || !(selection.canDownload && ordinary || checkable);
+                download.textContent = busy ? "正在处理…" : checkable ? "检查所选视频"
+                    : `↓ 下载所选${selection && selection.kind === "audio" ? "音频" : "视频"}`;
             }
             if (copy) copy.disabled = busy || !selection;
             root.querySelectorAll('[data-ytdlp-action="preview"]').forEach(button => { button.disabled = busy; });
@@ -177,10 +192,65 @@
         function current(operation) { return !destroyed && operation.generation === generation; }
         function finish(operation) {
             if (!current(operation)) return;
-            busy = false; activeController = null; refresh();
+            busy = false; activeController = null; activeCheck = null; refresh();
+        }
+        function sameSelection(selection) {
+            const now = selected(root);
+            return root.isConnected && root.contains(selection.radio) && now && now.radio === selection.radio
+                && now.id === selection.id && now.token === selection.token && now.formatId === selection.formatId;
+        }
+        function abandonCheck(showMessage = false) {
+            if (!activeCheck) return;
+            // Aborting local waiting does not prove that the server's bounded check stopped.
+            const radio = activeCheck.radio;
+            const message = "已停止等待检查结果；远端检查可能仍在进行。本页不再重复检查此格式，请重新解析后再试。";
+            radio.dataset.canCheck = "false";
+            radio.dataset.limitation = message;
+            const limitation = radio.closest("[data-picker-option]").querySelector("[data-picker-option-limitation]");
+            if (limitation) { limitation.textContent = message; limitation.hidden = false; }
+            generation += 1;
+            if (activeController) activeController.abort();
+            busy = false; activeController = null; activeCheck = null;
+            say(showMessage ? message : "");
+        }
+        async function checkSelected(selection) {
+            const operation = start();
+            if (!operation) return;
+            activeCheck = selection;
+            closePreview(); say("正在检查所选视频…");
+            const applicable = () => current(operation) && !operation.signal.aborted && sameSelection(selection);
+            try {
+                const result = await descriptor(root, selection, "check", environment, operation.signal);
+                if (!applicable()) return;
+                const {candidate} = result;
+                const radio = selection.radio;
+                radio.dataset.canDownload = String(candidate.can_download);
+                radio.dataset.canPreview = String(candidate.can_preview);
+                radio.dataset.canCheck = String(candidate.can_download && candidate.can_check);
+                radio.dataset.limitation = typeof candidate.limitation === "string" ? candidate.limitation : "";
+                if (!candidate.can_download && !radio.dataset.limitation) radio.dataset.limitation = "检查未确认可下载，未开始下载。";
+                if (typeof candidate.size_label === "string") radio.dataset.sizeLabel = candidate.size_label;
+                const row = radio.closest("[data-picker-option]");
+                const detail = row.querySelector("[data-picker-detail]");
+                if (detail) detail.textContent = typeof candidate.detail_label === "string" ? candidate.detail_label : radio.dataset.limitation;
+                const limitation = row.querySelector("[data-picker-option-limitation]");
+                if (limitation) {
+                    limitation.textContent = radio.dataset.limitation;
+                    limitation.hidden = !radio.dataset.limitation;
+                }
+                const size = row.querySelector("[data-picker-option-size]");
+                if (size) size.textContent = radio.dataset.sizeLabel || "大小未知";
+                say(candidate.can_download ? "检查完成，可再次点击下载所选视频。" : radio.dataset.limitation);
+            } catch (error) {
+                if (applicable()) say(error.message || "检查未完成，未开始下载。");
+            } finally { finish(operation); }
         }
         async function save() {
             const selection = selected(root);
+            if (selection && !selection.canDownload && selection.kind === "video" && selection.canCheck && !busy) {
+                await checkSelected(selection);
+                return;
+            }
             if (!selection || !selection.canDownload || !ordinary || busy) return;
             closePreview();
             const operation = start();
@@ -277,6 +347,7 @@
         }
         function handleChange(event) {
             if (!event.target.matches("[data-picker-radio]")) return;
+            if (activeCheck) abandonCheck();
             if (busy) return;
             generation += 1; closePreview(); say(""); refresh();
         }
@@ -296,7 +367,12 @@
             else if (button.dataset.ytdlpAction === "preview") preview();
             else if (button.dataset.ytdlpAction === "copy") copySelected();
             else if (button.dataset.ytdlpAction === "close-preview") closePreview();
-            else if (button.dataset.ytdlpAction === "cancel" && activeController) activeController.abort();
+            else if (button.dataset.ytdlpAction === "cancel" && activeController) {
+                if (activeCheck) {
+                    abandonCheck(true);
+                    refresh();
+                } else activeController.abort();
+            }
         }
         root.addEventListener("change", handleChange); root.addEventListener("click", handleClick);
         reconcile(); cover();

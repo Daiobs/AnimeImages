@@ -57,7 +57,7 @@ def ytdlp_selected_format_view(request):
             raise ValueError()
         data = json.loads(request.body)
         if (not isinstance(data, dict) or set(data) != {'candidate_id', 'resource_token', 'action'}
-                or data.get('action') not in {'download', 'preview', 'cover', 'link'}
+                or data.get('action') not in {'download', 'preview', 'cover', 'link', 'check'}
                 or not all(isinstance(data.get(k), str) for k in ('candidate_id', 'resource_token'))):
             return _response({'status': 'error', 'message': '所选格式请求无效。'}, 400)
         record = resolve_candidate_record(data['resource_token'], data['candidate_id'])
@@ -71,6 +71,44 @@ def ytdlp_selected_format_view(request):
 
     from . import views
     try:
+        if data['action'] == 'check':
+            from .services.ytdlp_format_check import CheckInProgress, check_selected_record
+            from .services.ytdlp_selection import choice
+            from .services.rate_limits import consume_fixed_window, get_client_identity
+            public = record['public']
+            guard = views.check_download_cost_preflight(request, [{
+                'type': public.get('media_type'), 'size_bytes': public.get('size_bytes') or 0,
+            }], views.get_download_runtime_setting())
+            if guard:
+                code, message, status = guard
+                return _response({'status': 'error', 'error_code': code, 'message': message}, status)
+            limit = consume_fixed_window('ytdlp-selected-check', get_client_identity(request), 12, 60)
+            if not limit.allowed:
+                response = _response({'status': 'error', 'message': '格式检查过于频繁，请稍后再试。'}, 429)
+                response['Retry-After'] = str(limit.retry_after)
+                return response
+            try:
+                checked = check_selected_record(record)
+            except CheckInProgress:
+                return _response({'status': 'error', 'message': '该格式已在检查或结果尚未确认，请勿重复提交。'}, 409)
+            except XhsParseError:
+                return _response({'status': 'error', 'message': '格式信息已失效，请重新解析。'}, 403)
+            # Recheck admission and original expiry after the bounded child.
+            try:
+                current = resolve_candidate_record(data['resource_token'], data['candidate_id'])
+            except XhsParseError:
+                return _response({'status': 'error', 'message': '格式信息已失效，请重新解析。'}, 403)
+            if not _admitted(request, current):
+                return _response({'status': 'error', 'message': '当前无权使用此格式。'}, 403)
+            projected = choice(checked['public'])
+            logger.info('ytdlp_selected_track_checked candidate_id=%s reason=%s requests=%s bytes_read=%s cached=%s',
+                        record['candidate_id'], projected.get('selected_track_check', {}).get('reason', 'already_complete'),
+                        projected.get('selected_track_check', {}).get('requests', 0),
+                        projected.get('selected_track_check', {}).get('bytes_read', 0), checked.get('_check_cached', False))
+            return _response({'status': 'success', 'candidate': projected,
+                              'check': projected.get('selected_track_check', {
+                                  'reason': 'already_complete', 'requests': 0, 'bytes_read': 0}),
+                              'check_cached': checked.get('_check_cached', False), 'server_media_relay': False})
         if data['action'] == 'link':
             from .services.rate_limits import consume_fixed_window, get_client_identity
             limit = consume_fixed_window('ytdlp-link-descriptor', get_client_identity(request), 120, 60)

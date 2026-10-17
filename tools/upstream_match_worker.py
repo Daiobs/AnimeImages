@@ -740,10 +740,7 @@ def parse_gallery(cls, url, timeout, observe=None):
     return result
 
 
-def probe_ytdlp_result(payload, *, deadline, budget):
-    # Only the single-work result is eligible, never every entry in a collection.
-    if not isinstance(payload, dict) or payload.get('_type', 'video') not in ('video', None):
-        return
+def metadata_probe_module():
     try:
         from tools import upstream_metadata_probe as probe
     except ModuleNotFoundError as error:
@@ -755,6 +752,14 @@ def probe_ytdlp_result(payload, *, deadline, budget):
             'upstream_metadata_probe', Path(__file__).resolve().with_name('upstream_metadata_probe.py'))
         probe = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(probe)
+    return probe
+
+
+def probe_ytdlp_result(payload, *, deadline, budget):
+    # Only the single-work result is eligible, never every entry in a collection.
+    if not isinstance(payload, dict) or payload.get('_type', 'video') not in ('video', None):
+        return
+    probe = metadata_probe_module()
     if (time.monotonic() >= deadline or budget['requests'] + probe.MAX_REQUESTS > MAX_REQUESTS
             or max(budget['bytes'], budget['decoded_bytes']) + probe.MAX_REQUESTS * probe.MAX_BYTES > MAX_BODY):
         return
@@ -783,6 +788,13 @@ def handle(request):
         return identity
     if request.get("version") != identity["version"]:
         raise ValueError("version_changed")
+    if action == "probe_tracks":
+        if provider != "yt_dlp_generic":
+            raise ValueError("invalid_action")
+        _STAGE = "ytdlp_probe"
+        url = validate_url(request["url"])
+        probe = metadata_probe_module()
+        return probe.probe_in_guarded_child(url, deadline_monotonic=time.monotonic() + probe.MAX_SECONDS)
     _STAGE = "extractor_inventory"
     classes = extractor_classes(provider)
     allow_mature = request.get("allow_mature", False)
@@ -843,7 +855,7 @@ def main():
             if key not in {"PATH", "HOME", "LANG", "PYTHONNOUSERSITE", "YTDLP_NO_PLUGINS"}:
                 os.environ.pop(key, None)
         os.environ["YTDLP_NO_PLUGINS"] = "1"
-        install_network_guard(offline=request.get("action") != "parse")
+        install_network_guard(offline=request.get("action") not in {"parse", "probe_tracks"})
         with contextlib.redirect_stdout(sys.stderr):
             payload = handle(request)
         output = json.dumps({"ok": True, "payload": payload}, ensure_ascii=True)

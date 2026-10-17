@@ -100,7 +100,17 @@ def capability(candidate):
             reason = 'unknown'
     else:
         reason = 'unknown'
-    return {'can_download': not reason, 'limitation': LIMITATIONS.get(reason, ''),
+    can_check = bool(reason == 'unknown' and protocol == 'https' and kind == 'video' and ext == 'mp4'
+                     and state in {'unknown_media_tracks', 'candidate_only'}
+                     and candidate.get('audio_tracks') != 'absent'
+                     and candidate.get('video_tracks') != 'absent'
+                     and not candidate.get('selected_track_check'))
+    limitation = ('尚未检查此格式的完整音视频，可检查所选视频后再保存。' if can_check
+                  else LIMITATIONS.get(reason, ''))
+    if reason and candidate.get('selected_track_check'):
+        from .ytdlp_format_check import check_message
+        limitation = check_message(candidate['selected_track_check'])
+    return {'can_download': not reason, 'can_check': can_check, 'limitation': limitation,
             'can_preview': not reason and ext in {'mp4', 'webm', 'm4v', 'm4a', 'mp3', 'ogg', 'opus', 'wav'}}
 
 
