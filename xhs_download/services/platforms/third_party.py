@@ -942,6 +942,12 @@ class GenericThirdPartyAdapter(BasePlatformAdapter):
                     # Execute exactly the backend admitted above, never re-expand to
                     # a dedicated backend excluded by source/access matching.
                     execution["backend"] = match["extractor_id"]
+                    if route["provider_options"].get("videodl_repo", {}).get("backend_category") == "common":
+                        from ..saved_videodl import authorized_common_options
+                        # Re-check persistence before using a cached result as well as
+                        # before dispatch. Reset/backend changes revoke this revision.
+                        authorized_common_options(source_url, route["revision"], match["extractor_id"])
+                        execution["saved_route_revision"] = route["revision"]
                 else:
                     execution["expected_match"] = match
                 if provider in SERVICE_PROVIDER_IDS:

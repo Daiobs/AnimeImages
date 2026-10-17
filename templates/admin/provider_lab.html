@@ -269,9 +269,14 @@
                     </details>
                     <div class="provider-lab-control-grid" data-route-videodl hidden>
                         <label><span>videodl 执行模式</span><select name="route_videodl_mode"><option value="">请显式设置执行模式</option><option value="dedicated_only">Dedicated Only</option><option value="specific_backend">Specific Backend</option></select></label>
+                        <label><span>Backend 类别</span><select name="route_videodl_category"><option value="dedicated">Dedicated</option><option value="common">Common</option></select></label>
                         <label><span>videodl 固定 Backend</span><select name="route_videodl_backend"><option value="">不指定</option>
-                            {% for backend in videodl_backend_inventory.items %}{% if backend.backend_category == 'dedicated' and backend.controlled_available and not backend.external_sharing_required %}<option value="{{ backend.backend_id }}">{{ backend.display_label }}</option>{% endif %}{% endfor %}
+                            {% for backend in videodl_backend_inventory.items %}<option value="{{ backend.backend_id }}" data-backend-category="{{ backend.backend_category }}" data-saved-route-selectable="{{ backend.saved_route_selectable|yesno:'true,false' }}" data-saved-route-recipients="{{ backend.saved_route_recipients|join:',' }}" data-saved-route-version="{{ backend.saved_route_version }}" {% if not backend.saved_route_selectable %}disabled{% endif %}>{{ backend.display_label }}{% if not backend.saved_route_selectable %} · 当前不可固定{% endif %}</option>{% endfor %}
                         </select></label>
+                        <div class="provider-lab-route-sharing" data-route-sharing hidden>
+                            <p data-route-sharing-scope></p>
+                            <label class="provider-lab-route-confirm"><input type="checkbox" name="route_videodl_sharing_confirmed"><span>确认向上述接收方共享未来本 host 获准请求的来源链接</span></label>
+                        </div>
                     </div>
                 </div>
                 <p data-route-confirmation-summary>请先读取来源站点并选择固定上游。</p>

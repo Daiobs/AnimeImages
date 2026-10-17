@@ -17,6 +17,20 @@ test("unknown and blocked sources do not masquerade as mature routes", () => {
     assert.equal(ledger.routeText({applicable: false, reason: "existing_route_not_overridden"}), "沿用成熟路线");
 });
 
+test("ledger Common evidence describes exact Backend adoption without blanket rejection or execution", async () => {
+    const f = fixture({read: (q) => q.has("execution_id") ? {ok: true, execution: record(1, A, {provider_id: "videodl_repo",
+        options: {mode: "specific_backend", backend_category: "common", backend_id: "GVVideoClient"},
+        result: {status: "success", assets: [{asset_id: "a", media_type: "video"}]}})} : undefined,
+        videodlInventory: {items: [{backend_id: "GVVideoClient", backend_category: "common", saved_route_selectable: true}]}});
+    await f.workspace.activate(true); await f.workspace.open(A); await f.workspace.inspect(1);
+    assert.match(text(f.detail.querySelector("[data-ledger-backend-adoption]")), /GVVideoClient：可恢复草稿.*重新确认/);
+    assert.doesNotMatch(text(f.detail), /Common \/ 未知选项暂不可固定/);
+    const requests = f.calls.length;
+    f.detail.querySelector('[data-ledger-format-order]').value = "resolution";
+    f.panel.listeners.change({target: f.detail.querySelector('[data-ledger-format-order]')});
+    assert.equal(f.calls.length, requests); assert.equal(f.routeCalls.length, 0); assert.deepEqual(f.instant, []);
+});
+
 test("oversized record and asset projections disclose omitted display fields", async () => {
     const f = fixture({read: (q) => q.has("execution_id") ? {ok: true, execution: record(1, A,
         {summary_truncated: true, asset_count: 1, result: {status: "success", assets: [
@@ -152,7 +166,7 @@ function fixture(options = {}) {
             const host = parsed.searchParams.get("source_host") || new URL(parsed.searchParams.get("source_url")).hostname;
             return reply({ok: true, route: snapshot(host)});
         }});
-    f.workspace = ledger.createWorkspace(f.doc, {root: f.root, descriptors, routeEditor: f.editor,
+    f.workspace = ledger.createWorkspace(f.doc, {root: f.root, descriptors, routeEditor: f.editor, videodlInventory: options.videodlInventory,
         window: f.window, url: "/admin/provider-lab/history/", fetch: f.fetch, lab,
         openInstant: (...args) => f.instant.push(args)});
     f.click = async (selector) => {
@@ -185,6 +199,25 @@ test("controller defaults to the platform table without a batch selection or exe
     assert.match(text(f.panel), /10000.*9999/);
     assert.ok(f.panel.querySelectorAll("small").some((node) => node.title === "TLS_FAILED"));
     assert.equal(f.panel.querySelectorAll("[data-ledger-open]").length, 3);
+});
+
+test("controller injects current inventory and adoption helper into live ledger records", async () => {
+    const f = domFixture(), calls = [];
+    const form = new Node("form", {"data-provider-lab-form": ""});
+    form.elements = {source: new Node("textarea")}; f.root.append(form);
+    const controller = lab.createController(f.doc, {window: {location: {origin: ORIGIN}}, navigator: {}, descriptors,
+        ledgerApi: ledger, videodlInventory: {items: [{backend_id: "GVVideoClient", backend_category: "common", saved_route_selectable: true}]},
+        fetch: async (url, init) => {
+            const parsed = new URL(url, ORIGIN); calls.push({parsed, init});
+            if (parsed.searchParams.has("execution_id")) return reply({ok: true, execution: record(1, A,
+                {provider_id: "videodl_repo", options: {mode: "specific_backend", backend_category: "common", backend_id: "GVVideoClient"}})});
+            if (parsed.searchParams.get("view") === "platform") return reply(detailPayload(A));
+            return reply(tablePayload());
+        }});
+    await flush(); await controller.platformWorkspace.open(A); await controller.platformWorkspace.inspect(1);
+    assert.match(text(f.detail.querySelector("[data-ledger-backend-adoption]")), /GVVideoClient：可恢复草稿.*重新确认/);
+    assert.ok(calls.every(({parsed, init}) => parsed.pathname === "/admin/provider-lab/history/" && !init.method));
+    controller.destroy();
 });
 
 test("search, filters and table pagination remain server-side and survive detail return", async () => {

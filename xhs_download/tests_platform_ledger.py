@@ -238,6 +238,32 @@ class PlatformLedgerTests(TestCase):
         self.add(execution("dedicated", provider_id="videodl_repo", options={"mode": "dedicated_only"}))
         self.assertEqual(self.platform()["providers"][0]["adoptability"], "draft_candidate")
 
+    def test_common_adoptability_is_per_backend_not_provider_or_first_asset(self):
+        for index, (backend, mode, expected) in enumerate((
+                ("GVVideoClient", "specific_backend", "draft_candidate"),
+                ("AnyFetcherVideoClient", "specific_backend", "draft_candidate"),
+                ("RayVideoClient", "specific_backend", "reference_only"),
+                ("GVVideoClient", "common_only", "reference_only"))):
+            host = f"common-{index}.example.com"
+            self.add(execution(str(index), source_url=f"https://{host}/work/1", provider_id="videodl_repo",
+                options={"mode": mode, "backend_category": "common", "backend_ids": [backend],
+                         "external_sharing_confirmed": True}, result=result(selected_backend=backend)))
+            self.assertEqual(self.platform(host)["providers"][0]["adoptability"], expected)
+        self.assertFalse(UpstreamRoute.objects.exists())
+        self.assertFalse(UpstreamRouteAudit.objects.exists())
+
+    def test_conflicting_or_malformed_history_cannot_select_a_backend(self):
+        for index, extra in enumerate((
+                {"backend_ids": ["AnyFetcherVideoClient"]},
+                {"backend_ids": ["GVVideoClient", "AnyFetcherVideoClient"]},
+                {"backend_ids": []}, {"backend_category": []}, {"backend_category": {}})):
+            host = f"ambiguous-{index}.example.com"
+            options = {"mode": "specific_backend", "backend_category": "common",
+                       "backend_id": "GVVideoClient", **extra}
+            self.add(execution(str(index), source_url=f"https://{host}/work/1",
+                provider_id="videodl_repo", options=options, result=result(selected_backend="GVVideoClient")))
+            self.assertEqual(self.platform(host)["providers"][0]["adoptability"], "reference_only")
+
     def test_running_record_update_and_import_idempotency_are_visible(self):
         record = history.begin_execution(SOURCE, PROVIDER, None)
         self.assertEqual(self.platform()["providers"][0]["positive_count"], 0)

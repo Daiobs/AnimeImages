@@ -120,6 +120,34 @@ class VideodlWorkerProtocolTests(SimpleTestCase):
         self.assertEqual(context.exception.code, "PROVIDER_SCHEMA_INVALID")
         build_common.assert_not_called()
 
+    def test_backend_main_emits_execution_identity_without_rewriting_native_source(self):
+        for category, backend_id in (("common", "GVVideoClient"), ("dedicated", "AcFunVideoClient")):
+            with self.subTest(category=category):
+                native = SimpleNamespace(belongto=mock.Mock(return_value=True))
+                client = SimpleNamespace(parsefromurl=mock.Mock(return_value=[SimpleNamespace(
+                    source="native-display-label", title="offline", ext="mp4",
+                    download_url="https://media.example.org/offline.mp4",
+                    with_valid_download_url=True,
+                )]))
+                request = {"schema_version": "1.0", "request_id": "identity-fixture",
+                    "source": "https://example.org/work", "max_assets": 16, "max_output_bytes": 1000000,
+                    "operation": "backend", "backend_id": backend_id, "backend_category": category}
+                output = io.BytesIO()
+                stdout = io.TextIOWrapper(output, encoding="utf-8", write_through=True)
+                with self._videodl_modules(**{category: {backend_id: native}},
+                        build_video=mock.Mock(return_value=client), build_common=mock.Mock(return_value=client)), \
+                        mock.patch.object(videodl_worker, "verify_install"), \
+                        mock.patch.object(sys, "argv", ["videodl_worker.py"]), \
+                        mock.patch.object(sys, "stdin", SimpleNamespace(buffer=io.BytesIO(json.dumps(request).encode()))), \
+                        mock.patch.object(sys, "stdout", stdout):
+                    status = videodl_worker.main()
+                self.assertEqual(status, 0, output.getvalue())
+                payload = json.loads(output.getvalue())
+                self.assertEqual(payload["executed_backend"], {
+                    "backend_id": backend_id, "backend_category": category})
+                self.assertEqual(payload["result"]["selected_backend"], "native-display-label")
+                client.parsefromurl.assert_called_once_with(request["source"], request_overrides={})
+
 
 class VideodlControlledOrchestrationTests(SimpleTestCase):
     def _videodl_modules(self, *, dedicated=None, common=None, build_video=None, build_common=None):
@@ -154,7 +182,7 @@ class VideodlControlledOrchestrationTests(SimpleTestCase):
 
     @staticmethod
     def _success(backend_id):
-        return {
+        payload = {
             "result": {
                 "status": "success",
                 "selected_backend": "upstream-value",
@@ -163,6 +191,12 @@ class VideodlControlledOrchestrationTests(SimpleTestCase):
             "resources": [{"asset_id": f"asset-{backend_id}"}],
             "metrics": {"candidate_count": 1},
         }
+        if backend_id != "legacy_auto":
+            payload["executed_backend"] = {
+                "backend_id": backend_id,
+                "backend_category": "common" if backend_id in REVIEWED_COMMON_BACKEND_IDS else "dedicated",
+            }
+        return payload
 
     @classmethod
     def _complete_policy_inventory(cls, inventory=()):
@@ -661,9 +695,32 @@ class VideodlControlledOrchestrationTests(SimpleTestCase):
             ["BilibiliVideoClient"],
         )
         self.assertEqual(result.result["selected_backend"], "BilibiliVideoClient")
+        self.assertEqual(result.result["native_selected_backend"], "upstream-value")
         self.assertEqual(len(result.attempts), 1)
         self.assertTrue(result.attempts[0].selected)
         self.assertFalse(result.attempts[0].external_sharing)
+
+    def test_backend_execution_identity_is_required_before_display_label_override(self):
+        for category, backend_id in (("common", "GVVideoClient"), ("dedicated", "AcFunVideoClient")):
+            expected = {"backend_id": backend_id, "backend_category": category}
+            for identity in (None, {}, "GVVideoClient", {**expected, "backend_id": "AnyFetcherVideoClient"},
+                    {**expected, "backend_category": "dedicated" if category == "common" else "common"},
+                    {**expected, "unexpected": True}):
+                with self.subTest(category=category, identity=identity):
+                    payload = self._success(backend_id)
+                    payload["result"]["selected_backend"] = "AnyFetcherVideoClient"
+                    if identity is None:
+                        payload.pop("executed_backend")
+                    else:
+                        payload["executed_backend"] = identity
+                    with self.assertRaises(VideodlControlledError) as caught:
+                        execute_controlled_videodl(python="python", worker="worker.py", request_id="mismatch",
+                            source="https://example.org/work", options=self._options("specific_backend",
+                                ids=(backend_id,), category=category, confirmed=category == "common"),
+                            invoke=self._invoke(inventory=[], backend_results={backend_id: payload}))
+                    self.assertEqual(caught.exception.attempts[0].safe_failure_code, "BACKEND_SCHEMA_INVALID")
+                    self.assertFalse(caught.exception.attempts[0].selected)
+                    self.assertEqual(payload["result"]["selected_backend"], "AnyFetcherVideoClient")
 
     def test_legacy_auto_remains_explicit_opaque_execution(self):
         calls = []

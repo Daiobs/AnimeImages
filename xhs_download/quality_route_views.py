@@ -42,7 +42,8 @@ def upstream_routes_view(request):
             data = json.loads(request.body)
             allowed = {"source_url", "source_host", "expected_revision"}
             if request.method == "POST":
-                allowed |= {"provider_order", "provider_options", "format_preferences", "reference_execution_id"}
+                allowed |= {"provider_order", "provider_options", "format_preferences", "reference_execution_id",
+                            "sharing_confirmation"}
             if not isinstance(data, dict) or set(data) - allowed:
                 raise UpstreamRouteError("INVALID_REQUEST")
             source = _source_selector(data)
@@ -51,6 +52,7 @@ def upstream_routes_view(request):
                 provider_order=data.get("provider_order"), provider_options=data.get("provider_options"),
                 format_preferences=data.get("format_preferences"), reset=request.method == "DELETE",
                 reference_execution_id=data.get("reference_execution_id"),
+                sharing_confirmation=data.get("sharing_confirmation"),
             )
         host_only = "source_host" in source
         route["scope_type"] = "exact_host"
