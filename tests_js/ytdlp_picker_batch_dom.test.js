@@ -64,6 +64,24 @@ function newPicker(ids = ["video", "audio"], name = "") {
     return root;
 }
 function radios(root) { return root.querySelectorAll("[data-picker-radio]"); }
+function layeredPicker() {
+    const root = newPicker(["video", "restricted", "audio", "audio-alt"]);
+    const rows = radios(root).map(radio => radio.parentNode);
+    radios(root).forEach(radio => {
+        radio.dataset.canDownload = String(radio.value !== "restricted");
+        radio.dataset.limitation = radio.value === "restricted" ? "requires merge" : "";
+    });
+    const primary = el("div", {"data-picker-primary": ""});
+    const other = el("details", {"data-picker-other": ""}); other.open = false;
+    const audio = el("details", {class: "ytdlp-audio-formats"}); audio.open = false;
+    const audioOther = el("details", {"data-picker-other": ""}); audioOther.open = false;
+    primary.append(rows[0]); other.append(rows[1]);
+    audio.append(rows[2], audioOther); audioOther.append(rows[3]);
+    root.append(primary, other, audio);
+    root.append(el("button", {"data-ytdlp-action": "download"}));
+    root.append(el("p", {"data-picker-limitation": ""}));
+    return root;
+}
 function choose(root, index) {
     const radio = radios(root)[index]; radio.checked = true;
     root.listeners.change?.({target: radio});
@@ -106,6 +124,73 @@ test("independent cached copies survive delayed insertion, reinit, sorting and r
     assert.equal(picker.selected(first).token, "signed-audio");
     const replacement = newPicker(["other"]); first.replaceChildren(...replacement.children.slice()); scan();
     assert.equal(picker.selected(first).id, "other", "removed selection falls back to available default");
+});
+
+test("layered duplicate cards reveal retained selections on reinit and redraw without rebinding", () => {
+    const {doc, win, scan} = fixture();
+    win.AnimeImagesOrdinaryMediaDownload = {download() { assert.fail("no download requested"); }};
+    const first = layeredPicker(), second = layeredPicker();
+    doc.body.append(card(first), card(second)); picker.attach(doc, win);
+    const download = () => first.querySelector('[data-ytdlp-action="download"]');
+    assert.equal(download().disabled, false);
+    assert.equal(first.querySelector(".ytdlp-audio-formats").open, false);
+    choose(first, 1);
+    assert.equal(first.querySelector("[data-picker-other]").open, true);
+    assert.equal(download().disabled, true);
+    assert.equal(first.querySelector("[data-picker-limitation]").textContent, "requires merge");
+    assert.equal(picker.selected(second).id, "video");
+    choose(first, 3);
+    const audio = first.querySelector(".ytdlp-audio-formats");
+    assert.equal(audio.open, true);
+    assert.equal(audio.querySelector("[data-picker-other]").open, true);
+    assert.equal(download().disabled, false);
+    assert.match(download().textContent, /音频/);
+    audio.open = false; audio.querySelector("[data-picker-other]").open = false;
+    picker.mount(first, doc, win);
+    assert.equal(audio.open, true, "unchanged DOM reinit reveals the current selection");
+    assert.equal(audio.querySelector("[data-picker-other]").open, true);
+    const fresh = layeredPicker(); first.replaceChildren(...fresh.children.slice()); scan();
+    assert.equal(picker.selected(first).id, "audio-alt");
+    assert.equal(picker.selected(first).token, "signed-audio-alt");
+    assert.equal(first.querySelector(".ytdlp-audio-formats").open, true);
+    assert.equal(first.querySelector(".ytdlp-audio-formats").querySelector("[data-picker-other]").open, true);
+    assert.match(download().textContent, /音频/);
+    assert.equal(picker.selected(second).id, "video");
+    assert.equal(second.querySelector(".ytdlp-audio-formats").open, false);
+    assert.notEqual(radios(first)[0].name, radios(second)[0].name);
+    assert.deepEqual(batch.collectBatchResourceLinks(doc, picker).map(entry =>
+        [entry.selection.id, entry.selection.token]), [["audio-alt", "signed-audio-alt"], ["video", "signed-video"]]);
+});
+
+test("layered selections keep all three Batch export modes bound to each duplicate card", async () => {
+    for (const mode of ["copy-links", "links", "aria2"]) {
+        const {doc, win} = fixture(); const page = el("main"); doc.body.append(page);
+        const button = el("button", {"data-batch-export": mode}); page.append(button);
+        const first = layeredPicker(), second = layeredPicker();
+        page.append(card(first), card(second)); picker.attach(doc, win);
+        choose(first, 3); choose(second, 1);
+        const calls = [], outputs = [];
+        const result = await batch.exportBatchResourceLinks(page, button, {
+            windowObject: win, documentObject: doc, pickerApi: picker,
+            fetchImpl: async (_url, options) => {
+                const body = JSON.parse(options.body); calls.push(body);
+                return {ok: true, json: async () => ({status: "success", item: linkItem(body.candidate_id,
+                    body.candidate_id === "audio-alt" ? "audio" : "video")})};
+            },
+            copyText: async text => outputs.push(text),
+            downloadTextFile: (_name, text) => outputs.push(text),
+        });
+        assert.deepEqual(calls, [
+            {candidate_id: "audio-alt", resource_token: "signed-audio-alt", action: "link"},
+            {candidate_id: "restricted", resource_token: "signed-restricted", action: "link"},
+        ]);
+        assert.equal(result.resources.length, 2);
+        assert.equal(result.skipped.length, 0);
+        assert.equal(outputs.length, 1);
+        assert.match(outputs[0], /audio-alt\.m4a/);
+        assert.match(outputs[0], /restricted\.mp4/);
+        if (mode === "aria2") assert.match(outputs[0], /out=audio-alt\.m4a/);
+    }
 });
 
 test("Batch collects new selected video/audio without hidden raw URL fallback", async () => {

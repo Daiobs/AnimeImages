@@ -147,6 +147,9 @@ def choice(candidate):
     codec = text(candidate.get('vcodec' if kind == 'video' else 'acodec'), 60)
     if codec and codec not in {'none', 'unknown'}:
         facts.append(codec)
+    protocol = text(candidate.get('protocol'), 40)
+    if protocol:
+        facts.append(protocol)
     return {**candidate, **capability(candidate), 'label': label,
             'detail_label': ' · '.join(facts), 'size_label': size_label(candidate)}
 
@@ -195,10 +198,10 @@ def build_picker(candidates, preferences=None):
         visible = 0
         for c in group:
             c['selected'] = c['candidate_id'] == selected['candidate_id']
-            # One initial representative per resolution/bitrate; never delete
-            # alternate codecs, languages, frame rates or unknown descriptors.
+            # Only direct-save representatives belong in the primary tier;
+            # all other identities remain selectable in the disclosure.
             key = c.get('height') if c['media_type'] == 'video' else c.get('audio_bitrate') or c.get('bitrate')
-            c['initial_visible'] = c['selected'] or (key not in seen and visible < 6)
+            c['initial_visible'] = c['can_download'] and (c['selected'] or (key not in seen and visible < 6))
             if c['initial_visible']:
                 seen.add(key)
                 visible += 1
@@ -207,8 +210,11 @@ def build_picker(candidates, preferences=None):
     return {'work': work, 'videos': videos, 'audios': audios, 'selected': selected,
             'preview': preview, 'first': work_candidate, 'is_audio': not videos,
             'duration_label': duration_label(work.get('duration')),
-            'video_more': any(not c['initial_visible'] for c in videos),
-            'audio_more': any(not c['initial_visible'] for c in audios),
+            'video_primary': [c for c in videos if c['initial_visible']],
+            'video_other': [c for c in videos if not c['initial_visible']],
+            'audio_primary': [c for c in audios if c['initial_visible']],
+            'audio_other': [c for c in audios if not c['initial_visible']],
+            'all_unavailable': not any(c['can_download'] for c in videos + audios),
             'group_id': 'ytfmt-' + re.sub('[^a-zA-Z0-9_-]', '', str(work_candidate.get('candidate_id', '')))[:80],
             'format_count': len(videos) + len(audios)}
 

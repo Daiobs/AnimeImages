@@ -115,11 +115,21 @@
         let coverController = null, coverObjectUrl = "", player = null;
         const groupName = `doki-ytdlp-instance-${++instanceSequence}`;
         let knownRadios = [], rememberedId = null;
+        function revealSelection() {
+            const radio = root.querySelector("[data-picker-radio]:checked");
+            if (!radio) return;
+            root.querySelectorAll("details").forEach(disclosure => {
+                if (disclosure.contains(radio)) disclosure.open = true;
+            });
+        }
         function reconcile() {
             const radios = Array.from(root.querySelectorAll("[data-picker-radio]"));
             if (radios.length === knownRadios.length
                     && radios.every((radio, index) => radio === knownRadios[index] && radio.name === groupName)
-                    && (!radios.length || radios.some(radio => radio.checked))) return;
+                    && (!radios.length || radios.some(radio => radio.checked))) {
+                revealSelection();
+                return;
+            }
             const choice = radios.find(radio => radio.value === rememberedId)
                 || radios.find(radio => radio.checked) || radios.find(radio => radio.defaultChecked) || radios[0];
             // Templates intentionally have no name: cached copies cannot disturb live groups before mounting.
@@ -139,6 +149,7 @@
         function refresh() {
             const selection = selected(root);
             if (selection) rememberedId = selection.id;
+            revealSelection();
             root.querySelectorAll("[data-picker-radio]").forEach(radio => {
                 radio.disabled = busy;
                 radio.closest("[data-picker-option]").classList.toggle("is-selected", radio.checked);

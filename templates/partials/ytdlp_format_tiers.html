@@ -1,0 +1,15 @@
+{% if primary_formats %}
+<div class="ytdlp-format-grid" data-picker-primary>
+    {% for format in primary_formats %}{% include 'partials/ytdlp_format_option.html' %}{% endfor %}
+</div>
+{% else %}
+<p class="ytdlp-secondary-text">暂无可直接保存的{{ kind_label }}格式。</p>
+{% endif %}
+{% if other_formats %}
+<details class="ytdlp-other-formats" data-picker-other {% if not primary_formats %}open{% endif %}>
+    <summary>其他格式 ({{ other_formats|length }}) · 含 {{ other_formats.0.label }}</summary>
+    <div class="ytdlp-format-grid">
+        {% for format in other_formats %}{% include 'partials/ytdlp_format_option.html' %}{% endfor %}
+    </div>
+</details>
+{% endif %}

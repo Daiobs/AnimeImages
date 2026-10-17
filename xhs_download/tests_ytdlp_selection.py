@@ -3,12 +3,15 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from bs4 import BeautifulSoup
 from django.core.cache import cache
 from django.template.loader import render_to_string
 from django.test import Client, SimpleTestCase, override_settings
 from django.urls import reverse
 
+from download_console.models import DownloadRuntimeSetting
 from tools.upstream_match_worker import compact_descriptor
+from .models import ProviderAccessMode, ProviderRuntimeSetting
 from .services.upstream_candidates import resolve_candidate_record
 from .services.upstream_delivery import normalize_upstream_result
 from .services.ytdlp_selection import build_picker, capability, context_required, selected_descriptor
@@ -205,7 +208,10 @@ class YtdlpSelectionTests(SimpleTestCase):
         self.assertEqual(picker['format_count'], 90)
         html = render_to_string('partials/ytdlp_result_picker.html', {'ytdlp_picker': picker})
         self.assertEqual(html.count('data-picker-radio'), 90)
-        self.assertIn('更多视频格式', html)
+        self.assertIn('其他格式 (89)', html)
+        soup = BeautifulSoup(html, 'html.parser')
+        self.assertEqual(len(soup.select('[data-picker-other] [data-picker-radio]')), 89)
+        self.assertFalse(soup.select('[data-picker-option][hidden]'))
 
     def test_selected_action_returns_the_selected_resource_not_first_default(self):
         self.gates()
@@ -289,7 +295,116 @@ class YtdlpSelectionTests(SimpleTestCase):
         picker = build_picker(candidates)
         self.assertEqual(len(picker['videos']), 3)
         self.assertEqual(sum(c['initial_visible'] for c in picker['videos']), 2)
-        self.assertTrue(picker['video_more'])
+        self.assertEqual(len(picker['video_other']), 1)
+
+    def test_video_tiers_keep_restricted_quality_discoverable_and_audio_secondary(self):
+        formats = [self.video('4k', 2160, acodec='none'), self.video('direct', 1080),
+                   self.video('60fps', 1080, fps=60), self.video('av1', 1080, vcodec='av1'),
+                   self.video('japanese', 1080, language='ja'),
+                   self.video('hls', 1080, protocol='m3u8_native'),
+                   self.video('audio', None, ext='m4a', vcodec='none', abr=128)]
+        candidates = self.result(formats).metadata['upstream_candidates']
+        picker = build_picker(candidates)
+        self.assertEqual(picker['selected']['format_id'], '60fps')
+        self.assertEqual([c['format_id'] for c in picker['video_primary']], ['60fps'])
+        soup = BeautifulSoup(render_to_string('partials/ytdlp_result_picker.html',
+                                             {'ytdlp_picker': picker}), 'html.parser')
+        video = soup.select_one('[data-picker-group="video"]')
+        other = video.select_one('[data-picker-other]')
+        self.assertNotIn('open', other.attrs)
+        self.assertIn('其他格式 (5)', other.summary.get_text())
+        self.assertIn('含 2160p', other.summary.get_text())
+        self.assertIn('合并', other.get_text())
+        self.assertIn('av1', other.get_text())
+        self.assertIn('ja', other.get_text())
+        self.assertIn('m3u8_native', other.get_text())
+        self.assertIn('60 fps', video.get_text())
+        self.assertNotIn('open', soup.select_one('.ytdlp-audio-formats').attrs)
+        self.assertEqual(len(soup.select('[data-picker-radio]')), len(candidates))
+        self.assertCountEqual([(r['value'], r['data-token']) for r in soup.select('[data-picker-radio]')],
+                              [(c['candidate_id'], c['resource_token']) for c in candidates])
+        self.assertEqual(soup.select_one('[data-picker-primary] input[checked]')['value'],
+                         picker['selected']['candidate_id'])
+
+    def test_audio_tiers_are_primary_without_outer_disclosure(self):
+        candidates = self.result([
+            self.video('audio-high', None, ext='m4a', vcodec='none', abr=256),
+            self.video('audio-alt', None, ext='webm', vcodec='none', acodec='opus', abr=256),
+            self.video('audio-stream', None, ext='m4a', vcodec='none', abr=320, protocol='m3u8_native'),
+        ]).metadata['upstream_candidates']
+        picker = build_picker(candidates)
+        self.assertTrue(picker['is_audio'])
+        self.assertEqual(picker['selected']['format_id'], 'audio-high')
+        soup = BeautifulSoup(render_to_string('partials/ytdlp_result_picker.html',
+                                             {'ytdlp_picker': picker}), 'html.parser')
+        self.assertIsNone(soup.select_one('.ytdlp-audio-formats'))
+        self.assertEqual(len(soup.select('[data-picker-primary] [data-picker-radio]')), 1)
+        other = soup.select_one('[data-picker-other]')
+        self.assertNotIn('open', other.attrs)
+        self.assertIn('其他格式 (2)', other.summary.get_text())
+        self.assertIn('含 320 kbps', other.summary.get_text())
+        self.assertEqual(len(other.select('[data-picker-radio]')), 2)
+
+    def test_all_restricted_formats_open_with_individual_reasons(self):
+        videos = [self.video('split', 2160, acodec='none'),
+                  self.video('stream', protocol='m3u8_native'),
+                  self.video('drm', has_drm=True),
+                  self.video('context', http_headers={'Referer': 'https://site.example.org/'})]
+        audio = self.video('audio-stream', None, ext='m4a', vcodec='none', protocol='m3u8_native')
+        for formats in (videos, [audio], videos + [audio]):
+            with self.subTest(formats=[f['format_id'] for f in formats]):
+                picker = build_picker(self.result(formats).metadata['upstream_candidates'])
+                self.assertTrue(picker['all_unavailable'])
+                self.assertFalse(picker['selected']['can_download'])
+                soup = BeautifulSoup(render_to_string('partials/ytdlp_result_picker.html',
+                                                     {'ytdlp_picker': picker}), 'html.parser')
+                self.assertFalse(soup.select('[data-picker-primary]'))
+                self.assertTrue(all('open' in d.attrs for d in soup.select('details')))
+                self.assertEqual(len(soup.select('[data-picker-radio]')), len(formats))
+                self.assertEqual(len(soup.select('.ytdlp-format-restricted')), len(formats))
+                for candidate in picker['videos'] + picker['audios']:
+                    self.assertIn(candidate['limitation'], soup.get_text())
+                self.assertIn('disabled', soup.select_one('[data-ytdlp-action="download"]').attrs)
+
+    def test_restricted_same_quality_does_not_displace_preferred_direct_default(self):
+        candidates = self.result([self.video('split', 1080, acodec='none'), self.video('direct', 1080),
+                                  self.video('preferred', 720)]).metadata['upstream_candidates']
+        picker = build_picker(candidates, {'max_height': 720})
+        self.assertEqual(picker['selected']['format_id'], 'preferred')
+        self.assertEqual([c['format_id'] for c in picker['video_primary']], ['direct', 'preferred'])
+        self.assertEqual([c['format_id'] for c in picker['video_other']], ['split'])
+
+    @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True, YTDLP_PROVIDER_ENABLED=True)
+    def test_anonymous_selected_actions_use_real_admission_and_download_policy(self):
+        # Only stored settings and extractor matching are fixtures; permission
+        # decisions and AnonymousUser come from the real request path.
+        candidate = self.candidate()
+        rule = SimpleNamespace(platform_id='upstream', risk_level='low', staff_default=True,
+                               provider_ids=('yt_dlp_generic',), upstream_matches=(self.match,))
+        for mode, video_enabled, download_status, link_status in (
+            (ProviderAccessMode.PUBLIC, True, 200, 200),
+            (ProviderAccessMode.STAFF, True, 403, 403),
+            (ProviderAccessMode.PUBLIC, False, 403, 200),
+        ):
+            with self.subTest(mode=mode, video_enabled=video_enabled):
+                runtime = ProviderRuntimeSetting(third_party_mode=mode,
+                    third_party_allowed_public_platforms='upstream:yt_dlp_generic')
+                download_runtime = DownloadRuntimeSetting(visitor_video_download_enabled=video_enabled)
+                with patch('xhs_download.services.provider_access.load_runtime_setting', return_value=runtime), \
+                        patch('xhs_download.services.platforms.third_party.GenericThirdPartyAdapter.get_rule_for_url',
+                              return_value=rule), \
+                        patch('xhs_download.views.get_download_runtime_setting', return_value=download_runtime), \
+                        patch('xhs_download.views.check_download_request_limits', return_value=('client', None)):
+                    download = self.post(candidate)
+                    link = self.post(candidate, 'link')
+                self.assertTrue(download.wsgi_request.user.is_anonymous)
+                self.assertTrue(link.wsgi_request.user.is_anonymous)
+                self.assertEqual(download.status_code, download_status, download.content)
+                self.assertEqual(link.status_code, link_status, link.content)
+                if mode == ProviderAccessMode.PUBLIC and not video_enabled:
+                    self.assertEqual(download.json()['error_code'], 'VISITOR_VIDEO_DOWNLOAD_DISABLED')
+                    self.assertEqual(link.json()['item']['candidate_id'], candidate['candidate_id'])
+                    self.assertNotIn('browser_direct_fetch_safe', link.json()['item'])
 
     def test_private_descriptor_revalidation_rejects_required_context_even_after_truncation(self):
         self.gates()

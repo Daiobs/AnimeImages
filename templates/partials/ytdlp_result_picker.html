@@ -26,23 +26,19 @@
     {% if ytdlp_picker.videos %}
     <fieldset class="ytdlp-format-group" data-picker-group="video">
         <legend>视频格式 <span>{{ ytdlp_picker.videos|length }}</span></legend>
-        <div class="ytdlp-format-grid">
-            {% for format in ytdlp_picker.videos %}{% include 'partials/ytdlp_format_option.html' %}{% endfor %}
-        </div>
-        {% if ytdlp_picker.video_more %}<button type="button" class="ytdlp-text-button" data-picker-more="video">更多视频格式</button>{% endif %}
+        {% include 'partials/ytdlp_format_tiers.html' with primary_formats=ytdlp_picker.video_primary other_formats=ytdlp_picker.video_other kind_label='视频' %}
     </fieldset>
     {% endif %}
     {% if ytdlp_picker.audios %}
-    <details class="ytdlp-audio-formats" {% if ytdlp_picker.is_audio %}open{% endif %}>
-        <summary>{% if ytdlp_picker.is_audio %}音频格式{% else %}仅下载音频{% endif %} <span>{{ ytdlp_picker.audios|length }}</span></summary>
+    {% if not ytdlp_picker.is_audio %}
+    <details class="ytdlp-audio-formats" {% if ytdlp_picker.all_unavailable %}open{% endif %}>
+        <summary>仅下载音频 <span>{{ ytdlp_picker.audios|length }}</span></summary>
+    {% endif %}
         <fieldset class="ytdlp-format-group" data-picker-group="audio">
-            <legend class="visually-hidden">选择音频格式</legend>
-            <div class="ytdlp-format-grid">
-                {% for format in ytdlp_picker.audios %}{% include 'partials/ytdlp_format_option.html' %}{% endfor %}
-            </div>
-            {% if ytdlp_picker.audio_more %}<button type="button" class="ytdlp-text-button" data-picker-more="audio">更多音频格式</button>{% endif %}
+            <legend{% if not ytdlp_picker.is_audio %} class="visually-hidden"{% endif %}>音频格式 <span>{{ ytdlp_picker.audios|length }}</span></legend>
+            {% include 'partials/ytdlp_format_tiers.html' with primary_formats=ytdlp_picker.audio_primary other_formats=ytdlp_picker.audio_other kind_label='音频' %}
         </fieldset>
-    </details>
+    {% if not ytdlp_picker.is_audio %}</details>{% endif %}
     {% endif %}
     <p class="ytdlp-selection-note" data-picker-limitation>{{ ytdlp_picker.selected.limitation|default:'保留源文件，不转码。实际保存取决于来源的浏览器访问条件。' }}</p>
     <button type="button" class="ytdlp-download-button" data-ytdlp-action="download" disabled>↓ 下载所选{% if ytdlp_picker.is_audio %}音频{% else %}视频{% endif %}</button>
