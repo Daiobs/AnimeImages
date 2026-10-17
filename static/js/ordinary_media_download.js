@@ -430,7 +430,12 @@
             && item.audio_tracks === "present" && item.video_tracks === "absent");
     }
 
-    function contentTypeAllowsSelectedAudio(value) {
+    function contentTypeAllowsSelectedAudio(value, item) {
+        const type = normalizedContentType(value);
+        // A declared WebM audio selection must not accept another audio container.
+        if (item && /\.(?:webm|weba)$/i.test(String(item.filename || ""))) {
+            return ["audio/webm", "application/octet-stream", "binary/octet-stream"].includes(type);
+        }
         return ["audio/mpeg", "audio/mp3", "audio/mp4", "audio/x-m4a", "audio/aac",
             "audio/ogg", "application/ogg", "audio/opus", "audio/flac", "audio/x-flac",
             "audio/wav", "audio/wave", "audio/x-wav", "audio/webm",
@@ -1147,7 +1152,7 @@
                 ? response.headers.get("Content-Type")
                 : "",
         );
-        if (!(isSelectedYtdlpAudio(item) ? contentTypeAllowsSelectedAudio(contentType) : contentTypeAllowsOrdinaryVideo(contentType))) {
+        if (!(isSelectedYtdlpAudio(item) ? contentTypeAllowsSelectedAudio(contentType, item) : contentTypeAllowsOrdinaryVideo(contentType))) {
             fetchGuard.clear();
             clearActiveProtection(true);
             throw downloadError(

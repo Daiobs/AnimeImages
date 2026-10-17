@@ -137,6 +137,46 @@ class YtdlpSelectionTests(SimpleTestCase):
         headers = {f'x-test-{i}': 'x' for i in range(33)}
         self.assertTrue(self.candidate(http_headers=headers)['download_context_required'])
 
+    def test_default_fetch_mode_is_optional_but_other_context_stays_restricted(self):
+        for name in ('Sec-Fetch-Mode', 'sec-fetch-mode', 'SEC-FETCH-MODE'):
+            candidate = self.candidate(http_headers={'User-Agent': 'fixture', name: 'navigate'})
+            self.assertTrue(capability(candidate)['can_download'])
+            record = resolve_candidate_record(candidate['resource_token'], candidate['candidate_id'])
+            self.assertEqual(selected_descriptor(record)['candidate_id'], candidate['candidate_id'])
+        for name in ('Cookie', 'Authorization', 'Referer', 'Origin', 'Sec-Unknown'):
+            self.assertTrue(context_required({name: 'private-fixture'}))
+        self.assertTrue(context_required({'Sec-Fetch-Mode': 'navigate'}, requires_cookie=True))
+        self.assertTrue(context_required({}, headers_present=True))
+
+    def test_webm_audio_descriptor_preserves_container_and_explicit_tracks(self):
+        self.gates()
+        candidate = self.candidate(ext='webm', acodec='opus', vcodec='none',
+                                   url='https://cdn.example.org/voice.webm')
+        response = self.post(candidate)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()['item']['type'], 'audio')
+        self.assertTrue(response.json()['item']['filename'].endswith('.webm'))
+        self.assertTrue(capability(self.candidate(ext='webm', vcodec='vp9', acodec='opus'))['can_download'])
+        self.assertFalse(capability(self.candidate(ext='webm', vcodec=None, acodec=None))['can_download'])
+
+    def test_selected_links_recheck_identity_without_granting_download_authority(self):
+        self.gates()
+        for changes in ({'protocol': 'm3u8_native'}, {'acodec': None, 'vcodec': None},
+                        {'http_headers': {'Referer': 'https://source.example.org'}}):
+            candidate = self.candidate(**changes)
+            response = self.post(candidate, 'link')
+            self.assertEqual(response.status_code, 200, response.content)
+            item = response.json()['item']
+            self.assertEqual(item['candidate_id'], candidate['candidate_id'])
+            self.assertEqual(item['url'], 'https://cdn.example.org/one.mp4')
+            self.assertNotIn('browser_direct_fetch_safe', item)
+            self.assertNotIn('headers', item)
+            self.assertEqual(self.post(candidate).status_code, 409)
+        with patch('xhs_download.services.platforms.third_party.provider_is_enabled', return_value=False):
+            self.assertEqual(self.post(candidate, 'link').status_code, 403)
+        cache.clear()
+        self.assertEqual(self.post(candidate, 'link').status_code, 403)
+
     def test_other_providers_and_collections_keep_existing_presentation(self):
         candidate = self.candidate()
         self.assertIsNone(build_picker([{**candidate, 'provider_id': 'gallery_dl_generic'}]))

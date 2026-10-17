@@ -353,6 +353,8 @@ def normalize_upstream_result(payload, *, match, source_url):
         if media_type not in {'image', 'video', 'audio'}:
             media_type = 'unknown'
         state = 'image' if media_type == 'image' else video_evidence_state({**metadata, 'url': url})
+        if state == 'complete' and _has_complete_bmff_tracks(metadata.get('upstream_bmff_track_evidence')):
+            metadata = {**metadata, 'audio_tracks': 'present', 'video_tracks': 'present'}
         if media_type == 'audio':
             state = 'audio_only'
         elif metadata.get('acodec') == 'none' and metadata.get('vcodec') not in {None, '', 'none'}:

@@ -13,10 +13,12 @@ from .provider_lab.contracts import safe_public_text
 PROVIDER = 'yt_dlp_generic'
 SCHEMA = 'ytdlp_selected_format_v1'
 VIDEO_EXTENSIONS = frozenset({'mp4', 'webm', 'mov', 'm4v', 'mkv'})
-AUDIO_EXTENSIONS = frozenset({'m4a', 'mp3', 'aac', 'ogg', 'opus', 'flac', 'wav', 'weba'})
+AUDIO_EXTENSIONS = frozenset({'m4a', 'mp3', 'aac', 'ogg', 'opus', 'flac', 'wav', 'weba', 'webm'})
+CONTEXT_POLICY_REVISION = 2
 # These preferences can be omitted on a credential-free browser attempt. In
 # particular Referer, Origin, Cookie and Authorization are NOT in this set.
-OPTIONAL_HEADERS = frozenset({'user-agent', 'accept', 'accept-language', 'accept-encoding', 'connection'})
+OPTIONAL_HEADERS = frozenset({'user-agent', 'accept', 'accept-language', 'accept-encoding', 'connection',
+                              'sec-fetch-mode'})
 LIMITATIONS = {
     'stream': '这是流媒体格式，当前选择器不合并分片；可在技术详情中复制来源。',
     'merge': '此格式需要合并音视频；当前选择器不将它当作完整文件下载。',
@@ -211,6 +213,33 @@ def build_picker(candidates, preferences=None):
             'format_count': len(videos) + len(audios)}
 
 
+def selected_link_descriptor(record):
+    """Authorized link metadata, not a media fetch or download grant."""
+    from .upstream_candidates import candidate_url
+    public = record.get('public', {})
+    if (record.get('provider_id') != PROVIDER or not isinstance(public, dict)
+            or public.get('provider_id') != PROVIDER
+            or public.get('media_type') not in {'video', 'audio'}):
+        raise ValueError('selected_link_invalid')
+    url = candidate_url(record.get('url'))
+    if not url:
+        raise ValueError('selected_link_url_invalid')
+    extension = str(public.get('extension') or '').lower().lstrip('.')
+    protocol = str(public.get('protocol') or '').lower()
+    if 'm3u8' in protocol:
+        extension = 'm3u8'
+    elif 'dash' in protocol:
+        extension = 'mpd'
+    if not re.fullmatch(r'[a-z0-9]{1,12}', extension):
+        extension = 'bin'
+    name = clean_filename(public.get('work_label') or 'media').strip(' .')[:160] or 'media'
+    format_id = re.sub(r'[^A-Za-z0-9_-]', '_', str(public.get('format_id') or 'original'))[:80]
+    return {'selection_schema': SCHEMA, 'candidate_id': record['candidate_id'],
+            'selected_format_id': public.get('format_id') or '', 'url': url,
+            'type': public['media_type'], 'provider': PROVIDER,
+            'filename': f'{name}_{format_id}.{extension}'}
+
+
 def selected_descriptor(record):
     """Fresh browser-only authority: no caller-supplied URL or format facts."""
     from .upstream_delivery import safe_resource_url
@@ -223,16 +252,12 @@ def selected_descriptor(record):
     url = safe_resource_url(record.get('url'))
     if not url:
         raise ValueError('selected_format_url_invalid')
-    extension = str(public.get('extension') or '').lower().lstrip('.')
-    name = clean_filename(public.get('work_label') or 'media').strip(' .')[:160] or 'media'
-    format_id = re.sub(r'[^A-Za-z0-9_-]', '_', str(public.get('format_id') or 'original'))[:80]
-    return {'selection_schema': SCHEMA, 'candidate_id': record['candidate_id'],
-            'selected_format_id': public.get('format_id') or '', 'url': url,
+    link = selected_link_descriptor(record)
+    return {**link, 'url': url,
             'type': public['media_type'], 'provider': PROVIDER, 'source_platform': 'upstream',
             'asset_id': 'upstream:selection:' + record['candidate_id'],
             'browser_upstream_bound': True, 'browser_direct_fetch_safe': True,
             'requires_merge': False, 'requires_cookie': False,
             'audio_tracks': public.get('audio_tracks'), 'video_tracks': public.get('video_tracks'),
-            'filename': f'{name}_{format_id}.{extension}',
             'size_bytes': number(public.get('size_bytes')) or 0,
             'size_is_estimate': bool(public.get('size_is_estimate'))}

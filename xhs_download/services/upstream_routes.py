@@ -351,6 +351,9 @@ def parse_cache_key(source_url, route, provider):
                 paths.append(root / "xhs_download/services/saved_videodl.py")
             signature = [(str(path), path.stat().st_size, path.stat().st_mtime_ns) for path in paths]
         payload = [source_url, route["cache_identity"], provider, signature]
+        if provider == 'yt_dlp_generic':
+            from .ytdlp_selection import CONTEXT_POLICY_REVISION
+            payload.append(CONTEXT_POLICY_REVISION)
         return "upstream:parse:v1:" + sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     except (OSError, ValueError, RuntimeError, XhsParseError):
         return None

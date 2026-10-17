@@ -14,7 +14,7 @@ from django.views.decorators.http import require_POST
 
 from .services.common import XhsParseError
 from .services.upstream_candidates import resolve_candidate_record
-from .services.ytdlp_selection import PROVIDER, selected_descriptor
+from .services.ytdlp_selection import PROVIDER, selected_descriptor, selected_link_descriptor
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ def ytdlp_selected_format_view(request):
             raise ValueError()
         data = json.loads(request.body)
         if (not isinstance(data, dict) or set(data) != {'candidate_id', 'resource_token', 'action'}
-                or data.get('action') not in {'download', 'preview', 'cover'}
+                or data.get('action') not in {'download', 'preview', 'cover', 'link'}
                 or not all(isinstance(data.get(k), str) for k in ('candidate_id', 'resource_token'))):
             return _response({'status': 'error', 'message': '所选格式请求无效。'}, 400)
         record = resolve_candidate_record(data['resource_token'], data['candidate_id'])
@@ -71,6 +71,15 @@ def ytdlp_selected_format_view(request):
 
     from . import views
     try:
+        if data['action'] == 'link':
+            from .services.rate_limits import consume_fixed_window, get_client_identity
+            limit = consume_fixed_window('ytdlp-link-descriptor', get_client_identity(request), 120, 60)
+            if not limit.allowed:
+                response = _response({'status': 'error', 'message': '链接请求过于频繁。'}, 429)
+                response['Retry-After'] = str(limit.retry_after)
+                return response
+            return _response({'status': 'success', 'item': selected_link_descriptor(record),
+                              'server_media_relay': False})
         if data['action'] == 'cover':
             from .services.upstream_delivery import safe_resource_url
             from .services.rate_limits import consume_fixed_window, get_client_identity

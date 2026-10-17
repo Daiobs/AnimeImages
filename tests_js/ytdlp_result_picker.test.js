@@ -66,6 +66,21 @@ test("returned identity, type, flags and URL cannot silently substitute another 
     assert.equal(picker.validateItem(item(), selected()).candidate_id, "fmt720");
 });
 
+test("download and preview descriptors must match the frozen format ID as well as candidate ID", async () => {
+    const selection = {...selected(), formatId: "format-720"};
+    for (const action of ["download", "preview"]) {
+        for (const formatId of ["other-format", undefined]) {
+            await assert.rejects(picker.descriptor(root, selection, action, {documentObject, windowObject: win,
+                fetchImpl: async () => ({ok: true, json: async () => ({status: "success",
+                    item: item("fmt720", "video", {selected_format_id: formatId})})})}));
+        }
+        const result = await picker.descriptor(root, selection, action, {documentObject, windowObject: win,
+            fetchImpl: async () => ({ok: true, json: async () => ({status: "success",
+                item: item("fmt720", "video", {selected_format_id: "format-720"})})})});
+        assert.equal(result.selected_format_id, "format-720");
+    }
+});
+
 test("expired, denied and malformed descriptors stop without a media fetch", async () => {
     for (const result of [{ok: false, json: async () => ({status: "error", message: "已过期"})},
         {ok: true, json: async () => ({status: "success", item: item("other")})},
@@ -160,4 +175,101 @@ test("cover descriptor stays a URL rather than a download grant", async () => {
         fetchImpl: async () => ({ok: true, json: async () => ({status: "success", url: "https://cdn.example.org/cover.jpg"})}),
     });
     assert.equal(source, "https://cdn.example.org/cover.jpg");
+});
+
+test("link resolution accepts HTTP/HTTPS and manifest filenames without download flags", async () => {
+    for (const [protocol, extension] of [["http", "m3u8"], ["https", "mpd"]]) {
+        const selection = {...selected(), formatId: "format-1", canDownload: false};
+        const link = {selection_schema: picker.SCHEMA, candidate_id: selection.id, selected_format_id: "format-1",
+            provider: "yt_dlp_generic", type: "video", filename: `source.${extension}`,
+            url: `${protocol}://cdn.example.org/source.${extension}?signed=exact%2Fbytes`};
+        let calls = 0;
+        const result = await picker.resolveLink(root, selection, {documentObject, windowObject: win,
+            fetchImpl: async (url, options) => {
+                calls += 1;
+                assert.equal(url, "http://localhost:8000/media/ytdlp-selected-format/");
+                assert.deepEqual(JSON.parse(options.body), {candidate_id: selection.id, resource_token: selection.token, action: "link"});
+                return {ok: true, json: async () => ({status: "success", item: link})};
+            }});
+        assert.equal(calls, 1);
+        assert.equal(result.filename, `source.${extension}`);
+        assert.equal(result.url, link.url);
+        assert.equal(Object.isFrozen(result), true);
+    }
+});
+
+test("link descriptors reject unsafe URL syntax, mismatched identities and malformed responses", async () => {
+    for (const change of [{url: "javascript:alert(1)"}, {url: "data:text/html,evil"},
+        {url: "file:///etc/passwd"}, {url: "https://user:pass@cdn.example.org/x"},
+        {url: "https://cdn.example.org:8080/x"}, {url: "https://cdn.example.org/x\nheader"},
+        {url: "https://cdn.example.org/\\evil"}, {url: "//cdn.example.org/x"},
+        {candidate_id: "other"}, {selected_format_id: "other"}, {provider: "other"},
+        {selection_schema: "other"}, {type: "audio"}, {filename: "bad\nout=evil"}, {filename: ""}]) {
+        await assert.rejects(picker.resolveLink(root, {...selected(), formatId: "fmt720"}, {
+            documentObject, windowObject: win, fetchImpl: async () => ({ok: true,
+                json: async () => ({status: "success", item: item("fmt720", "video", change)})}),
+        }));
+    }
+    for (const payload of [null, {}, {status: "success"}]) {
+        await assert.rejects(picker.resolveLink(root, selected(), {documentObject, windowObject: win,
+            fetchImpl: async () => ({ok: true, json: async () => payload})}));
+    }
+});
+
+test("expired or denied link authorization reports the server reason without fallback", async () => {
+    for (const message of ["授权已过期，请重新解析。", "当前访问受限。"] ) {
+        let calls = 0;
+        await assert.rejects(picker.resolveLink(root, selected(), {documentObject, windowObject: win,
+            fetchImpl: async () => { calls += 1; return {ok: false, status: 403,
+                json: async () => ({status: "error", message})}; }}), {message});
+        assert.equal(calls, 1);
+    }
+});
+
+test("selected WebM audio preserves bytes and suffix, with M4A/MP3 unchanged", async () => {
+    for (const [extension, mime] of [["webm", "audio/webm"], ["weba", "audio/webm"],
+        ["webm", "application/octet-stream"], ["m4a", "audio/mp4"], ["mp3", "audio/mpeg"]]) {
+        const media = item("voice", "audio", {filename: `voice.${extension}`,
+            url: `https://cdn.example.org/voice.${extension}`, audio_tracks: "present", video_tracks: "absent"});
+        assert.equal(ordinary.isOrdinaryMediaItem(media), true);
+        assert.equal(ordinary.contentTypeAllowsSelectedAudio(mime, media), true);
+        let saved;
+        await ordinary.download(media, {
+            fetchImpl: async url => response("exact-original-audio-bytes", url, mime),
+            handoffBlob: async (blob, filename) => { saved = {bytes: await blob.text(), filename}; },
+        });
+        assert.deepEqual(saved, {bytes: "exact-original-audio-bytes", filename: `voice.${extension}`});
+    }
+});
+
+test("valid synthetic Opus WebM reaches the save handoff byte-for-byte without transcoding", async () => {
+    const bytes = require('node:fs').readFileSync(require('node:path').join(__dirname, 'fixtures/opus-tone.webm'));
+    const media = item('opus-tone', 'audio', {filename: 'opus-tone.webm',
+        url: 'https://cdn.example.org/opus-tone.webm'});
+    let saved;
+    await ordinary.download(media, {
+        fetchImpl: async url => response(bytes, url, 'audio/webm'),
+        handoffBlob: async (blob, filename) => { saved = {bytes: Buffer.from(await blob.arrayBuffer()), filename}; },
+    });
+    assert.deepEqual(saved, {bytes, filename: 'opus-tone.webm'});
+});
+
+test("selected WebM audio rejects video, HTML, wrong containers and unknown tracks", async () => {
+    const media = item("voice", "audio", {filename: "voice.webm", url: "https://cdn.example.org/voice.webm",
+        audio_tracks: "present", video_tracks: "absent"});
+    for (const mime of ["video/webm", "text/html", "audio/mpeg"]) {
+        assert.equal(ordinary.contentTypeAllowsSelectedAudio(mime, media), false);
+        await assert.rejects(ordinary.download(media, {
+            fetchImpl: async url => response("wrong-container", url, mime),
+            handoffBlob: () => assert.fail("invalid container must not be saved"),
+        }), error => error.errorCode === "BROWSER_DOWNLOAD_UNSUPPORTED_CONTENT");
+    }
+    for (const tracks of [{audio_tracks: "unknown"}, {video_tracks: "unknown"}]) {
+        const unknown = {...media, ...tracks};
+        assert.equal(ordinary.isOrdinaryMediaItem(unknown), false);
+        await assert.rejects(ordinary.download(unknown, {
+            fetchImpl: () => assert.fail("unknown tracks must not be fetched"),
+            handoffBlob: () => assert.fail("unknown tracks must not be saved"),
+        }));
+    }
 });

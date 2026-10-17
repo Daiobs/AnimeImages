@@ -13,14 +13,24 @@
     const PAGE_SIZE = 6;
     const COVER_MAX_BYTES = 2 * 1024 * 1024;
     const controllers = new WeakMap();
+    let instanceSequence = 0;
 
     function selected(root) {
         const radio = root.querySelector("[data-picker-radio]:checked");
         if (!radio) return null;
         return Object.freeze({id: radio.value, token: radio.dataset.token, kind: radio.dataset.kind,
+            formatId: radio.dataset.formatId,
             label: radio.dataset.label || "", size: radio.dataset.sizeLabel || "大小未知",
             canDownload: radio.dataset.canDownload === "true", canPreview: radio.dataset.canPreview === "true",
             limitation: radio.dataset.limitation || "", radio});
+    }
+    function sourceLink(value) {
+        if (typeof value !== "string" || /[\\\s\u0000-\u001f\u007f]/.test(value)) throw new Error("资源地址无效。");
+        const url = new URL(value);
+        if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.hash
+                || (url.port && !["80", "443"].includes(url.port))) throw new Error("资源地址无效。");
+        // The fresh endpoint validates public targets (including DNS/IP), not the cached DOM.
+        return value;
     }
     function sourceHttps(value) {
         if (typeof value !== "string" || /[\\\s\u0000-\u001f\u007f]/.test(value)) throw new Error("资源地址无效。");
@@ -42,10 +52,22 @@
     function validateItem(item, selection) {
         if (!item || item.selection_schema !== SCHEMA || item.provider !== "yt_dlp_generic"
                 || item.candidate_id !== selection.id || item.type !== selection.kind
+                || (selection.formatId !== undefined && item.selected_format_id !== selection.formatId)
                 || item.browser_upstream_bound !== true || item.browser_direct_fetch_safe !== true
                 || item.requires_merge !== false || item.requires_cookie !== false) throw new Error("返回格式与本次选择不一致，未开始下载。");
         sourceHttps(item.url);
         return item;
+    }
+    function validateLinkItem(item, selection) {
+        if (!item || item.selection_schema !== SCHEMA || item.provider !== "yt_dlp_generic"
+                || item.candidate_id !== selection.id || item.type !== selection.kind
+                || !["video", "audio"].includes(item.type)
+                || typeof item.selected_format_id !== "string"
+                || (selection.formatId !== undefined && item.selected_format_id !== selection.formatId)
+                || typeof item.filename !== "string" || !item.filename.trim()
+                || /[\u0000-\u001f\u007f]/.test(item.filename)) throw new Error("返回格式与本次选择不一致，已跳过。");
+        sourceLink(item.url);
+        return Object.freeze({...item});
     }
     async function descriptor(root, selection, action, environment, signal) {
         const {documentObject, windowObject, fetchImpl} = environment;
@@ -57,27 +79,56 @@
         });
         let payload;
         try { payload = await response.json(); } catch (_) { throw new Error("资源准备失败，请稍后再试。"); }
-        if (!response.ok || payload.status !== "success") throw new Error(
-            typeof payload.message === "string" ? payload.message : "资源授权已失效，请重新解析。");
+        if (!response.ok || !payload || payload.status !== "success") throw new Error(
+            payload && typeof payload.message === "string" ? payload.message : "资源授权已失效或访问受限，请重新解析。");
         if (action === "cover") return sourceHttps(payload.url);
+        if (action === "link") return validateLinkItem(payload.item, selection);
         return validateItem(payload.item, selection);
+    }
+    async function resolveLink(root, selection, environment, signal) {
+        if (!selection || !selection.id || !selection.token) throw new Error("未选择可核验的格式，请重新解析。");
+        return descriptor(root, selection, "link", environment, signal);
     }
 
     function mount(root, documentObject, windowObject, options) {
-        if (controllers.has(root)) return controllers.get(root);
+        if (controllers.has(root)) {
+            const controller = controllers.get(root);
+            controller.reconcile();
+            return controller;
+        }
         const settings = options || {};
         const fetchImpl = settings.fetchImpl || windowObject.fetch.bind(windowObject);
         const ordinary = settings.ordinary || windowObject.AnimeImagesOrdinaryMediaDownload;
         const environment = {documentObject, windowObject, fetchImpl};
-        const status = root.querySelector("[data-picker-status]");
-        const download = root.querySelector('[data-ytdlp-action="download"]');
-        const copy = root.querySelector('[data-ytdlp-action="copy"]');
-        const cancel = root.querySelector('[data-ytdlp-action="cancel"]');
-        const progress = root.querySelector("[data-picker-progress]");
-        const playerRegion = root.querySelector("[data-picker-player-region]");
-        const playerSlot = root.querySelector("[data-picker-player]");
+        let status, download, copy, cancel, progress, playerRegion, playerSlot;
+        function bindControls() {
+            status = root.querySelector("[data-picker-status]");
+            download = root.querySelector('[data-ytdlp-action="download"]');
+            copy = root.querySelector('[data-ytdlp-action="copy"]');
+            cancel = root.querySelector('[data-ytdlp-action="cancel"]');
+            progress = root.querySelector("[data-picker-progress]");
+            playerRegion = root.querySelector("[data-picker-player-region]");
+            playerSlot = root.querySelector("[data-picker-player]");
+        }
+        bindControls();
         let generation = 0, busy = false, destroyed = false, activeController = null;
         let coverController = null, coverObjectUrl = "", player = null;
+        const groupName = `doki-ytdlp-instance-${++instanceSequence}`;
+        let knownRadios = [], rememberedId = null;
+        function reconcile() {
+            const radios = Array.from(root.querySelectorAll("[data-picker-radio]"));
+            if (radios.length === knownRadios.length
+                    && radios.every((radio, index) => radio === knownRadios[index] && radio.name === groupName)
+                    && (!radios.length || radios.some(radio => radio.checked))) return;
+            const choice = radios.find(radio => radio.value === rememberedId)
+                || radios.find(radio => radio.checked) || radios.find(radio => radio.defaultChecked) || radios[0];
+            // Templates intentionally have no name: cached copies cannot disturb live groups before mounting.
+            radios.forEach(radio => { radio.name = groupName; radio.checked = false; });
+            if (choice) { choice.checked = true; rememberedId = choice.value; }
+            knownRadios = radios;
+            bindControls();
+            refresh();
+        }
         function say(message) { if (status) status.textContent = message; }
         function closePreview() {
             if (player) {
@@ -87,6 +138,7 @@
         }
         function refresh() {
             const selection = selected(root);
+            if (selection) rememberedId = selection.id;
             root.querySelectorAll("[data-picker-radio]").forEach(radio => {
                 radio.disabled = busy;
                 radio.closest("[data-picker-option]").classList.toggle("is-selected", radio.checked);
@@ -156,7 +208,8 @@
             if (!selection || !selection.canPreview) {
                 const radio = Array.from(root.querySelectorAll("[data-picker-radio]")).find(r => r.value === root.dataset.previewId);
                 if (!radio) { say("暂无可直接预览的格式；下载选择未改变。"); return; }
-                selection = {id: radio.value, token: radio.dataset.token, kind: radio.dataset.kind, label: radio.dataset.label};
+                selection = {id: radio.value, token: radio.dataset.token, kind: radio.dataset.kind,
+                    formatId: radio.dataset.formatId, label: radio.dataset.label};
             }
             const operation = start();
             if (!operation) return;
@@ -179,20 +232,13 @@
             if (!selection || busy) return;
             const operation = start();
             if (!operation) return;
+            say("正在核验所选链接…");
             try {
-                const response = await fetchImpl(sameOriginPath(root.dataset.copyUrl, windowObject), {
-                    method: "POST", credentials: "same-origin", cache: "no-store", signal: operation.signal,
-                    headers: {"Content-Type": "application/json", "X-CSRFToken": csrf(documentObject)},
-                    body: JSON.stringify({candidate_id: selection.id, resource_token: selection.token}),
-                });
-                const payload = await response.json();
-                if (!response.ok || payload.status !== "success") throw new Error("所选链接已失效，请重新解析。");
-                const value = windowObject.AnimeImagesUpstreamCandidates
-                    ? windowObject.AnimeImagesUpstreamCandidates.permittedUrl(payload.url, false) : sourceHttps(payload.url);
+                const item = await resolveLink(root, selection, environment, operation.signal);
                 if (!current(operation) || operation.signal.aborted) return;
-                await windowObject.navigator.clipboard.writeText(value);
+                await windowObject.navigator.clipboard.writeText(item.url);
                 say("已复制所选格式链接；访问条件及有效期以来源为准。");
-            } catch (error) { if (current(operation)) say("未能复制链接，请检查剪贴板权限或重新解析。"); }
+            } catch (error) { if (current(operation)) say(`未能复制链接：${error.message || "请检查剪贴板权限或重新解析。"}`); }
             finally { finish(operation); }
         }
         async function cover() {
@@ -242,8 +288,8 @@
             else if (button.dataset.ytdlpAction === "cancel" && activeController) activeController.abort();
         }
         root.addEventListener("change", handleChange); root.addEventListener("click", handleClick);
-        refresh(); cover();
-        const controller = {destroy() {
+        reconcile(); cover();
+        const controller = {reconcile, destroy() {
             destroyed = true; generation += 1;
             if (activeController) activeController.abort();
             if (coverController) coverController.abort();
@@ -262,6 +308,7 @@
         function scan() {
             documentObject.querySelectorAll("[data-ytdlp-picker]").forEach(root => {
                 if (!mounted.has(root)) mounted.set(root, mount(root, documentObject, windowObject, options));
+                else mounted.get(root).reconcile();
             });
             mounted.forEach((controller, root) => {
                 if (!root.isConnected) { controller.destroy(); mounted.delete(root); }
@@ -273,6 +320,6 @@
             observer.observe(documentObject.body, {childList: true, subtree: true});
         }
     }
-    return Object.freeze({SCHEMA, PAGE_SIZE, COVER_MAX_BYTES, selected, sourceHttps, sameOriginPath,
-        csrf, validateItem, descriptor, mount, attach});
+    return Object.freeze({SCHEMA, PAGE_SIZE, COVER_MAX_BYTES, selected, sourceHttps, sourceLink, sameOriginPath,
+        csrf, validateItem, validateLinkItem, descriptor, resolveLink, mount, attach});
 }));
