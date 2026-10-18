@@ -178,7 +178,7 @@ def issue_candidate(url, metadata, *, ordinal, provider, source_url, media_type,
                                  source_url=source_url, media_type=media_type, state=state, match=match)])[0]
 
 
-def resolve_candidate_record(token, candidate_id):
+def resolve_candidate_record(token, candidate_id, *, display_only=False):
     try:
         payload = signing.loads(str(token), salt=SALT, max_age=TTL)
         if not isinstance(payload, dict) or payload.get('id') != str(candidate_id):
@@ -190,7 +190,12 @@ def resolve_candidate_record(token, candidate_id):
             record = cache.get('upstream:candidate:' + str(candidate_id))
         else:
             raise ValueError()
-        if not isinstance(record, dict) or not candidate_url(record.get('url')):
+        validator = None
+        if (display_only and isinstance(record, dict)
+                and record.get('provider_id') in {'tiantianjiexi', 'kukutool'}):
+            from .platforms.douyin_media_policy import validate_douyin_media_url
+            validator = validate_douyin_media_url
+        if not isinstance(record, dict) or not candidate_url(record.get('url'), validator=validator):
             raise ValueError()
         if record.get('provider_id') == 'yt_dlp_generic':
             from .ytdlp_format_check import apply_check_evidence

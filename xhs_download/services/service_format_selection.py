@@ -154,6 +154,12 @@ def attach_service_picker(result, *, payload, provider, source_url, match=None, 
         return result
     match = match or {'provider_id': provider, 'extractor_id': provider,
                       'version': SERVICE_VERSIONS[provider], 'label': provider}
+    projection_validator = None
+    if provider in DOUYIN_PROVIDERS:
+        from .platforms.douyin_media_policy import validate_douyin_media_url
+        # Projection does not fetch media. Keep the dedicated CDN policy here;
+        # link, cover and save actions still recheck public DNS before delivery.
+        projection_validator = validate_douyin_media_url
     candidates = []
     counts = {}
     for row in rows:
@@ -174,7 +180,7 @@ def attach_service_picker(result, *, payload, provider, source_url, match=None, 
     for row in rows[:MAX_CANDIDATES]:
         if not isinstance(row, dict):
             continue
-        url = candidate_url(row.get('url'))
+        url = candidate_url(row.get('url'), validator=projection_validator)
         if not url:
             continue
         metadata = {**row, '_service_picker_issued': True,
@@ -193,11 +199,15 @@ def attach_service_picker(result, *, payload, provider, source_url, match=None, 
         metadata['extension'] = row.get('extension') or row.get('ext') or extension_from_url(url)
         metadata.setdefault('work_label', payload.get('title') or result.base_filename)
         groups.setdefault(row.get('work_id') or '', []).append((url, metadata))
+    cover = (candidate_url(payload.get('cover'), validator=projection_validator)
+             if projection_validator else safe_resource_url(payload.get('cover')))
+    if cover and (urlsplit(cover).scheme != 'https' or urlsplit(cover).fragment):
+        cover = ''
     for group_id, values in groups.items():
         work = {'title': values[0][1].get('work_label') or result.base_filename,
                 'author': payload.get('author') or payload.get('nickname') or '',
                 'duration': payload.get('duration'), 'source_host': urlsplit(source_url).hostname or '',
-                'cover_url': safe_resource_url(payload.get('cover')), 'collection': False}
+                'cover_url': cover, 'collection': False}
         specs = []
         for url, metadata in values:
             kind = metadata.get('media_type', 'video')

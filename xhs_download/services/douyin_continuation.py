@@ -299,7 +299,9 @@ def deserialize_douyin_continuation_result(payload):
     if isinstance(refs, list) and len(json.dumps(refs)) <= 16 * 1024:
         for ref in refs:
             try:
-                record = resolve_candidate_record(ref['resource_token'], ref['candidate_id'])
+                # Restore display facts without network waits; action endpoints
+                # resolve the same token again with public-address validation.
+                record = resolve_candidate_record(ref['resource_token'], ref['candidate_id'], display_only=True)
                 if (record['provider_id'] == provider
                         and record.get('dedicated_resource_id') == item['provider_resource_id']):
                     candidates.append({**record['public'], 'resource_token': ref['resource_token']})

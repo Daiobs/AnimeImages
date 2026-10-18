@@ -127,6 +127,40 @@ class DouyinFormatSelectionTests(SimpleTestCase):
             self.assertEqual(binding['size_bytes'], 9000000)
             self.assertEqual(binding['provider_manifest_token'], original.video_assets[0].provider_manifest_token)
 
+    def test_projection_does_not_resolve_dns_but_actions_recheck_public_addresses(self):
+        from .services.common import XhsSecurityError
+        with patch('xhs_download.services.upstream_candidates.validate_public_download_url',
+                   side_effect=AssertionError('projection must not resolve DNS')), \
+             patch('xhs_download.services.upstream_delivery.validate_public_download_url',
+                   side_effect=AssertionError('projection must not resolve cover DNS')):
+            rows = self.result().metadata['upstream_candidates']
+            result = self.bridge_result('tiantianjiexi', (
+                MediaCandidate(url=BASE + 'cached.mp4', quality_label='Original', size_bytes=1000),
+            ))
+            restored = deserialize_douyin_continuation_result(serialize_douyin_continuation_result(result))
+            self.assertEqual(len(restored.metadata['upstream_candidates']), 1)
+        record = self.record(rows[1])
+        with patch('xhs_download.services.upstream_candidates.validate_public_download_url',
+                   side_effect=XhsSecurityError('private address')) as validate:
+            for action in (selected_link_descriptor, selected_descriptor, selected_legacy_descriptor):
+                with self.assertRaises(ValueError):
+                    action(record)
+            self.assertEqual(validate.call_count, 3)
+            with self.assertRaises(XhsParseError):
+                self.record(rows[1])
+        with patch('xhs_download.services.provider_access.load_runtime_setting', return_value=SimpleNamespace()), \
+             patch('xhs_download.services.provider_access.provider_is_allowed_for_request', return_value=True), \
+             patch('xhs_download.services.provider_settings.get_platform_provider_settings', return_value=self.settings), \
+             patch('xhs_download.services.upstream_delivery.validate_public_download_url',
+                   side_effect=XhsSecurityError('private cover address')) as validate:
+            response = self.client.post(reverse('service_selected_format'), {
+                'candidate_id': rows[0]['candidate_id'], 'resource_token': rows[0]['resource_token'],
+                'action': 'cover',
+            }, content_type='application/json')
+            self.assertEqual(response.status_code, 409)
+            validate.assert_called_once()
+        self.session.post.assert_called_once()
+
     def test_missing_or_ambiguous_manifest_disables_dedicated_download_but_not_copy(self):
         winner = MediaCandidate(url=BASE + 'main.mp4', quality_label='Original', size_bytes=9000000)
         alias = replace(winner, quality_label='2160P')
