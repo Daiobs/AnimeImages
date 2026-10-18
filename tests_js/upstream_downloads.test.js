@@ -13,7 +13,7 @@ function item(type = "video") {
         browser_direct_fetch_safe: true, url: `https://media.example.org/a.${type === "video" ? "mp4" : "jpg"}`};
 }
 
-test("upstream video uses Blob with strict redirects, never Service Worker", async () => {
+test("an authorized video outside the reviewed SW URL scope retains strict Blob compatibility", async () => {
     let saved = false;
     const result = await ordinary.download(item(), {
         streamingClient: {capabilityAvailable() { throw new Error("must not use SW"); }},

@@ -9,7 +9,7 @@
 }(typeof self !== "undefined" ? self : globalThis, function () {
     "use strict";
 
-    const PROTOCOL_VERSION = 3;
+    const PROTOCOL_VERSION = 4;
     const DOWNLOAD_PATH_SEGMENT = "__animeimages-stream-download";
     const DEFAULT_STREAM_DESCRIPTOR_TTL_MS = 120000;
     const MAX_STREAM_BYTES = 2 * 1024 * 1024 * 1024;
@@ -614,13 +614,16 @@
             binding.selection_schema === "ytdlp_selected_format_v1" && value.provider === "yt_dlp_generic"
             || binding.selection_schema === "service_selected_format_v1"
                 && ["tiantianjiexi_generic", "kukutool_generic"].includes(value.provider));
-        if ((!dedicated && !upstream) || binding.type !== "video"
+        const resource = binding.source_platform === "upstream"
+            && binding.selection_schema === "upstream_resource_v1"
+            && ["yt_dlp_generic", "gallery_dl_generic", "parsehub_generic"].includes(value.provider);
+        if ((!dedicated && !upstream && !resource) || binding.type !== "video"
             || (binding.selection_delivery || "direct") !== "direct"
             || binding.browser_upstream_bound !== true || binding.browser_direct_fetch_safe !== true
             || binding.requires_merge !== false || binding.requires_cookie !== false
             || binding.has_drm || binding.requires_context || binding.download_context_required
             || binding.video_tracks === "absent"
-            || !safeIdentity("candidate_id") || !safeIdentity("selected_format_id", true)
+            || (!resource && (!safeIdentity("candidate_id") || !safeIdentity("selected_format_id", true)))
             || !safeIdentity("asset_id")
             || !Number.isSafeInteger(binding.selection_expires_at) || binding.selection_expires_at <= 0) {
             throw new Error("INVALID_SELECTION_BINDING");
@@ -634,6 +637,11 @@
                     && /^[a-f0-9]{24}$/.test(binding.asset_id.slice(`${prefix}:format:`.length)))) {
                 throw new Error("INVALID_SELECTION_BINDING");
             }
+        } else if (resource) {
+            const asset = /^upstream:([a-f0-9]{32}):video:([1-9][0-9]?)$/.exec(binding.asset_id);
+            if (!asset || !/^[a-f0-9]{64}$/.test(binding.provider_resource_id)
+                || binding.provider_cache_key !== `upstream:${asset[1]}`
+                || !safeIdentity("provider_manifest_token")) throw new Error("INVALID_SELECTION_BINDING");
         } else if (binding.asset_id !== `upstream:selection:${binding.candidate_id}`) {
             throw new Error("INVALID_SELECTION_BINDING");
         }
@@ -642,9 +650,9 @@
             selection_schema: binding.selection_schema, source_platform: binding.source_platform,
             type: "video", selection_delivery: "direct", browser_upstream_bound: true,
             browser_direct_fetch_safe: true, requires_merge: false, requires_cookie: false,
-            candidate_id: binding.candidate_id, selected_format_id: binding.selected_format_id,
+            ...(!resource ? {candidate_id: binding.candidate_id, selected_format_id: binding.selected_format_id} : {}),
             asset_id: binding.asset_id, selection_expires_at: binding.selection_expires_at,
-            ...(dedicated ? {provider_resource_id: binding.provider_resource_id,
+            ...(dedicated || resource ? {provider_resource_id: binding.provider_resource_id,
                 provider_manifest_token: binding.provider_manifest_token,
                 provider_cache_key: binding.provider_cache_key} : {}),
         });

@@ -21,6 +21,7 @@ function serviceItem(provider, id = "service720", kind = "video", extra = {}) {
 function selected(id = "fmt720", kind = "video") { return {id, kind, token: `signed-${id}`}; }
 function item(id = "fmt720", type = "video", extra = {}) {
     return {selection_schema: picker.SCHEMA, candidate_id: id, selected_format_id: id,
+        selection_expires_at: Date.now() + 60000,
         type, provider: "yt_dlp_generic", source_platform: "upstream", asset_id: `upstream:selection:${id}`,
         url: `https://cdn.example.org/${id}.${type === "audio" ? "m4a" : "mp4"}`,
         filename: `${id}.${type === "audio" ? "m4a" : "mp4"}`,

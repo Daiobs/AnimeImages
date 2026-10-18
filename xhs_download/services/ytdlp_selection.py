@@ -358,6 +358,7 @@ def selection_expires_at(record):
 def selected_descriptor(record):
     """Fresh browser-only authority: no caller-supplied URL or format facts."""
     from .upstream_delivery import safe_resource_url
+    from .provider_strategy import browser_transport_hint
     public = record.get('public', {})
     if (record.get('provider_id') != PROVIDER or not isinstance(public, dict)
             or public.get('provider_id') != PROVIDER or not capability(public)['can_download']
@@ -368,7 +369,7 @@ def selected_descriptor(record):
     if not url:
         raise ValueError('selected_format_url_invalid')
     link = selected_link_descriptor(record)
-    return {**link, 'url': url,
+    item = {**link, 'url': url,
             'selection_expires_at': selection_expires_at(record),
             'type': public['media_type'], 'provider': PROVIDER, 'source_platform': 'upstream',
             'asset_id': 'upstream:selection:' + record['candidate_id'],
@@ -377,3 +378,4 @@ def selected_descriptor(record):
             'audio_tracks': public.get('audio_tracks'), 'video_tracks': public.get('video_tracks'),
             'size_bytes': number(public.get('size_bytes')) or 0,
             'size_is_estimate': bool(public.get('size_is_estimate'))}
+    return {**item, **browser_transport_hint(item)}

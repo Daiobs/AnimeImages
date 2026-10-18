@@ -319,6 +319,7 @@ def selected_legacy_descriptor(record):
 
 def selected_descriptor(record):
     from .upstream_delivery import safe_resource_url
+    from .provider_strategy import browser_transport_hint
     public = record.get('public', {})
     if (public.get('service_file_eligible') is not True or not capability(public)['can_download'] or picker.context_required(
             record.get('headers'), headers_present=record.get('headers_present'),
@@ -340,12 +341,13 @@ def selected_descriptor(record):
         if selection_expires_at <= time() * 1000:
             raise ValueError('service_selection_expired')
         item.pop('selection_delivery', None)
-        return {**item, 'browser_upstream_bound': True, 'browser_direct_fetch_safe': True,
+        item = {**item, 'browser_upstream_bound': True, 'browser_direct_fetch_safe': True,
                 'selection_expires_at': selection_expires_at,
                 'requires_merge': False, 'requires_cookie': False,
                 'size_bytes': picker.number(public.get('size_bytes')) or 0,
                 'size_is_estimate': bool(public.get('size_is_estimate'))}
-    return {**link, 'source_platform': 'upstream', 'asset_id': 'upstream:selection:' + record['candidate_id'],
+        return {**item, **browser_transport_hint(item)}
+    item = {**link, 'source_platform': 'upstream', 'asset_id': 'upstream:selection:' + record['candidate_id'],
             'selection_expires_at': selection_expires_at,
             'browser_upstream_bound': True, 'browser_direct_fetch_safe': True,
             'requires_merge': False, 'requires_cookie': False,
@@ -353,3 +355,4 @@ def selected_descriptor(record):
             'audio_tracks': public.get('audio_tracks'), 'video_tracks': public.get('video_tracks'),
             'size_bytes': picker.number(public.get('size_bytes')) or 0,
             'size_is_estimate': bool(public.get('size_is_estimate'))}
+    return {**item, **browser_transport_hint(item)}

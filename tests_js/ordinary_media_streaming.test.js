@@ -842,7 +842,7 @@ test("client registers the root-scoped worker and launches one opaque download p
     assert.equal(active.transport, "browser_streaming");
     assert.deepEqual(harness.calls[0], {
         type: "register",
-        url: "/ordinary-media-download-sw.js?v=3",
+        url: "/ordinary-media-download-sw.js?v=4",
         options: {scope: "/", updateViaCache: "none"},
     });
     assert.match(harness.clicked[0], /^\/__animeimages-stream-download\/[a-f0-9]{32}$/);
@@ -1035,7 +1035,7 @@ test("a page-rejected URL never fetches even when URL rejection is fallback-elig
 });
 
 test("worker and registration URLs stay bound to the current protocol version", () => {
-    assert.equal(protocol.PROTOCOL_VERSION, 3);
+    assert.equal(protocol.PROTOCOL_VERSION, 4);
     assert.equal(
         streaming.DEFAULT_WORKER_URL,
         `/ordinary-media-download-sw.js?v=${protocol.PROTOCOL_VERSION}`,
@@ -1958,10 +1958,16 @@ test("selected worker enforces declared, response and actual-byte 1 GiB limits w
 });
 
 test("real client and worker deliver selected bytes before EOF with bounded read-ahead and frozen identity", async () => {
-    for (const provider of ["tiantianjiexi", "kukutool"]) {
+    const sources = [selectedItem("tiantianjiexi"), selectedItem("kukutool"),
+        ...["yt_dlp_generic", "parsehub_generic"].map(provider => ordinaryItem({provider,
+            source_platform: "upstream", selection_schema: "upstream_resource_v1", browser_upstream_bound: true,
+            asset_id: `upstream:${"a".repeat(32)}:video:1`, provider_resource_id: "b".repeat(64),
+            provider_cache_key: `upstream:${"a".repeat(32)}`, provider_manifest_token: "signed-resource-manifest",
+            selection_expires_at: Date.now() + 60000, filename: "selected-high.bin"}))];
+    for (const item of sources) {
         const end = deferred();
         let pulls = 0, eof = false, fetches = 0;
-        const source = selectedItem(provider, {size_bytes: 4});
+        const source = {...item, size_bytes: 4};
         const app = integratedClient(async url => {
             fetches += 1;
             assert.equal(url, source.url);
@@ -1987,6 +1993,25 @@ test("real client and worker deliver selected bytes before EOF with bounded read
         assert.equal((await active.completion).filename, "selected-high.mp4");
         assert.equal(fetches, 1);
         await app.client.close();
+    }
+});
+
+test("old resource binding keeps its own manifest and expiry without fabricating candidate identity", () => {
+    const input = ordinaryItem({provider: "parsehub_generic", source_platform: "upstream",
+        selection_schema: "upstream_resource_v1", browser_upstream_bound: true,
+        asset_id: `upstream:${"a".repeat(32)}:video:1`, provider_resource_id: "b".repeat(64),
+        provider_cache_key: `upstream:${"a".repeat(32)}`, provider_manifest_token: "signed-resource-manifest",
+        selection_expires_at: Date.now() + 10000, downloadId: "1".repeat(32)});
+    const descriptor = protocol.createDescriptor(input);
+    assert.equal(descriptor.selectionBinding.asset_id, input.asset_id);
+    assert.equal(descriptor.selectionBinding.provider_manifest_token, input.provider_manifest_token);
+    assert.equal(descriptor.selectionBinding.candidate_id, undefined);
+    assert.equal(descriptor.expiresAt, input.selection_expires_at);
+    for (const changes of [{selection_schema: undefined}, {selection_expires_at: undefined},
+        {provider_manifest_token: ""}, {provider_cache_key: `upstream:${"b".repeat(32)}`},
+        {provider_resource_id: "another-work"}, {asset_id: `upstream:${"a".repeat(32)}:image:1`},
+        {requires_cookie: true}, {requires_merge: true}, {source_platform: "douyin"}]) {
+        assert.throws(() => protocol.createDescriptor({...input, ...changes}), /INVALID_SELECTION_BINDING/);
     }
 });
 

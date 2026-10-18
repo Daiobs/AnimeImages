@@ -638,6 +638,7 @@ function unknownServiceFile(provider, type = "video", overrides = {}) {
         candidate_id: "service-selected-candidate", selected_format_id: "",
         asset_id: "upstream:selection:service-selected-candidate", source_platform: "upstream",
         browser_upstream_bound: true, service_audio_file: type === "audio",
+        selection_expires_at: Date.now() + 60000,
         url: "https://cdn.example.org/opaque-resource", filename: "upstream-quality.bin",
         audio_tracks: "unknown", video_tracks: "unknown", ...overrides});
 }
@@ -653,6 +654,61 @@ function dedicatedServiceFile(provider, overrides = {}) {
         browser_upstream_bound: true, url: "https://v11-default.365yg.com/media/low.mp4?token=low-exact",
         filename: "low.mp4", ...overrides});
 }
+
+test("equal authorized full-video access conditions give old and selected cards the same streaming priority", async () => {
+    const url = "https://v11-default.365yg.com/media/same.mp4";
+    const oldUpstream = provider => ordinaryItem({provider, url, source_platform: "upstream",
+        selection_schema: "upstream_resource_v1", browser_upstream_bound: true,
+        asset_id: `upstream:${"a".repeat(32)}:video:1`, provider_resource_id: "b".repeat(64),
+        provider_cache_key: `upstream:${"a".repeat(32)}`, provider_manifest_token: "signed-original-manifest",
+        selection_expires_at: Date.now() + 60000});
+    const cases = [
+        ordinaryItem({provider: "", url}), ordinaryItem({provider: "tiantianjiexi", url}),
+        ordinaryItem({provider: "kukutool", url}),
+        ...["tiantianjiexi", "kukutool"].map(provider => dedicatedServiceFile(provider, {url})),
+        ...["tiantianjiexi_generic", "kukutool_generic"].map(provider => unknownServiceFile(provider, "video", {
+            url, selection_expires_at: Date.now() + 60000})),
+        unknownServiceFile("yt_dlp_generic", "video", {url, selection_schema: "ytdlp_selected_format_v1",
+            selection_expires_at: Date.now() + 60000}),
+        ...["yt_dlp_generic", "parsehub_generic"].map(oldUpstream),
+    ];
+    for (const item of cases) {
+        let starts = 0;
+        const result = await ordinary.download(item, {forceBlob: true,
+            fetchImpl: () => assert.fail("card identity must not force a page fetch"),
+            handoffBlob: () => assert.fail("card identity must not force a Blob"),
+            streamingClient: {capabilityAvailable: () => true, async start(actual) {
+                starts += 1;
+                assert.equal(actual, item);
+                assert.equal(actual.url, url);
+                return {downloadId: "same-resource", completion: Promise.resolve({filename: item.filename,
+                    receivedBytes: 5, totalBytes: 5})};
+            }},
+        });
+        assert.equal(result.transport, "browser_streaming", `${item.provider}/${item.selection_schema}`);
+        assert.equal(starts, 1);
+    }
+});
+
+test("non-SW compatibility cannot bypass a declared resource binding or its original expiry", async () => {
+    const resource = ordinaryItem({provider: "parsehub_generic", url: "https://cdn.example.org/video.mp4",
+        source_platform: "upstream", selection_schema: "upstream_resource_v1", browser_upstream_bound: true,
+        asset_id: `upstream:${"a".repeat(32)}:video:1`, provider_resource_id: "b".repeat(64),
+        provider_cache_key: `upstream:${"a".repeat(32)}`, provider_manifest_token: "signed-resource",
+        selection_expires_at: Date.now() + 60000});
+    for (const changes of [{provider_manifest_token: undefined}, {selection_expires_at: undefined},
+        {selection_expires_at: Date.now() - 1}, {provider_cache_key: "other"}]) {
+        for (const run of [ordinary.download, ordinary.downloadViaBlob]) {
+            let fetches = 0, saves = 0;
+            await assert.rejects(run({...resource, ...changes}, {
+                fetchImpl: () => { fetches += 1; throw new Error("unexpected-fetch"); },
+                handoffBlob: () => { saves += 1; },
+            }), error => error.message === "INVALID_SELECTION_BINDING" || error.errorCode === "DESCRIPTOR_EXPIRED");
+            assert.equal(fetches, 0);
+            assert.equal(saves, 0);
+        }
+    }
+});
 
 for (const provider of ["tiantianjiexi", "kukutool"]) {
     test(`${provider} bound selected format uses streaming when available without full Blob buffering`, async () => {

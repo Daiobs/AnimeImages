@@ -1,3 +1,6 @@
+from urllib.parse import urlsplit
+
+
 DOWNLOAD_STRATEGY_BROWSER_BLOB = "browser_blob"
 DOWNLOAD_STRATEGY_BROWSER_STREAMING = "browser_streaming"
 DOWNLOAD_STRATEGY_BROWSER_DIRECT = "browser_direct"
@@ -29,6 +32,44 @@ def normalize_media_type(value):
     return str(value or "").strip().lower()
 
 
+def browser_streaming_resource_url_is_allowed(value):
+    """The reviewed initial SW hosts, without DNS or provider-specific priority."""
+    from .platforms.douyin_media_policy import is_allowed_douyin_media_hostname
+    from .platforms.xiaohongshu import xhs_native_video_url_is_browser_streaming_allowed
+    from .platforms.xhs_tiantian_media_policy import xhs_tiantian_media_url_is_allowed
+
+    url = str(value or "")
+    try:
+        parsed = urlsplit(url)
+        if (not url or len(url) > 8192 or any(ord(c) <= 32 or ord(c) == 127 for c in url)
+                or "\\" in url or parsed.scheme != "https" or parsed.fragment
+                or parsed.username is not None or parsed.password is not None
+                or parsed.port not in (None, 443) or not parsed.path.strip("/")
+                or parsed.path.lower().endswith((".m3u8", ".mpd"))):
+            return False
+    except ValueError:
+        return False
+    return bool(
+        is_allowed_douyin_media_hostname(parsed.hostname, existing_suffixes=("365yg.com", "douyinvod.com"))
+        or xhs_native_video_url_is_browser_streaming_allowed(url)
+        or xhs_tiantian_media_url_is_allowed(url)
+    )
+
+
+def browser_transport_hint(item):
+    """Presentation only: callers must establish browser authority first."""
+    if (item.get("type") != "video" or item.get("browser_direct_fetch_safe") is not True
+            or item.get("requires_merge") is not False or item.get("requires_cookie") is not False
+            or any(item.get(key) for key in ("has_drm", "requires_context", "download_context_required"))
+            or item.get("video_tracks") == "absent"):
+        return {}
+    streaming = browser_streaming_resource_url_is_allowed(item.get("url"))
+    return {
+        "download_strategy": DOWNLOAD_STRATEGY_BROWSER_STREAMING if streaming else DOWNLOAD_STRATEGY_BROWSER_BLOB,
+        "fallback_strategy": FALLBACK_BROWSER_BLOB if streaming else FALLBACK_NONE,
+    }
+
+
 def build_download_strategy(asset, *, result_platform="", result_metadata=None):
     media_type = normalize_media_type(getattr(asset, "media_type", ""))
     provider = normalize_provider(getattr(asset, "provider", ""))
@@ -36,11 +77,9 @@ def build_download_strategy(asset, *, result_platform="", result_metadata=None):
     selected_provider = normalize_provider((result_metadata or {}).get("selected_provider"))
     effective_provider = provider or selected_provider or source_provider
     if str(getattr(asset, "asset_id", "") or "").startswith("upstream:"):
+        # Pre-authorization intent only; the authenticated route chooses transport.
         return {
-            "download_strategy": (
-                DOWNLOAD_STRATEGY_BROWSER_BLOB if media_type == "video"
-                else DOWNLOAD_STRATEGY_BROWSER_DIRECT
-            ),
+            "download_strategy": DOWNLOAD_STRATEGY_BROWSER_DIRECT,
             "fallback_strategy": FALLBACK_NONE,
             "cors_expected": True,
             "browser_direct_fetch_safe": False,

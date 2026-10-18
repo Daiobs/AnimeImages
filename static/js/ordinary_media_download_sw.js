@@ -1,6 +1,6 @@
 "use strict";
 
-const STREAMING_PROTOCOL_ASSET_VERSION = "3";
+const STREAMING_PROTOCOL_ASSET_VERSION = "4";
 importScripts(
     `/static/js/ordinary_media_streaming_protocol.js?v=${STREAMING_PROTOCOL_ASSET_VERSION}`,
 );

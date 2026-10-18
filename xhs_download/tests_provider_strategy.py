@@ -112,6 +112,37 @@ class TrackingThreadPoolExecutor:
 
 
 class ProviderDownloadStrategyTests(SimpleTestCase):
+    def test_authorized_browser_transport_depends_on_resource_not_provider(self):
+        from .services.provider_strategy import browser_transport_hint
+
+        item = dict(type='video', url='https://v26-default.365yg.com/video.mp4',
+                    browser_direct_fetch_safe=True, requires_merge=False, requires_cookie=False)
+        for provider in ('yt_dlp_generic', 'parsehub_generic', 'gallery_dl_generic',
+                         'kukutool_generic', 'tiantianjiexi_generic', 'kukutool', 'tiantianjiexi'):
+            with self.subTest(provider=provider):
+                self.assertEqual(browser_transport_hint({**item, 'provider': provider})['download_strategy'],
+                                 'browser_streaming')
+                self.assertEqual(browser_transport_hint({**item, 'provider': provider,
+                    'url': 'https://media.example/video.mp4'})['download_strategy'], 'browser_blob')
+        for fields in ({'type': 'audio'}, {'browser_direct_fetch_safe': False},
+                       {'requires_merge': True}, {'requires_cookie': True}, {'has_drm': True},
+                       {'requires_context': True}, {'download_context_required': True}, {'video_tracks': 'absent'}):
+            self.assertEqual(browser_transport_hint({**item, **fields}), {})
+
+    def test_browser_resource_policy_does_not_expand_reviewed_sw_hosts(self):
+        from .services.provider_strategy import browser_streaming_resource_url_is_allowed
+
+        for host in ('v26-default.365yg.com', 'v3.douyinvod.com', 'v3-dy-a-x.ixigua.com',
+                     'sns-video-bd.xhscdn.com', 'sns-video-hw.xhscdn.com'):
+            self.assertTrue(browser_streaming_resource_url_is_allowed(f'https://{host}/video.mp4'))
+        for url in ('https://v3.zjcdn.com/video.mp4', 'https://v3.bdcgslb.com/video.mp4',
+                    'https://other.xhscdn.com/video.mp4', 'https://v3-dy-b-x.ixigua.com/video.mp4',
+                    'http://v3.365yg.com/video.mp4', 'https://user@v3.365yg.com/video.mp4',
+                    'https://v3.365yg.com:444/video.mp4', 'https://v3.365yg.com/video.mp4#part',
+                    'https://v3.365yg.com/video.m3u8', 'https://v3.365yg.com/video.mpd',
+                    'https://v3.365yg.com./video.mp4', 'https://[broken'):
+            self.assertFalse(browser_streaming_resource_url_is_allowed(url), url)
+
     def test_service_worker_script_uses_root_scope_security_headers(self):
         response = self.client.get(reverse("ordinary_media_service_worker"))
 

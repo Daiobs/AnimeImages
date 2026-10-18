@@ -256,3 +256,23 @@ referrer的新标签页打开CDN地址。不会改左上角资源勾选、清晰
 已开始、状态未知、取消、CORS或资源校验拒绝均不自动重下。页面进度反映同一
 流的接收状态，流结束不等于网页已确认操作系统最终落盘。音频、HLS和新CDN
 范围不属于本次流式扩展；天天优先、既有缓存TTL、播放及路线配置不变。
+### Shared transport precedence
+
+Provider identity and card/selection identity describe provenance and authority,
+not a transport override. After normal action authorization, complete videos in
+the existing reviewed SW resource scope prefer streaming, including old resource
+cards and selected formats. Obsolete `forceBlob` hints cannot override this rule.
+The backend strategy, authorized action descriptor and shared frontend entry use
+the same precedence. Existing authorization contracts remain distinct and checked.
+
+Legacy upstream resource cards retain their exact manifest, work/cache identity
+and original resource expiry under `upstream_resource_v1`; no candidate identity
+is invented. Old cached records without that expiry require a fresh normal result
+for this path, not a fabricated extension or automatic Provider request. Protocol
+4 prevents an older Worker from treating the new binding as an unbound resource.
+
+Resources outside the existing reviewed SW URL scope and independent audio keep
+their existing bounded browser compatibility path. Necessary context, streaming
+media/separate tracks, expired authorization and unsafe URLs do not gain delivery
+permission. No new Provider-specific streaming exception or domain admission is
+introduced. Controlled slow-stream evidence is separate from live file evidence.

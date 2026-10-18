@@ -89,6 +89,19 @@ class YtdlpSelectionTests(SimpleTestCase):
             self.assertEqual(copied.status_code, 200)
             self.assertNotIn('selection_expires_at', copied.json()['item'])
 
+    def test_authorized_download_action_selects_transport_from_resource_url(self):
+        self.gates()
+        for url, strategy in (('https://v26-default.365yg.com/video.mp4', 'browser_streaming'),
+                              ('https://cdn.example.org/video.mp4', 'browser_blob')):
+            row = self.candidate(url=url)
+            response = self.post(row)
+            self.assertEqual(response.status_code, 200, response.content)
+            item = response.json()['item']
+            self.assertEqual(item['url'], url)
+            self.assertEqual(item['download_strategy'], strategy)
+            self.assertEqual(item['candidate_id'], row['candidate_id'])
+            self.assertNotIn('download_strategy', self.post(row, 'link').json()['item'])
+
     def test_missing_expiry_restricts_download_not_copy(self):
         candidate = self.candidate()
         record = resolve_candidate_record(candidate['resource_token'], candidate['candidate_id'])

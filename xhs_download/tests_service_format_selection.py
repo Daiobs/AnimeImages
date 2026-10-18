@@ -136,6 +136,26 @@ class ServiceFormatSelectionTests(SimpleTestCase):
         with self.assertRaises(ValueError):
             selected_descriptor(record)
 
+    def test_authorized_generic_actions_share_resource_transport_without_changing_legacy(self):
+        self.gates()
+        self.rule.media_host_suffixes = ('media.example', '365yg.com')
+        for provider in ('tiantianjiexi_generic', 'kukutool_generic'):
+            for url, strategy in (('https://v26-default.365yg.com/video.mp4', 'browser_streaming'),
+                                  ('https://media.example/video.mp4', 'browser_blob')):
+                row = self.result(provider, {'title': 'Work', 'videos': [
+                    {'url': url, 'quality': '720P'},
+                ]}).metadata['upstream_candidates'][0]
+                response = self.post(row)
+                self.assertEqual(response.status_code, 200, response.content)
+                item = response.json()['item']
+                self.assertEqual(item['url'], url)
+                self.assertEqual(item['download_strategy'], strategy)
+                self.assertEqual(item['provider'], provider)
+                self.assertNotIn('download_strategy', self.post(row, 'link').json()['item'])
+                record = resolve_candidate_record(row['resource_token'], row['candidate_id'])
+                with self.assertRaisesRegex(ValueError, 'service_legacy_binding_missing'):
+                    selected_legacy_descriptor(record)
+
     def test_expired_and_cross_candidate_tokens_are_rejected(self):
         self.gates()
         rows = self.result().metadata['upstream_candidates']
@@ -255,6 +275,8 @@ class ServiceFormatSelectionTests(SimpleTestCase):
             self.assertIsNone(legacy_response['server_media_relay'], 'The original route has not run yet')
             descriptor = legacy_response['item']
             self.assertEqual(descriptor['selection_delivery'], 'legacy_manifest')
+            self.assertNotIn('browser_upstream_bound', descriptor)
+            self.assertNotIn('download_strategy', descriptor)
             self.assertTrue(provider_manifest_is_valid(descriptor))
             self.assertEqual(descriptor['asset_id'], result.video_assets[0].asset_id)
             direct = self.post(other).json()['item']

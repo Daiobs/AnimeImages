@@ -144,6 +144,7 @@ class DouyinFormatSelectionTests(SimpleTestCase):
                         response = self.download_action(rows[1])
                     self.assertEqual(response.status_code, 200, response.content)
                     item = response.json()['item']
+                    self.assertEqual(item['download_strategy'], 'browser_streaming')
                     self.assertEqual(item['selection_expires_at'], (issued_at + 120) * 1000)
                     self.assertEqual(item['provider_manifest_token'], original['provider_manifest_token'])
                     self.assertEqual(item['url'], extra.url)

@@ -1058,6 +1058,10 @@
                 "当前资源不支持浏览器直接保存。",
             );
         }
+        if (item.selection_schema && item.type === "video"
+                && (isBoundDedicatedServiceItem(item) || isBoundUpstreamItem(item))) {
+            streamingProtocol.createSelectionBinding(item);
+        }
         if ((isBoundDedicatedServiceItem(item) || isBoundUpstreamItem(item))
             && item.selection_expires_at !== undefined
             && (!Number.isSafeInteger(item.selection_expires_at) || item.selection_expires_at <= Date.now())) {
@@ -1344,18 +1348,21 @@
             );
         }
         const boundSelection = isBoundUpstreamItem(item) || isBoundDedicatedServiceItem(item);
-        // Selection does not choose the transport. The existing streaming domain
-        // gate remains authoritative; audio and other domains retain their prior delivery.
-        const selectedStream = boundSelection && item.type === "video"
-            && streamingProtocol && streamingProtocol.isAllowedInitialMediaUrl(item.url || item.video_url)
-            && ["service_selected_format_v1", "ytdlp_selected_format_v1"].includes(item.selection_schema);
-        if (selectedStream) {
+        // Resource access and supported media determine transport, not the card,
+        // Provider, selection schema, or an obsolete caller forceBlob hint.
+        const streamEligible = String(item.type || item.media_type || "").toLowerCase() === "video"
+            && streamingProtocol && streamingProtocol.isAllowedInitialMediaUrl(item.url || item.video_url, {
+                allowLoopbackHttp: Boolean(settings.allowLoopback),
+            });
+        if (boundSelection && (streamEligible || item.selection_schema && item.type === "video")) {
             const binding = streamingProtocol.createSelectionBinding(item);
             if (!binding || binding.selection_expires_at <= Date.now()) {
                 throw downloadError("DESCRIPTOR_EXPIRED", "当前资源授权已过期，请重新解析。");
             }
         }
-        if (settings.forceBlob === true && !selectedStream || boundSelection && !selectedStream) {
+        // Existing direct-bound resources outside the reviewed SW URL scope and
+        // audio retain bounded compatibility delivery; they do not widen SW access.
+        if (!streamEligible) {
             return downloadViaBlob(item, settings);
         }
         try {
