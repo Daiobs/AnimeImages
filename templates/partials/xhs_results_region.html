@@ -1,5 +1,5 @@
 {% load static ytdlp_picker %}
-{% ytdlp_presentation upstream_candidates upstream_route video_items as ytdlp_picker %}
+{% ytdlp_presentation upstream_candidates upstream_route video_items display_title base_filename as ytdlp_picker %}
 {% remaining_picker_videos ytdlp_picker video_items as remaining_video_items %}
 {% if error_message or platform_notice or provider_notice or image_items or video_items or upstream_candidates %}
 <div class="results-scroll-anchor">
@@ -26,15 +26,10 @@
 
     {% if image_items or video_items or upstream_candidates %}
         <div class="card result-card {% if ytdlp_picker %}ytdlp-result-card{% endif %} result-theme-{{ result_theme|default:'home' }} border-0 shadow-sm mb-4">
-        {% if not ytdlp_picker or remaining_video_items or image_items %}
         <div class="card-header bg-white result-card-header py-3">
             <div class="result-summary">
                 <div class="fw-bold result-title">
-                    {% if ytdlp_picker %}
-                        {% if image_items %}图片与其他资源（独立选择）{% else %}
-                        其他视频资源（未参与格式选择）
-                        {% endif %}
-                    {% elif not image_items and not video_items %}
+                    {% if not image_items and not video_items and not ytdlp_picker %}
                         媒体候选
                     {% elif post_type == "video" %}
                         <i class="bi bi-play-circle result-icon me-1"></i>
@@ -43,7 +38,7 @@
                         <i class="bi bi-images result-icon me-1"></i>
                         图片笔记
                     {% endif %}
-                    {{ display_title|default:base_filename|default:"xhs_image" }}
+                    {{ display_title|default:base_filename|default:"已解析素材" }}
                 </div>
 
                 <div class="text-muted small">
@@ -54,7 +49,10 @@
                         <span>作者 {{ display_author }}</span>
                     {% endif %}
                     {% if ytdlp_picker %}
-                        {{ image_items|length }} 张图片 · {{ remaining_video_items|length }} 个其他视频资源
+                        {% if image_items %}{{ image_items|length }} 张图片 · {% endif %}
+                        {% if ytdlp_picker.video_resource_count %}已解析到 {{ ytdlp_picker.video_resource_count }} 个视频资源{% else %}已解析到音频资源{% endif %}
+                    {% elif image_items and video_items %}
+                        {{ image_items|length }} 张图片 · {{ video_items|length }} 个视频资源
                     {% elif not image_items and not video_items %}
                         已解析到 {{ upstream_candidates|length }} 个候选
                     {% elif post_type == "video" %}
@@ -65,7 +63,7 @@
                 </div>
             </div>
 
-            {% if image_items or video_items %}
+            {% if image_items or video_items or ytdlp_picker %}
             <div class="download-actions d-flex flex-column align-items-start align-items-md-end gap-1">
                 <div class="d-flex flex-wrap justify-content-start justify-content-md-end gap-2">
                     <button type="button" class="btn btn-outline-secondary btn-sm" id="select-all-btn">
@@ -95,7 +93,6 @@
             {% endif %}
         </div>
 
-        {% endif %}
         <div class="card-body note-preview-bg">
             {% if ytdlp_picker %}{% include "partials/ytdlp_result_picker.html" %}{% endif %}
             {% include "partials/upstream_candidates.html" %}

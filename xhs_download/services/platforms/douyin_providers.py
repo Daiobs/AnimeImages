@@ -977,6 +977,7 @@ def attach_douyin_service_picker(result, *, adapter, context, candidates, payloa
         return result
     original_rows = (payload or {}).get('_service_format_rows') or (payload or {}).get('videos') or ()
     rows, assets = [], {}
+    work_title = normalize_douyin_display_title((result.metadata or {}).get('title')) or result.base_filename
     default_assigned = False
     for candidate in candidates[:MAX_CANDIDATES]:
         try:
@@ -1000,11 +1001,12 @@ def attach_douyin_service_picker(result, *, adapter, context, candidates, payloa
                           provider_manifest_token=token, quality_label=candidate.quality_label,
                           size_bytes=candidate.size_bytes))
         rows.append({**original, 'url': candidate.url, 'quality_label': candidate.quality_label,
+                     'work_label': work_title,
                      'size_bytes': candidate.size_bytes or None, 'media_type': 'video',
                      'work_id': f"douyin:{context.aweme_id}:{original.get('work_id') or 'video'}",
                      '_dedicated_resource_id': context.aweme_id,
                      '_dedicated_default': is_default})
-    material = ServiceFormatPayload({**(payload or {}), 'title': result.base_filename,
+    material = ServiceFormatPayload({**(payload or {}), 'title': work_title,
                                     'cover': main.cover_url, '_service_format_rows': rows})
     return attach_service_picker(result, payload=material, provider=main.provider,
                                  source_url=context.canonical_url, binding_assets=tuple(assets.values()),

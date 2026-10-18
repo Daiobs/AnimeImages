@@ -24,6 +24,8 @@ class DomNode extends Node {
     get defaultChecked() { return this.getAttribute("checked") !== null; }
     get isConnected() { return this.tree.tagName === "DOCUMENT"; }
     matches(selector) {
+        if (selector.includes(",")) return selector.split(/,\s*/).some(part => this.matches(part));
+        if (selector.startsWith("#")) return this.getAttribute("id") === selector.slice(1);
         if (selector.endsWith(":checked")) return this.checked && super.matches(selector.slice(0, -8));
         return super.matches(selector);
     }
@@ -163,6 +165,7 @@ function homeLegacyController(fetchImpl, existingPickerRoot) {
     node("[data-legacy-download-status]").hidden = true;
     let regionClick, ready;
     const region = {
+        children: [oldCard, pickerRoot], isConnected: true,
         contains(value) { return [oldCard, pickerRoot, node("#download-btn"), node("#select-all-btn")].includes(value); },
         querySelector(selector) { return ["#status", "#download-btn", "#select-all-btn", "[data-legacy-download-status]"].includes(selector) ? node(selector) : null; },
         querySelectorAll(selector) { return selector === ".asset-card" ? [oldCard] : []; },
@@ -396,7 +399,7 @@ test("real home bridge ZIP filename fallback uses the candidate rather than the 
     assert.deepEqual(home.saved, ["high.zip"]);
 });
 
-test("empty native format ID reaches the real home ZIP bridge while keeping HTTP restriction and legacy action explicit", async () => {
+test("empty native format ID reaches the real home ZIP bridge through the unified download action", async () => {
     const {doc, win} = fixture(); const root = legacyPicker("kukutool_generic"); doc.body.append(root);
     radios(root)[0].setAttribute("data-format-id", "");
     const grant = {...legacyGrant("kukutool_generic"), selected_format_id: ""};
@@ -425,9 +428,8 @@ test("empty native format ID reaches the real home ZIP bridge while keeping HTTP
     }});
     assert.equal(picker.selected(root).formatId, "");
     const restriction = radios(root)[0].dataset.limitation;
-    assert.equal(root.querySelector("[data-ytdlp-action='download']").textContent, "原有方式保存所选资源");
-    assert.equal(root.querySelector("[data-picker-limitation]").textContent,
-        `${restriction} 可用原有方式保存所选资源；传输方式由原下载流程决定。`);
+    assert.equal(root.querySelector("[data-ytdlp-action='download']").textContent, "↓ 下载所选视频");
+    assert.equal(root.querySelector("[data-picker-limitation]").textContent, restriction);
     click(root); await settle();
     assert.deepEqual(calls.slice(1).map(call => call.url), ["/download", "/tasks", "/task-status", "/task-file"]);
     assert.deepEqual(home.saved, ["high.zip"]);
@@ -456,11 +458,11 @@ for (const provider of SERVICE_PROVIDERS) {
         assert.equal(handoffs[0].root, first);
         assert.equal(doc.body.querySelectorAll("iframe").length, 0);
         assert.equal(saves.length, 0);
-        assert.match(first.querySelector("[data-picker-status]").textContent, /原有保存流程.*状态提示/);
+        assert.match(first.querySelector("[data-picker-status]").textContent, /下载流程.*下载状态/);
         assert.doesNotMatch(first.querySelector("[data-picker-status]").textContent, /开始接收|已保存|保存成功/);
-        assert.equal(first.querySelector("[data-ytdlp-action='download']").textContent, "原有方式保存所选资源");
+        assert.equal(first.querySelector("[data-ytdlp-action='download']").textContent, "↓ 下载所选视频");
         assert.equal(first.querySelector("[data-picker-limitation]").textContent,
-            `${radios(first)[0].dataset.limitation} 可用原有方式保存所选资源；传输方式由原下载流程决定。`);
+            radios(first)[0].dataset.limitation);
         assert.equal(first.querySelector("[data-ytdlp-action='legacy']").hidden, true);
         click(second); await settle();
         assert.deepEqual(saves.map(item => item.candidate_id), ["low"]);
@@ -482,7 +484,7 @@ test("direct capability stays primary and legacy is a separate explicit secondar
         }});
     const secondary = root.querySelector("[data-ytdlp-action='legacy']");
     assert.equal(secondary.hidden, false);
-    assert.equal(secondary.textContent, "原有方式保存所选资源");
+    assert.equal(secondary.textContent, "下载所选视频");
     click(root); await settle();
     assert.deepEqual(calls, ["download"]); assert.equal(saves.length, 1); assert.equal(handoffs.length, 0);
     click(root, "legacy"); await settle();
@@ -1301,3 +1303,416 @@ test("single-card expired copy preserves the denial reason without copying raw d
     assert.match(current.querySelector("[data-picker-status]").textContent, /授权已过期/);
     assert.equal(button.disabled, false);
 });
+
+function selectablePicker(provider = "kukutool_generic") {
+    const root = servicePicker(provider);
+    root.setAttribute("data-picker-media", "");
+    const checkbox = el("input", {type: "checkbox", "data-picker-media-selected": "", checked: ""});
+    checkbox.checked = true;
+    root.append(checkbox);
+    root.querySelector('[data-ytdlp-action="download"]').remove();
+    root.querySelector('[data-ytdlp-action="copy"]').remove();
+    return root;
+}
+
+function originalLayoutController({batchPage = false, batchHandlers = false, roots = [selectablePicker()], fetchImpl, download, browserPhoto} = {}) {
+    const {doc, win, scan} = fixture();
+    doc.readyState = "complete";
+    doc.cookie = "csrftoken=fixture";
+    doc.getElementById = id => doc.querySelector(`#${id}`);
+    const page = el("main", {class: batchPage ? "xhs-download-page batch-parse-page" : "xhs-download-page"});
+    Object.assign(page.dataset, batchPage
+        ? {batchDownloadUrl: "/download", batchDownloadTaskUrl: "/tasks", batchDownloadAsyncEnabled: "true"}
+        : {downloadUrl: "/download", downloadTaskUrl: "/tasks", downloadAsyncEnabled: "true"});
+    if (batchPage) page.setAttribute("data-batch-download-url", "/download");
+    page.append(el("input", {name: "csrfmiddlewaretoken", value: "fixture-csrf"}));
+    const region = batchPage ? card(el("div")) : el("div", {id: "parse-results-region"});
+    const top = el("button", batchPage ? {"data-picker-download-all": ""} : {id: "download-btn"});
+    const all = el("button", batchPage ? {"data-picker-select-all": ""} : {id: "select-all-btn"});
+    region.append(top, all, el("p", {id: "status"}), ...roots);
+    page.append(region); doc.body.append(page);
+    const saved = [], calls = [];
+    class BrowserURL extends URL {
+        static createObjectURL() { return "blob:https://product.example/test"; }
+        static revokeObjectURL() {}
+    }
+    doc.createElement = tag => {
+        const node = el(tag);
+        node.click = () => saved.push(node.download);
+        return node;
+    };
+    doc.body.removeChild = node => node.remove();
+    Object.assign(win, {URL: BrowserURL, localStorage: {getItem: () => "{}"}, addEventListener() {},
+        alert: message => calls.push({alert: message}),
+        AnimeImagesOrdinaryMediaDownload: {download: download || (async item => saved.push(item)),
+            isOrdinaryMediaItem: item => item.type === "video" && !item.requires_merge && !item.requires_cookie
+                && (item.browser_direct_fetch_safe || item.browser_upstream_bound),
+            consumeInterruptedDownloadMarker: () => false},
+        AnimeImagesBrowserPhoto: browserPhoto,
+        fetch: async (url, options) => {
+            const payload = options?.body ? JSON.parse(options.body) : null;
+            calls.push({url, payload});
+            return fetchImpl ? fetchImpl(url, options, payload) : jsonResponse({status: "success",
+                item: serviceGrant("kukutool_generic", payload.candidate_id)});
+        }});
+    const context = vm.createContext({window: win, document: doc, URL: BrowserURL, AbortController, Blob,
+        fetch: win.fetch, console: {warn() {}, error() {}}});
+    for (const file of ["ytdlp_result_picker.js", ...(batchHandlers ? ["batch_parse.js"] : []), "xhs_download.js"]) {
+        vm.runInContext(fs.readFileSync(path.join(__dirname, "../static/js", file), "utf8"), context, {filename: file});
+    }
+    doc.listeners.DOMContentLoaded();
+    function clickTarget(target) {
+        const event = {target, preventDefault() {}};
+        const pending = [];
+        for (let node = target; node; node = node.parentNode) {
+            if (node.listeners.click) pending.push(node.listeners.click(event));
+        }
+        return Promise.all(pending);
+    }
+    roots.forEach(root => {
+        const checkbox = root.querySelector("[data-picker-media-selected]");
+        checkbox.click = () => {
+            checkbox.checked = !checkbox.checked;
+            const event = {target: checkbox};
+            for (let node = checkbox; node; node = node.parentNode) node.listeners.change?.(event);
+        };
+    });
+    return {doc, win, page, region, top, all, roots, saved, calls, scan, clickTarget};
+}
+
+test("original top download resolves non-primary direct candidate without a per-picker button", async () => {
+    const root = selectablePicker();
+    radios(root)[1].dataset.canLegacy = "true";
+    const app = originalLayoutController({roots: [root]});
+    choose(root, 1);
+    await app.clickTarget(app.top); await settle();
+    assert.deepEqual(app.calls.map(call => call.payload), [
+        {candidate_id: "low", resource_token: "signed-low", action: "download"},
+    ]);
+    assert.equal(app.saved.length, 1);
+    assert.equal(app.saved[0].candidate_id, "low");
+    assert.equal(app.saved[0].filename, "low.mp4");
+    assert.equal(app.top.disabled, false);
+});
+
+for (const batchPage of [false, true]) {
+    test(`${batchPage ? "Batch" : "home"} original button dispatches non-primary exact legacy manifest internally`, async () => {
+        const root = selectablePicker();
+        Object.assign(radios(root)[1].dataset, {canDownload: "false", canLegacy: "true",
+            legacyAssetId: "third_party:source:video:low"});
+        const grant = legacyGrant("kukutool_generic", "low");
+        const app = originalLayoutController({batchPage, roots: [root], fetchImpl: async (url, _options, payload) => {
+            if (url.includes("service-selected-format")) return jsonResponse({status: "success", item: grant});
+            if (url === "/download") return jsonResponse({status: "routed", route_type: "zip", download_strategy: "server_zip"});
+            if (url === "/tasks") return jsonResponse({status_url: "/task-status", file_url: "/task-file"});
+            if (url === "/task-status") return jsonResponse({status: "completed", saved_count: 1});
+            assert.equal(url, "/task-file");
+            return new Response(new Blob(["mock zip"]), {headers: {"Content-Type": "application/zip"}});
+        }});
+        choose(root, 1);
+        if (batchPage) {
+            assert.equal(app.page.listeners.click, undefined, "Batch must not install home click handlers");
+            assert.equal(app.region.listeners.click, undefined, "Batch keeps its own card handlers");
+        }
+        await app.clickTarget(app.top); await settle();
+        assert.deepEqual(app.calls[0].payload, {candidate_id: "low", resource_token: "signed-low", action: "legacy"});
+        for (const call of app.calls.filter(call => ["/download", "/tasks"].includes(call.url))) {
+            assert.deepEqual(call.payload.media_items, [grant]);
+            assert.equal(call.payload.base_filename, "low");
+        }
+        assert.deepEqual(app.saved, ["low.zip"]);
+        assert.equal(app.top.disabled, false);
+    });
+}
+
+test("home select-all counts media and old images independently without selecting formats", async () => {
+    const first = selectablePicker(), second = selectablePicker();
+    const app = originalLayoutController({roots: [first, second]});
+    const oldImage = el("div", {class: "asset-card", "data-type": "image", "data-url": "https://cdn.example/a.jpg"});
+    app.region.append(oldImage);
+    choose(first, 1);
+    await app.clickTarget(app.all);
+    assert.match(app.region.querySelector("#status").innerText, /已选择 3 个资源/);
+    assert.equal(app.win.DokiToolYtdlpPicker.selected(first).id, "low");
+    assert.equal(app.win.DokiToolYtdlpPicker.selected(second).id, "high");
+    await app.clickTarget(app.all);
+    assert.match(app.region.querySelector("#status").innerText, /已选择 0 个资源/);
+    assert.equal(first.querySelector("[data-picker-media-selected]").checked, false);
+    assert.equal(second.querySelector("[data-picker-media-selected]").checked, false);
+    assert.equal(app.calls.length, 0);
+    await app.clickTarget(oldImage);
+    assert.match(app.region.querySelector("#status").innerText, /已选择 1 个资源/);
+});
+
+test("Batch original button snapshots duplicate cards before waiting and skips unchecked media", async () => {
+    const first = selectablePicker(), second = selectablePicker(), unchecked = selectablePicker();
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const app = originalLayoutController({batchPage: true, roots: [first, second, unchecked],
+        fetchImpl: async (_url, _options, payload) => {
+            if (payload.candidate_id === "low") await gate;
+            return jsonResponse({status: "success", item: serviceGrant("kukutool_generic", payload.candidate_id)});
+        }});
+    choose(first, 1);
+    unchecked.querySelector("[data-picker-media-selected]").checked = false;
+    const task = app.clickTarget(app.top);
+    assert.equal(app.top.disabled, true);
+    assert.equal(app.calls.length, 1);
+    choose(second, 1);
+    release(); await task;
+    assert.deepEqual(app.calls.map(call => call.payload.candidate_id), ["low", "high"]);
+    assert.deepEqual(app.saved.map(item => item.candidate_id), ["low", "high"]);
+    assert.notEqual(radios(first)[0].name, radios(second)[0].name);
+    assert.equal(app.top.disabled, false);
+});
+
+for (const change of ["detach", "redraw"]) {
+    test(`top download rejects a late ${change} response without affecting a duplicate card`, async () => {
+        const first = selectablePicker(), second = selectablePicker();
+        let release;
+        const gate = new Promise(resolve => { release = resolve; });
+        const app = originalLayoutController({roots: [first, second], fetchImpl: async (_url, _options, payload) => {
+            if (payload.candidate_id === "low") await gate;
+            return jsonResponse({status: "success", item: serviceGrant("kukutool_generic", payload.candidate_id)});
+        }});
+        choose(first, 1);
+        app.clickTarget(app.top);
+        if (change === "detach") first.remove();
+        else first.replaceChildren(...selectablePicker().children.slice());
+        app.scan();
+        release(); await settle();
+        assert.deepEqual(app.saved.map(item => item.candidate_id), ["high"]);
+        assert.equal(app.win.DokiToolYtdlpPicker.selected(second).id, "high");
+    });
+}
+
+test("top direct failure never retries through an available legacy route", async () => {
+    const root = selectablePicker();
+    radios(root)[1].dataset.canLegacy = "true";
+    const app = originalLayoutController({roots: [root], download: async () => { throw new Error("direct failed"); }});
+    choose(root, 1);
+    await app.clickTarget(app.top); await settle();
+    assert.deepEqual(app.calls.map(call => call.payload.action), ["download"]);
+    assert.equal(root.querySelector("[data-picker-status]").textContent, "direct failed");
+});
+
+test("media selection survives cached inner redraw independently from format choice", async () => {
+    const root = selectablePicker();
+    const app = originalLayoutController({batchPage: true, roots: [root]});
+    choose(root, 1);
+    await app.clickTarget(app.all);
+    assert.equal(root.querySelector("[data-picker-media-selected]").checked, false);
+    root.replaceChildren(...selectablePicker().children.slice()); app.scan();
+    assert.equal(root.querySelector("[data-picker-media-selected]").checked, false);
+    assert.equal(app.win.DokiToolYtdlpPicker.selected(root).id, "low");
+    await app.clickTarget(app.all);
+    assert.equal(root.querySelector("[data-picker-media-selected]").checked, true);
+    assert.equal(app.win.DokiToolYtdlpPicker.selected(root).id, "low");
+});
+
+test("original preview-only card toggles media but never authorizes playback or duplicates exports", async () => {
+    const root = selectablePicker();
+    radios(root).forEach(radio => { radio.dataset.canPreview = "false"; });
+    const artwork = el("div", {class: "asset-card", "data-picker-preview-only": "",
+        "data-url": "https://cdn.example/original.mp4", "data-type": "video"});
+    const overlay = el("i", {class: "play-icon"}); artwork.append(overlay); root.append(artwork);
+    const app = originalLayoutController({roots: [root]});
+    choose(root, 1);
+    await app.clickTarget(overlay);
+    assert.equal(root.querySelector("[data-picker-media-selected]").checked, false);
+    assert.match(app.region.querySelector("#status").innerText, /已选择 0 个资源/);
+    await app.clickTarget(app.all);
+    assert.match(app.region.querySelector("#status").innerText, /已选择 1 个资源/);
+    assert.equal(app.win.DokiToolYtdlpPicker.selected(root).id, "low");
+    assert.equal(app.calls.length, 0);
+    assert.equal(root.querySelector("video"), null);
+    const wrapper = card(root);
+    app.region.append(wrapper);
+    const snapshot = batch.collectBatchResourceLinks(app.region, app.win.DokiToolYtdlpPicker);
+    assert.equal(snapshot.length, 1);
+    assert.equal(snapshot[0].selection.id, "low");
+    assert.equal(snapshot[0].url, undefined);
+});
+
+test("top button preserves old image selection alongside the current picker snapshot", async () => {
+    const root = selectablePicker();
+    const images = [];
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const app = originalLayoutController({roots: [root], fetchImpl: async (_url, _options, payload) => {
+        await gate;
+        return jsonResponse({status: "success", item: serviceGrant("kukutool_generic", payload.candidate_id)});
+    }, browserPhoto: {supportsSelection: items => items.every(item => item.type === "image"),
+        downloadImage: async item => { images.push(item); return {filename: "a.jpg"}; }}});
+    const oldImage = el("div", {class: "asset-card", "data-type": "image", "data-url": "https://cdn.example/a.jpg"});
+    app.region.append(oldImage);
+    choose(root, 1);
+    await app.clickTarget(oldImage);
+    await app.clickTarget(app.top);
+    await app.clickTarget(oldImage);
+    release(); await settle();
+    assert.equal(app.saved.length, 1);
+    assert.equal(app.saved[0].candidate_id, "low");
+    assert.equal(app.calls.length, 1);
+    assert.equal(images.length, 1);
+    assert.equal(images[0].url, "https://cdn.example/a.jpg");
+    assert.match(app.region.querySelector("#status").innerText, /a.jpg/);
+});
+
+test("home result replacement stops all queued picker and old-image saves", async () => {
+    const first = selectablePicker(), second = selectablePicker();
+    const images = [];
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const app = originalLayoutController({roots: [first, second], fetchImpl: async (_url, _options, payload) => {
+        await gate;
+        return jsonResponse({status: "success", item: serviceGrant("kukutool_generic", payload.candidate_id)});
+    }, browserPhoto: {supportsSelection: () => true, downloadImage: async item => images.push(item)}});
+    const oldImage = el("div", {class: "asset-card", "data-type": "image", "data-url": "https://cdn.example/old.jpg"});
+    app.region.append(oldImage);
+    await app.clickTarget(oldImage);
+    await app.clickTarget(app.top);
+    app.region.replaceChildren(el("p", {id: "status"}), selectablePicker());
+    app.page.dataset.baseFilename = "new-work";
+    app.scan();
+    release(); await settle();
+    assert.equal(app.calls.length, 1);
+    assert.equal(app.saved.length, 0);
+    assert.equal(images.length, 0);
+});
+
+test("home whole-download snapshot freezes the old-image filename before awaiting picker", async () => {
+    const images = [];
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const app = originalLayoutController({fetchImpl: async (_url, _options, payload) => {
+        await gate;
+        return jsonResponse({status: "success", item: serviceGrant("kukutool_generic", payload.candidate_id)});
+    }, browserPhoto: {supportsSelection: () => true, downloadImage: async (item, options) => {
+        images.push({item, options}); return {filename: "frozen.jpg"};
+    }}});
+    app.page.dataset.baseFilename = "original-work";
+    const image = el("div", {class: "asset-card", "data-type": "image", "data-url": "https://cdn.example/a.jpg"});
+    app.region.append(image);
+    await app.clickTarget(image);
+    await app.clickTarget(app.top);
+    app.page.dataset.baseFilename = "changed-title";
+    release(); await settle();
+    assert.equal(images.length, 1);
+    assert.equal(images[0].options.filenameStem, "original-work_01");
+});
+
+function oldBatchResource(type, id, allowed = true) {
+    const node = el("article", {"data-batch-download-item": "", "data-type": type,
+        "data-url": `https://cdn.example/${id}.${type === "image" ? "jpg" : "mp4"}`,
+        "data-asset-id": `old:${id}`, "data-download-filename-stem": id});
+    const button = el("button", type === "image" ? {"data-batch-image-download": ""} : {
+        "data-batch-direct-download": "", "data-batch-direct-url": node.dataset.url,
+        "data-batch-direct-filename": `${id}.mp4`, "data-batch-browser-fetch-safe": "true"});
+    if (allowed) node.append(button);
+    if (type === "video") {
+        node.append(el("div", {class: "batch-direct-summary"}));
+        return {node, button, outer: node};
+    }
+    node.setAttribute("data-batch-photo-item", "");
+    const section = el("section", {"data-batch-photo-section": ""});
+    section.append(node, el("button", {"data-batch-photo-archive-cancel": ""}));
+    return {node, button, section, outer: section};
+}
+
+test("Batch same-card all/download includes old image and video through their existing handlers", async () => {
+    const images = [];
+    const app = originalLayoutController({batchPage: true, batchHandlers: true,
+        browserPhoto: {downloadImage: async (item, options) => { images.push({item, options}); return {filename: "image.jpg"}; }}});
+    const image = oldBatchResource("image", "image"), video = oldBatchResource("video", "video");
+    const denied = oldBatchResource("video", "denied", false);
+    app.region.append(image.outer, video.outer, denied.outer); app.scan();
+    const imageCheck = image.node.querySelector("[data-picker-legacy-selected]");
+    const videoCheck = video.node.querySelector("[data-picker-legacy-selected]");
+    assert.ok(imageCheck && videoCheck);
+    assert.match(imageCheck.parentNode.className, /quality-media-select/);
+    assert.match(image.node.className, /position-relative/);
+    assert.match(videoCheck.parentNode.className, /position-static/);
+    assert.equal(videoCheck.parentNode.parentNode, video.node.querySelector(".batch-direct-summary"));
+    assert.equal(denied.node.querySelector("[data-picker-legacy-selected]"), null);
+    await app.clickTarget(app.all);
+    assert.equal(imageCheck.checked, false);
+    assert.equal(videoCheck.checked, false);
+    assert.equal(app.win.DokiToolYtdlpPicker.selected(app.roots[0]).id, "high");
+    await app.clickTarget(app.top);
+    assert.equal(app.calls.length, 0);
+    await app.clickTarget(app.all);
+    await app.clickTarget(app.top); await settle();
+    assert.deepEqual(app.saved.map(item => item.candidate_id || item.url), ["high", video.node.dataset.url]);
+    assert.equal(images.length, 1);
+    assert.equal(images[0].item.filenameStem, "image");
+    assert.ok(images[0].options.signal instanceof AbortSignal);
+    assert.equal(typeof images[0].options.onProgress, "function");
+    assert.equal(app.calls.length, 1, "Old ordinary resources retain their existing browser-only paths");
+});
+
+test("Batch old image retains section cancellation and stops the remaining queue", async () => {
+    let signal;
+    const app = originalLayoutController({batchPage: true, batchHandlers: true,
+        browserPhoto: {downloadImage: async (_item, options) => {
+            signal = options.signal;
+            return new Promise((_resolve, reject) => signal.addEventListener("abort", () => {
+                const error = new Error("cancelled"); error.errorCode = "BROWSER_PHOTO_CANCELLED"; reject(error);
+            }, {once: true}));
+        }, safeErrorCode: error => error.errorCode, safeErrorMessage: error => error.message}});
+    const image = oldBatchResource("image", "cancel"), video = oldBatchResource("video", "remaining");
+    app.region.append(image.outer, video.outer); app.scan();
+    const pending = app.clickTarget(app.top);
+    await settle();
+    assert.ok(signal);
+    await app.clickTarget(image.section.querySelector("[data-batch-photo-archive-cancel]"));
+    await pending;
+    assert.equal(signal.aborted, true);
+    assert.deepEqual(app.saved.map(item => item.candidate_id), ["high"]);
+    assert.equal(image.button.disabled, false);
+    assert.equal(app.top.disabled, false);
+});
+
+for (const change of ["redraw", "identity"]) {
+    test(`Batch old resource ${change} during picker wait is never saved`, async () => {
+        let release;
+        const gate = new Promise(resolve => { release = resolve; });
+        const images = [];
+        const app = originalLayoutController({batchPage: true, batchHandlers: true,
+            fetchImpl: async (_url, _options, payload) => {
+                await gate;
+                return jsonResponse({status: "success", item: serviceGrant("kukutool_generic", payload.candidate_id)});
+            }, browserPhoto: {downloadImage: async item => { images.push(item); return {filename: "a.jpg"}; }}});
+        const image = oldBatchResource("image", "old");
+        app.region.append(image.outer); app.scan();
+        const pending = app.clickTarget(app.top);
+        if (change === "redraw") app.region.replaceChildren(el("p"));
+        else image.node.dataset.url = "https://cdn.example/changed.jpg";
+        app.scan(); release(); await pending;
+        assert.equal(images.length, 0);
+    });
+}
+
+for (const type of ["image", "video"]) {
+    test(`Batch old upstream ${type} rechecks exact authorization and never falls back on denial`, async () => {
+        const images = [];
+        const app = originalLayoutController({batchPage: true, batchHandlers: true,
+            browserPhoto: {downloadImage: async item => images.push(item), safeErrorMessage: error => error.message,
+                safeErrorCode: error => error.errorCode || "BROWSER_PHOTO_FAILED"},
+            fetchImpl: async (url, _options, payload) => {
+                if (url.includes("service-selected-format")) return jsonResponse({status: "success", item: serviceGrant("kukutool_generic", payload.candidate_id)});
+                assert.equal(url, "https://product.example/download");
+                assert.equal(payload.route_only, true);
+                return jsonResponse({route_type: "direct", items: [{...payload.media_items[0],
+                    asset_id: "upstream:wrong", browser_upstream_bound: true}]});
+            }});
+        const old = oldBatchResource(type, "upstream");
+        old.node.dataset.assetId = "upstream:expected";
+        app.region.append(old.outer); app.scan();
+        await app.clickTarget(app.top);
+        assert.equal(images.length, 0);
+        assert.equal(app.saved.length, 1);
+        assert.equal(app.calls.length, 2);
+        assert.match(app.roots[0].querySelector("[data-picker-status]").textContent, /授权已失效/);
+    });
+}

@@ -1,5 +1,6 @@
 """Service-native results through normalizers, issuance, HTML and action checks."""
 import json
+from copy import deepcopy
 from pathlib import Path
 import shutil
 import subprocess
@@ -295,7 +296,8 @@ class ServiceFormatSelectionTests(SimpleTestCase):
         self.assertEqual(len(soup.select('.asset-card[data-type="video"]')), 1)
         self.assertEqual(len(soup.select('.asset-card[data-type="image"]')), 1)
         self.assertTrue(soup.select_one('#download-btn'))
-        self.assertIn('其他视频资源', soup.get_text())
+        self.assertIn('视频资源', soup.get_text())
+        self.assertFalse(soup.select('[data-picker-group="video"] details'))
 
     def test_mixed_images_keep_their_selection_actions_when_video_is_represented(self):
         from .views import build_result_display_context
@@ -311,7 +313,10 @@ class ServiceFormatSelectionTests(SimpleTestCase):
         self.assertTrue(soup.select_one('#download-btn'))
         self.assertTrue(soup.select_one('#select-all-btn'))
         self.assertNotIn('hidden', soup.select_one('[data-legacy-download-status]').attrs)
-        self.assertIn('图片与其他资源（独立选择）', soup.get_text())
+        self.assertIn('图片资源', soup.get_text())
+        self.assertFalse(soup.select('[data-ytdlp-action="copy"], [data-ytdlp-action="legacy"]'))
+        for removed in ('原有方式保存所选资源', '复制所选链接', '不需要选择解析通道'):
+            self.assertNotIn(removed, soup.get_text())
 
     def test_single_lab_or_unbound_candidate_does_not_get_legacy_authority(self):
         from .services.upstream_candidates import issue_candidate
@@ -345,6 +350,65 @@ class ServiceFormatSelectionTests(SimpleTestCase):
         for row in rows:
             self.assertTrue(row['same_resource_labels'])
             self.assertEqual(self.post(row, 'legacy').json()['item']['url'], 'http://media.example/a.mp4')
+        picker = build_service_picker(rows)
+        self.assertEqual(len(picker['videos']), 2)
+        self.assertTrue(all('alias_candidate_ids' not in row for row in picker['videos']))
+        soup = BeautifulSoup(render_to_string('partials/ytdlp_result_picker.html', {'ytdlp_picker': picker}), 'html.parser')
+        self.assertEqual(len(soup.select('[data-picker-primary] [data-picker-radio]')), 2)
+        self.assertFalse(soup.select('[data-picker-other], [data-ytdlp-action="copy"], [data-ytdlp-action="legacy"]'))
+
+    def test_generic_native_default_is_independent_of_source_first_display_order(self):
+        for provider, key in (('tiantianjiexi_generic', 'streams'), ('kukutool_generic', 'video_fullinfo')):
+            for scheme in ('https', 'http'):
+                with self.subTest(provider=provider, scheme=scheme):
+                    rows = self.result(provider, payload={'title': 'Work', 'videos': [{key: [
+                        {'url': f'{scheme}://media.example/source.mp4', 'quality_label': 'source', 'size_bytes': 9000},
+                        {'url': f'{scheme}://media.example/720.mp4', 'quality_label': '720p', 'size_bytes': 3000},
+                        {'url': f'{scheme}://media.example/1080.mp4', 'quality_label': '1080p', 'size_bytes': 2000},
+                    ]}]}).metadata['upstream_candidates']
+                    before = deepcopy(rows)
+                    self.assertTrue(all(row['height'] is None for row in rows))
+                    presentation = build_service_picker(rows)
+                    self.assertEqual([row['label'] for row in presentation['videos']], ['source', '1080p', '720p'])
+                    expected = next(row for row in rows if row['format_label'] == '1080p')
+                    self.assertEqual(presentation['selected']['candidate_id'], expected['candidate_id'])
+                    self.assertEqual(presentation['selected']['resource_token'], expected['resource_token'])
+                    self.assertEqual(rows, before)
+
+    def test_generic_native_facts_and_explicit_preferences_still_control_default(self):
+        for provider, key in (('tiantianjiexi_generic', 'streams'), ('kukutool_generic', 'video_fullinfo')):
+            with self.subTest(provider=provider):
+                rows = self.result(provider, payload={'videos': [{key: [
+                    {'url': 'https://media.example/source.mp4', 'quality_label': 'source', 'height': 2160},
+                    {'url': 'https://media.example/720.mp4', 'quality_label': '720p', 'height': 720},
+                    {'url': 'https://media.example/1080.mp4', 'quality_label': '1080p', 'height': 1080},
+                ]}]}).metadata['upstream_candidates']
+                self.assertEqual(build_service_picker(rows)['selected']['label'], 'source')
+                preferred = build_service_picker(rows, {'max_height': 720})
+                self.assertEqual(preferred['selected']['label'], '720p')
+                self.assertEqual([row['label'] for row in preferred['videos']], ['source', '1080p', '720p'])
+
+    def test_native_hdr_sdr_quality_labels_and_known_variant_facts_are_not_merged(self):
+        self.allow_fixture_manifest()
+        for provider, key in (('tiantianjiexi_generic', 'streams'), ('kukutool_generic', 'video_fullinfo')):
+            for variants in (
+                [{'quality_label': '1080p HDR'}, {'quality_label': '1080P SDR'}],
+                [{'quality_label': '1080p', 'fps': 30}, {'quality_label': '1080P', 'fps': 60}],
+                [{'quality_label': '1080p', 'format_id': 'track-one'},
+                 {'quality_label': '1080P', 'format_id': 'track-two'}],
+            ):
+                with self.subTest(provider=provider, variants=variants):
+                    rows = self.result(provider, payload={'videos': [{key: [
+                        {'url': 'http://media.example/shared.mp4', **variant} for variant in variants
+                    ]}]}).metadata['upstream_candidates']
+                    self.assertEqual(len(rows), 2)
+                    self.assertEqual(rows[0]['legacy_asset_id'], rows[1]['legacy_asset_id'])
+                    self.assertTrue(rows[0]['legacy_asset_id'])
+                    before = deepcopy(rows)
+                    videos = build_service_picker(rows)['videos']
+                    self.assertEqual(len(videos), 2)
+                    self.assertTrue(all('alias_candidate_ids' not in row for row in videos))
+                    self.assertEqual(rows, before)
 
     def test_restricted_candidates_do_not_inherit_an_old_manifest_operation(self):
         self.allow_fixture_manifest()

@@ -136,11 +136,57 @@ def duration_label(value):
     return f'{hours}:{minutes:02}:{seconds:02}' if hours else f'{minutes}:{seconds:02}'
 
 
+def video_quality_label(candidate):
+    label = text(candidate.get('format_label'), 80).strip()
+    if label.lower() in {'original', 'source', '原画'}:
+        return label
+    match = re.fullmatch(r'(\d{2,4})[pP](\+)?', label)
+    if match:
+        return f'{int(match[1])}p{match[2] or ""}'
+    height = number(candidate.get('height'))
+    return f'{int(height)}p' if height else label or '视频格式'
+
+
+def video_quality_order(candidate):
+    label = video_quality_label(candidate)
+    if label.lower() in {'original', 'source', '原画'}:
+        return (0, 0, 0)
+    match = re.fullmatch(r'(\d{2,4})p(\+)?', label)
+    if match:
+        return (1, -int(match[1]), -bool(match[2]))
+    return (2, 0, 0)
+
+
+def add_video_variant_labels(videos):
+    groups = {}
+    for candidate in videos:
+        candidate['variant_label'] = ''
+        groups.setdefault(candidate['label'].casefold(), []).append(candidate)
+    for siblings in groups.values():
+        if len(siblings) < 2:
+            continue
+        facts = []
+        for candidate in siblings:
+            fps = number(candidate.get('fps'))
+            values = [f'{fps:g} fps' if fps else '']
+            for field in ('vcodec', 'acodec', 'language', 'extension', 'protocol', 'dynamic_range'):
+                value = text(candidate.get(field), 60).strip()
+                values.append('' if value.lower() in {'', 'none', 'unknown'} else
+                              value.upper() if field == 'extension' else value)
+            facts.append(values)
+        differing = [index for index in range(len(facts[0]))
+                     if len({values[index].casefold() for values in facts if values[index]}) > 1]
+        labels = [' · '.join(values[index] for index in differing if values[index]) for values in facts]
+        # Equal or missing observable facts cannot establish a technical difference.
+        for ordinal, (candidate, label) in enumerate(zip(siblings, labels), 1):
+            candidate['variant_label'] = (f'{label} · 版本 {ordinal}' if label else f'版本 {ordinal}') if (
+                not label or labels.count(label) > 1) else label
+
+
 def choice(candidate):
     kind = candidate.get('media_type')
-    height = number(candidate.get('height'))
     abr = number(candidate.get('audio_bitrate')) or number(candidate.get('bitrate'))
-    label = (f'{int(height)}p' if height else text(candidate.get('format_label'), 80) or '视频格式') if kind == 'video' else (
+    label = video_quality_label(candidate) if kind == 'video' else (
         f'{abr:g} kbps' if abr else text(candidate.get('format_label'), 80) or '原始音频')
     facts = [str(candidate.get('extension') or '格式未知').upper()]
     fps = number(candidate.get('fps'))
@@ -181,10 +227,13 @@ def build_picker(candidates, preferences=None, *, provider=PROVIDER, schema=SCHE
     audios = [choice_factory(c) for c in candidates if c.get('media_type') == 'audio']
     if not videos and not audios:
         return None
-    videos.sort(key=lambda c: (number(c.get('height')) or 0, number(c.get('fps')) or 0,
-                              number(c.get('bitrate')) or 0), reverse=True)
+    # Keep the existing default ranking independent of the visible quality order.
+    ranked_videos = sorted(videos, key=lambda c: (number(c.get('height')) or 0, number(c.get('fps')) or 0,
+                                                number(c.get('bitrate')) or 0), reverse=True)
+    videos.sort(key=video_quality_order)
+    add_video_variant_labels(videos)
     audios.sort(key=lambda c: (number(c.get('audio_bitrate')) or number(c.get('bitrate')) or 0), reverse=True)
-    primary = videos or audios
+    primary = ranked_videos or audios
     direct = [c for c in primary if c['can_download']]
     preferred = []
     if videos and isinstance(preferences, dict) and preferences:
@@ -208,6 +257,9 @@ def build_picker(candidates, preferences=None, *, provider=PROVIDER, schema=SCHE
         visible = 0
         for c in group:
             c['selected'] = c['candidate_id'] == selected['candidate_id']
+            if c['media_type'] == 'video':
+                c['initial_visible'] = True
+                continue
             # Only direct-save representatives belong in the primary tier;
             # all other identities remain selectable in the disclosure.
             key = c.get('height') if c['media_type'] == 'video' else c.get('audio_bitrate') or c.get('bitrate')
@@ -227,6 +279,7 @@ def build_picker(candidates, preferences=None, *, provider=PROVIDER, schema=SCHE
             'audio_other': [c for c in audios if not c['initial_visible']],
             'all_unavailable': not any(c['can_download'] for c in videos + audios),
             'group_id': 'ytfmt-' + re.sub('[^a-zA-Z0-9_-]', '', str(work_candidate.get('candidate_id', '')))[:80],
+            'video_group_count': int(bool(videos)),
             'format_count': len(videos) + len(audios)}
 
 

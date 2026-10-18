@@ -4,6 +4,7 @@ Service file declarations retain their existing delivery semantics. They are
 not yt-dlp track evidence, and never establish codecs or complete audio tracks.
 """
 from dataclasses import replace
+import json
 import re
 from urllib.parse import urlsplit
 
@@ -90,11 +91,64 @@ def choice(candidate):
     result['can_legacy_download'] = bool(candidate.get('legacy_asset_id')
                                        and candidate.get('legacy_delivery') == 'existing_manifest')
     if candidate.get('format_label'):
-        result['label'] = candidate['format_label']
+        result['label'] = (picker.video_quality_label(candidate) if candidate.get('media_type') == 'video'
+                           else candidate['format_label'])
         result['detail_label'] += ' · 上游标注'
     if candidate.get('same_resource_labels'):
         result['detail_label'] += ' · 同一资源的不同标签'
     return result
+
+
+def project_bound_aliases(rows):
+    """Collapse only the confirmed 1080p/P aliases of one manifest binding.
+
+    A legacy identity is assigned by exact URL and unambiguous work matching.
+    No private record lookup, token combination or permission union is needed.
+    """
+    fields = ('provider_id', 'work_id', 'legacy_asset_id', 'legacy_delivery', 'media_type',
+              'protocol', 'delivery_state', 'extension', 'service_file_eligible', 'has_drm',
+              'requires_merge', 'audio_tracks', 'video_tracks', 'width', 'height', 'fps',
+              'bitrate', 'duration', 'vcodec', 'acodec', 'language', 'role', 'upstream_role',
+              'dynamic_range', 'selected_track_check', 'format_id', 'upstream_asset_id',
+              'audio_asset_present', 'relationships', 'audio_bitrate', 'metadata_source')
+    buckets = {}
+    for row in rows:
+        # Service normalization does not preserve every possible HDR/track fact.
+        # Do not generalize this confirmed spelling alias to other quality labels.
+        if (row.get('format_label') not in {'1080p', '1080P'}
+                or row.get('media_type') != 'video' or not row.get('work_id')
+                or not row.get('legacy_asset_id') or row.get('legacy_delivery') != 'existing_manifest'
+                or any(row.get(key) for key in ('requires_context', 'download_context_required',
+                                                'headers_present', 'requires_cookie'))):
+            continue
+        key = json.dumps([row.get(field) for field in fields], sort_keys=True)
+        buckets.setdefault(key, []).append(row)
+    replacements = {}
+    omitted = set()
+    for aliases in buckets.values():
+        if {row['format_label'] for row in aliases} != {'1080p', '1080P'}:
+            continue
+        known = [row for row in aliases if picker.number(row.get('size_bytes'))]
+        if len({picker.number(row['size_bytes']) for row in known}) > 1:
+            continue  # Conflicting upstream facts remain separately inspectable.
+        representative = next((row for row in aliases if row.get('dedicated_default')), None)
+        representative = representative or next((row for row in known if not row.get('size_is_estimate')), None)
+        representative = representative or (known or aliases)[0]
+        projected = dict(representative)
+        if known and not picker.number(projected.get('size_bytes')):
+            evidence = next((row for row in known if not row.get('size_is_estimate')), known[0])
+            projected['size_bytes'] = evidence['size_bytes']
+            projected['size_is_estimate'] = evidence.get('size_is_estimate', False)
+        projected['alias_candidate_ids'] = [row['candidate_id'] for row in aliases]
+        replacements[aliases[0]['candidate_id']] = projected
+        omitted.update(row['candidate_id'] for row in aliases[1:])
+    return [replacements.get(row['candidate_id'], row) for row in rows if row['candidate_id'] not in omitted]
+
+
+def default_label_order(row):
+    """Preserve the service picker's pre-projection default tie-break order."""
+    match = re.fullmatch(r'\s*(\d{2,4})[pP](\+)?\s*', str(row.get('format_label') or ''))
+    return (int(match[1]), bool(match[2])) if match else (0, False)
 
 
 def build_service_picker(candidates, preferences=None):
@@ -115,15 +169,16 @@ def build_service_picker(candidates, preferences=None):
         groups.setdefault(c['work_id'], []).append(c)
     result = []
     for rows in groups.values():
-        def label_order(row):
-            label = str(row.get('format_label') or '')
-            match = re.fullmatch(r'\s*(\d{2,4})[pP](\+)?\s*', label)
-            return (int(match[1]), bool(match[2])) if match else (0, False)
-        rows = sorted(rows, key=label_order, reverse=True)
+        raw_rows = rows
+        # build_picker applies the new display order after choosing its default.
+        rows = sorted(project_bound_aliases(rows), key=default_label_order, reverse=True)
         group = picker.build_picker(rows, preferences, provider=rows[0]['provider_id'],
                                     schema=SCHEMA, choice_factory=choice)
         if group:
             group['service_picker'] = True
+            group['legacy_asset_ids'] = list(dict.fromkeys(
+                row['legacy_asset_id'] for row in raw_rows
+                if row.get('legacy_asset_id') and row.get('legacy_delivery') == 'existing_manifest'))
             if rows[0]['provider_id'] in DOUYIN_PROVIDERS and not preferences:
                 default = next((c for c in group['videos'] if c.get('dedicated_default')), None)
                 if default:
@@ -138,7 +193,11 @@ def build_service_picker(candidates, preferences=None):
     if any(group['videos'] for group in result):
         for group in result:
             group['secondary_audio'] = group['is_audio']
-    return ({**result[0], 'groups': result} if len(result) > 1 else result[0]) if result else None
+    if not result:
+        return None
+    presentation = {**result[0], 'groups': result} if len(result) > 1 else result[0]
+    presentation['video_group_count'] = sum(bool(group['videos']) for group in result)
+    return presentation
 
 
 def attach_service_picker(result, *, payload, provider, source_url, match=None, binding_assets=None):

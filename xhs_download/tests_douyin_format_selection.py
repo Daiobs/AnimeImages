@@ -304,6 +304,7 @@ class DouyinFormatSelectionTests(SimpleTestCase):
                                ('partials/batch_result_card.html', {'row': context})):
             soup = BeautifulSoup(render_to_string(template, data), 'html.parser')
             self.assertEqual(len(soup.select('[data-picker-radio]')), 3)
+            self.assertEqual(len(soup.select('[data-upstream-candidate]')), 3)
             self.assertFalse(soup.select('.asset-card[data-type="video"]'))
         self.assertEqual(build_service_picker(rows)['selected']['candidate_id'], rows[0]['candidate_id'])
 

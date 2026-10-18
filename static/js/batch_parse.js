@@ -525,6 +525,11 @@
         }
         const page = button.closest("[data-batch-download-url]");
         const authorized = await authorizeBatchUpstreamItems(page, [photoItem], options);
+        if (options && options.isCurrent && !options.isCurrent()) {
+            const error = new Error("结果已更新，未开始保存旧资源。");
+            error.name = "AbortError";
+            throw error;
+        }
         return browserPhotoApi.downloadImage(authorized[0], options || {});
     }
 
@@ -1135,7 +1140,7 @@
         }
     }
 
-    async function downloadBatchImageWithUi(button) {
+    async function downloadBatchImageWithUi(button, options = {}) {
         const itemNode = button ? button.closest("[data-batch-photo-item]") : null;
         const section = itemNode ? itemNode.closest("[data-batch-photo-section]") : null;
         if (!itemNode || !section || !browserPhotoApi) {
@@ -1147,6 +1152,7 @@
         let completionLabel = "";
         try {
             const result = await downloadBatchImage(button, {
+                ...options,
                 signal: controller.signal,
                 onProgress(event) {
                     applyBatchPhotoArchiveProgress(section, event);
@@ -1168,6 +1174,80 @@
             if (completionLabel) {
                 showBatchDownloadButtonMessage(button, completionLabel);
             }
+        }
+    }
+
+    function batchVideoMediaItem(button) {
+        const node = button && button.closest("[data-batch-download-item]");
+        if (!node || node.dataset.type !== "video") return null;
+        const item = {
+            type: "video", url: button.dataset.batchDirectUrl || "",
+            filename: button.dataset.batchDirectFilename || "video.mp4",
+            provider: button.dataset.batchDirectProvider || "",
+            source_platform: button.dataset.batchDirectSourcePlatform || "",
+            size_bytes: button.dataset.batchDirectSizeBytes || "0",
+            size_is_estimate: button.dataset.batchDirectSizeIsEstimate === "true",
+            browser_direct_fetch_safe: button.dataset.batchBrowserFetchSafe === "true",
+            requires_merge: button.dataset.batchRequiresMerge === "true",
+            requires_cookie: button.dataset.batchRequiresCookie === "true",
+        };
+        for (const [key, field] of [["assetId", "asset_id"], ["providerResourceId", "provider_resource_id"],
+            ["providerCacheKey", "provider_cache_key"], ["providerManifestToken", "provider_manifest_token"]]) {
+            if (node.dataset[key]) item[field] = node.dataset[key];
+        }
+        return item;
+    }
+
+    async function downloadBatchVideoWithUi(button, options = {}) {
+        if (button.disabled) return;
+        const item = batchVideoMediaItem(button);
+        if (!item || !item.url) {
+            showBatchDownloadButtonMessage(button, "无直链");
+            return;
+        }
+        const upstream = String(item.asset_id || "").startsWith("upstream:");
+        if (!ordinaryMediaDownloadApi || (!upstream && !ordinaryMediaDownloadApi.isOrdinaryMediaItem(item))) {
+            showBatchDownloadButtonMessage(button, "请重新解析");
+            return;
+        }
+        setBatchDownloadButtonLoading(button, true, "正在准备下载...");
+        resetBatchDownloadProgress(button);
+        try {
+            const page = button.closest(".batch-parse-page");
+            const authorizedItems = await authorizeBatchUpstreamItems(page, [item]);
+            if (options.isCurrent && !options.isCurrent()) return;
+            await ordinaryMediaDownloadApi.download(authorizedItems[0], {
+                filename: item.filename,
+                onStage(_stage, message) { setBatchDownloadButtonLoading(button, true, message); },
+                onProgress(progressEvent) { applyBatchDownloadProgress(button, progressEvent); },
+            });
+            setBatchDownloadButtonLoading(button, false);
+            showBatchDownloadButtonMessage(button, "已交给浏览器保存");
+        } catch (error) {
+            console.warn("Batch ordinary browser download failed", String(error && error.errorCode || "BROWSER_DOWNLOAD_FAILED"));
+            applyBatchDownloadTerminalFailure(button, error, {showDiagnostics: showBatchInternalDiagnostics(button)});
+            throw error;
+        } finally { setBatchDownloadButtonLoading(button, false); }
+    }
+
+    function snapshotLegacyMedia(scope) {
+        const picker = window.DokiToolYtdlpPicker;
+        return picker.legacyMediaNodes(scope).filter(picker.mediaSelected).flatMap(node => {
+            const button = node.querySelector('[data-batch-image-download], [data-batch-direct-download]');
+            if (!button || button.disabled) return [];
+            const item = node.dataset.type === "image" ? batchBrowserPhotoItem(node) : batchVideoMediaItem(button);
+            return item ? [Object.freeze({node, button, item: Object.freeze(item)})] : [];
+        });
+    }
+
+    async function saveLegacyMedia(entries, scope, isCurrent) {
+        for (const {node, button, item} of entries) {
+            if (!isCurrent()) break;
+            const applicable = () => isCurrent() && scope.contains(node) && node.contains(button)
+                && JSON.stringify(item.type === "image" ? batchBrowserPhotoItem(node) : batchVideoMediaItem(button)) === JSON.stringify(item);
+            if (!applicable() || button.disabled) continue;
+            if (item.type === "image") await downloadBatchImageWithUi(button, {isCurrent: applicable});
+            else await downloadBatchVideoWithUi(button, {isCurrent: applicable});
         }
     }
 
@@ -1972,72 +2052,8 @@
             const directDownloadButton = event.target.closest("[data-batch-direct-download]");
             if (directDownloadButton) {
                 event.preventDefault();
-                if (directDownloadButton.disabled) {
-                    return;
-                }
-                const url = directDownloadButton.getAttribute("data-batch-direct-url") || "";
-                const filename = directDownloadButton.getAttribute("data-batch-direct-filename") || "video.mp4";
-                if (!url) {
-                    showBatchDownloadButtonMessage(directDownloadButton, "无直链");
-                    return;
-                }
-                const item = {
-                    type: "video",
-                    url,
-                    filename,
-                    provider: directDownloadButton.getAttribute("data-batch-direct-provider") || "",
-                    source_platform: directDownloadButton.getAttribute("data-batch-direct-source-platform") || "",
-                    size_bytes: directDownloadButton.getAttribute("data-batch-direct-size-bytes") || "0",
-                    size_is_estimate: (
-                        directDownloadButton.getAttribute("data-batch-direct-size-is-estimate") === "true"
-                    ),
-                    browser_direct_fetch_safe: (
-                        directDownloadButton.getAttribute("data-batch-browser-fetch-safe") === "true"
-                    ),
-                    requires_merge: (
-                        directDownloadButton.getAttribute("data-batch-requires-merge") === "true"
-                    ),
-                    requires_cookie: (
-                        directDownloadButton.getAttribute("data-batch-requires-cookie") === "true"
-                    ),
-                };
-                const resourceNode = directDownloadButton.closest("[data-batch-download-item]");
-                for (const [key, field] of [["assetId", "asset_id"], ["providerResourceId", "provider_resource_id"],
-                    ["providerCacheKey", "provider_cache_key"], ["providerManifestToken", "provider_manifest_token"]]) {
-                    if (resourceNode && resourceNode.dataset[key]) item[field] = resourceNode.dataset[key];
-                }
-                const upstream = String(item.asset_id || "").startsWith("upstream:");
-                if (
-                    !ordinaryMediaDownloadApi
-                    || (!upstream && !ordinaryMediaDownloadApi.isOrdinaryMediaItem(item))
-                ) {
-                    showBatchDownloadButtonMessage(directDownloadButton, "请重新解析");
-                    return;
-                }
-                setBatchDownloadButtonLoading(directDownloadButton, true, "正在准备下载...");
-                resetBatchDownloadProgress(directDownloadButton);
-                try {
-                    const authorizedItems = await authorizeBatchUpstreamItems(batchPage, [item]);
-                    await ordinaryMediaDownloadApi.download(authorizedItems[0], {
-                        filename,
-                        onStage(_stage, message) {
-                            setBatchDownloadButtonLoading(directDownloadButton, true, message);
-                        },
-                        onProgress(progressEvent) {
-                            applyBatchDownloadProgress(directDownloadButton, progressEvent);
-                        },
-                    });
-                    setBatchDownloadButtonLoading(directDownloadButton, false);
-                    showBatchDownloadButtonMessage(directDownloadButton, "已交给浏览器保存");
-                } catch (error) {
-                    console.warn(
-                        "Batch ordinary browser download failed",
-                        String(error && error.errorCode || "BROWSER_DOWNLOAD_FAILED"),
-                    );
-                    applyBatchDownloadTerminalFailure(directDownloadButton, error, {
-                        showDiagnostics: showBatchInternalDiagnostics(directDownloadButton),
-                    });
-                }
+                try { await downloadBatchVideoWithUi(directDownloadButton); }
+                catch (_) { /* The shared handler has already updated the resource status. */ }
                 return;
             }
 
@@ -2081,6 +2097,9 @@
     });
     if (typeof module === "object" && module.exports) {
         module.exports = testApi;
+    }
+    if (typeof window !== "undefined") {
+        window.AnimeImagesBatchSelectionDownload = Object.freeze({snapshot: snapshotLegacyMedia, save: saveLegacyMedia});
     }
     if (typeof document === "undefined") {
         return;

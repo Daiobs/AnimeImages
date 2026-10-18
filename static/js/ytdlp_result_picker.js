@@ -137,6 +137,71 @@
         return descriptor(root, selection, "link", environment, signal);
     }
 
+    function mediaRoots(scope) {
+        return Array.from(scope.querySelectorAll("[data-ytdlp-picker][data-picker-media]"));
+    }
+    function mediaSelected(root) {
+        const checkbox = root.querySelector("[data-picker-media-selected], [data-picker-legacy-selected]");
+        return !checkbox || checkbox.checked;
+    }
+    function legacyMediaNodes(scope) {
+        return Array.from(scope.querySelectorAll("[data-batch-download-item]"))
+            .filter(node => !node.closest("[data-ytdlp-picker], [data-picker-preview-only]")
+                && node.dataset.downloadSelectable !== "false"
+                && (node.dataset.type === "image" && node.querySelector("[data-batch-image-download]")
+                    || node.dataset.type === "video" && node.querySelector("[data-batch-direct-download]")));
+    }
+    function ensureLegacyMediaSelection(scope, documentObject) {
+        if (!scope.querySelector("[data-picker-select-all]")) return;
+        legacyMediaNodes(scope).forEach(node => {
+            if (node.querySelector("[data-picker-legacy-selected]")) return;
+            const label = documentObject.createElement("label");
+            label.setAttribute("class", "quality-media-select");
+            const checkbox = documentObject.createElement("input");
+            checkbox.setAttribute("type", "checkbox");
+            checkbox.setAttribute("data-picker-legacy-selected", "");
+            checkbox.setAttribute("aria-label", node.dataset.type === "image" ? "选择图片资源" : "选择视频资源");
+            checkbox.checked = true;
+            label.appendChild(checkbox);
+            const summary = node.querySelector(".batch-direct-summary");
+            if (summary) {
+                label.classList.add("position-static");
+                label.classList.add("flex-shrink-0");
+                summary.insertBefore(label, summary.children[0] || null);
+            } else {
+                node.classList.add("position-relative");
+                node.appendChild(label);
+            }
+        });
+    }
+    function selectMedia(scope, checked) {
+        mediaRoots(scope).concat(legacyMediaNodes(scope)).forEach(root => {
+            const checkbox = root.querySelector("[data-picker-media-selected], [data-picker-legacy-selected]");
+            if (checkbox) checkbox.checked = checked;
+            if (controllers.has(root)) controllers.get(root).reconcile();
+        });
+    }
+    function snapshotMedia(scope, documentObject, windowObject) {
+        return mediaRoots(scope).filter(mediaSelected).map(root => {
+            const controller = mount(root, documentObject, windowObject);
+            return Object.freeze({controller, selection: selected(root),
+                descriptorRoot: Object.freeze({dataset: Object.freeze({selectionUrl: root.dataset.selectionUrl})})});
+        });
+    }
+    async function downloadMedia(snapshot, isCurrent = () => true) {
+        for (const entry of snapshot) {
+            if (!isCurrent()) break;
+            await entry.controller.save(entry.selection, entry.descriptorRoot, false, isCurrent);
+        }
+    }
+    function refreshMediaSelectAll(scope) {
+        const button = scope.querySelector("[data-picker-select-all]");
+        if (!button) return;
+        const roots = mediaRoots(scope).concat(legacyMediaNodes(scope));
+        const label = roots.length && roots.every(mediaSelected) ? "取消全选" : "全选";
+        if (button.textContent !== label) button.textContent = label;
+    }
+
     function mount(root, documentObject, windowObject, options) {
         if (controllers.has(root)) {
             const controller = controllers.get(root);
@@ -164,7 +229,7 @@
         let activeLegacy = false;
         let coverController = null, coverObjectUrl = "", player = null;
         const groupName = `doki-ytdlp-instance-${++instanceSequence}`;
-        let knownRadios = [], rememberedId = null;
+        let knownRadios = [], rememberedId = null, knownMediaCheckbox = null, rememberedMediaSelected = true;
         function revealSelection() {
             const radio = root.querySelector("[data-picker-radio]:checked");
             if (!radio) return;
@@ -173,6 +238,12 @@
             });
         }
         function reconcile() {
+            const checkbox = root.querySelector("[data-picker-media-selected]");
+            if (checkbox !== knownMediaCheckbox) {
+                if (checkbox && knownMediaCheckbox) checkbox.checked = rememberedMediaSelected;
+                knownMediaCheckbox = checkbox;
+            }
+            if (checkbox) rememberedMediaSelected = checkbox.checked;
             const radios = Array.from(root.querySelectorAll("[data-picker-radio]"));
             if (radios.length === knownRadios.length
                     && radios.every((radio, index) => radio === knownRadios[index] && radio.name === groupName)
@@ -201,7 +272,6 @@
             const selection = selected(root);
             const legacyAvailable = selection && selection.canLegacy
                 && typeof windowObject.AnimeImagesLegacySelectionDownload === "function";
-            const legacyPrimary = legacyAvailable && !selection.canDownload;
             if (selection) rememberedId = selection.id;
             revealSelection();
             root.querySelectorAll("[data-picker-radio]").forEach(radio => {
@@ -212,13 +282,12 @@
                 const checkable = selection && !selection.canDownload && !legacyAvailable && selection.kind === "video" && selection.canCheck;
                 download.disabled = busy || !selection || !(selection.canDownload && ordinary || !selection.canDownload && legacyAvailable || checkable);
                 download.textContent = busy ? "正在处理…" : checkable ? "检查所选视频"
-                    : legacyPrimary ? "原有方式保存所选资源"
                     : `↓ 下载所选${selection && selection.kind === "audio" ? "音频" : "视频"}`;
             }
             if (legacy) {
                 legacy.hidden = !(selection && selection.canDownload && legacyAvailable);
                 legacy.disabled = busy || legacy.hidden;
-                legacy.textContent = "原有方式保存所选资源";
+                legacy.textContent = "下载所选视频";
             }
             if (copy) copy.disabled = busy || !selection;
             root.querySelectorAll('[data-ytdlp-action="preview"]').forEach(button => { button.disabled = busy; });
@@ -230,11 +299,8 @@
             if (label) label.textContent = selection ? selection.size : "大小未知";
             const limitation = root.querySelector("[data-picker-limitation]");
             if (limitation) {
-                const directLimitation = selection && selection.limitation
-                    || "保留源文件，不转码。实际保存取决于来源的浏览器访问条件。";
-                limitation.textContent = legacyPrimary
-                    ? `${directLimitation} 可用原有方式保存所选资源；传输方式由原下载流程决定。`
-                    : directLimitation;
+                limitation.textContent = selection && selection.limitation || "";
+                limitation.hidden = !limitation.textContent;
             }
         }
         function start(legacyOperation = false) {
@@ -250,10 +316,12 @@
             if (!current(operation)) return;
             busy = false; activeController = null; activeCheck = null; activeLegacy = false; refresh();
         }
-        function sameSelection(selection) {
+        function sameSelection(selection, snapshot = false) {
             const now = selected(root);
-            return root.isConnected && root.contains(selection.radio) && now && now.radio === selection.radio
-                && now.id === selection.id && now.token === selection.token && now.formatId === selection.formatId;
+            const radio = selection.radio;
+            return root.isConnected && root.contains(radio) && radio.value === selection.id
+                && radio.dataset.token === selection.token && radio.dataset.formatId === selection.formatId
+                && (snapshot || now && now.radio === radio);
         }
         function abandonCheck(showMessage = false) {
             if (!activeCheck) return;
@@ -301,26 +369,29 @@
                 if (applicable()) say(error.message || "检查未完成，未开始下载。");
             } finally { finish(operation); }
         }
-        async function save(forceLegacy = false) {
-            const selection = selected(root);
-            if (!selection || busy) return;
+        async function save(selection = selected(root), descriptorRoot = root, forceLegacy = false, isCurrent = () => true) {
+            const snapshot = descriptorRoot !== root;
+            if (!isCurrent() || !selection || busy || destroyed || !sameSelection(selection, snapshot)) return;
             const handler = windowObject.AnimeImagesLegacySelectionDownload;
             if (forceLegacy || !selection.canDownload && selection.canLegacy && typeof handler === "function") {
-                if (selection.canLegacy && typeof handler === "function") await saveLegacy(selection, handler);
+                if (selection.canLegacy && typeof handler === "function") await saveLegacy(selection, handler, descriptorRoot, isCurrent);
                 return;
             }
             if (selection && !selection.canDownload && selection.kind === "video" && selection.canCheck && !busy) {
                 await checkSelected(selection);
                 return;
             }
-            if (!selection.canDownload || !ordinary) return;
+            if (!selection.canDownload || !ordinary) {
+                say(selection.limitation || "当前格式暂不可下载。");
+                return;
+            }
             closePreview();
             const operation = start();
             if (!operation) return;
             say("正在准备所选格式…");
             try {
-                const item = await descriptor(root, selection, "download", environment, operation.signal);
-                if (!current(operation) || operation.signal.aborted || !sameSelection(selection)) return;
+                const item = await descriptor(descriptorRoot, selection, "download", environment, operation.signal);
+                if (!isCurrent() || !current(operation) || operation.signal.aborted || !sameSelection(selection, snapshot)) return;
                 if (progress) { progress.hidden = false; progress.removeAttribute("value"); }
                 await ordinary.download(item, {
                     filename: item.filename, signal: operation.signal,
@@ -353,23 +424,23 @@
                 if (signal.aborted) abort();
             });
         }
-        async function saveLegacy(selection, handler) {
+        async function saveLegacy(selection, handler, descriptorRoot = root, isCurrent = () => true) {
             closePreview();
             const operation = start(true);
             if (!operation) return;
             const signal = operation.signal;
-            const applicable = () => current(operation) && !signal.aborted && sameSelection(selection);
-            say("正在核验所选资源的原有交付授权…");
+            const applicable = () => isCurrent() && current(operation) && !signal.aborted && sameSelection(selection, descriptorRoot !== root);
+            say("正在核验所选资源…");
             try {
-                const item = await waitWhileActive(descriptor(root, selection, "legacy", environment, signal), signal);
+                const item = await waitWhileActive(descriptor(descriptorRoot, selection, "legacy", environment, signal), signal);
                 if (!applicable()) return;
                 // The home controller owns routing and status; this bridge never starts another transport.
                 await waitWhileActive(handler(item, root), signal);
-                if (applicable()) say("已交由原有保存流程处理，请查看该流程的状态提示。");
+                if (applicable()) say("下载流程已处理，请查看下载状态。");
             } catch (error) {
-                if (current(operation) && sameSelection(selection)) say(signal.aborted
-                    ? "已停止等待；原有保存流程可能仍在进行，请查看该流程的状态提示。未自动重试。"
-                    : error.message || "原有保存流程未完成，未自动重试。");
+                if (current(operation) && sameSelection(selection, descriptorRoot !== root)) say(signal.aborted
+                    ? "已停止等待；下载可能仍在进行，请查看下载状态。未自动重试。"
+                    : error.message || "下载未完成，未自动重试。");
             } finally { finish(operation); }
         }
         async function preview() {
@@ -438,12 +509,22 @@
             finally { windowObject.clearTimeout(timer); coverController = null; }
         }
         function handleChange(event) {
+            if (event.target.matches("[data-picker-media-selected]")) {
+                rememberedMediaSelected = event.target.checked;
+                return;
+            }
             if (!event.target.matches("[data-picker-radio]")) return;
             if (activeCheck) abandonCheck();
             if (busy) return;
             generation += 1; closePreview(); say(""); refresh();
         }
         function handleClick(event) {
+            const artwork = event.target.closest("[data-picker-preview-only]");
+            if (artwork && root.contains(artwork) && !event.target.closest("input, label, button, a, video")) {
+                const checkbox = root.querySelector("[data-picker-media-selected]");
+                if (checkbox && !checkbox.disabled) checkbox.click();
+                return;
+            }
             const more = event.target.closest("[data-picker-more]");
             if (more && root.contains(more)) {
                 const group = root.querySelector(`[data-picker-group="${more.dataset.pickerMore === "audio" ? "audio" : "video"}"]`);
@@ -456,7 +537,7 @@
             if (!button || !root.contains(button) || button.disabled) return;
             event.preventDefault();
             if (button.dataset.ytdlpAction === "download") save();
-            else if (button.dataset.ytdlpAction === "legacy") save(true);
+            else if (button.dataset.ytdlpAction === "legacy") save(selected(root), root, true);
             else if (button.dataset.ytdlpAction === "preview") preview();
             else if (button.dataset.ytdlpAction === "copy") copySelected();
             else if (button.dataset.ytdlpAction === "close-preview") closePreview();
@@ -469,7 +550,7 @@
         }
         root.addEventListener("change", handleChange); root.addEventListener("click", handleClick);
         reconcile(); cover();
-        const controller = {reconcile, destroy() {
+        const controller = {reconcile, save, destroy() {
             destroyed = true; generation += 1;
             if (activeController) activeController.abort();
             if (coverController) coverController.abort();
@@ -493,13 +574,55 @@
             mounted.forEach((controller, root) => {
                 if (!root.isConnected) { controller.destroy(); mounted.delete(root); }
             });
+            documentObject.querySelectorAll(".batch-result-card").forEach(scope => {
+                ensureLegacyMediaSelection(scope, documentObject);
+                refreshMediaSelectAll(scope);
+            });
         }
         scan();
+        documentObject.addEventListener("change", event => {
+            if (!event.target.matches("[data-picker-media-selected], [data-picker-legacy-selected]")) return;
+            const scope = event.target.closest(".batch-result-card");
+            if (scope) refreshMediaSelectAll(scope);
+        });
+        documentObject.addEventListener("click", async event => {
+            const button = event.target.closest("[data-picker-download-all], [data-picker-select-all]");
+            const scope = button && button.closest(".batch-result-card");
+            if (!scope || button.disabled) return;
+            event.preventDefault();
+            ensureLegacyMediaSelection(scope, documentObject);
+            if (button.matches("[data-picker-select-all]")) {
+                const roots = mediaRoots(scope).concat(legacyMediaNodes(scope));
+                selectMedia(scope, !roots.every(mediaSelected));
+                refreshMediaSelectAll(scope);
+                return;
+            }
+            const snapshot = snapshotMedia(scope, documentObject, windowObject);
+            const legacyApi = windowObject.AnimeImagesBatchSelectionDownload;
+            const oldItems = legacyApi ? legacyApi.snapshot(scope) : [];
+            const anchor = scope.children[0];
+            const isCurrent = () => scope.isConnected && anchor && scope.contains(anchor);
+            if (!snapshot.length && !oldItems.length) {
+                const status = scope.querySelector("[data-picker-status]");
+                if (status) status.textContent = "请先选择需要保存的资源。";
+                return;
+            }
+            button.disabled = true;
+            try {
+                await downloadMedia(snapshot, isCurrent);
+                if (oldItems.length && isCurrent()) await legacyApi.save(oldItems, scope, isCurrent);
+            } catch (error) {
+                const status = scope.querySelector("[data-picker-status]");
+                if (isCurrent() && status) status.textContent = error.message || "下载未完成，未自动重试。";
+            }
+            finally { if (button.isConnected) button.disabled = false; }
+        });
         if (windowObject.MutationObserver) {
             const observer = new windowObject.MutationObserver(scan);
             observer.observe(documentObject.body, {childList: true, subtree: true});
         }
     }
     return Object.freeze({SCHEMA, PAGE_SIZE, COVER_MAX_BYTES, selected, sourceHttps, sourceLink, sameOriginPath,
-        csrf, validateItem, validateLinkItem, descriptor, resolveLink, mount, attach});
+        csrf, validateItem, validateLinkItem, descriptor, resolveLink, mount, attach,
+        mediaRoots, mediaSelected, selectMedia, snapshotMedia, downloadMedia, legacyMediaNodes});
 }));

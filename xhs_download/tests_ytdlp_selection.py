@@ -99,6 +99,16 @@ class YtdlpSelectionTests(SimpleTestCase):
                                   self.video('c', vcodec='av1'), self.video('d', language='ja')]).metadata['upstream_candidates']
         self.assertEqual({r['format_id'] for r in build_picker(candidates)['videos']}, {'a', 'b', 'c', 'd'})
 
+    def test_native_dynamic_range_survives_issuance_and_distinguishes_equal_quality(self):
+        candidates = self.result([self.video('hdr', dynamic_range='HDR10'),
+                                  self.video('sdr', dynamic_range='SDR')]).metadata['upstream_candidates']
+        self.assertEqual([row['dynamic_range'] for row in candidates], ['HDR10', 'SDR'])
+        videos = build_picker(candidates)['videos']
+        self.assertEqual([row['label'] for row in videos], ['1080p', '1080p'])
+        self.assertEqual([row['variant_label'] for row in videos], ['HDR10', 'SDR'])
+        self.assertEqual([(row['candidate_id'], row['resource_token']) for row in videos],
+                         [(row['candidate_id'], row['resource_token']) for row in candidates])
+
     def test_sizes_are_estimated_only_when_the_input_says_so(self):
         candidates = self.result([self.video('exact', filesize=1024), self.video('approx', filesize_approx=2048),
                                   self.video('unknown')]).metadata['upstream_candidates']
@@ -116,7 +126,7 @@ class YtdlpSelectionTests(SimpleTestCase):
         self.assertTrue(picker['selected']['can_download'])
         html = render_to_string('partials/ytdlp_result_picker.html', {'ytdlp_picker': picker})
         self.assertNotIn('视频格式', html)
-        self.assertIn('下载所选音频', html)
+        self.assertIn('下载音频', html)
         self.assertNotIn('Hi-Res', html)
 
     def test_streams_drm_insecure_context_and_unknown_are_not_downloadable(self):
@@ -188,19 +198,31 @@ class YtdlpSelectionTests(SimpleTestCase):
                              upstream_scope={'bounded': True})
         self.assertNotIn('work', result.metadata['upstream_candidates'][0])
 
-    def test_home_and_batch_render_selector_not_old_default_download_button(self):
+    def test_home_and_batch_keep_original_download_controls_with_selector(self):
         result = self.result()
         candidates = result.metadata['upstream_candidates']
         html = render_to_string('partials/xhs_results_region.html', {'upstream_candidates': candidates,
             'video_items': [{'video_url': 'https://cdn.example.org/old.mp4'}], 'base_filename': 'sample'})
         self.assertIn('data-ytdlp-picker', html)
-        self.assertNotIn('id="download-btn"', html)
+        self.assertIn('id="download-btn"', html)
+        self.assertIn('id="select-all-btn"', html)
         self.assertNotIn('data-url="https://cdn.example.org/old.mp4"', html)
         self.assertNotIn('src="https://cdn.example.org/', html)
-        batch = render_to_string('partials/batch_result_card.html', {'row': {'status': 'success',
-            'upstream_candidates': candidates, 'video_items': [], 'image_items': []}})
+        batch_context = {'row': {'status': 'success', 'upstream_candidates': candidates,
+                                'video_items': [], 'image_items': [], 'base_filename': 'sample'},
+                         'batch_download_allowed': True}
+        batch = render_to_string('partials/batch_result_card.html', batch_context)
         self.assertIn('data-ytdlp-picker', batch)
-        self.assertIn('下载所选视频', batch)
+        self.assertIn('data-picker-download-all', batch)
+        denied_batch = render_to_string('partials/batch_result_card.html',
+                                        {**batch_context, 'batch_download_allowed': False})
+        self.assertNotIn('data-picker-download-all', denied_batch)
+        for markup in (html, batch):
+            soup = BeautifulSoup(markup, 'html.parser')
+            self.assertFalse(soup.select('[data-ytdlp-action="download"], '
+                                         '[data-ytdlp-action="copy"], [data-ytdlp-action="legacy"]'))
+            for removed in ('原有方式保存所选资源', '复制所选链接', '不需要选择解析通道'):
+                self.assertNotIn(removed, soup.get_text())
 
     def test_more_than_64_formats_remain_selectable_without_dedup_by_resolution(self):
         candidates = self.result([self.video(f'fmt-{i}', height=1080) for i in range(90)]).metadata['upstream_candidates']
@@ -208,9 +230,10 @@ class YtdlpSelectionTests(SimpleTestCase):
         self.assertEqual(picker['format_count'], 90)
         html = render_to_string('partials/ytdlp_result_picker.html', {'ytdlp_picker': picker})
         self.assertEqual(html.count('data-picker-radio'), 90)
-        self.assertIn('其他格式 (89)', html)
+        self.assertNotIn('其他格式', html)
         soup = BeautifulSoup(html, 'html.parser')
-        self.assertEqual(len(soup.select('[data-picker-other] [data-picker-radio]')), 89)
+        self.assertEqual(len(soup.select('[data-picker-primary] [data-picker-radio]')), 90)
+        self.assertFalse(soup.select('[data-picker-other]'))
         self.assertFalse(soup.select('[data-picker-option][hidden]'))
 
     def test_selected_action_returns_the_selected_resource_not_first_default(self):
@@ -290,14 +313,15 @@ class YtdlpSelectionTests(SimpleTestCase):
         self.assertEqual(picker['selected']['format_id'], '720')
         self.assertEqual(len(picker['videos']), 2)
 
-    def test_initial_choices_group_resolution_but_all_variants_remain_available(self):
+    def test_initial_choices_show_all_resolution_variants(self):
         candidates = self.result([self.video('a'), self.video('b', fps=60), self.video('c', 720)]).metadata['upstream_candidates']
         picker = build_picker(candidates)
         self.assertEqual(len(picker['videos']), 3)
-        self.assertEqual(sum(c['initial_visible'] for c in picker['videos']), 2)
-        self.assertEqual(len(picker['video_other']), 1)
+        self.assertEqual(sum(c['initial_visible'] for c in picker['videos']), 3)
+        self.assertEqual(picker['video_primary'], picker['videos'])
+        self.assertEqual(picker['video_other'], [])
 
-    def test_video_tiers_keep_restricted_quality_discoverable_and_audio_secondary(self):
+    def test_all_video_variants_are_visible_and_audio_stays_secondary(self):
         formats = [self.video('4k', 2160, acodec='none'), self.video('direct', 1080),
                    self.video('60fps', 1080, fps=60), self.video('av1', 1080, vcodec='av1'),
                    self.video('japanese', 1080, language='ja'),
@@ -306,19 +330,22 @@ class YtdlpSelectionTests(SimpleTestCase):
         candidates = self.result(formats).metadata['upstream_candidates']
         picker = build_picker(candidates)
         self.assertEqual(picker['selected']['format_id'], '60fps')
-        self.assertEqual([c['format_id'] for c in picker['video_primary']], ['60fps'])
+        self.assertEqual([c['format_id'] for c in picker['video_primary']],
+                         ['4k', 'direct', '60fps', 'av1', 'japanese', 'hls'])
+        self.assertEqual(picker['video_other'], [])
         soup = BeautifulSoup(render_to_string('partials/ytdlp_result_picker.html',
                                              {'ytdlp_picker': picker}), 'html.parser')
         video = soup.select_one('[data-picker-group="video"]')
-        other = video.select_one('[data-picker-other]')
-        self.assertNotIn('open', other.attrs)
-        self.assertIn('其他格式 (5)', other.summary.get_text())
-        self.assertIn('含 2160p', other.summary.get_text())
-        self.assertIn('合并', other.get_text())
-        self.assertIn('av1', other.get_text())
-        self.assertIn('ja', other.get_text())
-        self.assertIn('m3u8_native', other.get_text())
-        self.assertIn('60 fps', video.get_text())
+        self.assertFalse(video.select('[data-picker-other], details, [data-picker-option][hidden]'))
+        self.assertEqual(len(video.select('[data-picker-primary] [data-picker-radio]')), 6)
+        self.assertIn('2160p', video.get_text())
+        self.assertIn('合并', video.get_text())
+        projected = {c['format_id']: c for c in picker['videos']}
+        self.assertIn('av1', projected['av1']['detail_label'])
+        self.assertIn('ja', projected['japanese']['detail_label'])
+        self.assertIn('m3u8_native', projected['hls']['detail_label'])
+        self.assertIn('60 fps', projected['60fps']['detail_label'])
+        self.assertFalse(video.select('[data-picker-detail]'))
         self.assertNotIn('open', soup.select_one('.ytdlp-audio-formats').attrs)
         self.assertEqual(len(soup.select('[data-picker-radio]')), len(candidates))
         self.assertCountEqual([(r['value'], r['data-token']) for r in soup.select('[data-picker-radio]')],
@@ -358,21 +385,29 @@ class YtdlpSelectionTests(SimpleTestCase):
                 self.assertFalse(picker['selected']['can_download'])
                 soup = BeautifulSoup(render_to_string('partials/ytdlp_result_picker.html',
                                                      {'ytdlp_picker': picker}), 'html.parser')
-                self.assertFalse(soup.select('[data-picker-primary]'))
+                self.assertEqual(len(soup.select('[data-picker-group="video"] [data-picker-primary] [data-picker-radio]')),
+                                 len(picker['videos']))
+                self.assertFalse(soup.select('[data-picker-group="video"] details'))
                 self.assertTrue(all('open' in d.attrs for d in soup.select('details')))
                 self.assertEqual(len(soup.select('[data-picker-radio]')), len(formats))
                 self.assertEqual(len(soup.select('.ytdlp-format-restricted')), len(formats))
                 for candidate in picker['videos'] + picker['audios']:
                     self.assertIn(candidate['limitation'], soup.get_text())
-                self.assertIn('disabled', soup.select_one('[data-ytdlp-action="download"]').attrs)
+                self.assertTrue(all(radio['data-can-download'] == 'false'
+                                    for radio in soup.select('[data-picker-radio]')))
+                if picker['is_audio']:
+                    self.assertIn('disabled', soup.select_one('[data-ytdlp-action="download"]').attrs)
+                else:
+                    self.assertIsNone(soup.select_one('[data-ytdlp-action="download"]'))
 
     def test_restricted_same_quality_does_not_displace_preferred_direct_default(self):
         candidates = self.result([self.video('split', 1080, acodec='none'), self.video('direct', 1080),
                                   self.video('preferred', 720)]).metadata['upstream_candidates']
         picker = build_picker(candidates, {'max_height': 720})
         self.assertEqual(picker['selected']['format_id'], 'preferred')
-        self.assertEqual([c['format_id'] for c in picker['video_primary']], ['direct', 'preferred'])
-        self.assertEqual([c['format_id'] for c in picker['video_other']], ['split'])
+        self.assertEqual([c['format_id'] for c in picker['video_primary']], ['split', 'direct', 'preferred'])
+        self.assertEqual(picker['video_other'], [])
+        self.assertFalse(picker['video_primary'][0]['can_download'])
 
     @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True, YTDLP_PROVIDER_ENABLED=True)
     def test_anonymous_selected_actions_use_real_admission_and_download_policy(self):

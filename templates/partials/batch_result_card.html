@@ -1,5 +1,5 @@
 {% load ytdlp_picker %}
-{% ytdlp_presentation row.upstream_candidates row.upstream_route row.video_items as ytdlp_picker %}
+{% ytdlp_presentation row.upstream_candidates row.upstream_route row.video_items row.display_title row.base_filename as ytdlp_picker %}
 {% remaining_picker_videos ytdlp_picker row.video_items as remaining_video_items %}
 <article class="batch-result-card batch-status-card-{{ row.status }}"
          data-status="{{ row.status }}"
@@ -62,20 +62,20 @@
                 </div>
             </div>
         </div>
-    {% elif ytdlp_picker and not row.image_items and not remaining_video_items %}
-        <div class="batch-result-main"><div class="batch-result-info">
-            {% include "partials/ytdlp_result_picker.html" %}
-            {% include "partials/upstream_candidates.html" with upstream_candidates=row.upstream_candidates candidates_truncated=row.candidates_truncated upstream_route=row.upstream_route unexpanded_scope=row.unexpanded_scope returned_count=row.returned_count retained_count=row.retained_count unexpanded_count=row.unexpanded_count image_items=row.image_items video_items=row.video_items %}
-        </div></div>
     {% else %}
         <div class="batch-result-main">
             <div class="batch-result-info">
-                {% if ytdlp_picker %}{% include "partials/ytdlp_result_picker.html" %}{% else %}
                 <div class="batch-result-header">
                     <div>
                         <div class="batch-result-title">{{ row.display_title|default:row.base_filename|default:"已解析素材" }}</div>
                         <div class="batch-result-source">{{ row.source_text }}</div>
                     </div>
+                    {% if ytdlp_picker and batch_download_allowed %}
+                    <div class="d-flex flex-wrap gap-2">
+                        <button type="button" class="btn btn-outline-secondary btn-sm" data-picker-select-all>全选</button>
+                        <button type="button" class="btn btn-brand btn-sm" data-picker-download-all><i class="bi bi-download me-1"></i>下载</button>
+                    </div>
+                    {% endif %}
                     <div class="batch-status-pill batch-status-{{ row.status }}">
                         {% if show_internal_diagnostics %}
                             {{ row.status }}
@@ -103,7 +103,7 @@
                     {% elif row.image_items %}
                         <span>图片</span>
                     {% endif %}
-                    {% if row.video_items %}<span>视频 {{ row.video_items|length }}</span>{% endif %}
+                    {% if ytdlp_picker.video_resource_count %}<span>视频 {{ ytdlp_picker.video_resource_count }}</span>{% elif row.video_items %}<span>视频 {{ row.video_items|length }}</span>{% endif %}
                     {% if row.image_items %}<span>图片 {{ row.image_items|length }}</span>{% endif %}
                 </div>
 
@@ -114,9 +114,10 @@
                     </div>
                 {% endif %}
 
+                {% if ytdlp_picker %}{% include "partials/ytdlp_result_picker.html" with picker_batch=True %}{% endif %}
+
                 <div class="alert alert-danger mb-3 d-none"
                      data-batch-retry-request-error></div>
-                {% endif %}
 
                 {% if row.image_items %}
                     <section class="batch-photo-section"

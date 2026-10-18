@@ -10,6 +10,7 @@
          data-batch-item-url="{% url 'batch_parse_item' %}"
          data-batch-retry-url="{% url 'batch_parse_retry' %}"
          data-batch-download-url="{{ download_url }}"
+         data-download-prepare-url="{% url 'media_download_prepare' %}"
          data-batch-download-task-url="{{ download_task_url }}"
          data-batch-download-async-enabled="{{ download_async_tasks_enabled|yesno:'true,false' }}"
          data-show-internal-diagnostics="{{ show_internal_diagnostics|yesno:'true,false' }}"
@@ -262,4 +263,5 @@
 <script src="{% static 'js/ytdlp_result_picker.js' %}?v={{ static_asset_version }}" defer></script>
 <script src="{% static 'js/browser_photo_archive.js' %}?v={{ static_asset_version }}"></script>
 <script src="{% static 'js/batch_parse.js' %}?v={{ static_asset_version }}"></script>
+<script src="{% static 'js/xhs_download.js' %}?v={{ static_asset_version }}" defer></script>
 {% endblock %}

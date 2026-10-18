@@ -1790,11 +1790,18 @@ test("Single and Batch use one shared ordinary download primitive", () => {
         batchSource.indexOf('const directDownloadButton = event.target.closest("[data-batch-direct-download]")'),
         batchSource.indexOf('const imageDownloadButton = event.target.closest("[data-batch-image-download]")'),
     );
+    const sharedVideoHandler = batchSource.slice(
+        batchSource.indexOf('async function downloadBatchVideoWithUi('),
+        batchSource.indexOf('function snapshotLegacyMedia('),
+    );
     assert.match(singleSource, /ordinaryMediaDownloadApi\.download\(item/);
+    assert.match(ordinaryVideoHandler, /await downloadBatchVideoWithUi\(directDownloadButton\)/);
+    assert.match(batchSource, /await downloadBatchVideoWithUi\(button, \{isCurrent: applicable\}\)/);
     assert.match(
-        ordinaryVideoHandler,
-        /const authorizedItems = await authorizeBatchUpstreamItems\(batchPage, \[item\]\);\s*await ordinaryMediaDownloadApi\.download\(authorizedItems\[0\],/,
+        sharedVideoHandler,
+        /const authorizedItems = await authorizeBatchUpstreamItems\(page, \[item\]\);\s*if \(options\.isCurrent && !options\.isCurrent\(\)\) return;\s*await ordinaryMediaDownloadApi\.download\(authorizedItems\[0\],/,
     );
     assert.doesNotMatch(ordinaryVideoHandler, /response\.blob\s*\(|new Blob\(chunks/);
+    assert.doesNotMatch(sharedVideoHandler, /response\.blob\s*\(|new Blob\(chunks/);
     assert.match(batchSource, /async function readBatchPhotoArchiveResponse\(/);
 });
