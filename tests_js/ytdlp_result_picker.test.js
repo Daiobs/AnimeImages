@@ -10,6 +10,7 @@ const documentObject = {querySelector: () => ({value: "csrf-fixture"}), cookie: 
 const root = {dataset: {selectionUrl: "/media/ytdlp-selected-format/"}};
 const SERVICE_SCHEMA = "service_selected_format_v1";
 const SERVICE_PROVIDERS = ["tiantianjiexi_generic", "kukutool_generic"];
+const LEGACY_SERVICE_PROVIDERS = [...SERVICE_PROVIDERS, "tiantianjiexi", "kukutool"];
 function serviceSelection(provider, id = "service720", kind = "video") {
     return {...selected(id, kind), provider, schema: SERVICE_SCHEMA, formatId: id};
 }
@@ -34,7 +35,7 @@ function response(content, source, type = "video/mp4", overrides = {}) {
         body: bytes.stream(), blob: async () => bytes, ...overrides};
 }
 
-for (const provider of SERVICE_PROVIDERS) {
+for (const provider of LEGACY_SERVICE_PROVIDERS) {
     test(`${provider} legacy delivery is exact-candidate video only and never an ordinary fetch grant`, async () => {
         const selection = {...serviceSelection(provider), canLegacy: true, legacyAssetId: "third_party:source:video:1"};
         const media = serviceItem(provider, "service720", "video", {
@@ -54,7 +55,8 @@ for (const provider of SERVICE_PROVIDERS) {
         assert.equal(ordinary.isOrdinaryMediaItem(media), false);
         assert.equal(picker.validateLinkItem(media, selection).url, media.url);
         const changes = [{candidate_id: "other"}, {selected_format_id: "other"}, {type: "audio"},
-            {provider: SERVICE_PROVIDERS.find(value => value !== provider)}, {selection_schema: picker.SCHEMA},
+            ...LEGACY_SERVICE_PROVIDERS.filter(value => value !== provider).map(provider => ({provider})),
+            {selection_schema: picker.SCHEMA},
             {selection_delivery: "direct"}, {selection_delivery: undefined}, {browser_upstream_bound: true},
             {browser_direct_fetch_safe: true}, {requires_merge: true}, {requires_cookie: true},
             {asset_id: "upstream:selection:service720"}, {url: "javascript:alert(1)"},
@@ -71,6 +73,10 @@ for (const provider of SERVICE_PROVIDERS) {
         assert.throws(() => picker.validateItem({...media, provider: "yt_dlp_generic", selection_schema: picker.SCHEMA},
             {...selection, provider: "yt_dlp_generic", schema: picker.SCHEMA}, "legacy_manifest"));
         assert.throws(() => picker.validateItem({...media, type: "audio"}, {...selection, kind: "audio"}, "legacy_manifest"));
+        for (const unsupported of ["other", "videodl_repo", "douyin", "tiantianjiexi_custom", "kukutool_custom"]) {
+            assert.throws(() => picker.validateItem({...media, provider: unsupported},
+                {...selection, provider: unsupported}, "legacy_manifest"));
+        }
         let calls = 0;
         const environment = {documentObject, windowObject: win, fetchImpl: async (_url, options) => {
             calls += 1;
@@ -98,6 +104,51 @@ test("selection snapshots independent legacy capability and same-origin endpoint
     }
     assert.equal(picker.sameOriginPath("/download?token=exact", win), "http://localhost:8000/download?token=exact");
 });
+
+for (const provider of ["tiantianjiexi", "kukutool"]) {
+    test(`${provider} direct nondefault selection keeps frozen candidate/token and exact signed asset identity`, async () => {
+        const assetId = `douyin:7123456789012345678:video:${provider}:format:0123456789abcdef01234567`;
+        const radio = {value: "low", dataset: {token: "signed-low-candidate-token", kind: "video", formatId: "",
+            canDownload: "true", canPreview: "true", canLegacy: "true", legacyAssetId: assetId}};
+        const serviceRoot = {dataset: {selectionUrl: "/media/service-selected-format/", provider,
+            selectionSchema: SERVICE_SCHEMA}, querySelector: () => radio};
+        const selection = picker.selected(serviceRoot);
+        const media = serviceItem(provider, "low", "video", {selected_format_id: "", asset_id: assetId,
+            source_platform: "douyin", provider_resource_id: "7123456789012345678",
+            provider_cache_key: `douyin:${provider}:validated:7123456789012345678`,
+            provider_manifest_token: "signed-low-manifest:timestamp:signature",
+            url: "https://cdn.example.org/nondefault.mp4?signature=low-exact", filename: "nondefault.mp4"});
+        const before = JSON.stringify(media);
+        radio.value = "high"; radio.dataset.token = "signed-high-token"; radio.dataset.legacyAssetId = "other-asset";
+        serviceRoot.dataset.provider = `${provider}_generic`;
+        const calls = [], saves = [];
+        const environment = {documentObject, windowObject: win, fetchImpl: async (_url, options) => {
+            calls.push(JSON.parse(options.body));
+            return {ok: true, json: async () => ({status: "success", item: media})};
+        }};
+        for (const action of ["download", "preview"]) {
+            assert.equal(await picker.descriptor(serviceRoot, selection, action, environment), media);
+        }
+        await ordinary.download(media, {fetchImpl: async url => {
+            assert.equal(url, media.url); return response("nondefault-bytes", url);
+        }, handoffBlob: async (blob, filename) => saves.push([await blob.text(), filename])});
+        assert.deepEqual(calls, ["download", "preview"].map(action => ({candidate_id: "low",
+            resource_token: "signed-low-candidate-token", action})));
+        assert.deepEqual(saves, [["nondefault-bytes", "nondefault.mp4"]]);
+        assert.equal(JSON.stringify(media), before);
+        assert.equal(selection.legacyAssetId, assetId);
+        assert.equal(selection.provider, provider);
+        const changes = [{candidate_id: "high"}, {selected_format_id: "high"}, {provider: `${provider}_generic`},
+            {selection_schema: picker.SCHEMA}, {asset_id: `douyin:7123456789012345678:video:${provider}`},
+            {source_platform: "upstream"}, {provider_resource_id: "8123456789012345678"},
+            {provider_cache_key: "other-cache"}, {provider_manifest_token: ""}, {provider_manifest_token: "bad\ntoken"},
+            {selection_delivery: "legacy_manifest"}, {url: "http://cdn.example.org/nondefault.mp4"}];
+        for (const change of changes) assert.throws(() => picker.validateItem({...media, ...change}, selection));
+        for (const change of [{legacyAssetId: ""}, {legacyAssetId: "other-asset"}]) {
+            assert.throws(() => picker.validateItem(media, {...selection, ...change}));
+        }
+    });
+}
 
 for (const provider of SERVICE_PROVIDERS) {
     test(`${provider} selected download and link descriptors preserve provider and resource identity`, async () => {

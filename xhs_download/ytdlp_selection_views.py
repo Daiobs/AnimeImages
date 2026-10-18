@@ -38,6 +38,17 @@ def _admitted(request, record, *, provider=PROVIDER, service=False):
     from .services.platforms.xhs_independent import authorized_services
     runtime = load_runtime_setting()
     source, match = record['source_url'], record['match']
+    if service and provider in {'tiantianjiexi', 'kukutool'}:
+        from .services.platforms.douyin import DouyinAdapter
+        from .services.provider_access import PROVIDER_DOUYIN_ULTRA, provider_is_allowed_for_request
+        from .services.provider_settings import get_platform_provider_settings
+        from .services.service_format_selection import source_identity_matches
+        return bool(record['provider_id'] == provider and match.get('provider_id') == provider
+                    and match.get('extractor_id') == 'douyin:' + provider
+                    and DouyinAdapter().supports_url(source)
+                    and source_identity_matches(provider, source, record.get('dedicated_resource_id'))
+                    and provider_is_allowed_for_request(PROVIDER_DOUYIN_ULTRA, request)
+                    and get_platform_provider_settings('douyin').provider_is_enabled(provider))
     if service:
         from .services.provider_access import third_party_public_access_summary
         from .services.platforms.third_party import GenericThirdPartyAdapter

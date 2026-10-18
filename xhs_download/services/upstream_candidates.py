@@ -130,9 +130,12 @@ def _candidate_record(url, metadata, *, ordinal, provider, source_url, media_typ
         'headers': headers, 'headers_present': headers_present, 'requires_cookie': requires_cookie,
         'expires_at': time.time() + TTL,
     }
-    if provider in {'tiantianjiexi_generic', 'kukutool_generic'}:
+    if provider in {'tiantianjiexi_generic', 'kukutool_generic', 'tiantianjiexi', 'kukutool'}:
         from .service_format_selection import candidate_facts
         public.update(candidate_facts(metadata, url, media_type))
+        public['dedicated_default'] = metadata.get('_dedicated_default') is True
+        if provider in {'tiantianjiexi', 'kukutool'}:
+            record['dedicated_resource_id'] = metadata.get('_dedicated_resource_id', '')
         if metadata.get('_service_legacy_item'):
             record['service_legacy_item'] = dict(metadata['_service_legacy_item'])
     return public, record
@@ -152,7 +155,7 @@ def issue_candidates(specs, *, work=None):
             if projection:
                 public['work'] = projection
                 record['work'] = dict(work)
-        elif work and public['provider_id'] in {'tiantianjiexi_generic', 'kukutool_generic'}:
+        elif work and public['provider_id'] in {'tiantianjiexi_generic', 'kukutool_generic', 'tiantianjiexi', 'kukutool'}:
             from .service_format_selection import public_service_work
             public['work'] = public_service_work(work)
             record['work'] = dict(work)

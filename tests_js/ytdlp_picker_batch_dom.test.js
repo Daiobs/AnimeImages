@@ -106,6 +106,7 @@ function linkItem(id, type = "video", extra = {}) {
 
 const SERVICE_SCHEMA = "service_selected_format_v1";
 const SERVICE_PROVIDERS = ["tiantianjiexi_generic", "kukutool_generic"];
+const LEGACY_SERVICE_PROVIDERS = [...SERVICE_PROVIDERS, "tiantianjiexi", "kukutool"];
 function servicePicker(provider, ids = ["high", "low"]) {
     const root = newPicker(ids);
     root.dataset.provider = provider;
@@ -242,6 +243,112 @@ test("real home bridge snapshots the candidate, rejects concurrency and preserve
     assert.equal(requests[4].payload.media_items.length, 1);
     assert.equal(requests[4].payload.media_items[0].asset_id, "third_party:old:video:1");
 });
+
+for (const provider of LEGACY_SERVICE_PROVIDERS) {
+    test(`${provider} non-primary manifest reaches the real controller unchanged and preserves the main asset`, async () => {
+        const {doc, win} = fixture(); const root = legacyPicker(provider); doc.body.append(root);
+        const low = radios(root)[1];
+        const grant = {...legacyGrant(provider, "low"), selected_format_id: "", source_platform: "douyin",
+            asset_id: "douyin:source:video:low", provider_resource_id: "resource-low",
+            provider_cache_key: "cache-low", provider_manifest_token: "signed-manifest-low"};
+        Object.assign(low.dataset, {canDownload: "false", canLegacy: "true", formatId: "",
+            legacyAssetId: grant.asset_id});
+        const requests = [], authorizations = [];
+        let release;
+        const gate = new Promise(resolve => { release = resolve; });
+        const home = homeLegacyController(async (url, options) => {
+            const payload = options.body && JSON.parse(options.body); requests.push({url, payload});
+            if (url === "/download") {
+                if (payload.media_items[0].asset_id === "third_party:old:video:1") {
+                    return new Response(JSON.stringify({message: "old selected item"}), {status: 403});
+                }
+                await gate;
+                return payload.route_only
+                    ? jsonResponse({status: "routed", route_type: "zip", download_strategy: "server_zip"})
+                    : new Response(new Blob(["mock zip bytes"]), {headers: {"Content-Type": "application/zip"}});
+            }
+            if (url === "/tasks") return jsonResponse({status_url: "/task-status", file_url: "/task-file"});
+            if (url === "/task-status") return jsonResponse({status: "completed", saved_count: 1});
+            assert.equal(url, "/task-file");
+            return new Response(new Blob(["mock zip bytes"]), {headers: {"Content-Type": "application/zip"}});
+        }, root);
+        win.AnimeImagesLegacySelectionDownload = home.bridge;
+        picker.mount(root, doc, win, {ordinary: {download: () => assert.fail("legacy grant cannot use ordinary download")},
+            fetchImpl: async (_url, options) => {
+                authorizations.push(JSON.parse(options.body));
+                return jsonResponse({status: "success", item: grant});
+            }});
+        choose(root, 1);
+        const snapshot = picker.selected(root);
+        const expected = {...grant};
+        click(root); click(root); await settle();
+        assert.deepEqual(authorizations, [{candidate_id: "low", resource_token: "signed-low", action: "legacy"}]);
+        assert.equal(requests.length, 1);
+        assert.equal(snapshot.provider, provider);
+        assert.equal(snapshot.id, "low");
+        assert.equal(Object.isFrozen(snapshot), true);
+        grant.provider_manifest_token = "substituted-manifest";
+        grant.asset_id = "douyin:source:video:high";
+        grant.filename = "substituted.mp4";
+        release(); await settle();
+        assert.deepEqual(requests.map(request => request.url), provider === "kukutool_generic"
+            ? ["/download", "/tasks", "/task-status", "/task-file"] : ["/download", "/download"]);
+        for (const request of requests.slice(0, 2)) {
+            assert.deepEqual(request.payload.media_items, [expected]);
+            assert.equal(request.payload.base_filename, "low");
+        }
+        assert.deepEqual(home.saved, ["low.zip"]);
+        assert.equal(home.page.dataset.baseFilename, "original-page-title");
+        assert.equal(picker.selected(root).id, "low");
+        home.clickOldDownload(); await settle();
+        const oldRequest = requests.at(-1);
+        assert.equal(oldRequest.payload.media_items.length, 1);
+        assert.equal(oldRequest.payload.media_items[0].asset_id, "third_party:old:video:1");
+        assert.equal(oldRequest.payload.media_items[0].provider_manifest_token, "old-manifest");
+    });
+}
+
+test("real home bridge rejects unknown provider identities before contacting the legacy controller", async () => {
+    const home = homeLegacyController(async () => assert.fail("unknown provider must not reach a route"));
+    for (const provider of ["other", "videodl_repo", "douyin", "tiantianjiexi_custom", "kukutool_custom"]) {
+        await assert.rejects(home.bridge(legacyGrant(provider), home.pickerRoot), /当前无法/);
+    }
+    assert.equal(home.node("[data-legacy-download-status]").hidden, true);
+});
+
+for (const provider of ["tiantianjiexi", "kukutool"]) {
+    test(`${provider} direct picker saves the non-primary asset and alternate preview retains its own manifest binding`, async () => {
+        const {doc, win} = fixture(); const root = servicePicker(provider); doc.body.append(root);
+        const grants = Object.fromEntries(["high", "low"].map((id, index) => [id, serviceGrant(provider, id, "video", {
+            selected_format_id: "", source_platform: "douyin", provider_resource_id: "7123456789012345678",
+            provider_cache_key: `douyin:${provider}:validated:7123456789012345678`,
+            provider_manifest_token: `signed-manifest-${id}`, url: `https://cdn.example/${id}.mp4?token=${id}`,
+            asset_id: `douyin:7123456789012345678:video:${provider}${index ? ":format:0123456789abcdef01234567" : ""}`,
+        })]));
+        radios(root).forEach(radio => Object.assign(radio.dataset, {formatId: "", legacyAssetId: grants[radio.value].asset_id,
+            canPreview: String(radio.value === "high"), canLegacy: "true"}));
+        root.dataset.previewId = "high";
+        const region = el("div", {"data-picker-player-region": ""}); region.hidden = true;
+        const slot = el("div", {"data-picker-player": ""}); region.append(slot);
+        root.append(region, el("p", {"data-picker-preview-note": ""}), el("button", {"data-ytdlp-action": "preview"}));
+        const requests = [], saves = [];
+        win.AnimeImagesLegacySelectionDownload = () => assert.fail("direct download cannot use the legacy controller");
+        picker.mount(root, doc, win, {ordinary: {download: async media => saves.push(media)},
+            fetchImpl: async (_url, options) => {
+                const request = JSON.parse(options.body); requests.push(request);
+                return jsonResponse({status: "success", item: grants[request.candidate_id]});
+            }});
+        choose(root, 1); click(root); await settle();
+        assert.deepEqual(saves, [grants.low]);
+        click(root, "preview"); await settle();
+        assert.deepEqual(requests, [{candidate_id: "low", resource_token: "signed-low", action: "download"},
+            {candidate_id: "high", resource_token: "signed-high", action: "preview"}]);
+        assert.equal(slot.children.length, 1, root.querySelector("[data-picker-status]").textContent);
+        assert.equal(slot.children[0].src, grants.high.url);
+        assert.equal(picker.selected(root).id, "low");
+        assert.equal(picker.selected(root).legacyAssetId, grants.low.asset_id);
+    });
+}
 
 test("real home bridge refuses foreign roots and propagates route, task and network failures without retries", async () => {
     for (const failure of ["route", "task", "network"]) {
@@ -513,6 +620,50 @@ test("legacy redraw or removal before descriptor returns cannot hand off a stale
         assert.equal(doc.body.querySelectorAll("iframe").length, 0);
     }
 });
+
+for (const provider of LEGACY_SERVICE_PROVIDERS) {
+    for (const nextId of ["high", "low"]) {
+        test(`${provider} direct late response after same-root redraw to ${nextId} never delivers the old resource`, async () => {
+            const {doc, win} = fixture();
+            const dedicated = ["tiantianjiexi", "kukutool"].includes(provider);
+            const grants = Object.fromEntries(["high", "low"].map((id, index) => [id, serviceGrant(provider, id, "video",
+                dedicated ? {source_platform: "douyin", provider_resource_id: "7123456789012345678",
+                    provider_cache_key: `douyin:${provider}:validated:7123456789012345678`,
+                    provider_manifest_token: `signed-manifest-${id}`,
+                    asset_id: `douyin:7123456789012345678:video:${provider}${index ? ":format:0123456789abcdef01234567" : ""}`,
+                } : {})]));
+            function makePicker() {
+                const root = servicePicker(provider);
+                radios(root).forEach(radio => { radio.dataset.legacyAssetId = grants[radio.value].asset_id || ""; });
+                return root;
+            }
+            const root = makePicker(); doc.body.append(root);
+            const requests = [], saves = [];
+            let release;
+            const controller = picker.mount(root, doc, win, {ordinary: {download: async media => saves.push(media)},
+                fetchImpl: async (_url, options) => {
+                    const request = JSON.parse(options.body); requests.push(request);
+                    if (requests.length === 1) return new Promise(resolve => {
+                        release = () => resolve(jsonResponse({status: "success", item: grants.low}));
+                    });
+                    return jsonResponse({status: "success", item: grants[request.candidate_id]});
+                }});
+            choose(root, 1); click(root); await settle();
+            const originalRadio = picker.selected(root).radio;
+            root.replaceChildren(...makePicker().children.slice());
+            radios(root).forEach(radio => { radio.checked = false; });
+            choose(root, nextId === "low" ? 1 : 0);
+            assert.notEqual(picker.selected(root).radio, originalRadio);
+            release(); await settle();
+            assert.deepEqual(saves, [], "even a replacement radio with the same candidate ID must invalidate the old operation");
+            assert.equal(picker.selected(root).id, nextId);
+            controller.reconcile(); click(root); await settle();
+            assert.deepEqual(saves, [grants[nextId]], "a new explicit click may download the current selection");
+            assert.deepEqual(requests, [{candidate_id: "low", resource_token: "signed-low", action: "download"},
+                {candidate_id: nextId, resource_token: `signed-${nextId}`, action: "download"}]);
+        });
+    }
+}
 
 for (const provider of SERVICE_PROVIDERS) {
     test(`${provider} cached service cards keep actions isolated through insertion, sorting and redraw`, async () => {

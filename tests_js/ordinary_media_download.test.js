@@ -642,6 +642,92 @@ function unknownServiceFile(provider, type = "video", overrides = {}) {
         audio_tracks: "unknown", video_tracks: "unknown", ...overrides});
 }
 
+function dedicatedServiceFile(provider, overrides = {}) {
+    return ordinaryItem({provider, selection_schema: "service_selected_format_v1",
+        candidate_id: "signed-candidate-low", selected_format_id: "", source_platform: "douyin",
+        asset_id: `douyin:7123456789012345678:video:${provider}:format:0123456789abcdef01234567`,
+        provider_resource_id: "7123456789012345678",
+        provider_cache_key: `douyin:${provider}:validated:7123456789012345678`,
+        provider_manifest_token: "signed-low-manifest:timestamp:signature",
+        browser_upstream_bound: true, url: "https://v11-default.365yg.com/media/low.mp4?token=low-exact",
+        filename: "low.mp4", ...overrides});
+}
+
+for (const provider of ["tiantianjiexi", "kukutool"]) {
+    test(`${provider} dedicated selection preserves nondefault URL and signed manifest identity through direct save`, async () => {
+        for (const suffix of ["", ":format:0123456789abcdef01234567"]) {
+            const descriptor = dedicatedServiceFile(provider, {asset_id: `douyin:7123456789012345678:video:${provider}${suffix}`});
+            const before = JSON.stringify(descriptor);
+            const requests = [], saves = [];
+            assert.equal(ordinary.isOrdinaryMediaItem(descriptor), true);
+            await ordinary.download(descriptor, {
+                fetchImpl: async (url, options) => {
+                    requests.push(url);
+                    assert.equal(options.credentials, "omit");
+                    assert.equal(options.redirect, "error");
+                    assert.equal(options.mode, "cors");
+                    return responseFor("12345", {url});
+                },
+                streamingClient: {capabilityAvailable: () => true,
+                    start: () => assert.fail("bound selection must use the existing bounded Blob path")},
+                handoffBlob: async (blob, filename) => saves.push([await blob.text(), filename]),
+            });
+            assert.deepEqual(requests, [descriptor.url]);
+            assert.deepEqual(saves, [["12345", "low.mp4"]]);
+            assert.equal(JSON.stringify(descriptor), before);
+        }
+    });
+
+    test(`${provider} dedicated selected URL cannot redirect or return HTML before save`, async () => {
+        const descriptor = dedicatedServiceFile(provider);
+        for (const change of [{redirected: true}, {url: "https://v11-default.365yg.com/media/primary.mp4"},
+            {contentType: "text/html"}, {type: "opaque"}, {type: "opaqueredirect"}]) {
+            await assert.rejects(ordinary.download(descriptor, {
+                fetchImpl: async () => ({...responseFor("12345", {url: descriptor.url, ...change}),
+                    ...(change.type ? {type: change.type} : {})}),
+                handoffBlob: () => assert.fail("invalid response must not save"),
+            }));
+        }
+    });
+
+    test(`${provider} dedicated selection rejects incomplete or inconsistent manifest identity before media fetch`, async () => {
+        const descriptor = dedicatedServiceFile(provider);
+        const changes = [
+            {provider: "unknown"}, {provider: `${provider}_custom`}, {provider: `${provider}_generic`},
+            {provider: provider === "kukutool" ? "tiantianjiexi" : "kukutool"},
+            {source_platform: "upstream"}, {source_platform: "third_party"}, {type: "audio", service_audio_file: true},
+            {asset_id: "upstream:selection:signed-candidate-low"}, {asset_id: `douyin:8123456789012345678:video:${provider}`},
+            {asset_id: `${descriptor.asset_id}extra`}, {asset_id: `douyin:7123456789012345678:video:${provider}:format:xyz`},
+            {provider_resource_id: "8123456789012345678"}, {provider_resource_id: 7123456789012345678},
+            {provider_cache_key: "cache-for-another-work"}, {selected_format_id: undefined},
+            {browser_upstream_bound: false}, {browser_upstream_bound: "true"}, {browser_direct_fetch_safe: "true"},
+            {requires_merge: undefined}, {requires_cookie: undefined}, {selection_delivery: "legacy_manifest"},
+            {url: "http://v11-default.365yg.com/media/low.mp4"},
+            {url: "https://user:password@v11-default.365yg.com/media/low.mp4"},
+            {url: `${descriptor.url}#fragment`}, {url: "https://v11-default.365yg.com:8443/media/low.mp4"},
+        ];
+        for (const field of ["candidate_id", "provider_resource_id", "provider_manifest_token", "asset_id", "provider_cache_key"]) {
+            for (const value of [undefined, "", " ", "bad\nvalue"]) changes.push({[field]: value});
+        }
+        for (const change of changes) {
+            const invalid = {...descriptor, ...change};
+            assert.equal(ordinary.isOrdinaryMediaItem(invalid), false, JSON.stringify(change));
+            await assert.rejects(ordinary.download(invalid, {
+                fetchImpl: () => assert.fail("invalid identity must not fetch"),
+                handoffBlob: () => assert.fail("invalid identity must not save"),
+            }), error => error.errorCode === "BROWSER_DOWNLOAD_NOT_ORDINARY_MEDIA");
+        }
+    });
+}
+
+test("service schema cannot grant arbitrary non-upstream providers ordinary download permission", () => {
+    for (const provider of ["unknown", "yt_dlp_generic", "gallery_dl_generic", "parsehub_generic"]) {
+        for (const source of [{}, {asset_id: "upstream:selection:service-selected-candidate", source_platform: "upstream"}]) {
+            assert.equal(ordinary.isOrdinaryMediaItem(dedicatedServiceFile(provider, source)), false);
+        }
+    }
+});
+
 for (const provider of ["tiantianjiexi_generic", "kukutool_generic"]) {
     test(`${provider} unknown suffix uses validated HTTP media MIME without changing its descriptor`, async () => {
         for (const [type, contentType, suffix] of [

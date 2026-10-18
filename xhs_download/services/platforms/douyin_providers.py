@@ -964,6 +964,54 @@ def build_external_parse_result(
     )
 
 
+def attach_douyin_service_picker(result, *, adapter, context, candidates, payload=None):
+    from ..service_format_selection import attach_service_picker
+    from ..provider_manifest import douyin_format_asset_id
+    from .kukutool_generic import ServiceFormatPayload
+    from ..upstream_candidates import MAX_CANDIDATES
+
+    if not result.video_assets or not context.aweme_id or not context.canonical_url:
+        return result
+    main = result.video_assets[0]
+    if main.provider not in {'tiantianjiexi', 'kukutool'}:
+        return result
+    original_rows = (payload or {}).get('_service_format_rows') or (payload or {}).get('videos') or ()
+    rows, assets = [], {}
+    default_assigned = False
+    for candidate in candidates[:MAX_CANDIDATES]:
+        try:
+            validate_douyin_media_url(candidate.url, existing_suffixes=adapter.media_host_suffixes)
+        except (TypeError, ValueError):
+            continue
+        matching = [row for row in original_rows if isinstance(row, dict) and row.get('url') == candidate.url]
+        original = next((row for row in matching
+                         if str(row.get('quality_label') or row.get('quality') or '') == candidate.quality_label),
+                        matching[0] if matching else {})
+        is_main = candidate.url == main.url
+        is_default = (is_main and not default_assigned
+                      and candidate.quality_label == main.quality_label
+                      and candidate.size_bytes == main.size_bytes)
+        default_assigned = default_assigned or is_default
+        asset_id = main.asset_id if is_main else douyin_format_asset_id(context.aweme_id, main.provider, candidate.url)
+        token = main.provider_manifest_token if is_main else build_provider_manifest_token(
+            asset_id=asset_id, provider=main.provider, provider_resource_id=context.aweme_id,
+            provider_cache_key=main.provider_cache_key, url=candidate.url, media_type='video', source_platform='douyin')
+        assets.setdefault(candidate.url, main if is_main else replace(main, url=candidate.url, asset_id=asset_id,
+                          provider_manifest_token=token, quality_label=candidate.quality_label,
+                          size_bytes=candidate.size_bytes))
+        rows.append({**original, 'url': candidate.url, 'quality_label': candidate.quality_label,
+                     'size_bytes': candidate.size_bytes or None, 'media_type': 'video',
+                     'work_id': f"douyin:{context.aweme_id}:{original.get('work_id') or 'video'}",
+                     '_dedicated_resource_id': context.aweme_id,
+                     '_dedicated_default': is_default})
+    material = ServiceFormatPayload({**(payload or {}), 'title': result.base_filename,
+                                    'cover': main.cover_url, '_service_format_rows': rows})
+    return attach_service_picker(result, payload=material, provider=main.provider,
+                                 source_url=context.canonical_url, binding_assets=tuple(assets.values()),
+                                 match={'provider_id': main.provider, 'extractor_id': 'douyin:' + main.provider,
+                                        'version': 'douyin-service-picker-v1', 'label': main.provider})
+
+
 class DouyinTianTianJieXiProvider(DouyinResultProvider):
     name = "tiantianjiexi"
 
@@ -1256,6 +1304,8 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             tiantianjiexi_size_bytes=candidate.size_bytes,
             tiantianjiexi_quality_label=candidate.quality_label,
         )
+        result = attach_douyin_service_picker(result, adapter=adapter, context=context,
+                                             candidates=candidates, payload=payload)
         if not self.suppress_selected_log:
             log_provider_event(
                 "douyin_provider_selected",

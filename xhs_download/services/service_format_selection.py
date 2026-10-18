@@ -10,7 +10,8 @@ from urllib.parse import urlsplit
 from . import ytdlp_selection as picker
 from .platforms.gallerydl_generic import extension_from_url
 
-PROVIDERS = frozenset({'tiantianjiexi_generic', 'kukutool_generic'})
+DOUYIN_PROVIDERS = frozenset({'tiantianjiexi', 'kukutool'})
+PROVIDERS = frozenset({'tiantianjiexi_generic', 'kukutool_generic'}) | DOUYIN_PROVIDERS
 SCHEMA = 'service_selected_format_v1'
 
 
@@ -49,6 +50,11 @@ def capability(candidate):
                 picker.VIDEO_EXTENSIONS if candidate.get('media_type') == 'video' else picker.AUDIO_EXTENSIONS))
             and candidate.get('media_type') in {'video', 'audio'}):
         result = {'can_download': True, 'can_preview': False, 'can_check': False, 'limitation': ''}
+    if (candidate.get('provider_id') in DOUYIN_PROVIDERS
+            and not (candidate.get('legacy_asset_id')
+                     and candidate.get('legacy_delivery') == 'existing_manifest')):
+        result = {'can_download': False, 'can_preview': False, 'can_check': False,
+                  'limitation': '此格式缺少有效下载授权，可复制原始资源链接。'}
     # Service declarations do not borrow a yt-dlp runtime identity for probing.
     result['can_check'] = False
     if not result['can_download'] and '尚未检查' in result['limitation']:
@@ -59,16 +65,24 @@ def capability(candidate):
 def legacy_item_for_asset(asset, result, provider, source_url):
     from .provider_strategy import build_download_strategy
     from .downloads import provider_manifest_allows_public_download
-    from .platforms.kukutool_generic import source_key_for_url
     if (asset.provider != provider or asset.media_type != 'video'
-            or asset.provider_resource_id != source_key_for_url(source_url)):
+            or not source_identity_matches(provider, source_url, asset.provider_resource_id)):
         return None
     item = {**asset.to_download_item(), 'source_platform': result.platform}
     strategy = build_download_strategy(asset, result_platform=result.platform, result_metadata=result.metadata)
-    if (strategy['download_strategy'] != 'server_attachment'
+    if (strategy['download_strategy'] not in ({'browser_streaming'} if provider in DOUYIN_PROVIDERS else {'server_attachment'})
             or not provider_manifest_allows_public_download(item)):
         return None
     return {**item, 'size_bytes': asset.size_bytes, 'size_is_estimate': asset.size_is_estimate}
+
+
+def source_identity_matches(provider, source_url, resource_id):
+    if provider in DOUYIN_PROVIDERS:
+        from .platforms.douyin import DouyinAdapter
+        from .platforms.douyin_providers import source_url_matches_aweme_id
+        return DouyinAdapter().supports_url(source_url) and source_url_matches_aweme_id(source_url, resource_id)
+    from .platforms.kukutool_generic import source_key_for_url
+    return resource_id == source_key_for_url(source_url)
 
 
 def choice(candidate):
@@ -110,6 +124,16 @@ def build_service_picker(candidates, preferences=None):
                                     schema=SCHEMA, choice_factory=choice)
         if group:
             group['service_picker'] = True
+            if rows[0]['provider_id'] in DOUYIN_PROVIDERS and not preferences:
+                default = next((c for c in group['videos'] if c.get('dedicated_default')), None)
+                if default:
+                    group['selected'] = default
+                    for c in group['videos']:
+                        c['selected'] = c['candidate_id'] == default['candidate_id']
+                    if default['can_download']:
+                        default['initial_visible'] = True
+                    group['video_primary'] = [c for c in group['videos'] if c['initial_visible']]
+                    group['video_other'] = [c for c in group['videos'] if not c['initial_visible']]
             result.append(group)
     if any(group['videos'] for group in result):
         for group in result:
@@ -117,7 +141,7 @@ def build_service_picker(candidates, preferences=None):
     return ({**result[0], 'groups': result} if len(result) > 1 else result[0]) if result else None
 
 
-def attach_service_picker(result, *, payload, provider, source_url, match=None):
+def attach_service_picker(result, *, payload, provider, source_url, match=None, binding_assets=None):
     """Called only after a real service normalizer/executor, never on imports."""
     from .upstream_candidates import candidate_url, issue_candidates, MAX_CANDIDATES
     from .upstream_delivery import safe_resource_url
@@ -136,7 +160,7 @@ def attach_service_picker(result, *, payload, provider, source_url, match=None):
         if isinstance(row, dict) and row.get('url'):
             counts[row['url']] = counts.get(row['url'], 0) + 1
     legacy_by_url = {}
-    for asset in result.video_assets:
+    for asset in (result.video_assets if binding_assets is None else binding_assets):
         item = legacy_item_for_asset(asset, result, provider, source_url)
         if item:
             legacy_by_url.setdefault(asset.url, []).append(item)
@@ -202,13 +226,12 @@ def selected_legacy_descriptor(record):
     public = record.get('public', {})
     if public.get('legacy_delivery') == 'existing_manifest':
         from .downloads import provider_manifest_allows_public_download
-        from .platforms.kukutool_generic import source_key_for_url
         item = record.get('service_legacy_item') or {}
         if (not item or item.get('url') != record.get('url')
                 or item.get('provider') != record.get('provider_id')
                 or item.get('type') != public.get('media_type')
                 or item.get('asset_id') != public.get('legacy_asset_id')
-                or item.get('provider_resource_id') != source_key_for_url(record['source_url'])
+                or not source_identity_matches(record['provider_id'], record['source_url'], item.get('provider_resource_id'))
                 or not provider_manifest_allows_public_download(item)):
             raise ValueError('service_legacy_binding_invalid')
         link = selected_link_descriptor(record)
@@ -226,6 +249,13 @@ def selected_descriptor(record):
     link = selected_link_descriptor(record)
     if not safe_resource_url(link['url']):
         raise ValueError('service_url_invalid')
+    if record['provider_id'] in DOUYIN_PROVIDERS:
+        item = selected_legacy_descriptor(record)
+        item.pop('selection_delivery', None)
+        return {**item, 'browser_upstream_bound': True, 'browser_direct_fetch_safe': True,
+                'requires_merge': False, 'requires_cookie': False,
+                'size_bytes': picker.number(public.get('size_bytes')) or 0,
+                'size_is_estimate': bool(public.get('size_is_estimate'))}
     return {**link, 'source_platform': 'upstream', 'asset_id': 'upstream:selection:' + record['candidate_id'],
             'browser_upstream_bound': True, 'browser_direct_fetch_safe': True,
             'requires_merge': False, 'requires_cookie': False,

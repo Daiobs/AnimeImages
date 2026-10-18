@@ -2164,7 +2164,7 @@
             if (!resultsRegion || !pickerRoot || !resultsRegion.contains(pickerRoot)
                 || downloadInProgress || !item || item.selection_schema !== "service_selected_format_v1"
                 || item.selection_delivery !== "legacy_manifest" || item.type !== "video"
-                || !["tiantianjiexi_generic", "kukutool_generic"].includes(item.provider)
+                || !["tiantianjiexi_generic", "kukutool_generic", "tiantianjiexi", "kukutool"].includes(item.provider)
                 || !item.provider_manifest_token || !item.asset_id) {
                 throw new Error("当前无法使用原有资源操作，请等待已有任务结束或重新解析。");
             }

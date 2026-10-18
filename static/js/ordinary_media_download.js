@@ -436,6 +436,30 @@
             && item.audio_tracks === "present" && item.video_tracks === "absent");
     }
 
+    function isBoundDedicatedServiceItem(item) {
+        if (!item || item.selection_schema !== "service_selected_format_v1"
+                || !["tiantianjiexi", "kukutool"].includes(item.provider)
+                || item.type !== "video" || item.source_platform !== "douyin"
+                || (item.selection_delivery || "direct") !== "direct"
+                || item.browser_upstream_bound !== true || item.browser_direct_fetch_safe !== true
+                || item.requires_merge !== false || item.requires_cookie !== false
+                || typeof item.selected_format_id !== "string"
+                || ["candidate_id", "provider_resource_id", "provider_manifest_token", "url"]
+                    .some(key => typeof item[key] !== "string" || !item[key] || /[\s\\\u0000-\u001f\u007f]/.test(item[key]))
+                || !/^\d{8,24}$/.test(item.provider_resource_id)) return false;
+        const assetPrefix = `douyin:${item.provider_resource_id}:video:${item.provider}`;
+        if (item.provider_cache_key !== `douyin:${item.provider}:validated:${item.provider_resource_id}`
+                || typeof item.asset_id !== "string"
+                || !(item.asset_id === assetPrefix || item.asset_id.startsWith(`${assetPrefix}:format:`)
+                    && /^[a-f0-9]{24}$/.test(item.asset_id.slice(`${assetPrefix}:format:`.length)))) return false;
+        // The selected endpoint verifies the signature and exact URL; these checks retain its identity.
+        try {
+            const url = new URL(item.url);
+            return url.protocol === "https:" && !url.username && !url.password
+                && !url.hash && (!url.port || url.port === "443");
+        } catch (_) { return false; }
+    }
+
     function contentTypeAllowsSelectedAudio(value, item) {
         const type = normalizedContentType(value);
         // A declared WebM audio selection must not accept another audio container.
@@ -455,6 +479,9 @@
             && (String(item.type || item.media_type || "").toLowerCase() === "video" || isSelectedYtdlpAudio(item))
             && isHttpUrl(item.url || item.video_url)
             && booleanValue(item.browser_direct_fetch_safe)
+            && (item.selection_schema !== "service_selected_format_v1"
+                || ["tiantianjiexi_generic", "kukutool_generic"].includes(item.provider) && isBoundUpstreamItem(item)
+                || isBoundDedicatedServiceItem(item))
             && (!isUpstreamItem(item) || isBoundUpstreamItem(item))
             && !booleanValue(item.requires_merge)
             && !booleanValue(item.requires_cookie)
@@ -1037,7 +1064,7 @@
         let filename = sanitizeFilename(settings.filename || item.filename);
         const downloadId = createDownloadId(settings);
         const sourceUrl = String(item.url || item.video_url || "");
-        const upstreamBound = isBoundUpstreamItem(item);
+        const upstreamBound = isBoundUpstreamItem(item) || isBoundDedicatedServiceItem(item);
         if (
             !upstreamBound && (!streamingProtocol
             || typeof streamingProtocol.isAllowedInitialMediaUrl !== "function"
@@ -1307,7 +1334,7 @@
                 "当前资源不支持浏览器直接保存。",
             );
         }
-        if (settings.forceBlob === true || isBoundUpstreamItem(item)) {
+        if (settings.forceBlob === true || isBoundUpstreamItem(item) || isBoundDedicatedServiceItem(item)) {
             return downloadViaBlob(item, settings);
         }
         try {

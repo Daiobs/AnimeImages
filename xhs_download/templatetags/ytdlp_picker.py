@@ -7,7 +7,7 @@ register = template.Library()
 @register.simple_tag
 def ytdlp_presentation(candidates, route=None, legacy_videos=None):
     preferences = route.get('format_preferences', {}) if isinstance(route, dict) else {}
-    if candidates and candidates[0].get('provider_id') in {'tiantianjiexi_generic', 'kukutool_generic'}:
+    if candidates and candidates[0].get('provider_id') in {'tiantianjiexi_generic', 'kukutool_generic', 'tiantianjiexi', 'kukutool'}:
         from xhs_download.services.service_format_selection import build_service_picker
         return build_service_picker(candidates, preferences)
     return build_picker(candidates, preferences=preferences)

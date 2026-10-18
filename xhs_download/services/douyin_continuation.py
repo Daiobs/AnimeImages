@@ -13,6 +13,7 @@ from django.core.cache import cache
 
 from .assets import MediaAsset, ParseResult
 from .common import (
+    XhsParseError,
     XhsProviderTimeoutError,
     clean_filename,
 )
@@ -209,6 +210,16 @@ def serialize_douyin_continuation_result(result):
         },
         "metadata": safe_continuation_metadata(result.metadata),
     }
+    refs = []
+    for candidate in (result.metadata or {}).get('upstream_candidates', ()):
+        if not isinstance(candidate, dict) or candidate.get('provider_id') != provider:
+            continue
+        ref = {key: candidate.get(key, '') for key in ('candidate_id', 'resource_token')}
+        if len(json.dumps(refs + [ref])) > 16 * 1024:
+            break
+        refs.append(ref)
+    if refs:
+        payload['format_refs'] = refs
     encoded = json.dumps(
         payload,
         ensure_ascii=True,
@@ -281,12 +292,34 @@ def deserialize_douyin_continuation_result(payload):
         provider_cache_key=item["provider_cache_key"],
         provider_manifest_token=item["provider_manifest_token"],
     )
+    metadata = safe_continuation_metadata(payload.get('metadata'))
+    from .upstream_candidates import resolve_candidate_record
+    candidates = []
+    refs = payload.get('format_refs', [])
+    if isinstance(refs, list) and len(json.dumps(refs)) <= 16 * 1024:
+        for ref in refs:
+            try:
+                record = resolve_candidate_record(ref['resource_token'], ref['candidate_id'])
+                if (record['provider_id'] == provider
+                        and record.get('dedicated_resource_id') == item['provider_resource_id']):
+                    candidates.append({**record['public'], 'resource_token': ref['resource_token']})
+            except (KeyError, TypeError, ValueError, XhsParseError):
+                continue  # Expired references never trigger parsing or renewal.
+            except Exception as error:
+                logger.warning(
+                    'douyin_continuation_format_refs_unavailable exception_class=%s',
+                    type(error).__name__,
+                )
+                break  # Optional picker cache failures must not discard the primary result.
+    if candidates:
+        metadata['upstream_candidates'] = candidates
+        metadata['candidate_retained_count'] = len(candidates)
     return ParseResult(
         platform="douyin",
         post_type="video",
         base_filename=clean_filename(payload.get("base_filename"))[:200],
         assets=(asset,),
-        metadata=safe_continuation_metadata(payload.get("metadata")),
+        metadata=metadata,
     )
 
 

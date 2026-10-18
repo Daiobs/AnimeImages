@@ -59,7 +59,7 @@
         if (delivery === "legacy_manifest") {
             validateLinkItem(item, selection);
             if (selection.schema !== "service_selected_format_v1"
-                    || !["tiantianjiexi_generic", "kukutool_generic"].includes(selection.provider)
+                    || !["tiantianjiexi_generic", "kukutool_generic", "tiantianjiexi", "kukutool"].includes(selection.provider)
                     || selection.canLegacy !== true || !selection.legacyAssetId || item.asset_id !== selection.legacyAssetId
                     || selection.kind !== "video" || typeof selection.formatId !== "string"
                     || item.browser_upstream_bound === true || item.browser_direct_fetch_safe === true
@@ -75,6 +75,23 @@
                 || (selection.formatId !== undefined && item.selected_format_id !== selection.formatId)
                 || item.browser_upstream_bound !== true || item.browser_direct_fetch_safe !== true
                 || item.requires_merge !== false || item.requires_cookie !== false) throw new Error("返回格式与本次选择不一致，未开始下载。");
+        if (["tiantianjiexi", "kukutool"].includes(item.provider)) {
+            validateLinkItem(item, selection);
+            if (selection.schema !== "service_selected_format_v1" || selection.kind !== "video"
+                    || !selection.legacyAssetId || item.asset_id !== selection.legacyAssetId
+                    || item.source_platform !== "douyin"
+                    || typeof item.provider_resource_id !== "string" || !/^\d{8,24}$/.test(item.provider_resource_id)
+                    || item.provider_cache_key !== `douyin:${item.provider}:validated:${item.provider_resource_id}`
+                    || typeof item.provider_manifest_token !== "string" || !item.provider_manifest_token
+                    || /[\s\\\u0000-\u001f\u007f]/.test(item.provider_manifest_token)) {
+                throw new Error("返回资源授权与本次选择不一致，未开始下载。");
+            }
+            const assetPrefix = `douyin:${item.provider_resource_id}:video:${item.provider}`;
+            if (!(item.asset_id === assetPrefix || item.asset_id.startsWith(`${assetPrefix}:format:`)
+                    && /^[a-f0-9]{24}$/.test(item.asset_id.slice(`${assetPrefix}:format:`.length)))) {
+                throw new Error("返回资源身份与本次选择不一致，未开始下载。");
+            }
+        }
         sourceHttps(item.url);
         return item;
     }
@@ -303,7 +320,7 @@
             say("正在准备所选格式…");
             try {
                 const item = await descriptor(root, selection, "download", environment, operation.signal);
-                if (!current(operation) || operation.signal.aborted) return;
+                if (!current(operation) || operation.signal.aborted || !sameSelection(selection)) return;
                 if (progress) { progress.hidden = false; progress.removeAttribute("value"); }
                 await ordinary.download(item, {
                     filename: item.filename, signal: operation.signal,
@@ -363,6 +380,7 @@
                 if (!radio) { say("暂无可直接预览的格式；下载选择未改变。"); return; }
                 selection = {id: radio.value, token: radio.dataset.token, kind: radio.dataset.kind,
                     formatId: radio.dataset.formatId, label: radio.dataset.label,
+                    legacyAssetId: radio.dataset.legacyAssetId || "",
                     provider: root.dataset.provider || "yt_dlp_generic",
                     schema: root.dataset.selectionSchema || SCHEMA};
             }
