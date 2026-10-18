@@ -344,6 +344,17 @@ def selected_open_descriptor(record, *, provider=PROVIDER, schema=SCHEMA):
     return item
 
 
+def selection_expires_at(record):
+    """Bound a new download task to its original candidate lifetime, in ms."""
+    expires_at = number(record.get('expires_at'))
+    if expires_at is None:
+        raise ValueError('selected_format_expiry_invalid')
+    expires_ms = int(expires_at * 1000)
+    if expires_ms <= time() * 1000:
+        raise ValueError('selected_format_expired')
+    return expires_ms
+
+
 def selected_descriptor(record):
     """Fresh browser-only authority: no caller-supplied URL or format facts."""
     from .upstream_delivery import safe_resource_url
@@ -358,6 +369,7 @@ def selected_descriptor(record):
         raise ValueError('selected_format_url_invalid')
     link = selected_link_descriptor(record)
     return {**link, 'url': url,
+            'selection_expires_at': selection_expires_at(record),
             'type': public['media_type'], 'provider': PROVIDER, 'source_platform': 'upstream',
             'asset_id': 'upstream:selection:' + record['candidate_id'],
             'browser_upstream_bound': True, 'browser_direct_fetch_safe': True,

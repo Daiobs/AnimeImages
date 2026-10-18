@@ -649,31 +649,33 @@ function dedicatedServiceFile(provider, overrides = {}) {
         provider_resource_id: "7123456789012345678",
         provider_cache_key: `douyin:${provider}:validated:7123456789012345678`,
         provider_manifest_token: "signed-low-manifest:timestamp:signature",
+        selection_expires_at: Date.now() + 60000,
         browser_upstream_bound: true, url: "https://v11-default.365yg.com/media/low.mp4?token=low-exact",
         filename: "low.mp4", ...overrides});
 }
 
 for (const provider of ["tiantianjiexi", "kukutool"]) {
-    test(`${provider} dedicated selection preserves nondefault URL and signed manifest identity through direct save`, async () => {
+    test(`${provider} bound selected format uses streaming when available without full Blob buffering`, async () => {
         for (const suffix of ["", ":format:0123456789abcdef01234567"]) {
             const descriptor = dedicatedServiceFile(provider, {asset_id: `douyin:7123456789012345678:video:${provider}${suffix}`});
             const before = JSON.stringify(descriptor);
-            const requests = [], saves = [];
+            const streams = [];
             assert.equal(ordinary.isOrdinaryMediaItem(descriptor), true);
-            await ordinary.download(descriptor, {
-                fetchImpl: async (url, options) => {
-                    requests.push(url);
-                    assert.equal(options.credentials, "omit");
-                    assert.equal(options.redirect, "error");
-                    assert.equal(options.mode, "cors");
-                    return responseFor("12345", {url});
-                },
+            const result = await ordinary.download(descriptor, {
+                forceBlob: true,
+                fetchImpl: () => assert.fail("streaming selection must not fetch a page Blob"),
                 streamingClient: {capabilityAvailable: () => true,
-                    start: () => assert.fail("bound selection must use the existing bounded Blob path")},
-                handoffBlob: async (blob, filename) => saves.push([await blob.text(), filename]),
+                    async start(item, options) {
+                        streams.push({...item});
+                        assert.equal(options.filename, descriptor.filename);
+                        return {downloadId: "selected-stream", completion: Promise.resolve({
+                            filename: item.filename, receivedBytes: 5, totalBytes: 5,
+                        })};
+                    }},
+                handoffBlob: () => assert.fail("streaming selection must not hand off a Blob"),
             });
-            assert.deepEqual(requests, [descriptor.url]);
-            assert.deepEqual(saves, [["12345", "low.mp4"]]);
+            assert.equal(result.transport, "browser_streaming");
+            assert.deepEqual(streams, [descriptor]);
             assert.equal(JSON.stringify(descriptor), before);
         }
     });
@@ -719,6 +721,84 @@ for (const provider of ["tiantianjiexi", "kukutool"]) {
         }
     });
 }
+
+test("selected stream expiry and malformed binding fail before even a compatibility fetch", async () => {
+    for (const changes of [{selection_expires_at: Date.now() - 1}, {selection_expires_at: undefined},
+        {selection_expires_at: "9999999999999"}]) {
+        await assert.rejects(ordinary.download(dedicatedServiceFile("tiantianjiexi", changes), {
+            streamingClient: {capabilityAvailable: () => false},
+            fetchImpl: () => assert.fail("expired selection must not fetch"),
+            handoffBlob: () => assert.fail("expired selection must not save"),
+        }));
+    }
+});
+
+test("selected stream capability absence is an explicit one-fetch Blob compatibility path", async () => {
+    const item = dedicatedServiceFile("tiantianjiexi");
+    let fetches = 0, handoffs = 0;
+    const result = await ordinary.download(item, {
+        streamingClient: {capabilityAvailable: () => false},
+        fetchImpl: async (url, options) => {
+            fetches += 1;
+            assert.equal(url, item.url);
+            assert.equal(options.redirect, "error");
+            return responseFor("12345", {url});
+        },
+        handoffBlob: async (blob, filename) => {
+            handoffs += 1;
+            assert.equal(await blob.text(), "12345");
+            assert.equal(filename, item.filename);
+        },
+    });
+    assert.equal(result.transport, "browser_blob");
+    assert.equal(fetches, 1);
+    assert.equal(handoffs, 1);
+});
+
+test("a plausible error name without explicit unstarted proof never retries selected media", async () => {
+    for (const evidence of [{}, {streamingStarted: false}, {safeToFallback: true},
+        {safeToFallback: true, streamingStarted: true}]) {
+        const error = Object.assign(new Error("start state unavailable"), {
+            errorCode: "STREAMING_MESSAGE_TIMEOUT", ...evidence,
+        });
+        await assert.rejects(ordinary.download(dedicatedServiceFile("kukutool"), {
+            streamingClient: {capabilityAvailable: () => true, start: async () => { throw error; }},
+            fetchImpl: () => assert.fail("unknown start must not resend"),
+            handoffBlob: () => assert.fail("unknown start must not save a Blob"),
+        }), actual => actual === error);
+    }
+});
+
+test("expiry during safe SW setup failure prevents a new Blob request", async t => {
+    const now = Date.now();
+    t.mock.method(Date, "now", () => now);
+    const item = dedicatedServiceFile("tiantianjiexi", {selection_expires_at: now + 1000});
+    await assert.rejects(ordinary.download(item, {
+        streamingClient: {capabilityAvailable: () => true, async start() {
+            t.mock.method(Date, "now", () => now + 1001);
+            throw Object.assign(new Error("registration failed"), {
+                errorCode: "STREAMING_REGISTRATION_FAILED", streamingStarted: false, safeToFallback: true,
+            });
+        }},
+        fetchImpl: () => assert.fail("expired authorization cannot start a fallback request"),
+    }), error => error.errorCode === "DESCRIPTOR_EXPIRED");
+});
+
+test("confirmed old protocol before registration keeps one bounded compatibility request", async () => {
+    let fetches = 0;
+    const item = dedicatedServiceFile("kukutool");
+    const result = await ordinary.download(item, {
+        streamingClient: {capabilityAvailable: () => true, async start() {
+            throw Object.assign(new Error("old protocol"), {
+                errorCode: "STREAMING_PROTOCOL_UNSUPPORTED", streamingStarted: false, safeToFallback: true,
+            });
+        }},
+        fetchImpl: async url => { fetches += 1; return responseFor("12345", {url}); },
+        handoffBlob: async () => {},
+    });
+    assert.equal(fetches, 1);
+    assert.equal(result.transport, "browser_blob");
+});
 
 test("service schema cannot grant arbitrary non-upstream providers ordinary download permission", () => {
     for (const provider of ["unknown", "yt_dlp_generic", "gallery_dl_generic", "parsehub_generic"]) {

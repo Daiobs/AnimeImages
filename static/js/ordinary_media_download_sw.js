@@ -1,6 +1,6 @@
 "use strict";
 
-const STREAMING_PROTOCOL_ASSET_VERSION = "2";
+const STREAMING_PROTOCOL_ASSET_VERSION = "3";
 importScripts(
     `/static/js/ordinary_media_streaming_protocol.js?v=${STREAMING_PROTOCOL_ASSET_VERSION}`,
 );
@@ -20,7 +20,8 @@ function deferred() {
 }
 
 function attachmentHeader(filename) {
-    return `attachment; filename="download.mp4"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+    const suffix = /\.[a-z0-9]{1,8}$/i.exec(filename);
+    return `attachment; filename="download${suffix ? suffix[0] : ".bin"}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }
 
 function errorResponse(status, code) {
@@ -79,6 +80,7 @@ function clearSensitiveState(state) {
         state.expiryTimer = null;
     }
     state.url = "";
+    state.selectionBinding = null;
     state.abortController = null;
     state.upstreamReader = null;
     state.downstreamController = null;
@@ -123,8 +125,8 @@ function markTerminal(state, nextState, errorCode, options) {
     state.redirected = Boolean(settings.redirected || state.redirected);
     state.updatedAt = Date.now();
     state.terminalAt = state.updatedAt;
-    const notification = postToClients(`DOWNLOAD_${nextState.toUpperCase()}`, state)
-        .catch(() => {});
+    const notification = settings.deferNotification ? Promise.resolve()
+        : postToClients(`DOWNLOAD_${nextState.toUpperCase()}`, state).catch(() => {});
     if (settings.deferCleanup) {
         return notification;
     }
@@ -142,7 +144,7 @@ function pruneDownloads() {
             && now - state.terminalAt >= TERMINAL_RETENTION_MS
         ) {
             downloads.delete(downloadId);
-        } else if (state.state === "prepared" && now > state.expiresAt) {
+        } else if (state.state === "prepared" && now >= state.expiresAt) {
             markTerminal(state, "failed", "DESCRIPTOR_EXPIRED", {
                 failureStage: "DESCRIPTOR_FAILURE",
             });
@@ -157,12 +159,14 @@ async function cancelDownload(state, code) {
     const abortController = state.abortController;
     const upstreamReader = state.upstreamReader;
     const downstreamController = state.downstreamController;
+    state.cancellationPending = true;
     const notification = markTerminal(
         state,
         "cancelled",
         code || "DOWNLOAD_CANCELLED",
         {
             deferCleanup: true,
+            deferNotification: true,
             failureStage: code === "USER_CANCELLED"
                 ? "USER_CANCELLED"
                 : (code === "DOWNLOAD_MANAGER_CANCELLED"
@@ -188,6 +192,8 @@ async function cancelDownload(state, code) {
             }
         }
         await notification;
+        state.cancellationPending = false;
+        await postToClients("DOWNLOAD_CANCELLED", state).catch(() => {});
         clearSensitiveState(state);
         settle(state);
     }
@@ -257,11 +263,31 @@ self.addEventListener("message", (event) => {
     pruneDownloads();
     const message = event.data && typeof event.data === "object" ? event.data : {};
     const port = event.ports && event.ports[0];
+    if (message.type === "GET_STREAMING_CAPABILITIES") {
+        reply(port, {ok: true, protocolVersion: protocol.PROTOCOL_VERSION});
+        return;
+    }
+    const existing = downloads.get(protocol.normalizeDownloadId(message.downloadId));
+    if (existing && existing.selectionBinding
+        && ["DELETE_DOWNLOAD", "CANCEL_DOWNLOAD"].includes(message.type)
+        && (!event.source || event.source.id !== existing.ownerClientId)) {
+        reply(port, {ok: false, code: "DOWNLOAD_OWNER_MISMATCH"});
+        return;
+    }
     if (message.type === "REGISTER_DOWNLOAD") {
         try {
+            if (message.descriptor && (message.descriptor.selectionBinding
+                || message.descriptor.selection_schema || message.descriptor.browser_upstream_bound)
+                && (message.protocolVersion !== protocol.PROTOCOL_VERSION
+                    || message.descriptor.protocolVersion !== protocol.PROTOCOL_VERSION)) {
+                throw new Error("STREAMING_PROTOCOL_UNSUPPORTED");
+            }
             const descriptor = protocol.createDescriptor(message.descriptor, {
                 allowLoopbackHttp: ALLOW_LOOPBACK_HTTP,
             });
+            if (descriptor.selectionBinding && !(event.source && event.source.id)) {
+                throw new Error("DOWNLOAD_OWNER_MISSING");
+            }
             if (downloads.has(descriptor.downloadId)) {
                 throw new Error("DOWNLOAD_ID_ALREADY_EXISTS");
             }
@@ -340,7 +366,7 @@ self.addEventListener("message", (event) => {
 });
 
 async function streamDownload(state) {
-    if (Date.now() > state.expiresAt) {
+    if (Date.now() >= state.expiresAt) {
         markTerminal(state, "failed", "DESCRIPTOR_EXPIRED", {
             failureStage: "DESCRIPTOR_FAILURE",
         });
@@ -355,6 +381,7 @@ async function streamDownload(state) {
     await postToClients("DOWNLOAD_FETCH_STARTED", state);
 
     const initialUrl = state.url;
+    const selected = Boolean(state.selectionBinding);
     let upstream;
     try {
         upstream = await fetch(initialUrl, {
@@ -363,6 +390,7 @@ async function streamDownload(state) {
             cache: "no-store",
             referrerPolicy: "no-referrer",
             signal: state.abortController.signal,
+            ...(selected ? {redirect: "error", mode: "cors"} : {}),
         });
     } catch (error) {
         if (state.state === "cancelled") {
@@ -384,10 +412,14 @@ async function streamDownload(state) {
     state.firstResponseAt = Date.now();
     const contentType = protocol.normalizeContentType(upstream.headers.get("Content-Type"));
     const contentLength = protocol.positiveInteger(upstream.headers.get("Content-Length"));
-    const responseGate = protocol.classifyResponseRejection(upstream, {
+    let responseGate = protocol.classifyResponseRejection(upstream, {
         initialUrl,
         allowLoopbackHttp: ALLOW_LOOPBACK_HTTP,
     });
+    if (selected && (upstream.redirected || upstream.type === "opaque" || upstream.type === "opaqueredirect"
+        || !upstream.url || upstream.url !== initialUrl)) {
+        responseGate = {...responseGate, rejected: true, responseRejectReason: "FINAL_HOST_REJECTED"};
+    }
     state.url = "";
     state.initialMediaFamily = responseGate.initialMediaFamily;
     state.finalMediaHost = responseGate.finalMediaHost;
@@ -413,7 +445,7 @@ async function streamDownload(state) {
         });
         return errorResponse(502, "UPSTREAM_MEDIA_INVALID");
     }
-    if (contentLength > protocol.MAX_STREAM_BYTES) {
+    if (contentLength > state.maxBytes) {
         await upstream.body.cancel().catch(() => {});
         await markTerminal(state, "failed", "UPSTREAM_SIZE_LIMIT_EXCEEDED", {
             failureStage: "SIZE_VALIDATION_FAILURE",
@@ -428,9 +460,10 @@ async function streamDownload(state) {
         return errorResponse(502, "UPSTREAM_SIZE_MISMATCH");
     }
 
+    if (selected) state.filename = protocol.filenameFromContentType(state.filename, contentType);
     state.totalBytes = contentLength || state.expectedBytes;
     state.upstreamReader = upstream.body.getReader();
-    const byteLimit = state.totalBytes || protocol.MAX_STREAM_BYTES;
+    const byteLimit = Math.min(state.totalBytes || state.maxBytes, state.maxBytes);
 
     const downstream = new ReadableStream({
         start(controller) {

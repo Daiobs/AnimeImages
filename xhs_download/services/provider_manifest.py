@@ -64,6 +64,22 @@ def build_provider_manifest_token(
     return signing.dumps(payload, salt=PROVIDER_MANIFEST_SALT, compress=True)
 
 
+def provider_manifest_max_age_seconds():
+    return max(1, int(getattr(settings, "PROVIDER_MANIFEST_MAX_AGE_SECONDS", 3600) or 3600))
+
+
+def provider_manifest_expires_at(token):
+    """Read the original authenticated timestamp without issuing a new token."""
+    signer = signing.TimestampSigner(salt=PROVIDER_MANIFEST_SALT)
+    max_age = provider_manifest_max_age_seconds()
+    try:
+        signer.unsign(token, max_age=max_age)
+    except signing.BadSignature as error:
+        raise ValueError("provider_manifest_invalid") from error
+    issued_at = signing.b62_decode(token.rsplit(signer.sep, 2)[1])
+    return issued_at + max_age
+
+
 def provider_manifest_is_valid(item):
     token = str(item.get("provider_manifest_token") or "")
     if not token:
@@ -72,17 +88,7 @@ def provider_manifest_is_valid(item):
         payload = signing.loads(
             token,
             salt=PROVIDER_MANIFEST_SALT,
-            max_age=max(
-                1,
-                int(
-                    getattr(
-                        settings,
-                        "PROVIDER_MANIFEST_MAX_AGE_SECONDS",
-                        3600,
-                    )
-                    or 3600
-                ),
-            ),
+            max_age=provider_manifest_max_age_seconds(),
         )
     except signing.BadSignature:
         logger.warning("provider_download_manifest_signature_rejected")

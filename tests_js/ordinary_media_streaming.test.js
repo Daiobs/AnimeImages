@@ -9,6 +9,8 @@ const vm = require("node:vm");
 const protocol = require("../static/js/ordinary_media_streaming_protocol.js");
 const streaming = require("../static/js/ordinary_media_streaming.js");
 const ordinary = require("../static/js/ordinary_media_download.js");
+const picker = require("../static/js/ytdlp_result_picker.js");
+const {Node} = require("./helpers/lab_dom.js");
 
 const streamingPath = path.join(__dirname, "../static/js/ordinary_media_streaming.js");
 const streamingSource = fs.readFileSync(streamingPath, "utf8");
@@ -51,6 +53,7 @@ class FakeMessageChannel {
 
 function safeStatus(overrides) {
     return {
+        protocolVersion: protocol.PROTOCOL_VERSION,
         downloadId: "000102030405060708090a0b0c0d0e0f",
         filename: "video.mp4",
         provider: "tiantianjiexi",
@@ -104,6 +107,15 @@ function createClientHarness(options) {
         postMessage(message, ports) {
             calls.push({type: "message", message});
             const reply = ports[0];
+            if (settings.workerRuntime) {
+                settings.workerRuntime.send(message).then(response => reply.postMessage(response));
+                return;
+            }
+            if ((settings.dropMessages || []).includes(message.type)) return;
+            if (message.type === "GET_STREAMING_CAPABILITIES") {
+                reply.postMessage({ok: true, protocolVersion: settings.protocolVersion || protocol.PROTOCOL_VERSION});
+                return;
+            }
             if (message.type === "REGISTER_DOWNLOAD") {
                 if (settings.registerDownloadErrorCode) {
                     reply.postMessage({
@@ -120,6 +132,7 @@ function createClientHarness(options) {
                     totalBytes: message.descriptor.expectedBytes,
                 });
                 statuses.set(status.downloadId, status);
+                if (settings.dropRegisterReply) return;
                 reply.postMessage({ok: true, status});
                 return;
             }
@@ -233,7 +246,7 @@ function createClientHarness(options) {
         MessageChannelConstructor: FakeMessageChannel,
         locationObject: settings.locationObject,
         startTimeoutMs: settings.startTimeoutMs || 100,
-        messageTimeoutMs: 100,
+        messageTimeoutMs: settings.messageTimeoutMs || 100,
         statusPollMs: 20,
         telemetryReporter: settings.telemetryReporter,
     });
@@ -253,6 +266,44 @@ function ordinaryItem(overrides) {
         requires_cookie: false,
         ...overrides,
     };
+}
+
+function selectedItem(provider = "tiantianjiexi", overrides = {}) {
+    const resource = "7669858827638845160";
+    return ordinaryItem({
+        provider, source_platform: "douyin", selection_schema: "service_selected_format_v1",
+        candidate_id: "candidate-high", selected_format_id: "format-high",
+        asset_id: `douyin:${resource}:video:${provider}:format:${"a".repeat(24)}`,
+        provider_resource_id: resource, provider_cache_key: `douyin:${provider}:validated:${resource}`,
+        provider_manifest_token: "signed-manifest-fixture", browser_upstream_bound: true,
+        selection_expires_at: Date.now() + 60000, filename: "selected-high.bin", ...overrides,
+    });
+}
+
+function selectedDescriptor(overrides = {}, provider = "tiantianjiexi") {
+    return protocol.createDescriptor({...selectedItem(provider, overrides),
+        downloadId: "0123456789abcdef0123456789abcdef"});
+}
+
+async function registerSelected(runtime, descriptor) {
+    return runtime.send({type: "REGISTER_DOWNLOAD", protocolVersion: protocol.PROTOCOL_VERSION, descriptor});
+}
+
+function integratedClient(fetchImpl, options = {}) {
+    let harness;
+    const navigations = [];
+    const runtime = createWorkerRuntime(fetchImpl, {
+        onMessage(message) { harness.serviceWorker.emit(message.status, {telemetryOwner: false}); },
+    });
+    harness = createClientHarness({
+        ...options, workerRuntime: runtime,
+        onNavigate({href}) {
+            const navigation = runtime.startFetch(protocol.descriptorIdFromPath(href));
+            navigations.push(navigation);
+            if (options.onNavigate) options.onNavigate(navigation);
+        },
+    });
+    return {...harness, runtime, navigations};
 }
 
 function responseFor(body, options) {
@@ -288,6 +339,7 @@ function createWorkerRuntime(fetchImpl, options) {
     const clientDeliveries = [];
     const clientIds = settings.clientIds || ["client-a"];
     const context = {
+        Date: settings.DateConstructor || Date,
         AbortController,
         DOMException,
         Headers,
@@ -313,6 +365,7 @@ function createWorkerRuntime(fetchImpl, options) {
                         postMessage(message) {
                             clientMessages.push(message);
                             clientDeliveries.push({id, message});
+                            if (settings.onMessage) settings.onMessage(message, id);
                         },
                     }));
                 },
@@ -789,7 +842,7 @@ test("client registers the root-scoped worker and launches one opaque download p
     assert.equal(active.transport, "browser_streaming");
     assert.deepEqual(harness.calls[0], {
         type: "register",
-        url: "/ordinary-media-download-sw.js?v=2",
+        url: "/ordinary-media-download-sw.js?v=3",
         options: {scope: "/", updateViaCache: "none"},
     });
     assert.match(harness.clicked[0], /^\/__animeimages-stream-download\/[a-f0-9]{32}$/);
@@ -918,15 +971,18 @@ test("only explicit pre-start capability failures permit Blob fallback", async (
     assert.equal(ordinary.canFallbackToBlob(streaming.streamingError(
         "STREAMING_REGISTRATION_FAILED",
         "registration failed",
+        {safeToFallback: true},
     )), true);
     assert.equal(ordinary.canFallbackToBlob(streaming.streamingError(
         "STREAMING_START_TIMEOUT",
         "start timed out after the prepared descriptor was deleted",
+        {safeToFallback: true},
     )), true);
     assert.equal(ordinary.canFallbackToBlob(streaming.streamingError(
         "STREAMING_URL_UNSUPPORTED",
         "stale worker protocol",
-    )), true);
+        {safeToFallback: true},
+    )), false);
     assert.equal(ordinary.canFallbackToBlob(streaming.streamingError(
         "STREAMING_START_STATE_UNKNOWN",
         "start state unknown",
@@ -934,14 +990,14 @@ test("only explicit pre-start capability failures permit Blob fallback", async (
     )), false);
 });
 
-test("a stale worker URL rejection falls back through the current page gate once", async () => {
+test("a stale worker URL rejection never falls back or fetches media", async () => {
     const harness = createClientHarness({
         registerDownloadErrorCode: "STREAMING_URL_UNSUPPORTED",
     });
     let mediaFetches = 0;
     let blobHandoffs = 0;
     let fallbacks = 0;
-    const result = await ordinary.download(ordinaryItem({
+    await assert.rejects(ordinary.download(ordinaryItem({
         url: "https://sns-video-hw.xhscdn.com/media/video.mp4?fixture=fake",
         provider: "tiantianjiexi_generic",
         size_bytes: 5,
@@ -955,12 +1011,11 @@ test("a stale worker URL rejection falls back through the current page gate once
         },
         async handoffBlob() { blobHandoffs += 1; },
         onTransportFallback() { fallbacks += 1; },
-    });
+    }), error => error.errorCode === "STREAMING_URL_UNSUPPORTED");
 
-    assert.equal(result.transport, "browser_blob");
-    assert.equal(mediaFetches, 1);
-    assert.equal(blobHandoffs, 1);
-    assert.equal(fallbacks, 1);
+    assert.equal(mediaFetches, 0);
+    assert.equal(blobHandoffs, 0);
+    assert.equal(fallbacks, 0);
     assert.equal(harness.clicked.length, 0);
 });
 
@@ -980,7 +1035,7 @@ test("a page-rejected URL never fetches even when URL rejection is fallback-elig
 });
 
 test("worker and registration URLs stay bound to the current protocol version", () => {
-    assert.equal(protocol.PROTOCOL_VERSION, 2);
+    assert.equal(protocol.PROTOCOL_VERSION, 3);
     assert.equal(
         streaming.DEFAULT_WORKER_URL,
         `/ordinary-media-download-sw.js?v=${protocol.PROTOCOL_VERSION}`,
@@ -1804,4 +1859,300 @@ test("Single and Batch use one shared ordinary download primitive", () => {
     assert.doesNotMatch(ordinaryVideoHandler, /response\.blob\s*\(|new Blob\(chunks/);
     assert.doesNotMatch(sharedVideoHandler, /response\.blob\s*\(|new Blob\(chunks/);
     assert.match(batchSource, /async function readBatchPhotoArchiveResponse\(/);
+});
+
+test("selected protocol keeps identity, expiry and the original 1 GiB bound without leaking tokens", () => {
+    for (const provider of ["tiantianjiexi", "kukutool"]) {
+        const input = selectedItem(provider);
+        const descriptor = selectedDescriptor(input, provider);
+        assert.equal(descriptor.selectionBinding.candidate_id, input.candidate_id);
+        assert.equal(descriptor.selectionBinding.provider_manifest_token, input.provider_manifest_token);
+        assert.equal(descriptor.expiresAt, input.selection_expires_at);
+        assert.equal(descriptor.maxBytes, 1024 ** 3);
+        const registered = protocol.createDescriptor(descriptor, {nowEpochMs: descriptor.createdAt + 1000});
+        assert.equal(registered.expiresAt, descriptor.expiresAt);
+        assert.ok(Object.isFrozen(descriptor.selectionBinding));
+        const snapshot = JSON.stringify(protocol.safeSnapshot({...descriptor, state: "prepared"}));
+        assert.ok(!snapshot.includes(input.provider_manifest_token));
+        assert.ok(!snapshot.includes(input.url));
+        assert.equal(protocol.createDescriptor({...descriptor, maxBytes: 2 * 1024 ** 3}).maxBytes, 1024 ** 3);
+        assert.throws(() => selectedDescriptor({size_bytes: 1024 ** 3 + 1}), /EXPECTED_SIZE_TOO_LARGE/);
+        assert.equal(selectedDescriptor({size_bytes: 1024 ** 3 + 1, size_is_estimate: true}).expectedBytes, 0);
+        assert.throws(() => protocol.createDescriptor(descriptor, {nowEpochMs: descriptor.expiresAt}), /DESCRIPTOR_EXPIRED/);
+    }
+    assert.equal(protocol.createDescriptor({...ordinaryItem(), downloadId: "1".repeat(32)}).maxBytes, 2 * 1024 ** 3);
+});
+
+test("bound video variants retain strict admission without new domains, audio or context grants", () => {
+    for (const provider of ["yt_dlp_generic", "tiantianjiexi_generic", "kukutool_generic"]) {
+        const item = selectedItem(provider, {source_platform: "upstream", asset_id: "upstream:selection:candidate-high",
+            selection_schema: provider === "yt_dlp_generic" ? "ytdlp_selected_format_v1" : "service_selected_format_v1"});
+        assert.equal(selectedDescriptor(item, provider).selectionBinding.candidate_id, "candidate-high");
+    }
+    for (const changes of [
+        {type: "audio"}, {requires_merge: true}, {requires_cookie: true}, {requires_context: true},
+        {download_context_required: true}, {has_drm: true}, {video_tracks: "absent"},
+        {browser_direct_fetch_safe: false}, {selection_delivery: "legacy_manifest"},
+        {provider_cache_key: "douyin:kukutool:validated:other"}, {asset_id: "upstream:selection:other"},
+        {selection_expires_at: undefined}, {selection_expires_at: Date.now() - 1},
+        {url: "https://unreviewed.example/video.mp4"}, {url: "http://127.0.0.1/video.mp4"},
+    ]) assert.throws(() => selectedDescriptor(changes), undefined, JSON.stringify(changes));
+});
+
+test("selected worker validates MIME before naming the response and never permits old redirects", async () => {
+    for (const [mime, extension] of [["video/mp4", "mp4"], ["video/webm", "webm"], ["video/quicktime", "mov"],
+        ["application/octet-stream", "bin"]]) {
+        const source = selectedItem();
+        let fetches = 0;
+        const runtime = createWorkerRuntime(async (url, options) => {
+            fetches += 1;
+            assert.equal(url, source.url);
+            assert.equal(options.redirect, "error"); assert.equal(options.mode, "cors");
+            assert.equal(options.credentials, "omit"); assert.equal(options.referrerPolicy, "no-referrer");
+            const upstream = chunkedUpstream([[1, 2]], {url});
+            upstream.response.headers.set("Content-Type", mime);
+            return upstream.response;
+        });
+        const descriptor = selectedDescriptor({...source, size_bytes: 2});
+        assert.equal((await registerSelected(runtime, descriptor)).ok, true);
+        const response = await runtime.startFetch(descriptor.downloadId).response;
+        assert.match(response.headers.get("Content-Disposition"), new RegExp(`selected-high\\.${extension}`));
+        const status = await runtime.send({type: "GET_DOWNLOAD_STATUS", downloadId: descriptor.downloadId});
+        assert.equal(status.status.filename, `selected-high.${extension}`);
+        await response.arrayBuffer();
+        assert.equal(fetches, 1);
+    }
+    for (const changes of [{redirected: true}, {type: "opaque"}, {type: "opaqueredirect"},
+        {url: "https://v.example.bdcgslb.com/video.mp4"}, {url: selectedItem().url + "&different=1"}]) {
+        let fetches = 0;
+        const runtime = createWorkerRuntime(async () => {
+            fetches += 1;
+            return {...chunkedUpstream([[1, 2]]).response, ...changes};
+        });
+        const descriptor = selectedDescriptor({size_bytes: 2});
+        await registerSelected(runtime, descriptor);
+        assert.equal((await runtime.startFetch(descriptor.downloadId).response).status, 502);
+        assert.equal(fetches, 1);
+    }
+});
+
+test("selected worker enforces declared, response and actual-byte 1 GiB limits without allocating GiB", async () => {
+    for (const mode of ["header", "chunks"]) {
+        const runtime = createWorkerRuntime(async () => ({
+            ok: true, status: 200, url: selectedItem().url,
+            headers: new Headers({"Content-Type": "video/mp4", ...(mode === "header"
+                ? {"Content-Length": String(1024 ** 3 + 1)} : {})}),
+            body: new ReadableStream({pull(controller) {
+                // A synthetic oversized chunk exercises accounting before enqueue, without allocation.
+                controller.enqueue({byteLength: 1024 ** 3 + 1});
+            }}),
+        }));
+        const descriptor = selectedDescriptor({size_bytes: 0});
+        await registerSelected(runtime, descriptor);
+        const response = await runtime.startFetch(descriptor.downloadId).response;
+        if (mode === "header") assert.equal(response.status, 502);
+        else await assert.rejects(response.body.getReader().read(), /UPSTREAM_SIZE_LIMIT_EXCEEDED/);
+        const status = await runtime.send({type: "GET_DOWNLOAD_STATUS", downloadId: descriptor.downloadId});
+        assert.equal(status.status.errorCode, "UPSTREAM_SIZE_LIMIT_EXCEEDED");
+    }
+});
+
+test("real client and worker deliver selected bytes before EOF with bounded read-ahead and frozen identity", async () => {
+    for (const provider of ["tiantianjiexi", "kukutool"]) {
+        const end = deferred();
+        let pulls = 0, eof = false, fetches = 0;
+        const source = selectedItem(provider, {size_bytes: 4});
+        const app = integratedClient(async url => {
+            fetches += 1;
+            assert.equal(url, source.url);
+            return {ok: true, status: 200, url, headers: new Headers({"Content-Type": "video/mp4", "Content-Length": "4"}),
+                body: new ReadableStream({async pull(controller) {
+                    pulls += 1;
+                    if (pulls <= 4) controller.enqueue(Uint8Array.of(pulls));
+                    else { await end.promise; eof = true; controller.close(); }
+                }})};
+        });
+        const active = await app.client.start(source);
+        source.filename = "later-choice.bin";
+        const response = await app.navigations[0].response;
+        await new Promise(resolve => setImmediate(resolve));
+        assert.ok(pulls <= 2, `read ahead ${pulls} chunks without downstream consumption`);
+        const reader = response.body.getReader();
+        assert.deepEqual(Array.from((await reader.read()).value), [1]);
+        assert.equal(eof, false);
+        assert.match(response.headers.get("Content-Disposition"), /selected-high.mp4/);
+        for (let index = 2; index <= 4; index += 1) assert.deepEqual(Array.from((await reader.read()).value), [index]);
+        end.resolve();
+        assert.equal((await reader.read()).done, true);
+        assert.equal((await active.completion).filename, "selected-high.mp4");
+        assert.equal(fetches, 1);
+        await app.client.close();
+    }
+});
+
+test("real selected page signal cancels its worker task and waits for upstream cancellation confirmation", async () => {
+    const cancelled = deferred(), release = deferred();
+    let options, fetches = 0;
+    const app = integratedClient(async (url, init) => {
+        options = init; fetches += 1;
+        return {ok: true, status: 200, url, headers: new Headers({"Content-Type": "video/mp4"}),
+            body: new ReadableStream({pull() {}, async cancel() { cancelled.resolve(); await release.promise; }})};
+    });
+    const controller = new AbortController();
+    const active = await app.client.start(selectedItem("tiantianjiexi", {size_bytes: 0}), {signal: controller.signal});
+    await app.navigations[0].response;
+    let settled = false;
+    const completion = active.completion.catch(error => { settled = true; return error; });
+    controller.abort();
+    await cancelled.promise;
+    assert.equal(options.signal.aborted, true);
+    const pending = await app.client.getStatus(active.downloadId);
+    assert.equal(pending.cancellationPending, true);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, false);
+    release.resolve();
+    const error = await completion;
+    assert.equal(error.errorCode, "USER_CANCELLED");
+    assert.equal(error.safeToFallback, false);
+    assert.equal(error.status.cancellationPending, false);
+    assert.equal(fetches, 1);
+    await app.client.close();
+});
+
+test("unknown registration is cleaned but cannot fall back, and unknown cleanup never permits a retry", async () => {
+    for (const dropMessages of [[], ["DELETE_DOWNLOAD"]]) {
+        const app = createClientHarness({dropRegisterReply: true, dropMessages, messageTimeoutMs: 5});
+        await assert.rejects(app.client.start(selectedItem()), error =>
+            error.errorCode === "STREAMING_START_STATE_UNKNOWN" && error.safeToFallback === false);
+        assert.equal(app.clicked.length, 0);
+        assert.equal(app.calls.filter(call => call.message && call.message.type === "REGISTER_DOWNLOAD").length, 1);
+        await app.client.close();
+    }
+});
+
+test("old protocol is detected before registering selected work and ordinary compatibility remains usable", async () => {
+    const app = createClientHarness({protocolVersion: 2});
+    await assert.rejects(app.client.start(selectedItem()), error => error.errorCode === "STREAMING_PROTOCOL_UNSUPPORTED"
+        && error.safeToFallback === true && error.streamingStarted === false);
+    assert.equal(app.calls.filter(call => call.message && call.message.type === "REGISTER_DOWNLOAD").length, 0);
+    assert.equal(app.clicked.length, 0);
+    await app.client.close();
+    const runtime = createWorkerRuntime(async () => { throw new Error("no network"); });
+    const descriptor = selectedDescriptor();
+    assert.equal((await runtime.send({type: "REGISTER_DOWNLOAD", protocolVersion: 2, descriptor})).ok, false);
+    assert.equal((await registerSelected(runtime, descriptor)).ok, true);
+    assert.equal((await runtime.send({type: "CANCEL_DOWNLOAD", downloadId: descriptor.downloadId}, "other-client")).code,
+        "DOWNLOAD_OWNER_MISMATCH");
+    await runtime.send({type: "DELETE_DOWNLOAD", downloadId: descriptor.downloadId});
+});
+
+test("unknown cancellation fails honestly without a Blob-safe result", async () => {
+    const app = createClientHarness({dropMessages: ["CANCEL_DOWNLOAD"], messageTimeoutMs: 5,
+        onNavigate({serviceWorker, statuses}) {
+            serviceWorker.emit({...Array.from(statuses.values())[0], state: "fetching", streamingStarted: true});
+        }});
+    const controller = new AbortController();
+    const active = await app.client.start(selectedItem(), {signal: controller.signal});
+    controller.abort();
+    await assert.rejects(active.completion, error => error.errorCode === "STREAMING_CANCEL_STATE_UNKNOWN"
+        && error.safeToFallback === false);
+    await app.client.close();
+});
+
+test("real picker action validation through ordinary, client and worker streams two selected cards before EOF", async () => {
+    class PickerNode extends Node {
+        get isConnected() { return !this.parentNode ? this.tagName === "DOCUMENT" : this.parentNode.isConnected; }
+        matches(selector) {
+            if (selector.endsWith(":checked")) return this.checked && super.matches(selector.slice(0, -8));
+            return super.matches(selector);
+        }
+        contains(node) { return this === node || this.children.some(child => child.contains(node)); }
+        removeAttribute(name) { delete this.attributes[name]; }
+    }
+    const doc = new PickerNode("document");
+    const win = {AbortController, URL, location: {href: "https://download.example.test/", origin: "https://download.example.test"}};
+    const actions = [], media = [], results = [], endings = [deferred(), deferred()];
+    const navigated = [deferred(), deferred()];
+    let navigationCount = 0, blobCalls = 0;
+    const app = integratedClient(async url => {
+        const index = media.length; media.push(url);
+        let sent = false;
+        return {ok: true, status: 200, url, headers: new Headers({"Content-Type": "video/mp4", "Content-Length": "2"}),
+            body: new ReadableStream({async pull(controller) {
+                if (!sent) { sent = true; controller.enqueue(Uint8Array.of(index, 7)); }
+                else { await endings[index].promise; controller.close(); }
+            }})};
+    }, {onNavigate(navigation) { navigated[navigationCount++].resolve(navigation); }});
+    const roots = [], controllers = [];
+    for (const [index, provider] of ["tiantianjiexi", "kukutool"].entries()) {
+        const root = new PickerNode("section", {"data-ytdlp-picker": "", "data-selection-url": "/media/service-selected-format/",
+            "data-provider": provider, "data-selection-schema": "service_selected_format_v1"});
+        for (const quality of ["low", "high"]) {
+            const row = new PickerNode("label", {"data-picker-option": ""});
+            const radio = new PickerNode("input", {"data-picker-radio": "", "data-kind": "video", value: `candidate-${quality}`,
+                "data-token": `token-${quality}`, "data-format-id": `format-${quality}`, "data-can-download": "true",
+                "data-legacy-asset-id": `douyin:7669858827638845160:video:${provider}:format:${(quality === "low" ? "b" : "a").repeat(24)}`});
+            radio.checked = quality === (index ? "high" : "low"); row.append(radio); root.append(row);
+        }
+        root.append(new PickerNode("p", {"data-picker-status": ""})); doc.append(root); roots.push(root);
+        controllers.push(picker.mount(root, doc, win, {
+            fetchImpl: async (url, options) => {
+                const body = JSON.parse(options.body); actions.push(body);
+                assert.equal(body.action, "download");
+                assert.equal(url, "https://download.example.test/media/service-selected-format/");
+                const quality = body.candidate_id === "candidate-low" ? "low" : "high";
+                const item = selectedItem(provider, {candidate_id: body.candidate_id, selected_format_id: `format-${quality}`,
+                    asset_id: `douyin:7669858827638845160:video:${provider}:format:${(quality === "low" ? "b" : "a").repeat(24)}`,
+                    filename: `${provider}-${quality}.bin`, url: `https://v11-default.365yg.com/${provider}/${quality}.mp4`,
+                    size_bytes: 999, size_is_estimate: true});
+                return {ok: true, json: async () => ({status: "success", item, server_media_relay: false})};
+            },
+            ordinary: {async download(item, options) {
+                const result = await ordinary.download(item, {...options, streamingClient: app.client,
+                    fetchImpl: async () => { blobCalls += 1; throw new Error("unexpected Blob fetch"); },
+                    handoffBlob: async () => { blobCalls += 1; throw new Error("unexpected Blob handoff"); }});
+                results.push(result); return result;
+            }},
+        }));
+    }
+    const saves = controllers.map(controller => controller.save());
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(navigationCount, 2, roots.map(root => root.querySelector("[data-picker-status]").textContent).join("; "));
+    const responses = await Promise.all(navigated.map(async ready => (await ready.promise).response));
+    assert.equal(media.length, 2); assert.equal(actions.length, 2); assert.equal(results.length, 0);
+    // A later UI choice cannot replace either already-authorized stream.
+    roots.forEach(root => root.querySelectorAll("[data-picker-radio]").forEach(radio => { radio.checked = !radio.checked; }));
+    const readers = responses.map(response => response.body.getReader());
+    for (let index = 0; index < 2; index += 1) {
+        assert.deepEqual(Array.from((await readers[index].read()).value), [index, 7]);
+        assert.equal(results.length, 0);
+        assert.match(responses[index].headers.get("Content-Disposition"), index ? /kukutool-high.mp4/ : /tiantianjiexi-low.mp4/);
+        endings[index].resolve();
+        assert.equal((await readers[index].read()).done, true);
+    }
+    await Promise.all(saves);
+    assert.equal(results.length, 2); assert.equal(blobCalls, 0);
+    assert.ok(results.every(result => result.transport === "browser_streaming" && result.receivedBytes === 2));
+    assert.deepEqual(media, ["https://v11-default.365yg.com/tiantianjiexi/low.mp4", "https://v11-default.365yg.com/kukutool/high.mp4"]);
+    controllers.forEach(controller => controller.destroy()); await app.client.close();
+});
+
+test("worker refuses a new expired selected task but does not expire an already-started stream", async () => {
+    let now = Date.now();
+    class Clock extends Date { static now() { return now; } }
+    let fetches = 0;
+    const runtime = createWorkerRuntime(async url => { fetches += 1; return chunkedUpstream([[1, 2]], {url}).response; },
+        {DateConstructor: Clock});
+    const descriptor = selectedDescriptor({size_bytes: 2});
+    await registerSelected(runtime, descriptor);
+    const response = await runtime.startFetch(descriptor.downloadId).response;
+    now = descriptor.expiresAt + 1;
+    assert.equal((await response.arrayBuffer()).byteLength, 2);
+    assert.equal(fetches, 1);
+    const later = selectedDescriptor({size_bytes: 2});
+    const second = {...later, downloadId: "f".repeat(32)};
+    await registerSelected(runtime, second);
+    now = second.expiresAt + 1;
+    assert.equal((await runtime.startFetch(second.downloadId).response).status, 410);
+    assert.equal(fetches, 1);
 });

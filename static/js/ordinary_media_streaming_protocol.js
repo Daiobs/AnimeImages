@@ -9,10 +9,11 @@
 }(typeof self !== "undefined" ? self : globalThis, function () {
     "use strict";
 
-    const PROTOCOL_VERSION = 2;
+    const PROTOCOL_VERSION = 3;
     const DOWNLOAD_PATH_SEGMENT = "__animeimages-stream-download";
     const DEFAULT_STREAM_DESCRIPTOR_TTL_MS = 120000;
     const MAX_STREAM_BYTES = 2 * 1024 * 1024 * 1024;
+    const MAX_SELECTED_STREAM_BYTES = 1024 * 1024 * 1024;
     const DOWNLOAD_ID_PATTERN = /^[a-f0-9]{32}$/;
     const INITIAL_MEDIA_HOST_SUFFIXES = Object.freeze([
         "365yg.com",
@@ -600,23 +601,90 @@
         return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
     }
 
+    function createSelectionBinding(value) {
+        const binding = value.selectionBinding || value;
+        if (!value.selectionBinding && !value.selection_schema && !value.browser_upstream_bound) return null;
+        const safeIdentity = (field, allowEmpty = false) => typeof binding[field] === "string"
+            && (allowEmpty || binding[field].length > 0)
+            && binding[field].length <= 8192 && !/[\s\\\u0000-\u001f\u007f]/.test(binding[field]);
+        const dedicated = binding.source_platform === "douyin"
+            && binding.selection_schema === "service_selected_format_v1"
+            && ["tiantianjiexi", "kukutool"].includes(value.provider);
+        const upstream = binding.source_platform === "upstream" && (
+            binding.selection_schema === "ytdlp_selected_format_v1" && value.provider === "yt_dlp_generic"
+            || binding.selection_schema === "service_selected_format_v1"
+                && ["tiantianjiexi_generic", "kukutool_generic"].includes(value.provider));
+        if ((!dedicated && !upstream) || binding.type !== "video"
+            || (binding.selection_delivery || "direct") !== "direct"
+            || binding.browser_upstream_bound !== true || binding.browser_direct_fetch_safe !== true
+            || binding.requires_merge !== false || binding.requires_cookie !== false
+            || binding.has_drm || binding.requires_context || binding.download_context_required
+            || binding.video_tracks === "absent"
+            || !safeIdentity("candidate_id") || !safeIdentity("selected_format_id", true)
+            || !safeIdentity("asset_id")
+            || !Number.isSafeInteger(binding.selection_expires_at) || binding.selection_expires_at <= 0) {
+            throw new Error("INVALID_SELECTION_BINDING");
+        }
+        if (dedicated) {
+            const prefix = `douyin:${binding.provider_resource_id}:video:${value.provider}`;
+            if (!["provider_resource_id", "provider_manifest_token", "provider_cache_key"].every(field => safeIdentity(field))
+                || !/^\d{8,24}$/.test(binding.provider_resource_id)
+                || binding.provider_cache_key !== `douyin:${value.provider}:validated:${binding.provider_resource_id}`
+                || !(binding.asset_id === prefix || binding.asset_id.startsWith(`${prefix}:format:`)
+                    && /^[a-f0-9]{24}$/.test(binding.asset_id.slice(`${prefix}:format:`.length)))) {
+                throw new Error("INVALID_SELECTION_BINDING");
+            }
+        } else if (binding.asset_id !== `upstream:selection:${binding.candidate_id}`) {
+            throw new Error("INVALID_SELECTION_BINDING");
+        }
+        // Server action validation is authoritative; this projection retains its exact task identity.
+        return Object.freeze({
+            selection_schema: binding.selection_schema, source_platform: binding.source_platform,
+            type: "video", selection_delivery: "direct", browser_upstream_bound: true,
+            browser_direct_fetch_safe: true, requires_merge: false, requires_cookie: false,
+            candidate_id: binding.candidate_id, selected_format_id: binding.selected_format_id,
+            asset_id: binding.asset_id, selection_expires_at: binding.selection_expires_at,
+            ...(dedicated ? {provider_resource_id: binding.provider_resource_id,
+                provider_manifest_token: binding.provider_manifest_token,
+                provider_cache_key: binding.provider_cache_key} : {}),
+        });
+    }
+
+    function filenameFromContentType(filename, contentType) {
+        const safe = sanitizeFilename(filename);
+        const suffix = {"video/mp4": "mp4", "video/webm": "webm", "video/quicktime": "mov"}[
+            normalizeContentType(contentType)];
+        return suffix && /\.bin$/i.test(safe) ? safe.replace(/\.bin$/i, `.${suffix}`) : safe;
+    }
+
     function createDescriptor(input, options) {
         const value = input && typeof input === "object" ? input : {};
         const settings = options && typeof options === "object" ? options : {};
         const id = normalizeDownloadId(value.downloadId || value.id);
         const now = positiveInteger(settings.nowEpochMs) || Date.now();
         const ttlMs = positiveInteger(settings.ttlMs) || DEFAULT_STREAM_DESCRIPTOR_TTL_MS;
-        const expectedBytes = positiveInteger(value.expectedBytes || value.size_bytes);
+        const expectedBytes = value.size_is_estimate === true ? 0 : positiveInteger(value.expectedBytes || value.size_bytes);
+        const selectionBinding = createSelectionBinding(value);
         if (!id) {
             throw new Error("INVALID_DOWNLOAD_ID");
         }
         if (!isAllowedInitialMediaUrl(value.url, settings)) {
             throw new Error("STREAMING_URL_UNSUPPORTED");
         }
-        if (expectedBytes > MAX_STREAM_BYTES) {
+        if (selectionBinding) {
+            const url = new URL(value.url);
+            if (!isSecureProviderUrl(url) || url.hash) throw new Error("INVALID_SELECTION_BINDING");
+        }
+        const maxBytes = selectionBinding ? MAX_SELECTED_STREAM_BYTES : MAX_STREAM_BYTES;
+        if (expectedBytes > maxBytes) {
             throw new Error("EXPECTED_SIZE_TOO_LARGE");
         }
+        const createdAt = positiveInteger(value.createdAt) || now;
+        const expiresAt = Math.min(createdAt + ttlMs, positiveInteger(value.expiresAt) || Infinity,
+            selectionBinding ? selectionBinding.selection_expires_at : Infinity);
+        if (createdAt > now || expiresAt <= now) throw new Error("DESCRIPTOR_EXPIRED");
         return Object.freeze({
+            protocolVersion: PROTOCOL_VERSION,
             downloadId: id,
             url: String(value.url),
             mediaHost: sanitizeMediaHost(value.url, {
@@ -626,8 +694,10 @@
             filename: sanitizeFilename(value.filename),
             provider: sanitizeProvider(value.provider),
             expectedBytes,
-            createdAt: now,
-            expiresAt: now + ttlMs,
+            maxBytes,
+            createdAt,
+            expiresAt,
+            ...(selectionBinding ? {selectionBinding} : {}),
         });
     }
 
@@ -694,6 +764,7 @@
             transport: "browser_streaming",
             state,
             streamingStarted: Boolean(status.streamingStarted),
+            cancellationPending: Boolean(status.cancellationPending),
             stage: state === "prepared" ? "preparing" : (
                 state === "fetching" ? "fetching" : state
             ),
@@ -780,6 +851,7 @@
         INITIAL_MEDIA_FAMILIES,
         INITIAL_MEDIA_HOST_SUFFIXES,
         MAX_STREAM_BYTES,
+        MAX_SELECTED_STREAM_BYTES,
         PROTOCOL_VERSION,
         RESPONSE_REJECT_REASONS,
         REVIEWED_FINAL_ONLY_HOST_SUFFIXES,
@@ -791,6 +863,8 @@
         classifyObservedFinalHost,
         classifyResponseRejection,
         createDescriptor,
+        createSelectionBinding,
+        filenameFromContentType,
         createProgressEstimator,
         descriptorIdFromPath,
         downloadPath,

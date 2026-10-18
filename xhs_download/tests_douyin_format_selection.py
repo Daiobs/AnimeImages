@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from bs4 import BeautifulSoup
+from django.core import signing
 from django.core.cache import cache
 from django.template.loader import render_to_string
 from django.test import SimpleTestCase, override_settings
@@ -104,6 +105,101 @@ class DouyinFormatSelectionTests(SimpleTestCase):
 
     def record(self, candidate):
         return resolve_candidate_record(candidate['resource_token'], candidate['candidate_id'])
+
+    def download_action(self, candidate, **overrides):
+        with patch('xhs_download.services.provider_access.load_runtime_setting', return_value=SimpleNamespace()), \
+             patch('xhs_download.services.provider_access.provider_is_allowed_for_request', return_value=True), \
+             patch('xhs_download.services.provider_settings.get_platform_provider_settings', return_value=self.settings), \
+             patch('xhs_download.views.get_download_runtime_setting', return_value=SimpleNamespace()), \
+             patch('xhs_download.views.check_download_cost_preflight', return_value=None), \
+             patch('xhs_download.views.check_download_request_limits', return_value=('test', None)):
+            return self.client.post(reverse('service_selected_format'), {
+                'candidate_id': candidate['candidate_id'], 'resource_token': candidate['resource_token'],
+                'action': 'download', **overrides,
+            }, content_type='application/json')
+
+    def update_cached_record(self, candidate, **changes):
+        from .services.upstream_candidates import SALT, TTL
+        payload = signing.loads(candidate['resource_token'], salt=SALT)
+        key = 'upstream:candidate-bundle:' + payload['bundle']
+        records = cache.get(key)
+        records[candidate['candidate_id']].update(changes)
+        cache.set(key, records, TTL)
+
+    @override_settings(PROVIDER_MANIFEST_MAX_AGE_SECONDS=120)
+    def test_download_expiry_uses_original_manifest_timestamp_without_resigning(self):
+        issued_at = int(time()) - 80
+        for provider in ('tiantianjiexi', 'kukutool'):
+            with self.subTest(provider=provider):
+                prefix = 'https://v26-default.365yg.com/s/7fffffff/video/tos/'
+                main = MediaCandidate(url=prefix + 'main/', quality_label='1080P', size_bytes=3000)
+                extra = replace(main, url=prefix + 'extra/', quality_label='720P', size_bytes=2000)
+                with patch('time.time', return_value=issued_at):
+                    rows = self.bridge_result(provider, (main, extra)).metadata['upstream_candidates']
+                record = self.record(rows[1])
+                original = record['service_legacy_item']
+                for elapsed in (80, 100):
+                    with self.subTest(elapsed=elapsed), patch('time.time', return_value=issued_at + elapsed), \
+                         patch('django.core.signing.TimestampSigner.sign', side_effect=AssertionError('No renewal')):
+                        response = self.download_action(rows[1])
+                    self.assertEqual(response.status_code, 200, response.content)
+                    item = response.json()['item']
+                    self.assertEqual(item['selection_expires_at'], (issued_at + 120) * 1000)
+                    self.assertEqual(item['provider_manifest_token'], original['provider_manifest_token'])
+                    self.assertEqual(item['url'], extra.url)
+                    self.assertEqual(item['asset_id'], original['asset_id'])
+                    self.assertNotEqual(item['asset_id'], self.record(rows[0])['service_legacy_item']['asset_id'])
+
+    def test_download_expiry_is_bounded_by_candidate_record(self):
+        rows = self.result().metadata['upstream_candidates']
+        record = self.record(rows[1])
+        response = self.download_action(rows[1])
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()['item']['selection_expires_at'], int(record['expires_at'] * 1000))
+        self.assertEqual(response.json()['item']['provider_manifest_token'],
+                         record['service_legacy_item']['provider_manifest_token'])
+
+    def test_download_expiry_is_bounded_by_known_cdn_expiry(self):
+        expires_at = int(time()) + 90
+        for provider in ('tiantianjiexi', 'kukutool'):
+            with self.subTest(provider=provider):
+                main = MediaCandidate(url='https://v26-default.365yg.com/s/7fffffff/video/tos/main/',
+                                      quality_label='1080P', size_bytes=3000)
+                extra = replace(main, url=f'https://v26-default.365yg.com/s/{expires_at:08x}/video/tos/extra/',
+                                quality_label='720P')
+                row = self.bridge_result(provider, (main, extra)).metadata['upstream_candidates'][1]
+                response = self.download_action(row)
+                self.assertEqual(response.status_code, 200, response.content)
+                self.assertEqual(response.json()['item']['selection_expires_at'], expires_at * 1000)
+                with patch('xhs_download.services.service_format_selection.time', return_value=expires_at):
+                    response = self.download_action(row)
+                self.assertEqual(response.status_code, 409)
+
+    def test_download_action_rejects_expired_record_and_manifest_without_renewal(self):
+        row = self.result().metadata['upstream_candidates'][1]
+        record = self.record(row)
+        with patch('django.core.signing.TimestampSigner.sign', side_effect=AssertionError('No renewal')):
+            with override_settings(PROVIDER_MANIFEST_MAX_AGE_SECONDS=1), \
+                 patch('time.time', return_value=time() + 2):
+                self.assertEqual(self.download_action(row).status_code, 409)
+            self.update_cached_record(row, expires_at=time() - 1)
+            self.assertEqual(self.download_action(row).status_code, 409)
+        self.assertEqual(self.record(row)['service_legacy_item']['provider_manifest_token'],
+                         record['service_legacy_item']['provider_manifest_token'])
+
+    def test_download_action_rejects_cross_candidate_work_and_manifest(self):
+        rows = self.result().metadata['upstream_candidates']
+        row = rows[1]
+        foreign = self.result('7669858827638845161').metadata['upstream_candidates'][1]
+        record = self.record(row)
+        original = record['service_legacy_item']
+        self.assertEqual(self.download_action(row, resource_token=rows[0]['resource_token']).status_code, 403)
+        self.assertEqual(self.download_action(row, resource_token=foreign['resource_token']).status_code, 403)
+        for other in (rows[0], foreign):
+            with self.subTest(candidate_id=other['candidate_id']):
+                token = self.record(other)['service_legacy_item']['provider_manifest_token']
+                self.update_cached_record(row, service_legacy_item={**original, 'provider_manifest_token': token})
+                self.assertEqual(self.download_action(row).status_code, 409)
 
     def test_same_url_aliases_keep_exact_default_and_real_main_binding(self):
         winner = MediaCandidate(url=BASE + 'main.mp4', quality_label='Original', size_bytes=9000000)

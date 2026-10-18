@@ -45,7 +45,7 @@
         "STREAMING_MESSAGE_TIMEOUT",
         "STREAMING_NAVIGATION_UNAVAILABLE",
         "STREAMING_START_TIMEOUT",
-        "STREAMING_URL_UNSUPPORTED",
+        "STREAMING_PROTOCOL_UNSUPPORTED",
     ]);
     const STAGE_MESSAGES = Object.freeze({
         preparing: "正在准备下载...",
@@ -805,7 +805,7 @@
     }
 
     function canFallbackToBlob(error) {
-        if (error && error.streamingStarted) {
+        if (!error || error.streamingStarted !== false || error.safeToFallback !== true) {
             return false;
         }
         return STREAMING_BLOB_FALLBACK_ERROR_CODES.includes(
@@ -1058,6 +1058,11 @@
                 "当前资源不支持浏览器直接保存。",
             );
         }
+        if ((isBoundDedicatedServiceItem(item) || isBoundUpstreamItem(item))
+            && item.selection_expires_at !== undefined
+            && (!Number.isSafeInteger(item.selection_expires_at) || item.selection_expires_at <= Date.now())) {
+            throw downloadError("DESCRIPTOR_EXPIRED", "当前资源授权已过期，请重新解析。");
+        }
 
         const declaredSize = positiveInteger(item.size_bytes || item.sizeBytes);
         const maxBytes = positiveInteger(settings.maxBytes) || MAX_BROWSER_BLOB_BYTES;
@@ -1291,10 +1296,13 @@
                 : null
         );
         if (!client || typeof client.capabilityAvailable !== "function" || !client.capabilityAvailable()) {
-            throw downloadError(
+            const error = downloadError(
                 "STREAMING_CAPABILITY_UNAVAILABLE",
                 "当前浏览器不支持流式下载。",
             );
+            error.streamingStarted = false;
+            error.safeToFallback = true;
+            throw error;
         }
         const onStage = typeof settings.onStage === "function"
             ? settings.onStage
@@ -1305,6 +1313,7 @@
         onStage("preparing", STAGE_MESSAGES.preparing);
         const active = await client.start(item, {
             filename: sanitizeFilename(settings.filename || item.filename),
+            signal: settings.signal,
             onProgress(status) {
                 if (status.state === "fetching") {
                     onStage("fetching", STAGE_MESSAGES.fetching);
@@ -1334,7 +1343,19 @@
                 "当前资源不支持浏览器直接保存。",
             );
         }
-        if (settings.forceBlob === true || isBoundUpstreamItem(item) || isBoundDedicatedServiceItem(item)) {
+        const boundSelection = isBoundUpstreamItem(item) || isBoundDedicatedServiceItem(item);
+        // Selection does not choose the transport. The existing streaming domain
+        // gate remains authoritative; audio and other domains retain their prior delivery.
+        const selectedStream = boundSelection && item.type === "video"
+            && streamingProtocol && streamingProtocol.isAllowedInitialMediaUrl(item.url || item.video_url)
+            && ["service_selected_format_v1", "ytdlp_selected_format_v1"].includes(item.selection_schema);
+        if (selectedStream) {
+            const binding = streamingProtocol.createSelectionBinding(item);
+            if (!binding || binding.selection_expires_at <= Date.now()) {
+                throw downloadError("DESCRIPTOR_EXPIRED", "当前资源授权已过期，请重新解析。");
+            }
+        }
+        if (settings.forceBlob === true && !selectedStream || boundSelection && !selectedStream) {
             return downloadViaBlob(item, settings);
         }
         try {

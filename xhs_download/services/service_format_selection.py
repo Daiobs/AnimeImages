@@ -6,6 +6,7 @@ not yt-dlp track evidence, and never establish codecs or complete audio tracks.
 from dataclasses import replace
 import json
 import re
+from time import time
 from urllib.parse import urlsplit
 
 from . import ytdlp_selection as picker
@@ -326,14 +327,26 @@ def selected_descriptor(record):
     link = selected_link_descriptor(record)
     if not safe_resource_url(link['url']):
         raise ValueError('service_url_invalid')
+    selection_expires_at = picker.selection_expires_at(record)
     if record['provider_id'] in DOUYIN_PROVIDERS:
+        from .provider_manifest import provider_manifest_expires_at
+        from .platforms.douyin_kukutool import parse_byte_cdn_url
         item = selected_legacy_descriptor(record)
+        selection_expires_at = min(
+            selection_expires_at, provider_manifest_expires_at(item['provider_manifest_token']) * 1000)
+        cdn_expires_at = parse_byte_cdn_url(item['url'])['expires_at']
+        if cdn_expires_at:
+            selection_expires_at = min(selection_expires_at, cdn_expires_at * 1000)
+        if selection_expires_at <= time() * 1000:
+            raise ValueError('service_selection_expired')
         item.pop('selection_delivery', None)
         return {**item, 'browser_upstream_bound': True, 'browser_direct_fetch_safe': True,
+                'selection_expires_at': selection_expires_at,
                 'requires_merge': False, 'requires_cookie': False,
                 'size_bytes': picker.number(public.get('size_bytes')) or 0,
                 'size_is_estimate': bool(public.get('size_is_estimate'))}
     return {**link, 'source_platform': 'upstream', 'asset_id': 'upstream:selection:' + record['candidate_id'],
+            'selection_expires_at': selection_expires_at,
             'browser_upstream_bound': True, 'browser_direct_fetch_safe': True,
             'requires_merge': False, 'requires_cookie': False,
             'service_audio_file': public.get('media_type') == 'audio',

@@ -14,7 +14,7 @@ from tools.upstream_match_worker import compact_descriptor
 from .models import ProviderAccessMode, ProviderRuntimeSetting
 from .services.upstream_candidates import resolve_candidate_record
 from .services.upstream_delivery import normalize_upstream_result
-from .services.ytdlp_selection import build_picker, capability, context_required, selected_descriptor
+from .services.ytdlp_selection import build_picker, capability, context_required, selected_descriptor, selected_link_descriptor
 
 
 @override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}})
@@ -71,6 +71,31 @@ class YtdlpSelectionTests(SimpleTestCase):
         self.assertEqual(compact_descriptor({'thumbnail': url})['thumbnail'], url)
         self.assertEqual(compact_descriptor({'thumbnails': [{'url': []}, {'url': url}]})['thumbnail'], url)
         self.assertNotIn('thumbnail', compact_descriptor({'thumbnails': [{'url': []}]}))
+
+    def test_download_expiry_preserves_candidate_lifetime_and_rejects_late_action(self):
+        self.gates()
+        candidate = self.candidate()
+        record = resolve_candidate_record(candidate['resource_token'], candidate['candidate_id'])
+        expected = int(record['expires_at'] * 1000)
+        for now in (record['expires_at'] - 100, record['expires_at'] - 1):
+            with patch('xhs_download.services.ytdlp_selection.time', return_value=now):
+                response = self.post(candidate)
+            self.assertEqual(response.status_code, 200, response.content)
+            self.assertEqual(response.json()['item']['selection_expires_at'], expected)
+            self.assertEqual(response.json()['item']['url'], record['url'])
+        with patch('xhs_download.services.ytdlp_selection.time', return_value=record['expires_at']):
+            self.assertEqual(self.post(candidate).status_code, 409)
+            copied = self.post(candidate, 'link')
+            self.assertEqual(copied.status_code, 200)
+            self.assertNotIn('selection_expires_at', copied.json()['item'])
+
+    def test_missing_expiry_restricts_download_not_copy(self):
+        candidate = self.candidate()
+        record = resolve_candidate_record(candidate['resource_token'], candidate['candidate_id'])
+        record.pop('expires_at')
+        self.assertEqual(selected_link_descriptor(record)['url'], record['url'])
+        with self.assertRaises(ValueError):
+            selected_descriptor(record)
 
     def test_single_work_information_is_not_a_public_signed_url_or_header(self):
         candidates = self.result().metadata['upstream_candidates']

@@ -480,7 +480,9 @@
                 });
                 if (current(operation)) say("已交给浏览器保存，请在下载列表中确认。");
             } catch (error) {
-                if (current(operation)) say(operation.signal.aborted ? "下载已取消，未自动重试。" :
+                const cancellationUnknown = error && error.errorCode === "STREAMING_CANCEL_STATE_UNKNOWN";
+                if (current(operation)) say(cancellationUnknown ? "尚未确认下载已停止，请查看浏览器下载列表；未自动重试。" :
+                    operation.signal.aborted ? "下载已取消，未自动重试。" :
                     (error && error.errorCode && ordinary.safeErrorMessage ? ordinary.safeErrorMessage(error) : error.message || "下载未完成。"));
             } finally {
                 if (progress && current(operation)) progress.hidden = true;

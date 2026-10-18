@@ -1679,6 +1679,17 @@ test("top direct failure never retries through an available legacy route", async
     assert.equal(root.querySelector("[data-picker-status]").textContent, "direct failed");
 });
 
+test("unconfirmed SW cancellation is not displayed as a successful cancellation or retried", async () => {
+    const root = selectablePicker();
+    const app = originalLayoutController({roots: [root], download: async () => {
+        throw Object.assign(new Error("cancel reply unavailable"), {errorCode: "STREAMING_CANCEL_STATE_UNKNOWN"});
+    }});
+    await app.clickTarget(app.top); await settle();
+    assert.deepEqual(app.calls.map(call => call.payload.action), ["download"]);
+    assert.match(root.querySelector("[data-picker-status]").textContent, /尚未确认下载已停止/);
+    assert.doesNotMatch(root.querySelector("[data-picker-status]").textContent, /下载已取消/);
+});
+
 test("media selection survives cached inner redraw independently from format choice", async () => {
     const root = selectablePicker();
     const app = originalLayoutController({batchPage: true, roots: [root]});

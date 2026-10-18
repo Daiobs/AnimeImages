@@ -16,7 +16,7 @@ from django.urls import reverse
 
 from .services.platforms.kukutool_generic import KukutoolResultNormalizer
 from .services.platforms.tiantianjiexi_generic import TianTianJieXiResultNormalizer
-from .services.service_format_selection import build_service_picker, capability, selected_descriptor, selected_legacy_descriptor
+from .services.service_format_selection import build_service_picker, capability, selected_descriptor, selected_legacy_descriptor, selected_link_descriptor
 from .services.upstream_candidates import resolve_candidate_record
 
 
@@ -107,6 +107,34 @@ class ServiceFormatSelectionTests(SimpleTestCase):
         self.assertEqual(self.post(c, url='https://media.example/arbitrary.mp4').status_code, 400)
         self.assertEqual(Client(enforce_csrf_checks=True).post(reverse('service_selected_format'),
                          {}, content_type='application/json').status_code, 403)
+
+    def test_generic_download_expiry_preserves_original_candidate_lifetime(self):
+        self.gates()
+        for provider in ('tiantianjiexi_generic', 'kukutool_generic'):
+            with self.subTest(provider=provider):
+                row = self.result(provider, {'title': 'Work', 'videos': [
+                    {'url': 'https://media.example/video.mp4', 'quality': '720P'},
+                ]}).metadata['upstream_candidates'][0]
+                record = resolve_candidate_record(row['resource_token'], row['candidate_id'])
+                for now in (record['expires_at'] - 100, record['expires_at'] - 1):
+                    with patch('xhs_download.services.ytdlp_selection.time', return_value=now):
+                        response = self.post(row)
+                    self.assertEqual(response.status_code, 200, response.content)
+                    self.assertEqual(response.json()['item']['selection_expires_at'], int(record['expires_at'] * 1000))
+                    self.assertEqual(response.json()['item']['url'], record['url'])
+                with patch('xhs_download.services.ytdlp_selection.time', return_value=record['expires_at']):
+                    self.assertEqual(self.post(row).status_code, 409)
+                    copied = self.post(row, 'link')
+                    self.assertEqual(copied.status_code, 200)
+                    self.assertNotIn('selection_expires_at', copied.json()['item'])
+
+    def test_generic_copy_without_expiry_does_not_gain_download_authority(self):
+        row = self.result().metadata['upstream_candidates'][0]
+        record = resolve_candidate_record(row['resource_token'], row['candidate_id'])
+        record.pop('expires_at')
+        self.assertEqual(selected_link_descriptor(record)['url'], record['url'])
+        with self.assertRaises(ValueError):
+            selected_descriptor(record)
 
     def test_expired_and_cross_candidate_tokens_are_rejected(self):
         self.gates()
