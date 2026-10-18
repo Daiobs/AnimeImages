@@ -198,6 +198,31 @@ class ValidatedKukuToolCandidate:
     probe_duration_ms: int = 0
     payload_age_ms: int = 0
     candidates: tuple[MediaCandidate, ...] = ()
+    title: str = ""
+    cover_url: str = ""
+
+
+def current_payload_metadata(payload, allowed_host_suffixes):
+    """Display fields travel only with this payload's existing validated TTL."""
+    from .douyin_providers import normalize_douyin_display_title
+    from .douyin_media_policy import validate_douyin_media_url
+
+    if not isinstance(payload, dict):
+        return {"title": "", "cover_url": ""}
+    try:
+        title = normalize_douyin_display_title(payload.get("title") or payload.get("description"))
+    except ValueError:
+        title = ""
+    cover = str(payload.get("cover") or "").strip()
+    if cover:
+        try:
+            parts = urlsplit(cover)
+            if parts.username or parts.password:
+                raise ValueError("credentialed cover")
+            validate_douyin_media_url(cover, existing_suffixes=allowed_host_suffixes)
+        except (TypeError, ValueError):
+            cover = ""
+    return {"title": title, "cover_url": cover}
 
 
 def integer_value(value):
@@ -611,6 +636,8 @@ def serialize_validated_candidate(validated):
         "signed_url_expires_at": validated.signed_url_expires_at,
         "candidate_count": validated.candidate_count,
         "candidates": [asdict(candidate) for candidate in validated.candidates],
+        "title": validated.title,
+        "cover": validated.cover_url,
         "cached_at": time(),
     }
 
@@ -681,6 +708,7 @@ def get_cached_validated_candidate(cache_key, allowed_host_suffixes):
             int((time() - cached_at) * 1000),
         ),
         candidates=retain_kukutool_candidates(candidates, allowed_host_suffixes),
+        **current_payload_metadata(data, allowed_host_suffixes),
     )
 
 
@@ -954,6 +982,7 @@ def convert_sidecar_payload_to_kukutool_payload(payload):
 
     return {
         "title": payload.get("title"),
+        "cover": payload.get("cover"),
         "videos": [{"video_fullinfo": video_fullinfo}],
         "_retained_video_fullinfo": retained_video_fullinfo,
         "_sidecar": {
@@ -1264,12 +1293,30 @@ class DouyinKukuToolProvider:
                 self.provider_settings.kukutool_timeout_seconds,
             ),
         )
+        upstream_deadline = monotonic() + timeout_seconds
+        if context.deadline_monotonic:
+            upstream_deadline = min(upstream_deadline, context.deadline_monotonic)
+
+        def remaining_upstream_budget():
+            remaining = upstream_deadline - monotonic()
+            if remaining <= 0:
+                trace.update(
+                    outcome=ProviderOutcome.FAILURE_TIMEOUT,
+                    failure_class=ProviderFailureClass.TIMEOUT,
+                )
+                if context.ultra_attempt_controller is not None:
+                    context.ultra_attempt_controller.skip_fresh_work(
+                        self.name, reason="deadline_exhausted",
+                    )
+                raise XhsProviderTimeoutError("KuKuTool Provider deadline exhausted")
+            return remaining
+
+        timeout_seconds = remaining_upstream_budget()
         upstream_started_at = time()
         semaphore = get_kukutool_semaphore(
             self.provider_settings.kukutool_max_concurrency
         )
         queue_timeout = min(1.0, timeout_seconds)
-        queue_started_at = monotonic()
         if not semaphore.acquire(timeout=queue_timeout):
             trace.update(
                 outcome=ProviderOutcome.FAILURE_CONCURRENCY,
@@ -1283,6 +1330,7 @@ class DouyinKukuToolProvider:
             raise RuntimeError("KuKuTool Provider is busy")
         request_reservation = None
         try:
+            remaining_upstream_budget()
             request_reservation = reserve_fixed_window(
                 "kukutool-upstream-global",
                 "all",
@@ -1302,15 +1350,13 @@ class DouyinKukuToolProvider:
                 raise RuntimeError(
                     "KuKuTool Provider global request limit reached"
                 )
+            remaining_upstream_budget()
             if context.ultra_attempt_controller is not None:
                 trace["attempt_consumed"] = bool(
                     context.ultra_attempt_controller.begin_provider(self.name)
                 )
+            runner_timeout = remaining_upstream_budget()
             request_reservation.commit()
-            runner_timeout = max(
-                0.1,
-                timeout_seconds - (monotonic() - queue_started_at),
-            )
             trace["external_call"] = True
             payload = call_kukutool_runner(
                 self.runner,
@@ -1341,6 +1387,7 @@ class DouyinKukuToolProvider:
                 sidecar_total_ms=(sidecar_metadata.get("timing") or {}).get("total_ms"),
             )
         resources = normalize_kukutool_payload(payload)
+        display_metadata = current_payload_metadata(payload, adapter.media_host_suffixes)
         candidates = retain_kukutool_candidates(
             (
                 resource.to_candidate()
@@ -1392,6 +1439,7 @@ class DouyinKukuToolProvider:
                 cache_hit=False,
                 candidate_count=len(resources),
                 candidates=candidates,
+                **display_metadata,
             )
             try:
                 cache_validated_candidate(
@@ -1489,6 +1537,7 @@ class DouyinKukuToolProvider:
                     ),
                     adapter.media_host_suffixes,
                 ),
+                **display_metadata,
             )
             try:
                 cache_validated_candidate(
@@ -2019,6 +2068,8 @@ class DouyinKukuToolProvider:
             validated.candidate,
             reference_result,
             provider_name=self.name,
+            base_filename=validated.title,
+            cover_url=validated.cover_url,
         )
         result = with_parse_metadata(
             result,
@@ -2174,7 +2225,6 @@ class DouyinKukuToolProvider:
             return None
 
         from .douyin_providers import (
-            get_cached_douyin_metadata,
             get_fast_native_result,
             log_provider_event,
             log_provider_failure,
@@ -2194,18 +2244,14 @@ class DouyinKukuToolProvider:
                     self.name,
                     reason="validated_cache",
                 )
-            cached_metadata = get_cached_douyin_metadata(context.aweme_id)
-            if cached_metadata:
-                metadata_future = Future()
-                metadata_future.set_result(cached_metadata)
-                return self.build_result(
-                    adapter,
-                    context,
-                    cached,
-                    metadata_future,
-                    parse_started_at,
-                    ProviderOutcome.SUCCESS_PAYLOAD_CACHE,
-                )
+            # Do not fill a fresh response from the independent, longer-lived
+            # native metadata cache or start a native request for cached media.
+            metadata_future = Future()
+            metadata_future.set_result(None)
+            return self.build_result(
+                adapter, context, cached, metadata_future, parse_started_at,
+                ProviderOutcome.SUCCESS_PAYLOAD_CACHE,
+            )
 
         native_budget = min(
             max(0.1, self.provider_settings.ultra_native_timeout_seconds),
@@ -2253,6 +2299,7 @@ class DouyinKukuToolProvider:
         kukutool_future, flight_state = self.get_or_start_kukutool_future(
             adapter,
             context,
+            preserve_deadline=context.service_execution_policy == "tiantian_first",
         )
         if (
             context.allow_continuation

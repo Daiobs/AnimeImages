@@ -265,6 +265,7 @@ from .services.platforms.douyin_providers import (
     DouyinMobileFeedProvider,
     DouyinTikHubProvider,
     DouyinTianTianJieXiProvider,
+    DouyinTianTianFirstProvider,
     DouyinUltraRaceProvider,
     ValidatedProviderCandidate,
     build_external_parse_result,
@@ -2309,14 +2310,16 @@ class DouyinAdapterTests(SimpleTestCase):
         TIANTIANJIEXI_PHONE="13800000000",
         TIANTIANJIEXI_PASSWORD="secret",
     )
-    def test_douyin_provider_builder_respects_explicit_kukutool_first_order(self):
+    def test_douyin_provider_builder_keeps_explicit_kukutool_authorization_and_native_fallback(self):
         providers = build_douyin_result_providers(ProviderSettings(
             ultra_hd_enabled=True,
             provider_order=("kukutool", "native"),
         ))
 
         self.assertEqual(len(providers), 2)
-        self.assertIsInstance(providers[0], DouyinKukuToolProvider)
+        self.assertIsInstance(providers[0], DouyinTianTianFirstProvider)
+        self.assertEqual(len(providers[0].providers), 1)
+        self.assertIsInstance(providers[0].providers[0], DouyinKukuToolProvider)
         self.assertIsInstance(providers[1], DouyinNativeProvider)
 
     @override_settings(

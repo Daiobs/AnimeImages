@@ -14,7 +14,7 @@ from .services.platforms.douyin_kukutool import (
     convert_sidecar_payload_to_kukutool_payload,
     serialize_validated_candidate,
 )
-from .services.platforms.douyin_providers import DouyinParseContext
+from .services.platforms.douyin_providers import DouyinParseContext, build_douyin_metadata_cache_key
 from .services.provider_settings import ProviderSettings
 from .services.quality import QualityProbeResult
 from .services.service_format_selection import build_service_picker
@@ -102,6 +102,64 @@ class DouyinKukuToolRetentionTests(SimpleTestCase):
             resolve_candidate_record(row["resource_token"], row["candidate_id"])
             for row in result.metadata["upstream_candidates"]
         ]
+
+    def test_current_response_metadata_survives_only_its_validated_cache(self):
+        self.adapter.media_host_suffixes += ("douyinpic.com",)
+        self.runner.return_value = {
+            "title": "Current work", "cover": "https://p3.douyinpic.com/current.jpg",
+            "videos": [{"video_fullinfo": [resource("720P")]}],
+        }
+        validated = self.provider.resolve_validated_candidate(self.adapter, self.context)
+        cached = self.provider.get_cached_candidate(self.adapter, self.context)
+        for item in (validated, cached):
+            failed_native = Future()
+            failed_native.set_exception(TimeoutError("native unavailable"))
+            result = self.provider.build_result(self.adapter, self.context, item, failed_native, self.now)
+            self.assertEqual(result.metadata["title"], "Current work")
+            self.assertEqual(result.video_assets[0].cover_url, "https://p3.douyinpic.com/current.jpg")
+        self.runner.assert_called_once()
+        self.assertIsNone(cache.get(build_douyin_metadata_cache_key(AWEME_ID)))
+
+    def test_cache_hit_never_reads_separate_old_metadata_or_starts_native(self):
+        self.resolve([resource("720P")])
+        cache.set(build_douyin_metadata_cache_key(AWEME_ID), {
+            "platform": "douyin", "post_type": "video", "base_filename": "Old title",
+            "reference_url": resource_url("expired"),
+            "cover_url": "https://p3.douyinpic.com/old.jpg", "metadata": {"title": "Old title"},
+        }, 1800)
+        with patch(f"{MODULE}.submit_provider_task", side_effect=AssertionError("No fresh task")):
+            result = self.provider.parse(self.adapter, self.context)
+        self.assertNotEqual(result.metadata.get("title"), "Old title")
+        self.assertEqual(result.video_assets[0].cover_url, "")
+        self.runner.assert_called_once()
+
+    def test_expired_validated_metadata_does_not_decorate_new_response(self):
+        self.runner.return_value = {"title": "Old title", "videos": [{"video_fullinfo": [resource("720P")]}]}
+        self.provider.resolve_validated_candidate(self.adapter, self.context)
+        saved = cache.get(self.cache_key)
+        saved["signed_url_expires_at"] = self.now - 1
+        cache.set(self.cache_key, saved, 300)
+        self.runner.return_value = {"videos": [{"video_fullinfo": [resource("1080P")]}]}
+        current = self.provider.resolve_validated_candidate(self.adapter, self.context)
+        self.assertEqual(current.title, "")
+        self.assertNotEqual(self.build(current).metadata.get("title"), "Old title")
+        self.assertEqual(self.runner.call_count, 2)
+
+    def test_invalid_optional_cover_does_not_discard_media(self):
+        for cover in ("https://127.0.0.1/private", "https://secret@v26-default.365yg.com/private"):
+            cache.delete(self.cache_key)
+            self.runner.return_value = {"title": "Current", "cover": cover,
+                                      "videos": [{"video_fullinfo": [resource("720P")]}]}
+            current = self.provider.resolve_validated_candidate(self.adapter, self.context)
+            self.assertEqual(current.cover_url, "")
+            self.assertTrue(self.build(current).video_assets)
+
+    def test_malformed_optional_title_does_not_discard_media(self):
+        self.runner.return_value = {"title": "https://[broken",
+                                  "videos": [{"video_fullinfo": [resource("720P")]}]}
+        current = self.provider.resolve_validated_candidate(self.adapter, self.context)
+        self.assertEqual(current.title, "")
+        self.assertTrue(self.build(current).video_assets)
 
     def test_runner_resolve_cache_build_retains_variants_without_changing_winner(self):
         high = resource("2160P", bitrate=9_000_000)

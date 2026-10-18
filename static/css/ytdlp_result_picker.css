@@ -10,7 +10,8 @@
 .quality-media-select input{width:19px;height:19px;accent-color:var(--yt-accent);cursor:pointer;margin:0}
 .ytdlp-preview-button{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border:1px solid #ffffff90;border-radius:50%;height:56px;width:56px;color:#fff;background:#18213fc7;display:grid;place-items:center;cursor:pointer;z-index:1;font-size:28px}
 .ytdlp-preview-button:hover{background:var(--yt-accent)}
-.quality-original-play{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:56px;height:56px;border-radius:50%;display:grid;place-items:center;background:#18213fc7;color:white;font-size:28px;pointer-events:none}
+.quality-original-play{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:56px;height:56px;border:0;padding:0;border-radius:50%;display:grid;place-items:center;background:#18213fc7;color:white;font-size:28px;cursor:pointer;z-index:1}
+.quality-original-play:hover:not(:disabled){background:var(--yt-accent)}
 .quality-preview-caption{position:absolute;bottom:0;left:0;right:0;padding:9px 12px;background:#18212bc4;color:white;font-size:13px}
 .ytdlp-format-group{border:0;margin:0;padding:0;min-width:0}
 .ytdlp-format-group legend,.ytdlp-audio-formats>summary{float:none;width:auto;font-size:15px;font-weight:700;margin-bottom:12px;color:var(--yt-ink)}

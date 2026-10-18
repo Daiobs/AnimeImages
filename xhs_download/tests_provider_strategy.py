@@ -31,6 +31,7 @@ from .services.platforms.douyin_providers import (
     DouyinNativeProvider,
     DouyinParseContext,
     DouyinTianTianJieXiProvider,
+    DouyinTianTianFirstProvider,
     DouyinUltraRaceProvider,
     build_douyin_result_providers,
 )
@@ -2772,7 +2773,7 @@ class DouyinUltraRaceSettingsTests(SimpleTestCase):
         TIANTIANJIEXI_PASSWORD="password",
         KUKUTOOL_PROVIDER_ENABLED=True,
     )
-    def test_race_enabled_with_both_upstreams_uses_ultra_race(self):
+    def test_both_upstreams_use_tiantian_first(self):
         providers = build_douyin_result_providers(
             ProviderSettings(
                 ultra_hd_enabled=True,
@@ -2781,7 +2782,7 @@ class DouyinUltraRaceSettingsTests(SimpleTestCase):
             )
         )
 
-        self.assertIsInstance(providers[0], DouyinUltraRaceProvider)
+        self.assertIsInstance(providers[0], DouyinTianTianFirstProvider)
         self.assertIsInstance(providers[-1], DouyinNativeProvider)
         race_provider = providers[0]
         tiantianjiexi_provider = next(
@@ -2791,8 +2792,8 @@ class DouyinUltraRaceSettingsTests(SimpleTestCase):
             provider for provider in race_provider.providers if provider.name == "kukutool"
         )
         self.assertFalse(tiantianjiexi_provider.reserve_fallback_grace)
-        self.assertTrue(tiantianjiexi_provider.suppress_selected_log)
-        self.assertTrue(kukutool_provider.suppress_selected_log)
+        self.assertFalse(tiantianjiexi_provider.use_reference_metadata)
+        self.assertEqual(kukutool_provider.provider_settings.ultra_kukutool_grace_seconds, 0)
 
     @override_settings(
         DOUYIN_ULTRA_RACE_ENABLED=False,
@@ -2802,7 +2803,7 @@ class DouyinUltraRaceSettingsTests(SimpleTestCase):
         TIANTIANJIEXI_PASSWORD="password",
         KUKUTOOL_PROVIDER_ENABLED=True,
     )
-    def test_race_disabled_respects_provider_order(self):
+    def test_reverse_order_and_old_race_flag_cannot_restart_competition(self):
         providers = build_douyin_result_providers(
             ProviderSettings(
                 ultra_hd_enabled=True,
@@ -2811,10 +2812,8 @@ class DouyinUltraRaceSettingsTests(SimpleTestCase):
             )
         )
 
-        self.assertIsInstance(providers[0], DouyinKukuToolProvider)
-        self.assertIsInstance(providers[1], DouyinTianTianJieXiProvider)
-        self.assertTrue(providers[1].reserve_fallback_grace)
-        self.assertFalse(providers[1].suppress_selected_log)
+        self.assertIsInstance(providers[0], DouyinTianTianFirstProvider)
+        self.assertEqual([p.name for p in providers[0].providers], ["tiantianjiexi", "kukutool"])
         self.assertIsInstance(providers[-1], DouyinNativeProvider)
 
     @override_settings(
@@ -2835,8 +2834,8 @@ class DouyinUltraRaceSettingsTests(SimpleTestCase):
             provider_order=("tiantianjiexi", "native"),
         )
 
-        self.assertIsInstance(providers[0], DouyinTianTianJieXiProvider)
-        self.assertFalse(providers[0].reserve_fallback_grace)
+        self.assertIsInstance(providers[0], DouyinTianTianFirstProvider)
+        self.assertEqual([p.name for p in providers[0].providers], ["tiantianjiexi"])
         self.assertIsInstance(providers[-1], DouyinNativeProvider)
         self.assertFalse(any(isinstance(provider, DouyinUltraRaceProvider) for provider in providers))
         self.assertFalse(any(isinstance(provider, DouyinKukuToolProvider) for provider in providers))
@@ -2859,7 +2858,9 @@ class DouyinUltraRaceSettingsTests(SimpleTestCase):
         )
 
         self.assertFalse(any(isinstance(provider, DouyinTianTianJieXiProvider) for provider in providers))
-        self.assertTrue(any(isinstance(provider, DouyinKukuToolProvider) for provider in providers))
+        self.assertIsInstance(providers[0], DouyinTianTianFirstProvider)
+        self.assertFalse(providers[0].provider_settings.provider_is_enabled("tiantianjiexi"))
+        self.assertTrue(providers[0].provider_settings.provider_is_enabled("kukutool"))
         self.assertIsInstance(providers[-1], DouyinNativeProvider)
 
 

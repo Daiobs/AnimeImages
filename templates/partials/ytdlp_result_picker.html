@@ -25,7 +25,7 @@
             {% endif %}
             <label class="quality-media-select"><input type="checkbox" data-picker-media-selected checked aria-label="选择{% if ytdlp_picker.is_audio %}音频{% else %}视频{% endif %}资源"><span class="visually-hidden">选择资源</span></label>
             {% if ytdlp_picker.preview %}<button type="button" class="ytdlp-preview-button" data-ytdlp-action="preview" aria-label="预览作品" disabled><i class="bi bi-play-fill" aria-hidden="true"></i></button>{% endif %}
-            {% if not ytdlp_picker.preview and not ytdlp_picker.is_audio %}<span class="quality-original-play" aria-hidden="true"><i class="bi bi-play-fill"></i></span>{% endif %}
+            {% if not ytdlp_picker.preview and not ytdlp_picker.is_audio %}<button type="button" class="quality-original-play" data-ytdlp-action="open" aria-label="在新标签页播放所选视频" title="在新标签页播放所选视频" disabled><i class="bi bi-play-fill" aria-hidden="true"></i></button>{% endif %}
             <div class="quality-preview-caption">{% if ytdlp_picker.is_audio %}音频{% else %}视频{% endif %}资源 · <span data-picker-size>{{ ytdlp_picker.selected.size_label }}</span></div>
         </div>
         <div class="ytdlp-player-region" data-picker-player-region hidden>

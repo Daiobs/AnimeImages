@@ -5,6 +5,7 @@ format identities, including formats this browser-only delivery path cannot save
 """
 import math
 import re
+from time import time
 from urllib.parse import urlsplit
 
 from .common import clean_filename
@@ -111,7 +112,22 @@ def capability(candidate):
         from .ytdlp_format_check import check_message
         limitation = check_message(candidate['selected_track_check'])
     return {'can_download': not reason, 'can_check': can_check, 'limitation': limitation,
+            'can_open': can_open_video(candidate),
             'can_preview': not reason and ext in {'mp4', 'webm', 'm4v', 'm4a', 'mp3', 'ogg', 'opus', 'wav'}}
+
+
+def can_open_video(candidate):
+    """Navigation needs no fetch/CORS or codec probe, but retains source restrictions."""
+    return bool(candidate.get('media_type') == 'video'
+                and candidate.get('protocol') == 'https'
+                and not candidate.get('has_drm')
+                and not candidate.get('requires_merge')
+                and not candidate.get('requires_cookie')
+                and not candidate.get('download_context_required', candidate.get('requires_context', False))
+                and candidate.get('video_tracks') != 'absent'
+                and candidate.get('delivery_state') not in {
+                    'streaming_media', 'separate_media_tracks', 'insecure_reference'}
+                and str(candidate.get('extension') or '').lower().lstrip('.') in ({''} | VIDEO_EXTENSIONS))
 
 
 def size_label(candidate):
@@ -308,6 +324,24 @@ def selected_link_descriptor(record, *, provider=PROVIDER, schema=SCHEMA):
             'selected_format_id': public.get('format_id') or '', 'url': url,
             'type': public['media_type'], 'provider': provider,
             'filename': f'{name}_{format_id}.{extension}'}
+
+
+def selected_open_descriptor(record, *, provider=PROVIDER, schema=SCHEMA):
+    from .platforms.douyin_kukutool import parse_byte_cdn_url
+    from .platforms.douyin_media_policy import is_allowed_douyin_media_hostname
+    from .upstream_delivery import safe_resource_url
+    if (not can_open_video(record.get('public', {}))
+            or context_required(record.get('headers'), headers_present=record.get('headers_present'),
+                                requires_cookie=record.get('requires_cookie'))):
+        raise ValueError('selected_video_navigation_restricted')
+    item = selected_link_descriptor(record, provider=provider, schema=schema)
+    if not safe_resource_url(item['url']):
+        raise ValueError('selected_video_navigation_url_invalid')
+    if is_allowed_douyin_media_hostname(urlsplit(item['url']).hostname):
+        expires_at = parse_byte_cdn_url(item['url'])['expires_at']
+        if expires_at and expires_at <= time():
+            raise ValueError('selected_video_navigation_expired')
+    return item
 
 
 def selected_descriptor(record):

@@ -24,7 +24,7 @@
             formatId: radio.dataset.formatId,
             label: radio.dataset.label || "", size: radio.dataset.sizeLabel || "大小未知",
             canDownload: radio.dataset.canDownload === "true", canPreview: radio.dataset.canPreview === "true",
-            canCheck: radio.dataset.canCheck === "true",
+            canCheck: radio.dataset.canCheck === "true", canOpen: radio.dataset.canOpen === "true",
             limitation: radio.dataset.limitation || "", radio});
     }
     function sourceLink(value) {
@@ -120,6 +120,12 @@
             payload && typeof payload.message === "string" ? payload.message : "资源授权已失效或访问受限，请重新解析。");
         if (action === "cover") return sourceHttps(payload.url);
         if (action === "link") return validateLinkItem(payload.item, selection);
+        if (action === "open") {
+            const item = validateLinkItem(payload.item, selection);
+            if (item.type !== "video") throw new Error("此格式不支持新标签页播放。");
+            sourceHttps(item.url);
+            return item;
+        }
         if (action === "check") {
             const candidate = payload.candidate;
             if (!candidate || candidate.candidate_id !== selection.id || candidate.format_id !== selection.formatId
@@ -227,6 +233,7 @@
         let generation = 0, busy = false, destroyed = false, activeController = null;
         let activeCheck = null;
         let activeLegacy = false;
+        let activeOpen = null;
         let coverController = null, coverObjectUrl = "", player = null;
         const groupName = `doki-ytdlp-instance-${++instanceSequence}`;
         let knownRadios = [], rememberedId = null, knownMediaCheckbox = null, rememberedMediaSelected = true;
@@ -238,6 +245,7 @@
             });
         }
         function reconcile() {
+            if (activeOpen && !openApplicable(activeOpen)) abandonOpen();
             const checkbox = root.querySelector("[data-picker-media-selected]");
             if (checkbox !== knownMediaCheckbox) {
                 if (checkbox && knownMediaCheckbox) checkbox.checked = rememberedMediaSelected;
@@ -291,6 +299,13 @@
             }
             if (copy) copy.disabled = busy || !selection;
             root.querySelectorAll('[data-ytdlp-action="preview"]').forEach(button => { button.disabled = busy; });
+            root.querySelectorAll('[data-ytdlp-action="open"]').forEach(button => {
+                button.disabled = busy || Boolean(activeOpen) || !selection;
+                const restricted = selection && (selection.kind !== "video" || !selection.canOpen);
+                button.setAttribute("aria-disabled", String(button.disabled || Boolean(restricted)));
+                button.title = restricted ? selection.limitation || "此格式暂不能在新标签页播放。" : "在新标签页播放所选视频";
+                button.setAttribute("aria-busy", String(Boolean(activeOpen)));
+            });
             if (cancel) {
                 cancel.hidden = !busy;
                 cancel.textContent = activeLegacy ? "停止等待" : "取消当前下载";
@@ -305,6 +320,7 @@
         }
         function start(legacyOperation = false) {
             if (busy || destroyed) return null;
+            abandonOpen();
             activeLegacy = legacyOperation;
             busy = true; generation += 1;
             activeController = new windowObject.AbortController();
@@ -322,6 +338,61 @@
             return root.isConnected && root.contains(radio) && radio.value === selection.id
                 && radio.dataset.token === selection.token && radio.dataset.formatId === selection.formatId
                 && (snapshot || now && now.radio === radio);
+        }
+        function closeOpenWindow(operation) {
+            try { if (operation.popup && !operation.popup.closed) operation.popup.close(); } catch (_) { /* Detached window. */ }
+        }
+        function openApplicable(operation) {
+            const now = selected(root);
+            return !destroyed && activeOpen === operation && !operation.controller.signal.aborted
+                && sameSelection(operation.selection) && now.canOpen && now.kind === "video"
+                && now.provider === operation.selection.provider && now.schema === operation.selection.schema
+                && root.dataset.selectionUrl === operation.endpoint
+                && root.querySelector('[data-ytdlp-action="open"]') === operation.button;
+        }
+        function abandonOpen() {
+            if (!activeOpen) return;
+            const operation = activeOpen;
+            activeOpen = null;
+            operation.controller.abort();
+            closeOpenWindow(operation);
+            say(""); refresh();
+        }
+        async function openSelected(button) {
+            const selection = selected(root);
+            if (destroyed || busy || activeOpen || !selection || !sameSelection(selection)) return;
+            if (!selection.canOpen || selection.kind !== "video") {
+                say(selection.limitation || "此格式暂不能在新标签页播放。");
+                return;
+            }
+            const operation = {selection, button, endpoint: root.dataset.selectionUrl,
+                controller: new windowObject.AbortController(), popup: null};
+            activeOpen = operation;
+            let navigated = false;
+            try {
+                // Retain a window handle for cleanup; isolate it before awaiting authorization.
+                operation.popup = windowObject.open("about:blank", "_blank");
+                const popup = operation.popup;
+                if (!popup) throw new Error("请允许新标签页后重试。");
+                popup.opener = null;
+                if (popup.opener !== null) throw new Error("无法安全打开新标签页。");
+                const meta = popup.document.createElement("meta");
+                meta.name = "referrer"; meta.content = "no-referrer";
+                popup.document.head.appendChild(meta);
+                refresh(); say("正在核验所选视频…");
+                const descriptorRoot = {dataset: {selectionUrl: operation.endpoint}};
+                const item = await descriptor(descriptorRoot, selection, "open", environment, operation.controller.signal);
+                if (!openApplicable(operation)) return;
+                if (popup.closed) { say("新标签页已关闭，未打开视频。"); return; }
+                popup.location.replace(item.url);
+                navigated = true;
+                say("已打开所选视频链接。");
+            } catch (error) {
+                if (openApplicable(operation)) say(error.message || "未能打开所选视频，请重新解析。");
+            } finally {
+                if (!navigated) closeOpenWindow(operation);
+                if (activeOpen === operation) { activeOpen = null; refresh(); }
+            }
         }
         function abandonCheck(showMessage = false) {
             if (!activeCheck) return;
@@ -514,6 +585,7 @@
                 return;
             }
             if (!event.target.matches("[data-picker-radio]")) return;
+            abandonOpen();
             if (activeCheck) abandonCheck();
             if (busy) return;
             generation += 1; closePreview(); say(""); refresh();
@@ -534,6 +606,11 @@
                 return;
             }
             const button = event.target.closest("[data-ytdlp-action]");
+            if (button && root.contains(button) && button.dataset.ytdlpAction === "open") {
+                event.preventDefault(); event.stopPropagation();
+                if (!button.disabled) void openSelected(button);
+                return;
+            }
             if (!button || !root.contains(button) || button.disabled) return;
             event.preventDefault();
             if (button.dataset.ytdlpAction === "download") save();
@@ -552,6 +629,7 @@
         reconcile(); cover();
         const controller = {reconcile, save, destroy() {
             destroyed = true; generation += 1;
+            abandonOpen();
             if (activeController) activeController.abort();
             if (coverController) coverController.abort();
             closePreview();

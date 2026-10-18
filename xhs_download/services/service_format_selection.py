@@ -58,6 +58,7 @@ def capability(candidate):
                   'limitation': '此格式缺少有效下载授权，可复制原始资源链接。'}
     # Service declarations do not borrow a yt-dlp runtime identity for probing.
     result['can_check'] = False
+    result['can_open'] = picker.can_open_video(candidate)
     if not result['can_download'] and '尚未检查' in result['limitation']:
         result['limitation'] = picker.LIMITATIONS['unknown']
     return result
@@ -289,6 +290,13 @@ def selected_link_descriptor(record):
     if provider not in PROVIDERS or record.get('public', {}).get('work', {}).get('schema') != SCHEMA:
         raise ValueError('service_selection_invalid')
     return picker.selected_link_descriptor(record, provider=provider, schema=SCHEMA)
+
+
+def selected_open_descriptor(record):
+    provider = record.get('provider_id')
+    if provider not in PROVIDERS or record.get('public', {}).get('work', {}).get('schema') != SCHEMA:
+        raise ValueError('service_selection_invalid')
+    return picker.selected_open_descriptor(record, provider=provider, schema=SCHEMA)
 
 
 def selected_legacy_descriptor(record):

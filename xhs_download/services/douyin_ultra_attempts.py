@@ -116,7 +116,8 @@ class DouyinUltraAttemptController:
     def _has_reusable_result(self):
         return any(
             item.get("state") == "reused"
-            for item in self._preflight.values()
+            for provider, item in self._preflight.items()
+            if not self._expected_providers or provider in self._expected_providers
         )
 
     def begin_provider(self, provider):

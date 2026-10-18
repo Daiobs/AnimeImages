@@ -876,7 +876,7 @@ function checkPicker() {
     return root;
 }
 function click(root, action = "download") {
-    root.listeners.click({target: root.querySelector(`[data-ytdlp-action="${action}"]`), preventDefault() {}});
+    root.listeners.click({target: root.querySelector(`[data-ytdlp-action="${action}"]`), preventDefault() {}, stopPropagation() {}});
 }
 function checkResult(id = "video", changes = {}, reason = "complete") {
     return {status: "success", candidate: {candidate_id: id, format_id: `format-${id}`,
@@ -885,6 +885,189 @@ function checkResult(id = "video", changes = {}, reason = "complete") {
         check: {reason, requests: 2, bytes_read: 4096, complete_moov: true, video: "present", audio: "present"}};
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
+
+function openFixture(app = fixture()) {
+    const root = servicePicker("tiantianjiexi");
+    const artwork = el("div", {"data-picker-preview-only": ""});
+    const button = el("button", {type: "button", "data-ytdlp-action": "open"});
+    const icon = el("i"), checkbox = el("input", {type: "checkbox", "data-picker-media-selected": ""});
+    button.append(icon); artwork.append(button, checkbox); root.append(artwork);
+    checkbox.checked = true;
+    checkbox.click = () => { checkbox.checked = !checkbox.checked; };
+    radios(root).forEach(radio => Object.assign(radio.dataset, {
+        canOpen: "true", canPreview: "false", canDownload: "false",
+    }));
+    const windows = [], calls = [], pending = [];
+    app.win.open = (...args) => {
+        assert.deepEqual(args, ["about:blank", "_blank"], "do not discard the cleanup handle with noopener features");
+        const popup = {opener: app.win, closed: false, navigations: [],
+            document: {head: el("head"), createElement: tag => el(tag)},
+            close() { this.closed = true; }, location: {replace(url) { popup.navigations.push(url); }}};
+        windows.push(popup); return popup;
+    };
+    app.doc.body.append(card(root));
+    const controller = picker.mount(root, app.doc, app.win, {
+        ordinary: {download() { assert.fail("opening cannot save media"); }},
+        fetchImpl: async (url, options) => {
+            const body = JSON.parse(options.body);
+            calls.push({url, options, body});
+            assert.equal(body.action, "open", "no provider parse, track check or download action");
+            return new Promise(resolve => pending.push((extra = {}, status = 200) => resolve(jsonResponse({
+                status: status < 400 ? "success" : "error", message: "授权已过期，请重新解析。",
+                item: serviceGrant("tiantianjiexi", body.candidate_id, "video", extra),
+            }, status))));
+        },
+    });
+    return {...app, root, button, icon, checkbox, controller, windows, calls, pending,
+        status: root.querySelector("[data-picker-status]")};
+}
+
+test("central open control is a native labelled button, while existing embedded preview is preserved", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../templates/partials/ytdlp_result_picker.html"), "utf8");
+    assert.match(source, /if not ytdlp_picker.preview and not ytdlp_picker.is_audio %}<button type="button"[^>]*data-ytdlp-action="open"[^>]*aria-label="在新标签页播放所选视频"/);
+    assert.match(source, /if ytdlp_picker.preview %}<button[^>]*data-ytdlp-action="preview"/);
+    assert.doesNotMatch(source, /<span class="quality-original-play"/);
+});
+
+test("open captures selected identity synchronously, isolates popup, and does not toggle checkbox or fetch media", async () => {
+    const app = openFixture();
+    choose(app.root, 1);
+    let prevented = false, stopped = false;
+    app.root.listeners.click({target: app.icon,
+        preventDefault() { prevented = true; }, stopPropagation() { stopped = true; }});
+    assert.equal(prevented && stopped, true);
+    assert.equal(app.windows.length, 1);
+    const popup = app.windows[0];
+    assert.equal(popup.opener, null);
+    assert.equal(popup.document.head.children[0].name, "referrer");
+    assert.equal(popup.document.head.children[0].content, "no-referrer");
+    assert.equal(app.checkbox.checked, true);
+    assert.equal(radios(app.root)[1].checked, true);
+    assert.equal(radios(app.root)[0].disabled, false);
+    assert.deepEqual(app.calls[0].body, {candidate_id: "low", resource_token: "signed-low", action: "open"});
+    assert.equal(app.calls[0].options.credentials, "same-origin");
+    assert.equal(app.calls[0].options.cache, "no-store");
+    click(app.root, "open");
+    assert.equal(app.windows.length, 1, "pending duplicate click does not create another blank tab");
+    app.pending[0]({browser_direct_fetch_safe: false, browser_upstream_bound: false});
+    await settle();
+    assert.deepEqual(popup.navigations, ["https://cdn.example/low.mp4"]);
+    assert.equal(app.calls.length, 1);
+    assert.equal(app.status.textContent, "已打开所选视频链接。");
+    assert.equal(app.button.disabled, false);
+    app.controller.destroy();
+    assert.equal(popup.closed, false, "result cleanup does not close already navigated media");
+});
+
+test("popup blocked or throwing prevents authorization fetch and allows an explicit retry", async () => {
+    for (const throws of [false, true]) {
+        const app = openFixture();
+        app.win.open = () => { if (throws) throw new Error("窗口不可用"); return null; };
+        click(app.root, "open"); await settle();
+        assert.equal(app.calls.length, 0);
+        assert.equal(app.button.disabled, false);
+        assert.match(app.status.textContent, throws ? /窗口不可用/ : /允许新标签页/);
+    }
+});
+
+test("failure to isolate opener closes blank tab without any authorization request", async () => {
+    const app = openFixture(), createWindow = app.win.open;
+    app.win.open = (...args) => {
+        const popup = createWindow(...args);
+        Object.defineProperty(popup, "opener", {get: () => app.win, set() {}});
+        return popup;
+    };
+    click(app.root, "open"); await settle();
+    assert.equal(app.windows[0].closed, true);
+    assert.equal(app.calls.length, 0);
+    assert.match(app.status.textContent, /无法安全打开/);
+});
+
+test("closed popup never receives a late authorized URL", async () => {
+    const app = openFixture(); click(app.root, "open");
+    app.windows[0].close(); app.pending[0](); await settle();
+    assert.deepEqual(app.windows[0].navigations, []);
+    assert.match(app.status.textContent, /已关闭/);
+});
+
+test("switching selection cancels the frozen request; old response cannot navigate or release a newer operation", async () => {
+    const app = openFixture(); click(app.root, "open");
+    choose(app.root, 1);
+    assert.equal(app.calls[0].options.signal.aborted, true);
+    assert.equal(app.windows[0].closed, true);
+    click(app.root, "open");
+    assert.equal(app.calls[1].body.candidate_id, "low");
+    app.pending[0](); await settle();
+    assert.equal(app.button.disabled, true);
+    app.pending[1](); await settle();
+    assert.deepEqual(app.windows[0].navigations, []);
+    assert.deepEqual(app.windows[1].navigations, ["https://cdn.example/low.mp4"]);
+    click(app.root, "open"); choose(app.root, 0); choose(app.root, 1);
+    app.pending[2](); await settle();
+    assert.deepEqual(app.windows[2].navigations, [], "switching back does not resurrect the cancelled snapshot");
+});
+
+for (const change of ["detach", "destroy", "radio", "button", "token", "endpoint", "provider", "schema", "capability"]) {
+    test(`pending open is invalidated by ${change} replacement`, async () => {
+        const app = openFixture(); click(app.root, "open");
+        if (change === "detach") app.root.remove();
+        if (change === "destroy") app.controller.destroy();
+        if (change === "radio") {
+            const old = radios(app.root)[0], replacement = el("input", {...old.attributes});
+            replacement.checked = true; old.parentNode.append(replacement); old.remove();
+        }
+        if (change === "button") {
+            app.button.parentNode.append(el("button", {"data-ytdlp-action": "open"})); app.button.remove();
+        }
+        if (change === "token") radios(app.root)[0].dataset.token = "new-token";
+        if (change === "endpoint") app.root.dataset.selectionUrl = "/new-selection/";
+        if (change === "provider") app.root.dataset.provider = "kukutool";
+        if (change === "schema") app.root.dataset.selectionSchema = "different";
+        if (change === "capability") radios(app.root)[0].dataset.canOpen = "false";
+        if (change !== "destroy") app.controller.reconcile();
+        app.pending[0](); await settle();
+        assert.equal(app.windows[0].closed, true);
+        assert.deepEqual(app.windows[0].navigations, []);
+        assert.doesNotMatch(app.status.textContent, /已打开所选视频链接/);
+    });
+}
+
+test("identical cards in the same document own independent selections and popup lifetimes", async () => {
+    const app = openFixture(); click(app.root, "open");
+    const other = openFixture(app); choose(other.root, 1); click(other.root, "open");
+    assert.equal(radios(app.root)[0].checked, true);
+    app.root.remove(); app.pending[0](); other.pending[0](); await settle();
+    assert.deepEqual(app.windows[0].navigations, []);
+    assert.deepEqual(other.windows[0].navigations, ["https://cdn.example/low.mp4"]);
+});
+
+test("denied, expired, substituted and unsafe open descriptors close the blank tab without fallback", async () => {
+    for (const [extra, status] of [[{}, 403], [{candidate_id: "low"}, 200],
+        [{selected_format_id: "format-low"}, 200], [{provider: "kukutool"}, 200],
+        [{type: "audio"}, 200], [{url: "http://cdn.example/high.mp4"}, 200],
+        [{url: "javascript:alert(1)"}, 200]]) {
+        const app = openFixture(); click(app.root, "open");
+        app.pending[0](extra, status); await settle();
+        assert.equal(app.windows[0].closed, true);
+        assert.deepEqual(app.windows[0].navigations, []);
+        assert.equal(app.calls.length, 1);
+        assert.equal(app.button.disabled, false);
+        if (status === 403) assert.match(app.status.textContent, /已过期.*重新解析/);
+    }
+});
+
+test("audio or missing open capability gives feedback without creating popups", () => {
+    for (const value of [undefined, "false", "true"]) {
+        const app = openFixture();
+        radios(app.root)[1].dataset.canOpen = value;
+        if (value === "true") radios(app.root)[1].dataset.kind = "audio";
+        choose(app.root, 1); click(app.root, "open");
+        assert.equal(app.button.disabled, false);
+        assert.equal(app.button.getAttribute("aria-disabled"), "true");
+        assert.match(app.status.textContent, /暂不能在新标签页播放/);
+        assert.equal(app.calls.length, 0); assert.equal(app.windows.length, 0);
+    }
+});
 
 test("check is opt-in, fires once while busy, then needs a second click for the same resource download", async () => {
     const {doc, win} = fixture(); const root = checkPicker(); doc.body.append(card(root));

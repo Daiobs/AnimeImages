@@ -79,10 +79,10 @@ def _admitted(request, record, *, provider=PROVIDER, service=False):
 def ytdlp_selected_format_view(request, *, service=False):
     if service:
         from .services import service_format_selection as selection
-        allowed_actions = {'download', 'preview', 'cover', 'link', 'legacy'}
+        allowed_actions = {'download', 'preview', 'cover', 'link', 'open', 'legacy'}
     else:
         from .services import ytdlp_selection as selection
-        allowed_actions = {'download', 'preview', 'cover', 'link', 'check'}
+        allowed_actions = {'download', 'preview', 'cover', 'link', 'open', 'check'}
     try:
         if len(request.body) > 8192:
             raise ValueError()
@@ -141,14 +141,16 @@ def ytdlp_selected_format_view(request, *, service=False):
                               'check': projected.get('selected_track_check', {
                                   'reason': 'already_complete', 'requests': 0, 'bytes_read': 0}),
                               'check_cached': checked.get('_check_cached', False), 'server_media_relay': False})
-        if data['action'] == 'link':
+        if data['action'] in {'link', 'open'}:
             from .services.rate_limits import consume_fixed_window, get_client_identity
             limit = consume_fixed_window('ytdlp-link-descriptor', get_client_identity(request), 120, 60)
             if not limit.allowed:
                 response = _response({'status': 'error', 'message': '链接请求过于频繁。'}, 429)
                 response['Retry-After'] = str(limit.retry_after)
                 return response
-            return _response({'status': 'success', 'item': selection.selected_link_descriptor(record),
+            item = (selection.selected_open_descriptor(record) if data['action'] == 'open'
+                    else selection.selected_link_descriptor(record))
+            return _response({'status': 'success', 'item': item,
                               'server_media_relay': False})
         if data['action'] == 'cover':
             from .services.upstream_delivery import safe_resource_url
@@ -180,8 +182,11 @@ def ytdlp_selected_format_view(request, *, service=False):
         logger.info('ytdlp_selected_descriptor_issued action=%s candidate_id=%s', data['action'], record['candidate_id'])
         return _response({'status': 'success', 'item': item,
                           'server_media_relay': None if item.get('selection_delivery') == 'legacy_manifest' else False})
-    except (ValueError, KeyError, TypeError, XhsParseError):
-        return _response({'status': 'error', 'message': '此格式暂不能直接保存；请查看格式限制或选择其他格式。'}, 409)
+    except (ValueError, KeyError, TypeError, XhsParseError) as error:
+        message = ('视频链接已过期，请重新解析。' if data['action'] == 'open' and str(error) == 'selected_video_navigation_expired'
+                   else '此格式暂不能在新标签页播放。' if data['action'] == 'open'
+                   else '此格式暂不能直接保存；请查看格式限制或选择其他格式。')
+        return _response({'status': 'error', 'message': message}, 409)
     except Exception as error:
         logger.warning('ytdlp_selected_descriptor_failed exception_class=%s', type(error).__name__)
         return _response({'status': 'error', 'message': '资源准备服务暂时不可用，请稍后再试。'}, 503)
