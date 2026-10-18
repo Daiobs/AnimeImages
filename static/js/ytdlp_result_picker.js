@@ -466,8 +466,9 @@
                 if (progress) { progress.hidden = false; progress.removeAttribute("value"); }
                 await ordinary.download(item, {
                     filename: item.filename, signal: operation.signal,
-                    onStage(stage) {
+                    onStage(stage, message) {
                         if (!current(operation)) return;
+                        if (stage === "updating") { say(message); return; }
                         const messages = {preparing: "正在准备浏览器保存…", fetching: "正在接收所选源文件…", saving: "正在交给浏览器保存…", completed: "已交给浏览器保存，请在下载列表中确认。"};
                         say(messages[stage] || "正在处理所选格式…");
                     },

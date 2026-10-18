@@ -840,20 +840,22 @@ test("expiry during safe SW setup failure prevents a new Blob request", async t 
     }), error => error.errorCode === "DESCRIPTOR_EXPIRED");
 });
 
-test("confirmed old protocol before registration keeps one bounded compatibility request", async () => {
+test("worker upgrade is not browser incapability and never starts a Blob request", async () => {
     let fetches = 0;
     const item = dedicatedServiceFile("kukutool");
-    const result = await ordinary.download(item, {
-        streamingClient: {capabilityAvailable: () => true, async start() {
-            throw Object.assign(new Error("old protocol"), {
-                errorCode: "STREAMING_PROTOCOL_UNSUPPORTED", streamingStarted: false, safeToFallback: true,
-            });
-        }},
-        fetchImpl: async url => { fetches += 1; return responseFor("12345", {url}); },
-        handoffBlob: async () => {},
-    });
-    assert.equal(fetches, 1);
-    assert.equal(result.transport, "browser_blob");
+    for (const code of ["STREAMING_PROTOCOL_UNSUPPORTED", "STREAMING_UPDATE_REQUIRED"]) {
+        await assert.rejects(ordinary.download(item, {
+            streamingClient: {capabilityAvailable: () => true, async start() {
+                throw Object.assign(new Error("old protocol"), {
+                    errorCode: code, streamingStarted: false, safeToFallback: true,
+                });
+            }},
+            fetchImpl: async url => { fetches += 1; return responseFor("12345", {url}); },
+            handoffBlob: async () => {},
+        }), error => error.errorCode === code);
+        assert.equal(fetches, 0);
+        assert.match(ordinary.safeErrorMessage({errorCode: code}), /关闭所有本站标签页/);
+    }
 });
 
 test("service schema cannot grant arbitrary non-upstream providers ordinary download permission", () => {

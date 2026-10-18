@@ -21,6 +21,7 @@
     const DEFAULT_START_TIMEOUT_MS = 8000;
     const DEFAULT_MESSAGE_TIMEOUT_MS = 4000;
     const DEFAULT_STATUS_POLL_MS = 1000;
+    const WORKER_UPDATE_MESSAGE = "下载服务正在更新，尚未开始下载。请等待本站其他下载完成，关闭所有本站标签页后重新打开；无需清除浏览器数据。";
     const DEFAULT_TELEMETRY_ENDPOINT = "/media/browser-download-telemetry/";
     const TELEMETRY_SCHEMA_VERSION = 1;
     const TERMINAL_STATES = new Set(["completed", "failed", "cancelled"]);
@@ -520,18 +521,26 @@
                     return {registration: registered, active, controller};
                 })().catch((error) => {
                     registrationPromise = null;
+                    if (currentRegistration && (currentRegistration.waiting || currentRegistration.installing)) {
+                        throw streamingError("STREAMING_UPDATE_REQUIRED", WORKER_UPDATE_MESSAGE);
+                    }
                     throw error;
                 });
             }
-            return registrationPromise;
+            const registered = await registrationPromise;
+            return {...registered, active: registered.registration.active,
+                controller: navigatorObject.serviceWorker.controller};
         }
 
         async function postMessage(message, onDispatch) {
-            const registered = await registration();
-            const worker = registered.controller
-                || navigatorObject.serviceWorker.controller
-                || registered.registration.active
-                || registered.active;
+            await registration();
+            // A cached registration must never keep messaging the old controller
+            // after a normal worker upgrade. Do not close the shared client here:
+            // it can still own navigation frames for existing downloads.
+            const worker = navigatorObject.serviceWorker.controller
+                || await waitForWorkerControl(navigatorObject, {
+                    timeoutMs: startTimeoutMs, schedule, clearSchedule,
+                });
             if (!worker || typeof worker.postMessage !== "function") {
                 throw streamingError(
                     "STREAMING_WORKER_NOT_ACTIVE",
@@ -574,6 +583,62 @@
                 } catch (error) {
                     finish(reject, error);
                 }
+            });
+        }
+
+        async function ensureSelectedWorker(signal, onUpdating) {
+            await registration();
+            const serviceWorker = navigatorObject.serviceWorker;
+            const compatible = async () => {
+                const controller = serviceWorker.controller;
+                const response = await postMessage({type: "GET_STREAMING_CAPABILITIES"});
+                return controller && controller === serviceWorker.controller
+                    && response.ok === true && response.protocolVersion === protocol.PROTOCOL_VERSION;
+            };
+            try {
+                if (await compatible()) return;
+            } catch (error) {
+                // A known pending update is not browser incapability, even when
+                // the old controller cannot answer our capability message.
+                if (!currentRegistration || !(currentRegistration.waiting || currentRegistration.installing)) throw error;
+            }
+            if (typeof onUpdating === "function") onUpdating(WORKER_UPDATE_MESSAGE);
+            // Legacy workers cannot atomically drain all tabs before skipWaiting.
+            // Observe normal takeover only; UNKNOWN_MESSAGE is not an idle proof.
+            await new Promise((resolve, reject) => {
+                let finished = false;
+                let checking = false;
+                let changedDuringCheck = false;
+                const finish = (callback, value) => {
+                    if (finished) return;
+                    finished = true;
+                    clearSchedule(timer);
+                    serviceWorker.removeEventListener("controllerchange", check);
+                    if (signal) signal.removeEventListener("abort", abort);
+                    callback(value);
+                };
+                const abort = () => finish(reject, streamingError("USER_CANCELLED", "已取消等待下载服务更新，未开始下载。"));
+                const check = async () => {
+                    if (finished) return;
+                    if (checking) { changedDuringCheck = true; return; }
+                    checking = true;
+                    try {
+                        if (await compatible()) finish(resolve);
+                    } catch (_) {
+                        // No download was registered. A failed/unknown handshake
+                        // stays in the bounded update wait, never a media retry.
+                    } finally {
+                        checking = false;
+                        if (changedDuringCheck) { changedDuringCheck = false; check(); }
+                    }
+                };
+                const timer = schedule(() => finish(reject, streamingError(
+                    "STREAMING_UPDATE_REQUIRED", WORKER_UPDATE_MESSAGE,
+                )), startTimeoutMs);
+                serviceWorker.addEventListener("controllerchange", check);
+                if (signal) signal.addEventListener("abort", abort, {once: true});
+                if (signal && signal.aborted) abort();
+                else check();
             });
         }
 
@@ -898,10 +963,10 @@
             try {
                 if (cancelRequested) throw cancelledError();
                 if (descriptor.selectionBinding) {
-                    const capabilities = await postMessage({type: "GET_STREAMING_CAPABILITIES"});
-                    if (!capabilities.ok || capabilities.protocolVersion !== protocol.PROTOCOL_VERSION) {
-                        throw streamingError("STREAMING_PROTOCOL_UNSUPPORTED", "下载服务版本暂不兼容。",
-                            {safeToFallback: true});
+                    await ensureSelectedWorker(signal, startOptions.onUpdating);
+                    // Waiting never extends a signed candidate's original life.
+                    if (descriptor.selectionBinding.selection_expires_at <= Date.now()) {
+                        throw streamingError("DESCRIPTOR_EXPIRED", "当前资源授权已过期，请重新解析。");
                     }
                 }
                 if (cancelRequested) throw cancelledError();
@@ -975,6 +1040,7 @@
                         {streamingStarted});
                 }
                 if (error) error.safeToFallback = !cancelRequested && !error.streamingStarted
+                    && !["STREAMING_UPDATE_REQUIRED", "STREAMING_PROTOCOL_UNSUPPORTED", "DESCRIPTOR_EXPIRED"].includes(error.errorCode)
                     && (!registrationDispatched || registrationRejected || preparedDescriptorDeleted);
                 throw error;
             }
@@ -1025,6 +1091,7 @@
         DEFAULT_TELEMETRY_ENDPOINT,
         DEFAULT_WORKER_SCOPE,
         DEFAULT_WORKER_URL,
+        WORKER_UPDATE_MESSAGE,
         TELEMETRY_SCHEMA_VERSION,
         TERMINAL_STATES,
         createTerminalTelemetryPayload,

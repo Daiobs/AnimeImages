@@ -45,7 +45,6 @@
         "STREAMING_MESSAGE_TIMEOUT",
         "STREAMING_NAVIGATION_UNAVAILABLE",
         "STREAMING_START_TIMEOUT",
-        "STREAMING_PROTOCOL_UNSUPPORTED",
     ]);
     const STAGE_MESSAGES = Object.freeze({
         preparing: "正在准备下载...",
@@ -741,6 +740,9 @@
     }
 
     function safeErrorMessage(error) {
+        if (error && ["STREAMING_UPDATE_REQUIRED", "STREAMING_PROTOCOL_UNSUPPORTED"].includes(error.errorCode)) {
+            return streamingApi.WORKER_UPDATE_MESSAGE;
+        }
         const errorCode = String(error && error.errorCode || "");
         if (errorCode === "UPSTREAM_BROWSER_FETCH_FAILED") {
             return "浏览器无法读取资源：可能是来源未允许跨域（CORS）、重定向被拒绝或网络连接失败。不会转为服务器下载。";
@@ -1318,6 +1320,7 @@
         const active = await client.start(item, {
             filename: sanitizeFilename(settings.filename || item.filename),
             signal: settings.signal,
+            onUpdating(message) { onStage("updating", message); },
             onProgress(status) {
                 if (status.state === "fetching") {
                     onStage("fetching", STAGE_MESSAGES.fetching);
