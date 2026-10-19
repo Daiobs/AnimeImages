@@ -56,6 +56,7 @@ class DouyinTianTianFirstTests(SimpleTestCase):
         self.elapsed = 0
         self.clock = lambda: real_monotonic() + self.elapsed
         self.tasks = []
+        self.callback_completions = []
         self.release = Event()
         for name, value in (
             ("time.time", lambda: self.wall),
@@ -75,6 +76,21 @@ class DouyinTianTianFirstTests(SimpleTestCase):
             future = submit_provider_task(*args)
             if future is not None:
                 self.tasks.append(future)
+                add_done_callback = future.add_done_callback
+
+                def track_callback(callback):
+                    completed = Event()
+                    self.callback_completions.append(completed)
+
+                    def tracked_callback(done):
+                        try:
+                            return callback(done)
+                        finally:
+                            completed.set()
+
+                    add_done_callback(tracked_callback)
+
+                future.add_done_callback = track_callback
             return future
         active = patch(f"{MODULE}.submit_provider_task", side_effect=tracked_submit)
         active.start(); self.addCleanup(active.stop)
@@ -111,6 +127,9 @@ class DouyinTianTianFirstTests(SimpleTestCase):
             except Exception:
                 pass
             self.assertTrue(future.done(), "An isolated provider task escaped the test")
+        # Future.result() can return before continuation callbacks publish to cache.
+        for completed in self.callback_completions:
+            self.assertTrue(completed.wait(3), "A continuation callback escaped the test")
 
     def advance(self, seconds):
         self.elapsed += seconds
