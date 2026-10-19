@@ -353,6 +353,8 @@ def normalize_upstream_result(payload, *, match, source_url):
         if media_type not in {'image', 'video', 'audio'}:
             media_type = 'unknown'
         state = 'image' if media_type == 'image' else video_evidence_state({**metadata, 'url': url})
+        if state == 'complete' and _has_complete_bmff_tracks(metadata.get('upstream_bmff_track_evidence')):
+            metadata = {**metadata, 'audio_tracks': 'present', 'video_tracks': 'present'}
         if media_type == 'audio':
             state = 'audio_only'
         elif metadata.get('acodec') == 'none' and metadata.get('vcodec') not in {None, '', 'none'}:
@@ -365,7 +367,12 @@ def normalize_upstream_result(payload, *, match, source_url):
         admitted_rows.append((safe_url, metadata))
     if not candidates:
         raise XhsParseError('上游没有返回有效的公网媒体候选。')
-    candidates = issue_candidates(candidates)
+    work = None
+    if provider == 'yt_dlp_generic' and not collection:
+        work = {'title': str(title), 'author': str(author), 'duration': payload.get('duration'),
+                'source_host': urlsplit(source_url).hostname or '', 'collection': False,
+                'cover_url': safe_resource_url(payload.get('thumbnail'))}
+    candidates = issue_candidates(candidates, work=work)
     assets = ()
     if provider == 'yt_dlp_generic':
         downloadable_payload = {**payload, 'formats': [dict(meta, url=url) for url, meta in admitted_rows]}

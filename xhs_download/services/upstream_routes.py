@@ -5,8 +5,10 @@ from dataclasses import replace
 from hashlib import sha256
 import ipaddress
 import json
+import math
 from pathlib import Path
 import re
+import time
 from urllib.parse import urlsplit
 
 from django.db import transaction
@@ -351,34 +353,62 @@ def parse_cache_key(source_url, route, provider):
                 paths.append(root / "xhs_download/services/saved_videodl.py")
             signature = [(str(path), path.stat().st_size, path.stat().st_mtime_ns) for path in paths]
         payload = [source_url, route["cache_identity"], provider, signature]
+        if provider == 'yt_dlp_generic':
+            from .ytdlp_selection import CONTEXT_POLICY_REVISION
+            payload.append(CONTEXT_POLICY_REVISION)
         return "upstream:parse:v1:" + sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     except (OSError, ValueError, RuntimeError, XhsParseError):
         return None
 
 
+def _candidate_binding(record):
+    # Bind every original field, including URL, Runtime, context and expiry.
+    # Derived check evidence is deliberately absent from the issued record.
+    return sha256(json.dumps(record, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _candidate_record_is_live(record):
+    expires_at = record.get("expires_at")
+    return (type(expires_at) in (int, float) and math.isfinite(expires_at)
+            and expires_at > 0 and expires_at > time.time())
+
+
 def cached_parse_result(key, source_url, provider):
     if not key:
         return None
-    from .upstream_candidates import resolve_candidate_record
+    from .upstream_candidates import resolve_issued_candidate_record
     from .upstream_delivery import upstream_manifest_item_is_allowed
     try:
-        result = cache.get(key)
-        if result is None:
+        saved = cache.get(key)
+        if not isinstance(saved, dict) or set(saved) != {"result", "candidate_bindings"}:
             return None
+        result = saved["result"]
         candidates = (result.metadata or {}).get("upstream_candidates", [])
         if not result.assets and not candidates:
             return None
+        if len(saved["candidate_bindings"]) != len(candidates):
+            return None
+        displayed = []
         for candidate in candidates:
-            record = resolve_candidate_record(candidate.get("resource_token"), candidate.get("candidate_id"))
-            if (record.get("source_url") != source_url or record.get("provider_id") != provider
-                    or record.get("public") != candidate):
+            record = resolve_issued_candidate_record(candidate.get("resource_token"), candidate.get("candidate_id"))
+            if (not _candidate_record_is_live(record)
+                    or record.get("source_url") != source_url or record.get("provider_id") != provider
+                    or record.get("public") != candidate
+                    or _candidate_binding(record) != saved["candidate_bindings"].get(candidate.get("candidate_id"))):
                 return None
+            if provider == "yt_dlp_generic":
+                from .ytdlp_format_check import apply_check_evidence
+                record = apply_check_evidence(record)
+            displayed.append(record["public"])
         if any(not upstream_manifest_item_is_allowed(asset.to_download_item())
                or asset.provider != provider
                or asset.provider_resource_id != sha256(source_url.encode()).hexdigest()
                for asset in result.assets):
             return None
-        return deepcopy(result)
+        result = deepcopy(result)
+        if candidates:
+            result = replace(result, metadata={**result.metadata, "upstream_candidates": deepcopy(displayed)})
+        return result
     except Exception:
         # A cache outage or expired authority is a miss, not a provider failure.
         return None
@@ -387,7 +417,14 @@ def cached_parse_result(key, source_url, provider):
 def cache_parse_result(key, result):
     if key:
         try:
-            cache.set(key, deepcopy(result), timeout=60)
+            from .upstream_candidates import resolve_issued_candidate_record
+            bindings = {}
+            for candidate in (result.metadata or {}).get("upstream_candidates", []):
+                record = resolve_issued_candidate_record(candidate.get("resource_token"), candidate.get("candidate_id"))
+                if not _candidate_record_is_live(record) or record.get("public") != candidate:
+                    return
+                bindings[candidate["candidate_id"]] = _candidate_binding(record)
+            cache.set(key, {"result": deepcopy(result), "candidate_bindings": bindings}, timeout=60)
         except Exception:
             pass
 

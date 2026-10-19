@@ -1,9 +1,11 @@
 """Persistent Human routes consumed by the real ordinary and Batch adapters."""
 
 from contextlib import ExitStack
+from copy import deepcopy
 from dataclasses import replace
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -217,6 +219,238 @@ class RouteApiTests(RouteFixtures, TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(read_route(SOURCE), before)
         self.assertEqual(UpstreamRouteAudit.objects.count(), 1)
+
+
+@override_settings(THIRD_PARTY_PROVIDER_ENABLED=True, YTDLP_PROVIDER_ENABLED=True,
+                   CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+                                       "LOCATION": "selected-check-route-cache"}})
+class SelectedCheckRouteCacheTests(RouteFixtures, TestCase):
+    def setUp(self):
+        super().setUp()
+        from .tests_execution_path_parity import runtime_python
+        cache.clear()
+        self.addCleanup(cache.clear)
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(override_settings(
+            YTDLP_BINARY=shlex.quote(runtime_python('yt_dlp_generic')) + ' -m yt_dlp'))
+        self.match = {"provider_id": "yt_dlp_generic", "extractor_id": "Fixture",
+                      "version": "2026.6.9", "label": "Fixture"}
+        self.stack.enter_context(patch("socket.socket.connect", side_effect=AssertionError("offline")))
+        for module in ('common', 'upstream_candidates', 'upstream_delivery'):
+            self.stack.enter_context(patch(f"xhs_download.services.{module}.validate_public_download_url",
+                                          side_effect=lambda url: url))
+        self.stack.enter_context(patch("xhs_download.services.platforms.third_party.provider_is_enabled", return_value=True))
+        self.stack.enter_context(patch("xhs_download.services.quality_execution.runtime_bool", return_value=True))
+        self.stack.enter_context(patch("xhs_download.services.upstream_routes.saved_service_matches", return_value=()))
+        self.stack.enter_context(patch("xhs_download.services.upstream_matching.match_upstream_url", return_value=(self.match,)))
+        self.execute = self.stack.enter_context(patch("xhs_download.services.quality_execution.execute_provider",
+                                                     side_effect=self.execute_fixture))
+        self.save(['yt_dlp_generic'])
+
+    def execute_fixture(self, provider, source, **kwargs):
+        from .services.upstream_delivery import normalize_upstream_result
+        return normalize_upstream_result({'id': 'fixture', 'title': 'Offline fixture', 'formats': [
+            {'format_id': str(height), 'url': f'https://cdn.example.org/{height}.mp4',
+             'height': height, 'ext': 'mp4', 'protocol': 'https', 'acodec': None, 'vcodec': None}
+            for height in (1080, 720)]}, match=kwargs['expected_match'], source_url=source)
+
+    def parse(self, source=SOURCE, match=None):
+        return PlatformRegistry().parse_url(source, upstream_provider_ids=['yt_dlp_generic'],
+                                            upstream_matches=(match or self.match,))
+
+    def check(self, candidate, reason):
+        from .services.upstream_candidates import resolve_candidate_record
+        from .services.ytdlp_format_check import check_selected_record
+        record = resolve_candidate_record(candidate['resource_token'], candidate['candidate_id'])
+        complete = reason == 'complete_track_table'
+        evidence = dict(schema='iso_bmff_tracks_v1', reason=reason, complete_moov=complete,
+                        audio='present' if complete else 'unknown', video='present' if complete else 'unknown',
+                        requests=1, bytes_read=104)
+        with patch('xhs_download.services.upstream_matching._context', return_value=([], '2026.6.9', 'fixture')), \
+                patch('xhs_download.services.upstream_matching._call',
+                      **({'side_effect': RuntimeError('offline failure')} if reason == 'execution_failed'
+                         else {'return_value': evidence})):
+            return check_selected_record(record)
+
+    def test_check_outcomes_keep_normal_route_cache_hit_without_resigning(self):
+        from .services.upstream_candidates import SALT, resolve_candidate_record
+        from .services.upstream_routes import parse_cache_key
+        for reason in ('complete_track_table', 'moov_not_found', 'range_rejected', 'execution_failed'):
+            with self.subTest(reason=reason):
+                cache.clear()
+                self.execute.reset_mock()
+                first = self.parse()
+                self.assertFalse(first.metadata['upstream_route']['cache_hit'])
+                candidates = first.metadata['upstream_candidates']
+                selected = candidates[1]
+                payload = signing.loads(selected['resource_token'], salt=SALT)
+                bundle_key = 'upstream:candidate-bundle:' + payload['bundle']
+                bundle = cache.get(bundle_key)
+                _, route = route_matches(SOURCE, (self.match,))
+                key = parse_cache_key(SOURCE, route, 'yt_dlp_generic')
+                snapshot = deepcopy(cache.get(key))
+                self.assertTrue(self.parse().metadata['upstream_route']['cache_hit'])
+                with patch('xhs_download.services.upstream_candidates.signing.dumps', wraps=signing.dumps) as sign:
+                    checked = self.check(selected, reason)
+                    after = self.parse()
+                self.execute.assert_called_once()
+                self.assertTrue(after.metadata['upstream_route']['cache_hit'])
+                sign.assert_not_called()
+                self.assertEqual(cache.get(key), snapshot)
+                self.assertEqual(cache.get(bundle_key), bundle)
+                self.assertEqual(checked['expires_at'], bundle[selected['candidate_id']]['expires_at'])
+                self.assertEqual(checked['public']['resource_token'], selected['resource_token'])
+                self.assertEqual(after.metadata['upstream_candidates'][1], checked['public'])
+                self.assertEqual(after.metadata['upstream_candidates'][0], candidates[0])
+                self.assertEqual(resolve_candidate_record(candidates[0]['resource_token'], candidates[0]['candidate_id']),
+                                 bundle[candidates[0]['candidate_id']])
+
+    def test_checked_cache_rejects_changes_to_all_issued_identity_fields(self):
+        from .services.upstream_candidates import SALT
+        changes = {'url': 'https://cdn.example.org/replaced.mp4',
+                   'source_url': SOURCE.replace('123', '456'), 'source_digest': 'changed',
+                   'provider_id': 'gallery_dl_generic', 'candidate_id': 'changed',
+                   'match': {**self.match, 'version': 'changed'},
+                   'headers': {'Authorization': 'fixture'}, 'headers_present': True,
+                   'requires_cookie': True, 'expires_at': time.time() + 1000,
+                   'unrecognized_issued_field': 'changed'}
+        for field, value in changes.items():
+            with self.subTest(field=field):
+                cache.clear()
+                self.execute.reset_mock()
+                candidate = self.parse().metadata['upstream_candidates'][1]
+                self.check(candidate, 'complete_track_table')
+                self.assertTrue(self.parse().metadata['upstream_route']['cache_hit'])
+                payload = signing.loads(candidate['resource_token'], salt=SALT)
+                key = 'upstream:candidate-bundle:' + payload['bundle']
+                records = cache.get(key)
+                records[candidate['candidate_id']][field] = value
+                cache.set(key, records, timeout=300)
+                fresh = self.parse()
+                self.assertFalse(fresh.metadata['upstream_route']['cache_hit'])
+                self.assertEqual(self.execute.call_count, 2)
+                self.assertTrue(all('selected_track_check' not in row
+                                    for row in fresh.metadata['upstream_candidates']))
+
+    def test_checked_cache_rejects_public_snapshot_changes_including_unknown_fields(self):
+        from .services.upstream_routes import parse_cache_key
+        for field, value in (('format_id', 'other'), ('work_id', 'other'),
+                             ('height', 999), ('selected_track_check', {}), ('new_field', True)):
+            with self.subTest(field=field):
+                cache.clear()
+                self.execute.reset_mock()
+                candidate = self.parse().metadata['upstream_candidates'][1]
+                self.check(candidate, 'complete_track_table')
+                _, route = route_matches(SOURCE, (self.match,))
+                key = parse_cache_key(SOURCE, route, 'yt_dlp_generic')
+                saved = cache.get(key)
+                saved['result'].metadata['upstream_candidates'][1][field] = value
+                cache.set(key, saved, timeout=60)
+                self.assertFalse(self.parse().metadata['upstream_route']['cache_hit'])
+                self.assertEqual(self.execute.call_count, 2)
+
+    def test_late_check_does_not_extend_parse_cache_ttl(self):
+        candidate = self.parse().metadata['upstream_candidates'][1]
+        now = time.time()
+        with patch('time.time', return_value=now + 55):
+            self.check(candidate, 'complete_track_table')
+            self.assertTrue(self.parse().metadata['upstream_route']['cache_hit'])
+        with patch('time.time', return_value=now + 61):
+            fresh = self.parse()
+        self.assertFalse(fresh.metadata['upstream_route']['cache_hit'])
+        self.assertEqual(self.execute.call_count, 2)
+        self.assertNotEqual(fresh.metadata['upstream_candidates'][1]['candidate_id'], candidate['candidate_id'])
+        self.assertNotIn('selected_track_check', fresh.metadata['upstream_candidates'][1])
+
+    def test_checked_cache_rejects_expired_or_revoked_authority(self):
+        from .services.upstream_candidates import SALT
+        for expired in ('signed_token', 'record', 'bundle'):
+            with self.subTest(expired=expired):
+                cache.clear()
+                self.execute.reset_mock()
+                candidate = self.parse().metadata['upstream_candidates'][1]
+                self.check(candidate, 'complete_track_table')
+                payload = signing.loads(candidate['resource_token'], salt=SALT)
+                key = 'upstream:candidate-bundle:' + payload['bundle']
+                with ExitStack() as stack:
+                    if expired == 'signed_token':
+                        stack.enter_context(patch('django.core.signing.time',
+                                                  SimpleNamespace(time=lambda: time.time() + 301)))
+                    elif expired == 'record':
+                        records = cache.get(key)
+                        records[candidate['candidate_id']]['expires_at'] = time.time() - 1
+                        cache.set(key, records, timeout=300)
+                    else:
+                        cache.delete(key)
+                    self.assertFalse(self.parse().metadata['upstream_route']['cache_hit'])
+                self.assertEqual(self.execute.call_count, 2)
+
+    def test_checked_cache_stays_bound_to_source_runtime_and_current_admission(self):
+        from .services import upstream_matching
+        candidate = self.parse().metadata['upstream_candidates'][1]
+        self.check(candidate, 'complete_track_table')
+        self.assertTrue(self.parse().metadata['upstream_route']['cache_hit'])
+        other = self.parse(SOURCE.replace('123', '456'))
+        self.assertFalse(other.metadata['upstream_route']['cache_hit'])
+        self.assertNotIn('selected_track_check', other.metadata['upstream_candidates'][1])
+        newer = {**self.match, 'version': '2026.6.10'}
+        with patch.object(upstream_matching, 'match_upstream_url', return_value=(newer,)):
+            changed = self.parse(match=newer)
+        self.assertFalse(changed.metadata['upstream_route']['cache_hit'])
+        self.assertNotIn('selected_track_check', changed.metadata['upstream_candidates'][1])
+        command, signature = upstream_matching._executor('yt_dlp_generic')
+        with patch.object(upstream_matching, '_executor', return_value=(command, [*signature, ('changed',)])):
+            self.assertFalse(self.parse().metadata['upstream_route']['cache_hit'])
+        self.assertEqual(self.execute.call_count, 4)
+        with patch('xhs_download.services.platforms.third_party.provider_is_enabled', return_value=False):
+            with self.assertRaises(XhsParseError):
+                self.parse()
+        with self.assertRaises(XhsParseError):
+            PlatformRegistry().parse_url(SOURCE, upstream_provider_ids=[], upstream_matches=())
+        self.assertEqual(self.execute.call_count, 4)
+
+    def test_unchanged_record_expiry_is_cache_miss_while_other_authority_is_live(self):
+        from .services.upstream_candidates import SALT, TTL, resolve_candidate_record
+        from .services.upstream_routes import cached_parse_result, parse_cache_key
+        now = int(time.time())
+        with patch('time.time', return_value=now):
+            # Only the issued record has a short lifetime; signing and cache TTLs stay unchanged.
+            with patch('xhs_download.services.upstream_candidates.time',
+                       SimpleNamespace(time=lambda: now - TTL + 10)):
+                first = self.parse()
+            candidate = first.metadata['upstream_candidates'][1]
+            token, identity = candidate['resource_token'], candidate['candidate_id']
+            payload = signing.loads(token, salt=SALT, max_age=TTL)
+            bundle_key = 'upstream:candidate-bundle:' + payload['bundle']
+            bundle = cache.get(bundle_key)
+            _, route = route_matches(SOURCE, (self.match,))
+            key = parse_cache_key(SOURCE, route, 'yt_dlp_generic')
+            snapshot = cache.get(key)
+            self.check(candidate, 'complete_track_table')
+            self.assertTrue(self.parse().metadata['upstream_route']['cache_hit'])
+            self.execute.assert_called_once()
+
+        with patch('time.time', return_value=now + 11):
+            self.assertEqual(signing.loads(token, salt=SALT, max_age=TTL), payload)
+            self.assertEqual(cache.get(bundle_key), bundle)
+            self.assertEqual(cache.get(key), snapshot)
+            with patch('xhs_download.services.upstream_candidates.signing.dumps', wraps=signing.dumps) as sign:
+                self.assertEqual(resolve_candidate_record(token, identity), bundle[identity])
+                self.assertIsNone(cached_parse_result(key, SOURCE, 'yt_dlp_generic'))
+            sign.assert_not_called()
+            self.assertEqual(cache.get(bundle_key), bundle)
+            self.assertEqual(cache.get(key), snapshot)
+            fresh = self.parse()
+            self.assertFalse(fresh.metadata['upstream_route']['cache_hit'])
+            self.assertEqual(self.execute.call_count, 2)
+            self.assertNotEqual(fresh.metadata['upstream_candidates'][1]['candidate_id'], identity)
+            self.assertNotIn('selected_track_check', fresh.metadata['upstream_candidates'][1])
+
+        with patch('django.core.signing.time', SimpleNamespace(time=lambda: now + TTL + 1)):
+            self.assertEqual(cache.get(bundle_key), bundle)
+            with self.assertRaises(XhsParseError):
+                resolve_candidate_record(token, identity)
 
 
 @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True,
@@ -508,7 +742,7 @@ class RouteConsumptionTests(RouteFixtures, TestCase):
         _, route = route_matches(SOURCE, MATCHES)
         key = parse_cache_key(SOURCE, route, "parsehub_generic")
         cached = cache.get(key)
-        cached.metadata["upstream_candidates"][0]["resource_token"] += "tampered"
+        cached["result"].metadata["upstream_candidates"][0]["resource_token"] += "tampered"
         cache.set(key, cached, timeout=60)
         self.assertFalse(self.parse().metadata["upstream_route"]["cache_hit"])
         self.assertEqual(self.execute.call_count, 3)
@@ -601,7 +835,7 @@ class RouteConsumptionTests(RouteFixtures, TestCase):
         self.transport.assert_called_once()
         self.assertEqual(first.metadata["upstream_candidates"], second.metadata["upstream_candidates"])
         _, route = route_matches(SOURCE, MATCHES)
-        stored = cache.get(parse_cache_key(SOURCE, route, "parsehub_generic"))
+        stored = cache.get(parse_cache_key(SOURCE, route, "parsehub_generic"))["result"]
         self.assertEqual(len(stored.metadata["upstream_candidates"]), 75)
         self.assertEqual(stored.metadata["upstream_candidates"],
                          self.normalized_results[0].metadata["upstream_candidates"])

@@ -4,6 +4,7 @@ from hashlib import sha256
 from itertools import islice
 import json
 import math
+import time
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -93,6 +94,13 @@ def _candidate_record(url, metadata, *, ordinal, provider, source_url, media_typ
         'requires_context': headers_present or requires_cookie,
         'headers_present': headers_present, 'requires_cookie': requires_cookie,
     }
+    if provider == 'yt_dlp_generic':
+        from .ytdlp_selection import context_required
+        public['download_context_required'] = context_required(
+            supplied_headers, headers_present=headers_present, requires_cookie=requires_cookie)
+        public['has_drm'] = metadata.get('has_drm') is True
+        public['dynamic_range'] = safe_public_text(metadata.get('dynamic_range'), 30) or None
+        public['audio_bitrate'] = _number(metadata.get('abr'))
     for track, codec in (('audio_tracks','acodec'),('video_tracks','vcodec')):
         explicit = metadata.get(track)
         codec_value = str(metadata.get(codec) or '').strip().lower()
@@ -120,11 +128,12 @@ def _candidate_record(url, metadata, *, ordinal, provider, source_url, media_typ
         'source_digest': sha256(source_url.encode()).hexdigest(),
         'provider_id': provider, 'public': public, 'match': dict(match or {'provider_id': provider}),
         'headers': headers, 'headers_present': headers_present, 'requires_cookie': requires_cookie,
+        'expires_at': time.time() + TTL,
     }
     return public, record
 
 
-def issue_candidates(specs):
+def issue_candidates(specs, *, work=None):
     """Issue one bounded parse bundle without exhausting per-entry caches."""
     bundle_id = uuid4().hex
     records = {}
@@ -132,6 +141,12 @@ def issue_candidates(specs):
     encoded_bytes = 2
     for spec in islice(specs, MAX_CANDIDATES):
         public, record = _candidate_record(**spec)
+        if not candidates and public['provider_id'] == 'yt_dlp_generic' and work:
+            from .ytdlp_selection import public_work
+            projection = public_work(work)
+            if projection:
+                public['work'] = projection
+                record['work'] = dict(work)
         key = public['candidate_id']
         public['resource_token'] = signing.dumps({'id':key,'bundle':bundle_id}, salt=SALT)
         entry_bytes = len(json.dumps({key:record}, ensure_ascii=True, separators=(',', ':')).encode()) - 2
@@ -151,7 +166,8 @@ def issue_candidate(url, metadata, *, ordinal, provider, source_url, media_type,
                                  source_url=source_url, media_type=media_type, state=state, match=match)])[0]
 
 
-def resolve_candidate_record(token, candidate_id):
+def resolve_issued_candidate_record(token, candidate_id):
+    """Resolve immutable issuance facts, without selected-check display overlays."""
     try:
         payload = signing.loads(str(token), salt=SALT, max_age=TTL)
         if not isinstance(payload, dict) or payload.get('id') != str(candidate_id):
@@ -168,3 +184,14 @@ def resolve_candidate_record(token, candidate_id):
         return record
     except (signing.BadSignature, ValueError, TypeError):
         raise XhsParseError('候选资源已失效，请重新解析。') from None
+
+
+def resolve_candidate_record(token, candidate_id):
+    record = resolve_issued_candidate_record(token, candidate_id)
+    try:
+        if record.get('provider_id') == 'yt_dlp_generic':
+            from .ytdlp_format_check import apply_check_evidence
+            return apply_check_evidence(record)
+    except (ValueError, TypeError):
+        raise XhsParseError('候选资源已失效，请重新解析。') from None
+    return record

@@ -24,6 +24,7 @@ from djangoProject import health
 from xhs_download import views as download_views
 from xhs_download import provider_lab_views
 from xhs_download import quality_route_views
+from xhs_download import ytdlp_selection_views
 from xhs_download import user_feedback_views
 from xhs_download.mail_settings_views import mail_settings
 
@@ -54,6 +55,7 @@ urlpatterns = [
                   path("admin/provider-lab/", provider_lab_views.provider_lab_view, name="provider_lab"),
                   path("admin/provider-lab/history/", provider_lab_views.provider_lab_history_view, name="provider_lab_history"),
                   path("provider-lab/routes/", quality_route_views.upstream_routes_view, name="upstream_routes"),
+                  path("media/ytdlp-selected-format/", ytdlp_selection_views.ytdlp_selected_format_view, name="ytdlp_selected_format"),
                   path("media/upstream-candidate/", download_views.upstream_candidate_view, name="upstream_candidate"),
                   path("admin/provider-lab/run/", provider_lab_views.provider_lab_run_view, name="provider_lab_run"),
                   path("admin/provider-lab/resource/", provider_lab_views.provider_lab_resource_view, name="provider_lab_resource"),

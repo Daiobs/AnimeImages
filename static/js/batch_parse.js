@@ -341,12 +341,24 @@
         }
     }
 
-    function collectBatchResourceLinks(root) {
+    function collectBatchResourceLinks(root, pickerApi) {
         const scope = root || document;
+        const picker = pickerApi || (typeof window !== "undefined" && window.DokiToolYtdlpPicker);
         const resources = [];
         const seenUrls = new Set();
         Array.from(scope.querySelectorAll(".batch-result-card")).forEach((card) => {
             if (normalizeBatchValue(card.dataset.status) !== "success") {
+                return;
+            }
+            const selectedPicker = card.querySelector && card.querySelector("[data-ytdlp-picker]");
+            if (selectedPicker) {
+                const selection = picker && picker.selected(selectedPicker);
+                // Snapshot all cards before any authorization request; never fall back to raw candidate rows.
+                resources.push(Object.freeze({
+                    pickerRoot: Object.freeze({dataset: Object.freeze({selectionUrl: selectedPicker.dataset.selectionUrl})}),
+                    selection: selection ? Object.freeze({id: selection.id, token: selection.token,
+                        kind: selection.kind, formatId: selection.formatId}) : null,
+                }));
                 return;
             }
             const nodes = Array.from(card.querySelectorAll("[data-batch-download-item]"));
@@ -377,6 +389,72 @@
             });
         });
         return resources;
+    }
+
+    async function resolveBatchResourceLinks(snapshot, pickerApi, environment) {
+        const resources = [], skipped = [], seenUrls = new Set();
+        for (const entry of snapshot) {
+            let item = entry;
+            if (entry.pickerRoot) {
+                try {
+                    if (!pickerApi || !pickerApi.resolveLink) throw new Error("格式核验不可用，请刷新后重试。");
+                    item = await pickerApi.resolveLink(entry.pickerRoot, entry.selection, environment);
+                } catch (error) {
+                    skipped.push(String(error.message || "资源授权已失效或访问受限，请重新解析。"));
+                    continue;
+                }
+            }
+            if (seenUrls.has(item.url)) continue;
+            seenUrls.add(item.url);
+            resources.push(Object.freeze({type: item.type, url: item.url, filename: item.filename}));
+        }
+        return {resources, skipped};
+    }
+
+    async function exportBatchResourceLinks(page, button, options) {
+        if (button.disabled) return;
+        const settings = options || {};
+        const windowObject = settings.windowObject || window;
+        const documentObject = settings.documentObject || document;
+        const picker = settings.pickerApi || windowObject.DokiToolYtdlpPicker;
+        const snapshot = collectBatchResourceLinks(page, picker);
+        const mode = button.getAttribute("data-batch-export");
+        const environment = {windowObject, documentObject,
+            fetchImpl: settings.fetchImpl || windowObject.fetch.bind(windowObject)};
+        let status = page.querySelector("[data-batch-export-status]");
+        if (!status) {
+            status = documentObject.createElement("p");
+            status.setAttribute("data-batch-export-status", "");
+            status.setAttribute("role", "status");
+            status.setAttribute("aria-live", "polite");
+            button.parentNode.appendChild(status);
+        }
+        button.disabled = true;
+        status.textContent = "正在核验所选资源链接…";
+        let result;
+        try {
+            result = await resolveBatchResourceLinks(snapshot, picker, environment);
+            const {resources, skipped} = result;
+            const reasons = Array.from(new Set(skipped)).map(reason =>
+                `${reason}（${skipped.filter(value => value === reason).length} 项）`).join("；");
+            const summary = `可用 ${resources.length} 项，跳过 ${skipped.length} 项${reasons ? `：${reasons}` : "。"}`;
+            status.textContent = summary;
+            if (!resources.length) return result;
+            if (mode === "copy-links") {
+                await (settings.copyText || copyText)(buildBatchLinksText(resources));
+                status.textContent = `已复制 ${resources.length} 项链接。${summary}`;
+            } else {
+                const aria2 = mode === "aria2";
+                (settings.downloadTextFile || downloadTextFile)(aria2 ? "aria2.txt" : "links.txt",
+                    aria2 ? buildBatchAria2Text(resources) : buildBatchLinksText(resources));
+                status.textContent = `已导出 ${resources.length} 项链接。${summary}`;
+            }
+            return result;
+        } catch (error) {
+            status.textContent += mode === "copy-links" ? " 复制失败，请检查剪贴板权限。" : " 导出失败，请重试。";
+        } finally {
+            button.disabled = false;
+        }
     }
 
     function buildBatchLinksText(resources) {
@@ -1884,29 +1962,8 @@
 
             const exportButton = event.target.closest("[data-batch-export]");
             if (exportButton) {
-                const resources = collectBatchResourceLinks(batchPage);
-                const mode = exportButton.getAttribute("data-batch-export");
-                if (!resources.length) {
-                    flashButton(exportButton, "无可复制资源");
-                    return;
-                }
-                if (mode === "copy-links") {
-                    try {
-                        await copyText(buildBatchLinksText(resources));
-                        flashButton(exportButton, "已复制");
-                    } catch (error) {
-                        flashButton(exportButton, "复制失败");
-                    }
-                    return;
-                }
-                if (mode === "aria2") {
-                    downloadTextFile(
-                        "aria2.txt",
-                        buildBatchAria2Text(resources)
-                    );
-                    return;
-                }
-                downloadTextFile("links.txt", buildBatchLinksText(resources));
+                event.preventDefault();
+                await exportBatchResourceLinks(batchPage, exportButton);
                 return;
             }
 
@@ -2007,6 +2064,8 @@
         downloadBatchPhotoArchive,
         authorizeBatchUpstreamItems,
         collectBatchResourceLinks,
+        resolveBatchResourceLinks,
+        exportBatchResourceLinks,
         buildBatchLinksText,
         buildBatchAria2Text,
         batchPhotoMediaItem,

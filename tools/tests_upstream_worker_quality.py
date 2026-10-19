@@ -246,6 +246,78 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertFalse(evidence["complete_moov"])
         self.assertEqual(evidence["reason"], "request_failed")
 
+    def test_initial_parse_stdlib_http_response_rejects_reversed_tail_before_read(self):
+        from tools import upstream_metadata_probe as bmff
+        from yt_dlp.extractor.common import InfoExtractor
+
+        class FixtureIE(InfoExtractor):
+            _VALID_URL = r"https://example.org/(?P<id>1)"
+
+            def _real_extract(self, url):
+                return {"id": "1", "title": "fixture", "formats": [
+                    {"url": "https://example.org/movie.mp4"}]}
+
+        def box(kind, body):
+            return (len(body) + 8).to_bytes(4, "big") + kind + body
+
+        moov = box(b"moov", b"".join(box(b"trak", box(b"mdia", box(
+            b"hdlr", bytes(8) + handler + bytes(12)))) for handler in (b"vide", b"soun")))
+        total = 2 * bmff.MAX_BYTES + len(moov)
+
+        def guarded_connection(*args, **kwargs):
+            raise AssertionError("offline")
+
+        guarded_connection.__qualname__ = "install_network_guard.<locals>.connect"
+        for malformed in (False, True):
+            with self.subTest(malformed=malformed):
+                reads, requests = [], []
+
+                class FixtureSocket:
+                    def __init__(self, wire):
+                        self.wire = wire
+
+                    def makefile(self, mode):
+                        return io.BytesIO(self.wire)
+
+                class Response(http.client.HTTPResponse):
+                    def geturl(self):
+                        return "https://example.org/movie.mp4"
+
+                    def read(self, amount=None):
+                        data = super().read(amount)
+                        reads.append((amount, len(data)))
+                        return data
+
+                def open_range(request, timeout):
+                    requests.append(request.get_header("Range"))
+                    self.assertLessEqual(len(requests), 2)
+                    self.assertTrue(0 < timeout <= 5)
+                    if len(requests) == 1:
+                        interval = f"0-{bmff.MAX_BYTES - 1}/{total}"
+                        body = (2 * bmff.MAX_BYTES).to_bytes(4, 'big') + b'mdat' + bytes(bmff.MAX_BYTES - 8)
+                    else:
+                        interval = "262144-0/1" if malformed else f"262144-{total - 1}/{total}"
+                        body = bytes(1024 * 1024) if malformed else moov
+                    wire = (f"HTTP/1.1 206 Fixture\r\nContent-Range: bytes {interval}\r\n"
+                            f"Content-Length: {len(body)}\r\n\r\n").encode() + body
+                    response = Response(FixtureSocket(wire))
+                    response.begin()
+                    return response
+
+                with patch.object(worker, "package_identity", return_value={"version": "fixture"}), \
+                        patch.object(worker, "extractor_classes", return_value=[FixtureIE]), \
+                        patch.object(socket, "create_connection", guarded_connection), \
+                        patch("urllib.request.build_opener", return_value=Mock(open=open_range)):
+                    result = worker.handle({"provider_id": "yt_dlp_generic", "version": "fixture", "action": "parse",
+                        "url": "https://example.org/1", "extractor_id": FixtureIE.ie_key(), "timeout_seconds": 10})
+                evidence = result['formats'][0]['upstream_bmff_track_evidence']
+                self.assertEqual(evidence['reason'], 'range_rejected' if malformed else 'complete_track_table')
+                self.assertEqual(reads, [(bmff.MAX_BYTES, bmff.MAX_BYTES)] +
+                                 ([] if malformed else [(len(moov), len(moov))]))
+                self.assertEqual(evidence['bytes_read'], sum(size for _, size in reads))
+                self.assertLessEqual(evidence['bytes_read'], 256 * 1024)
+                self.assertEqual(signal.getitimer(signal.ITIMER_REAL)[0], 0)
+
     def test_ytdlp_lazy_collection_stops_and_preserves_partial(self):
         from yt_dlp.extractor.common import InfoExtractor
         consumed = []

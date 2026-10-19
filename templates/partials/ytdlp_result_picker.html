@@ -1,0 +1,53 @@
+<section class="ytdlp-picker" data-ytdlp-picker
+         data-selection-url="{% url 'ytdlp_selected_format' %}"
+         data-first-id="{{ ytdlp_picker.first.candidate_id }}"
+         data-first-token="{{ ytdlp_picker.first.resource_token }}"
+         {% if ytdlp_picker.preview %}data-preview-id="{{ ytdlp_picker.preview.candidate_id }}"{% endif %}>
+    <div class="ytdlp-picker-eyebrow">解析完成 · {% if ytdlp_picker.is_audio %}音频{% else %}视频{% endif %}</div>
+    <div class="ytdlp-work">
+        <div class="ytdlp-artwork" data-picker-artwork>
+            <span class="ytdlp-artwork-placeholder" aria-hidden="true">{% if ytdlp_picker.is_audio %}♫{% else %}▷{% endif %}</span>
+            <img data-picker-cover alt="作品封面" decoding="async" hidden {% if ytdlp_picker.work.cover_available %}data-cover-available="true"{% endif %}>
+            {% if ytdlp_picker.preview %}<button type="button" class="ytdlp-preview-button" data-ytdlp-action="preview" aria-label="预览作品" disabled>▶</button>{% endif %}
+            {% if ytdlp_picker.duration_label %}<span class="ytdlp-duration">{{ ytdlp_picker.duration_label }}</span>{% endif %}
+        </div>
+        <div class="ytdlp-work-info">
+            <h3>{{ ytdlp_picker.work.title|default:'已解析素材' }}</h3>
+            {% if ytdlp_picker.work.author %}<p class="ytdlp-author">{{ ytdlp_picker.work.author }}</p>{% endif %}
+            <p class="ytdlp-work-meta">{{ ytdlp_picker.work.source_host }}{% if ytdlp_picker.duration_label %} · {{ ytdlp_picker.duration_label }}{% endif %}</p>
+            <p class="ytdlp-selected-size">所选文件：<span data-picker-size>{{ ytdlp_picker.selected.size_label }}</span></p>
+        </div>
+    </div>
+    <div class="ytdlp-player-region" data-picker-player-region hidden>
+        <div data-picker-player></div>
+        <p class="ytdlp-secondary-text" data-picker-preview-note>预览用于确认作品，不改变下载选择。</p>
+        <button type="button" class="ytdlp-text-button" data-ytdlp-action="close-preview">关闭预览</button>
+    </div>
+    {% if ytdlp_picker.videos %}
+    <fieldset class="ytdlp-format-group" data-picker-group="video">
+        <legend>视频格式 <span>{{ ytdlp_picker.videos|length }}</span></legend>
+        {% include 'partials/ytdlp_format_tiers.html' with primary_formats=ytdlp_picker.video_primary other_formats=ytdlp_picker.video_other kind_label='视频' %}
+    </fieldset>
+    {% endif %}
+    {% if ytdlp_picker.audios %}
+    {% if not ytdlp_picker.is_audio %}
+    <details class="ytdlp-audio-formats" {% if ytdlp_picker.all_unavailable %}open{% endif %}>
+        <summary>仅下载音频 <span>{{ ytdlp_picker.audios|length }}</span></summary>
+    {% endif %}
+        <fieldset class="ytdlp-format-group" data-picker-group="audio">
+            <legend{% if not ytdlp_picker.is_audio %} class="visually-hidden"{% endif %}>音频格式 <span>{{ ytdlp_picker.audios|length }}</span></legend>
+            {% include 'partials/ytdlp_format_tiers.html' with primary_formats=ytdlp_picker.audio_primary other_formats=ytdlp_picker.audio_other kind_label='音频' %}
+        </fieldset>
+    {% if not ytdlp_picker.is_audio %}</details>{% endif %}
+    {% endif %}
+    <p class="ytdlp-selection-note" data-picker-limitation>{{ ytdlp_picker.selected.limitation|default:'保留源文件，不转码。实际保存取决于来源的浏览器访问条件。' }}</p>
+    <button type="button" class="ytdlp-download-button" data-ytdlp-action="download" disabled>↓ 下载所选{% if ytdlp_picker.is_audio %}音频{% else %}视频{% endif %}</button>
+    <div class="ytdlp-secondary-actions">
+        <button type="button" class="ytdlp-text-button" data-ytdlp-action="copy" disabled>复制所选链接</button>
+        <button type="button" class="ytdlp-text-button" data-ytdlp-action="cancel" hidden>取消当前下载</button>
+        <span class="ytdlp-secondary-text">不需要选择解析通道</span>
+    </div>
+    <progress data-picker-progress max="100" hidden aria-label="文件接收进度"></progress>
+    <p class="ytdlp-status" data-picker-status role="status" aria-live="polite"></p>
+    <noscript>格式选择需要 JavaScript；原始候选仍保留在下方技术信息中。</noscript>
+</section>

@@ -423,11 +423,30 @@
         }
     }
 
+    function isSelectedYtdlpAudio(item) {
+        return Boolean(item && item.type === "audio"
+            && item.selection_schema === "ytdlp_selected_format_v1"
+            && item.provider === "yt_dlp_generic" && isBoundUpstreamItem(item)
+            && item.audio_tracks === "present" && item.video_tracks === "absent");
+    }
+
+    function contentTypeAllowsSelectedAudio(value, item) {
+        const type = normalizedContentType(value);
+        // A declared WebM audio selection must not accept another audio container.
+        if (item && /\.(?:webm|weba)$/i.test(String(item.filename || ""))) {
+            return ["audio/webm", "application/octet-stream", "binary/octet-stream"].includes(type);
+        }
+        return ["audio/mpeg", "audio/mp3", "audio/mp4", "audio/x-m4a", "audio/aac",
+            "audio/ogg", "application/ogg", "audio/opus", "audio/flac", "audio/x-flac",
+            "audio/wav", "audio/wave", "audio/x-wav", "audio/webm",
+            "application/octet-stream", "binary/octet-stream"].includes(normalizedContentType(value));
+    }
+
     function isOrdinaryMediaItem(item) {
         return Boolean(
             item
             && typeof item === "object"
-            && String(item.type || item.media_type || "").toLowerCase() === "video"
+            && (String(item.type || item.media_type || "").toLowerCase() === "video" || isSelectedYtdlpAudio(item))
             && isHttpUrl(item.url || item.video_url)
             && booleanValue(item.browser_direct_fetch_safe)
             && (!isUpstreamItem(item) || isBoundUpstreamItem(item))
@@ -1133,7 +1152,7 @@
                 ? response.headers.get("Content-Type")
                 : "",
         );
-        if (!contentTypeAllowsOrdinaryVideo(contentType)) {
+        if (!(isSelectedYtdlpAudio(item) ? contentTypeAllowsSelectedAudio(contentType, item) : contentTypeAllowsOrdinaryVideo(contentType))) {
             fetchGuard.clear();
             clearActiveProtection(true);
             throw downloadError(
@@ -1319,6 +1338,8 @@
         downloadViaBlob,
         downloadViaStreaming,
         isOrdinaryMediaItem,
+        isSelectedYtdlpAudio,
+        contentTypeAllowsSelectedAudio,
         mountActiveDownloadPanel,
         probeOrdinaryMediaFetch,
         formatBytes,

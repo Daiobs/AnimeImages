@@ -88,6 +88,36 @@ class YtdlpRuntimeCompatibilityTests(SimpleTestCase):
                     self.assertIsNone(rows[2]['requires_merge'])
                 if scenario == 'probe_rejected':
                     self.assertEqual((rows[0]['audio_tracks'], rows[0]['video_tracks']), ('unknown', 'unknown'))
+                if scenario == 'probe':
+                    self.assertEqual((rows[0]['audio_tracks'], rows[0]['video_tracks']), ('present', 'present'))
+                    self.assertIsNone(rows[0]['acodec'])
+                    self.assertIsNone(rows[0]['vcodec'])
+
+    def test_real_default_headers_survive_processing_and_allow_selected_descriptor(self):
+        from .services.upstream_candidates import resolve_candidate_record
+        from .services.ytdlp_selection import capability, selected_descriptor
+        for scenario in ('audio', 'video'):
+            with self.subTest(scenario=scenario):
+                matching._IDENTITIES.clear()
+                candidate = self.shared(scenario).metadata['upstream_candidates'][0]
+                with patch('socket.getaddrinfo', return_value=[(2, 1, 6, '', ('8.8.8.8', 443))]):
+                    record = resolve_candidate_record(candidate['resource_token'], candidate['candidate_id'])
+                    self.assertIn('sec-fetch-mode', {key.lower() for key in record['headers']})
+                    self.assertTrue(capability(candidate)['can_download'])
+                    descriptor = selected_descriptor(record)
+                self.assertEqual(descriptor['candidate_id'], candidate['candidate_id'])
+                self.assertEqual(descriptor['type'], candidate['media_type'])
+
+    def test_context_policy_revision_invalidates_normalized_parse_cache(self):
+        from .services.upstream_routes import parse_cache_key
+        from .services import ytdlp_selection
+        route = {'cache_identity': 'fixture-route'}
+        with patch.object(quality, '_python_for', return_value=self.python), \
+                patch.object(matching, '_executor', return_value=([], 'fixed-runtime')):
+            before = parse_cache_key(parity.SOURCE, route, 'yt_dlp_generic')
+            with patch.object(ytdlp_selection, 'CONTEXT_POLICY_REVISION', 999):
+                after = parse_cache_key(parity.SOURCE, route, 'yt_dlp_generic')
+        self.assertNotEqual(before, after)
 
     def test_native_rejections_and_late_import_are_not_configuration_absence(self):
         cases = [('auth', 'PROVIDER_PROCESS_FAILED', 'UPSTREAM_AUTH_REQUIRED'),

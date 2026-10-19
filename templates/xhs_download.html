@@ -177,12 +177,13 @@
     </section>
 {% endblock %}
 
-{% block extra_css %}<link rel="stylesheet" href="{% static 'css/upstream_candidates.css' %}?v={{ static_asset_version }}">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{% static 'css/upstream_candidates.css' %}?v={{ static_asset_version }}"><link rel="stylesheet" href="{% static 'css/ytdlp_result_picker.css' %}?v={{ static_asset_version }}">{% endblock %}
 {% block extra_js %}
     <script src="{% static 'js/upstream_candidates.js' %}?v={{ static_asset_version }}"></script>
     <script src="{% static 'js/ordinary_media_streaming_protocol.js' %}?v={{ static_asset_version }}"></script>
     <script src="{% static 'js/ordinary_media_streaming.js' %}?v={{ static_asset_version }}"></script>
     <script src="{% static 'js/ordinary_media_download.js' %}?v={{ static_asset_version }}"></script>
+<script src="{% static 'js/ytdlp_result_picker.js' %}?v={{ static_asset_version }}" defer></script>
     <script src="{% static 'js/download_reliability.js' %}?v={{ static_asset_version }}"></script>
     <script src="{% static 'js/douyin_reliability.js' %}?v={{ static_asset_version }}"></script>
     <script src="{% static 'js/result_url_safety.js' %}?v={{ static_asset_version }}"></script>
