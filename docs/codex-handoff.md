@@ -1,330 +1,84 @@
-# Codex Handoff
+# DokiTool 开发交接
 
-Updated: 2026-08-29
+核对日期：2026-10-19 UTC。这是后续开发的快速入口，部署证据集中在 [当前版本状态](current-version-status.md)，历史任务不作为新的永久制度。
 
-This is the short handoff for a new AnimeImages Codex task. Read [Current Version Status](current-version-status.md) for deployment/history detail and [Architecture](architecture.md) for stable runtime structure.
+## 从哪里继续
 
-## Baseline
+- 本次应用快照：main `c2b8ac51cfb87d4c030d321bf763080708db9593`，tree `1befb9f3c27a880d91da26305a27f4a671faccce`。
+- #96–#100 已顺序合并，不再向这些已合并功能分支追加工作。新任务从实际最新 main 建立分支，除非任务明确指定其他基线。
+- 最后已记录的生产应用：`bf9f1255b006ea93b7a0cf766d28f1db6138113f`。本次没有访问生产；应用合并不代表 Runtime、开关、账号或部署已更新。
 
-```text
-current development baseline = LATEST_FETCHED_ORIGIN_MAIN
-documented application baseline = 457139b98d67d6e5f79b099f9a4e91d60a26904f
-last recorded production runtime = 38992e955f2f268c2a6d4ecd81d900feba83f048
-repository main ahead of recorded production = YES
-ahead type = APPLICATION_CODE_AND_DOCUMENTATION
-production reverified by documentation task = NO
-```
-
-The hard-coded application SHA is a documentation snapshot, not a permanent
-`main` pointer. Every new task must fetch and resolve `origin/main` again. Do
-not infer deployment from `main`. PR #74, #75 and #76 are merged development
-capabilities and are not recorded as deployed by this documentation task.
-
-## First Commands
-
-Run these before editing:
+开始前确认工作目录、远端和并行工作：
 
 ```bash
 pwd
 git status --short --branch
-git fetch origin --prune
+git fetch origin
 git rev-parse HEAD
 git rev-parse origin/main
 git worktree list
-gh pr list --state open
 ```
 
-Confirm the assigned worktree, current branch, expected exact SHA, remote alignment and clean status. Unknown local or remote changes are a blocker, not permission to reset or force-push.
+这些 SHA 是文档快照，不追逐文档自身提交。保护日常 8000 所在工作树、未提交修改、原 `.env`、解释器、数据库、管理员、历史及正式路线；不要为普通开发切换其他任务的服务。已有修改先读清楚，不覆盖或强推。
 
-## Worktree Rules
+## 当前用户主流程
 
-- Use the existing long-lived development worktree assigned by the task.
-- Start a new task branch from the latest fetched `origin/main` unless the task names an existing branch/PR.
-- Use one task, one branch and one PR.
-- Do not create another worktree when the task explicitly says to continue the current one.
-- Do not use a production checkout as a development baseline.
-- Never reset, clean or delete files that may belong to the user or another task.
-- Preserve unrelated dirty changes and work with concurrent updates.
-- Delete branches/worktrees only after exact merge/tree/cleanup gates authorize it.
+粘贴作品链接 → 获取素材 → 查看原标题、平台、资源数量和预览 → 有多档时选择清晰度 → 原下载按钮保存所选文件。
 
-Production deploy, service restart, Nginx reload, migration, checkpoint movement and runtime setting changes always require separate explicit authorization.
+视频格式全部展开并按清晰度降序显示，桌面在预览右侧、窄屏上下排列。只合并已证实为同一资源且事实相容的别名；原始候选保留。不同视频、图集与 Live Photo 不能机械合成清晰度组。格式选择不是 Staff 特权，但匿名来源/Provider/下载准入仍独立核验。
 
-## Repository Shape
+当前已接通 yt-dlp、天天/Kukutool 通用服务以及抖音专用服务候选。无共享候选或无法可靠分组的旧结果保留原路径。所选动作绑定原候选、作品、资源、文件名与有效期；适用的旧资产/抖音专用路径另核验准确 manifest，不把通用候选和专用资产授权混为一套。播放、保存和 Batch 导出不能偷换成默认资源。
 
-AnimeImages is a Django monolith with platform adapters, fixed Provider routes, a browser-owned ordinary media data plane and Staff operations surfaces.
+中央播放按钮在提供新标签页操作的路径上核验并打开当时选中的 CDN 视频，不切换勾选或触发保存；保留的内嵌预览路径不因此改写。下载不主动启动播放器，浏览器自身的自动打开偏好不是应用保存成功的依据。
 
-Primary pages:
+## 路线与缓存
 
-| Path | Purpose |
+- 成熟平台策略与通用上游路线并存。适用来源可使用已配置、获准的默认 Provider 顺序，不必先逐站保存人工路线，也不对每条链接全通道竞赛。
+- 人工路线保存首选/备选与质量偏好，作用于精确 hostname；内容分组建议不是内容类型路由。成熟路线保护、来源准入、权限、Runtime 和安全检查仍生效。
+- 固定 videodl Common 使用已审查的具体 Backend 和类别。保存时的未来共享确认与 host/Backend/执行范围绑定，执行时重新核验；单次 Lab 测试和历史导入不授予未来权限。许可及使用范围不因代码接通而放宽。
+- **当前抖音相关服务链**采用天天优先：有效缓存直接复用；缺失或过期先请求天天，Kukutool 缓存不能提前截断；天天失败、不可用、限流或达到既定期限才进入获准兜底。天天成功不预热 Kukutool。不能把这条规则写成全站所有来源都先请求天天。
+- 保留总期限、兜底预留、账号串行、single-flight 与未知请求保护。停止等待不证明远端 HTTP 已停止；晚到结果不能替换已交付资源。
+- 缓存到期正常重新解析，不从历史档案跨过期拼接旧标题、封面或媒体授权。本次响应取得的作品信息正常保留；缺失则如实显示。
+
+## 下载与旧 Worker
+
+清晰度选择只改变资源及相应授权，不能仅因 Provider 名称、候选绑定或新旧卡片身份改变传输优先级。
+
+符合当前访问策略、授权和浏览器能力的普通完整视频复用共用浏览器交付；可用时通过 Service Worker 逐块交给浏览器下载管理器。实际协议、上下文、主机策略、CORS、MIME 和大小限制仍必须检查。音频、图片、明确的服务端合流及其他特殊输出保持各自路径，不把所有 HLS 当成完整 MP4。
+
+Blob 只在既有策略明确允许的兼容条件下使用；启动后失败、未知状态或取消不能自动再全量下载或转服务器。`provider_strategy`、动作描述符和前端共用入口须保持一致，不能前面选择 streaming、后面因 bound 标记改回 Blob。
+
+Worker 正在安装/等待更新与浏览器缺少能力不同。客户端确认**实际 controller**、等待必要的 `controllerchange` 后重新握手，并复核原候选期限；取消或过期不能晚到启动。旧 v2 无法证明全部标签已空闲时，不把 `UNKNOWN_MESSAGE` 当成“无下载”，也不强制接管。
+
+仅遇到明确的旧版更新提示时，先完成现有下载，再正常关闭该站点全部标签并重开。无需清缓存、注销 Worker 或退出账号；不是每次下载前的例行操作。
+
+## 关键入口
+
+| 范围 | 代码 / 指南 |
 | --- | --- |
-| `/` | Single parse/download |
-| `/xhs/` | XHS entry |
-| `/tiktok/` | Douyin entry |
-| `/bilibili/` | Bilibili video entry |
-| `/batch/` | Progressive Batch |
-| `/library/` | Local image library |
-| `/feedback/` | User feedback |
-| `/admin/` | Staff control plane |
-| `/admin/provider-lab/` | Staff-only Provider Lab |
+| 页面和动作路由 | `djangoProject/urls.py`、`xhs_download/views.py`、`xhs_download/ytdlp_selection_views.py` |
+| 共享执行与 Runtime | `services/quality_execution.py`、`services/upstream_matching.py`、`tools/upstream_match_worker.py`（services 路径均在 `xhs_download/` 下） |
+| 候选与选择 | `services/upstream_candidates.py`、`services/ytdlp_selection.py`、`services/service_format_selection.py`、[格式选择指南](ytdlp-result-picker.md) |
+| 抖音服务协调 | `services/platforms/douyin_providers.py`、`services/platforms/douyin.py` |
+| 下载策略与前端 | `services/provider_strategy.py`、`static/js/ordinary_media_download.js`、`static/js/ordinary_media_streaming.js`、`static/js/ordinary_media_download_sw.js`、`static/js/ytdlp_result_picker.js` |
+| 首页与 Batch 消费者 | `templates/partials/xhs_results_region.html`、`templates/partials/batch_result_card.html`、`static/js/batch_parse.js` |
+| 台账 / 路线 | `services/provider_lab/history.py`、`services/provider_lab/ledger.py`、`services/upstream_routes.py`、`services/saved_videodl.py`、[Lab 指南](provider-lab.md) |
+| 环境 / 架构 | [开发指南](development.md)、[架构](architecture.md)、[Provider 准入](provider-runtime-gates.md) |
 
-The old Public Submissions surface is retired. Its historical model/migrations remain. Current `UserFeedback` is a separate protected workflow.
+Lab 页面、持久执行历史和精确 host 路线仍由后端权限控制。短期资源检查与持久脱敏证据不同；历史导入不能签发下载权限，浏览和草稿不能触发解析。未确认身份、离线回放和真实媒体成功分别表达。
 
-## Platform Routes
+## 证据与验证
 
-### Xiaohongshu
+已有证据须保留原 Head、Provider、用户身份、配置范围和实际 transport：
 
-Ordinary video:
+- #99 的匿名 PeerTube 1080p/720p 证明该代表作品的选择与落盘，不自动代表全部网站或 SW 交付。
+- [正常 Chrome](https://github.com/Daiobs/AnimeImages/pull/100#issuecomment-6251827401)：`58f79d57`，日常页面的抖音专用天天非默认 720p，真实 CDN 增量交付与文件证据。
+- [Safari 与旧 Worker 升级](https://github.com/Daiobs/AnimeImages/pull/100#issuecomment-6252702886)：`e7c9d9f`，原 Safari 日常会话从 v2 正常换代到 v4，所选 720p 的浏览器任务早于流结束。同一记录中“不打断已有下载”的生命周期证据来自持久 Chrome 上的真实旧 v2/新 v4 与本地慢流夹具，不冒称 Safari 的在途升级实测。不要据此推断所有 Safari/来源都通过。
+- 应用内浏览器同类 SW 流在首块后取消的内部原因仍不完整，不能把它等同用户取消或用 Chrome 成功代替。早期 Blob 文件不追认为 SW 成功。
+- [F1–F5 修复及复审](https://github.com/Daiobs/AnimeImages/pull/100#issuecomment-6257613265)和[最终合并记录](https://github.com/Daiobs/AnimeImages/pull/100#issuecomment-6259776450)记录后续定向回归与最终同树验证。
 
-```text
-Native exact identity/title/author/cover/filename
-  -> TianTian high-quality video when Ultra is enabled
-  -> Native video fallback
-```
+按改动风险运行现有 Django、Node、Worker 入口；先复用对应版本的有效证据，再补具体缺口。自动测试使用脱敏输入和有界本地边界，不把替身或页面回调写成真实媒体成功。独立音频、全部 HLS 合流与全浏览器覆盖尚未全面验收，不自动成为每个任务的前置条件。
 
-Images:
+## 发布交接
 
-```text
-Native exact note identity and source order
-  -> ParseHub raw original candidate
-  -> Native exact same-item fallback
-```
-
-Rules:
-
-- Images and Live Photo make zero TianTian calls.
-- ParseHub cannot replace Native identity/order.
-- Preview is separate from original download authority.
-- Admitted originals preserve JPEG/PNG/GIF/WebP/AVIF/HEIC.
-- ParseHub disabled/unavailable/rejected means exact same-item Native fallback.
-
-Live Photo:
-
-- Anonymous Single: flat static images only.
-- Active Staff Single: badge, one-shot playback, ended restore, replay, still + motion archive.
-- Batch: flat static images only; no motion, playback, pair token or pair ZIP.
-- Archive is original still + motion MP4, not automatic iOS Photos import.
-
-### Douyin
-
-Normal uses Native baseline.
-
-Single Ultra:
-
-```text
-TianTian preferred -> KuKuTool fallback/race reserve -> Native fallback
-```
-
-Batch Ultra:
-
-```text
-TianTian -> Native fallback
-```
-
-Short links, canonical links, modal links and share text resolve to canonical content identity before Provider work. Keep existing Provider deadlines, request attempt accounting, continuation and source-bound redirect policy unless a task explicitly changes them.
-
-### Bilibili
-
-```text
-scope = VIDEO_ONLY
-formal route = NATIVE
-```
-
-Supported current forms include BV, AV, `b23.tv` and `p=` part. Native uses official View/PlayURL and prioritizes complete DURL media. It reads the title, UP owner name and cover from official View data; title and owner name feed the download filename semantics, while the cover enters the media result. Independent structured `ParseResult.metadata.author` is not yet a stable contract.
-
-Provider Lab compared three real samples: Native, TianTian, videodl and official DURL bytes were equivalent; ParseHub added metadata only; yt-dlp failed as a known Provider-specific limitation. No quality improvement was proven, so do not start a Bilibili route change from PR #76.
-
-Dynamic, Opus, Live Photo, member quality and DASH merge are deferred independent scopes.
-
-### YouTube And Long Tail
-
-yt-dlp and gallery-dl are optional generic capabilities behind capability/runtime/platform/safety gates. They are not blanket stable support.
-
-YouTube video/audio merge is a server-generated output class. It must remain separate from ordinary Provider/CDN browser streaming.
-
-## Download Contract
-
-Ordinary video:
-
-```text
-Provider/CDN -> Browser Service Worker -> Browser Download Manager -> Disk
-```
-
-Images and static archive:
-
-```text
-Image CDN -> Browser image/archive implementation -> Disk
-```
-
-Staff Live Photo archive:
-
-```text
-Still CDN + Motion CDN -> Browser archive -> Disk
-```
-
-AnimeImages is the control/validation/descriptor authority. Ordinary media must not silently fall back to Server Relay. Server-generated merge/archive outputs are separate resource types and may use bounded server processing.
-
-## Batch Contract
-
-- Progressive item results; no all-at-once wait.
-- `success`, `failed`, `timeout` and `skipped` remain distinct.
-- One timeout does not block later links.
-- Retry replaces only one card and uses current saved preferences.
-- Response deadline matches the displayed budget and has a fail-safe boundary.
-- Douyin Batch Provider order remains TianTian -> Native.
-- XHS Batch remains flat static for Live Photo notes.
-
-Do not change Provider order, timeout, completion grace or progressive token as incidental cleanup.
-
-## Provider Gate Model
-
-Formal Provider routes use separate capability, runtime, platform, safety and rollout gates. Daily exposure lives in `ProviderRuntimeSetting` and `/admin/provider-settings/`.
-
-Provider Lab uses a different Staff-only gate:
-
-```text
-UPSTREAM_PROVIDER_LAB_ENABLED
-VIDEODL_PROVIDER_LAB_ENABLED
-active Staff
-CSRF
-rate limit
-single-flight
-```
-
-Lab has no anonymous `public_gray/public` release mode and cannot be exposed by Admin Provider Settings.
-
-## Provider Lab
-
-Provider Lab compares fixed Providers without changing platform routes:
-
-- `animeimages_current`
-- `parsehub_repo`
-- `videodl_repo`
-- `yt_dlp_existing`
-- `tiantian_existing`
-
-Browser concurrency max is three. Each Provider uses a separate POST; Django does not fan out automatically. Existing wrappers run through current integrations, while ParseHub and videodl use isolated exact-pin whole-repository Workers.
-
-```text
-ParseHub pin = 144260f4349c5bb57415f7555a572fcd48c3b8ba
-videodl pin = 6cd1de0fe1209380b183b654c65e98a629637873
-```
-
-videodl is PolyForm Noncommercial 1.0.0 and is limited to noncommercial local Staff Lab use. It is not a production candidate.
-
-Provider Lab defaults off, does not persist results, does not choose a winner and does not perform full-media Relay. Stable operations live in [Provider Lab](provider-lab.md); research history lives in [Provider Lab research](research/provider_lab/01_UPSTREAM_PROVIDER_LAB_V1.md).
-
-videodl controlled execution is Provider-Lab-local. Use only fixed inventory
-IDs and the closed modes documented in
-[Asset 1/2 outcome](research/videodl/ASSET_1_2_IMPLEMENTATION_OUTCOME_V1.md).
-Do not reintroduce hidden common/grabber fallback, arbitrary import paths,
-client-controlled timeouts, or global observation/catalog abstractions.
-Asset 3 (daily production validation, Staff reporting and notification) is
-deferred, not cancelled, and requires a separate authorization.
-
-ParseHub Provider Lab Worker and ParseHub XHS Runtime are separate capabilities. Never reuse one flag or venv path to imply the other is enabled.
-
-## Recent PR Timeline
-
-| PR | State | Development effect |
-| --- | --- | --- |
-| #65 | Merged and last recorded production runtime | Douyin reviewed final redirect policy and terminal download failure UX |
-| #66 | Closed, not merged | Superseded research path; not a current capability |
-| #67-#72 | Merged | XHS Live Photo evidence, mapping, transport and Asset Spec foundations |
-| #73 | Merged | Active Staff XHS Live Photo one-shot preview |
-| #74 | Merged | XHS TianTian ordinary-video Hybrid |
-| #75 | Merged | ParseHub raw originals, shared preview and Staff Live Photo archive |
-| #76 | Merged | Staff-only Upstream Provider Lab |
-| #62 | OPEN / Draft / deferred | External tool progress materials; not in main |
-
-Do not continue modifying PR #76. The next stage is documentation and separately scoped platform research or deployment work.
-
-## Admin Pages
-
-- `/admin/provider-settings/`: formal Provider exposure.
-- `/admin/provider-health-tests/`: Provider readiness/smoke.
-- `/admin/provider-audit-logs/`: runtime setting audit.
-- `/admin/ops-dashboard/`: observability.
-- `/admin/xhs_download/batchparseruntimesetting/`: Django Admin `BatchParseRuntimeSetting` access and budgets.
-- `/admin/provider-lab/`: isolated Staff comparison.
-
-Public pages must not expose Provider names, raw media URLs, strategy matrices, Staff diagnostics or Lab controls.
-
-The Provider Health page now has an Asset 3 candidate section for daily Suite
-configuration and reporting. Its command, migration, email logic and inactive
-systemd units are development-only until a separate production task supplies
-approved samples, SMTP configuration and explicit timer activation. Do not
-infer deployment from merge, or install the tracked units during an ordinary
-development task. PR #62 remains deferred and untouched.
-
-## Local Verification
-
-Use the project virtualenv selected for the worktree. Unset production database variables for local SQLite gates when the task requires it.
-
-```bash
-python manage.py check
-python manage.py makemigrations --check --dry-run
-python manage.py test xhs_download --noinput
-node --test tests_js/*.test.js
-node --check static/js/*.js
-git diff --check
-```
-
-Do not call real Providers from automated tests. Real sample work must use a separately authorized, sanitized browser/research gate.
-
-## Before A PR
-
-1. Fetch and confirm exact base/head.
-2. Confirm clean worktree and no unrelated changes.
-3. Review full diff scope.
-4. Run focused and full gates proportional to risk.
-5. Run secret/URL/privacy scans for Provider work.
-6. Update stable docs when behavior changes.
-7. Create Draft PR first.
-8. Wait for exact-head CI with real executed steps.
-9. Keep Human Browser gates distinct from automated tests.
-10. Do not Ready, merge or deploy unless the current task explicitly authorizes each action.
-
-PR descriptions should separate:
-
-- Summary / Why
-- Design / Implementation
-- Scope
-- Safety
-- Verification
-- Runtime Behavior Changes
-- Deployment Notes
-- Rollback
-- Non-goals
-
-Never include real sample URLs, media URLs, signed queries, Cookie, credentials, user input or local personal paths.
-
-## Known Pitfalls
-
-- Treating merged main as production.
-- Treating a Provider Lab success as formal route readiness.
-- Treating metadata-only ParseHub output as downloadable Bilibili media.
-- Treating TianTian or videodl equivalence as a Bilibili quality upgrade.
-- Enabling Staff Live Photo for Anonymous or Batch.
-- Replacing XHS Native item order with Provider array order.
-- Mixing ParseHub XHS Runtime and Provider Lab Worker configuration.
-- Installing Provider-specific venvs into the application `.venv`.
-- Using Browser Relay/Server Relay terminology interchangeably.
-- Logging signed URLs or user inputs while diagnosing failures.
-- Modifying PR #62 as incidental cleanup.
-
-## Production Boundary
-
-The last recorded runtime is `38992e955f2f268c2a6d4ecd81d900feba83f048`. This handoff does not state that it is the live verified checkout; it only records the latest accepted evidence provided to the repository task.
-
-A production task must independently verify exact checkout, config drift, migrations, static integrity, service state and browser acceptance. Do not touch production from an ordinary development or documentation task.
-
-## Further Reading
-
-- [README](../README.md)
-- [Current Version Status](current-version-status.md)
-- [Architecture](architecture.md)
-- [Development Guide](development.md)
-- [Provider Runtime Gates](provider-runtime-gates.md)
-- [Provider Lab](provider-lab.md)
-- [Repository Governance](repository-governance.md)
-- [Production Deploy Checklist](production-deploy-checklist.md)
+发布使用已有 [固定 SHA 的 SSH 发布通道](../ops/managed-release/README.md#approved-release)，从独立、已核验的工具 checkout 执行；须另行获得明确授权并重新核对现场 SHA、配置、迁移和服务状态。[Admin Release Management](release-management.md) 是另一项可选执行入口，最近生产记录仍为 record-only，不能据页面存在推断 Web 执行器已安装。本交接不授权部署、生产重启或权限变更；最新记录不等于本次实时核验。

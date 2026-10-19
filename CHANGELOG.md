@@ -2,6 +2,66 @@
 
 ## Unreleased
 
+The entries below are merged in application snapshot
+`c2b8ac51cfb87d4c030d321bf763080708db9593` (#96-#100), but are not recorded as
+deployed. No version number or Release is assigned. The last recorded
+production application is `bf9f1255b006ea93b7a0cf766d28f1db6138113f`; see
+[current version status](docs/current-version-status.md) for release evidence.
+
+- Aligned shared yt-dlp execution with verified 2026.6.9 while retaining
+  2026.3.17 offline compatibility, exact per-request Runtime identity, isolated
+  subprocess checks and Python 3.12 CI coverage.
+- Added cross-batch platform evidence and route references to the existing
+  Provider Lab. Scout imports and Lab runs retain distinct provenance; drafts
+  do not save routes automatically. Reviewed fixed Common backends can use
+  scoped, audited host routes with explicit future-sharing authorization.
+- Added exact-candidate format selection for shared yt-dlp, TianTian and
+  Kukutool results, including dedicated Douyin service consumers. Preserved
+  native quality labels, work grouping, unknown fields, independent audio,
+  per-card selection and mixed Batch copy/link/aria2 selection snapshots.
+- Restored the original result layout, actual work titles, resource count,
+  preview and download entry. Video formats remain expanded and descending;
+  confirmed same-resource 1080p/1080P aliases share one visible option without
+  deleting raw candidates. Every selected resource retains its own authority.
+- Made the relevant Douyin service chain TianTian-first: valid cache reuse,
+  fresh TianTian after expiry, then admitted fallback on failure or deadline.
+  Kukutool is not preheated when TianTian succeeds. Added selected-video
+  new-tab playback without changing selection or starting a save.
+- Restored eligible bound videos to the common Service Worker streaming path.
+  Worker upgrade waiting is distinct from unsupported-browser compatibility;
+  controller replacement re-handshakes and checks original expiry without
+  interrupting active downloads or silently starting Blob. Normal Chrome and
+  Safari have scoped live streaming evidence; the in-app-browser cancellation
+  limitation remains separate.
+- Fixed five premerge blockers: strict confirmed-vs-offline evidence labels;
+  cancelled/replaced-card late responses no longer continue saving; empty
+  unknown-size streams fail instead of reporting completion; malformed Range
+  responses cannot exceed metadata read budgets; derived format checks no
+  longer invalidate otherwise-live parse caches or extend resource authority.
+
+See [the final merge record](https://github.com/Daiobs/AnimeImages/pull/100#issuecomment-6259776450)
+and [F1-F5 rereview](https://github.com/Daiobs/AnimeImages/pull/100#issuecomment-6257613265).
+These changes do not imply all sources are public, all HLS can be merged, or
+all browsers/formats are verified.
+
+## Recorded Production: 2026-10-16
+
+- Deployed fixed application `bf9f1255b006ea93b7a0cf766d28f1db6138113f`,
+  including #93-#95, using the existing managed release channel. Runtime
+  inventory and existing public/route/mail settings were not expanded;
+  the shared yt-dlp version gate remained a known limitation of that release.
+  See [the release record](https://github.com/Daiobs/AnimeImages/pull/95#issuecomment-6211550835).
+- #96-#100 above were merged later and were not part of that deployment.
+
+## Earlier Development And Acceptance History
+
+The entries below preserve the behavior and scope recorded at each earlier
+stage. They were formerly grouped under Unreleased; that did not remain an
+accurate deployment label. For example, #74-#76 and Asset 3 later received
+recorded deployments. Old race, continuation, Blob and Worker descriptions
+are historical, not overrides of the current behavior above. Detailed dated
+evidence remains in the linked guides and research records.
+
 - Added Asset 3 as a default-off extension of the existing Provider Health
   Tests: five XHS/Bilibili/videodl checks, one bounded sequential daily Suite,
   failure/reminder/recovery email deduplication, Admin reporting, retention,
@@ -32,8 +92,9 @@
   The Lab does not change formal platform routes; the first three-sample
   Bilibili comparison retained the Native video route.
 
-These Unreleased entries describe development `main`; this documentation task
-does not record PR #74, #75 or #76 as deployed to production.
+At the time those entries were written, #74-#76 described development main.
+Their later deployment is recorded in the historical section of
+[current version status](docs/current-version-status.md).
 - Added a dormant, URL-free XHS LivePhoto asset identity and Asset Spec mapper
   on top of the browser-verified host-class subset merged in PR #71. The
   class-level transport policy is separate from factory-only format proof,
