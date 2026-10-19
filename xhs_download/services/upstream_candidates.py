@@ -181,10 +181,6 @@ def resolve_issued_candidate_record(token, candidate_id):
             raise ValueError()
         if not isinstance(record, dict) or not candidate_url(record.get('url')):
             raise ValueError()
-        expires_at = record.get('expires_at')
-        if (not isinstance(expires_at, (int, float)) or not math.isfinite(expires_at)
-                or expires_at <= time.time()):
-            raise ValueError()
         return record
     except (signing.BadSignature, ValueError, TypeError):
         raise XhsParseError('候选资源已失效，请重新解析。') from None

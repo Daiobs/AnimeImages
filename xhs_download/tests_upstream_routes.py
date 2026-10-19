@@ -410,6 +410,48 @@ class SelectedCheckRouteCacheTests(RouteFixtures, TestCase):
             PlatformRegistry().parse_url(SOURCE, upstream_provider_ids=[], upstream_matches=())
         self.assertEqual(self.execute.call_count, 4)
 
+    def test_unchanged_record_expiry_is_cache_miss_while_other_authority_is_live(self):
+        from .services.upstream_candidates import SALT, TTL, resolve_candidate_record
+        from .services.upstream_routes import cached_parse_result, parse_cache_key
+        now = int(time.time())
+        with patch('time.time', return_value=now):
+            # Only the issued record has a short lifetime; signing and cache TTLs stay unchanged.
+            with patch('xhs_download.services.upstream_candidates.time',
+                       SimpleNamespace(time=lambda: now - TTL + 10)):
+                first = self.parse()
+            candidate = first.metadata['upstream_candidates'][1]
+            token, identity = candidate['resource_token'], candidate['candidate_id']
+            payload = signing.loads(token, salt=SALT, max_age=TTL)
+            bundle_key = 'upstream:candidate-bundle:' + payload['bundle']
+            bundle = cache.get(bundle_key)
+            _, route = route_matches(SOURCE, (self.match,))
+            key = parse_cache_key(SOURCE, route, 'yt_dlp_generic')
+            snapshot = cache.get(key)
+            self.check(candidate, 'complete_track_table')
+            self.assertTrue(self.parse().metadata['upstream_route']['cache_hit'])
+            self.execute.assert_called_once()
+
+        with patch('time.time', return_value=now + 11):
+            self.assertEqual(signing.loads(token, salt=SALT, max_age=TTL), payload)
+            self.assertEqual(cache.get(bundle_key), bundle)
+            self.assertEqual(cache.get(key), snapshot)
+            with patch('xhs_download.services.upstream_candidates.signing.dumps', wraps=signing.dumps) as sign:
+                self.assertEqual(resolve_candidate_record(token, identity), bundle[identity])
+                self.assertIsNone(cached_parse_result(key, SOURCE, 'yt_dlp_generic'))
+            sign.assert_not_called()
+            self.assertEqual(cache.get(bundle_key), bundle)
+            self.assertEqual(cache.get(key), snapshot)
+            fresh = self.parse()
+            self.assertFalse(fresh.metadata['upstream_route']['cache_hit'])
+            self.assertEqual(self.execute.call_count, 2)
+            self.assertNotEqual(fresh.metadata['upstream_candidates'][1]['candidate_id'], identity)
+            self.assertNotIn('selected_track_check', fresh.metadata['upstream_candidates'][1])
+
+        with patch('django.core.signing.time', SimpleNamespace(time=lambda: now + TTL + 1)):
+            self.assertEqual(cache.get(bundle_key), bundle)
+            with self.assertRaises(XhsParseError):
+                resolve_candidate_record(token, identity)
+
 
 @override_settings(THIRD_PARTY_PROVIDER_ENABLED=True,
                    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache",
