@@ -5,8 +5,10 @@ from dataclasses import replace
 from hashlib import sha256
 import ipaddress
 import json
+import math
 from pathlib import Path
 import re
+import time
 from urllib.parse import urlsplit
 
 from django.db import transaction
@@ -365,6 +367,12 @@ def _candidate_binding(record):
     return sha256(json.dumps(record, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def _candidate_record_is_live(record):
+    expires_at = record.get("expires_at")
+    return (type(expires_at) in (int, float) and math.isfinite(expires_at)
+            and expires_at > 0 and expires_at > time.time())
+
+
 def cached_parse_result(key, source_url, provider):
     if not key:
         return None
@@ -383,7 +391,8 @@ def cached_parse_result(key, source_url, provider):
         displayed = []
         for candidate in candidates:
             record = resolve_issued_candidate_record(candidate.get("resource_token"), candidate.get("candidate_id"))
-            if (record.get("source_url") != source_url or record.get("provider_id") != provider
+            if (not _candidate_record_is_live(record)
+                    or record.get("source_url") != source_url or record.get("provider_id") != provider
                     or record.get("public") != candidate
                     or _candidate_binding(record) != saved["candidate_bindings"].get(candidate.get("candidate_id"))):
                 return None
@@ -412,7 +421,7 @@ def cache_parse_result(key, result):
             bindings = {}
             for candidate in (result.metadata or {}).get("upstream_candidates", []):
                 record = resolve_issued_candidate_record(candidate.get("resource_token"), candidate.get("candidate_id"))
-                if record.get("public") != candidate:
+                if not _candidate_record_is_live(record) or record.get("public") != candidate:
                     return
                 bindings[candidate["candidate_id"]] = _candidate_binding(record)
             cache.set(key, {"result": deepcopy(result), "candidate_bindings": bindings}, timeout=60)
