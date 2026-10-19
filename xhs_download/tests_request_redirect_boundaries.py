@@ -10,7 +10,7 @@ import requests
 import urllib3
 from django.contrib.auth.models import AnonymousUser
 from django.core.cache import cache
-from django.test import RequestFactory, SimpleTestCase
+from django.test import RequestFactory, SimpleTestCase, override_settings
 
 from .services.common import (
     XhsDownloadError, XhsSecurityError, encode_url, request_get_with_retry,
@@ -41,6 +41,10 @@ class RecordedBody(io.BytesIO):
         pass
 
 
+@override_settings(CACHES={"default": {
+    "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+    "LOCATION": "request-redirect-boundary-tests",
+}})
 class BoundaryNetworkCase(SimpleTestCase):
     def setUp(self):
         self.sent = []
