@@ -2,7 +2,9 @@
 
 from dataclasses import replace
 from hashlib import sha256
+from math import isfinite
 import re
+from time import time
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -11,7 +13,7 @@ from django.core.cache import cache
 
 from .assets import MediaAsset, ParseResult
 from .common import XhsParseError, clean_filename, validate_public_download_url
-from .provider_manifest import build_provider_manifest_token, provider_manifest_is_valid
+from .provider_manifest import build_provider_manifest_token, provider_manifest_is_valid, provider_manifest_expires_at
 from .provider_access import UPSTREAM_PROVIDER_IDS
 from .platforms.gallerydl_generic import media_type_from_metadata, extension_from_url, VIDEO_EXTENSIONS
 from .platforms.ytdlp_generic import (
@@ -46,21 +48,54 @@ def _key(asset_id):
     return 'upstream:asset:v1:' + sha256(asset_id.encode()).hexdigest()
 
 
-def upstream_manifest_item_is_allowed(item):
+def _authorized_resource_record(item):
     if not isinstance(item, dict) or item.get('provider') not in PROVIDERS:
-        return False
+        return None
     match = ASSET_PATTERN.fullmatch(str(item.get('asset_id') or ''))
     if not match or not provider_manifest_is_valid(item):
-        return False
+        return None
     if item.get('type') != match[2] or item.get('source_platform') != 'upstream':
-        return False
+        return None
     try:
         record = cache.get(_key(item['asset_id']))
     except Exception:
-        return False
+        return None
     keys = ('asset_id', 'provider', 'provider_resource_id', 'provider_cache_key',
             'url', 'type', 'source_platform')
-    return bool(isinstance(record, dict) and all(item.get(k) == record.get(k) for k in keys))
+    if not (isinstance(record, dict) and all(item.get(k) == record.get(k) for k in keys)
+            and provider_manifest_is_valid(record)):
+        return None
+    if 'expires_at' in record:
+        expires_at = record['expires_at']
+        if (isinstance(expires_at, bool) or not isinstance(expires_at, (int, float))
+                or not isfinite(expires_at) or expires_at <= time()):
+            return None
+    return record
+
+
+def upstream_manifest_item_is_allowed(item):
+    return _authorized_resource_record(item) is not None
+
+
+def upstream_video_resource_binding(item):
+    """Project original issuer authority; reading a route never renews it."""
+    record = _authorized_resource_record(item)
+    if record is None or record.get('type') != 'video':
+        return {}
+    binding = {key: record[key] for key in (
+        'asset_id', 'provider', 'provider_resource_id', 'provider_cache_key',
+        'provider_manifest_token', 'url', 'type', 'source_platform')}
+    binding['selection_schema'] = 'upstream_resource_v1'
+    if 'expires_at' not in record:
+        binding['streaming_unsupported_reason'] = 'missing_resource_expiry'
+    else:
+        try:
+            manifest_expires_at = provider_manifest_expires_at(record['provider_manifest_token'])
+        except ValueError:
+            return {}
+        binding['selection_expires_at'] = int(min(
+            record['expires_at'], manifest_expires_at) * 1000)
+    return binding
 
 
 def _issue_assets(assets, *, match, source_url):
@@ -75,6 +110,8 @@ def _issue_assets(assets, *, match, source_url):
         token = build_provider_manifest_token(**fields, url=asset.url, media_type=asset.media_type)
         bound = replace(asset, **fields, provider_manifest_token=token)
         record = bound.to_download_item()
+        if asset.media_type == 'video':
+            record['expires_at'] = min(time() + RESOURCE_TTL, provider_manifest_expires_at(token))
         # Only issuer-produced exact URLs enter this cache. No client-supplied host grant.
         cache.set(_key(asset_id), record, timeout=RESOURCE_TTL)
         result.append(bound)

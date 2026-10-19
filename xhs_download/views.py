@@ -6267,6 +6267,9 @@ def upstream_candidate_view(request):
                    and source_allowed)
         if not request_user_is_staff(request):
             allowed = allowed and upstream_match_is_public_allowed(match, urlsplit(source).hostname, runtime)
+        if record['provider_id'] in {'tiantianjiexi', 'kukutool'}:
+            from .ytdlp_selection_views import _admitted
+            allowed = _admitted(request, record, provider=record['provider_id'], service=True)
         if not allowed:
             raise ValueError()
         response = JsonResponse({"status": "success", "url": record["url"],

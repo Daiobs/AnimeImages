@@ -463,6 +463,9 @@ def tiantianjiexi_douyin_manifest_is_allowed(item):
 def provider_manifest_allows_public_download(item):
     if not isinstance(item, dict):
         return False
+    if ':format:' in str(item.get('asset_id') or '') and item.get('provider') in {'tiantianjiexi', 'kukutool'}:
+        from .provider_manifest import douyin_format_manifest_is_valid
+        return douyin_format_manifest_is_valid(item)
     if str(item.get("asset_id") or "").startswith("upstream:"):
         from .upstream_delivery import upstream_manifest_item_is_allowed
 
@@ -594,6 +597,9 @@ def validate_provider_signed_download_url(provider_item, url, message):
         allowed = youtube_merge_manifest_item_is_allowed(signed_url_item)
     elif provider == YTDLP_MERGE_PROVIDER_ID:
         allowed = ytdlp_merge_manifest_item_is_allowed(signed_url_item)
+    elif provider in {'kukutool', 'tiantianjiexi'} and ':format:' in str(provider_item.get('asset_id') or ''):
+        from .provider_manifest import douyin_format_manifest_is_valid
+        allowed = douyin_format_manifest_is_valid(signed_url_item)
     elif provider == "kukutool":
         allowed = bool(get_kukutool_manifest_identity(provider_item)) and is_byte_cdn_url(url)
     elif provider == "tiantianjiexi":

@@ -260,7 +260,7 @@ test("homepage failed image download clears busy progress and reenables button w
             window.testDownload = async (items) => { selected = items; await handleDownloadClick(getDownloadButton(), true); };
             return;`);
     vm.runInNewContext(source, {window, URL, AbortController,
-        document: {cookie: "", querySelector() { return page; },
+        document: {cookie: "", querySelector(selector) { return selector === ".xhs-download-page" ? page : null; },
             getElementById(id) { return id === "parse-results-region" ? region : null; },
             addEventListener(_name, callback) { ready = callback; }},
         fetch: async () => ({ok: true, async json() { return {route_type: "direct", items: [{...item, browser_upstream_bound: true}]}; }}),

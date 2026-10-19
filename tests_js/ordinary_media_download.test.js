@@ -633,6 +633,329 @@ test("video and binary media content types remain supported", () => {
     assert.equal(ordinary.contentTypeAllowsOrdinaryVideo("text/html"), false);
 });
 
+function unknownServiceFile(provider, type = "video", overrides = {}) {
+    return ordinaryItem({provider, type, selection_schema: "service_selected_format_v1",
+        candidate_id: "service-selected-candidate", selected_format_id: "",
+        asset_id: "upstream:selection:service-selected-candidate", source_platform: "upstream",
+        browser_upstream_bound: true, service_audio_file: type === "audio",
+        selection_expires_at: Date.now() + 60000,
+        url: "https://cdn.example.org/opaque-resource", filename: "upstream-quality.bin",
+        audio_tracks: "unknown", video_tracks: "unknown", ...overrides});
+}
+
+function dedicatedServiceFile(provider, overrides = {}) {
+    return ordinaryItem({provider, selection_schema: "service_selected_format_v1",
+        candidate_id: "signed-candidate-low", selected_format_id: "", source_platform: "douyin",
+        asset_id: `douyin:7123456789012345678:video:${provider}:format:0123456789abcdef01234567`,
+        provider_resource_id: "7123456789012345678",
+        provider_cache_key: `douyin:${provider}:validated:7123456789012345678`,
+        provider_manifest_token: "signed-low-manifest:timestamp:signature",
+        selection_expires_at: Date.now() + 60000,
+        browser_upstream_bound: true, url: "https://v11-default.365yg.com/media/low.mp4?token=low-exact",
+        filename: "low.mp4", ...overrides});
+}
+
+test("equal authorized full-video access conditions give old and selected cards the same streaming priority", async () => {
+    const url = "https://v11-default.365yg.com/media/same.mp4";
+    const oldUpstream = provider => ordinaryItem({provider, url, source_platform: "upstream",
+        selection_schema: "upstream_resource_v1", browser_upstream_bound: true,
+        asset_id: `upstream:${"a".repeat(32)}:video:1`, provider_resource_id: "b".repeat(64),
+        provider_cache_key: `upstream:${"a".repeat(32)}`, provider_manifest_token: "signed-original-manifest",
+        selection_expires_at: Date.now() + 60000});
+    const cases = [
+        ordinaryItem({provider: "", url}), ordinaryItem({provider: "tiantianjiexi", url}),
+        ordinaryItem({provider: "kukutool", url}),
+        ...["tiantianjiexi", "kukutool"].map(provider => dedicatedServiceFile(provider, {url})),
+        ...["tiantianjiexi_generic", "kukutool_generic"].map(provider => unknownServiceFile(provider, "video", {
+            url, selection_expires_at: Date.now() + 60000})),
+        unknownServiceFile("yt_dlp_generic", "video", {url, selection_schema: "ytdlp_selected_format_v1",
+            selection_expires_at: Date.now() + 60000}),
+        ...["yt_dlp_generic", "parsehub_generic"].map(oldUpstream),
+    ];
+    for (const item of cases) {
+        let starts = 0;
+        const result = await ordinary.download(item, {forceBlob: true,
+            fetchImpl: () => assert.fail("card identity must not force a page fetch"),
+            handoffBlob: () => assert.fail("card identity must not force a Blob"),
+            streamingClient: {capabilityAvailable: () => true, async start(actual) {
+                starts += 1;
+                assert.equal(actual, item);
+                assert.equal(actual.url, url);
+                return {downloadId: "same-resource", completion: Promise.resolve({filename: item.filename,
+                    receivedBytes: 5, totalBytes: 5})};
+            }},
+        });
+        assert.equal(result.transport, "browser_streaming", `${item.provider}/${item.selection_schema}`);
+        assert.equal(starts, 1);
+    }
+});
+
+test("non-SW compatibility cannot bypass a declared resource binding or its original expiry", async () => {
+    const resource = ordinaryItem({provider: "parsehub_generic", url: "https://cdn.example.org/video.mp4",
+        source_platform: "upstream", selection_schema: "upstream_resource_v1", browser_upstream_bound: true,
+        asset_id: `upstream:${"a".repeat(32)}:video:1`, provider_resource_id: "b".repeat(64),
+        provider_cache_key: `upstream:${"a".repeat(32)}`, provider_manifest_token: "signed-resource",
+        selection_expires_at: Date.now() + 60000});
+    for (const changes of [{provider_manifest_token: undefined}, {selection_expires_at: undefined},
+        {selection_expires_at: Date.now() - 1}, {provider_cache_key: "other"}]) {
+        for (const run of [ordinary.download, ordinary.downloadViaBlob]) {
+            let fetches = 0, saves = 0;
+            await assert.rejects(run({...resource, ...changes}, {
+                fetchImpl: () => { fetches += 1; throw new Error("unexpected-fetch"); },
+                handoffBlob: () => { saves += 1; },
+            }), error => error.message === "INVALID_SELECTION_BINDING" || error.errorCode === "DESCRIPTOR_EXPIRED");
+            assert.equal(fetches, 0);
+            assert.equal(saves, 0);
+        }
+    }
+});
+
+for (const provider of ["tiantianjiexi", "kukutool"]) {
+    test(`${provider} bound selected format uses streaming when available without full Blob buffering`, async () => {
+        for (const suffix of ["", ":format:0123456789abcdef01234567"]) {
+            const descriptor = dedicatedServiceFile(provider, {asset_id: `douyin:7123456789012345678:video:${provider}${suffix}`});
+            const before = JSON.stringify(descriptor);
+            const streams = [];
+            assert.equal(ordinary.isOrdinaryMediaItem(descriptor), true);
+            const result = await ordinary.download(descriptor, {
+                forceBlob: true,
+                fetchImpl: () => assert.fail("streaming selection must not fetch a page Blob"),
+                streamingClient: {capabilityAvailable: () => true,
+                    async start(item, options) {
+                        streams.push({...item});
+                        assert.equal(options.filename, descriptor.filename);
+                        return {downloadId: "selected-stream", completion: Promise.resolve({
+                            filename: item.filename, receivedBytes: 5, totalBytes: 5,
+                        })};
+                    }},
+                handoffBlob: () => assert.fail("streaming selection must not hand off a Blob"),
+            });
+            assert.equal(result.transport, "browser_streaming");
+            assert.deepEqual(streams, [descriptor]);
+            assert.equal(JSON.stringify(descriptor), before);
+        }
+    });
+
+    test(`${provider} dedicated selected URL cannot redirect or return HTML before save`, async () => {
+        const descriptor = dedicatedServiceFile(provider);
+        for (const change of [{redirected: true}, {url: "https://v11-default.365yg.com/media/primary.mp4"},
+            {contentType: "text/html"}, {type: "opaque"}, {type: "opaqueredirect"}]) {
+            await assert.rejects(ordinary.download(descriptor, {
+                fetchImpl: async () => ({...responseFor("12345", {url: descriptor.url, ...change}),
+                    ...(change.type ? {type: change.type} : {})}),
+                handoffBlob: () => assert.fail("invalid response must not save"),
+            }));
+        }
+    });
+
+    test(`${provider} dedicated selection rejects incomplete or inconsistent manifest identity before media fetch`, async () => {
+        const descriptor = dedicatedServiceFile(provider);
+        const changes = [
+            {provider: "unknown"}, {provider: `${provider}_custom`}, {provider: `${provider}_generic`},
+            {provider: provider === "kukutool" ? "tiantianjiexi" : "kukutool"},
+            {source_platform: "upstream"}, {source_platform: "third_party"}, {type: "audio", service_audio_file: true},
+            {asset_id: "upstream:selection:signed-candidate-low"}, {asset_id: `douyin:8123456789012345678:video:${provider}`},
+            {asset_id: `${descriptor.asset_id}extra`}, {asset_id: `douyin:7123456789012345678:video:${provider}:format:xyz`},
+            {provider_resource_id: "8123456789012345678"}, {provider_resource_id: 7123456789012345678},
+            {provider_cache_key: "cache-for-another-work"}, {selected_format_id: undefined},
+            {browser_upstream_bound: false}, {browser_upstream_bound: "true"}, {browser_direct_fetch_safe: "true"},
+            {requires_merge: undefined}, {requires_cookie: undefined}, {selection_delivery: "legacy_manifest"},
+            {url: "http://v11-default.365yg.com/media/low.mp4"},
+            {url: "https://user:password@v11-default.365yg.com/media/low.mp4"},
+            {url: `${descriptor.url}#fragment`}, {url: "https://v11-default.365yg.com:8443/media/low.mp4"},
+        ];
+        for (const field of ["candidate_id", "provider_resource_id", "provider_manifest_token", "asset_id", "provider_cache_key"]) {
+            for (const value of [undefined, "", " ", "bad\nvalue"]) changes.push({[field]: value});
+        }
+        for (const change of changes) {
+            const invalid = {...descriptor, ...change};
+            assert.equal(ordinary.isOrdinaryMediaItem(invalid), false, JSON.stringify(change));
+            await assert.rejects(ordinary.download(invalid, {
+                fetchImpl: () => assert.fail("invalid identity must not fetch"),
+                handoffBlob: () => assert.fail("invalid identity must not save"),
+            }), error => error.errorCode === "BROWSER_DOWNLOAD_NOT_ORDINARY_MEDIA");
+        }
+    });
+}
+
+test("selected stream expiry and malformed binding fail before even a compatibility fetch", async () => {
+    for (const changes of [{selection_expires_at: Date.now() - 1}, {selection_expires_at: undefined},
+        {selection_expires_at: "9999999999999"}]) {
+        await assert.rejects(ordinary.download(dedicatedServiceFile("tiantianjiexi", changes), {
+            streamingClient: {capabilityAvailable: () => false},
+            fetchImpl: () => assert.fail("expired selection must not fetch"),
+            handoffBlob: () => assert.fail("expired selection must not save"),
+        }));
+    }
+});
+
+test("selected stream capability absence is an explicit one-fetch Blob compatibility path", async () => {
+    const item = dedicatedServiceFile("tiantianjiexi");
+    let fetches = 0, handoffs = 0;
+    const result = await ordinary.download(item, {
+        streamingClient: {capabilityAvailable: () => false},
+        fetchImpl: async (url, options) => {
+            fetches += 1;
+            assert.equal(url, item.url);
+            assert.equal(options.redirect, "error");
+            return responseFor("12345", {url});
+        },
+        handoffBlob: async (blob, filename) => {
+            handoffs += 1;
+            assert.equal(await blob.text(), "12345");
+            assert.equal(filename, item.filename);
+        },
+    });
+    assert.equal(result.transport, "browser_blob");
+    assert.equal(fetches, 1);
+    assert.equal(handoffs, 1);
+});
+
+test("a plausible error name without explicit unstarted proof never retries selected media", async () => {
+    for (const evidence of [{}, {streamingStarted: false}, {safeToFallback: true},
+        {safeToFallback: true, streamingStarted: true}]) {
+        const error = Object.assign(new Error("start state unavailable"), {
+            errorCode: "STREAMING_MESSAGE_TIMEOUT", ...evidence,
+        });
+        await assert.rejects(ordinary.download(dedicatedServiceFile("kukutool"), {
+            streamingClient: {capabilityAvailable: () => true, start: async () => { throw error; }},
+            fetchImpl: () => assert.fail("unknown start must not resend"),
+            handoffBlob: () => assert.fail("unknown start must not save a Blob"),
+        }), actual => actual === error);
+    }
+});
+
+test("expiry during safe SW setup failure prevents a new Blob request", async t => {
+    const now = Date.now();
+    t.mock.method(Date, "now", () => now);
+    const item = dedicatedServiceFile("tiantianjiexi", {selection_expires_at: now + 1000});
+    await assert.rejects(ordinary.download(item, {
+        streamingClient: {capabilityAvailable: () => true, async start() {
+            t.mock.method(Date, "now", () => now + 1001);
+            throw Object.assign(new Error("registration failed"), {
+                errorCode: "STREAMING_REGISTRATION_FAILED", streamingStarted: false, safeToFallback: true,
+            });
+        }},
+        fetchImpl: () => assert.fail("expired authorization cannot start a fallback request"),
+    }), error => error.errorCode === "DESCRIPTOR_EXPIRED");
+});
+
+test("worker upgrade is not browser incapability and never starts a Blob request", async () => {
+    let fetches = 0;
+    const item = dedicatedServiceFile("kukutool");
+    for (const code of ["STREAMING_PROTOCOL_UNSUPPORTED", "STREAMING_UPDATE_REQUIRED"]) {
+        await assert.rejects(ordinary.download(item, {
+            streamingClient: {capabilityAvailable: () => true, async start() {
+                throw Object.assign(new Error("old protocol"), {
+                    errorCode: code, streamingStarted: false, safeToFallback: true,
+                });
+            }},
+            fetchImpl: async url => { fetches += 1; return responseFor("12345", {url}); },
+            handoffBlob: async () => {},
+        }), error => error.errorCode === code);
+        assert.equal(fetches, 0);
+        assert.match(ordinary.safeErrorMessage({errorCode: code}), /关闭所有本站标签页/);
+    }
+});
+
+test("service schema cannot grant arbitrary non-upstream providers ordinary download permission", () => {
+    for (const provider of ["unknown", "yt_dlp_generic", "gallery_dl_generic", "parsehub_generic"]) {
+        for (const source of [{}, {asset_id: "upstream:selection:service-selected-candidate", source_platform: "upstream"}]) {
+            assert.equal(ordinary.isOrdinaryMediaItem(dedicatedServiceFile(provider, source)), false);
+        }
+    }
+});
+
+for (const provider of ["tiantianjiexi_generic", "kukutool_generic"]) {
+    test(`${provider} unknown suffix uses validated HTTP media MIME without changing its descriptor`, async () => {
+        for (const [type, contentType, suffix] of [
+            ["video", "video/mp4; codecs=avc1", "mp4"], ["video", "video/webm", "webm"],
+            ["audio", "audio/mp4", "m4a"], ["audio", "audio/mpeg", "mp3"],
+            ["audio", "audio/webm", "webm"], ["audio", "audio/ogg", "ogg"],
+        ]) {
+            const descriptor = unknownServiceFile(provider, type);
+            const before = JSON.stringify(descriptor);
+            const handoffs = [];
+            const result = await ordinary.download(descriptor, {
+                fetchImpl: async url => {
+                    assert.equal(url, descriptor.url);
+                    return responseFor("12345", {contentType, url});
+                },
+                handoffBlob: async (blob, filename) => handoffs.push({filename, body: await blob.text()}),
+            });
+            assert.deepEqual(handoffs, [{filename: `upstream-quality.${suffix}`, body: "12345"}]);
+            assert.equal(result.filename, `upstream-quality.${suffix}`);
+            assert.equal(result.receivedBytes, 5);
+            assert.equal(JSON.stringify(descriptor), before, "MIME improves only the save filename, not format or track facts");
+            assert.equal(descriptor.filename, "upstream-quality.bin");
+            assert.equal(descriptor.selected_format_id, "");
+        }
+    });
+
+    test(`${provider} MIME suffix inference never overwrites known or nonterminal suffixes`, async () => {
+        for (const [type, filename, contentType] of [
+            ["video", "original.mov", "video/mp4"], ["video", "original.webm", "video/mp4"],
+            ["audio", "original.aac", "audio/mp4"], ["audio", "original.ogg", "audio/mpeg"],
+            ["video", "original.bin.backup", "video/mp4"],
+        ]) {
+            const descriptor = unknownServiceFile(provider, type, {filename});
+            const result = await ordinary.download(descriptor, {
+                fetchImpl: async () => responseFor("12345", {contentType, url: descriptor.url}),
+                handoffBlob: async (_blob, actualName) => assert.equal(actualName, filename),
+            });
+            assert.equal(result.filename, filename);
+            assert.equal(descriptor.filename, filename);
+        }
+        const descriptor = unknownServiceFile(provider);
+        const result = await ordinary.download(descriptor, {filename: "user-choice.mp4",
+            fetchImpl: async () => responseFor("12345", {contentType: "video/webm", url: descriptor.url}),
+            handoffBlob: async (_blob, filename) => assert.equal(filename, "user-choice.mp4"),
+        });
+        assert.equal(result.filename, "user-choice.mp4");
+    });
+
+    test(`${provider} generic MIME leaves unknown suffix honest instead of guessing from URL or label`, async () => {
+        for (const type of ["video", "audio"]) {
+            const descriptor = unknownServiceFile(provider, type, {url: "https://cdn.example.org/looks-like-1080p.mp4",
+                filename: "upstream-1080P.BIN", quality_label: "1080P"});
+            const result = await ordinary.download(descriptor, {
+                fetchImpl: async () => responseFor("12345", {contentType: "application/octet-stream", url: descriptor.url}),
+                handoffBlob: async (_blob, filename) => assert.equal(filename, "upstream-1080P.BIN"),
+            });
+            assert.equal(result.filename, "upstream-1080P.BIN");
+        }
+    });
+
+    test(`${provider} HTML and invalid blobs cannot reach MIME-based rename or save`, async () => {
+        for (const type of ["video", "audio"]) {
+            for (const [content, options, errorCode] of [
+                ["<html>login</html>", {contentType: "text/html; charset=utf-8"}, "BROWSER_DOWNLOAD_UNSUPPORTED_CONTENT"],
+                ["", {contentType: type === "audio" ? "audio/mp4" : "video/mp4", contentLength: 0}, "BROWSER_DOWNLOAD_EMPTY"],
+                ["12345", {contentType: type === "audio" ? "audio/mp4" : "video/mp4", contentLength: 8}, "BROWSER_DOWNLOAD_SIZE_MISMATCH"],
+            ]) {
+                const descriptor = unknownServiceFile(provider, type);
+                const before = JSON.stringify(descriptor);
+                await assert.rejects(ordinary.download(descriptor, {
+                    fetchImpl: async () => responseFor(content, {...options, url: descriptor.url}),
+                    handoffBlob: () => assert.fail("rejected bytes must never reach save handoff"),
+                }), error => error.errorCode === errorCode);
+                assert.equal(JSON.stringify(descriptor), before);
+            }
+        }
+    });
+}
+
+test("MIME suffix inference does not extend to yt-dlp or legacy ordinary video", async () => {
+    for (const descriptor of [ordinaryItem({filename: "legacy.bin"}),
+        unknownServiceFile("yt_dlp_generic", "video", {selection_schema: "ytdlp_selected_format_v1", filename: "ytdlp.bin"})]) {
+        const result = await ordinary.download(descriptor, {
+            fetchImpl: async () => responseFor("12345", {contentType: "video/mp4", url: descriptor.url}),
+            handoffBlob: async (_blob, filename) => assert.equal(filename, descriptor.filename),
+        });
+        assert.equal(result.filename, descriptor.filename);
+    }
+});
+
 test("declared or response size above the bounded Blob limit is rejected", async () => {
     await assert.rejects(
         ordinary.download(ordinaryItem({size_bytes: 11}), {

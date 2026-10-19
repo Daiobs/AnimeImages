@@ -970,7 +970,7 @@ class DouyinKukuToolTests(SimpleTestCase):
         self.assertEqual(state, "remote_single_flight")
         runner.assert_not_called()
 
-    def test_hot_candidate_and_metadata_cache_skip_native_reference_wait(self):
+    def test_hot_candidate_does_not_borrow_independent_metadata_cache(self):
         cache_douyin_metadata(
             AWEME_ID,
             ParseResult(
@@ -1033,11 +1033,8 @@ class DouyinKukuToolTests(SimpleTestCase):
         )
 
         self.assertLess(monotonic() - started_at, 0.2)
-        self.assertEqual(result.base_filename, "cached-title")
-        self.assertEqual(
-            result.video_assets[0].cover_url,
-            "https://p3-sign.douyinpic.com/cover.jpeg",
-        )
+        self.assertEqual(result.base_filename, f"douyin_{AWEME_ID}")
+        self.assertFalse(result.video_assets[0].cover_url)
         adapter.fetch_mobile_feed_result.assert_not_called()
         runner.assert_not_called()
 

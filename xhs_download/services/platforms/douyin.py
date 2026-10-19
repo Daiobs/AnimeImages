@@ -1105,8 +1105,14 @@ class DouyinAdapter(BasePlatformAdapter):
             context.deadline_monotonic = outer_deadline
         context.client_country_code = client_country_code
         context.prefer_ultra_hd = prefer_ultra_hd
+        result_providers = tuple(self.get_result_providers(
+            prefer_ultra_hd=prefer_ultra_hd,
+            provider_order=douyin_provider_order,
+        ))
+        tiantian_first = any(getattr(provider, "name", "") == "tiantian_first" for provider in result_providers)
         context.allow_continuation = bool(
             allow_continuation and prefer_ultra_hd
+            and not tiantian_first
         )
         context.continuation_identity = str(continuation_identity or "")
         context.ultra_attempt_controller = ultra_attempt_controller
@@ -1130,10 +1136,7 @@ class DouyinAdapter(BasePlatformAdapter):
             )
 
         last_timeout_error = None
-        for provider in self.get_result_providers(
-            prefer_ultra_hd=prefer_ultra_hd,
-            provider_order=douyin_provider_order,
-        ):
+        for provider in result_providers:
             provider_name = getattr(provider, "name", "")
             provider_stage = (
                 provider_name
@@ -1265,6 +1268,8 @@ class DouyinAdapter(BasePlatformAdapter):
             )
         if context.direct_error:
             raise context.direct_error
+        if tiantian_first and ultra_attempt_controller is not None:
+            ultra_attempt_controller.raise_if_blocked()
         if last_timeout_error:
             raise last_timeout_error
 

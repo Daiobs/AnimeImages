@@ -45,7 +45,6 @@
         "STREAMING_MESSAGE_TIMEOUT",
         "STREAMING_NAVIGATION_UNAVAILABLE",
         "STREAMING_START_TIMEOUT",
-        "STREAMING_URL_UNSUPPORTED",
     ]);
     const STAGE_MESSAGES = Object.freeze({
         preparing: "正在准备下载...",
@@ -409,9 +408,12 @@
     }
 
     function isBoundUpstreamItem(item) {
+        const serviceSelection = item && item.selection_schema === "service_selected_format_v1"
+            && ["tiantianjiexi_generic", "kukutool_generic"].includes(item.provider)
+            && typeof item.candidate_id === "string" && item.candidate_id.length > 0;
         if (!isUpstreamItem(item) || item.browser_upstream_bound !== true
             || item.source_platform !== "upstream"
-            || !["yt_dlp_generic", "gallery_dl_generic", "parsehub_generic"].includes(item.provider)) {
+            || (!serviceSelection && !["yt_dlp_generic", "gallery_dl_generic", "parsehub_generic"].includes(item.provider))) {
             return false;
         }
         try {
@@ -424,10 +426,37 @@
     }
 
     function isSelectedYtdlpAudio(item) {
+        if (item && item.type === "audio" && item.selection_schema === "service_selected_format_v1"
+                && ["tiantianjiexi_generic", "kukutool_generic"].includes(item.provider)
+                && item.service_audio_file === true && isBoundUpstreamItem(item)) return true;
         return Boolean(item && item.type === "audio"
             && item.selection_schema === "ytdlp_selected_format_v1"
             && item.provider === "yt_dlp_generic" && isBoundUpstreamItem(item)
             && item.audio_tracks === "present" && item.video_tracks === "absent");
+    }
+
+    function isBoundDedicatedServiceItem(item) {
+        if (!item || item.selection_schema !== "service_selected_format_v1"
+                || !["tiantianjiexi", "kukutool"].includes(item.provider)
+                || item.type !== "video" || item.source_platform !== "douyin"
+                || (item.selection_delivery || "direct") !== "direct"
+                || item.browser_upstream_bound !== true || item.browser_direct_fetch_safe !== true
+                || item.requires_merge !== false || item.requires_cookie !== false
+                || typeof item.selected_format_id !== "string"
+                || ["candidate_id", "provider_resource_id", "provider_manifest_token", "url"]
+                    .some(key => typeof item[key] !== "string" || !item[key] || /[\s\\\u0000-\u001f\u007f]/.test(item[key]))
+                || !/^\d{8,24}$/.test(item.provider_resource_id)) return false;
+        const assetPrefix = `douyin:${item.provider_resource_id}:video:${item.provider}`;
+        if (item.provider_cache_key !== `douyin:${item.provider}:validated:${item.provider_resource_id}`
+                || typeof item.asset_id !== "string"
+                || !(item.asset_id === assetPrefix || item.asset_id.startsWith(`${assetPrefix}:format:`)
+                    && /^[a-f0-9]{24}$/.test(item.asset_id.slice(`${assetPrefix}:format:`.length)))) return false;
+        // The selected endpoint verifies the signature and exact URL; these checks retain its identity.
+        try {
+            const url = new URL(item.url);
+            return url.protocol === "https:" && !url.username && !url.password
+                && !url.hash && (!url.port || url.port === "443");
+        } catch (_) { return false; }
     }
 
     function contentTypeAllowsSelectedAudio(value, item) {
@@ -449,6 +478,9 @@
             && (String(item.type || item.media_type || "").toLowerCase() === "video" || isSelectedYtdlpAudio(item))
             && isHttpUrl(item.url || item.video_url)
             && booleanValue(item.browser_direct_fetch_safe)
+            && (item.selection_schema !== "service_selected_format_v1"
+                || ["tiantianjiexi_generic", "kukutool_generic"].includes(item.provider) && isBoundUpstreamItem(item)
+                || isBoundDedicatedServiceItem(item))
             && (!isUpstreamItem(item) || isBoundUpstreamItem(item))
             && !booleanValue(item.requires_merge)
             && !booleanValue(item.requires_cookie)
@@ -708,6 +740,9 @@
     }
 
     function safeErrorMessage(error) {
+        if (error && ["STREAMING_UPDATE_REQUIRED", "STREAMING_PROTOCOL_UNSUPPORTED"].includes(error.errorCode)) {
+            return streamingApi.WORKER_UPDATE_MESSAGE;
+        }
         const errorCode = String(error && error.errorCode || "");
         if (errorCode === "UPSTREAM_BROWSER_FETCH_FAILED") {
             return "浏览器无法读取资源：可能是来源未允许跨域（CORS）、重定向被拒绝或网络连接失败。不会转为服务器下载。";
@@ -772,7 +807,7 @@
     }
 
     function canFallbackToBlob(error) {
-        if (error && error.streamingStarted) {
+        if (!error || error.streamingStarted !== false || error.safeToFallback !== true) {
             return false;
         }
         return STREAMING_BLOB_FALLBACK_ERROR_CODES.includes(
@@ -1025,13 +1060,22 @@
                 "当前资源不支持浏览器直接保存。",
             );
         }
+        if (item.selection_schema && item.type === "video"
+                && (isBoundDedicatedServiceItem(item) || isBoundUpstreamItem(item))) {
+            streamingProtocol.createSelectionBinding(item);
+        }
+        if ((isBoundDedicatedServiceItem(item) || isBoundUpstreamItem(item))
+            && item.selection_expires_at !== undefined
+            && (!Number.isSafeInteger(item.selection_expires_at) || item.selection_expires_at <= Date.now())) {
+            throw downloadError("DESCRIPTOR_EXPIRED", "当前资源授权已过期，请重新解析。");
+        }
 
         const declaredSize = positiveInteger(item.size_bytes || item.sizeBytes);
         const maxBytes = positiveInteger(settings.maxBytes) || MAX_BROWSER_BLOB_BYTES;
-        const filename = sanitizeFilename(settings.filename || item.filename);
+        let filename = sanitizeFilename(settings.filename || item.filename);
         const downloadId = createDownloadId(settings);
         const sourceUrl = String(item.url || item.video_url || "");
-        const upstreamBound = isBoundUpstreamItem(item);
+        const upstreamBound = isBoundUpstreamItem(item) || isBoundDedicatedServiceItem(item);
         if (
             !upstreamBound && (!streamingProtocol
             || typeof streamingProtocol.isAllowedInitialMediaUrl !== "function"
@@ -1227,6 +1271,13 @@
 
         emitProgress("fetching", receivedBytes, true);
         clearActiveProtection();
+        // A service URL need not expose a suffix. Only a validated response
+        // MIME can replace the honest .bin fallback, never a quality label.
+        if (item.selection_schema === "service_selected_format_v1" && /\.bin$/i.test(filename)) {
+            const suffix = {"video/mp4": "mp4", "video/webm": "webm", "audio/mp4": "m4a",
+                "audio/mpeg": "mp3", "audio/webm": "webm", "audio/ogg": "ogg"}[contentType];
+            if (suffix) filename = filename.replace(/\.bin$/i, "." + suffix);
+        }
         onStage("saving", STAGE_MESSAGES.saving);
         emitProgress("saving", receivedBytes, true);
         const handoffBlob = settings.handoffBlob || defaultBlobHandoff;
@@ -1251,10 +1302,13 @@
                 : null
         );
         if (!client || typeof client.capabilityAvailable !== "function" || !client.capabilityAvailable()) {
-            throw downloadError(
+            const error = downloadError(
                 "STREAMING_CAPABILITY_UNAVAILABLE",
                 "当前浏览器不支持流式下载。",
             );
+            error.streamingStarted = false;
+            error.safeToFallback = true;
+            throw error;
         }
         const onStage = typeof settings.onStage === "function"
             ? settings.onStage
@@ -1265,6 +1319,8 @@
         onStage("preparing", STAGE_MESSAGES.preparing);
         const active = await client.start(item, {
             filename: sanitizeFilename(settings.filename || item.filename),
+            signal: settings.signal,
+            onUpdating(message) { onStage("updating", message); },
             onProgress(status) {
                 if (status.state === "fetching") {
                     onStage("fetching", STAGE_MESSAGES.fetching);
@@ -1294,7 +1350,22 @@
                 "当前资源不支持浏览器直接保存。",
             );
         }
-        if (settings.forceBlob === true || isBoundUpstreamItem(item)) {
+        const boundSelection = isBoundUpstreamItem(item) || isBoundDedicatedServiceItem(item);
+        // Resource access and supported media determine transport, not the card,
+        // Provider, selection schema, or an obsolete caller forceBlob hint.
+        const streamEligible = String(item.type || item.media_type || "").toLowerCase() === "video"
+            && streamingProtocol && streamingProtocol.isAllowedInitialMediaUrl(item.url || item.video_url, {
+                allowLoopbackHttp: Boolean(settings.allowLoopback),
+            });
+        if (boundSelection && (streamEligible || item.selection_schema && item.type === "video")) {
+            const binding = streamingProtocol.createSelectionBinding(item);
+            if (!binding || binding.selection_expires_at <= Date.now()) {
+                throw downloadError("DESCRIPTOR_EXPIRED", "当前资源授权已过期，请重新解析。");
+            }
+        }
+        // Existing direct-bound resources outside the reviewed SW URL scope and
+        // audio retain bounded compatibility delivery; they do not widen SW access.
+        if (!streamEligible) {
             return downloadViaBlob(item, settings);
         }
         try {

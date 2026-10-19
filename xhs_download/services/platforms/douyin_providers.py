@@ -1,5 +1,6 @@
 from concurrent.futures import (
     FIRST_COMPLETED,
+    Future,
     ThreadPoolExecutor,
     TimeoutError as FutureTimeoutError,
     wait,
@@ -308,6 +309,7 @@ class DouyinParseContext:
     native_fallback_future: object | None = None
     ultra_retry_after_seconds: int = 0
     continuation_deadline_monotonic: float = 0
+    service_execution_policy: str = ""
 
     def __post_init__(self):
         self.raw_url = self.raw_url or self.url
@@ -861,7 +863,10 @@ def normalize_douyin_display_title(value):
         parsed_value = f"https:{value}"
     elif value.lower().startswith("www."):
         parsed_value = f"https://{value}"
-    parsed = urlsplit(parsed_value)
+    try:
+        parsed = urlsplit(parsed_value)
+    except ValueError:
+        return ""
     if parsed.scheme in {"http", "https"} and parsed.hostname:
         return ""
     return value[:200]
@@ -964,6 +969,56 @@ def build_external_parse_result(
     )
 
 
+def attach_douyin_service_picker(result, *, adapter, context, candidates, payload=None):
+    from ..service_format_selection import attach_service_picker
+    from ..provider_manifest import douyin_format_asset_id
+    from .kukutool_generic import ServiceFormatPayload
+    from ..upstream_candidates import MAX_CANDIDATES
+
+    if not result.video_assets or not context.aweme_id or not context.canonical_url:
+        return result
+    main = result.video_assets[0]
+    if main.provider not in {'tiantianjiexi', 'kukutool'}:
+        return result
+    original_rows = (payload or {}).get('_service_format_rows') or (payload or {}).get('videos') or ()
+    rows, assets = [], {}
+    work_title = normalize_douyin_display_title((result.metadata or {}).get('title')) or result.base_filename
+    default_assigned = False
+    for candidate in candidates[:MAX_CANDIDATES]:
+        try:
+            validate_douyin_media_url(candidate.url, existing_suffixes=adapter.media_host_suffixes)
+        except (TypeError, ValueError):
+            continue
+        matching = [row for row in original_rows if isinstance(row, dict) and row.get('url') == candidate.url]
+        original = next((row for row in matching
+                         if str(row.get('quality_label') or row.get('quality') or '') == candidate.quality_label),
+                        matching[0] if matching else {})
+        is_main = candidate.url == main.url
+        is_default = (is_main and not default_assigned
+                      and candidate.quality_label == main.quality_label
+                      and candidate.size_bytes == main.size_bytes)
+        default_assigned = default_assigned or is_default
+        asset_id = main.asset_id if is_main else douyin_format_asset_id(context.aweme_id, main.provider, candidate.url)
+        token = main.provider_manifest_token if is_main else build_provider_manifest_token(
+            asset_id=asset_id, provider=main.provider, provider_resource_id=context.aweme_id,
+            provider_cache_key=main.provider_cache_key, url=candidate.url, media_type='video', source_platform='douyin')
+        assets.setdefault(candidate.url, main if is_main else replace(main, url=candidate.url, asset_id=asset_id,
+                          provider_manifest_token=token, quality_label=candidate.quality_label,
+                          size_bytes=candidate.size_bytes))
+        rows.append({**original, 'url': candidate.url, 'quality_label': candidate.quality_label,
+                     'work_label': work_title,
+                     'size_bytes': candidate.size_bytes or None, 'media_type': 'video',
+                     'work_id': f"douyin:{context.aweme_id}:{original.get('work_id') or 'video'}",
+                     '_dedicated_resource_id': context.aweme_id,
+                     '_dedicated_default': is_default})
+    material = ServiceFormatPayload({**(payload or {}), 'title': work_title,
+                                    'cover': main.cover_url, '_service_format_rows': rows})
+    return attach_service_picker(result, payload=material, provider=main.provider,
+                                 source_url=context.canonical_url, binding_assets=tuple(assets.values()),
+                                 match={'provider_id': main.provider, 'extractor_id': 'douyin:' + main.provider,
+                                        'version': 'douyin-service-picker-v1', 'label': main.provider})
+
+
 class DouyinTianTianJieXiProvider(DouyinResultProvider):
     name = "tiantianjiexi"
 
@@ -974,11 +1029,13 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
         *,
         reserve_fallback_grace=True,
         suppress_selected_log=False,
+        use_reference_metadata=True,
     ):
         self.provider_settings = provider_settings or get_platform_provider_settings("douyin")
         self.provider = provider or TianTianJieXiGenericProvider()
         self.reserve_fallback_grace = bool(reserve_fallback_grace)
         self.suppress_selected_log = bool(suppress_selected_log)
+        self.use_reference_metadata = bool(use_reference_metadata)
 
     def remaining_budget(self, context, fallback):
         if not context.deadline_monotonic:
@@ -986,6 +1043,8 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
         return max(0.0, context.deadline_monotonic - monotonic())
 
     def build_candidates(self, payload, adapter):
+        from .douyin_kukutool import parse_byte_cdn_url
+
         candidates = []
         for index, resource in enumerate(payload.get("videos") or (), start=1):
             if not isinstance(resource, dict):
@@ -1006,6 +1065,9 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
                     existing_suffixes=adapter.media_host_suffixes,
                 )
             except (TypeError, ValueError):
+                continue
+            expires_at = parse_byte_cdn_url(url)["expires_at"]
+            if expires_at and expires_at <= int(time()) + 30:
                 continue
             quality_label = str(
                 resource.get("quality")
@@ -1151,9 +1213,14 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
                 )
             ):
                 parse_options["source_identity"] = source_identity
+            execution_deadline = (
+                context.continuation_deadline_monotonic
+                if context.allow_continuation and context.continuation_deadline_monotonic
+                else min(context.deadline_monotonic, monotonic() + timeout_seconds)
+                if context.deadline_monotonic else 0
+            )
             if (
-                context.allow_continuation
-                and context.continuation_deadline_monotonic
+                execution_deadline
                 and (
                     "deadline_monotonic" in provider_parse_parameters
                     or any(
@@ -1163,7 +1230,7 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
                 )
             ):
                 parse_options["deadline_monotonic"] = (
-                    context.continuation_deadline_monotonic
+                    execution_deadline
                 )
             if (
                 context.allow_continuation
@@ -1211,6 +1278,56 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             )
             raise ValueError("天天解析未返回可用抖音视频资源")
 
+        result = self.result_from_payload(adapter, context, payload, candidates)
+        candidate = candidates[0]
+        if not self.suppress_selected_log:
+            log_provider_event(
+                "douyin_provider_selected", self.name, context, parse_started_at,
+                fallback_reason="tiantianjiexi_official_api",
+                selected_size_bytes=candidate.size_bytes, candidate_count=len(candidates),
+                quality_label=candidate.quality_label, selected_quality=candidate.quality_label,
+                remaining_budget_ms=int(max(0, remaining_budget) * 1000),
+                assigned_timeout_ms=int(max(0, timeout_seconds) * 1000),
+                reserve_fallback_grace=self.reserve_fallback_grace,
+                fallback_grace_ms=int(max(0, fallback_grace) * 1000), cache_hit=False,
+            )
+        return result
+
+    def cached_result(self, adapter, context):
+        from .tiantianjiexi_generic import provider_configured, source_key_for_request
+
+        if not self.provider_settings.provider_is_enabled(self.name) or not provider_configured():
+            return None
+        if not isinstance(self.provider, TianTianJieXiGenericProvider):
+            return None
+        source_url = select_tiantian_request_url(context)
+        if not source_url:
+            return None
+        payload, age = self.provider.get_cached_payload_entry(
+            source_key_for_request(source_url, context.source_identity),
+            lambda value: bool(self.build_candidates(value, adapter)),
+        )
+        if not payload:
+            return None
+        result = self.result_from_payload(
+            adapter, context, payload, self.build_candidates(payload, adapter), allow_network=False,
+        )
+        if context.ultra_attempt_controller is not None:
+            context.ultra_attempt_controller.reuse_cached_result(self.name, reason="payload_cache")
+        record_provider_attempt(
+            provider=self.name, outcome=ProviderOutcome.SUCCESS_PAYLOAD_CACHE,
+            external_call=False, cache_hit=True, payload_age_ms=age,
+            candidate_count=len(payload.get("videos") or ()),
+        )
+        log_provider_event(
+            "douyin_provider_selected", self.name, context,
+            cache_hit=True, candidate_count=len(payload.get("videos") or ()),
+            fallback_reason="tiantianjiexi_payload_cache",
+        )
+        return with_parse_metadata(result, tiantianjiexi_cache_hit=True, tiantianjiexi_payload_age_ms=age)
+
+    def result_from_payload(self, adapter, context, payload, candidates, *, allow_network=True):
+        source_url = select_tiantian_request_url(context)
         provider_title = safe_external_base_filename(payload.get("title"))
         if not provider_title:
             provider_title = safe_external_base_filename(
@@ -1234,8 +1351,8 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
         reference_result = get_reference_result(
             adapter,
             context,
-            allow_network=not (provider_title and provider_cover_url),
-        )
+            allow_network=allow_network and not (provider_title and provider_cover_url),
+        ) if self.use_reference_metadata else None
         candidate = candidates[0]
         result = build_external_parse_result(
             adapter,
@@ -1256,24 +1373,103 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             tiantianjiexi_size_bytes=candidate.size_bytes,
             tiantianjiexi_quality_label=candidate.quality_label,
         )
-        if not self.suppress_selected_log:
-            log_provider_event(
-                "douyin_provider_selected",
-                self.name,
-                context,
-                parse_started_at,
-                fallback_reason="tiantianjiexi_official_api",
-                selected_size_bytes=candidate.size_bytes,
-                candidate_count=len(candidates),
-                quality_label=candidate.quality_label,
-                selected_quality=candidate.quality_label,
-                remaining_budget_ms=int(max(0, remaining_budget) * 1000),
-                assigned_timeout_ms=int(max(0, timeout_seconds) * 1000),
-                reserve_fallback_grace=self.reserve_fallback_grace,
-                fallback_grace_ms=int(max(0, fallback_grace) * 1000),
-                cache_hit=False,
-            )
+        result = attach_douyin_service_picker(result, adapter=adapter, context=context,
+                                             candidates=candidates, payload=payload)
         return result
+
+
+class DouyinTianTianFirstProvider(DouyinResultProvider):
+    name = "tiantian_first"
+
+    def __init__(self, provider_settings=None, providers=None, provider_names=("tiantianjiexi", "kukutool")):
+        self.provider_settings = provider_settings or get_platform_provider_settings("douyin")
+        available = (
+            DouyinTianTianJieXiProvider(
+                self.provider_settings, reserve_fallback_grace=False,
+                use_reference_metadata=False,
+            ),
+            DouyinKukuToolProvider(replace(
+                self.provider_settings, ultra_kukutool_grace_seconds=0,
+                kukutool_reference_wait_seconds=0,
+            )),
+        )
+        self.providers = tuple(providers) if providers is not None else tuple(
+            provider for provider in available if provider.name in provider_names
+        )
+
+    def parse(self, adapter, context):
+        deadline = context.deadline_monotonic or (
+            monotonic() + max(0.1, self.provider_settings.ultra_total_timeout_seconds)
+        )
+        controller = context.ultra_attempt_controller
+        last_error = None
+        empty_native = Future()
+        empty_native.set_result(None)
+        stages = sorted(self.providers, key=lambda provider: provider.name != "tiantianjiexi")
+        for provider in stages:
+            if not self.provider_settings.provider_is_enabled(provider.name):
+                continue
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                break
+            if provider.name == "tiantianjiexi":
+                native_reserve = min(
+                    max(0.0, self.provider_settings.ultra_native_timeout_seconds),
+                    max(0.1, self.provider_settings.ultra_kukutool_grace_seconds),
+                )
+                service_reserve = (
+                    max(0.0, self.provider_settings.ultra_kukutool_grace_seconds)
+                    if any(item.name == "kukutool" and self.provider_settings.provider_is_enabled(item.name)
+                           for item in stages) else 0
+                )
+                reserve = min(
+                    service_reserve + native_reserve,
+                    remaining / 2,
+                )
+            else:
+                reserve = min(self.provider_settings.ultra_native_timeout_seconds, remaining / 2)
+            stage_deadline = deadline - max(0.0, reserve)
+            stage_context = replace(
+                context, deadline_monotonic=stage_deadline, allow_continuation=False,
+                continuation_deadline_monotonic=0, native_fallback_future=empty_native,
+                service_execution_policy=self.name,
+            )
+            if controller is not None:
+                controller.configure_providers((provider.name,))
+            started_at = time()
+            future = None
+            try:
+                cached_reader = getattr(provider, "cached_result", None)
+                if callable(cached_reader):
+                    cached = cached_reader(adapter, stage_context)
+                    if cached and cached.assets:
+                        return with_parse_metadata(cached, service_execution_policy=self.name)
+                future = submit_provider_task(
+                    "douyin-service-sequential", 4, 8, provider.parse, adapter, stage_context,
+                )
+                if future is None:
+                    if controller is not None:
+                        controller.skip_fresh_work(provider.name, reason="local_capacity_full")
+                    continue
+                result = future.result(timeout=max(0.0, stage_deadline - monotonic()))
+                if result and result.assets and monotonic() <= stage_deadline:
+                    return with_parse_metadata(result, service_execution_policy=self.name)
+            except FutureTimeoutError:
+                # Cancelling a local waiter does not cancel an already sent HTTP request.
+                cancelled = future.cancel() if future is not None else False
+                last_error = XhsProviderTimeoutError("抖音首选服务等待期限已到，进入既有兜底")
+                log_provider_event(
+                    "douyin_sequential_wait_deadline", provider.name, stage_context, started_at,
+                    local_cancelled=cancelled, upstream_may_be_running=not cancelled,
+                )
+            except Exception as error:
+                last_error = error
+                log_provider_failure(provider.name, stage_context, error, started_at)
+            finally:
+                context.record_ultra_retry_after(stage_context.ultra_retry_after_seconds)
+        if last_error is not None and deadline <= monotonic():
+            raise XhsProviderTimeoutError("抖音服务解析超过本次总期限") from last_error
+        return None
 
 
 class DouyinUltraRaceProvider(DouyinResultProvider):
@@ -2544,6 +2740,7 @@ def build_douyin_result_providers(
     provider_order=None,
 ):
     provider_settings = provider_settings or get_platform_provider_settings("douyin")
+    service_names = ()
     if provider_order is not None:
         provider_settings = replace(
             provider_settings,
@@ -2556,21 +2753,23 @@ def build_douyin_result_providers(
         )
     else:
         configured_order = tuple(provider_settings.provider_order or ())
-        if (
-            runtime_bool("DOUYIN_ULTRA_RACE_ENABLED", True)
-            and "tiantianjiexi" in configured_order
-            and "kukutool" in configured_order
-            and provider_settings.provider_is_enabled("tiantianjiexi")
-            and provider_settings.provider_is_enabled("kukutool")
-        ):
+        service_names = tuple(
+            name for name in ("tiantianjiexi", "kukutool")
+            if name in configured_order or "ultra_race" in configured_order
+        )
+        if service_names:
             provider_settings = replace(
                 provider_settings,
-                # Default ultra-HD path races TianTianJieXi against KuKuTool
-                # so a slow primary provider does not block user-facing parse.
-                provider_order=("ultra_race", "native"),
+                provider_order=("tiantian_first", *(
+                    name for name in configured_order
+                    if name not in {"tiantianjiexi", "kukutool", "ultra_race", "tiantian_first"}
+                )),
             )
 
     provider_map = {
+        "tiantian_first": lambda: DouyinTianTianFirstProvider(
+            provider_settings=provider_settings, provider_names=service_names,
+        ),
         "ultra_race": lambda: DouyinUltraRaceProvider(provider_settings=provider_settings),
         "tiantianjiexi": lambda: DouyinTianTianJieXiProvider(
             provider_settings=provider_settings,

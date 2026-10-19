@@ -194,7 +194,9 @@ class NativeReplayTests(SimpleTestCase):
     def test_real_kukutool_root_alias_does_not_duplicate_candidate(self):
         result, _, _ = self.run_fixture('1d723e3f60f5f7b7634cd84a')
         rows=result.metadata['upstream_candidates']
-        self.assertEqual(len(rows),9)
+        # Seven labelled variants plus the image; the unlabelled root alias
+        # shares the 2160P URL and is not another independent resource.
+        self.assertEqual(len(rows),8)
         self.assertNotIn('unknown',[r['media_type'] for r in rows])
         self.assertEqual([r['format_label'] for r in rows if r['format_label']],
                          ['360P','480P','540P','720P','1080P','1080P+','2160P'])

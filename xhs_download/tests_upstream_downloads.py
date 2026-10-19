@@ -1,5 +1,6 @@
 from hashlib import sha256
 import json
+from time import time
 from types import SimpleNamespace
 from unittest.mock import patch
 from unittest.mock import Mock
@@ -32,7 +33,7 @@ class UpstreamDownloadTests(SimpleTestCase):
             **{k: v for k, v in self.item.items() if k != "type"}, media_type="video",
         )
         key = "upstream:asset:v1:" + sha256(self.item["asset_id"].encode()).hexdigest()
-        cache.set(key, dict(self.item), 300)
+        cache.set(key, {**self.item, 'expires_at': time() + 300}, 300)
         self.addCleanup(cache.delete, key)
         self.cache_key = key
         self.request = RequestFactory().post("/")
@@ -57,6 +58,75 @@ class UpstreamDownloadTests(SimpleTestCase):
             self.assertIs(route["items"][0]["browser_upstream_bound"], False)
         cache.delete(self.cache_key)
         self.assertFalse(provider_manifest_allows_public_download(self.item))
+
+    def issued_video(self, provider='yt_dlp_generic'):
+        from .services.upstream_delivery import _issue_assets, _key
+
+        asset = MediaAsset(media_type='video', platform='third_party',
+                           url='https://v26-default.365yg.com/video.mp4')
+        issued = _issue_assets((asset,), match={'provider_id': provider},
+                               source_url='https://source.example/work/one')[0].to_download_item()
+        self.addCleanup(cache.delete, _key(issued['asset_id']))
+        return issued
+
+    def test_issued_video_route_keeps_original_identity_and_expiry_across_providers(self):
+        from .services.upstream_delivery import _key
+
+        now = int(time())
+        for provider in ('yt_dlp_generic', 'parsehub_generic'):
+            with self.subTest(provider=provider), patch('time.time', return_value=now), \
+                    patch('xhs_download.services.upstream_delivery.time', return_value=now):
+                item = self.issued_video(provider)
+            record = cache.get(_key(item['asset_id']))
+            self.assertEqual(record['expires_at'], now + 300)
+            for elapsed in (0, 200, 299):
+                with patch('time.time', return_value=now + elapsed), \
+                        patch('xhs_download.services.upstream_delivery.time', return_value=now + elapsed), \
+                        patch('django.core.signing.TimestampSigner.sign', side_effect=AssertionError('No renewal')), \
+                        patch('requests.sessions.Session.request', side_effect=AssertionError('No network')):
+                    route = decide_download_route(self.request, [item])
+                self.assertEqual(route['route_type'], 'direct')
+                public = route['items'][0]
+                self.assertEqual(public['selection_schema'], 'upstream_resource_v1')
+                self.assertEqual(public['selection_expires_at'], (now + 300) * 1000)
+                self.assertEqual(public['download_strategy'], 'browser_streaming')
+                for key in ('asset_id', 'provider', 'provider_resource_id', 'provider_cache_key',
+                            'provider_manifest_token', 'url'):
+                    self.assertEqual(public[key], item[key])
+                self.assertNotIn('candidate_id', public)
+                self.assertNotIn('selected_format_id', public)
+            with patch('xhs_download.services.upstream_delivery.time', return_value=now + 300):
+                self.assertEqual(decide_download_route(self.request, [item])['route_type'], 'blocked')
+
+    @override_settings(PROVIDER_MANIFEST_MAX_AGE_SECONDS=120)
+    def test_resource_expiry_is_bounded_by_original_manifest_not_route_time(self):
+        now = int(time())
+        with patch('time.time', return_value=now), \
+                patch('xhs_download.services.upstream_delivery.time', return_value=now):
+            item = self.issued_video()
+        with patch('time.time', return_value=now + 90):
+            public = decide_download_route(self.request, [item])['items'][0]
+        self.assertEqual(public['selection_expires_at'], (now + 120) * 1000)
+        with patch('time.time', return_value=now + 121):
+            self.assertEqual(decide_download_route(self.request, [item])['route_type'], 'blocked')
+
+    def test_old_cache_without_expiry_has_no_streaming_grant_or_fabricated_expiry(self):
+        from .services.upstream_delivery import _key
+
+        item = self.issued_video()
+        key = _key(item['asset_id'])
+        record = cache.get(key)
+        record.pop('expires_at')
+        cache.set(key, record, 300)
+        for forged in (item, {**item, 'selection_expires_at': int((time() + 9999) * 1000),
+                             'browser_direct_fetch_safe': True, 'browser_upstream_bound': True}):
+            public = decide_download_route(self.request, [forged])['items'][0]
+            self.assertEqual(public['selection_schema'], 'upstream_resource_v1')
+            self.assertEqual(public['streaming_unsupported_reason'], 'missing_resource_expiry')
+            self.assertNotIn('selection_expires_at', public)
+            self.assertNotIn('download_strategy', public)
+            self.assertIs(public['browser_direct_fetch_safe'], False)
+            self.assertIs(public['browser_upstream_bound'], False)
 
     def test_server_modes_and_mixed_selections_are_blocked(self):
         for mode in ("proxy", "server_single", "zip", "stream", "server"):

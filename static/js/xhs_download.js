@@ -83,7 +83,7 @@
         }, retry * 1000);
     }
 
-    window.retryImage = retryImage;
+    if (!window.retryImage) window.retryImage = retryImage;
 
     async function openUpstreamImage(button, requestRoute) {
         const card = button.closest(".asset-card");
@@ -215,7 +215,21 @@
         return getDispositionFilename(response) || `${fallbackName || "xhs"}.zip`;
     }
 
-    async function saveZipBlob(blob, filename, useFilePicker) {
+    function downloadOperationCurrent(operation) {
+        return !operation || (!(operation.signal && operation.signal.aborted)
+            && (!operation.isCurrent || operation.isCurrent()));
+    }
+
+    function assertDownloadCurrent(operation) {
+        if (!downloadOperationCurrent(operation)) {
+            const error = new Error("Download operation is no longer current");
+            error.name = "AbortError";
+            throw error;
+        }
+    }
+
+    async function saveZipBlob(blob, filename, useFilePicker, operation) {
+        assertDownloadCurrent(operation);
         if (useFilePicker && window.showSaveFilePicker) {
             const isZip = filename.toLowerCase().endsWith(".zip");
             const handle = await window.showSaveFilePicker({
@@ -229,9 +243,18 @@
                     },
                 ],
             });
+            assertDownloadCurrent(operation);
             const writable = await handle.createWritable();
-            await writable.write(blob);
-            await writable.close();
+            try {
+                assertDownloadCurrent(operation);
+                await writable.write(blob);
+                assertDownloadCurrent(operation);
+                await writable.close();
+            } catch (error) {
+                if (typeof writable.abort === "function") await writable.abort().catch(() => {});
+                throw error;
+            }
+            assertDownloadCurrent(operation);
             return "已保存到选择的位置";
         }
 
@@ -324,14 +347,16 @@
     }
 
     document.addEventListener("DOMContentLoaded", () => {
-        const page = document.querySelector(".xhs-download-page");
+        const batchPage = document.querySelector(".batch-parse-page");
+        const homePage = batchPage ? null : document.querySelector(".xhs-download-page");
+        const page = homePage || batchPage;
 
         if (!page) {
             return;
         }
 
         const searchForm = document.getElementById("hero-search-form");
-        const resultsRegion = document.getElementById("parse-results-region");
+        const resultsRegion = homePage ? document.getElementById("parse-results-region") : page;
         const pageHeading = document.getElementById("page-heading");
         const pageDescription = document.getElementById("page-description");
         const linkLabel = document.getElementById("media-link-label");
@@ -343,11 +368,11 @@
         const downloadLocationSettingAvailable = (
             page.dataset.downloadLocationSettingAvailable === "true"
         );
-        const downloadUrl = page.dataset.downloadUrl;
+        const downloadUrl = page.dataset.downloadUrl || page.dataset.batchDownloadUrl;
         const downloadPrepareUrl = page.dataset.downloadPrepareUrl;
         const douyinContinuationUrl = page.dataset.douyinContinuationUrl;
-        const downloadTaskUrl = page.dataset.downloadTaskUrl;
-        const downloadAsyncEnabled = page.dataset.downloadAsyncEnabled === "true";
+        const downloadTaskUrl = page.dataset.downloadTaskUrl || page.dataset.batchDownloadTaskUrl;
+        const downloadAsyncEnabled = (page.dataset.downloadAsyncEnabled || page.dataset.batchDownloadAsyncEnabled) === "true";
         const showInternalDiagnostics = page.dataset.showInternalDiagnostics === "true";
         const presentationText = (publicText, diagnosticText) => (
             showInternalDiagnostics ? diagnosticText : publicText
@@ -392,7 +417,10 @@
         );
         let activeParseController = null;
         let parseRequestId = 0;
+        let resultGeneration = 0;
         let downloadInProgress = false;
+        let pickerDownloadInProgress = false;
+        let legacyPickerRoot = null;
         let activePhotoController = null;
         let pendingPhotoServerFallback = false;
         let pendingProjectSettings = null;
@@ -408,7 +436,18 @@
         }
 
         function getCards() {
-            return Array.from(resultsRegion ? resultsRegion.querySelectorAll(".asset-card") : []);
+            return Array.from(resultsRegion ? resultsRegion.querySelectorAll(".asset-card") : [])
+                .filter(card => !card.closest || !card.closest("[data-ytdlp-picker], [data-picker-preview-only]"));
+        }
+
+        function getPickerMedia() {
+            const api = window.DokiToolYtdlpPicker;
+            return api && resultsRegion ? api.mediaRoots(resultsRegion) : [];
+        }
+
+        function selectedPickerCount() {
+            const api = window.DokiToolYtdlpPicker;
+            return api ? getPickerMedia().filter(api.mediaSelected).length : 0;
         }
 
         function getSelectableCards() {
@@ -545,6 +584,7 @@
         }
 
         function getStatusElement() {
+            if (!homePage && legacyPickerRoot) return legacyPickerRoot.querySelector("[data-picker-status]");
             return resultsRegion ? resultsRegion.querySelector("#status") : null;
         }
 
@@ -705,7 +745,7 @@
         }
 
         function updateSelectedStatus() {
-            setStatus(getStatusElement(), `已选择 ${selected.length} 个资源`);
+            setStatus(getStatusElement(), `已选择 ${selected.length + selectedPickerCount()} 个资源`);
         }
 
         function updateSelectAllButton() {
@@ -715,14 +755,17 @@
                 return;
             }
 
-            const allSelected = cards.length > 0 && selected.length === cards.length;
+            const media = getPickerMedia();
+            const allSelected = cards.length + media.length > 0
+                && selected.length === cards.length && selectedPickerCount() === media.length;
             selectAllBtn.innerHTML = allSelected
                 ? '<i class="bi bi-x-square me-1"></i>取消全选'
                 : '<i class="bi bi-check2-square me-1"></i>全选';
         }
 
-        function setDownloadButtonsBusy(isBusy, activeButton, label) {
-            getDownloadActionButtons().forEach((button) => {
+        function setDownloadButtonsBusy(isBusy, activeButton, label, controls) {
+            if (!isBusy && pickerDownloadInProgress) return;
+            (controls ? controls.buttons : getDownloadActionButtons()).forEach((button) => {
                 if (!button.isConnected) {
                     return;
                 }
@@ -739,7 +782,7 @@
                     delete button.dataset.originalHtml;
                 }
             });
-            getCards().forEach((card) => {
+            (controls ? controls.cards : getCards()).forEach((card) => {
                 const playbackButton = card.querySelector("[data-livephoto-toggle]");
                 if (!playbackButton) {
                     return;
@@ -1067,10 +1110,10 @@
         }
 
         async function downloadSelectedPhotos(payload) {
-            const items = (payload.browserRouteItems || selected)
+            const items = (payload.browserRouteItems || payload.media_items || selected)
                 .map((item, index) => ({
                     ...item,
-                    filenameStem: item.filenameStem || `${getBaseFilename()}_${String(index + 1).padStart(2, "0")}`,
+                    filenameStem: item.filenameStem || `${payload.base_filename || getBaseFilename()}_${String(index + 1).padStart(2, "0")}`,
                     display_ordinal: item.display_ordinal || index + 1,
                 }))
                 .sort((left, right) => left.display_ordinal - right.display_ordinal);
@@ -1270,6 +1313,7 @@
         }
 
         function showParseLoading() {
+            resultGeneration += 1;
             if (!resultsRegion) {
                 return;
             }
@@ -1289,6 +1333,7 @@
         }
 
         function showParseContinuationPending(message, attempt, maxPolls) {
+            resultGeneration += 1;
             if (!resultsRegion) {
                 return;
             }
@@ -1312,6 +1357,7 @@
         }
 
         function showParseError(message) {
+            resultGeneration += 1;
             if (!resultsRegion) {
                 return;
             }
@@ -1344,6 +1390,7 @@
         }
 
         function applyParsePayload(payload, retrySource = "") {
+            resultGeneration += 1;
             if (!resultsRegion) {
                 return;
             }
@@ -1428,6 +1475,7 @@
         }
 
         function resetResults() {
+            resultGeneration += 1;
             if (activeParseController) {
                 activeParseController.abort();
                 activeParseController = null;
@@ -1445,11 +1493,13 @@
             applyPendingProjectSettings();
         }
 
-        async function readResponseBlobWithProgress(response, startPercent, endPercent) {
+        async function readResponseBlobWithProgress(response, startPercent, endPercent, operation) {
+            assertDownloadCurrent(operation);
             const contentLength = Number.parseInt(response.headers.get("Content-Length") || "0", 10);
             if (!response.body || !contentLength) {
                 setProgressPending("下载中");
                 const blob = await response.blob();
+                assertDownloadCurrent(operation);
                 setProgress(endPercent);
                 return blob;
             }
@@ -1458,23 +1508,29 @@
             const chunks = [];
             let received = 0;
 
-            while (true) {
-                const {done, value} = await reader.read();
-                if (done) {
-                    break;
+            try {
+                while (true) {
+                    assertDownloadCurrent(operation);
+                    const {done, value} = await reader.read();
+                    assertDownloadCurrent(operation);
+                    if (done) {
+                        break;
+                    }
+                    chunks.push(value);
+                    received += value.length;
+                    const ratio = received / contentLength;
+                    setProgress(startPercent + (endPercent - startPercent) * ratio);
                 }
-                chunks.push(value);
-                received += value.length;
-                const ratio = received / contentLength;
-                setProgress(startPercent + (endPercent - startPercent) * ratio);
+            } finally {
+                if (!downloadOperationCurrent(operation)) await reader.cancel().catch(() => {});
+                reader.releaseLock();
             }
 
             setProgress(endPercent);
             return new Blob(chunks, {type: response.headers.get("Content-Type") || "application/zip"});
         }
 
-        function directDownloadFilename(item, response, index, total) {
-            const fallbackBase = getBaseFilename();
+        function directDownloadFilename(item, response, index, total, fallbackBase) {
             const suffix = total > 1 ? `_${index + 1}` : "";
             const extension = extensionFromContentType(
                 response.headers.get("Content-Type") || "",
@@ -1526,7 +1582,8 @@
             return wrapped;
         }
 
-        async function prepareServerSingleDownload(payload) {
+        async function prepareServerSingleDownload(payload, operation) {
+            assertDownloadCurrent(operation);
             if (!downloadPrepareUrl) {
                 throw new Error("当前页面缺少单文件下载准备接口。");
             }
@@ -1541,7 +1598,9 @@
                     download_mode: "server_single",
                 }),
                 cache: "no-store",
+                signal: operation && operation.signal,
             });
+            assertDownloadCurrent(operation);
             let rawPayload = {};
             try {
                 rawPayload = await response.json();
@@ -1551,6 +1610,7 @@
                     message: "下载准备响应格式异常，请稍后再试。",
                 };
             }
+            assertDownloadCurrent(operation);
             const prepared = downloadReliabilityApi
                 ? downloadReliabilityApi.parsePreparePayload(
                     rawPayload,
@@ -1597,10 +1657,12 @@
             }
         }
 
-        async function prepareAndHandoffServerSingle(payload, warnings) {
+        async function prepareAndHandoffServerSingle(payload, warnings, operation) {
+            assertDownloadCurrent(operation);
             setProgressPending("准备下载");
             setStatus(getStatusElement(), "正在签发安全下载通道...");
-            const prepared = await prepareServerSingleDownload(payload);
+            const prepared = await prepareServerSingleDownload(payload, operation);
+            assertDownloadCurrent(operation);
             const statusUrl = sameOriginHandoffPath(prepared.statusUrl);
             setProgressPending("连接下载");
             setStatus(
@@ -1623,12 +1685,45 @@
                 ? await downloadReliabilityApi.pollDownloadStatus({
                     statusUrl,
                     pollAfterMs: prepared.pollAfterMs,
+                    fetchStatus: async (url, init) => {
+                        assertDownloadCurrent(operation);
+                        const controller = new AbortController();
+                        const signals = [init.signal, operation && operation.signal].filter(Boolean);
+                        const abort = () => controller.abort();
+                        const cleanup = () => signals.forEach(signal => signal.removeEventListener("abort", abort));
+                        let readingBody = false;
+                        signals.forEach(signal => signal.addEventListener("abort", abort, {once: true}));
+                        if (signals.some(signal => signal.aborted)) abort();
+                        try {
+                            const response = await fetch(url, {...init, signal: controller.signal});
+                            assertDownloadCurrent(operation);
+                            if (response.status === 429 || response.status === 503) return response;
+                            readingBody = true;
+                            return {ok: response.ok, status: response.status, headers: response.headers,
+                                async json() {
+                                    try {
+                                        assertDownloadCurrent(operation);
+                                        const payload = await response.json();
+                                        assertDownloadCurrent(operation);
+                                        return payload;
+                                    } finally { cleanup(); }
+                                }};
+                        } finally {
+                            if (!readingBody) cleanup();
+                        }
+                    },
+                    wait: async delay => {
+                        assertDownloadCurrent(operation);
+                        await sleep(delay);
+                        assertDownloadCurrent(operation);
+                    },
                 })
                 : {
                     ok: true,
                     status: "streaming",
                     recovered: false,
                 };
+            assertDownloadCurrent(operation);
             const startDisposition = downloadReliabilityApi
                 ? downloadReliabilityApi.downloadStartDisposition(
                     statusResult,
@@ -1669,16 +1764,23 @@
             };
         }
 
-        async function writeResponseToFileWithProgress(response, fileHandle, startPercent, endPercent) {
+        async function writeResponseToFileWithProgress(response, fileHandle, startPercent, endPercent, operation) {
+            assertDownloadCurrent(operation);
             const contentLength = Number.parseInt(response.headers.get("Content-Length") || "0", 10);
             if (!response.body || !contentLength) {
                 const blob = await response.blob();
+                assertDownloadCurrent(operation);
                 const writable = await fileHandle.createWritable();
                 try {
+                    assertDownloadCurrent(operation);
                     await writable.write(blob);
-                } finally {
+                    assertDownloadCurrent(operation);
                     await writable.close();
+                } catch (error) {
+                    if (typeof writable.abort === "function") await writable.abort().catch(() => {});
+                    throw error;
                 }
+                assertDownloadCurrent(operation);
                 setProgress(endPercent);
                 return;
             }
@@ -1689,22 +1791,32 @@
 
             try {
                 while (true) {
+                    assertDownloadCurrent(operation);
                     const {done, value} = await reader.read();
+                    assertDownloadCurrent(operation);
                     if (done) {
                         break;
                     }
                     await writable.write(value);
+                    assertDownloadCurrent(operation);
                     received += value.length;
                     const ratio = received / contentLength;
                     setProgress(startPercent + (endPercent - startPercent) * ratio);
                 }
-            } finally {
                 await writable.close();
+                assertDownloadCurrent(operation);
+            } catch (error) {
+                if (typeof writable.abort === "function") await writable.abort().catch(() => {});
+                throw error;
+            } finally {
+                if (!downloadOperationCurrent(operation)) await reader.cancel().catch(() => {});
+                reader.releaseLock();
             }
             setProgress(endPercent);
         }
 
-        async function downloadDirectItem(item, index, total, onStatus) {
+        async function downloadDirectItem(item, index, total, onStatus, baseFilename, operation) {
+            assertDownloadCurrent(operation);
             const startPercent = total > 1 ? (index / total) * 100 : 0;
             const endPercent = total > 1 ? ((index + 1) / total) * 100 : 100;
             if (onStatus) {
@@ -1713,13 +1825,15 @@
             const response = await fetch(item.url, {
                 cache: "no-store",
                 credentials: "omit",
+                signal: operation && operation.signal,
             });
+            assertDownloadCurrent(operation);
 
             if (!response.ok) {
                 throw new Error(`直链下载失败（${response.status}）`);
             }
 
-            const filename = directDownloadFilename(item, response, index, total);
+            const filename = directDownloadFilename(item, response, index, total, baseFilename);
             if (onStatus) {
                 onStatus("下载通道已建立，正在读取文件...");
             }
@@ -1736,36 +1850,43 @@
                         },
                     ],
                 });
-                await writeResponseToFileWithProgress(response, handle, startPercent, endPercent);
+                assertDownloadCurrent(operation);
+                await writeResponseToFileWithProgress(response, handle, startPercent, endPercent, operation);
+                assertDownloadCurrent(operation);
                 return filename;
             }
 
-            const blob = await readResponseBlobWithProgress(response, startPercent, endPercent);
+            const blob = await readResponseBlobWithProgress(response, startPercent, endPercent, operation);
+            assertDownloadCurrent(operation);
             if (onStatus) {
                 onStatus("正在唤起浏览器下载...");
             }
-            await saveZipBlob(blob, filename, false);
+            await saveZipBlob(blob, filename, false, operation);
+            assertDownloadCurrent(operation);
             return filename;
         }
 
-        async function downloadDirectRouteItems(items) {
+        async function downloadDirectRouteItems(items, baseFilename, operation) {
+            assertDownloadCurrent(operation);
             const directItems = (items || []).filter((item) => item && item.url);
             if (directItems.length === 0) {
                 throw new Error("没有可下载的直链资源");
             }
 
             const onStatus = (message) => {
-                setStatus(getStatusElement(), message);
+                if (downloadOperationCurrent(operation)) setStatus(getStatusElement(), message);
             };
             onStatus("正在获取文件...");
             const filenames = [];
             for (let index = 0; index < directItems.length; index += 1) {
-                filenames.push(await downloadDirectItem(directItems[index], index, directItems.length, onStatus));
+                assertDownloadCurrent(operation);
+                filenames.push(await downloadDirectItem(directItems[index], index, directItems.length, onStatus, baseFilename, operation));
             }
             return filenames;
         }
 
-        async function downloadOrdinaryMediaRouteItems(items) {
+        async function downloadOrdinaryMediaRouteItems(items, baseFilename, operation) {
+            assertDownloadCurrent(operation);
             const directItems = (items || []).filter((item) => item && item.url);
             if (!ordinaryMediaDownloadApi || directItems.length !== 1) {
                 throw new Error("当前资源无法由浏览器直接保存。");
@@ -1773,16 +1894,21 @@
             resetDownloadProgressBaseline();
             const item = directItems[0];
             const result = await ordinaryMediaDownloadApi.download(item, {
-                filename: item.filename || `${getBaseFilename()}.mp4`,
+                filename: item.filename || `${baseFilename}.mp4`,
+                signal: operation && operation.signal,
                 onStage(_stage, message) {
-                    setStatus(getStatusElement(), message);
+                    if (downloadOperationCurrent(operation)) setStatus(getStatusElement(), message);
                 },
-                onProgress: applyOrdinaryDownloadProgress,
+                onProgress(progress) {
+                    if (downloadOperationCurrent(operation)) applyOrdinaryDownloadProgress(progress);
+                },
             });
+            assertDownloadCurrent(operation);
             return [result.filename];
         }
 
-        async function postDownloadPayload(payload) {
+        async function postDownloadPayload(payload, operation) {
+            assertDownloadCurrent(operation);
             return fetch(downloadUrl, {
                 method: "POST",
                 headers: {
@@ -1790,21 +1916,26 @@
                     "X-CSRFToken": getCookie("csrftoken"),
                 },
                 body: JSON.stringify(payload),
+                signal: operation && operation.signal,
             });
         }
 
-        async function fetchRouteOnly(payload) {
+        async function fetchRouteOnly(payload, operation) {
             const response = await postDownloadPayload({
                 ...payload,
                 route_only: true,
-            });
+            }, operation);
+            assertDownloadCurrent(operation);
             if (!response.ok) {
                 throw new Error(await parseErrorResponse(response));
             }
-            return response.json();
+            const route = await response.json();
+            assertDownloadCurrent(operation);
+            return route;
         }
 
-        async function handleDirectRoute(routeData) {
+        async function handleDirectRoute(routeData, baseFilename, operation) {
+            assertDownloadCurrent(operation);
             const directItems = routeData.items || [];
             if (directItems.some((item) => String(item.asset_id || "").startsWith("upstream:"))
                 && !directRouteHasOrdinaryMedia(directItems)) {
@@ -1812,7 +1943,8 @@
             }
             if (directRouteHasOrdinaryMedia(directItems)) {
                 try {
-                    const filenames = await downloadOrdinaryMediaRouteItems(directItems);
+                    const filenames = await downloadOrdinaryMediaRouteItems(directItems, baseFilename, operation);
+                    assertDownloadCurrent(operation);
                     setStatus(
                         getStatusElement(),
                         `已交给浏览器保存：${filenames.join("、")}${routeWarningText(routeData.warnings)}`,
@@ -1831,7 +1963,8 @@
                 return;
             }
 
-            const filenames = await downloadDirectRouteItems(directItems);
+            const filenames = await downloadDirectRouteItems(directItems, baseFilename, operation);
+            assertDownloadCurrent(operation);
             setProgress(100);
             const completionLabel = showInternalDiagnostics
                 ? (routeData.route_reason || "已开始保存")
@@ -1843,10 +1976,13 @@
             );
         }
 
-        async function saveDownloadResponse(response, fallbackName, startPercent, endPercent) {
+        async function saveDownloadResponse(response, fallbackName, startPercent, endPercent, operation) {
+            assertDownloadCurrent(operation);
             const filename = getDownloadFilename(response, fallbackName);
-            const blob = await readResponseBlobWithProgress(response, startPercent, endPercent);
-            const savedMessage = await saveZipBlob(blob, filename, useFilePicker);
+            const blob = await readResponseBlobWithProgress(response, startPercent, endPercent, operation);
+            assertDownloadCurrent(operation);
+            const savedMessage = await saveZipBlob(blob, filename, useFilePicker, operation);
+            assertDownloadCurrent(operation);
             const savedCount = response.headers.get("X-Saved-Count") || "?";
             const failedCount = response.headers.get("X-Failed-Count") || "0";
             const variant = failedCount === "0" ? "text-success" : "text-muted";
@@ -1857,14 +1993,17 @@
             return `${result.savedMessage}：${result.filename}，成功 ${result.savedCount} 个，失败 ${result.failedCount} 个`;
         }
 
-        async function waitForDownloadTask(taskStatusUrl) {
+        async function waitForDownloadTask(taskStatusUrl, operation) {
             while (true) {
-                const response = await fetch(taskStatusUrl, {cache: "no-store"});
+                assertDownloadCurrent(operation);
+                const response = await fetch(taskStatusUrl, {cache: "no-store", signal: operation && operation.signal});
+                assertDownloadCurrent(operation);
                 if (!response.ok) {
                     throw new Error(await parseErrorResponse(response));
                 }
 
                 const task = await response.json();
+                assertDownloadCurrent(operation);
                 const progress = Number(task.progress || 0);
                 if (progress > 0) {
                     setProgress(progress);
@@ -1884,7 +2023,8 @@
             }
         }
 
-        async function downloadWithTask(payload) {
+        async function downloadWithTask(payload, operation) {
+            assertDownloadCurrent(operation);
             if (!downloadTaskUrl) {
                 throw new Error("当前页面缺少下载任务接口");
             }
@@ -1892,6 +2032,7 @@
             setProgressPending("创建任务");
             setStatus(getStatusElement(), "正在创建后台打包任务，请保持页面打开...");
 
+            // Aborting this request cannot undo work already accepted by the server.
             const createResponse = await fetch(downloadTaskUrl, {
                 method: "POST",
                 headers: {
@@ -1899,27 +2040,33 @@
                     "X-CSRFToken": getCookie("csrftoken"),
                 },
                 body: JSON.stringify(payload),
+                signal: operation && operation.signal,
             });
-
+            assertDownloadCurrent(operation);
             if (!createResponse.ok) {
                 throw new Error(await parseErrorResponse(createResponse));
             }
 
             const created = await createResponse.json();
-            const completed = await waitForDownloadTask(created.status_url);
+            assertDownloadCurrent(operation);
+            const completed = await waitForDownloadTask(created.status_url, operation);
+            assertDownloadCurrent(operation);
             const fileUrl = completed.file_url || created.file_url;
 
             setProgress(95);
             setStatus(getStatusElement(), "正在下载文件...");
 
-            const fileResponse = await fetch(fileUrl, {cache: "no-store"});
+            const fileResponse = await fetch(fileUrl, {cache: "no-store", signal: operation && operation.signal});
+            assertDownloadCurrent(operation);
             if (!fileResponse.ok) {
                 throw new Error(await parseErrorResponse(fileResponse));
             }
 
-            const filename = getDownloadFilename(fileResponse, getBaseFilename());
-            const blob = await readResponseBlobWithProgress(fileResponse, 95, 100);
-            const savedMessage = await saveZipBlob(blob, filename, useFilePicker);
+            const filename = getDownloadFilename(fileResponse, payload.base_filename || getBaseFilename());
+            const blob = await readResponseBlobWithProgress(fileResponse, 95, 100, operation);
+            assertDownloadCurrent(operation);
+            const savedMessage = await saveZipBlob(blob, filename, useFilePicker, operation);
+            assertDownloadCurrent(operation);
             const savedCount = fileResponse.headers.get("X-Saved-Count") || completed.saved_count || "?";
             const failedCount = fileResponse.headers.get("X-Failed-Count") || completed.failed_count || "0";
             const variant = String(failedCount) === "0" ? "text-success" : "text-muted";
@@ -1928,8 +2075,10 @@
             setStatus(getStatusElement(), `${savedMessage}：${filename}，成功 ${savedCount} 个，失败 ${failedCount} 个`, variant);
         }
 
-        async function handleDownloadClick(downloadBtn, forceAutoMode, options) {
-            if (selected.length === 0) {
+        async function handleDownloadClick(downloadBtn, forceAutoMode, options, chosenItems = selected) {
+            const isCurrent = () => downloadOperationCurrent(options);
+            if (!isCurrent()) return;
+            if (chosenItems.length === 0) {
                 window.alert("请先选择需要保存的资源");
                 return;
             }
@@ -1939,18 +2088,20 @@
             }
 
             downloadInProgress = true;
+            const controls = {buttons: getDownloadActionButtons(), cards: getCards()};
             resetDownloadProgressBaseline();
             const busyLabel = forceAutoMode ? "智能处理中" : "保存中";
             setDownloadButtonsBusy(true, downloadBtn, busyLabel);
             setStatus(getStatusElement(), "正在准备下载...");
+            const filenameBase = options && options.baseFilename || getBaseFilename();
 
             try {
                 const forceServerPhotoArchive = Boolean(
                     options && options.forceServerPhotoArchive
                 );
                 const payload = {
-                    media_items: selected,
-                    base_filename: getBaseFilename(),
+                    media_items: chosenItems,
+                    base_filename: filenameBase,
                     download_mode: forceAutoMode ? "auto" : "browser",
                     save_dir: String(savedSettings.save_dir || "xhs").trim(),
                     save_format: savedSettings.save_format || "original",
@@ -1967,8 +2118,9 @@
                     );
                 }
 
-                if (selected.some((item) => String(item.asset_id || "").startsWith("upstream:"))) {
-                    const route = await fetchRouteOnly(payload);
+                if (chosenItems.some((item) => String(item.asset_id || "").startsWith("upstream:"))) {
+                    const route = await fetchRouteOnly(payload, options);
+                    if (!isCurrent()) return;
                     if (!route || route.route_type !== "direct"
                         || !route.items || !route.items.every((item) => item.browser_upstream_bound === true)) {
                         throw new Error(route && (route.message || route.route_reason) || "下载授权已失效，请重新解析。");
@@ -1979,18 +2131,18 @@
                         }
                         await downloadSelectedPhotos({...payload, browserRouteItems: route.items});
                     } else {
-                        await handleDirectRoute(route);
+                        await handleDirectRoute(route, filenameBase, options);
                     }
                     return;
                 }
 
                 if (
                     !forceServerPhotoArchive
-                    && selectedSupportsBrowserPhoto(selected, payload.save_format)
+                    && selectedSupportsBrowserPhoto(chosenItems, payload.save_format)
                 ) {
                     if (!browserPhotoApi) {
-                        const zeroRelay = selectionRequiresZeroRelay(selected);
-                        pendingPhotoServerFallback = !zeroRelay && selected.length > 1;
+                        const zeroRelay = selectionRequiresZeroRelay(chosenItems);
+                        pendingPhotoServerFallback = !zeroRelay && chosenItems.length > 1;
                         setPhotoActionVisibility({serverFallback: pendingPhotoServerFallback});
                         setStatus(
                             getStatusElement(),
@@ -2010,8 +2162,9 @@
                     return;
                 }
 
-                if (selectedSingleItem(selected)) {
-                    const routePreview = await fetchRouteOnly(payload);
+                if (selectedSingleItem(chosenItems)) {
+                    const routePreview = await fetchRouteOnly(payload, options);
+                    if (!isCurrent()) return;
                     if (
                         routePreview
                         && routePreview.status === "routed"
@@ -2021,6 +2174,7 @@
                         await prepareAndHandoffServerSingle(
                             payload,
                             routePreview.warnings,
+                            options,
                         );
                         return;
                     }
@@ -2029,7 +2183,7 @@
                         && routePreview.status === "routed"
                         && routePreview.route_type === "direct"
                     ) {
-                        await handleDirectRoute(routePreview);
+                        await handleDirectRoute(routePreview, filenameBase, options);
                         return;
                     }
                 }
@@ -2037,19 +2191,19 @@
                 if (
                     downloadAsyncEnabled
                     && downloadTaskUrl
-                    && selectedNeedsZipTask(selected)
+                    && selectedNeedsZipTask(chosenItems)
                 ) {
-                    await downloadWithTask(payload);
+                    await downloadWithTask(payload, options);
                     return;
                 }
 
-                const requiresProviderProcessing = selectedRequiresProviderProcessing(selected);
+                const requiresProviderProcessing = selectedRequiresProviderProcessing(chosenItems);
                 const pendingLabel = requiresProviderProcessing
                     ? presentationText("准备文件", "服务端处理")
                     : (
                         payload.download_mode === "auto"
                             ? "判断中"
-                            : (selectedSingleItem(selected) ? "准备下载" : "打包中")
+                            : (selectedSingleItem(chosenItems) ? "准备下载" : "打包中")
                     );
                 setProgressPending(pendingLabel);
                 if (requiresProviderProcessing) {
@@ -2059,7 +2213,7 @@
                             ? "Provider 资源正在服务端校验、恢复或合并，完成后会开始传输..."
                             : "正在准备所需文件，完成后会开始下载...",
                     );
-                } else if (!selectedSingleItem(selected)) {
+                } else if (!selectedSingleItem(chosenItems)) {
                     setStatus(
                         getStatusElement(),
                         forceServerPhotoArchive
@@ -2073,7 +2227,8 @@
                             ),
                     );
                 }
-                const response = await postDownloadPayload(payload);
+                const response = await postDownloadPayload(payload, options);
+                if (!isCurrent()) return;
 
                 if (!response.ok) {
                     throw new Error(await parseErrorResponse(response));
@@ -2083,8 +2238,9 @@
                 if (contentType.includes("application/json")) {
                     setProgress(0);
                     const data = await response.json();
+                    if (!isCurrent()) return;
                     if (data.status === "routed" && data.route_type === "direct") {
-                        await handleDirectRoute(data);
+                        await handleDirectRoute(data, filenameBase, options);
                         return;
                     }
                     if (data.status === "routed" && data.route_type === "proxy") {
@@ -2101,17 +2257,15 @@
                         setStatus(getStatusElement(), data.message, "text-success");
                         return;
                     }
-                    setStatus(
-                        getStatusElement(),
-                        data.message
+                    const failureMessage = data.message
                         || (
                             showInternalDiagnostics
                                 ? data.route_reason
                                 : "下载请求未返回可保存的文件，请刷新页面后重试。"
                         )
-                        || "下载请求未返回可保存的文件，请刷新页面后重试。",
-                        "text-danger",
-                    );
+                        || "下载请求未返回可保存的文件，请刷新页面后重试。";
+                    setStatus(getStatusElement(), failureMessage, "text-danger");
+                    if (options && options.propagateError) throw new Error(failureMessage);
                     return;
                 }
 
@@ -2124,9 +2278,11 @@
                     getStatusElement(),
                     presentationText("文件准备完成，正在下载...", "服务器处理完成，正在下载文件..."),
                 );
-                const result = await saveDownloadResponse(response, getBaseFilename(), 0, 100);
+                const result = await saveDownloadResponse(response, filenameBase, 0, 100, options);
+                if (!isCurrent()) return;
                 setStatus(getStatusElement(), serverDownloadStatusMessage(result), result.variant);
             } catch (error) {
+                if (!isCurrent()) return;
                 if (error && error.name === "AbortError") {
                     setProgress(0);
                     setStatus(getStatusElement(), "已取消保存位置选择");
@@ -2153,10 +2309,65 @@
                         "text-danger",
                     );
                 }
+                if (options && options.propagateError) throw error;
             } finally {
                 downloadInProgress = false;
-                setDownloadButtonsBusy(false);
-                applyPendingProjectSettings();
+                setDownloadButtonsBusy(false, null, null, controls);
+                if (isCurrent()) {
+                    applyPendingProjectSettings();
+                }
+            }
+        }
+
+        window.AnimeImagesLegacySelectionDownload = async function (item, pickerRoot, operation) {
+            assertDownloadCurrent(operation);
+            if (!resultsRegion || !pickerRoot || !resultsRegion.contains(pickerRoot)
+                || downloadInProgress || !item || item.selection_schema !== "service_selected_format_v1"
+                || item.selection_delivery !== "legacy_manifest" || item.type !== "video"
+                || !["tiantianjiexi_generic", "kukutool_generic", "tiantianjiexi", "kukutool"].includes(item.provider)
+                || !item.provider_manifest_token || !item.asset_id) {
+                throw new Error("当前无法下载所选资源，请等待已有任务结束或重新解析。");
+            }
+            // A private candidate descriptor supplies the original manifest.
+            // Snapshot it without changing the user's other selected assets.
+            const legacyStatus = resultsRegion.querySelector("[data-legacy-download-status]");
+            if (legacyStatus) legacyStatus.hidden = false;
+            legacyPickerRoot = pickerRoot;
+            try {
+                return await handleDownloadClick(null, true, {
+                    propagateError: true,
+                    baseFilename: String(item.filename || "video").replace(/\.[^.]+$/, ""),
+                    signal: operation && operation.signal,
+                    isCurrent: () => resultsRegion.contains(pickerRoot) && downloadOperationCurrent(operation),
+                }, [Object.freeze({...item})]);
+            } finally { legacyPickerRoot = null; }
+        };
+
+        // Batch shares only the authorized download bridge, not the home page controller.
+        if (!homePage) return;
+
+        async function downloadCurrentSelection(button) {
+            if (pickerDownloadInProgress || downloadInProgress) return;
+            const generation = resultGeneration;
+            const anchor = resultsRegion.children[0];
+            const isCurrent = () => generation === resultGeneration && resultsRegion.isConnected
+                && anchor && resultsRegion.contains(anchor);
+            const baseFilename = getBaseFilename();
+            const api = window.DokiToolYtdlpPicker;
+            const snapshot = api ? api.snapshotMedia(resultsRegion, document, window) : [];
+            const oldItems = selected.map(item => Object.freeze({...item}));
+            if (!snapshot.length) return handleDownloadClick(button, true, {baseFilename, isCurrent}, oldItems);
+            pickerDownloadInProgress = true;
+            const controls = {buttons: getDownloadActionButtons(), cards: getCards()};
+            setDownloadButtonsBusy(true, button, "保存中");
+            try {
+                await api.downloadMedia(snapshot, isCurrent);
+                if (oldItems.length && isCurrent()) {
+                    await handleDownloadClick(button, true, {baseFilename, isCurrent}, oldItems);
+                }
+            } finally {
+                pickerDownloadInProgress = false;
+                setDownloadButtonsBusy(false, null, null, controls);
             }
         }
 
@@ -2198,8 +2409,11 @@
             clearPhotoServerFallback();
             const allCards = getCards();
             const cards = getSelectableCards();
-            const allSelected = selected.length === cards.length;
+            const media = getPickerMedia();
+            const allSelected = selected.length === cards.length && selectedPickerCount() === media.length;
             selected = [];
+
+            if (window.DokiToolYtdlpPicker) window.DokiToolYtdlpPicker.selectMedia(resultsRegion, !allSelected);
 
             allCards.forEach((card) => setAssetCardSelected(card, false));
             if (!allSelected) {
@@ -2350,7 +2564,13 @@
             searchForm.addEventListener("submit", handleSearchSubmit);
         }
 
-        if (resultsRegion) {
+        if (resultsRegion && homePage) {
+            resultsRegion.addEventListener("change", event => {
+                if (event.target.matches("[data-picker-media-selected]")) {
+                    updateSelectedStatus();
+                    updateSelectAllButton();
+                }
+            });
             resultsRegion.addEventListener("click", (event) => {
                 const openImageButton = event.target.closest("[data-upstream-image-open]");
                 if (openImageButton && resultsRegion.contains(openImageButton)) {
@@ -2388,9 +2608,11 @@
 
                 const downloadBtn = event.target.closest("#download-btn");
                 if (downloadBtn && resultsRegion.contains(downloadBtn)) {
-                    handleDownloadClick(downloadBtn, true);
+                    downloadCurrentSelection(downloadBtn);
                     return;
                 }
+
+                if (event.target.closest("[data-ytdlp-picker]")) return;
 
                 if (event.target.closest("[data-livephoto-toggle]")) {
                     return;

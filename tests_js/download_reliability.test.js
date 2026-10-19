@@ -309,7 +309,7 @@ test("single-page code no longer submits an unobservable iframe POST", () => {
     assert.match(source, /sameOriginHandoffPath\(prepared\.statusUrl\)/);
     assert.match(source, /pollDownloadStatus/);
     assert.match(source, /setProgress\(100\)/);
-    assert.match(source, /setDownloadButtonsBusy\(false\)/);
+    assert.match(source, /setDownloadButtonsBusy\(false, null, null, controls\)/);
     assert.doesNotMatch(source, /console\.(?:warn|error)\([^)]*item\.url/s);
 });
 

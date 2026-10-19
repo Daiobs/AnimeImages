@@ -310,6 +310,9 @@ def single_item_can_attachment_download(item):
 
 
 def public_route_item(item):
+    from .provider_strategy import browser_transport_hint
+    from .upstream_delivery import upstream_video_resource_binding
+
     allowed_keys = (
         "type",
         "url",
@@ -339,6 +342,18 @@ def public_route_item(item):
         if browser_direct_fetch_safe:
             public_item["requires_merge"] = False
             public_item["requires_cookie"] = False
+            if item_is_upstream(item):
+                binding = upstream_video_resource_binding(item)
+                if binding:
+                    public_item.update(binding)
+                    if binding.get("selection_expires_at"):
+                        public_item.update(browser_transport_hint(public_item))
+                    else:
+                        public_item["browser_upstream_bound"] = False
+                        public_item["browser_direct_fetch_safe"] = False
+                else:
+                    public_item["browser_upstream_bound"] = False
+                    public_item["browser_direct_fetch_safe"] = False
     return public_item
 
 

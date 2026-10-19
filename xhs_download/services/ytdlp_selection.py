@@ -5,6 +5,7 @@ format identities, including formats this browser-only delivery path cannot save
 """
 import math
 import re
+from time import time
 from urllib.parse import urlsplit
 
 from .common import clean_filename
@@ -111,7 +112,22 @@ def capability(candidate):
         from .ytdlp_format_check import check_message
         limitation = check_message(candidate['selected_track_check'])
     return {'can_download': not reason, 'can_check': can_check, 'limitation': limitation,
+            'can_open': can_open_video(candidate),
             'can_preview': not reason and ext in {'mp4', 'webm', 'm4v', 'm4a', 'mp3', 'ogg', 'opus', 'wav'}}
+
+
+def can_open_video(candidate):
+    """Navigation needs no fetch/CORS or codec probe, but retains source restrictions."""
+    return bool(candidate.get('media_type') == 'video'
+                and candidate.get('protocol') == 'https'
+                and not candidate.get('has_drm')
+                and not candidate.get('requires_merge')
+                and not candidate.get('requires_cookie')
+                and not candidate.get('download_context_required', candidate.get('requires_context', False))
+                and candidate.get('video_tracks') != 'absent'
+                and candidate.get('delivery_state') not in {
+                    'streaming_media', 'separate_media_tracks', 'insecure_reference'}
+                and str(candidate.get('extension') or '').lower().lstrip('.') in ({''} | VIDEO_EXTENSIONS))
 
 
 def size_label(candidate):
@@ -136,11 +152,57 @@ def duration_label(value):
     return f'{hours}:{minutes:02}:{seconds:02}' if hours else f'{minutes}:{seconds:02}'
 
 
+def video_quality_label(candidate):
+    label = text(candidate.get('format_label'), 80).strip()
+    if label.lower() in {'original', 'source', '原画'}:
+        return label
+    match = re.fullmatch(r'(\d{2,4})[pP](\+)?', label)
+    if match:
+        return f'{int(match[1])}p{match[2] or ""}'
+    height = number(candidate.get('height'))
+    return f'{int(height)}p' if height else label or '视频格式'
+
+
+def video_quality_order(candidate):
+    label = video_quality_label(candidate)
+    if label.lower() in {'original', 'source', '原画'}:
+        return (0, 0, 0)
+    match = re.fullmatch(r'(\d{2,4})p(\+)?', label)
+    if match:
+        return (1, -int(match[1]), -bool(match[2]))
+    return (2, 0, 0)
+
+
+def add_video_variant_labels(videos):
+    groups = {}
+    for candidate in videos:
+        candidate['variant_label'] = ''
+        groups.setdefault(candidate['label'].casefold(), []).append(candidate)
+    for siblings in groups.values():
+        if len(siblings) < 2:
+            continue
+        facts = []
+        for candidate in siblings:
+            fps = number(candidate.get('fps'))
+            values = [f'{fps:g} fps' if fps else '']
+            for field in ('vcodec', 'acodec', 'language', 'extension', 'protocol', 'dynamic_range'):
+                value = text(candidate.get(field), 60).strip()
+                values.append('' if value.lower() in {'', 'none', 'unknown'} else
+                              value.upper() if field == 'extension' else value)
+            facts.append(values)
+        differing = [index for index in range(len(facts[0]))
+                     if len({values[index].casefold() for values in facts if values[index]}) > 1]
+        labels = [' · '.join(values[index] for index in differing if values[index]) for values in facts]
+        # Equal or missing observable facts cannot establish a technical difference.
+        for ordinal, (candidate, label) in enumerate(zip(siblings, labels), 1):
+            candidate['variant_label'] = (f'{label} · 版本 {ordinal}' if label else f'版本 {ordinal}') if (
+                not label or labels.count(label) > 1) else label
+
+
 def choice(candidate):
     kind = candidate.get('media_type')
-    height = number(candidate.get('height'))
     abr = number(candidate.get('audio_bitrate')) or number(candidate.get('bitrate'))
-    label = (f'{int(height)}p' if height else text(candidate.get('format_label'), 80) or '视频格式') if kind == 'video' else (
+    label = video_quality_label(candidate) if kind == 'video' else (
         f'{abr:g} kbps' if abr else text(candidate.get('format_label'), 80) or '原始音频')
     facts = [str(candidate.get('extension') or '格式未知').upper()]
     fps = number(candidate.get('fps'))
@@ -164,27 +226,30 @@ def choice(candidate):
             'detail_label': ' · '.join(facts), 'size_label': size_label(candidate)}
 
 
-def build_picker(candidates, preferences=None):
+def build_picker(candidates, preferences=None, *, provider=PROVIDER, schema=SCHEMA, choice_factory=choice):
     if not isinstance(candidates, (list, tuple)) or not candidates:
         return None
-    if any(not isinstance(c, dict) or c.get('provider_id') != PROVIDER for c in candidates):
+    if any(not isinstance(c, dict) or c.get('provider_id') != provider for c in candidates):
         return None
     work_candidate = next((c for c in candidates if isinstance(c.get('work'), dict)
-                           and c['work'].get('schema') == SCHEMA), candidates[0])
+                           and c['work'].get('schema') == schema), candidates[0])
     work = work_candidate.get('work', {})
-    if not isinstance(work, dict) or work.get('schema') != SCHEMA:
+    if not isinstance(work, dict) or work.get('schema') != schema:
         return None  # Old cached/multiwork/other-provider results keep their UI.
     groups = {str(c.get('work_id') or c.get('work_label') or '') for c in candidates}
     if len(groups - {''}) > 1:
         return None
-    videos = [choice(c) for c in candidates if c.get('media_type') == 'video' and c.get('role') not in {'cover', 'thumbnail', 'poster'}]
-    audios = [choice(c) for c in candidates if c.get('media_type') == 'audio']
+    videos = [choice_factory(c) for c in candidates if c.get('media_type') == 'video' and c.get('role') not in {'cover', 'thumbnail', 'poster'}]
+    audios = [choice_factory(c) for c in candidates if c.get('media_type') == 'audio']
     if not videos and not audios:
         return None
-    videos.sort(key=lambda c: (number(c.get('height')) or 0, number(c.get('fps')) or 0,
-                              number(c.get('bitrate')) or 0), reverse=True)
+    # Keep the existing default ranking independent of the visible quality order.
+    ranked_videos = sorted(videos, key=lambda c: (number(c.get('height')) or 0, number(c.get('fps')) or 0,
+                                                number(c.get('bitrate')) or 0), reverse=True)
+    videos.sort(key=video_quality_order)
+    add_video_variant_labels(videos)
     audios.sort(key=lambda c: (number(c.get('audio_bitrate')) or number(c.get('bitrate')) or 0), reverse=True)
-    primary = videos or audios
+    primary = ranked_videos or audios
     direct = [c for c in primary if c['can_download']]
     preferred = []
     if videos and isinstance(preferences, dict) and preferences:
@@ -208,6 +273,9 @@ def build_picker(candidates, preferences=None):
         visible = 0
         for c in group:
             c['selected'] = c['candidate_id'] == selected['candidate_id']
+            if c['media_type'] == 'video':
+                c['initial_visible'] = True
+                continue
             # Only direct-save representatives belong in the primary tier;
             # all other identities remain selectable in the disclosure.
             key = c.get('height') if c['media_type'] == 'video' else c.get('audio_bitrate') or c.get('bitrate')
@@ -218,6 +286,7 @@ def build_picker(candidates, preferences=None):
     previews = [c for c in primary if c['can_preview']]
     preview = min(previews, key=lambda c: (number(c.get('height')) or 0, number(c.get('size_bytes')) or float('inf'))) if previews else None
     return {'work': work, 'videos': videos, 'audios': audios, 'selected': selected,
+            'provider_id': provider, 'selection_schema': schema,
             'preview': preview, 'first': work_candidate, 'is_audio': not videos,
             'duration_label': duration_label(work.get('duration')),
             'video_primary': [c for c in videos if c['initial_visible']],
@@ -226,15 +295,16 @@ def build_picker(candidates, preferences=None):
             'audio_other': [c for c in audios if not c['initial_visible']],
             'all_unavailable': not any(c['can_download'] for c in videos + audios),
             'group_id': 'ytfmt-' + re.sub('[^a-zA-Z0-9_-]', '', str(work_candidate.get('candidate_id', '')))[:80],
+            'video_group_count': int(bool(videos)),
             'format_count': len(videos) + len(audios)}
 
 
-def selected_link_descriptor(record):
+def selected_link_descriptor(record, *, provider=PROVIDER, schema=SCHEMA):
     """Authorized link metadata, not a media fetch or download grant."""
     from .upstream_candidates import candidate_url
     public = record.get('public', {})
-    if (record.get('provider_id') != PROVIDER or not isinstance(public, dict)
-            or public.get('provider_id') != PROVIDER
+    if (record.get('provider_id') != provider or not isinstance(public, dict)
+            or public.get('provider_id') != provider
             or public.get('media_type') not in {'video', 'audio'}):
         raise ValueError('selected_link_invalid')
     url = candidate_url(record.get('url'))
@@ -249,16 +319,46 @@ def selected_link_descriptor(record):
     if not re.fullmatch(r'[a-z0-9]{1,12}', extension):
         extension = 'bin'
     name = clean_filename(public.get('work_label') or 'media').strip(' .')[:160] or 'media'
-    format_id = re.sub(r'[^A-Za-z0-9_-]', '_', str(public.get('format_id') or 'original'))[:80]
-    return {'selection_schema': SCHEMA, 'candidate_id': record['candidate_id'],
+    format_id = re.sub(r'[^A-Za-z0-9_-]', '_', str(public.get('format_id') or record['candidate_id']))[:80]
+    return {'selection_schema': schema, 'candidate_id': record['candidate_id'],
             'selected_format_id': public.get('format_id') or '', 'url': url,
-            'type': public['media_type'], 'provider': PROVIDER,
+            'type': public['media_type'], 'provider': provider,
             'filename': f'{name}_{format_id}.{extension}'}
+
+
+def selected_open_descriptor(record, *, provider=PROVIDER, schema=SCHEMA):
+    from .platforms.douyin_kukutool import parse_byte_cdn_url
+    from .platforms.douyin_media_policy import is_allowed_douyin_media_hostname
+    from .upstream_delivery import safe_resource_url
+    if (not can_open_video(record.get('public', {}))
+            or context_required(record.get('headers'), headers_present=record.get('headers_present'),
+                                requires_cookie=record.get('requires_cookie'))):
+        raise ValueError('selected_video_navigation_restricted')
+    item = selected_link_descriptor(record, provider=provider, schema=schema)
+    if not safe_resource_url(item['url']):
+        raise ValueError('selected_video_navigation_url_invalid')
+    if is_allowed_douyin_media_hostname(urlsplit(item['url']).hostname):
+        expires_at = parse_byte_cdn_url(item['url'])['expires_at']
+        if expires_at and expires_at <= time():
+            raise ValueError('selected_video_navigation_expired')
+    return item
+
+
+def selection_expires_at(record):
+    """Bound a new download task to its original candidate lifetime, in ms."""
+    expires_at = number(record.get('expires_at'))
+    if expires_at is None:
+        raise ValueError('selected_format_expiry_invalid')
+    expires_ms = int(expires_at * 1000)
+    if expires_ms <= time() * 1000:
+        raise ValueError('selected_format_expired')
+    return expires_ms
 
 
 def selected_descriptor(record):
     """Fresh browser-only authority: no caller-supplied URL or format facts."""
     from .upstream_delivery import safe_resource_url
+    from .provider_strategy import browser_transport_hint
     public = record.get('public', {})
     if (record.get('provider_id') != PROVIDER or not isinstance(public, dict)
             or public.get('provider_id') != PROVIDER or not capability(public)['can_download']
@@ -269,7 +369,8 @@ def selected_descriptor(record):
     if not url:
         raise ValueError('selected_format_url_invalid')
     link = selected_link_descriptor(record)
-    return {**link, 'url': url,
+    item = {**link, 'url': url,
+            'selection_expires_at': selection_expires_at(record),
             'type': public['media_type'], 'provider': PROVIDER, 'source_platform': 'upstream',
             'asset_id': 'upstream:selection:' + record['candidate_id'],
             'browser_upstream_bound': True, 'browser_direct_fetch_safe': True,
@@ -277,3 +378,4 @@ def selected_descriptor(record):
             'audio_tracks': public.get('audio_tracks'), 'video_tracks': public.get('video_tracks'),
             'size_bytes': number(public.get('size_bytes')) or 0,
             'size_is_estimate': bool(public.get('size_is_estimate'))}
+    return {**item, **browser_transport_hint(item)}

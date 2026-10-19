@@ -1,5 +1,5 @@
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
 import inspect
 import json
@@ -197,6 +197,32 @@ class ValidatedKukuToolCandidate:
     candidate_count: int = 0
     probe_duration_ms: int = 0
     payload_age_ms: int = 0
+    candidates: tuple[MediaCandidate, ...] = ()
+    title: str = ""
+    cover_url: str = ""
+
+
+def current_payload_metadata(payload, allowed_host_suffixes):
+    """Display fields travel only with this payload's existing validated TTL."""
+    from .douyin_providers import normalize_douyin_display_title
+    from .douyin_media_policy import validate_douyin_media_url
+
+    if not isinstance(payload, dict):
+        return {"title": "", "cover_url": ""}
+    try:
+        title = normalize_douyin_display_title(payload.get("title") or payload.get("description"))
+    except ValueError:
+        title = ""
+    cover = str(payload.get("cover") or "").strip()
+    if cover:
+        try:
+            parts = urlsplit(cover)
+            if parts.username or parts.password:
+                raise ValueError("credentialed cover")
+            validate_douyin_media_url(cover, existing_suffixes=allowed_host_suffixes)
+        except (TypeError, ValueError):
+            cover = ""
+    return {"title": title, "cover_url": cover}
 
 
 def integer_value(value):
@@ -239,12 +265,15 @@ def is_byte_cdn_url(url):
     return str(url).startswith("https://")
 
 
-def normalize_kukutool_payload(payload):
+def normalize_kukutool_payload(payload, *, retain_variants=False):
     if not isinstance(payload, dict):
         return ()
 
     resources_by_identity = {}
-    for video in payload.get("videos") or ():
+    videos = payload.get("videos") or ()
+    if retain_variants and isinstance(payload.get("_retained_video_fullinfo"), list):
+        videos = [{"video_fullinfo": payload["_retained_video_fullinfo"]}]
+    for video in videos:
         if not isinstance(video, dict):
             continue
         for raw_resource in video.get("video_fullinfo") or ():
@@ -253,6 +282,10 @@ def normalize_kukutool_payload(payload):
             url = raw_resource.get("url")
             if not isinstance(url, str) or not is_byte_cdn_url(url):
                 continue
+            raw_size = raw_resource.get("size")
+            if retain_variants and raw_size not in (None, ""):
+                if isinstance(raw_size, bool) or integer_value(raw_size) <= 0:
+                    continue
 
             parsed_url = urlsplit(url)
             query = parse_qs(parsed_url.query)
@@ -282,7 +315,8 @@ def normalize_kukutool_payload(payload):
                 object_key=metadata["object_key"],
                 signed_url_expires_at=metadata["expires_at"],
             )
-            identity = resource.object_key or resource.url
+            # Keep the historical winner's object-key dedupe independent of picker rows.
+            identity = resource if retain_variants else resource.object_key or resource.url
             current = resources_by_identity.get(identity)
             if current is None or resource.score > current.score:
                 resources_by_identity[identity] = resource
@@ -294,6 +328,30 @@ def normalize_kukutool_payload(payload):
             reverse=True,
         )
     )
+
+
+def retain_kukutool_candidates(candidates, allowed_host_suffixes):
+    retained = []
+    seen = set()
+    expires_after = int(time()) + 30
+    for candidate in candidates:
+        try:
+            if not is_byte_cdn_url(candidate.url):
+                continue
+            validate_external_url(candidate.url, allowed_host_suffixes)
+            metadata = parse_byte_cdn_url(candidate.url)
+            if (
+                candidate.size_bytes < 0
+                or not metadata["object_key"]
+                or metadata["expires_at"] <= expires_after
+                or candidate in seen
+            ):
+                continue
+        except (TypeError, ValueError):
+            continue
+        seen.add(candidate)
+        retained.append(candidate)
+    return tuple(retained)
 
 
 def build_kukutool_cache_key(aweme_id):
@@ -577,11 +635,16 @@ def serialize_validated_candidate(validated):
         "object_key": validated.object_key,
         "signed_url_expires_at": validated.signed_url_expires_at,
         "candidate_count": validated.candidate_count,
+        "candidates": [asdict(candidate) for candidate in validated.candidates],
+        "title": validated.title,
+        "cover": validated.cover_url,
         "cached_at": time(),
     }
 
 
 def get_cached_validated_candidate(cache_key, allowed_host_suffixes):
+    from ..upstream_candidates import MAX_CANDIDATES
+
     data = cache.get(cache_key)
     if not isinstance(data, dict):
         return None
@@ -614,6 +677,17 @@ def get_cached_validated_candidate(cache_key, allowed_host_suffixes):
         cache.delete(cache_key)
         return None
 
+    candidates = []
+    raw_candidates = data.get("candidates")
+    if isinstance(raw_candidates, (list, tuple)):
+        for raw_candidate in raw_candidates[:MAX_CANDIDATES]:
+            if not isinstance(raw_candidate, dict):
+                continue
+            try:
+                candidates.append(MediaCandidate(**raw_candidate))
+            except TypeError:
+                continue
+
     return ValidatedKukuToolCandidate(
         candidate=MediaCandidate(
             url=url,
@@ -633,6 +707,8 @@ def get_cached_validated_candidate(cache_key, allowed_host_suffixes):
             0,
             int((time() - cached_at) * 1000),
         ),
+        candidates=retain_kukutool_candidates(candidates, allowed_host_suffixes),
+        **current_payload_metadata(data, allowed_host_suffixes),
     )
 
 
@@ -845,13 +921,16 @@ def sidecar_resource_to_video_fullinfo(resource):
         or resource.get("verified_size")
         or 0
     )
+    has_size = any(resource.get(key) not in (None, "") for key in (
+        "size", "size_bytes", "verified_size",
+    ))
     return {
         "type": str(
             resource.get("type")
             or resource.get("quality_label")
             or "超高清源"
         ),
-        "size": integer_value(size),
+        "size": integer_value(size) if has_size else None,
         "url": url,
         "bit_rate": integer_value(
             resource.get("bit_rate")
@@ -887,9 +966,13 @@ def convert_sidecar_payload_to_kukutool_payload(payload):
 
     seen = set()
     video_fullinfo = []
+    retained_video_fullinfo = []
     for resource in raw_resources:
         item = sidecar_resource_to_video_fullinfo(resource)
-        if not item or item["url"] in seen:
+        if not item:
+            continue
+        retained_video_fullinfo.append(item)
+        if item["url"] in seen:
             continue
         seen.add(item["url"])
         video_fullinfo.append(item)
@@ -899,7 +982,9 @@ def convert_sidecar_payload_to_kukutool_payload(payload):
 
     return {
         "title": payload.get("title"),
+        "cover": payload.get("cover"),
         "videos": [{"video_fullinfo": video_fullinfo}],
+        "_retained_video_fullinfo": retained_video_fullinfo,
         "_sidecar": {
             "contract_version": payload.get("contract_version"),
             "cached": bool(payload.get("cached")),
@@ -1208,12 +1293,30 @@ class DouyinKukuToolProvider:
                 self.provider_settings.kukutool_timeout_seconds,
             ),
         )
+        upstream_deadline = monotonic() + timeout_seconds
+        if context.deadline_monotonic:
+            upstream_deadline = min(upstream_deadline, context.deadline_monotonic)
+
+        def remaining_upstream_budget():
+            remaining = upstream_deadline - monotonic()
+            if remaining <= 0:
+                trace.update(
+                    outcome=ProviderOutcome.FAILURE_TIMEOUT,
+                    failure_class=ProviderFailureClass.TIMEOUT,
+                )
+                if context.ultra_attempt_controller is not None:
+                    context.ultra_attempt_controller.skip_fresh_work(
+                        self.name, reason="deadline_exhausted",
+                    )
+                raise XhsProviderTimeoutError("KuKuTool Provider deadline exhausted")
+            return remaining
+
+        timeout_seconds = remaining_upstream_budget()
         upstream_started_at = time()
         semaphore = get_kukutool_semaphore(
             self.provider_settings.kukutool_max_concurrency
         )
         queue_timeout = min(1.0, timeout_seconds)
-        queue_started_at = monotonic()
         if not semaphore.acquire(timeout=queue_timeout):
             trace.update(
                 outcome=ProviderOutcome.FAILURE_CONCURRENCY,
@@ -1227,6 +1330,7 @@ class DouyinKukuToolProvider:
             raise RuntimeError("KuKuTool Provider is busy")
         request_reservation = None
         try:
+            remaining_upstream_budget()
             request_reservation = reserve_fixed_window(
                 "kukutool-upstream-global",
                 "all",
@@ -1246,15 +1350,13 @@ class DouyinKukuToolProvider:
                 raise RuntimeError(
                     "KuKuTool Provider global request limit reached"
                 )
+            remaining_upstream_budget()
             if context.ultra_attempt_controller is not None:
                 trace["attempt_consumed"] = bool(
                     context.ultra_attempt_controller.begin_provider(self.name)
                 )
+            runner_timeout = remaining_upstream_budget()
             request_reservation.commit()
-            runner_timeout = max(
-                0.1,
-                timeout_seconds - (monotonic() - queue_started_at),
-            )
             trace["external_call"] = True
             payload = call_kukutool_runner(
                 self.runner,
@@ -1285,6 +1387,14 @@ class DouyinKukuToolProvider:
                 sidecar_total_ms=(sidecar_metadata.get("timing") or {}).get("total_ms"),
             )
         resources = normalize_kukutool_payload(payload)
+        display_metadata = current_payload_metadata(payload, adapter.media_host_suffixes)
+        candidates = retain_kukutool_candidates(
+            (
+                resource.to_candidate()
+                for resource in normalize_kukutool_payload(payload, retain_variants=True)
+            ),
+            adapter.media_host_suffixes,
+        )
         trace["candidate_count"] = len(resources)
         log_kukutool_event(
             "douyin_provider_response",
@@ -1328,6 +1438,8 @@ class DouyinKukuToolProvider:
                 signed_url_expires_at=preferred.signed_url_expires_at,
                 cache_hit=False,
                 candidate_count=len(resources),
+                candidates=candidates,
+                **display_metadata,
             )
             try:
                 cache_validated_candidate(
@@ -1381,6 +1493,9 @@ class DouyinKukuToolProvider:
                 allow_fallback=False,
             )
             if not diagnostic.reachable or diagnostic.size_bytes <= 0:
+                candidates = tuple(
+                    candidate for candidate in candidates if candidate.url != resource.url
+                )
                 log_kukutool_event(
                     "douyin_provider_candidate_probe_failed",
                     context,
@@ -1415,6 +1530,14 @@ class DouyinKukuToolProvider:
                 cache_hit=False,
                 candidate_count=len(resources),
                 probe_duration_ms=int((time() - probe_started_at) * 1000),
+                candidates=retain_kukutool_candidates(
+                    (
+                        candidate,
+                        *(item for item in candidates if item != resource.to_candidate()),
+                    ),
+                    adapter.media_host_suffixes,
+                ),
+                **display_metadata,
             )
             try:
                 cache_validated_candidate(
@@ -1917,6 +2040,7 @@ class DouyinKukuToolProvider:
         reused_outcome=None,
     ):
         from .douyin_providers import (
+            attach_douyin_service_picker,
             build_external_parse_result,
             log_provider_event,
             log_provider_failure,
@@ -1944,6 +2068,8 @@ class DouyinKukuToolProvider:
             validated.candidate,
             reference_result,
             provider_name=self.name,
+            base_filename=validated.title,
+            cover_url=validated.cover_url,
         )
         result = with_parse_metadata(
             result,
@@ -1954,6 +2080,22 @@ class DouyinKukuToolProvider:
             kukutool_probe_duration_ms=validated.probe_duration_ms,
             kukutool_object_key=validated.object_key,
             kukutool_signed_url_expires_at=validated.signed_url_expires_at,
+        )
+        result = attach_douyin_service_picker(
+            result,
+            adapter=adapter,
+            context=context,
+            candidates=(
+                validated.candidate,
+                *(
+                    candidate
+                    for candidate in retain_kukutool_candidates(
+                        validated.candidates,
+                        adapter.media_host_suffixes,
+                    )
+                    if candidate != validated.candidate
+                ),
+            ),
         )
         if reused_outcome is not None:
             self.record_candidate_outcome(
@@ -2083,7 +2225,6 @@ class DouyinKukuToolProvider:
             return None
 
         from .douyin_providers import (
-            get_cached_douyin_metadata,
             get_fast_native_result,
             log_provider_event,
             log_provider_failure,
@@ -2103,18 +2244,14 @@ class DouyinKukuToolProvider:
                     self.name,
                     reason="validated_cache",
                 )
-            cached_metadata = get_cached_douyin_metadata(context.aweme_id)
-            if cached_metadata:
-                metadata_future = Future()
-                metadata_future.set_result(cached_metadata)
-                return self.build_result(
-                    adapter,
-                    context,
-                    cached,
-                    metadata_future,
-                    parse_started_at,
-                    ProviderOutcome.SUCCESS_PAYLOAD_CACHE,
-                )
+            # Do not fill a fresh response from the independent, longer-lived
+            # native metadata cache or start a native request for cached media.
+            metadata_future = Future()
+            metadata_future.set_result(None)
+            return self.build_result(
+                adapter, context, cached, metadata_future, parse_started_at,
+                ProviderOutcome.SUCCESS_PAYLOAD_CACHE,
+            )
 
         native_budget = min(
             max(0.1, self.provider_settings.ultra_native_timeout_seconds),
@@ -2162,6 +2299,7 @@ class DouyinKukuToolProvider:
         kukutool_future, flight_state = self.get_or_start_kukutool_future(
             adapter,
             context,
+            preserve_deadline=context.service_execution_policy == "tiantian_first",
         )
         if (
             context.allow_continuation

@@ -130,6 +130,14 @@ def _candidate_record(url, metadata, *, ordinal, provider, source_url, media_typ
         'headers': headers, 'headers_present': headers_present, 'requires_cookie': requires_cookie,
         'expires_at': time.time() + TTL,
     }
+    if provider in {'tiantianjiexi_generic', 'kukutool_generic', 'tiantianjiexi', 'kukutool'}:
+        from .service_format_selection import candidate_facts
+        public.update(candidate_facts(metadata, url, media_type))
+        public['dedicated_default'] = metadata.get('_dedicated_default') is True
+        if provider in {'tiantianjiexi', 'kukutool'}:
+            record['dedicated_resource_id'] = metadata.get('_dedicated_resource_id', '')
+        if metadata.get('_service_legacy_item'):
+            record['service_legacy_item'] = dict(metadata['_service_legacy_item'])
     return public, record
 
 
@@ -147,6 +155,10 @@ def issue_candidates(specs, *, work=None):
             if projection:
                 public['work'] = projection
                 record['work'] = dict(work)
+        elif work and public['provider_id'] in {'tiantianjiexi_generic', 'kukutool_generic', 'tiantianjiexi', 'kukutool'}:
+            from .service_format_selection import public_service_work
+            public['work'] = public_service_work(work)
+            record['work'] = dict(work)
         key = public['candidate_id']
         public['resource_token'] = signing.dumps({'id':key,'bundle':bundle_id}, salt=SALT)
         entry_bytes = len(json.dumps({key:record}, ensure_ascii=True, separators=(',', ':')).encode()) - 2
@@ -166,7 +178,7 @@ def issue_candidate(url, metadata, *, ordinal, provider, source_url, media_type,
                                  source_url=source_url, media_type=media_type, state=state, match=match)])[0]
 
 
-def resolve_issued_candidate_record(token, candidate_id):
+def resolve_issued_candidate_record(token, candidate_id, *, display_only=False):
     """Resolve immutable issuance facts, without selected-check display overlays."""
     try:
         payload = signing.loads(str(token), salt=SALT, max_age=TTL)
@@ -179,15 +191,20 @@ def resolve_issued_candidate_record(token, candidate_id):
             record = cache.get('upstream:candidate:' + str(candidate_id))
         else:
             raise ValueError()
-        if not isinstance(record, dict) or not candidate_url(record.get('url')):
+        validator = None
+        if (display_only and isinstance(record, dict)
+                and record.get('provider_id') in {'tiantianjiexi', 'kukutool'}):
+            from .platforms.douyin_media_policy import validate_douyin_media_url
+            validator = validate_douyin_media_url
+        if not isinstance(record, dict) or not candidate_url(record.get('url'), validator=validator):
             raise ValueError()
         return record
     except (signing.BadSignature, ValueError, TypeError):
         raise XhsParseError('候选资源已失效，请重新解析。') from None
 
 
-def resolve_candidate_record(token, candidate_id):
-    record = resolve_issued_candidate_record(token, candidate_id)
+def resolve_candidate_record(token, candidate_id, *, display_only=False):
+    record = resolve_issued_candidate_record(token, candidate_id, display_only=display_only)
     try:
         if record.get('provider_id') == 'yt_dlp_generic':
             from .ytdlp_format_check import apply_check_evidence
