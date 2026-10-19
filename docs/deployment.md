@@ -261,7 +261,67 @@ DOWNLOAD_ASYNC_TASKS_ENABLED=False
 
 The in-memory background task implementation is intentionally local-only. With production async tasks disabled, the browser automatically uses the synchronous temporary ZIP response. Before re-enabling asynchronous progress in production, replace task state and execution with Redis plus Celery/RQ and store completed archives in a controlled temporary/object-storage location.
 
-Public download endpoints use shared-cache counters for per-IP frequency, per-IP concurrency, daily request count, and daily output bytes. Configure the limits from the project-root `.env` or deployment environment variables. `DOWNLOAD_TRUST_X_FORWARDED_FOR` must remain false unless a trusted reverse proxy overwrites that header; otherwise clients can spoof their limiter identity.
+Public download endpoints use shared-cache counters for per-IP frequency, per-IP concurrency, daily request count, and daily output bytes. Configure the limits from the project-root `.env` or deployment environment variables. Browser-direct/SW transfers do not acquire server-side media concurrency slots merely to establish an identity.
+
+### Trusted client address
+
+The shared resolver in `services/rate_limits.py` is used by rate limits, anonymous
+rollout, GeoIP, request observations and IP-bound resource handoffs. Its default
+is the socket peer (`REMOTE_ADDR`), not a client-supplied proxy header. To accept
+X-Forwarded-For, **both** the existing switch and explicit proxy ranges are
+required. The ranges use the existing `env_config.runtime_list` reader; no
+`settings.py` change is required.
+
+For a verified single local Nginx -> IPv4-loopback Gunicorn deployment, a future
+authorized deployment can migrate from `False` / empty ranges to:
+
+```text
+DOWNLOAD_TRUST_X_FORWARDED_FOR=True
+DOWNLOAD_TRUSTED_PROXY_CIDRS=127.0.0.1/32
+```
+
+Do not apply this example to an unverified topology. Trust `::1/128` only if it
+is an actual proxy peer. Do not trust all private networks; universal ranges
+(`0.0.0.0/0`, `::/0`) or malformed CIDRs fail closed. Empty ranges also trust
+nothing, even when the switch is true. Keep the origin's network access controls.
+
+The managed Nginx configuration appends its peer using
+`$proxy_add_x_forwarded_for`. Starting at the actual socket peer, the application
+walks right to left only through explicitly trusted proxies and stops at the
+first untrusted address. It ignores X-Real-IP and Forwarded for identity.
+Malformed addresses at the trusted boundary, missing headers, or a trusted
+chain requiring over 2048 characters / 20 entries to resolve fall back to the
+socket peer; they never skip a bad boundary to accept an earlier claim. Once
+the untrusted client boundary is reached, its left-hand claims are ignored,
+including oversized prefixes, so client padding cannot choose the proxy bucket.
+IPv6 is canonicalized,
+IPv4-mapped IPv6 becomes IPv4, and scoped/port-bearing address strings are rejected.
+
+If a CDN/load balancer is added, first verify its forwarding behavior, narrow
+proxy ranges and origin bypass controls. A DNS provider name alone does not
+prove proxying. Do not add all upstream networks on speculation.
+
+Anonymous rollout now uses this same address without User-Agent. Authenticated
+rollout continues to use the user ID; disabled/staff/gray/public modes and
+percentages are unchanged. IP rollout is gradual exposure, not strong identity
+or an exact user quota: users behind one egress can share a bucket, and changing
+networks can change it. Migration may change short-lived counter keys, buckets
+and IP-bound tokens. Let old records expire and require normal re-parsing when
+needed; do not clear global caches or keep accepting spoofable legacy identities.
+
+Read-only observation on 2026-10-19 found the installed project Nginx site
+forwarding to `127.0.0.1:8000`, with X-Real-IP=`$remote_addr` and appended XFF;
+Gunicorn runs as `www-data` and binds that loopback address. The service's
+environment file records `DOWNLOAD_TRUST_X_FORWARDED_FOR=False`, and no matching
+unit-level override was observed. Local DNS resolved the hostname to the recorded
+origin address. Full `nginx -T` and live process environment access were denied,
+so loaded include/edge behavior and origin bypass restrictions are **not fully
+verified**. These are deployment prerequisites, not claims of production fixes.
+This task changed no production configuration and sent no public spoofing probes.
+
+The five candidate/selection descriptor endpoints also require the updated
+managed media snippet; see [Nginx baseline and acceptance](../ops/nginx/README.md).
+Installing application code alone does not remove the old Nginx 404 boundary.
 
 The image preview proxy is also an outbound bandwidth path and has separate controls:
 

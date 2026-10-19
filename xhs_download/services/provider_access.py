@@ -8,6 +8,7 @@ from django.conf import settings
 from ..models import ProviderAccessMode, ProviderRuntimeSetting
 from .common import extract_url_from_text, host_matches, is_blocked_hostname
 from .quality_execution import PROVIDER_ALIASES
+from .rate_limits import get_client_ip
 
 
 logger = logging.getLogger(__name__)
@@ -140,10 +141,7 @@ def request_rollout_identity(request):
     user = getattr(request, "user", None)
     if getattr(user, "is_authenticated", False) is True:
         return f"user:{getattr(user, 'pk', '')}"
-    forwarded = str(request.META.get("HTTP_X_FORWARDED_FOR") or "").split(",", 1)[0].strip()
-    remote_addr = str(request.META.get("REMOTE_ADDR") or "").strip()
-    user_agent = str(request.META.get("HTTP_USER_AGENT") or "").strip()[:120]
-    return f"ip:{forwarded or remote_addr}|ua:{user_agent}"
+    return f"ip:{get_client_ip(request)}"
 
 
 def request_rollout_bucket(provider_id, request=None):
