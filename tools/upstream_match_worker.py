@@ -114,6 +114,10 @@ def safe_error(error, stage=None, _depth=0):
         "encoding_denied": "encoding_denied", "node_limit": "node_limit",
     }.get(str(error))
     cause = getattr(error, "cause", None) or error.__cause__
+    if cause is None and name == "DownloadError":
+        exc_info = getattr(error, "exc_info", None)
+        if isinstance(exc_info, tuple) and len(exc_info) == 3 and isinstance(exc_info[1], BaseException):
+            cause = exc_info[1]
     if code is None and cause is not None and cause is not error and _depth < 4:
         child = safe_error(cause, stage, _depth + 1)
         if child["error"] != "worker_error":
