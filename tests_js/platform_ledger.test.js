@@ -73,6 +73,7 @@ test("refresh reflects external route revision changes instead of stale editor s
 });
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return {promise, resolve, reject}; };
 const text = (node) => [node.textContent, ...node.children.map(text)].join(" ");
+const evidenceCases = require("../xhs_download/fixtures/route_evidence_cases.json");
 const descriptors = [
     ["yt_dlp_existing", "yt_dlp_generic"], ["gallery_dl_existing", "gallery_dl_generic"],
     ["parsehub_repo", "parsehub_generic"], ["videodl_repo", "videodl_repo"],
@@ -180,6 +181,24 @@ function fixture(options = {}) {
     f.confirm = () => { const target = f.routePanel.querySelector("[data-route-confirm]"); target.checked = true; f.routePanel.listeners.change({target}); };
     return f;
 }
+
+test("ledger DOM preserves the shared history evidence cases without promoting offline or unknown media", async () => {
+    for (const entry of evidenceCases) {
+        const p = platform(A, {providers: [{provider_id: "parsehub_repo", evidence: entry.evidence,
+            latest_status: entry.status || "success"}], route_hint: entry.evidence === "confirmed"
+            ? "unique_positive" : entry.evidence === "unconfirmed" ? "unconfirmed_media" : "no_positive_evidence"});
+        const f = fixture({read: (q) => q.get("view") === "platforms" ? tablePayload(1, {platforms: [p]})
+            : q.get("view") === "platform" ? {...detailPayload(A), platform: p} : undefined});
+        await f.workspace.activate(true);
+        assert.equal(Boolean(f.overview.querySelector(".ledger-positive")), entry.evidence === "confirmed", entry.name);
+        await f.workspace.open(A);
+        assert.match(text(f.detail), {confirmed: /已确认目标媒体/, unconfirmed: /未确认媒体/, none: /尚无有效媒体/}[entry.evidence], entry.name);
+        if (entry.status === "failed") assert.match(text(f.detail), /失败/);
+        assert.equal(f.saved, 0); assert.equal(f.instant.length, 0);
+        assert.ok(f.calls.every(({init}) => !init.method));
+        f.workspace.destroy();
+    }
+});
 
 test("controller defaults to the platform table without a batch selection or execution", async () => {
     const f = domFixture(), calls = [];
