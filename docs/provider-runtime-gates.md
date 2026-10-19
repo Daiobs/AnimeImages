@@ -160,10 +160,13 @@ capabilities. The former supplies candidates inside the fixed XHS image route;
 the latter compares a whole-repository parser in an isolated Staff Lab. Their
 flags and Runtime paths are not interchangeable.
 
-videodl is licensed under PolyForm Noncommercial 1.0.0 and is limited to a
-noncommercial local Staff Lab. It must not enter `public_gray`, `public`, or a
-production platform route unless a future task completes a new license and
-authorization review.
+videodl remains subject to PolyForm Noncommercial 1.0.0 and the existing
+approved-use boundary. Current code can consume controlled execution in shared
+parsing and explicitly saved local host routes, including only the reviewed
+Common backends described in the Lab guide. This does not expand anonymous
+admission or grant production/commercial permission. Source access, runtime
+policy and host/backend-bound future-sharing authorization are separate from
+license approval; uses beyond the recorded authorization remain to be verified.
 
 Provider Lab operations, exact repository pins, bootstrap commands, result
 governance, and cleanup are documented in [Provider Lab](provider-lab.md).

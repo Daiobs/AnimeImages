@@ -4,6 +4,8 @@ Provider Lab 是 AnimeImages Django monolith 内的 Staff-only 上游对比工�
 
 Provider Lab 不是公开解析产品、自动 Provider Planner 或微服务。它不会选择赢家，也不会把实验结果写回正式 Registry。人工路线不覆盖已有成熟平台的严格路线。
 
+本页无日期的操作说明按当前 main 核对；带日期的验收段落保留当时状态、配置与失败事实，不代表最新生产或当前公开权限。版本与部署集中见 [当前版本状态](current-version-status.md)。
+
 ## 平台总表与持续收录（2026-10-16）
 
 `/admin/provider-lab/` 默认打开“平台总表”；“即时测试”和“执行记录”保留。
@@ -157,12 +159,13 @@ Authorization 不成为持久摘要；敏感来源链接不保留为可重测入
 
 ## 当前状态
 
-Provider Lab 已合并进入 development main，但本次文档任务没有记录它已部署生产。
+Provider Lab 基础代码已有部署记录，但最近记录仍关闭生产页面；#97 的平台总表和 #98 的固定 Common 路线属于后续已合并、未记录部署的增量。本文没有实时核验生产。
+
+以下是代码默认值，不是本文读取的运行实例配置：
 
 ```text
 UPSTREAM_PROVIDER_LAB_ENABLED=False
 VIDEODL_PROVIDER_LAB_ENABLED=False
-PROVIDER_LAB_PRODUCTION_STATUS=NOT_DEPLOYED
 ```
 
 普通 AnimeImages 开发启动不需要安装 ParseHub Provider Lab Worker 或 videodl Provider Lab Worker。
@@ -205,7 +208,7 @@ Provider Lab 没有以下公开发布模式：
 
 ## 固定 Provider 清单
 
-Registry 显式列出六个入口：
+Registry 显式列出七个入口：六个独立通道和一个复合基线。
 
 | Provider ID | 类型 | 运行位置 | 用途 |
 | --- | --- | --- | --- |
@@ -215,6 +218,7 @@ Registry 显式列出六个入口：
 | `yt_dlp_existing` | 现有工具包装 | 受控外部工具路径 | 观察当前 yt-dlp 行为和失败隔离 |
 | `gallery_dl_existing` | 现有工具包装 | 受控外部工具路径 | 与普通通用解析共享候选承接 |
 | `tiantian_existing` | 现有 Provider 包装 | 当前受控 Provider 路径 | 对比 TianTian 解析结果 |
+| `kukutool_existing` | 现有 Provider 包装 | 当前受控 helper 路径 | 对比 Kukutool 解析结果 |
 
 固定 Registry 防止用户通过请求参数加载任意 Python 包、命令或 Provider。添加新 Provider 必须经过代码审查；页面不会扫描本机环境自动发现工具。
 
@@ -260,6 +264,7 @@ flowchart TD
     P --> R
     V --> R
     R --> S[Sanitized result cards]
+    R --> H[Persistent sanitized execution history]
     R --> T[Short-lived Staff-bound resource tokens]
     T --> I[Bounded browser resource inspection]
 ```
@@ -272,7 +277,7 @@ flowchart TD
 - 一个 Provider 失败不阻塞其它结果；
 - Lab 不计算全局分数，也不选择正式赢家；
 - 比较不修改平台路线；仅具有配置权限的 Human 明确保存时更新通用 Host 路线，不修改 Provider Runtime Setting；
-- 刷新页面清除结果；
+- 刷新可清除即时卡片，但已保存的脱敏执行历史仍可查询；
 - 服务端不做完整媒体 Relay。
 
 ## 初始化 Runtime
@@ -339,12 +344,12 @@ python manage.py runserver
 ## 使用流程
 
 1. 使用 active Staff 账号登录。
-2. 打开 `/admin/provider-lab/`。
-3. 输入任意待研究的公开 HTTP/HTTPS URL，或包含该 URL 的分享文案。
-4. 只选择本次需要比较的 Provider。
-5. 提交后分别观察每张 Provider 结果卡片。
-6. 使用受限资源检查确认浏览器可读性、响应类型和小范围字节信号。
-7. 刷新页面清理当前结果。
+2. 打开 `/admin/provider-lab/`，默认从“平台总表”按 hostname 查看跨批次证据；“执行记录”可按批次查看原记录。
+3. 需要新比较时进入“即时测试”，输入适用的公开 HTTP/HTTPS 作品链接或分享文案。只查看总表、详情和草稿不会解析。
+4. 主操作为“测试全部上游”；限定比较时在高级选项中选择 Provider 并使用“测试所选上游”。关闭、缺授权或不可执行项不计实际执行。
+5. 完成本次必要共享确认后提交，分别观察卡片与执行状态；一家失败不抹除其他结果。
+6. 有需要才明确执行受限资源检查，确认浏览器可读性、响应类型和小范围字节信号。
+7. 刷新后通过“执行记录”查看已保存摘要。短期资源授权不因历史存在而续签；保存失败只补同步，不重发解析。
 
 Lab 先把输入约束为公开 HTTP/HTTPS source，再由每个选中的 Provider
 独立判断是否支持。`unsupported` 是有效结果。输入不要求已被正式
@@ -397,30 +402,21 @@ videodl 当前许可证：
 PolyForm Noncommercial 1.0.0
 ```
 
-因此当前边界固定为：
+既有非商业和已批准用途边界仍保留。当前代码已允许受控共享解析及明确保存的本地精确 host 路线，不能继续把实现描述为“任何正式路线均不可使用”。已接通 Common 仅限下文列出的具体 Backend，另需保存时的未来共享确认。
 
-```text
-videodl=noncommercial local Staff Lab only
-```
+这些代码能力不自动授权匿名/public、生产或商业用途，也不扩大第三方服务的使用条件。超出已有批准范围而缺少独立许可证据的用途仍待核验，不能以技术成功作法律结论。
 
-videodl 不得进入：
+## 持久历史与短期资源
 
-- anonymous/public Provider；
-- `public_gray` rollout；
-- 正式平台路线；
-- 生产候选或商业部署。
+应用在 `EvaluationBatch` / `EvaluationExecution` 中保存脱敏批次与执行摘要，Worker 本身不写该库。保存的历史与即时资源凭据分别管理：
 
-未来若要改变范围，必须先完成新的法律与许可证授权审查；技术可用性不能替代许可证授权。
-
-## 无持久化
-
-Provider Lab 不保存结果历史：
-
-- 不写数据库结果模型；
+- Scout 导入保留来源、实际测试时间和关联身份，不冒称新的产品执行；
 - 不把媒体候选写入用户媒体库；
 - 不在浏览器持久存储原始结果；
-- 页面刷新后结果消失；
+- 刷新或进程重启不删除已保存摘要；普通公开解析不自动入此历史库；
 - token 只在短期缓存中存在并受 Staff 身份约束。
+
+查看旧记录不解析、不续签、不取得下载权限。解析结果与摘要保存结果分别报告；保存失败不构成重新调用上游的理由。
 
 应用日志只能记录固定 Provider ID、阶段、状态和受限计数，不应记录用户输入或媒体 URL。
 
@@ -440,15 +436,15 @@ Provider Lab 不保存结果历史：
 ## 已知限制
 
 - 默认关闭且仅限 Staff。
-- 页面刷新会清除结果。
+- 即时卡片和资源 token 不保证跨刷新可继续操作，持久摘要仍可查询。
 - 浏览器并发上限为 3，不保证所有 Provider 同时完成。
 - Lab 不自动选择赢家。
 - Resource inspection 不是完整媒体证明。
 - 需要 Cookie、Referer 或特殊 Header 的资源可能无法浏览器检查。
 - 外部仓库 schema 或依赖变化会使 Worker fail closed。
-- yt-dlp 的 Bilibili 路径当前存在已记录的执行限制。
+- 早期 Bilibili 样本的 yt-dlp 失败保留为历史，不能据此判断当前全部 Bilibili 路径。
 - videodl 受 noncommercial license boundary 限制。
-- Provider Lab 未被本任务记录为已部署生产。
+- 基础 Lab 的部署与页面开放不同；当前增量和最后生产记录见版本状态页。
 
 ## videodl 受控执行
 
@@ -487,7 +483,7 @@ identity 和 runtime identity 缓存 10 分钟，安全失败缓存 30 秒；并
 
 完整实现与 26 项组件处置见
 [videodl Asset 1/2 outcome](research/videodl/ASSET_1_2_IMPLEMENTATION_OUTCOME_V1.md)。
-这不会授权正式平台路线、公开访问、grabber 或生产部署。
+单次 Lab 的这项执行确认不会授权未来正式路线、公开访问、grabber 或生产部署；后续已审查固定路线须走下述独立保存及共享确认。
 
 ## 添加 Whole-Repository Provider
 
@@ -546,9 +542,10 @@ Django check、迁移漂移、文档本地链接和 diff 检查通过。授权�
 
 ## 本地平台证据与选路参考（2026-10-16）
 
-当前日常入口为 `http://127.0.0.1:8000/admin/provider-lab/`。在“批次与历史”中
-选择批次，再按实际来源 hostname 筛选，可查看同一作品的各通道结果、当前路线、
-候选详情和选路参考；“设为首选/加入备选”只修改草稿，明确确认并保存才改变路线。
+当前日常入口为 `http://127.0.0.1:8000/admin/provider-lab/`。默认从“平台总表”
+按实际来源 hostname 进入跨批次作品比较；“执行记录”保留按批次查阅。
+可查看同一作品的各通道结果、当前路线、候选详情和选路参考；
+“设为首选/加入备选”只修改草稿，明确确认并保存才改变路线。
 
 原生采集的离线转换摘要标为“原生离线证据”，与产品解析成功分别计数。
 保留目标身份、采集状态、完整性、未知字段及历史时间，不据此授予资源访问权限，
@@ -621,7 +618,7 @@ rm -rf /tmp/animeimages-provider-lab/videodl
 
 ### 结果在刷新后消失
 
-这是无持久化设计，不是数据丢失缺陷。需要保留研究结论时，只归档脱敏统计和结构证据，不保存真实媒体 URL。
+先区分即时卡片与“执行记录”：刷新可以重置前者，后者应保留已保存的脱敏摘要。检查当次历史保存状态、筛选和导入同步，不把短期 token 失效当作历史删除。保存或同步失败只补该步骤，不为恢复页面重发解析；不要保存真实媒体 URL 来延长授权。
 
 ## 进一步阅读
 

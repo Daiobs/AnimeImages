@@ -1,424 +1,118 @@
 # Current Version Status
 
-Date: 2026-09-07
+核对日期：2026-10-19 UTC。本文区分**已合并的应用能力、最后已记录的生产发布、实际运行配置与历史验收**。
 
-## Latest Authorized Deployment
+## 当前结论
 
-Mail capability production deployment on 2026-09-07 verified the previous live
-SHA `509ef74b76a4424f907bbf6152a824b5a9b2d633`, then deployed exact reviewed SHA
-`003f75b83e164fc19a043c8213e887ddf9879459`. Migration 0026, cryptography 47.0.0
-and the independent persisted mail key are present. Web health, static assets,
-command encryption roundtrip and unchanged Daily/Runtime settings passed.
-Both mail gates remain off; real delivery remains unconfigured.
-
-Status: `MAIL_CAPABILITY_DEPLOYED_UI_VERIFICATION_PENDING`. Chrome control
-timed out, so authenticated mail/Admin browser acceptance is not claimed.
-Timer remains active/enabled; no post-deploy natural run has yet been observed.
-See the [dated mail deployment record](admin-mail-settings.md#production-deployment-2026-09-07).
-This records deployment, not real-email activation or full-platform acceptance.
-The September 4 baseline below remains historical evidence, not the latest
-production SHA. This docs-only follow-up does not redeploy the application.
-
-Historical development mail pilot, before this deployment: Human confirmed TopicEye/Rardar has no
-configured real mail service. AnimeImages is the first source-code capability
-absorption pilot, not a migration of credentials. The Admin SMTP/Brevo work is
-development-only; see [mail setup](admin-mail-settings.md). PR #84's historical
-access failures are not prerequisites for this work. Production state below is
-not reverified or changed by this pilot; real delivery remains unconfigured.
-
-## Source Of Truth
-
-| Concern | Source of truth |
+| 项目 | 本次核对结果 |
 | --- | --- |
-| Development repository | Latest fetched `origin/main` and its code/tests |
-| Merged capability | Merge commit and final PR evidence |
-| Recorded production application | Last explicitly recorded deployed SHA |
-| Live production application | Requires a separate authorized server verification |
-| Production infrastructure | Exact host configuration from a separate infrastructure audit |
-| Runtime configuration | Deployment environment and persisted Admin settings |
-| Historical acceptance | Dated acceptance/checkpoint records in this file and `docs/research/` |
+| 应用功能快照 | main `c2b8ac51cfb87d4c030d321bf763080708db9593` |
+| 应用文件树 | `1befb9f3c27a880d91da26305a27f4a671faccce` |
+| #96–#100 | 已按顺序 Squash Merge，最终树等于冻结审查树 |
+| 开发与生产差异 | #96–#100 的应用增量已在 main，尚无本次增量的部署记录 |
+| 最后已记录的生产应用 | `bf9f1255b006ea93b7a0cf766d28f1db6138113f` |
+| 本文档任务访问 / 部署生产 | 均未执行 |
+| 8000、配置、账号、正式路线和历史 | 本文档任务不切换、不重启、不修改 |
 
-Never infer deployment from a merge to `main`. Repository code, recorded production code, active host configuration and Runtime Settings are separate facts.
+依据：[最终合并与本地同步记录](https://github.com/Daiobs/AnimeImages/pull/100#issuecomment-6259776450)、[最后已记录的生产发布](https://github.com/Daiobs/AnimeImages/pull/95#issuecomment-6211550835)。
 
-The authorized Asset 3 activation on 2026-09-04 verified the live production
-checkout and deployed the exact reviewed SHA below. See the
-[activation record](research/production/ASSET_3_PRODUCTION_ACTIVATION_V1.md) for
-the operational scope and incomplete email/browser gates. This is not a new
-full-platform browser acceptance.
-
-## Development Repository
-
-```text
-CURRENT_DEVELOPMENT_BASELINE = LATEST_FETCHED_ORIGIN_MAIN
-DOCUMENTED_APPLICATION_BASELINE = 509ef74b76a4424f907bbf6152a824b5a9b2d633
-```
-
-This documentation was prepared against the application baseline above, which
-includes the development changes merged through PR #82. Resolve the
-current Repository SHA instead of treating this snapshot as a permanent main
-pointer:
+应用 SHA 是本次功能快照，不是永久 main 指针。本文档 PR 自身会产生新提交，不为追逐文档自身 SHA 反复改写快照。获取最新代码应重新读取远端：
 
 ```bash
 git fetch origin
 git rev-parse origin/main
+git rev-parse origin/main^{tree}
 ```
 
-### PR #74
+## 事实来源
 
-XHS ordinary-video Hybrid:
+| 问题 | 核对依据 |
+| --- | --- |
+| 当前代码支持什么 | 实际 main 的代码、模板、配置定义与测试 |
+| 哪些改动已合并 | 合并提交、最终文件树及 PR 记录 |
+| 上一次部署了什么 | 明确记录的应用 SHA 与部署验证 |
+| 生产此刻运行什么 | 需要另行授权的现场核验；本文未执行 |
+| 谁能调用或下载 | 环境能力开关、Admin Runtime、来源/Provider 准入及资源授权 |
+| 某项验收通过意味着什么 | 原 Head、浏览器、用户身份、样本、配置范围和实际 transport |
 
-- Native exact note identity and metadata;
-- optional TianTian high-quality ordinary video;
-- Native ordinary-video fallback;
-- no TianTian call for images or Live Photo.
+合并不能推导部署；代码支持不能推导当前公众开放。一个样本成功不能推导全平台、全部格式或全浏览器通过。
 
-### PR #75
+## 已合并的应用能力
 
-XHS image fidelity and Staff Live Photo:
+| 增量 | main 中的实际价值 | 仍需区分的边界 |
+| --- | --- | --- |
+| #96：yt-dlp Runtime | 共享路径兼容已验证的 2026.3.17 / 2026.6.9，保留同次请求真实版本一致性和 Runtime 缓存指纹；CI 含 Python 3.12 隔离路径 | 不是自动接受所有新版本，不替生产升级 Runtime |
+| #97：平台台账 | 按精确 host 聚合跨批次能力、Scout/Lab 来源、作品/候选与路线参考；未确认身份和离线证据单列 | 行数、历史导入和样本成功不等于产品新增上线 |
+| #98：已审查 Common 路线 | 明确固定 Backend、正常 API 保存、与 host/Backend 绑定的未来共享确认，普通解析读取并再次核验 | 不是遍历所有 Common；不覆盖成熟路线或自动扩大许可/匿名准入 |
+| #99：yt-dlp 格式选择 | 真实候选、音视频类型、大小/语言/格式表达，按需检查所选 HTTPS MP4，卡片独立选择与 Batch 快照 | 不根据后缀猜轨道，不自动合流所有 HLS/DASH |
+| #100：服务格式与交付 | 天天/Kukutool 通用及抖音专用结果接入原结果页；全部视频清晰度展开、保留标题/分组、同资源别名处理、逐候选操作绑定 | 通用服务与专用来源准入不同；没有返回的档位不补造 |
+| #100：抖音服务与播放 | 天天有效缓存优先，过期先重新请求天天，失败/期限后兜底；新标签页播放点击时所选视频 | 不把天天优先推广到所有来源，不跨过期拼接旧作品信息 |
+| #100：下载与更新 | 符合条件的绑定视频复用共用流式路径；旧 Worker 更新等待不静默降级 Blob，接管后重新核验 | 不是所有 HTTPS/CDN 都具备 SW 条件；不能打断已有任务 |
 
-- ParseHub raw original image candidates;
-- Native exact same-item fallback and source order;
-- shared static preview path;
-- Anonymous Single and Batch remain flat static images;
-- Active Staff Single gets Live Photo badge and one-shot playback;
-- Staff browser archives support still + motion pairs and mixed selections;
-- ZIP entry timestamp repair.
+没有人工路线的适用通用来源，可按默认顺序使用已配置且获准的 Provider，包括服务通道；人工路线不是启用许可证。既有 Native/成熟平台路径、资源安全条件、Runtime 与公开准入仍是独立约束。管理员配置详情见 [Provider Lab](provider-lab.md)，普通用户操作见 [README](../README.md)及[格式选择指南](ytdlp-result-picker.md)。
 
-### PR #76
+### F1–F5 合并前修复
 
-Staff-only Upstream Provider Lab:
+[五项修复与复审记录](https://github.com/Daiobs/AnimeImages/pull/100#issuecomment-6257613265)确认以下内容保留在最终树：
 
-- fixed five-Provider Registry;
-- whole-repository ParseHub Worker;
-- whole-repository videodl Worker;
-- isolated venv/process/result governance;
-- existing AnimeImages, yt-dlp and TianTian wrappers;
-- Bilibili three-sample comparison;
-- no formal platform route change.
+- F1：台账/历史只把严格确认的目标媒体作为已验证参考，离线与证据不足不冒称成功。
+- F2：旧卡片被替换或取消后，晚到的下载准备响应不能继续触发保存；已经接受的远端任务不伪称已撤销。
+- F3：未知大小的空 200 流报失败，不报下载完成，不自动重试或改 Blob。
+- F4：元数据读取先验证 Range 与剩余预算，避免畸形长度导致超预算读取。
+- F5：原始签发记录与派生检查投影分开；合法格式检查不破坏仍有效的解析缓存，真实期限和关键身份检查不放宽。
 
-## Last Recorded Production Runtime
+最终 main 的实际 CI 已在[合并记录](https://github.com/Daiobs/AnimeImages/pull/100#issuecomment-6259776450)逐项核对。本文档同步没有再次开展整仓功能或真实上游验收。
 
-```text
-last verified production runtime = 509ef74b76a4424f907bbf6152a824b5a9b2d633
-previous verified production runtime = 38992e955f2f268c2a6d4ecd81d900feba83f048
-source PR = #82
-source title = Add daily real-sample validation reports and notifications
-```
+## 已有浏览器证据与限制
 
-The activation verified a clean production `main`, created and verified a
-PostgreSQL backup, deployed the reviewed target, applied migration 0025 and
-rechecked local/public health. The deployment used the existing scripts and
-retained the Web and Nginx topology.
+| 证据 | 版本 / 环境 | 已确认与未确认 |
+| --- | --- | --- |
+| PeerTube 两档视频 | #99 历史记录，正常 Chrome 独立匿名会话 | 1080p 与 720p 选择及实际落盘；不把早期文件追认为 SW 交付，也不推广为所有来源匿名开放 |
+| 服务多档文件 | #100 初始服务接入记录，Staff、隔离单通道配置 | 天天/Kukutool 代表资源实际文件；不替代日常默认路线或匿名准入证据 |
+| Chrome 真实流式 | `58f79d57bcdf6cdd8ef234e59f91d02355f0626a`，原日常页面/配置、抖音专用天天 | 所选非默认 720p 的下载任务及部分文件增长早于流结束；不是只看到 transport 或文件最终存在 |
+| Safari 旧用户升级与流式 | `e7c9d9f73155ef5de9f99f3e09c912335ced29c1`，原 Safari 日常会话 | 正常关闭/重开完成 v2→v4；720p SW 任务开始早于流结束，文件对应所选资源 |
+| 应用内浏览器取消 | Chrome 对照任务中的同一当前 SW/小型慢流 | 首块后下游取消仍有内部原因缺口，不能解释为用户主动取消，也不能用正常 Chrome 成功替代 |
+| 最终组合树 | `1befb9f3c27a880d91da26305a27f4a671faccce` | 后续 F1–F5 定向回归及完整 CI 保留；没有重新下载所有历史样本 |
 
-PR #74, #75 and #76 code is included in the deployed target. Deployment does not
-claim renewed browser acceptance or enable the Staff Provider Lab page.
+来源：[格式选择历史记录](ytdlp-result-picker.md)、[Chrome 对照](https://github.com/Daiobs/AnimeImages/pull/100#issuecomment-6251827401)、[Safari 升级](https://github.com/Daiobs/AnimeImages/pull/100#issuecomment-6252702886)。Chrome/Safari 记录未单独声明匿名身份的，不补写为匿名通过。
 
-## Repository Ahead Of Production
+当前保留的能力/证据限制：
 
-```text
-REPOSITORY_MAIN_AHEAD_OF_RECORDED_PRODUCTION = NO_AT_ACTIVATION
-AHEAD_TYPE = NONE_AT_REVIEWED_TARGET
-PRODUCTION_VERIFICATION_SCOPE = EXACT_SHA_AND_ASSET_3_OPERATIONS
-```
+- 独立音频真实保存、全部 HLS 合流、所有历史样本视觉效果与所有浏览器尚未全面验收。
+- 上游有候选但受上下文、协议、过期或访问限制，不等于“平台不支持”，也不等于文件可保存。
+- HLS/分离轨候选保留与特定服务器合流能力不是全量下载保证。
+- XHS Live Photo 的 Staff 单作品与匿名/Batch 静态边界仍分别处理；原始配对 ZIP 不是自动 iOS Photos 导入。
+- videodl 许可及既有授权用途继续保留；本地固定路线的代码能力不授权生产或商业使用。其他用途如缺少独立许可证据，保持待核验。
 
-Repository main and the live checkout matched the reviewed target at activation.
-The activation-record PR is documentation-only. Merging that record does not
-deploy or alter the production runtime.
+## 最后已记录的生产发布
 
-After the record PR merges, repository main may be ahead of the verified
-production application SHA by documentation only. That documentation-only
-difference does not require production deployment.
+[2026-10-16 发布记录](https://github.com/Daiobs/AnimeImages/pull/95#issuecomment-6211550835)明确记载：
 
-Any future deployment must compare exact SHAs, run the release gates and receive explicit production authorization. This file does not authorize deployment.
+| 项目 | 当时记录 |
+| --- | --- |
+| 应用 SHA | `bf9f1255b006ea93b7a0cf766d28f1db6138113f` |
+| 应用 tree | `8364ff8f7b0fbac01a2419376acbe5ea7a0a94bf` |
+| 独立发布工具 SHA | `6f28bcefa0701c1eca9ce068a7b2e03eb3b01639` |
+| 发布方式 | 既有受控固定 SHA 通道，正式 apply / verify 成功 |
+| 数据库 | 0001–0028 已应用；当次 migrate 无新增变更 |
+| Runtime | 保留 yt-dlp 2026.6.9；应用共享版本门禁当时仍只接受 2026.3.17 |
+| 开关与业务状态 | Lab 关闭；账号、路线、邮件/Daily 和既有权限未因当次发布改变 |
+| 实际业务验收 | 当次未执行真实 Provider 解析、媒体下载、发信或手动 Daily |
 
-## Current Capability Boundaries
+#96 修复了上述共享 Runtime 兼容限制，但它目前属于已合并、未记录部署的后续代码。不能因为 main 已更新，就声称生产该路径已通过或公众能力已开放。生产工具、开关、账号与 Runtime 的**当前值**未由本文档任务重新核验。
 
-The following describes development main. The last column records whether this documentation task has evidence of production deployment.
+后续发布需按当时数据变化决定备份与验证，使用已有 [固定 SHA 发布通道](../ops/managed-release/README.md#approved-release)。首次安装资料不是重复发布命令；不能从线上旧 checkout 直接调用旧部署脚本。本文不授权生产操作，也不要求为版本一致性回滚迁移或重建数据库。
 
-| Capability | Anonymous | Active Staff | Batch | Development main | Recorded production evidence |
-| --- | --- | --- | --- | --- | --- |
-| XHS ordinary video | Native; optional Ultra by existing product setting | Same route with Staff diagnostics | Flat ordinary result | Native identity + TianTian Ultra + Native fallback | Code deployed; no renewed browser acceptance |
-| XHS image/gallery | Ordered flat originals | Same originals | Ordered flat originals | Native identity/order + ParseHub raw original + Native same-item fallback | Code deployed; runtime gates not changed |
-| XHS Live Photo | Flat stills only | Badge, one-shot playback, still + motion archive | Flat stills only | Staff-only vertical slice | Code deployed; no renewed browser acceptance |
-| Douyin | Native baseline; Ultra by Runtime Setting | Additional diagnostics | Separate TianTian -> Native order | Stable fixed strategy | Native parse-only canary and scheduled check passed |
-| Bilibili | Native video-only | Native plus Lab comparison when Lab enabled | Existing video boundary | Native remains formal route | Code deployed; route configuration not changed |
-| Provider Lab | No | Staff-only when flags enabled | No | Present, default off | Code deployed; Lab page remains disabled |
+## 较早历史记录
 
-## XHS Fixed Routes
+以下仍是当时的有效记录，**都不是最新生产版本声明**：
 
-### Ordinary Video
+| 时间 / 阶段 | 历史记录与范围 |
+| --- | --- |
+| 2026-09-07 邮件能力 | 应用 `003f75b83e164fc19a043c8213e887ddf9879459`，迁移 0026 与邮件加密能力已部署；当时真实邮件未配置、浏览器验收待补。见[邮件部署记录](admin-mail-settings.md#production-deployment-2026-09-07) |
+| 2026-09-04 Asset 3 | 应用 `509ef74b76a4424f907bbf6152a824b5a9b2d633`，Daily 指定检查启用；当时 SMTP/通知与浏览器有保留缺口。见[生产激活记录](research/production/ASSET_3_PRODUCTION_ACTIVATION_V1.md) |
+| Browser Photo Archive | `e70848c8b89225beba0838e9b681aaf5b7fdf789`，图片字节、扩展、ZIP 与浏览器路径验收。见[原始记录](research/browser-photo-archive-format-reliability-v1.md) |
+| Download UI / Batch Actions | #42 的界面与权限验收，见[原始记录](research/download-ui-batch-actions-production-acceptance-v1.md) |
+| 更早平台/发布里程碑 | 保留在 [CHANGELOG](../CHANGELOG.md) 与 `docs/research/`，原 Head、范围和失败事实不追改 |
 
-```text
-Native exact identity and metadata
-  -> TianTian high-quality ordinary video when Ultra is enabled
-  -> Native fallback when TianTian is unavailable or rejected
-```
-
-TianTian is never called by the XHS image or Live Photo branches.
-
-### Images
-
-```text
-Native exact note identity and source order
-  -> ParseHub raw original candidate
-  -> Native exact same-item fallback
-```
-
-Preview and original download resources are separate. Admitted original formats are JPEG, PNG, GIF, WebP, AVIF and HEIC.
-
-If the ParseHub XHS Runtime is disabled, unavailable or fails correspondence/admission checks, the same Native item remains authoritative. There is no cross-item replacement or recommendation scan.
-
-### Live Photo
-
-- Anonymous Single: flat images; no badge, motion, playback or pair archive.
-- Active Staff Single: exact same-item still/motion relationship, one-shot playback, ended restore, replay and browser archive.
-- Batch: flat static images; no motion, pair token or Live Photo archive.
-- Archive semantics: original still + motion MP4, not an automatic iOS Photos import.
-
-## Douyin Fixed Routes
-
-Normal parsing uses Native baseline.
-
-Single Ultra:
-
-```text
-TianTian preferred
-  -> KuKuTool fallback / race reserve
-  -> Native fallback
-```
-
-Batch Ultra:
-
-```text
-TianTian
-  -> Native fallback
-```
-
-The PR #65 recorded production line admits only reviewed source-bound final redirect families and converts terminal browser download failures into explicit retryable UI state. New XHS development work does not imply a Douyin production change.
-
-## Bilibili Fixed Route
-
-```text
-BILIBILI_CURRENT_SCOPE = VIDEO_ONLY
-BILIBILI_VIDEO_ROUTE = NATIVE
-```
-
-Current development support includes BV, AV, `b23.tv`, `p=` part selection and official DURL media. The adapter reads the title, UP owner name and cover from official View data. The title and owner name feed the current download filename semantics, while the cover enters the media result; an independent structured `ParseResult.metadata.author` value is not yet a stable contract.
-
-Three real Provider Lab samples established:
-
-- Native, TianTian, videodl and official DURL media bytes were identical;
-- no TianTian Bilibili quality delta was proven;
-- no videodl Bilibili quality delta was proven;
-- ParseHub exposed additional format metadata but no deliverable media improvement;
-- yt-dlp returned `PROVIDER_PROCESS_FAILED`, a known Provider-specific nonblocking limitation.
-
-Dynamic, Opus, Live Photo, Cookie/member-only quality and DASH audio/video merge remain deferred. Provider Lab does not change this route.
-
-## Provider Lab State
-
-Provider Lab is present in development main and defaults off:
-
-```text
-UPSTREAM_PROVIDER_LAB_ENABLED=False
-VIDEODL_PROVIDER_LAB_ENABLED=False
-PROVIDER_LAB_PRODUCTION_STATUS=CODE_DEPLOYED_UI_DISABLED
-```
-
-It is Staff-only, sends one POST per Provider, limits browser concurrency to three, does not let Django fan out automatically, does not choose a winner and does not persist results.
-
-Whole-repository pins:
-
-```text
-ParseHub=144260f4349c5bb57415f7555a572fcd48c3b8ba
-videodl=6cd1de0fe1209380b183b654c65e98a629637873
-```
-
-videodl is PolyForm Noncommercial 1.0.0. The 2026-09-04 task separately authorized
-internal noncommercial production validation: its persistent isolated runtime
-is enabled for the daily policy inventory while `UPSTREAM_PROVIDER_LAB_ENABLED`
-remains false. This does not authorize a public or formal production Provider
-route, Common execution, provider downloads or browser execution.
-
-See [Provider Lab](provider-lab.md) for stable operations and [Provider Lab research](research/provider_lab/01_UPSTREAM_PROVIDER_LAB_V1.md) for historical design evidence.
-
-The videodl Asset 1/2 development branch adds controlled, observable execution
-inside this same default-off Staff Lab: exact backend, dedicated-only,
-explicitly confirmed common-only, reviewed-auto, and an opaque legacy
-comparison. AnimeImages owns bounded attempt ordering and safe diagnostics;
-videodl remains the exact-pin isolated noncommercial upstream. This changes no
-formal platform route and authorizes no Production deployment. See the
-[implementation outcome](research/videodl/ASSET_1_2_IMPLEMENTATION_OUTCOME_V1.md)
-for the 26 component dispositions.
-
-## Download Data Plane
-
-Ordinary Provider video:
-
-```text
-Provider/CDN -> Browser Service Worker -> Browser Download Manager -> Disk
-```
-
-Ordinary image/archive:
-
-```text
-Image CDN -> Browser image/archive implementation -> Disk
-```
-
-Staff Live Photo archive:
-
-```text
-Still CDN + Motion CDN -> Browser archive -> Disk
-```
-
-AnimeImages remains the control, validation and descriptor authority. Ordinary media does not use automatic Server Relay. Server-generated outputs such as an explicit merge remain a distinct resource class and may use a server path.
-
-## Open And Deferred Work
-
-PR #62 remains outside current main:
-
-```text
-branch = feat/external-tool-progress-materials-v1
-head = bb5f63f348ad5a1ae2f40332077610af51eb8940
-state = OPEN / Draft / DEFERRED / not merged
-```
-
-It was not modified by the documentation refresh and must not be described as a current capability.
-
-Other explicit boundaries:
-
-- Enabling the Provider Lab production page remains a separate future task.
-- XHS Anonymous and Batch Live Photo motion remain closed.
-- Bilibili Dynamic/Opus and merge upgrades remain research/product work.
-- videodl cannot enter public or production routes under the current license boundary.
-- Provider Lab resource inspection is not full-file equivalence proof.
-- Asset 3 has operational acceptance with email and Admin browser gaps; no
-  renewed full-platform browser/download acceptance is claimed.
-
-## Previously Accepted Milestones
-
-These records preserve historical acceptance evidence. They are not claims about the active production checkout on 2026-08-29 unless a separate deployment record says so.
-
-### Production Promotion Checkpoint
-
-The immutable historical checkpoint `checkpoint/production-promotion-ready-v1` points to `766cecfd239f594e791c556b4caa69aebf2d1f9f`. Its acceptance established Douyin canonical identity, reviewed media host admission, restored size metadata, Browser Streaming zero ordinary-media server bytes, and real-device download completion.
-
-Observed mobile destinations were Android Gallery and iOS Files. Automatic iOS Photos import was not implemented and was accepted as nonblocking.
-
-This checkpoint was not moved by PR #74, #75 or #76. It is historical evidence, not a statement that the recorded runtime still equals the checkpoint SHA.
-
-### Production Polish
-
-The historical Production Polish line accepted PR #47 through #52 at application SHA `a87ec475...`:
-
-- retired public legacy submissions while retaining historical model state;
-- hid internal Provider diagnostics from public results;
-- consolidated project settings;
-- added protected user feedback with migration `0024_userfeedback`;
-- added browser identity assets;
-- tightened XHS source identity, Gallery layout and Douyin display metadata.
-
-The corresponding browser gate recorded no ordinary-video Server Relay and no unexpected application errors in its observation window.
-
-### Browser Photo Archive
-
-The browser-first photo archive was historically accepted at `e70848c8b89225beba0838e9b681aaf5b7fdf789`, with checkpoint `checkpoint/production-browser-photo-archive-v1`.
-
-Recorded evidence included:
-
-- production-origin XHS CORS;
-- correct filesystem extension and JPEG magic;
-- source/download byte equality;
-- valid ordered STORE ZIP entries and CRC;
-- real progress/speed/ETA;
-- zero AnimeImages media endpoint requests on successful browser photo paths.
-
-See [Browser Photo Archive research](research/browser-photo-archive-format-reliability-v1.md).
-
-### Download UI And Batch Actions
-
-PR #42 historically removed the redundant global download panel while retaining Service Worker state and card-local progress. Public Batch download/copy boundaries and Staff-only raw exports were accepted without changing ordinary-media zero-relay behavior.
-
-See [Download UI acceptance](research/download-ui-batch-actions-production-acceptance-v1.md).
-
-### Provider Stabilization
-
-The Provider Stabilization line first exposed a production formatter mismatch and rolled back, then accepted its corrected formatter and Provider terminal diagnostics at the next reviewed candidate. Evidence recorded exact browser Streaming, zero ordinary-media server bytes, bounded Batch behavior and sanitized logs.
-
-PR #65 later superseded those historical candidates; the 2026-09-04 Asset 3
-activation now records the newer exact production application SHA above.
-
-## Historical Infrastructure Evidence
-
-Earlier audits recorded a canonical Nginx and systemd baseline, PostgreSQL,
-Redis-backed shared controls and a Browser Download Telemetry route. The Asset 3
-activation compared pre/post file hashes: Nginx configuration and the Web unit
-were unchanged. Only the two approved validation units were installed.
-
-Canonical infrastructure files remain under `ops/`; merging repository files does not install, reload or restart production configuration.
-
-## Governance
-
-- Start work from the latest fetched `origin/main`, not a production checkout.
-- Use one task, one branch and one PR.
-- Keep exact-SHA test and browser evidence with the PR that changes behavior.
-- Treat deployment as a separate authorized task.
-- Do not move immutable checkpoints.
-- Keep research evidence under `docs/research/` and stable usage under top-level `docs/`.
-- Update this file when development main, recorded production runtime or a major product boundary changes.
-
-## Current Summary
-
-```text
-CURRENT_DEVELOPMENT_BASELINE = LATEST_FETCHED_ORIGIN_MAIN
-DOCUMENTED_APPLICATION_BASELINE = 509ef74b76a4424f907bbf6152a824b5a9b2d633
-LAST_RECORDED_PRODUCTION_RUNTIME = 509ef74b76a4424f907bbf6152a824b5a9b2d633
-REPOSITORY_MAIN_AHEAD_OF_RECORDED_PRODUCTION = NO_AT_ACTIVATION
-AHEAD_TYPE = NONE_AT_REVIEWED_TARGET
-PRODUCTION_REVERIFIED_BY_THIS_TASK = EXACT_SHA_AND_ASSET_3_OPERATIONS
-PRODUCTION_DEPLOYMENT_BY_THIS_TASK = YES
-```
-
-## Asset 3 Daily Validation Activation
-
-Asset 3 extends the existing Provider Health Tests rather than
-introducing a global health platform. It preserves the original nine checks,
-adds five XHS/Bilibili/videodl checks, and supplies one bounded daily Suite,
-change-based email logic, an Admin report, retention, and inactive systemd
-candidates. Code defaults keep daily execution and email delivery off; the
-authorized production activation now enables daily execution with the three
-validated keys below. Missing approved SMTP and recipients keep both email
-gates closed. Admin ORM/report evidence passed; the browser tool timed out.
-
-The authorized reconnection closeout on the same date confirmed the unchanged
-production target, environment and dependency checks, healthy Web/timer state,
-evidence-preserving temporary cleanup and sudo credential-cache revocation.
-The next automatic run had not occurred; the existing scheduled 3/3 result was
-retained without another canary. No redeploy or production configuration change
-was performed during closeout. Email and browser acceptance gaps remain open.
-
-```text
-ASSET_3_CODE = DEPLOYED
-ASSET_3_PRODUCTION_ACTIVATION = PARTIAL
-DAILY_ENABLED = YES
-DAILY_TEST_KEYS = health_ready, douyin_native_parse, videodl_policy_inventory
-APPROVED_SAMPLE_HOST = www.douyin.com
-FIRST_SCHEDULED_SUITE = SUCCESS_3_OF_3
-SMTP_CONFIGURED = NO
-EMAIL_DB_GATE = DISABLED
-EMAIL_ENV_GATE = DISABLED
-ADMIN_BROWSER_SMOKE = NOT_AVAILABLE_TOOLING_TIMEOUT
-SYSTEMD_INSTALLED = YES
-TIMER_ENABLED = YES
-ACTIVATION_SPECIFIC_ROUTE_OVERRIDE = NO
-ACTIVATION_SPECIFIC_DOWNLOAD_CHANGE = NO
-SSH_CLOSEOUT = PASS
-SUPPLEMENTAL_ENVIRONMENT_CHECK = PASS
-DEPENDENCY_CHECK = PASS
-OPERATIONAL_TEMP_CLEANUP = PASS
-SUDO_CREDENTIAL_CACHE_REVOCATION = PASS
-POST_CLOSEOUT_WEB_HEALTH = PASS
-POST_CLOSEOUT_TIMER = ACTIVE_AND_ENABLED
-FINAL_ACTIVATION_STATUS = PARTIAL_EMAIL_NOT_CONFIGURED
-PRODUCTION_REDEPLOY_DURING_CLOSEOUT = NO
-```
+更早的 Native/Hybrid、竞速、Blob 恢复和旧 Worker 说明只代表对应阶段。当前运行行为以本页快照的代码及现行指南为准；旧成功不重新标成新的 transport 或全部平台验收。

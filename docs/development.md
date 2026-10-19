@@ -116,10 +116,15 @@ Provider Lab changes must preserve:
 - parse-only Workers with Provider downloader disabled;
 - bounded subprocess/output/process-tree cleanup;
 - `LabProviderResultV1` normalization and raw sanitization;
-- no result persistence or full-media Relay;
+- persistent sanitized execution summaries remain separate from short-lived
+  resource tokens; no full-media Relay or historical download authority;
 - no automatic formal route change.
 
-videodl is restricted to noncommercial local Staff Lab use under PolyForm Noncommercial 1.0.0. See [Provider Lab](provider-lab.md) for exact pins, flags and cleanup.
+videodl remains subject to PolyForm Noncommercial 1.0.0 and the existing
+approved-use boundary. Current code also exposes reviewed execution through
+shared parsing and scoped saved routes; that is not new production, public or
+commercial authorization. See [Provider Lab](provider-lab.md) for exact pins,
+flags, reviewed Common scope and cleanup.
 
 ## External Provider Tests
 

@@ -1,396 +1,120 @@
-# AnimeImages
+# DokiTool
 
-AnimeImages 是一个多平台媒体解析、预览和浏览器下载工作台。平台能力按照经过真实样本验证的固定 Provider 路线执行，而不是在每次请求中遍历所有解析器并猜测最优结果。
+DokiTool 是一个基于 Django 的多平台媒体工具：粘贴公开作品链接，查看作品信息与预览，选择上游实际返回的清晰度，再保存所选资源。
 
-AnimeImages 负责：
-
-- 识别用户输入与目标内容；
-- 调用固定平台路线中的 Provider；
-- 校验媒体候选、来源身份和内容关系；
-- 将 Provider 结果归一化为统一资源；
-- 展示预览并签发受约束的下载描述；
-- 维护权限、限流、超时、日志和运行边界。
-
-AnimeImages 不是：
-
-- 任意 URL 的服务器代理；
-- 自动抓取所有网页的通用爬虫；
-- 自动调用全部 Provider 的 Broker；
-- 自动评分和改写正式路线的 Provider Planner；
-- 默认持久化用户解析历史的媒体仓库。
+仓库仍名为 `Daiobs/AnimeImages`，部分包名、文件路径和 JavaScript 命名空间也继续使用 AnimeImages；产品名称为 DokiTool。
 
 ## 当前状态
 
-> **Development branch**：latest fetched `origin/main`<br>
-> **Documented application baseline**：`457139b98d67d6e5f79b099f9a4e91d60a26904f`<br>
-> **Last recorded Production Runtime**：`38992e955f2f268c2a6d4ecd81d900feba83f048`
+本说明核对的应用快照是 main `c2b8ac51cfb87d4c030d321bf763080708db9593`，包含已合并的 #96–#100。最后已记录的生产应用仍为 `bf9f1255b006ea93b7a0cf766d28f1db6138113f`；本次只同步文档，没有访问或部署生产。
 
-本文档以以上 application baseline 为事实快照。当前 Repository SHA 必须通过 `git fetch origin` 和 `git rev-parse origin/main` 实时取得。该基线已包含 PR #74、#75 和 #76 的应用能力；本次文档任务没有访问生产服务器，也没有证据表明这些 PR 已部署。合并进入 `main` 不等于已部署，详细状态见[当前版本状态](docs/current-version-status.md)。
+这两个 SHA 分别表示功能快照和发布记录，不是永久的最新版本指针。证据、验证范围和历史说明见 [当前版本状态](docs/current-version-status.md)。代码已合并、某来源已向访客开放、实际解析成功和文件保存成功是不同事实。
 
-当前关系：
+## 主要功能
 
-```text
-development main
-    newer application capabilities and documentation
-                 |
-                 | separate, explicitly authorized release task
-                 v
-recorded production runtime
-```
+- **单作品解析**：首页及小红书、抖音、哔哩哔哩入口，保留标题、平台、资源数量和实际取得的媒体信息。
+- **逐条 Batch**：展示各作品的完成、失败、超时或未执行状态，可按既有权限重试单条、下载、复制或导出链接。
+- **视频格式选择**：共享 yt-dlp、天天解析、Kukutool 结果及抖音专用服务结果可展示真实返回的清晰度；选择与下载资源、文件名和授权对应。
+- **图片与音频结果**：保留原始图片、图集和音频候选；视频作品的独立音频位于次级区域，纯音频作品以音频为主。是否可保存取决于具体资源条件。
+- **浏览器交付**：符合现有资源策略且浏览器具备能力的完整视频，优先使用共用 Service Worker 流式下载。图片及图片 ZIP 使用已有浏览器路径；特殊合流输出与兼容交付单独处理。
+- **管理员评估与选路**：Provider Lab、跨批次平台台账、执行历史、候选比较及精确 hostname 路线草稿，支持有依据地确认首选与备选。
 
-## 核心能力
+已接入能力来源包括成熟 Native 路线及 yt-dlp、gallery-dl、ParseHub、videodl、天天解析、Kukutool。它们并非每次全部执行：实际使用哪些通道由来源准入、配置、Runtime、匹配和路线策略决定。没有人工路线的适用来源可以使用已获准的默认策略；人工路线是偏好和执行范围的选择，不是所有 Provider 的启用许可证。
 
-- 单条解析：小红书、抖音、哔哩哔哩及受控的可选长尾平台。
-- 批量解析：逐条、有界地处理多链接；单条失败或超时不阻塞后续结果。
-- 媒体预览：预览资源与原始下载资源分离，图片预览经过受限校验。
-- 浏览器下载：普通媒体尽量保持 Provider/CDN 到用户浏览器的数据路径。
-- 图片归档：浏览器生成有序图片 ZIP，不以预览图替代原始资源。
-- Staff Rich Media：Active Staff 的小红书单条结果支持 Live Photo 一次播放及 still + motion 归档。
-- Provider 运维：后台运行开关、健康检查、审计和观测入口。
-- Provider Lab：Staff-only 的上游对比工具，不参与正式用户路线。
+## 普通用户如何使用
 
-主要页面：
+1. 打开首页，粘贴作品链接或包含链接的分享文本，点击 **获取素材**。
+2. 查看作品标题、平台、资源数量与封面。有多档视频时，在视频旁选择清晰度；手机端上下排列。
+3. 点击原有 **下载** 按钮，保存当前选中的资源。某些 yt-dlp HTTPS MP4 尚缺轨道事实时，先按提示检查所选格式，确认后再下载；不会自动改成另一档。
+4. 查看浏览器下载列表确认实际完成。页面收到全部字节或显示已交付，不单独证明文件已落盘。
 
-| 页面 | 路径 | 用途 |
-| --- | --- | --- |
-| 通用解析 | `/` | 单条媒体解析与下载 |
-| 小红书 | `/xhs/` | 小红书专用入口 |
-| 抖音 | `/tiktok/` | 抖音专用入口 |
-| 哔哩哔哩 | `/bilibili/` | Bilibili 视频入口 |
-| 批量解析 | `/batch/` | 多链接逐条解析 |
-| 图库 | `/library/` | 本地图库浏览 |
-| Django 后台 | `/admin/` | Staff 运维入口 |
-| Provider Lab | `/admin/provider-lab/` | Staff-only 上游对比实验室 |
+视频格式全部展开并按清晰度降序显示；同清晰度的编码、帧率、语言或协议差异仍保留。已确认同资源的 `1080p` / `1080P` 别名可合并为一个选项，原始候选仍可查看。**一个视频的多个格式不是多个独立视频**；上游只有一档时正常显示，不承诺每条作品都有原画或多档。
 
-具体页面是否可见还受登录身份、Runtime Setting 和能力开关约束。
+播放与保存分开：当前选择器提供新标签页播放时，中央三角会核验并打开点击时所选的合法 CDN 视频；保留内嵌预览的路径仍按该路径播放，预览不改变下载选择。源站可能拒绝访问，浏览器也可能拦截弹窗。下载操作不主动打开播放器；浏览器自己的下载后打开偏好另行生效。
 
-## 平台能力矩阵
+格式选择不是管理员专属。匿名用户能否解析某来源、使用某 Provider 或保存视频，仍取决于实际访客开放配置、限额与资源授权。能打开首页不代表任意链接都可解析或下载。
 
-表中的“开发 main”描述仓库能力，不代表已记录生产 Runtime 已经具备。
+### 常见提示
 
-| 平台 | 单条视频 | 单条图片/图集 | Staff Rich Media | Batch | 固定路线 / 可选 Runtime | 开发 main | 已记录生产 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 小红书 | 普通视频；可选 Ultra | 有序原图图集 | 单条 Live Photo 播放与归档 | 静态图片和普通视频；无 Live Photo motion | Native 身份；视频可用 TianTian；图片可用 ParseHub XHS Runtime | PR #74/#75 已合并 | 未记录部署这些变化 |
-| 抖音 | Native 基线；可选 Ultra | 非主要能力 | 无 | 支持，Provider 顺序独立于单条 | Ultra 优先 TianTian，保留 KuKuTool 与 Native fallback | 支持 | PR #65 为最后记录 Runtime |
-| 哔哩哔哩 | Native video-only | 不提供 Dynamic/Opus 图集 | 无 | 受现有 Batch 平台能力约束 | 官方 View/PlayURL；优先完整 DURL | 支持 | 不因 Provider Lab 审计改变 |
-| YouTube / 通用视频 | 可选 yt-dlp；必要时服务器生成 merge 输出 | 不适用 | 无 | 受 Generic 能力和平台 gate 约束 | 可选通用 Provider，默认不是全部公开 | 条件支持 | 以已记录 Runtime 配置为准 |
-| 通用图片 / gallery | 不适用 | 可选 gallery-dl 等受控 Provider | 无 | 受 Generic 能力和平台 gate 约束 | 可选长尾能力，不是稳定全站支持声明 | 条件支持 | 以已记录 Runtime 配置为准 |
+- **未知大小、编码或音轨**：表示本次未取得可靠信息，不从扩展名或其他档位推断。
+- **HLS/DASH、分离轨或需要上下文**：仍保留候选和具体原因，不等于没有解析到媒体，也不保证能够直接保存。
+- **链接已过期**：正常重新解析取得新结果，不能继续使用旧媒体授权。
+- **下载服务正在更新**：先让现有下载完成。只有旧 Worker 无法安全协调接管并明确提示时，才关闭该本地站点的所有标签后重新打开；无需清数据、退出账号或操作开发者工具。这不是每次下载的步骤，也不会静默改用 Blob。
 
-长尾平台属于 **optional generic provider capability**。一个工具声称支持某网站，不等于 AnimeImages 已完成该平台的产品、安全和下载验收。
+详细操作和各次真实验收范围见 [格式选择与保存指南](docs/ytdlp-result-picker.md)。
 
-## 小红书固定路线
+## 主要页面
 
-### 普通视频
+| 入口 | 用途 |
+| --- | --- |
+| `/` | 普通单作品解析与下载 |
+| `/xhs/`、`/tiktok/`、`/bilibili/` | 现有平台入口 |
+| `/batch/` | 逐条批量解析与结果操作，按当前权限开放 |
+| `/library/` | 本地图片库 |
+| 顶部“平台覆盖”按钮 | 查看覆盖说明；不代表实时成功保证 |
+| `/admin/provider-lab/` | Staff 评估、批次与历史、平台总表、路线草稿 |
+| `/admin/provider-settings/` | Provider 日常开放模式与相关配置 |
+| `/admin/provider-health-tests/` | 已配置的健康检查及验证记录 |
 
-Native 负责确认 exact note identity，并提供标题、作者、封面和文件名等内容语义。
+## 本地启动
 
-```text
-普通模式
-  Native video
-
-Ultra 开启
-  Native identity and metadata
-        |
-        v
-  TianTianJieXi high-quality video
-        |
-        +-- unavailable/invalid --> Native video fallback
-```
-
-TianTianJieXi（天天解析，后文简称 TianTian）只参与普通视频 Ultra 路线。图片和 Live Photo 路线不会调用 TianTian。
-
-### 图片与图集
-
-Native 是目标笔记身份、item 数量和源顺序的权威来源；ParseHub XHS Runtime 只供应经过准入的 raw original image candidate。
-
-```text
-Native exact note identity and item order
-                    |
-                    v
-        ParseHub raw original candidate
-                    |
-                    +-- absent/rejected --> Native exact same-item fallback
-```
-
-预览 URL 与原始下载资源分离。原图下载保留经过文件头验证的以下格式：
-
-- JPEG
-- PNG
-- GIF
-- WebP
-- AVIF
-- HEIC
-
-ParseHub XHS Runtime 被禁用、不可用或候选不通过验证时，路线 fail closed 到同一 item 的 Native 资源；它不会打乱 Native 顺序，也不会把无关图片补入当前笔记。
-
-### Live Photo 边界
-
-| 入口 | 展示 | Motion | 归档 |
-| --- | --- | --- | --- |
-| Anonymous Single | 普通 flat images | 不暴露 | 普通图片下载 |
-| Active Staff Single | Live Photo 标记与一次播放 | 点击后加载，ended 自动恢复 still | original still + motion MP4 浏览器归档 |
-| Batch | flat static images | 不暴露 | 普通静态图片归档 |
-
-Live Photo 播放为 one-shot：每次点击播放一次，自然结束后恢复静态图，可再次点击重播。Live Photo Archive 保存 original still 与 motion MP4；它不承诺自动导入 iOS Photos，也不等同于 Apple 原生 Live Photo 容器导入流程。
-
-## 抖音固定路线
-
-普通解析使用 Native baseline。Ultra 路线由固定 Provider Strategy 调度：
-
-```text
-Single Ultra
-  TianTian preferred
-      -> KuKuTool fallback / race reserve
-      -> Native fallback
-
-Batch Ultra
-  TianTian
-      -> Native fallback
-```
-
-Single 与 Batch 的 Provider 顺序并不完全相同，不能用其中一个页面推断另一个页面。短链、标准视频链接、用户页 modal 链接和分享文本先经过 Source Lifecycle 归一，再进入同一内容身份与受控缓存边界。
-
-最后记录的生产 Runtime 来自 PR #65，其核心是受审查的抖音最终 CDN redirect policy 与明确的终止下载错误。此处不会把更新的小红书开发能力误写成抖音生产状态。
-
-## 哔哩哔哩固定路线
-
-当前正式范围是 **Native video-only**：
-
-- 接受 BV、AV 和 `b23.tv` 链接；
-- 支持 `p=` 分 P；
-- 从官方 View 读取标题、UP 主名称和封面；
-- 标题与 UP 主名称进入当前下载文件名语义，封面进入媒体结果；
-- 独立结构化 `author` metadata 尚未形成稳定契约；
-- 使用官方 View/PlayURL 数据；
-- 优先完整 DURL 媒体。
-
-Provider Lab 对三个真实视频样本的对比显示，AnimeImages Native、TianTian、videodl 和官方 DURL 的底层媒体字节一致，未证明 TianTian 或 videodl 带来质量增量。ParseHub 观察到额外格式元数据，但未形成可交付的额外媒体候选。因此正式路线保持 Native。
-
-当前延期范围：
-
-- Dynamic 与 Opus；
-- Live Photo；
-- Cookie / member-only 质量；
-- DASH 音视频 merge 升级。
-
-yt-dlp 在首次 Bilibili Lab 对比中返回 Provider process failure。该已知 Provider-specific 限制被独立呈现，不影响其它 Provider，也不构成修改正式 Bilibili 路线的理由。
-
-## 下载数据路径
-
-普通 Provider 视频的目标路径：
-
-```text
-Provider / CDN
-      -> Browser Service Worker
-      -> Browser Download Manager
-      -> Disk
-```
-
-普通图片与静态图集归档：
-
-```text
-Image CDN
-      -> Browser image/archive implementation
-      -> Disk
-```
-
-Staff Live Photo 归档：
-
-```text
-Still CDN + Motion CDN
-      -> Browser archive
-      -> Disk
-```
-
-AnimeImages 在这些路径中承担控制面、校验和 Manifest/descriptor authority。普通媒体不使用 Server Relay 作为默认或自动 fallback；浏览器失败会明确终止并允许重试或重新解析。服务器生成的输出，例如确实需要音视频 merge 或显式生成新文件的任务，仍可使用独立服务端流程，因此“普通媒体 zero relay”不等于项目永远不传输任何媒体字节。
-
-## Provider Lab
-
-Provider Lab 是 Django monolith 内的 Staff-only 对比模块。它不会自动选择赢家，也不会改变任何正式平台路线。
-
-```mermaid
-flowchart LR
-    B[Staff Browser] -->|one POST per Provider| D[Django Lab governance]
-    D --> E[Existing in-process wrappers]
-    D --> W[Isolated whole-repository workers]
-    E --> R[LabProviderResultV1]
-    W --> R
-    R --> T[Short-lived resource tokens]
-    T --> I[Staff browser inspection]
-```
-
-固定 Registry 包含：
-
-- `animeimages_current`
-- `parsehub_repo`
-- `videodl_repo`
-- `yt_dlp_existing`
-- `tiantian_existing`
-
-浏览器最多并发 3 个 Provider；每个 Provider 单独 POST，服务端不自动 fan out。刷新页面会清除结果，Lab 不持久化解析历史，也不进行完整媒体 Server Relay。
-
-默认状态：
-
-```text
-UPSTREAM_PROVIDER_LAB_ENABLED=False
-VIDEODL_PROVIDER_LAB_ENABLED=False
-```
-
-ParseHub Provider Lab Worker 与正式 XHS ParseHub Runtime 是两套用途和开关不同的运行路径。videodl 使用 PolyForm Noncommercial 1.0.0，仅限 noncommercial local Staff Lab，不是生产候选。完整操作说明见 [Provider Lab 指南](docs/provider-lab.md)。
-
-## 本地快速启动
-
-要求：Python 3、Node.js，以及项目依赖所需的系统工具。普通开发启动不要求安装 ParseHub 或 videodl 的 Provider Lab Runtime。
+在全新克隆中，使用现有开发环境约定启动：
 
 ```bash
-git clone <repository>
+git clone https://github.com/Daiobs/AnimeImages.git
 cd AnimeImages
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 cp .env.example.local .env
 python manage.py check
 python manage.py migrate
-python manage.py runserver
+python manage.py runserver 127.0.0.1:8000
 ```
 
-默认地址是 `http://127.0.0.1:8000/`。Windows 和更完整的日常开发流程见[开发指南](docs/development.md)。
+访问 `http://127.0.0.1:8000/`。已有工作目录应继续使用原解释器、`.env` 和数据库，不重复覆盖示例配置或重建数据。开发基线为 Python 3.14.5 / Django 5.2.x；完整环境、检查和隔离 Runtime 操作见 [开发指南](docs/development.md)。
 
-常用验证：
+### 可选 yt-dlp Runtime
 
-```bash
-python manage.py check
-python manage.py makemigrations --check --dry-run
-python manage.py test xhs_download --noinput
-node --test tests_js/*.test.js
-node --check static/js/*.js
-git diff --check
-```
+yt-dlp 不属于应用必装依赖。共享执行路径的兼容版本以 [`VERIFIED_RUNTIME_VERSIONS`](xhs_download/services/quality_execution.py) 为权威来源，目前验证了 **2026.3.17 和 2026.6.9**，不自动认可所有更高版本。PyPI 的 `2026.6.9` 与模块报告的 `2026.06.09` 是同一发行版本的合法表示；同次请求仍核对父进程、匹配与 Worker 的实际版本，缓存也区分 Runtime。
 
-## 可选 Provider Runtime
-
-正式 Provider capability、Runtime exposure、platform allowlist 和 rollout 是分离的 gate，详见 [Provider Runtime Gates](docs/provider-runtime-gates.md)。
-
-可选运行时包括：
-
-- TianTian 与 KuKuTool 的平台固定路线能力；
-- yt-dlp / gallery-dl 长尾解析；
-- YouTube 服务端 merge 输出；
-- ParseHub XHS Runtime；
-- Staff-only Provider Lab 的 ParseHub / videodl 隔离环境。
-
-不要把 Provider-specific venv 安装进应用 `.venv`。Provider Lab 的初始化命令和 exact pins 见[稳定指南](docs/provider-lab.md)。
-
-### yt-dlp 共享路径兼容版本
-
-`xhs_download/services/quality_execution.py::VERIFIED_RUNTIME_VERSIONS` 是应用兼容集合的唯一来源；目前接受 `2026.3.17` 和 `2026.6.9`，不自动接受更高版本。PyPI 的 `2026.6.9` 与模块版本 `2026.06.09` 是同一发行的整数归一化表示。兼容准入不会替代同次 identity、match、parse 的精确版本核对；Worker 原始版本和运行环境指纹仍参与缓存隔离。
-
-可选 Runtime 单独安装，不加入应用必装依赖：
+需要安装时，在应用 `.venv` 之外使用单独环境，例如：
 
 ```bash
 python3.12 -m venv /absolute/local/path/ytdlp-2026.6.9
 /absolute/local/path/ytdlp-2026.6.9/bin/python -m pip install --index-url https://pypi.org/simple --no-deps yt-dlp==2026.6.9
 ```
 
-在原本已启用 yt-dlp 的本地配置中，将 `YTDLP_BINARY` 设为 `/absolute/local/path/ytdlp-2026.6.9/bin/python -m yt_dlp`，通过既有启动方式重载。更换前保留原值，不改人工路线。配置可用不等于版本已验证：未验证版本在共享执行时返回 `PROVIDER_POLICY_REJECTED / UPSTREAM_VERSION_UNSUPPORTED`；请求中版本变化返回协议错误，不能当成作品不支持或自动重试。
+项目配置使用已有 `YTDLP_BINARY`，例如 `/absolute/local/path/ytdlp-2026.6.9/bin/python -m yt_dlp`，并核对 `YTDLP_PROVIDER_ENABLED` 及当前来源准入。安装包不自动开放公众能力。其他可选 Runtime 的固定版本、隔离安装和参数见 [Provider Lab 指南](docs/provider-lab.md)。
 
-新增兼容版本必须先用真实安装包复现并运行 `xhs_download.tests_ytdlp_runtime_compatibility`、`xhs_download.tests_execution_path_parity` 和 `tools.tests_upstream_worker_quality`，再运行完整 Django/Node 检查。前两项通过 `YTDLP_COMPAT_PYTHON` 选择隔离解释器，`YTDLP_COMPAT_EXPECTED_VERSION` 断言实际安装版本；`YTDLP_COMPAT_ALTERNATE_PYTHON` 指向另一已安装版本，验证缓存隔离和执行中换包拒绝。原生提取/最终 HTTP 使用离线替身，真实 Worker、隔离参数、后处理及共享映射不替换；这些测试不代表远端站点当前成功。
+更换 yt-dlp 版本时，先验证真实隔离进程及共享转换，再更新兼容集合与现有 CI；不是只改版本字符串。主要回归入口为 `xhs_download.tests_ytdlp_runtime_compatibility`、`xhs_download.tests_execution_path_parity` 和 `tools.tests_upstream_worker_quality`。现有 CI 含 Python 3.12 的新旧版本隔离验证，不代表生产环境已更新。
 
-现有 Django CI 的完整套件安装 `2026.6.9`；另有 Python 3.12 专项执行新版与旧版离线共享路径，不固定生产的 3.12.3 补丁版本。日志记录实际解释器、包版本、模块版本和导入位置。安装选择位于 `.github/workflows/django.yml`，改兼容集合时必须同步验证入口，不能只替换版本字符串。生产升级另行授权，本地选择不会修改生产 Runtime。
+## 管理员评估与路线
 
-## 后台入口
+在已配置开放的 Provider Lab 中，管理员可按平台查看跨批次记录、Scout 与 Lab 来源、作品身份依据、候选和当前路线，再进入草稿。实时资源检查凭据是短期的；执行历史与经过脱敏的导入摘要可以持久保存，历史本身不重新授予下载权限。
 
-常用 Staff 运维页面：
+路线保存使用正常后台权限、revision 和审计。当前人工路线按**精确 hostname**生效，不是内容类型路由；修改会影响该 host 的适用作品。成熟平台既有路线受到保护。当前接通的两个已审查 videodl Common 可在明确指定 Backend、核验策略/Runtime 并确认该 host 后续共享范围后进入固定路线；其他 Common 不自动获准。单次 Lab 确认或导入结果不等于未来调用授权。
 
-- `/admin/provider-settings/`：正式 Provider Runtime exposure；
-- `/admin/provider-health-tests/`：Provider 健康检查；
-- `/admin/provider-audit-logs/`：Provider 设置审计；
-- `/admin/ops-dashboard/`：运行观测；
-- `/admin/xhs_download/batchparseruntimesetting/`：Django Admin 中的 `BatchParseRuntimeSetting` 批量解析配置；
-- `/admin/provider-lab/`：独立的 Provider 对比实验室。
+只有一个具备明确目标媒体确认依据的通道时，可称“当前证据中的唯一已验证候选”；成功但身份未确认仍标为未确认媒体。不同作品的成功不能直接排画质。推荐与草稿不会自动保存成正式路线。具体权限、参数与使用限制见 [Provider Lab](docs/provider-lab.md) 和 [Provider Runtime Gates](docs/provider-runtime-gates.md)。
 
-Provider Lab 不能通过 Admin Provider Settings 开放给匿名用户；它没有 `public_gray` 或 `public` 发布模式。
+## 已知限制与使用边界
 
-## 开发与生产状态
+- 平台支持声明、能力匹配、某条样本成功和当前可保存性不能互相替代；登录、DRM、限流、签名过期、TLS/CORS 等实际条件仍会限制结果。
+- #99/#100 保留了匿名 PeerTube 两档视频、非 yt-dlp 服务文件，以及正常 Chrome/Safari 流式保存的限定证据；不是所有平台、全部格式或所有浏览器验收。应用内浏览器的首块取消问题仍有环境层证据缺口。
+- 独立音频、所有 HLS 合流、全部历史样本的视觉效果未全面验收。既有特定服务端合流能力不等于任意 HLS 都可下载。
+- XHS Live Photo 的 Staff 单作品能力与匿名/Batch 的静态展示不同；打包原始 still + motion 不等于自动导入 iOS 相册。
+- 仅处理合法获准的内容；本项目不会因接通接口而获得内容使用权或扩大第三方服务/软件许可。videodl 的既有非商业许可及已批准用途仍需遵守，生产或商业用途不能从代码可执行性推断。
+- 不在日志、PR 或提交中放入凭据、Cookie、签名媒体链接和私有环境文件。
 
-- `main` 是开发仓库的 canonical branch。
-- Production checkout 不是开发基线。
-- Development main 当前包含尚未记录部署的 PR #74、#75 和 #76。
-- Last recorded Production Runtime 是 `38992e955f2f268c2a6d4ecd81d900feba83f048`。
-- 本次文档任务没有访问、修改、重启或部署生产。
-- Production rollout 必须作为单独、明确授权的任务执行。
+## 进一步阅读
 
-PR #62 `feat/external-tool-progress-materials-v1` 仍为 OPEN / Draft / deferred，未合并，不属于当前 main 能力。
+- [当前版本与生产记录](docs/current-version-status.md)
+- [后续开发交接](docs/codex-handoff.md)
+- [开发与验证](docs/development.md)
+- [应用架构](docs/architecture.md)
+- [格式选择与保存](docs/ytdlp-result-picker.md)
+- [Provider Lab、平台台账与路线](docs/provider-lab.md)
+- [现有固定 SHA 发布通道](ops/managed-release/README.md)
+- [变更记录](CHANGELOG.md)
 
-## 安全边界
-
-- Provider 和媒体目标使用固定 scheme/host/final-host 准入，不接受任意代理地址。
-- Public、Staff、Batch 和 Provider Health 的能力边界分别验证。
-- Provider manifest、resource token 和下载 descriptor 均短期、受范围约束。
-- 初始 HTML 和脱敏 JSON 不应包含 Provider 原始媒体 URL、Cookie 或凭据。
-- 外部工具在有界子进程、临时 HOME/CWD 和限制输出中运行。
-- Provider Lab 只返回脱敏归一结果，资源检查使用短期 Staff-bound token。
-- 解析结果默认不持久化；用户反馈与历史 submissions 模型是不同的数据边界。
-- 生产依赖、密钥、Redis 和 Runtime Settings 必须由部署环境提供。
-
-## 已知限制
-
-| 类型 | 限制 |
-| --- | --- |
-| Code | Bilibili 正式路线仍为 Native video-only，Dynamic/Opus 和 DASH merge 未产品化 |
-| Code | 需要特殊 Header/Cookie 的资源可能无法由浏览器直接检查或下载 |
-| Product | Anonymous 与 Batch 不提供 XHS Live Photo motion、播放或 pair archive |
-| Product | Live Photo Archive 不自动导入 iOS Photos |
-| Product | Provider Lab 不自动选择 Provider，resource inspection 也不是完整文件证明 |
-| Product | Provider Lab 刷新后结果消失，且只允许 Staff 使用 |
-| License | videodl 仅限 noncommercial local Staff Lab，不能进入公开或生产路线 |
-| Provider | yt-dlp 在首次 Bilibili Lab 对比中执行失败，当前记录为非阻塞限制 |
-| Deployment | Development main 新于 recorded Production Runtime |
-| Deployment | Provider Lab 及 PR #74/#75/#76 未被本任务记录为已部署 |
-
-## 文档索引
-
-### Getting Started
-
-- [开发指南](docs/development.md)
-- [仓库治理](docs/repository-governance.md)
-
-### Current Status
-
-- [当前版本状态](docs/current-version-status.md)
-- [Codex Handoff](docs/codex-handoff.md)
-- [生产行为基线](docs/production-behavior-baseline-v1.md)
-
-### Architecture
-
-- [当前架构](docs/architecture.md)
-- [下载路由](docs/download-routing-engine.md)
-- [Provider 资源生命周期](docs/provider-resource-lifecycle.md)
-
-### Provider Operations
-
-- [Provider Runtime Gates](docs/provider-runtime-gates.md)
-- [Provider Health Tests](docs/admin-provider-health-tests.md)
-- [后台观测](docs/admin-observability.md)
-- [TianTian API](docs/tiantianjiexi-api.md)
-
-### Provider Lab
-
-- [Provider Lab 稳定使用指南](docs/provider-lab.md)
-- [Provider Lab 研究与阶段性证据](docs/research/provider_lab/01_UPSTREAM_PROVIDER_LAB_V1.md)
-
-### Deployment
-
-- [生产部署检查清单](docs/production-deploy-checklist.md)
-- [Release Management](docs/release-management.md)
-- [生产基础设施基线](docs/production-infrastructure-baseline-v1.md)
-
-### Research / Historical Evidence
-
-- [ParseHub 研究索引](docs/research/parsehub/01_UPSTREAM_BASELINE.md)
-- [XHS Live Photo 实证](docs/research/parsehub/15_XHS_LIVEPHOTO_REAL_PAYLOAD_EVIDENCE_V1.md)
-- [Production main reconciliation](docs/research/production-main-reconciliation-v1.md)
-- [历史下载传输考古](docs/research/v1-download-transport-archaeology.md)
-
-稳定使用说明以 README 和非 `research` 文档为入口；`docs/research/` 保存历史证据、阶段性结论和尚未产品化的候选设计。
+发布沿用现有通道并须另行授权；合并代码或更新本文档都不会自动部署生产。

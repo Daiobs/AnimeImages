@@ -1,12 +1,12 @@
 # Architecture
 
-本文描述 documented application baseline `457139b98d67d6e5f79b099f9a4e91d60a26904f` 的稳定结构。该 SHA 是文档快照，不是永久的 `main` 指针；当前 development baseline 必须从 latest fetched `origin/main` 解析。它也不是生产部署证明；last recorded Production Runtime 仍为 `38992e955f2f268c2a6d4ecd81d900feba83f048`。
+本文按应用快照 `c2b8ac51cfb87d4c030d321bf763080708db9593` 核对稳定结构。当前 main 须重新 fetch；生产及历史证据统一见 [当前版本状态](current-version-status.md)，不从合并推断部署。
 
 ## 系统定位
 
-AnimeImages 是一个 Django monolith。正式请求在固定平台路线中完成识别、Provider 调用、候选准入、结果归一化、预览和下载授权。
+DokiTool（仓库及内部名称 AnimeImages）是一个 Django monolith。正式请求在成熟平台路线或受控通用路线中完成识别、Provider 调用、候选准入、结果归一化、预览和下载授权。
 
-Provider Lab 也是 monolith 内的模块，但它可以启动隔离的 external repository Runtime。它不是微服务、自动 Broker 或正式路由层。
+Provider Lab 也是 monolith 内的模块，可以启动隔离的 external repository Runtime、保留脱敏执行历史并提供人工路线编辑入口；比较本身不自动修改正式路线。它不是微服务或自动 Broker。
 
 ```mermaid
 flowchart LR
@@ -52,7 +52,7 @@ flowchart LR
 HTTP input
   -> URL/text normalization
   -> platform registry
-  -> fixed adapter/provider route
+  -> mature adapter / admitted default or saved host route
   -> candidate admission
   -> ParseResult / MediaAsset normalization
   -> display context
@@ -85,6 +85,10 @@ Provider Lab 使用独立的固定 Lab Registry。Lab Provider 不会被正式 P
 
 ## Xiaohongshu
 
+普通请求可按当前准入启用 `xhs_independent.py`：获准的 Kukutool/天天服务分支与 Native 并行准备，并在原总期限内选择有效结果。Native 登录壳或失败不直接否定独立服务结果；服务分支失败仍保留有效 Native。服务资格来自后端当前配置，不由前台参数授予。
+
+下述 Native identity、图片与 Live Photo 约束仍作用于 Native/Hybrid 分支；不能误读为独立服务必须先取得 Native 成功。只有 Native 的 exact-item 快照可建立 Live Photo 配对，候选不能借用另一分支的下载授权。
+
 ### Source Authority
 
 XHS Native 负责：
@@ -98,7 +102,7 @@ XHS Native 负责：
 
 推荐内容、其它 note payload、generic carousel 和 broad page scan 不能覆盖 current-note authority。
 
-### 普通视频路线
+### Native/Hybrid 普通视频分支
 
 ```mermaid
 flowchart TD
@@ -110,7 +114,7 @@ flowchart TD
     T -->|failed or rejected| V
 ```
 
-图片和 Live Photo 分支不会调用 TianTian。TianTian 只替换普通视频媒体候选，不替代 Native note identity。
+该 Hybrid 内部只为普通视频调用 TianTian，不为图片或 Live Photo 调用；它不替代 Native note identity。前述独立服务分支是另一条经准入的路径，不能套用这一分支限制。
 
 ### 图片与图集路线
 
@@ -165,8 +169,8 @@ Douyin Normal 使用 Native baseline。Source Lifecycle 将短链、标准链接
 Single Ultra 固定路线：
 
 ```text
-TianTian preferred
-  -> KuKuTool fallback / race reserve
+TianTian valid cache or fresh request
+  -> KuKuTool admitted fallback only after failure/unavailability/deadline
   -> Native fallback
 ```
 
@@ -178,6 +182,10 @@ TianTian
 ```
 
 两条路线共享安全候选和下载契约，但预算、Provider 顺序与渐进协议各自固定。不要从 Single 配置推断 Batch 顺序。
+
+Single 的 `DouyinTianTianFirstProvider` 在天天合法结果返回后结束，不预热 Kukutool；天天缓存缺失/过期时，Kukutool 的有效缓存不能提前阻止天天请求。各阶段在原总期限中给后续兜底留出时间。既有竞速设施仍供其他明确场景使用，不代表本服务链继续竞速，也不意味着全站默认天天优先。
+
+结果层缓存不能延长首选资源的实际 TTL；本次响应中的标题/封面正常传递，不跨过期读取历史档案补齐。停止等待不证明远端终止，晚到结果不替换已交付资源。
 
 Ultra Provider 工作有独立 foreground deadline、短期 payload/failure cache、single-flight 和请求级 attempt accounting。最终媒体 redirect 只接受 source-bound 的受审查 host policy。
 
@@ -200,13 +208,16 @@ Dynamic、Opus、Live Photo、member-only quality 和 DASH merge 仍是独立后
 
 ## Generic Providers
 
-Generic third-party adapter 通过显式 platform rules、Provider allowlist、runtime gate 和安全预算提供可选长尾能力。
+Generic third-party adapter 通过既有 platform rules、原生匹配、来源/Provider 准入、Runtime 与安全预算提供可选长尾能力。支持声明用于采样，不自动变成产品逐域名白名单。
 
 当前主要工具：
 
 - yt-dlp：通用视频 metadata/candidate，YouTube 可形成 server-required merge task。
 - gallery-dl：通用图片/gallery metadata/candidate。
-- KuKuTool generic：与 Douyin Ultra 的 KuKuTool capability 分离。
+- ParseHub 与受控 videodl：复用隔离执行器与共享候选转换。
+- TianTian / Kukutool generic：与抖音专用服务身份和来源准入分开。
+
+无人工路线的适用来源使用已配置、获准的默认顺序；服务通道不因身份被排除。`UpstreamRoute` 保存精确 hostname 的首选/备选及质量偏好，不覆盖成熟路线，也不是内容类型路由。固定 videodl Common 仅限当前接通的已审查 Backend，保存与执行复核未来共享授权，详见 [Lab 固定路线](provider-lab.md#已审查-common-固定路线-v1)。
 
 外部工具运行在有界子进程中，使用临时 HOME/CWD、输出上限和进程树清理。它们是 breadth tools，不是专用平台 adapter 的替代品。
 
@@ -225,6 +236,10 @@ flowchart LR
 ```
 
 普通视频的目标是 Browser Zero Relay：AnimeImages 不传输普通媒体 body，也不在 direct failure 后自动切入 Server Relay。
+
+图示适用于已授权且处于现有 SW 资源策略范围内的完整视频，不是所有 HTTPS 视频。范围外合法资源及独立音频仍按原条件走有界兼容路径；候选绑定或 Provider 名称不单独决定 Blob。选择器、动作描述符与共用入口保持所选资源、文件名和有效期一致，适用的旧资产/专用路径另核验准确 manifest，不把它强加为全部通用候选的契约。
+
+当前协议为 v4，客户端核验实际 controller。旧 Worker 等待更新时不静默 Blob，不用未知状态推断可以接管；正常更新后重新握手和检查原期限。具体用户操作和 Chrome/Safari/IAB 证据范围见 [格式选择指南](ytdlp-result-picker.md)。
 
 ### Images And Archives
 
@@ -289,6 +304,7 @@ flowchart TD
     I --> N[LabProviderResultV1]
     W --> N
     N --> S[Sanitized cards]
+    N --> H[Persistent sanitized execution history]
     N --> T[Short-lived Staff-bound tokens]
     T --> X[Browser resource inspection]
 ```
@@ -302,9 +318,9 @@ Whole-repository Workers：
 - Cookie、proxy inheritance 和 Provider downloader 禁用；
 - timeout、输出上限及进程树清理；
 - 归一为 `LabProviderResultV1`；
-- 不持久化结果。
+- Worker 不写应用结果库；应用的历史服务另行保存脱敏执行摘要，不保存媒体授权。
 
-Lab 不自动 fan out、不选赢家、不修改平台路线、不做完整媒体 Relay。操作和许可证边界见 [Provider Lab](provider-lab.md)。
+Lab 比较不自动 fan out、不选赢家、不修改路线、不做完整媒体 Relay。具配置权限者可在独立确认后保存通用精确 host 路线；历史导入和资源检查不授权该保存或未来调用。刷新即时卡片不删除已保存历史，保存失败独立报告且不能据此重发解析。操作和许可证边界见 [Provider Lab](provider-lab.md)。
 
 videodl 是一个局部例外：浏览器仍然只对显式 Provider 并发，Django
 只在单个 `videodl_repo` 请求内部执行 AnimeImages-owned、顺序且有界的
@@ -376,13 +392,13 @@ legacy/reviewed auto、grabber、browser 和正式平台路线均不在该能力
 
 ```text
 current development baseline = latest fetched origin/main
-documented application baseline = 457139b98d67d6e5f79b099f9a4e91d60a26904f
-recorded production runtime = 38992e955f2f268c2a6d4ecd81d900feba83f048
+documented application baseline = c2b8ac51cfb87d4c030d321bf763080708db9593
+last recorded production application = bf9f1255b006ea93b7a0cf766d28f1db6138113f
 ```
 
-PR #74、#75 和 #76 已合并 development main，但本次文档任务没有访问生产，也没有记录它们已部署。部署需要独立授权、exact-SHA gate、迁移/static/infrastructure 检查和验收。
+PR #96–#100 已合并 main，尚无该增量部署记录；本次文档任务没有访问生产。较早已发布能力不再笼统标为未部署。证据集中在 [当前版本状态](current-version-status.md)。后续部署仍须独立授权及既有 exact-SHA 验证。
 
-PR #62 仍为 OPEN / Draft / deferred，不属于当前架构能力。
+未合并的研究或功能分支不属于本文的 main 能力，不从历史任务标题推断当前状态。
 
 ## 扩展原则
 
