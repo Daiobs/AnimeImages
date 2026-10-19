@@ -11,6 +11,7 @@
 
 {% block extrahead %}
     {{ block.super }}
+    <script src="{% static 'js/platform_ledger.js' %}?v={{ static_asset_version }}" defer></script>
     <script src="{% static 'js/provider_lab.js' %}?v={{ static_asset_version }}" defer></script>
 {% endblock %}
 
@@ -18,6 +19,7 @@
 <main
     class="provider-lab"
     data-provider-lab
+    data-lab-view="platforms"
     data-run-url="{{ provider_lab_run_url }}"
     data-resource-url="{{ provider_lab_resource_url }}"
     data-route-url="{% url 'upstream_routes' %}"
@@ -29,18 +31,38 @@
         <header class="provider-lab-header">
             <div>
                 <span class="provider-lab-eyebrow">Provider Lab</span>
-                <h1>上游画质比较与路线</h1>
+                <h1>平台能力与路线</h1>
             </div>
             <a class="provider-lab-secondary" href="{% url 'provider_settings' %}">Provider 设置</a>
         </header>
 
         <nav class="provider-lab-tabs" aria-label="评估工作区">
-            <button type="button" data-lab-tab="instant" aria-pressed="true">即时测试</button>
-            <button type="button" data-lab-tab="history" aria-pressed="false">批次与历史</button>
+            <button type="button" data-lab-tab="platforms" aria-pressed="true">平台总表</button>
+            <button type="button" data-lab-tab="instant" aria-pressed="false">即时测试</button>
+            <button type="button" data-lab-tab="history" aria-pressed="false">执行记录</button>
         </nav>
+        <section data-platform-ledger aria-label="平台总表">
+            <div data-ledger-overview>
+                <form class="platform-ledger-filters" data-ledger-filters>
+                    <label class="platform-ledger-search">平台或 hostname<input type="search" name="q" autocomplete="off" placeholder="搜索已收录来源"></label>
+                    <label>内容类型<select name="content_type"><option value="">全部类型</option><option value="image">图片</option><option value="video">视频</option><option value="audio">音频</option><option value="unknown">未知</option></select></label>
+                    <label>Provider<select name="provider_id"><option value="">全部上游</option>{% for provider in provider_lab_providers %}{% if not provider.baseline %}<option value="{{ provider.provider_id }}">{{ provider.label }}</option>{% endif %}{% endfor %}</select></label>
+                    <label>能力证据<select name="evidence"><option value="">全部证据</option><option value="confirmed">已确认目标媒体</option><option value="unconfirmed">未确认媒体</option><option value="declared">仅声明</option><option value="none">尚无有效媒体</option></select></label>
+                    <label>路线状态<select name="route_state"><option value="">全部路线</option><option value="manual">人工路线</option><option value="default">默认策略</option><option value="protected">成熟路线保护</option></select></label>
+                    <label>排序<select name="sort"><option value="latest">最近观察</option><option value="host">hostname</option><option value="evidence">正向证据</option></select></label>
+                    <button type="submit">筛选</button>
+                    <button type="button" data-ledger-refresh>刷新</button>
+                </form>
+                <p data-ledger-status role="status"></p>
+                <p data-ledger-scope class="platform-ledger-muted"></p>
+                <div data-ledger-table></div>
+                <nav data-ledger-pagination aria-label="平台分页"></nav>
+            </div>
+            <section data-ledger-detail hidden aria-label="平台详情"></section>
+        </section>
         <section data-lab-history hidden aria-label="批次与历史">
             <div class="provider-lab-section-heading">
-                <h2>批次与历史</h2>
+                <h2>执行记录</h2>
                 <button type="button" data-history-refresh>刷新批次</button>
             </div>
             <p data-history-status role="status"></p>
@@ -48,7 +70,9 @@
             <h3 data-history-heading>尚未选择批次</h3>
             <div class="provider-lab-history-filters">
                 <label>来源站点 <select data-history-host><option value="">全部站点</option></select></label>
-                <label>曾有结果 <select data-history-state><option value="">全部状态</option><option value="success">成功</option><option value="failed">失败</option><option value="unsupported">不支持</option><option value="not_executed">未执行</option></select></label>
+                <button type="button" data-history-host-all hidden>跨批次查看此主机</button>
+                <button type="button" data-history-back-batch hidden>返回原批次</button>
+                <label>曾有结果 <select data-history-state><option value="">全部状态</option><option value="success">产品成功</option><option value="native_observed">原生离线证据</option><option value="failed">失败</option><option value="unsupported">不支持</option><option value="not_executed">未执行</option></select></label>
                 <label>执行顺序 <select data-history-order><option value="latest">最新在前</option><option value="oldest">最早在前</option><option value="provider">Provider</option></select></label>
             </div>
             <div data-history-executions></div>
@@ -221,7 +245,7 @@
         <section class="provider-lab-route" data-lab-route-editor
                  data-can-configure="{% if perms.xhs_download.change_upstreamroute %}true{% else %}false{% endif %}">
             <div class="provider-lab-section-heading">
-                <h2>平台路线</h2>
+                <h2>来源 hostname 路线</h2>
                 <button type="button" class="provider-lab-secondary" data-route-load>刷新路线</button>
             </div>
             <p data-route-scope>尚未读取来源范围</p>

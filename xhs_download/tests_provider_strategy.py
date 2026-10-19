@@ -1951,8 +1951,10 @@ class BatchParseViewTests(TestCase):
             assets=(),
         )
 
-        first = self.client.post(reverse("batch_parse"), {"links": "https://example.com/1"})
-        second = self.client.post(reverse("batch_parse"), {"links": "https://example.com/2"})
+        # The message concerns two requests within one fixed rate-limit window.
+        with patch("xhs_download.services.rate_limits.time.time", return_value=1700000001):
+            first = self.client.post(reverse("batch_parse"), {"links": "https://example.com/1"})
+            second = self.client.post(reverse("batch_parse"), {"links": "https://example.com/2"})
 
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)

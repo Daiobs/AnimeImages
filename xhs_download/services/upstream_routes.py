@@ -3,6 +3,7 @@
 from copy import deepcopy
 from dataclasses import replace
 from hashlib import sha256
+import ipaddress
 import json
 from pathlib import Path
 import re
@@ -33,7 +34,34 @@ class UpstreamRouteError(ValueError):
         super().__init__(code)
 
 
-def source_scope(source_url):
+def canonical_source_host(value):
+    """Validate a canonical public DNS name, without resolving or inventing a URL."""
+    if (not isinstance(value, str) or len(value) > 253 or "." not in value
+            or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+                   for label in value.split("."))
+            or value.split(".")[-1] in {
+                "localhost", "local", "internal", "test", "invalid", "example", "onion", "home", "lan"}
+            or not re.search(r"[a-z]", value.split(".")[-1])):
+        raise UpstreamRouteError("INVALID_SOURCE_HOST")
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        pass
+    else:
+        raise UpstreamRouteError("INVALID_SOURCE_HOST")
+    try:
+        if value.encode("ascii").decode("idna").encode("idna").decode("ascii") != value:
+            raise UpstreamRouteError("INVALID_SOURCE_HOST")
+    except UnicodeError:
+        raise UpstreamRouteError("INVALID_SOURCE_HOST") from None
+    return value
+
+
+def source_scope(source_url=None, *, source_host=None):
+    if source_host is not None:
+        if source_url is not None:
+            raise UpstreamRouteError("INVALID_SOURCE_SCOPE")
+        return _host_scope(canonical_source_host(source_host))
     try:
         url = extract_url_from_text(source_url)
         validate_url(url)
@@ -42,10 +70,17 @@ def source_scope(source_url):
             raise ValueError()
     except (ValueError, TypeError, AttributeError, UnicodeError, XhsParseError):
         raise UpstreamRouteError("INVALID_SOURCE") from None
+    return _host_scope(host, source_url=url)
+
+
+def _host_scope(host, *, source_url=None):
     from .platforms.third_party import THIRD_PARTY_PLATFORM_RULES, BLOCKED_PUBLIC_HOST_SUFFIXES
     from .registry import DEFAULT_ADAPTERS
     mature = any(rule.supports_hostname(host) for rule in THIRD_PARTY_PLATFORM_RULES) or any(
-        adapter.platform_id != "third_party" and adapter.supports_url(url) for adapter in DEFAULT_ADAPTERS
+        adapter.platform_id != "third_party" and (
+            adapter.supports_url(source_url) if source_url is not None
+            else host_matches(host, adapter.page_host_suffixes)
+        ) for adapter in DEFAULT_ADAPTERS
     )
     blocked = host_matches(host, BLOCKED_PUBLIC_HOST_SUFFIXES)
     return {"source_host": host, "applicable": not mature and not blocked,
@@ -64,8 +99,8 @@ def _snapshot(route):
             "format_preferences": deepcopy(route.format_preferences)}
 
 
-def read_route(source_url):
-    scope = source_scope(source_url)
+def read_route(source_url=None, *, source_host=None):
+    scope = source_scope(source_url, source_host=source_host)
     route = UpstreamRoute.objects.filter(source_host=scope["source_host"]).first() if scope["applicable"] else None
     state = _snapshot(route) if route else {
         "revision": 0, "active": False, "provider_order": [], "provider_options": {}, "format_preferences": {},
@@ -95,7 +130,7 @@ def validate_preferences(provider_order, provider_options, format_preferences):
             raise UpstreamRouteError("INVALID_PROVIDER_OPTIONS")
         from .provider_lab.videodl_policy import REVIEWED_DEDICATED_BACKEND_IDS, backend_policy
         backend = value["backend_id"]
-        if (backend not in REVIEWED_DEDICATED_BACKEND_IDS
+        if (not isinstance(backend, str) or backend not in REVIEWED_DEDICATED_BACKEND_IDS
                 or backend_policy(backend, "dedicated", registry_present=True).controlled_state != "allowed"):
             raise UpstreamRouteError("INVALID_BACKEND")
         options[pid] = dict(value)
@@ -113,9 +148,9 @@ def validate_preferences(provider_order, provider_options, format_preferences):
     return list(provider_order), options, dict(format_preferences)
 
 
-def write_route(source_url, *, expected_revision, actor, provider_order=None,
+def write_route(source_url=None, *, source_host=None, expected_revision, actor, provider_order=None,
                 provider_options=None, format_preferences=None, reset=False, reference_execution_id=None):
-    scope = source_scope(source_url)
+    scope = source_scope(source_url, source_host=source_host)
     if not scope["applicable"]:
         raise UpstreamRouteError("ROUTE_NOT_APPLICABLE", 422)
     if type(expected_revision) is not int or expected_revision < 0:
@@ -158,7 +193,7 @@ def write_route(source_url, *, expected_revision, actor, provider_order=None,
             before=before, after=after, actor_id=getattr(actor, "pk", None),
             actor_username=str(getattr(actor, "username", ""))[:150],
         )
-    return read_route(source_url)
+    return read_route(source_url, source_host=source_host)
 
 
 def route_cache_identity(route, matches):

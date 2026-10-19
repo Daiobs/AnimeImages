@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
+import ipaddress
+import re
 
 from django.contrib import admin
 from django.core.cache import cache
@@ -28,11 +30,58 @@ from xhs_download.services.provider_lab.resources import (
 )
 from xhs_download.services.rate_limits import consume_fixed_window
 from xhs_download.models import EvaluationBatch, EvaluationExecution
-from xhs_download.services.provider_lab import history
+from xhs_download.services.provider_lab import history, ledger
 
 
 PROVIDER_EXECUTIONS_PER_MINUTE = 20
 SINGLE_FLIGHT_SECONDS = 90
+HOST_HISTORY_MAX_ROWS = 200
+HOST_HISTORY_MAX_BYTES = 2 * 1024 * 1024
+
+
+def host_history_payload(value):
+    # Accept canonical public DNS hostnames only; no DNS or provider calls.
+    if (not isinstance(value, str) or len(value) > 253
+            or not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", value)
+            or "." not in value
+            or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+                   for label in value.split("."))
+            or value.split(".")[-1] in {"localhost", "local", "internal", "test", "invalid", "example", "onion", "home", "lan"}):
+        raise history.HistoryError("HISTORY_INPUT_INVALID")
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        pass
+    else:
+        raise history.HistoryError("HISTORY_INPUT_INVALID")
+    try:
+        if value.encode("ascii").decode("idna").encode("idna").decode("ascii") != value:
+            raise history.HistoryError("HISTORY_INPUT_INVALID")
+    except UnicodeError:
+        raise history.HistoryError("HISTORY_INPUT_INVALID") from None
+    _, canonical, _ = history.source_info("https://" + value + "/")
+    if canonical != value or not re.search(r"[a-z]", value.split(".")[-1]):
+        raise history.HistoryError("HISTORY_INPUT_INVALID")
+    records = EvaluationExecution.objects.filter(summary__source_host=value)
+    total = records.count()
+    rows = []
+    # Reserve space for the fixed envelope; count the same ASCII JSON encoding as JsonResponse.
+    size = 1024
+    for record in records.select_related("batch").order_by("-pk")[:HOST_HISTORY_MAX_ROWS]:
+        batch = record.batch
+        metadata = batch.metadata if isinstance(batch.metadata, dict) else {}
+        row = {**history.execution_dict(record), "batch": {
+            "id": batch.pk, "batch_key": batch.batch_key, "label": batch.label,
+            "origin": batch.origin, "created_at": batch.created_at.isoformat(),
+            "metadata": {key: metadata[key] for key in ("version", "evidence_kind") if key in metadata},
+        }}
+        row_size = len(json.dumps(row, ensure_ascii=True).encode("utf-8")) + 2
+        if size + row_size > HOST_HISTORY_MAX_BYTES:
+            break
+        rows.append(row)
+        size += row_size
+    return {"ok": True, "source_host": value, "executions": rows,
+            "total": total, "returned": len(rows), "truncated": len(rows) < total}
 
 
 def provider_lab_enabled() -> bool:
@@ -94,7 +143,7 @@ def provider_lab_view(request):
     require_provider_lab_access(request)
     context = {
         **admin.site.each_context(request),
-        "title": "上游 Provider 测试工作台",
+        "title": "平台能力与路线",
         "provider_lab_providers": list_provider_descriptors(),
         "provider_lab_run_url": "/admin/provider-lab/run/",
         "provider_lab_resource_url": "/admin/provider-lab/resource/",
@@ -232,7 +281,22 @@ def provider_lab_history_view(request):
             if len(request.body) > history.MAX_IMPORT_BYTES:
                 raise history.HistoryError("HISTORY_INPUT_TOO_LARGE", 413)
             return secure_json(history.import_batch(parse_json_body(request)))
+        view = request.GET.get("view")
+        if view or "execution_id" in request.GET:
+            if any(len(request.GET.getlist(key)) != 1 for key in request.GET):
+                raise history.HistoryError("HISTORY_INPUT_INVALID")
+            if view == "platforms" and "execution_id" not in request.GET:
+                return secure_json(ledger.platforms_payload(request.GET))
+            if view == "platform" and "execution_id" not in request.GET:
+                return secure_json(ledger.platform_payload(request.GET))
+            if not view and "execution_id" in request.GET:
+                return secure_json(ledger.execution_payload(request.GET))
+            raise history.HistoryError("HISTORY_INPUT_INVALID")
         batch_id = request.GET.get("batch_id")
+        if "source_host" in request.GET:
+            if "batch_id" in request.GET or len(request.GET.getlist("source_host")) != 1:
+                raise history.HistoryError("HISTORY_INPUT_INVALID")
+            return secure_json(host_history_payload(request.GET["source_host"]))
         if batch_id:
             batch = EvaluationBatch.objects.filter(pk=int(batch_id)).first()
             if not batch:

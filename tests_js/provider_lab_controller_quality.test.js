@@ -341,6 +341,67 @@ test("history route saves evidence only on explicit save and never guesses missi
     assert.deepEqual(writes[0].provider_options, {videodl_repo: {mode: "dedicated_only"}});
 });
 
+test("existing videodl draft never carries old options into Common or unknown evidence", async () => {
+    for (const options of [null, {}, {mode: "common_only", backend_category: "common"},
+        {mode: "specific_backend", backend_category: "common", backend_id: "CommonClient"},
+        {mode: "specific_backend", backend_category: "dedicated", backend_id: "UnavailableClient"}]) {
+        const {panel, doc} = routeFixture(); const writes = [];
+        const snapshot = {...route, provider_order: ["videodl_repo"], allowed_provider_ids: ["videodl_repo"],
+            provider_options: {videodl_repo: {mode: "specific_backend", backend_id: "OldClient"}}};
+        const editor = lab.createRouteEditor(doc, {url: "/routes", csrf: () => "csrf",
+            getSource: () => "https://source.example/history",
+            descriptors: [{provider_id: "videodl_repo", available: true, route_selectable: true}],
+            window: {location: {origin: "https://local.example"}}, fetch: async (_url, request) => {
+                if (request.method) writes.push(JSON.parse(request.body));
+                return {ok: true, json: async () => ({ok: true, route: snapshot})};
+            }});
+        await editor.load();
+        panel.querySelector('[name="route_videodl_backend"]').options = [{value: "OldClient"}];
+        editor.selectProvider("videodl_repo", {id: 74, options}, "primary");
+        assert.equal(panel.querySelector('[name="route_videodl_mode"]').value, "");
+        assert.equal(panel.querySelector('[name="route_videodl_backend"]').value, "");
+        assert.match(panel.querySelector("[data-route-status]").textContent, /已清空旧执行模式/);
+        assert.equal(panel.querySelector("[data-route-confirm]").checked, false);
+        panel.querySelector("[data-route-confirm]").checked = true;
+        await editor.persist(false);
+        assert.deepEqual(writes, []);
+        assert.equal(editor.route.provider_options.videodl_repo.backend_id, "OldClient");
+    }
+});
+
+test("selecting another Dedicated history replaces backend and requires a new Human confirmation", async () => {
+    const {panel, doc} = routeFixture(); const writes = [];
+    panel.append(new Node("p", {"data-route-confirmation-summary": ""}));
+    const snapshot = {...route, provider_order: ["videodl_repo"], allowed_provider_ids: ["videodl_repo"],
+        provider_options: {videodl_repo: {mode: "specific_backend", backend_id: "OldClient"}}};
+    const editor = lab.createRouteEditor(doc, {url: "/routes", csrf: () => "csrf",
+        getSource: () => "https://source.example/history",
+        descriptors: [{provider_id: "videodl_repo", available: true, route_selectable: true}],
+        window: {location: {origin: "https://local.example"}}, fetch: async (_url, request) => {
+            if (request.method) writes.push(JSON.parse(request.body));
+            return {ok: true, json: async () => ({ok: true, route: snapshot})};
+        }});
+    await editor.load();
+    panel.querySelector('[name="route_videodl_backend"]').options = [{value: "OldClient"}, {value: "NewClient"}];
+    panel.querySelector("[data-route-confirm]").checked = true;
+    editor.selectProvider("videodl_repo", {id: 75, options: {mode: "specific_backend",
+        backend_category: "dedicated", backend_ids: ["NewClient"]}}, "primary");
+    assert.equal(panel.querySelector('[name="route_videodl_backend"]').value, "NewClient");
+    assert.equal(panel.querySelector('[name="route_videodl_mode"]').value, "specific_backend");
+    assert.match(panel.querySelector("[data-route-status]").textContent, /所选历史重新设置/);
+    assert.match(panel.querySelector("[data-route-scope]").textContent, /实际 hostname 范围：source.example.*不区分内容类型/);
+    assert.match(panel.querySelector("[data-route-confirmation-summary]").textContent, /不自动合并别名或短链域名/);
+    await editor.persist(false); assert.deepEqual(writes, []);
+    panel.querySelector("[data-route-confirm]").checked = true;
+    await editor.persist(false);
+    assert.deepEqual(writes[0].provider_options, {videodl_repo: {mode: "specific_backend", backend_id: "NewClient"}});
+    assert.equal(writes[0].reference_execution_id, 75);
+    editor.selectProvider("videodl_repo", {id: 76, options: {mode: "dedicated_only"}}, "primary");
+    assert.equal(panel.querySelector('[name="route_videodl_mode"]').value, "dedicated_only");
+    assert.equal(panel.querySelector('[name="route_videodl_backend"]').value, "");
+    assert.equal(writes.length, 1);
+});
+
 test("history cannot trust imported route_selectable for removed or currently forbidden providers", async () => {
     const {panel, doc} = routeFixture(); let writes = 0;
     const editor = lab.createRouteEditor(doc, {url: "/routes", csrf: () => "csrf", getSource: () => "source",
