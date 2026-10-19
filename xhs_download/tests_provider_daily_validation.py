@@ -262,6 +262,18 @@ class ProviderHealthSampleUrlPolicyTests(TestCase):
             test_setting=self.setting,
         )
 
+    def test_dns_failure_is_failed_not_a_policy_rejection_or_parse_attempt(self):
+        import socket
+        self.setting.xhs_video_url = "https://www.xiaohongshu.com/explore/example"
+        self.setting.save()
+        with patch('socket.getaddrinfo', side_effect=socket.gaierror(socket.EAI_AGAIN, 'temporary')), \
+                patch('xhs_download.services.provider_health_tests.parse_media_page') as parse:
+            run = execute_provider_health_test(self.context(), provider_health_test_by_key('xhs_video_current'))
+        self.assertEqual(run.status, ProviderHealthTestStatus.FAILED)
+        self.assertEqual(run.error_type, 'XhsDNSResolutionError')
+        self.assertNotEqual(run.error_code, 'SAMPLE_URL_POLICY_REJECTED')
+        parse.assert_not_called()
+
     def test_structural_policy_rejects_private_credentials_and_nonstandard_ports(self):
         rejected = (
             ("videodl_url", "https://localhost/sample"),

@@ -7,6 +7,7 @@ import time
 from urllib.parse import urldefrag, urljoin, urlparse
 
 import requests
+from urllib3.exceptions import ConnectTimeoutError, NewConnectionError
 
 
 HEADERS = {
@@ -67,6 +68,12 @@ class XhsProviderTimeoutError(XhsParseError):
 
 class XhsDownloadError(XhsError):
     pass
+
+
+class XhsDNSResolutionError(XhsDownloadError):
+    def __init__(self, *, temporary=False):
+        self.temporary = temporary
+        super().__init__("DNS 暂时解析失败，请稍后重试" if temporary else "DNS 解析失败，无法确定目标地址")
 
 
 def clean_filename(filename):
@@ -172,6 +179,11 @@ def validate_public_url(url, message="不允许请求该 URL"):
 
 
 def validate_public_download_url(url, message="不允许请求该 URL"):
+    _validated_download_addresses(url, message)
+    return url
+
+
+def _validated_download_addresses(url, message):
     parsed = urlparse(url or "")
     validate_public_url(url, message)
     try:
@@ -188,12 +200,16 @@ def validate_public_download_url(url, message="不允许请求该 URL"):
             type=socket.SOCK_STREAM,
         )
     except OSError as error:
-        raise XhsSecurityError(message) from error
+        raise XhsDNSResolutionError(
+            temporary=isinstance(error, socket.gaierror) and error.errno == socket.EAI_AGAIN,
+        ) from error
 
-    addresses = {item[4][0] for item in results if item and item[4]}
-    if not addresses or any(is_blocked_ip_address(address) for address in addresses):
+    addresses = tuple(dict.fromkeys(item[4][0] for item in results if item and item[4]))
+    if not addresses:
+        raise XhsDNSResolutionError()
+    if any(is_blocked_ip_address(address) for address in addresses):
         raise XhsSecurityError(message)
-    return url
+    return addresses
 
 
 def validate_page_url(url):
@@ -204,21 +220,97 @@ def validate_media_url(url):
     return validate_external_url(url, MEDIA_HOST_SUFFIXES, "资源 URL 不在允许的下载域名内")
 
 
-def _validate_request_target(url, message):
+def _validate_request_target(url, message, allowed_host_suffixes=None):
     try:
         if re.search(r"[\x00-\x20\x7f]", url):
             raise XhsSecurityError(message)
         parsed = urlparse(url)
         if parsed.username is not None or parsed.password is not None:
             raise XhsSecurityError(message)
-        validate_public_download_url(url, message)
+        if allowed_host_suffixes:
+            validate_external_url(url, allowed_host_suffixes, message)
+        addresses = _validated_download_addresses(url, message)
+    except XhsDNSResolutionError:
+        raise
     except (TypeError, ValueError) as error:
         raise XhsSecurityError(message) from error
-    return parsed
+    return parsed, addresses
 
 
 def _request_origin(parsed):
     return parsed.scheme, parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
+
+
+class _PinnedAddressAdapter(requests.adapters.HTTPAdapter):
+    """One validated hop owns its pools; proxies keep their own DNS boundary."""
+    def __init__(self, url, addresses, deadline_monotonic=None):
+        super().__init__()
+        canonical = requests.Request("GET", url).prepare().url
+        self.origin = _request_origin(urlparse(canonical))
+        if isinstance(addresses, str):
+            addresses = (addresses,)
+        self.addresses = tuple(str(ipaddress.ip_address(address)) for address in addresses)
+        if not self.addresses or any(is_blocked_ip_address(address) for address in self.addresses):
+            raise XhsSecurityError("不允许请求该地址")
+        self.deadline_monotonic = deadline_monotonic
+
+    def _pin_pool_connections(self, pool):
+        addresses, deadline = self.addresses, self.deadline_monotonic
+
+        class PinnedConnection(pool.ConnectionCls):
+            def _new_conn(self):
+                original_host, original_timeout = self._dns_host, self.timeout
+                connect_deadline = time.monotonic() + original_timeout
+                if deadline is not None:
+                    connect_deadline = min(connect_deadline, deadline)
+                try:
+                    for index, address in enumerate(addresses):
+                        remaining = connect_deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise ConnectTimeoutError(self, "已验证地址的连接超过时间限制")
+                        self._dns_host = address
+                        self.timeout = min(original_timeout, remaining)
+                        try:
+                            return super()._new_conn()
+                        except (NewConnectionError, ConnectTimeoutError):
+                            if index == len(addresses) - 1:
+                                raise
+                finally:
+                    self._dns_host, self.timeout = original_host, original_timeout
+
+        # This pool belongs to one admission. Only socket establishment may try
+        # another admitted IP; TLS and HTTP are never replayed by this loop.
+        pool.ConnectionCls = PinnedConnection
+        return pool
+
+    def get_connection_with_tls_context(self, request, verify, proxies=None, cert=None):
+        if _request_origin(urlparse(request.url)) != self.origin or verify is False:
+            raise XhsSecurityError("请求与已校验的目标不一致")
+        parent = super()
+        if requests.utils.select_proxy(request.url, proxies):
+            # Environment proxy/NO_PROXY/CA behavior remains Requests-owned.
+            # The proxy may resolve the origin itself: this path is NOT IP-pinned.
+            connect = getattr(parent, "get_connection_with_tls_context", None) or parent._get_connection
+            return connect(request, verify, proxies, cert)
+        if hasattr(parent, "build_connection_pool_key_attributes"):
+            host, options = parent.build_connection_pool_key_attributes(request, verify, cert)
+        else:
+            # Requests 2.32.0/2.32.1 expose the same TLS-aware operation privately.
+            host, options = requests.adapters._urllib3_request_context(request, verify, cert)
+        host["host"] = self.addresses[0]
+        if host["scheme"] == "https":
+            options["server_hostname"] = self.origin[1]
+        pool = self.poolmanager.connection_from_host(**host, pool_kwargs=options)
+        return self._pin_pool_connections(pool)
+
+    def _get_connection(self, request, verify, proxies=None, cert=None):
+        return self.get_connection_with_tls_context(request, verify, proxies, cert)
+
+    def send(self, request, **kwargs):
+        parsed = urlparse(request.url)
+        host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+        request.headers["Host"] = f"{host}:{parsed.port}" if parsed.port else host
+        return super().send(request, **kwargs)
 
 
 class _SingleHopSession(requests.Session):
@@ -250,10 +342,37 @@ def request_get_with_retry(
     deadline_monotonic=None,
     max_redirects=5,
 ):
-    """Validate each hop before sending; DNS checks do not pin the connection IP.
+    return _request_with_retry(
+        url, headers=headers or HEADERS, timeout=timeout, retries=retries,
+        sleep_seconds=sleep_seconds, stream=stream,
+        allowed_final_host_suffixes=allowed_final_host_suffixes,
+        final_url_message=final_url_message, deadline_monotonic=deadline_monotonic,
+        max_redirects=max_redirects,
+    )
+
+
+class _RedirectBudget:
+    """One hop allowance shared by the HEAD/Range pair, including retries."""
+    def __init__(self, remaining):
+        self.remaining = remaining
+
+    def consume(self):
+        if self.remaining <= 0:
+            raise requests.TooManyRedirects("请求跳转次数过多")
+        self.remaining -= 1
+
+
+def _request_with_retry(
+    url, headers=None, timeout=15, retries=3, sleep_seconds=0.8, stream=False,
+    allowed_final_host_suffixes=None, final_url_message="请求跳转到了不允许的 URL",
+    deadline_monotonic=None, max_redirects=5, *, method="GET", accepted_statuses=(200,),
+    allowed_hop_host_suffixes=None, redirect_budget=None,
+):
+    """Validate each hop and pin direct connections to an admitted address.
 
     Callers retain their initial-host policy. Intermediates must be public, but
     the final-host allowlist is intentionally applied only to the final response.
+    Configured proxies retain their existing, independently resolved egress.
     The deadline covers fetching the response, not consumption of a returned stream.
     """
     retries = max(1, int(retries))
@@ -285,8 +404,8 @@ def request_get_with_retry(
         try:
             current_url = urldefrag(url)[0]
         except (TypeError, ValueError) as error:
-            raise XhsSecurityError(final_url_message) from error
-        current_headers = dict(headers or HEADERS)
+            raise XhsSecurityError("不允许请求该 URL") from error
+        current_headers = dict(HEADERS if headers is None else headers)
         visited = set()
         with _SingleHopSession() as session:
             for hop in range(max_redirects + 1):
@@ -294,15 +413,21 @@ def request_get_with_retry(
                 if current_url in visited:
                     raise requests.TooManyRedirects("请求出现循环跳转")
                 visited.add(current_url)
-                current = _validate_request_target(current_url, final_url_message)
-                # DNS resolution consumes the same budget as all hops and retries.
-                phase_budget = remaining_budget() / 2
-                request_timeout = tuple(min(value, phase_budget) for value in phases)
-                if not isinstance(timeout, (tuple, list)):
-                    request_timeout = request_timeout[0]
                 response = None
                 try:
-                    response = session.get(
+                    message = final_url_message if hop else "不允许请求该 URL"
+                    current, addresses = _validate_request_target(current_url, message, allowed_hop_host_suffixes)
+                    # DNS consumes the same budget and retry scope as HTTP.
+                    phase_budget = remaining_budget() / 2
+                    request_timeout = tuple(min(value, phase_budget) for value in phases)
+                    if not isinstance(timeout, (tuple, list)):
+                        request_timeout = request_timeout[0]
+                    adapter = _PinnedAddressAdapter(current_url, addresses, deadline_monotonic)
+                    prefix = current.scheme + "://"
+                    session.adapters[prefix].close()
+                    session.mount(prefix, adapter)
+                    response = session.request(
+                        method,
                         current_url,
                         headers=current_headers,
                         timeout=request_timeout,
@@ -316,6 +441,8 @@ def request_get_with_retry(
                             raise XhsDownloadError("请求跳转缺少 Location")
                         if hop == max_redirects:
                             raise requests.TooManyRedirects("请求跳转次数过多")
+                        if redirect_budget is not None:
+                            redirect_budget.consume()
                         try:
                             next_url = urldefrag(urljoin(current_url, location))[0]
                             next_target = urlparse(next_url)
@@ -335,7 +462,7 @@ def request_get_with_retry(
                         current_url = next_url
                         continue
 
-                    if response.status_code == 200:
+                    if accepted_statuses is None or response.status_code in accepted_statuses:
                         final_url = response.url or current_url
                         if final_url != current_url:
                             _validate_request_target(final_url, final_url_message)
@@ -357,6 +484,10 @@ def request_get_with_retry(
                         return result
 
                     last_error = XhsDownloadError(f"HTTP {response.status_code}")
+                except XhsDNSResolutionError as error:
+                    if not error.temporary:
+                        raise
+                    last_error = error
                 except requests.RequestException as error:
                     if error.response is not None and error.response is not response:
                         error.response.close()

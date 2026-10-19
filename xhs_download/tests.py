@@ -1056,50 +1056,53 @@ class XhsUtilityTests(SimpleTestCase):
 
         self.assertEqual(provider_settings.enabled_provider_order, ("native",))
 
-    @patch("xhs_download.services.quality.requests.head")
-    def test_quality_probe_uses_head_content_length(self, mock_head):
+    @patch("socket.getaddrinfo", return_value=[(2, 1, 6, '', ('8.8.8.8', 443))])
+    @patch("xhs_download.services.common._SingleHopSession.request")
+    def test_quality_probe_uses_head_content_length(self, mock_request, _dns):
         response = Mock()
         response.status_code = 200
         response.url = "https://aweme.snssdk.com/aweme/v1/play/?video_id=abc"
         response.headers = {"Content-Length": "1234", "Content-Type": "video/mp4"}
         response.close = Mock()
-        mock_head.return_value = response
+        mock_request.return_value = response
 
         result = QualityProbe().probe("https://aweme.snssdk.com/aweme/v1/play/?video_id=abc")
 
         self.assertTrue(result.reachable)
         self.assertEqual(result.size_bytes, 1234)
         self.assertEqual(result.method, "HEAD")
+        self.assertEqual(mock_request.call_args.args[0], "HEAD")
         response.close.assert_called_once()
 
-    @patch("xhs_download.services.quality.requests.get")
-    @patch("xhs_download.services.quality.requests.head")
-    def test_quality_probe_falls_back_to_range_when_head_has_no_size(self, mock_head, mock_get):
+    @patch("socket.getaddrinfo", return_value=[(2, 1, 6, '', ('8.8.8.8', 443))])
+    @patch("xhs_download.services.common._SingleHopSession.request")
+    def test_quality_probe_falls_back_to_range_when_head_has_no_size(self, mock_request, _dns):
         head_response = Mock()
         head_response.status_code = 200
         head_response.url = "https://aweme.snssdk.com/aweme/v1/play/?video_id=abc"
         head_response.headers = {"Content-Type": "video/mp4"}
         head_response.close = Mock()
-        mock_head.return_value = head_response
 
         range_response = Mock()
         range_response.status_code = 206
         range_response.url = "https://aweme.snssdk.com/aweme/v1/play/?video_id=abc"
         range_response.headers = {"Content-Range": "bytes 0-0/5678", "Content-Type": "video/mp4"}
         range_response.close = Mock()
-        mock_get.return_value = range_response
+        mock_request.side_effect = [head_response, range_response]
 
         result = QualityProbe().probe("https://aweme.snssdk.com/aweme/v1/play/?video_id=abc")
 
         self.assertTrue(result.reachable)
         self.assertEqual(result.size_bytes, 5678)
         self.assertEqual(result.method, "RANGE")
+        self.assertEqual([call.args[0] for call in mock_request.call_args_list], ["HEAD", "GET"])
+        self.assertEqual(mock_request.call_args.kwargs['headers']['Range'], 'bytes=0-0')
         head_response.close.assert_called_once()
         range_response.close.assert_called_once()
 
-    @patch("xhs_download.services.quality.requests.get")
-    @patch("xhs_download.services.quality.requests.head")
-    def test_quality_probe_fast_mode_uses_only_range_request(self, mock_head, mock_get):
+    @patch("socket.getaddrinfo", return_value=[(2, 1, 6, '', ('8.8.8.8', 443))])
+    @patch("xhs_download.services.common._SingleHopSession.request")
+    def test_quality_probe_fast_mode_uses_only_range_request(self, mock_request, _dns):
         range_response = Mock()
         range_response.status_code = 206
         range_response.url = "https://v11-default.365yg.com/video.mp4"
@@ -1109,7 +1112,7 @@ class XhsUtilityTests(SimpleTestCase):
             "Content-Type": "video/mp4",
         }
         range_response.close = Mock()
-        mock_get.return_value = range_response
+        mock_request.return_value = range_response
 
         result = QualityProbe(("365yg.com",)).probe(
             "https://v11-default.365yg.com/video.mp4",
@@ -1122,25 +1125,24 @@ class XhsUtilityTests(SimpleTestCase):
         self.assertTrue(result.reachable)
         self.assertEqual(result.size_bytes, 94_441_025)
         self.assertEqual(result.method, "RANGE")
-        mock_head.assert_not_called()
-        mock_get.assert_called_once()
+        mock_request.assert_called_once()
+        self.assertEqual(mock_request.call_args.args[0], "GET")
 
-    @patch("xhs_download.services.quality.requests.get")
-    @patch("xhs_download.services.quality.requests.head")
-    def test_quality_probe_rejects_html_when_video_expected(self, mock_head, mock_get):
+    @patch("socket.getaddrinfo", return_value=[(2, 1, 6, '', ('8.8.8.8', 443))])
+    @patch("xhs_download.services.common._SingleHopSession.request")
+    def test_quality_probe_rejects_html_when_video_expected(self, mock_request, _dns):
         head_response = Mock()
         head_response.status_code = 200
         head_response.url = "https://v3-web.douyinvod.com/video.mp4"
         head_response.headers = {"Content-Length": "1234", "Content-Type": "text/html"}
         head_response.close = Mock()
-        mock_head.return_value = head_response
 
         range_response = Mock()
         range_response.status_code = 200
         range_response.url = "https://v3-web.douyinvod.com/video.mp4"
         range_response.headers = {"Content-Length": "1234", "Content-Type": "text/html"}
         range_response.close = Mock()
-        mock_get.return_value = range_response
+        mock_request.side_effect = [head_response, range_response]
 
         result = QualityProbe().probe("https://v3-web.douyinvod.com/video.mp4", expected_type="video")
 

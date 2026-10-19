@@ -323,6 +323,37 @@ The five candidate/selection descriptor endpoints also require the updated
 managed media snippet; see [Nginx baseline and acceptance](../ops/nginx/README.md).
 Installing application code alone does not remove the old Nginx 404 boundary.
 
+For this reverse-proxy deployment, leaving proxy trust disabled or omitting the
+correct trusted CIDRs can make clients share the proxy socket identity (for
+example, loopback), combining their rate-limit counters and anonymous rollout
+buckets. This does not mean every production topology has one client identity.
+Before enabling trust, confirm the effective proxy chain and origin access
+controls, then select only the narrow CIDRs justified by that topology.
+
+Use the existing fixed-SHA release checklist for one controlled migration of
+application code, proxy-trust configuration and the updated media snippet.
+Prepare and review the candidate configuration and corresponding version/backup
+set before switching; validate syntax and preserve reviewed site-specific Nginx
+additions. Code-only or partially configured intermediate states are not a
+completed release. Do not infer effective runtime configuration from repository
+defaults or the readable files alone.
+
+Acceptance must confirm that two controlled clients retain separate identities
+and quotas, a forged XFF prefix/X-Real-IP or changed User-Agent cannot choose
+their identity or rollout bucket, and disabled/staff/0% rollout restrictions
+remain intact. Verify all five exact business APIs listed in the Nginx runbook
+reach the application using bounded upstream request records, retain method,
+CSRF and resource-authorization rejections, and leave unknown/upload/subpaths
+blocked. Keep the short-lived identity/token expiry behavior described above;
+do not clear global caches to make the migration appear successful.
+
+Rollback must restore a reviewed compatible combination of application SHA,
+proxy-trust configuration and snippet version, followed by the same identity
+and route checks; do not roll back only one component and assume compatibility.
+These instructions complete migration preparation only. Production execution,
+configuration changes, snippet installation and reload still require separate
+authorization; production is not marked fixed by this documentation update.
+
 The image preview proxy is also an outbound bandwidth path and has separate controls:
 
 ```text

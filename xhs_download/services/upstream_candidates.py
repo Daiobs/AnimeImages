@@ -11,7 +11,7 @@ from uuid import uuid4
 from django.core import signing
 from django.core.cache import cache
 
-from .common import XhsParseError, validate_public_download_url
+from .common import XhsDNSResolutionError, XhsParseError, validate_public_download_url
 from .provider_lab.contracts import ASSET_ROLES, MAX_RETAINED_CANDIDATES, exact_public_identity, safe_public_text
 
 MAX_CANDIDATES = MAX_RETAINED_CANDIDATES
@@ -20,7 +20,7 @@ TTL = 300
 SALT = 'upstream-candidate-info-v1'
 
 
-def candidate_url(value, *, validator=None):
+def candidate_url(value, *, validator=None, raise_dns_error=False):
     validator = validator or validate_public_download_url
     url = str(value or '')
     try:
@@ -31,6 +31,10 @@ def candidate_url(value, *, validator=None):
                 or any(ord(c) <= 32 or ord(c) == 127 for c in url)):
             return ''
         validator(url)
+    except XhsDNSResolutionError:
+        if raise_dns_error:
+            raise
+        return ''
     except (ValueError, XhsParseError):
         return ''
     return url

@@ -1,8 +1,13 @@
 from dataclasses import dataclass
+import math
+import time
 
 import requests
 
-from .common import MEDIA_HOST_SUFFIXES, validate_external_url, validate_media_url
+from .common import (
+    MEDIA_HOST_SUFFIXES, XhsDownloadError, XhsSecurityError,
+    _RedirectBudget, _request_with_retry,
+)
 
 
 @dataclass(frozen=True)
@@ -14,11 +19,13 @@ class QualityProbeResult:
     content_type: str = ""
     method: str = ""
     error: str = ""
+    terminal: bool = False
+    security_rejected: bool = False
 
 
 def parse_content_length(response):
     try:
-        return int(response.headers.get("Content-Length") or 0)
+        return max(0, int(response.headers.get("Content-Length") or 0))
     except (AttributeError, TypeError, ValueError):
         return 0
 
@@ -27,7 +34,7 @@ def parse_content_range_total(content_range):
     if not content_range:
         return 0
     try:
-        return int(str(content_range).split("/", 1)[1])
+        return max(0, int(str(content_range).split("/", 1)[1]))
     except (IndexError, TypeError, ValueError):
         return 0
 
@@ -63,21 +70,23 @@ class QualityProbe:
         strategy="head_first",
         allow_fallback=True,
     ):
-        validate_media_url(url)
+        timeout = float(timeout)
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be positive and finite")
+        deadline = time.monotonic() + timeout
+        redirects = _RedirectBudget(5)
         request_headers = headers or {}
-        probes = (
-            (self._probe_range, self._probe_head)
-            if strategy == "range_first"
-            else (self._probe_head, self._probe_range)
-        )
+        methods = ("RANGE", "HEAD") if strategy == "range_first" else ("HEAD", "RANGE")
 
-        primary_result = probes[0](url, request_headers, timeout, expected_type)
+        primary_result = self._probe(url, request_headers, timeout, expected_type, methods[0], deadline, redirects)
         if primary_result.reachable and primary_result.size_bytes:
             return primary_result
-        if not allow_fallback:
+        if not allow_fallback or primary_result.terminal:
             return primary_result
 
-        fallback_result = probes[1](url, request_headers, timeout, expected_type)
+        fallback_result = self._probe(url, request_headers, timeout, expected_type, methods[1], deadline, redirects)
+        if fallback_result.security_rejected:
+            return fallback_result
         if fallback_result.reachable:
             return fallback_result
         if primary_result.reachable:
@@ -85,76 +94,35 @@ class QualityProbe:
         return QualityProbeResult(
             url=url,
             error=fallback_result.error or primary_result.error,
+            terminal=fallback_result.terminal,
         )
 
-    def _validate_final_url(self, url):
-        validate_external_url(
-            url,
-            self.allowed_final_host_suffixes,
-            "资源 URL 跳转到了不允许的下载域名",
-        )
-
-    def _probe_head(self, url, headers, timeout, expected_type=""):
+    def _probe(self, url, headers, timeout, expected_type, method, deadline, redirects):
         try:
-            response = requests.head(
-                url,
-                headers=headers,
-                timeout=timeout,
-                allow_redirects=True,
+            response = _request_with_retry(
+                url, method="HEAD" if method == "HEAD" else "GET",
+                headers=headers if method == "HEAD" else {**headers, "Range": "bytes=0-0"},
+                timeout=timeout, retries=2, stream=True,
+                accepted_statuses=None, deadline_monotonic=deadline,
+                redirect_budget=redirects, allowed_hop_host_suffixes=MEDIA_HOST_SUFFIXES,
+                allowed_final_host_suffixes=self.allowed_final_host_suffixes,
+                final_url_message="资源 URL 跳转到了不允许的下载域名",
             )
             try:
-                if response.status_code >= 400:
-                    return QualityProbeResult(url=url, final_url=response.url, method="HEAD", error=f"HTTP {response.status_code}")
-
-                self._validate_final_url(response.url)
+                if response.status_code not in {200, 206}:
+                    return QualityProbeResult(url=url, final_url=response.url, method=method, error=f"HTTP {response.status_code}")
                 content_type = response.headers.get("Content-Type", "")
                 if not content_type_matches_expected(content_type, expected_type):
                     return QualityProbeResult(
                         url=url,
                         final_url=response.url,
-                        method="HEAD",
-                        content_type=content_type,
-                        error=f"Unexpected content type {content_type}",
-                    )
-                return QualityProbeResult(
-                    url=url,
-                    final_url=response.url,
-                    reachable=True,
-                    size_bytes=parse_content_length(response),
-                    content_type=content_type,
-                    method="HEAD",
-                )
-            finally:
-                response.close()
-        except Exception as error:
-            return QualityProbeResult(url=url, method="HEAD", error=str(error))
-
-    def _probe_range(self, url, headers, timeout, expected_type=""):
-        try:
-            response = requests.get(
-                url,
-                headers={**headers, "Range": "bytes=0-0"},
-                timeout=timeout,
-                allow_redirects=True,
-                stream=True,
-            )
-            try:
-                if response.status_code >= 400:
-                    return QualityProbeResult(url=url, final_url=response.url, method="RANGE", error=f"HTTP {response.status_code}")
-
-                self._validate_final_url(response.url)
-                content_type = response.headers.get("Content-Type", "")
-                if not content_type_matches_expected(content_type, expected_type):
-                    return QualityProbeResult(
-                        url=url,
-                        final_url=response.url,
-                        method="RANGE",
+                        method=method,
                         content_type=content_type,
                         error=f"Unexpected content type {content_type}",
                     )
                 size_bytes = (
                     parse_content_range_total(response.headers.get("Content-Range"))
-                    if response.status_code == 206
+                    if method == "RANGE" and response.status_code == 206
                     else parse_content_length(response)
                 )
                 return QualityProbeResult(
@@ -163,9 +131,15 @@ class QualityProbe:
                     reachable=True,
                     size_bytes=size_bytes,
                     content_type=content_type,
-                    method="RANGE",
+                    method=method,
                 )
             finally:
                 response.close()
-        except Exception as error:
-            return QualityProbeResult(url=url, method="RANGE", error=str(error))
+        except XhsSecurityError as error:
+            return QualityProbeResult(url=url, method=method, error=str(error), terminal=True, security_rejected=True)
+        except (XhsDownloadError, requests.TooManyRedirects) as error:
+            return QualityProbeResult(url=url, method=method, error=str(error), terminal=True)
+        except requests.RequestException as error:
+            return QualityProbeResult(url=url, method=method, error=str(error))
+        except OSError as error:
+            return QualityProbeResult(url=url, method=method, error=str(error), terminal=True)
