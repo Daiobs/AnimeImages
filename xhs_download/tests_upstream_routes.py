@@ -221,7 +221,7 @@ class RouteApiTests(RouteFixtures, TestCase):
         self.assertEqual(UpstreamRouteAudit.objects.count(), 1)
 
 
-@override_settings(YTDLP_PROVIDER_ENABLED=True,
+@override_settings(THIRD_PARTY_PROVIDER_ENABLED=True, YTDLP_PROVIDER_ENABLED=True,
                    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache",
                                        "LOCATION": "selected-check-route-cache"}})
 class SelectedCheckRouteCacheTests(RouteFixtures, TestCase):
