@@ -12,6 +12,8 @@ import re
 from urllib.parse import urlsplit
 
 from django.utils.dateparse import parse_datetime
+from django.db import connection
+from django.db.models import CharField, F, Func, Value
 
 from xhs_download.models import EvaluationExecution, UpstreamRoute
 from xhs_download.services.quality_execution import PROVIDER_ALIASES
@@ -126,6 +128,8 @@ def _observation(row):
     s = {key: row.get("summary__" + key) for key in SUMMARY_FIELDS}
     r = {key: row.get("summary__result__" + key) for key in RESULT_FIELDS}
     m = {key: row.get("summary__result__metadata__" + key) for key in META_FIELDS}
+    if "identity_json_type" in row and row["identity_json_type"] not in {"true", "false"}:
+        m["identity_confirmed"] = None
     host = canonical_host(s["source_host"])
     source = _safe_source(s["source_url"], host) if host else ""
     provider = PROVIDER_ALIASES.get(_string(s["provider_id"]), _text(s["provider_id"], 80))
@@ -200,7 +204,13 @@ def _scan():
     fields += ["summary__" + key for key in SUMMARY_FIELDS]
     fields += ["summary__result__" + key for key in RESULT_FIELDS]
     fields += ["summary__result__metadata__" + key for key in META_FIELDS]
-    return [_observation(row) for row in EvaluationExecution.objects.order_by("pk").values(*fields).iterator(chunk_size=128)]
+    records = EvaluationExecution.objects.order_by("pk")
+    if connection.vendor == "sqlite":
+        # SQLite JSON scalar decoding otherwise conflates the string "true" with true.
+        records = records.annotate(identity_json_type=Func(F("summary"),
+            Value("$.result.metadata.identity_confirmed"), function="json_type", output_field=CharField()))
+        fields.append("identity_json_type")
+    return [_observation(row) for row in records.values(*fields).iterator(chunk_size=128)]
 
 
 def _groups(rows):

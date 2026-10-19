@@ -2,6 +2,7 @@
 from contextlib import ExitStack
 from copy import deepcopy
 import json
+from pathlib import Path
 import re
 from time import perf_counter
 from unittest.mock import patch
@@ -105,6 +106,25 @@ class PlatformLedgerTests(TestCase):
             self.assertEqual(provider["evidence"], "confirmed" if identity is True else "unconfirmed")
             self.assertEqual(provider["positive_count"], 1 if identity is True else 0)
             self.assertEqual(platform["route_hint"], "unique_positive" if identity is True else "unconfirmed_media")
+
+    def test_shared_history_dom_cases_use_actual_ledger_classification_without_rewriting_history(self):
+        cases = json.loads((Path(__file__).parent / "fixtures" / "route_evidence_cases.json").read_text())
+        for index, case in enumerate(cases):
+            with self.subTest(case=case["name"]):
+                host = f"case{index}.evidence.example.org"
+                changes = {key: case[key] for key in ("status", "executed", "metadata", "assets", "client_status") if key in case}
+                record = self.add(execution(case["name"], source_url=f"https://{host}/work",
+                    state=case.get("state", "returned"), result=result(**changes)))
+                original = deepcopy(record.summary), record.fingerprint
+                self.assertEqual(self.platform(host)["providers"][0]["evidence"], case["evidence"])
+                rows = self.get(batch_id=record.batch_id)["executions"]
+                returned = next(row for row in rows if row["id"] == record.pk)
+                self.assertEqual(returned["result"], original[0]["result"])
+                record.refresh_from_db()
+                self.assertEqual((record.summary, record.fingerprint), original)
+        self.assertFalse(UpstreamRoute.objects.exists())
+        self.assertFalse(UpstreamRouteAudit.objects.exists())
+        self.run.assert_not_called()
 
     def test_early_success_beyond_100_batches_and_200_rows(self):
         self.add(execution(result=result(result_kind="gallery", assets=[
