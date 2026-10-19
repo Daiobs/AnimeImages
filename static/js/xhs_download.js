@@ -215,7 +215,21 @@
         return getDispositionFilename(response) || `${fallbackName || "xhs"}.zip`;
     }
 
-    async function saveZipBlob(blob, filename, useFilePicker) {
+    function downloadOperationCurrent(operation) {
+        return !operation || (!(operation.signal && operation.signal.aborted)
+            && (!operation.isCurrent || operation.isCurrent()));
+    }
+
+    function assertDownloadCurrent(operation) {
+        if (!downloadOperationCurrent(operation)) {
+            const error = new Error("Download operation is no longer current");
+            error.name = "AbortError";
+            throw error;
+        }
+    }
+
+    async function saveZipBlob(blob, filename, useFilePicker, operation) {
+        assertDownloadCurrent(operation);
         if (useFilePicker && window.showSaveFilePicker) {
             const isZip = filename.toLowerCase().endsWith(".zip");
             const handle = await window.showSaveFilePicker({
@@ -229,9 +243,18 @@
                     },
                 ],
             });
+            assertDownloadCurrent(operation);
             const writable = await handle.createWritable();
-            await writable.write(blob);
-            await writable.close();
+            try {
+                assertDownloadCurrent(operation);
+                await writable.write(blob);
+                assertDownloadCurrent(operation);
+                await writable.close();
+            } catch (error) {
+                if (typeof writable.abort === "function") await writable.abort().catch(() => {});
+                throw error;
+            }
+            assertDownloadCurrent(operation);
             return "已保存到选择的位置";
         }
 
@@ -740,9 +763,9 @@
                 : '<i class="bi bi-check2-square me-1"></i>全选';
         }
 
-        function setDownloadButtonsBusy(isBusy, activeButton, label) {
+        function setDownloadButtonsBusy(isBusy, activeButton, label, controls) {
             if (!isBusy && pickerDownloadInProgress) return;
-            getDownloadActionButtons().forEach((button) => {
+            (controls ? controls.buttons : getDownloadActionButtons()).forEach((button) => {
                 if (!button.isConnected) {
                     return;
                 }
@@ -759,7 +782,7 @@
                     delete button.dataset.originalHtml;
                 }
             });
-            getCards().forEach((card) => {
+            (controls ? controls.cards : getCards()).forEach((card) => {
                 const playbackButton = card.querySelector("[data-livephoto-toggle]");
                 if (!playbackButton) {
                     return;
@@ -1470,11 +1493,13 @@
             applyPendingProjectSettings();
         }
 
-        async function readResponseBlobWithProgress(response, startPercent, endPercent) {
+        async function readResponseBlobWithProgress(response, startPercent, endPercent, operation) {
+            assertDownloadCurrent(operation);
             const contentLength = Number.parseInt(response.headers.get("Content-Length") || "0", 10);
             if (!response.body || !contentLength) {
                 setProgressPending("下载中");
                 const blob = await response.blob();
+                assertDownloadCurrent(operation);
                 setProgress(endPercent);
                 return blob;
             }
@@ -1483,15 +1508,22 @@
             const chunks = [];
             let received = 0;
 
-            while (true) {
-                const {done, value} = await reader.read();
-                if (done) {
-                    break;
+            try {
+                while (true) {
+                    assertDownloadCurrent(operation);
+                    const {done, value} = await reader.read();
+                    assertDownloadCurrent(operation);
+                    if (done) {
+                        break;
+                    }
+                    chunks.push(value);
+                    received += value.length;
+                    const ratio = received / contentLength;
+                    setProgress(startPercent + (endPercent - startPercent) * ratio);
                 }
-                chunks.push(value);
-                received += value.length;
-                const ratio = received / contentLength;
-                setProgress(startPercent + (endPercent - startPercent) * ratio);
+            } finally {
+                if (!downloadOperationCurrent(operation)) await reader.cancel().catch(() => {});
+                reader.releaseLock();
             }
 
             setProgress(endPercent);
@@ -1550,7 +1582,8 @@
             return wrapped;
         }
 
-        async function prepareServerSingleDownload(payload) {
+        async function prepareServerSingleDownload(payload, operation) {
+            assertDownloadCurrent(operation);
             if (!downloadPrepareUrl) {
                 throw new Error("当前页面缺少单文件下载准备接口。");
             }
@@ -1565,7 +1598,9 @@
                     download_mode: "server_single",
                 }),
                 cache: "no-store",
+                signal: operation && operation.signal,
             });
+            assertDownloadCurrent(operation);
             let rawPayload = {};
             try {
                 rawPayload = await response.json();
@@ -1575,6 +1610,7 @@
                     message: "下载准备响应格式异常，请稍后再试。",
                 };
             }
+            assertDownloadCurrent(operation);
             const prepared = downloadReliabilityApi
                 ? downloadReliabilityApi.parsePreparePayload(
                     rawPayload,
@@ -1621,10 +1657,12 @@
             }
         }
 
-        async function prepareAndHandoffServerSingle(payload, warnings) {
+        async function prepareAndHandoffServerSingle(payload, warnings, operation) {
+            assertDownloadCurrent(operation);
             setProgressPending("准备下载");
             setStatus(getStatusElement(), "正在签发安全下载通道...");
-            const prepared = await prepareServerSingleDownload(payload);
+            const prepared = await prepareServerSingleDownload(payload, operation);
+            assertDownloadCurrent(operation);
             const statusUrl = sameOriginHandoffPath(prepared.statusUrl);
             setProgressPending("连接下载");
             setStatus(
@@ -1647,12 +1685,45 @@
                 ? await downloadReliabilityApi.pollDownloadStatus({
                     statusUrl,
                     pollAfterMs: prepared.pollAfterMs,
+                    fetchStatus: async (url, init) => {
+                        assertDownloadCurrent(operation);
+                        const controller = new AbortController();
+                        const signals = [init.signal, operation && operation.signal].filter(Boolean);
+                        const abort = () => controller.abort();
+                        const cleanup = () => signals.forEach(signal => signal.removeEventListener("abort", abort));
+                        let readingBody = false;
+                        signals.forEach(signal => signal.addEventListener("abort", abort, {once: true}));
+                        if (signals.some(signal => signal.aborted)) abort();
+                        try {
+                            const response = await fetch(url, {...init, signal: controller.signal});
+                            assertDownloadCurrent(operation);
+                            if (response.status === 429 || response.status === 503) return response;
+                            readingBody = true;
+                            return {ok: response.ok, status: response.status, headers: response.headers,
+                                async json() {
+                                    try {
+                                        assertDownloadCurrent(operation);
+                                        const payload = await response.json();
+                                        assertDownloadCurrent(operation);
+                                        return payload;
+                                    } finally { cleanup(); }
+                                }};
+                        } finally {
+                            if (!readingBody) cleanup();
+                        }
+                    },
+                    wait: async delay => {
+                        assertDownloadCurrent(operation);
+                        await sleep(delay);
+                        assertDownloadCurrent(operation);
+                    },
                 })
                 : {
                     ok: true,
                     status: "streaming",
                     recovered: false,
                 };
+            assertDownloadCurrent(operation);
             const startDisposition = downloadReliabilityApi
                 ? downloadReliabilityApi.downloadStartDisposition(
                     statusResult,
@@ -1693,16 +1764,23 @@
             };
         }
 
-        async function writeResponseToFileWithProgress(response, fileHandle, startPercent, endPercent) {
+        async function writeResponseToFileWithProgress(response, fileHandle, startPercent, endPercent, operation) {
+            assertDownloadCurrent(operation);
             const contentLength = Number.parseInt(response.headers.get("Content-Length") || "0", 10);
             if (!response.body || !contentLength) {
                 const blob = await response.blob();
+                assertDownloadCurrent(operation);
                 const writable = await fileHandle.createWritable();
                 try {
+                    assertDownloadCurrent(operation);
                     await writable.write(blob);
-                } finally {
+                    assertDownloadCurrent(operation);
                     await writable.close();
+                } catch (error) {
+                    if (typeof writable.abort === "function") await writable.abort().catch(() => {});
+                    throw error;
                 }
+                assertDownloadCurrent(operation);
                 setProgress(endPercent);
                 return;
             }
@@ -1713,22 +1791,32 @@
 
             try {
                 while (true) {
+                    assertDownloadCurrent(operation);
                     const {done, value} = await reader.read();
+                    assertDownloadCurrent(operation);
                     if (done) {
                         break;
                     }
                     await writable.write(value);
+                    assertDownloadCurrent(operation);
                     received += value.length;
                     const ratio = received / contentLength;
                     setProgress(startPercent + (endPercent - startPercent) * ratio);
                 }
-            } finally {
                 await writable.close();
+                assertDownloadCurrent(operation);
+            } catch (error) {
+                if (typeof writable.abort === "function") await writable.abort().catch(() => {});
+                throw error;
+            } finally {
+                if (!downloadOperationCurrent(operation)) await reader.cancel().catch(() => {});
+                reader.releaseLock();
             }
             setProgress(endPercent);
         }
 
-        async function downloadDirectItem(item, index, total, onStatus, baseFilename) {
+        async function downloadDirectItem(item, index, total, onStatus, baseFilename, operation) {
+            assertDownloadCurrent(operation);
             const startPercent = total > 1 ? (index / total) * 100 : 0;
             const endPercent = total > 1 ? ((index + 1) / total) * 100 : 100;
             if (onStatus) {
@@ -1737,7 +1825,9 @@
             const response = await fetch(item.url, {
                 cache: "no-store",
                 credentials: "omit",
+                signal: operation && operation.signal,
             });
+            assertDownloadCurrent(operation);
 
             if (!response.ok) {
                 throw new Error(`直链下载失败（${response.status}）`);
@@ -1760,37 +1850,43 @@
                         },
                     ],
                 });
-                await writeResponseToFileWithProgress(response, handle, startPercent, endPercent);
+                assertDownloadCurrent(operation);
+                await writeResponseToFileWithProgress(response, handle, startPercent, endPercent, operation);
+                assertDownloadCurrent(operation);
                 return filename;
             }
 
-            const blob = await readResponseBlobWithProgress(response, startPercent, endPercent);
+            const blob = await readResponseBlobWithProgress(response, startPercent, endPercent, operation);
+            assertDownloadCurrent(operation);
             if (onStatus) {
                 onStatus("正在唤起浏览器下载...");
             }
-            await saveZipBlob(blob, filename, false);
+            await saveZipBlob(blob, filename, false, operation);
+            assertDownloadCurrent(operation);
             return filename;
         }
 
-        async function downloadDirectRouteItems(items, baseFilename, isCurrent) {
+        async function downloadDirectRouteItems(items, baseFilename, operation) {
+            assertDownloadCurrent(operation);
             const directItems = (items || []).filter((item) => item && item.url);
             if (directItems.length === 0) {
                 throw new Error("没有可下载的直链资源");
             }
 
             const onStatus = (message) => {
-                setStatus(getStatusElement(), message);
+                if (downloadOperationCurrent(operation)) setStatus(getStatusElement(), message);
             };
             onStatus("正在获取文件...");
             const filenames = [];
             for (let index = 0; index < directItems.length; index += 1) {
-                if (!isCurrent()) break;
-                filenames.push(await downloadDirectItem(directItems[index], index, directItems.length, onStatus, baseFilename));
+                assertDownloadCurrent(operation);
+                filenames.push(await downloadDirectItem(directItems[index], index, directItems.length, onStatus, baseFilename, operation));
             }
             return filenames;
         }
 
-        async function downloadOrdinaryMediaRouteItems(items, baseFilename) {
+        async function downloadOrdinaryMediaRouteItems(items, baseFilename, operation) {
+            assertDownloadCurrent(operation);
             const directItems = (items || []).filter((item) => item && item.url);
             if (!ordinaryMediaDownloadApi || directItems.length !== 1) {
                 throw new Error("当前资源无法由浏览器直接保存。");
@@ -1799,15 +1895,20 @@
             const item = directItems[0];
             const result = await ordinaryMediaDownloadApi.download(item, {
                 filename: item.filename || `${baseFilename}.mp4`,
+                signal: operation && operation.signal,
                 onStage(_stage, message) {
-                    setStatus(getStatusElement(), message);
+                    if (downloadOperationCurrent(operation)) setStatus(getStatusElement(), message);
                 },
-                onProgress: applyOrdinaryDownloadProgress,
+                onProgress(progress) {
+                    if (downloadOperationCurrent(operation)) applyOrdinaryDownloadProgress(progress);
+                },
             });
+            assertDownloadCurrent(operation);
             return [result.filename];
         }
 
-        async function postDownloadPayload(payload) {
+        async function postDownloadPayload(payload, operation) {
+            assertDownloadCurrent(operation);
             return fetch(downloadUrl, {
                 method: "POST",
                 headers: {
@@ -1815,22 +1916,26 @@
                     "X-CSRFToken": getCookie("csrftoken"),
                 },
                 body: JSON.stringify(payload),
+                signal: operation && operation.signal,
             });
         }
 
-        async function fetchRouteOnly(payload) {
+        async function fetchRouteOnly(payload, operation) {
             const response = await postDownloadPayload({
                 ...payload,
                 route_only: true,
-            });
+            }, operation);
+            assertDownloadCurrent(operation);
             if (!response.ok) {
                 throw new Error(await parseErrorResponse(response));
             }
-            return response.json();
+            const route = await response.json();
+            assertDownloadCurrent(operation);
+            return route;
         }
 
-        async function handleDirectRoute(routeData, baseFilename, isCurrent) {
-            if (!isCurrent()) return;
+        async function handleDirectRoute(routeData, baseFilename, operation) {
+            assertDownloadCurrent(operation);
             const directItems = routeData.items || [];
             if (directItems.some((item) => String(item.asset_id || "").startsWith("upstream:"))
                 && !directRouteHasOrdinaryMedia(directItems)) {
@@ -1838,7 +1943,8 @@
             }
             if (directRouteHasOrdinaryMedia(directItems)) {
                 try {
-                    const filenames = await downloadOrdinaryMediaRouteItems(directItems, baseFilename);
+                    const filenames = await downloadOrdinaryMediaRouteItems(directItems, baseFilename, operation);
+                    assertDownloadCurrent(operation);
                     setStatus(
                         getStatusElement(),
                         `已交给浏览器保存：${filenames.join("、")}${routeWarningText(routeData.warnings)}`,
@@ -1857,7 +1963,8 @@
                 return;
             }
 
-            const filenames = await downloadDirectRouteItems(directItems, baseFilename, isCurrent);
+            const filenames = await downloadDirectRouteItems(directItems, baseFilename, operation);
+            assertDownloadCurrent(operation);
             setProgress(100);
             const completionLabel = showInternalDiagnostics
                 ? (routeData.route_reason || "已开始保存")
@@ -1869,10 +1976,13 @@
             );
         }
 
-        async function saveDownloadResponse(response, fallbackName, startPercent, endPercent) {
+        async function saveDownloadResponse(response, fallbackName, startPercent, endPercent, operation) {
+            assertDownloadCurrent(operation);
             const filename = getDownloadFilename(response, fallbackName);
-            const blob = await readResponseBlobWithProgress(response, startPercent, endPercent);
-            const savedMessage = await saveZipBlob(blob, filename, useFilePicker);
+            const blob = await readResponseBlobWithProgress(response, startPercent, endPercent, operation);
+            assertDownloadCurrent(operation);
+            const savedMessage = await saveZipBlob(blob, filename, useFilePicker, operation);
+            assertDownloadCurrent(operation);
             const savedCount = response.headers.get("X-Saved-Count") || "?";
             const failedCount = response.headers.get("X-Failed-Count") || "0";
             const variant = failedCount === "0" ? "text-success" : "text-muted";
@@ -1883,14 +1993,17 @@
             return `${result.savedMessage}：${result.filename}，成功 ${result.savedCount} 个，失败 ${result.failedCount} 个`;
         }
 
-        async function waitForDownloadTask(taskStatusUrl) {
+        async function waitForDownloadTask(taskStatusUrl, operation) {
             while (true) {
-                const response = await fetch(taskStatusUrl, {cache: "no-store"});
+                assertDownloadCurrent(operation);
+                const response = await fetch(taskStatusUrl, {cache: "no-store", signal: operation && operation.signal});
+                assertDownloadCurrent(operation);
                 if (!response.ok) {
                     throw new Error(await parseErrorResponse(response));
                 }
 
                 const task = await response.json();
+                assertDownloadCurrent(operation);
                 const progress = Number(task.progress || 0);
                 if (progress > 0) {
                     setProgress(progress);
@@ -1910,7 +2023,8 @@
             }
         }
 
-        async function downloadWithTask(payload) {
+        async function downloadWithTask(payload, operation) {
+            assertDownloadCurrent(operation);
             if (!downloadTaskUrl) {
                 throw new Error("当前页面缺少下载任务接口");
             }
@@ -1918,6 +2032,7 @@
             setProgressPending("创建任务");
             setStatus(getStatusElement(), "正在创建后台打包任务，请保持页面打开...");
 
+            // Aborting this request cannot undo work already accepted by the server.
             const createResponse = await fetch(downloadTaskUrl, {
                 method: "POST",
                 headers: {
@@ -1925,27 +2040,33 @@
                     "X-CSRFToken": getCookie("csrftoken"),
                 },
                 body: JSON.stringify(payload),
+                signal: operation && operation.signal,
             });
-
+            assertDownloadCurrent(operation);
             if (!createResponse.ok) {
                 throw new Error(await parseErrorResponse(createResponse));
             }
 
             const created = await createResponse.json();
-            const completed = await waitForDownloadTask(created.status_url);
+            assertDownloadCurrent(operation);
+            const completed = await waitForDownloadTask(created.status_url, operation);
+            assertDownloadCurrent(operation);
             const fileUrl = completed.file_url || created.file_url;
 
             setProgress(95);
             setStatus(getStatusElement(), "正在下载文件...");
 
-            const fileResponse = await fetch(fileUrl, {cache: "no-store"});
+            const fileResponse = await fetch(fileUrl, {cache: "no-store", signal: operation && operation.signal});
+            assertDownloadCurrent(operation);
             if (!fileResponse.ok) {
                 throw new Error(await parseErrorResponse(fileResponse));
             }
 
             const filename = getDownloadFilename(fileResponse, payload.base_filename || getBaseFilename());
-            const blob = await readResponseBlobWithProgress(fileResponse, 95, 100);
-            const savedMessage = await saveZipBlob(blob, filename, useFilePicker);
+            const blob = await readResponseBlobWithProgress(fileResponse, 95, 100, operation);
+            assertDownloadCurrent(operation);
+            const savedMessage = await saveZipBlob(blob, filename, useFilePicker, operation);
+            assertDownloadCurrent(operation);
             const savedCount = fileResponse.headers.get("X-Saved-Count") || completed.saved_count || "?";
             const failedCount = fileResponse.headers.get("X-Failed-Count") || completed.failed_count || "0";
             const variant = String(failedCount) === "0" ? "text-success" : "text-muted";
@@ -1955,7 +2076,7 @@
         }
 
         async function handleDownloadClick(downloadBtn, forceAutoMode, options, chosenItems = selected) {
-            const isCurrent = options && options.isCurrent || (() => true);
+            const isCurrent = () => downloadOperationCurrent(options);
             if (!isCurrent()) return;
             if (chosenItems.length === 0) {
                 window.alert("请先选择需要保存的资源");
@@ -1967,6 +2088,7 @@
             }
 
             downloadInProgress = true;
+            const controls = {buttons: getDownloadActionButtons(), cards: getCards()};
             resetDownloadProgressBaseline();
             const busyLabel = forceAutoMode ? "智能处理中" : "保存中";
             setDownloadButtonsBusy(true, downloadBtn, busyLabel);
@@ -1997,7 +2119,7 @@
                 }
 
                 if (chosenItems.some((item) => String(item.asset_id || "").startsWith("upstream:"))) {
-                    const route = await fetchRouteOnly(payload);
+                    const route = await fetchRouteOnly(payload, options);
                     if (!isCurrent()) return;
                     if (!route || route.route_type !== "direct"
                         || !route.items || !route.items.every((item) => item.browser_upstream_bound === true)) {
@@ -2009,7 +2131,7 @@
                         }
                         await downloadSelectedPhotos({...payload, browserRouteItems: route.items});
                     } else {
-                        await handleDirectRoute(route, filenameBase, isCurrent);
+                        await handleDirectRoute(route, filenameBase, options);
                     }
                     return;
                 }
@@ -2041,7 +2163,7 @@
                 }
 
                 if (selectedSingleItem(chosenItems)) {
-                    const routePreview = await fetchRouteOnly(payload);
+                    const routePreview = await fetchRouteOnly(payload, options);
                     if (!isCurrent()) return;
                     if (
                         routePreview
@@ -2052,6 +2174,7 @@
                         await prepareAndHandoffServerSingle(
                             payload,
                             routePreview.warnings,
+                            options,
                         );
                         return;
                     }
@@ -2060,7 +2183,7 @@
                         && routePreview.status === "routed"
                         && routePreview.route_type === "direct"
                     ) {
-                        await handleDirectRoute(routePreview, filenameBase, isCurrent);
+                        await handleDirectRoute(routePreview, filenameBase, options);
                         return;
                     }
                 }
@@ -2070,7 +2193,7 @@
                     && downloadTaskUrl
                     && selectedNeedsZipTask(chosenItems)
                 ) {
-                    await downloadWithTask(payload);
+                    await downloadWithTask(payload, options);
                     return;
                 }
 
@@ -2104,7 +2227,7 @@
                             ),
                     );
                 }
-                const response = await postDownloadPayload(payload);
+                const response = await postDownloadPayload(payload, options);
                 if (!isCurrent()) return;
 
                 if (!response.ok) {
@@ -2115,8 +2238,9 @@
                 if (contentType.includes("application/json")) {
                     setProgress(0);
                     const data = await response.json();
+                    if (!isCurrent()) return;
                     if (data.status === "routed" && data.route_type === "direct") {
-                        await handleDirectRoute(data, filenameBase, isCurrent);
+                        await handleDirectRoute(data, filenameBase, options);
                         return;
                     }
                     if (data.status === "routed" && data.route_type === "proxy") {
@@ -2154,9 +2278,11 @@
                     getStatusElement(),
                     presentationText("文件准备完成，正在下载...", "服务器处理完成，正在下载文件..."),
                 );
-                const result = await saveDownloadResponse(response, filenameBase, 0, 100);
+                const result = await saveDownloadResponse(response, filenameBase, 0, 100, options);
+                if (!isCurrent()) return;
                 setStatus(getStatusElement(), serverDownloadStatusMessage(result), result.variant);
             } catch (error) {
+                if (!isCurrent()) return;
                 if (error && error.name === "AbortError") {
                     setProgress(0);
                     setStatus(getStatusElement(), "已取消保存位置选择");
@@ -2186,12 +2312,15 @@
                 if (options && options.propagateError) throw error;
             } finally {
                 downloadInProgress = false;
-                setDownloadButtonsBusy(false);
-                applyPendingProjectSettings();
+                setDownloadButtonsBusy(false, null, null, controls);
+                if (isCurrent()) {
+                    applyPendingProjectSettings();
+                }
             }
         }
 
-        window.AnimeImagesLegacySelectionDownload = async function (item, pickerRoot) {
+        window.AnimeImagesLegacySelectionDownload = async function (item, pickerRoot, operation) {
+            assertDownloadCurrent(operation);
             if (!resultsRegion || !pickerRoot || !resultsRegion.contains(pickerRoot)
                 || downloadInProgress || !item || item.selection_schema !== "service_selected_format_v1"
                 || item.selection_delivery !== "legacy_manifest" || item.type !== "video"
@@ -2208,6 +2337,8 @@
                 return await handleDownloadClick(null, true, {
                     propagateError: true,
                     baseFilename: String(item.filename || "video").replace(/\.[^.]+$/, ""),
+                    signal: operation && operation.signal,
+                    isCurrent: () => resultsRegion.contains(pickerRoot) && downloadOperationCurrent(operation),
                 }, [Object.freeze({...item})]);
             } finally { legacyPickerRoot = null; }
         };
@@ -2227,6 +2358,7 @@
             const oldItems = selected.map(item => Object.freeze({...item}));
             if (!snapshot.length) return handleDownloadClick(button, true, {baseFilename, isCurrent}, oldItems);
             pickerDownloadInProgress = true;
+            const controls = {buttons: getDownloadActionButtons(), cards: getCards()};
             setDownloadButtonsBusy(true, button, "保存中");
             try {
                 await api.downloadMedia(snapshot, isCurrent);
@@ -2235,7 +2367,7 @@
                 }
             } finally {
                 pickerDownloadInProgress = false;
-                setDownloadButtonsBusy(false);
+                setDownloadButtonsBusy(false, null, null, controls);
             }
         }
 

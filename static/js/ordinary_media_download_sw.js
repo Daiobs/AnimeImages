@@ -479,6 +479,9 @@ async function streamDownload(state) {
                     if (state.totalBytes && state.receivedBytes !== state.totalBytes) {
                         throw new Error("UPSTREAM_SIZE_MISMATCH");
                     }
+                    if (state.receivedBytes === 0) {
+                        throw new Error("UPSTREAM_STREAM_FAILED");
+                    }
                     const metrics = state.progressEstimator.update(
                         state.receivedBytes,
                         state.totalBytes,

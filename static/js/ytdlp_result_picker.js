@@ -509,7 +509,7 @@
                 const item = await waitWhileActive(descriptor(descriptorRoot, selection, "legacy", environment, signal), signal);
                 if (!applicable()) return;
                 // The home controller owns routing and status; this bridge never starts another transport.
-                await waitWhileActive(handler(item, root), signal);
+                await waitWhileActive(handler(item, root, Object.freeze({isCurrent: applicable, signal})), signal);
                 if (applicable()) say("下载流程已处理，请查看下载状态。");
             } catch (error) {
                 if (current(operation) && sameSelection(selection, descriptorRoot !== root)) say(signal.aborted

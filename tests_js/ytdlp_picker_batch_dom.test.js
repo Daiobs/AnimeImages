@@ -12,6 +12,8 @@ const batch = require("../static/js/batch_parse.js");
 // Extend the existing DOM double with browser radio grouping and checked selectors.
 class DomNode extends Node {
     get tree() { return this.parentNode ? this.parentNode.tree : this; }
+    get id() { return this.getAttribute("id") || ""; }
+    set id(value) { this.setAttribute("id", value); }
     get name() { return this.getAttribute("name") || ""; }
     set name(value) { this.setAttribute("name", value); if (this.checked) this.checked = true; }
     get checked() { return Boolean(this._checked); }
@@ -442,7 +444,12 @@ for (const provider of SERVICE_PROVIDERS) {
         const {doc, win} = fixture(); const first = legacyPicker(provider), second = legacyPicker(provider);
         doc.body.append(card(first), card(second));
         const calls = [], saves = [], handoffs = [];
-        win.AnimeImagesLegacySelectionDownload = async (item, root) => handoffs.push({item, root});
+        win.AnimeImagesLegacySelectionDownload = async (item, root, operation) => {
+            assert.equal(Object.isFrozen(operation), true);
+            assert.equal(operation.isCurrent(), true);
+            assert.equal(operation.signal.aborted, false);
+            handoffs.push({item, root});
+        };
         picker.attach(doc, win, {ordinary: {download: async item => saves.push(item)},
             fetchImpl: async (url, options) => {
                 assert.match(url, /service-selected-format/);
@@ -548,7 +555,7 @@ test("legacy descriptor and controller failures propagate without retries or dir
 });
 
 for (const phase of ["descriptor", "controller"]) {
-    test(`legacy stop-waiting during ${phase} ignores late completion without cancelling the old workflow`, async () => {
+    test(`legacy stop-waiting during ${phase} ignores late completion without claiming remote undo`, async () => {
         const {doc, win} = fixture(); const root = legacyPicker(SERVICE_PROVIDERS[0]); doc.body.append(root);
         let release, signal; let calls = 0, handoffs = 0;
         win.AnimeImagesLegacySelectionDownload = async () => {
@@ -1498,7 +1505,7 @@ function selectablePicker(provider = "kukutool_generic") {
     return root;
 }
 
-function originalLayoutController({batchPage = false, batchHandlers = false, roots = [selectablePicker()], fetchImpl, download, browserPhoto} = {}) {
+function originalLayoutController({batchPage = false, batchHandlers = false, roots = [selectablePicker()], fetchImpl, download, browserPhoto, configure} = {}) {
     const {doc, win, scan} = fixture();
     doc.readyState = "complete";
     doc.cookie = "csrftoken=fixture";
@@ -1534,10 +1541,11 @@ function originalLayoutController({batchPage = false, batchHandlers = false, roo
         AnimeImagesBrowserPhoto: browserPhoto,
         fetch: async (url, options) => {
             const payload = options?.body ? JSON.parse(options.body) : null;
-            calls.push({url, payload});
+            calls.push({url, payload, signal: options?.signal});
             return fetchImpl ? fetchImpl(url, options, payload) : jsonResponse({status: "success",
                 item: serviceGrant("kukutool_generic", payload.candidate_id)});
         }});
+    if (configure) configure({win, doc, page});
     const context = vm.createContext({window: win, document: doc, URL: BrowserURL, AbortController, Blob,
         fetch: win.fetch, console: {warn() {}, error() {}}});
     for (const file of ["ytdlp_result_picker.js", ...(batchHandlers ? ["batch_parse.js"] : []), "xhs_download.js"]) {
@@ -1606,6 +1614,211 @@ for (const batchPage of [false, true]) {
         assert.deepEqual(app.saved, ["low.zip"]);
         assert.equal(app.top.disabled, false);
     });
+}
+
+for (const batchPage of [false, true]) {
+    for (const phase of ["route-response", "route-json", "task-response", "task-json",
+        "status-response", "status-json", "file-response", "file-body", "file-chunk"]) {
+        const changes = phase.startsWith("route-") ? ["detach", "replace", "cancel"] : ["cancel"];
+        for (const change of changes) {
+            test(`${batchPage ? "Batch" : "home"} legacy ${change} at ${phase} stops unsent stages and stale handoff`, async () => {
+                let release;
+                const gate = new Promise(resolve => { release = resolve; });
+                const root = selectablePicker();
+                Object.assign(radios(root)[1].dataset, {canDownload: "false", canLegacy: "true",
+                    legacyAssetId: "third_party:source:video:low"});
+                const grant = legacyGrant("kukutool_generic", "low");
+                let blocked = false;
+                async function pause(boundary) {
+                    if (phase === boundary) { blocked = true; await gate; }
+                }
+                const app = originalLayoutController({batchPage, batchHandlers: batchPage, roots: [root], fetchImpl: async (url) => {
+                    if (url.includes("service-selected-format")) return jsonResponse({status: "success", item: grant});
+                    const stage = {"/download": "route", "/tasks": "task", "/task-status": "status", "/task-file": "file"}[url];
+                    assert.ok(stage, `unexpected request ${url}`);
+                    await pause(`${stage}-response`);
+                    if (stage === "file" && phase === "file-chunk") return new Response(new ReadableStream({
+                        async start(controller) {
+                            await pause("file-chunk");
+                            controller.enqueue(Uint8Array.of(1));
+                            controller.close();
+                        },
+                    }), {headers: {"Content-Type": "application/zip", "Content-Length": "1"}});
+                    if (stage === "file") return {ok: true, headers: new Headers({"Content-Type": "application/zip"}),
+                        blob: async () => { await pause("file-body"); return new Blob(["offline fixture only"]); }};
+                    return {ok: true, json: async () => {
+                        await pause(`${stage}-json`);
+                        return {route: {status: "routed", route_type: "zip", download_strategy: "server_zip"},
+                            task: {status_url: "/task-status", file_url: "/task-file"},
+                            status: {status: "completed", saved_count: 1}}[stage];
+                    }};
+                }});
+                choose(root, 1);
+                const pending = app.clickTarget(app.top);
+                await settle();
+                assert.equal(blocked, true);
+                const issued = app.calls.map(call => call.url);
+                const newStatus = el("p", {id: "status"});
+                const newButton = el("button", {id: "download-btn"});
+                newButton.disabled = true;
+                newButton.innerHTML = "new button label";
+                newStatus.innerText = "new result status";
+                if (change === "detach") root.remove();
+                else if (change === "replace") app.region.replaceChildren(newStatus, newButton, selectablePicker());
+                else await app.clickTarget(root.querySelector('[data-ytdlp-action="cancel"]'));
+                app.scan();
+                await settle();
+                const pickerStatus = root.querySelector("[data-picker-status]").textContent;
+                const status = change === "replace" ? newStatus : app.region.querySelector("#status");
+                status.innerText = "new result status";
+                release();
+                await pending;
+                await settle();
+                assert.deepEqual(app.calls.map(call => call.url), issued, "no unsent task/status/file request may start");
+                assert.deepEqual(app.saved, []);
+                assert.equal(status.innerText, "new result status");
+                assert.equal(root.querySelector("[data-picker-status]").textContent, pickerStatus);
+                if (change === "replace") {
+                    assert.equal(newButton.disabled, true, "old cleanup cannot reset replacement controls");
+                    assert.equal(newButton.innerHTML, "new button label");
+                } else assert.equal(app.top.disabled, false);
+                for (const call of app.calls) {
+                    assert.equal(call.signal, app.calls[0].signal, "the frozen picker signal reaches every legacy request");
+                }
+                assert.equal(app.calls[0].signal.aborted, true);
+                for (const call of app.calls.filter(call => ["/download", "/tasks"].includes(call.url))) {
+                    assert.deepEqual(call.payload.media_items, [grant]);
+                    assert.equal(call.payload.base_filename, "low");
+                }
+            });
+        }
+    }
+}
+
+for (const batchPage of [false, true]) {
+    test(`${batchPage ? "Batch" : "home"} legacy checks validity before observer delivery without needing an abort`, async () => {
+        let release;
+        const gate = new Promise(resolve => { release = resolve; });
+        const root = selectablePicker();
+        Object.assign(radios(root)[1].dataset, {canDownload: "false", canLegacy: "true",
+            legacyAssetId: "third_party:source:video:low"});
+        const app = originalLayoutController({batchPage, batchHandlers: batchPage, roots: [root], fetchImpl: async url => {
+            if (url.includes("service-selected-format")) return jsonResponse({status: "success", item: legacyGrant("kukutool_generic", "low")});
+            assert.equal(url, "/download");
+            await gate;
+            return jsonResponse({status: "routed", route_type: "zip", download_strategy: "server_zip"});
+        }});
+        choose(root, 1);
+        const pending = app.clickTarget(app.top);
+        await settle();
+        root.replaceChildren(...selectablePicker().children.slice());
+        assert.equal(app.calls[0].signal.aborted, false);
+        release(); await pending; await settle();
+        assert.equal(app.calls.length, 2);
+        assert.deepEqual(app.saved, []);
+    });
+
+    for (const phase of ["sync-json", "sync-body", "direct-response", "direct-body", "prepare-response", "prepare-json",
+        "prepare-status-response", "prepare-status-json", "file-picker", "file-writable", "file-write", "normal-prepare"]) {
+        test(`${batchPage ? "Batch" : "home"} legacy guards ${phase} with real shared controller`, async () => {
+            let release, blocked = false;
+            const gate = new Promise(resolve => { release = resolve; });
+            const root = selectablePicker("tiantianjiexi_generic");
+            Object.assign(radios(root)[1].dataset, {canDownload: "false", canLegacy: "true",
+                legacyAssetId: "third_party:source:video:low"});
+            const grant = legacyGrant("tiantianjiexi_generic", "low");
+            const events = [];
+            const prepare = phase.includes("prepare"), direct = phase.startsWith("direct-");
+            async function pause(boundary) {
+                if (phase === boundary) { blocked = true; await gate; }
+            }
+            const app = originalLayoutController({batchPage, batchHandlers: batchPage, roots: [root],
+                configure({win, page}) {
+                    page.dataset.downloadPrepareUrl = "/prepare";
+                    win.AnimeImagesDownloadReliability = require("../static/js/download_reliability.js");
+                    if (phase.startsWith("file-")) {
+                        page.dataset.downloadLocationSettingAvailable = "true";
+                        win.localStorage.getItem = () => JSON.stringify({use_file_picker: true});
+                        win.showSaveFilePicker = async options => {
+                            events.push(["picker", options.suggestedName]);
+                            await pause("file-picker");
+                            return {async createWritable() {
+                                events.push(["writable"]);
+                                await pause("file-writable");
+                                return {
+                                    async write(blob) { events.push(["write", blob.size]); await pause("file-write"); },
+                                    async close() { events.push(["close"]); },
+                                    async abort() { events.push(["abort"]); },
+                                };
+                            }};
+                        };
+                    }
+                },
+                fetchImpl: async (url, _options, payload) => {
+                    if (url.includes("service-selected-format")) return jsonResponse({status: "success", item: grant});
+                    if (url === "/download" && payload.route_only) return jsonResponse({status: "routed",
+                        route_type: prepare ? "proxy" : direct ? "direct" : "zip",
+                        download_strategy: prepare ? "server_single_attachment" : "server_zip",
+                        items: [grant]});
+                    if (url === "/prepare") {
+                        await pause("prepare-response");
+                        return {ok: true, json: async () => {
+                            await pause("prepare-json");
+                            return {ok: true, status: "issued", download_url: "/attachment", status_url: "/prepared-status"};
+                        }};
+                    }
+                    if (url === "/prepared-status") {
+                        await pause("prepare-status-response");
+                        return {ok: true, status: 200, json: async () => {
+                            await pause("prepare-status-json");
+                            return {status: "streaming", stream_started: true};
+                        }};
+                    }
+                    assert.equal(url, direct ? grant.url : "/download");
+                    await pause("direct-response");
+                    if (phase === "sync-json") return {ok: true, headers: new Headers({"Content-Type": "application/json"}),
+                        json: async () => { await pause("sync-json"); return {status: "success", message: "stale success"}; }};
+                    return {ok: true, headers: new Headers({"Content-Type": "video/mp4"}), blob: async () => {
+                        await pause(direct ? "direct-body" : "sync-body");
+                        return new Blob(["offline fixture"]);
+                    }};
+                }});
+            choose(root, 1);
+            const pending = app.clickTarget(app.top);
+            await settle();
+            if (phase === "normal-prepare") {
+                await pending;
+                assert.equal(app.doc.getElementById("xhs-server-download-frame").src, "/attachment");
+                assert.deepEqual(app.calls.slice(1).map(call => call.url), ["/download", "/prepare", "/prepared-status"]);
+            } else {
+                assert.equal(blocked, true);
+                const issued = app.calls.map(call => call.url);
+                const issuedEvents = events.slice();
+                await app.clickTarget(root.querySelector('[data-ytdlp-action="cancel"]'));
+                await settle();
+                if (phase.startsWith("prepare-status-")) {
+                    assert.equal(app.calls.at(-1).signal.aborted, true);
+                }
+                const status = batchPage ? root.querySelector("[data-picker-status]") : app.region.querySelector("#status");
+                status.innerText = "current status";
+                release(); await pending; await settle();
+                assert.deepEqual(app.calls.map(call => call.url), issued);
+                assert.deepEqual(app.saved, []);
+                assert.equal(status.innerText, "current status");
+                assert.deepEqual(events, ["file-writable", "file-write"].includes(phase)
+                    ? [...issuedEvents, ["abort"]] : issuedEvents);
+                if (["prepare-response", "prepare-json"].includes(phase)) {
+                    assert.equal(app.doc.getElementById("xhs-server-download-frame"), null);
+                }
+                assert.equal(app.calls[0].signal.aborted, true);
+            }
+            assert.equal(app.top.disabled, false);
+            for (const call of app.calls.filter(call => ["/download", "/prepare"].includes(call.url))) {
+                assert.deepEqual(call.payload.media_items, [grant]);
+                assert.equal(call.payload.base_filename, "low");
+            }
+        });
+    }
 }
 
 test("home select-all counts media and old images independently without selecting formats", async () => {

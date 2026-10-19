@@ -430,7 +430,8 @@ function createWorkerRuntime(fetchImpl, options) {
         return {response: responsePromise, waitUntil};
     }
 
-    return {clientDeliveries, clientMessages, send, startFetch};
+    return {clientDeliveries, clientMessages, send, startFetch,
+        inspectState: vm.runInNewContext("downloadId => downloads.get(downloadId)", context)};
 }
 
 function chunkedUpstream(chunks, options) {
@@ -2024,6 +2025,90 @@ test("real client and worker deliver selected bytes before EOF with bounded read
         await app.client.close();
     }
 });
+
+for (const size of ["unknown", "estimated"]) {
+    for (const chunks of [[], [[], []]]) {
+        test(`real client and worker reject ${size} empty EOF after ${chunks.length} zero-byte chunks`, async () => {
+            let fetches = 0;
+            const navigation = deferred();
+            const app = integratedClient(async url => {
+                fetches += 1;
+                const upstream = chunkedUpstream(chunks, {url});
+                upstream.response.headers.delete("Content-Length");
+                return upstream.response;
+            }, {onNavigate: navigation.resolve});
+            try {
+                const item = selectedItem("tiantianjiexi", {size_bytes: size === "estimated" ? 1024 : 0,
+                    size_is_estimate: size === "estimated"});
+                const pending = ordinary.download(item, {streamingClient: app.client,
+                    fetchImpl: () => assert.fail("no fallback fetch"), handoffBlob: () => assert.fail("no Blob handoff")});
+                const outcome = pending.then(result => ({result}), error => ({error}));
+                const started = await navigation.promise;
+                const response = await started.response;
+                assert.equal(response.status, 200);
+                await assert.rejects(response.arrayBuffer(), /UPSTREAM_STREAM_FAILED/);
+                const {error} = await outcome;
+                assert.equal(error.errorCode, "UPSTREAM_STREAM_FAILED");
+                assert.equal(error.streamingStarted, true);
+                assert.notEqual(error.safeToFallback, true);
+                await Promise.all(started.waitUntil);
+                const terminal = app.runtime.clientMessages.filter(message => message.type === "DOWNLOAD_FAILED");
+                assert.equal(terminal.length, 1);
+                assert.equal(terminal[0].status.receivedBytes, 0);
+                assert.equal(terminal[0].status.failureStage, "STREAM_BODY_FAILURE");
+                assert.equal(app.runtime.clientMessages.some(message => message.type === "DOWNLOAD_COMPLETED"), false);
+                assert.equal(fetches, 1);
+                const state = app.runtime.inspectState(terminal[0].status.downloadId);
+                for (const key of ["settled", "expiryTimer", "selectionBinding", "abortController", "upstreamReader", "downstreamController"]) {
+                    assert.equal(state[key], null, `${key} is released`);
+                }
+                assert.equal(state.url, "");
+                assert.equal((await app.client.listActiveDownloads()).length, 0);
+            } finally { await app.client.close(); }
+        });
+    }
+}
+
+for (const size of ["unknown", "estimated", "exact", "mismatch"]) {
+    test(`real client and worker preserve ${size} nonempty incremental consumption`, async () => {
+        const end = deferred();
+        let pulls = 0, fetches = 0, eof = false;
+        const app = integratedClient(async url => {
+            fetches += 1;
+            return {ok: true, status: 200, url, headers: new Headers({"Content-Type": "video/mp4"}),
+                body: new ReadableStream({async pull(controller) {
+                    pulls += 1;
+                    if (pulls <= 4) controller.enqueue(Uint8Array.of(pulls));
+                    else { await end.promise; eof = true; controller.close(); }
+                }})};
+        });
+        try {
+            const active = await app.client.start(selectedItem("tiantianjiexi", {
+                size_bytes: {unknown: 0, estimated: 1024, exact: 4, mismatch: 5}[size],
+                size_is_estimate: size === "estimated",
+            }));
+            const completion = active.completion.then(result => ({result}), error => ({error}));
+            const response = await app.navigations[0].response;
+            await new Promise(resolve => setImmediate(resolve));
+            assert.ok(pulls <= 2, `bounded read-ahead: ${pulls}`);
+            const reader = response.body.getReader();
+            for (let byte = 1; byte <= 4; byte += 1) {
+                assert.deepEqual(Array.from((await reader.read()).value), [byte]);
+                assert.equal(eof, false, "bytes arrive before EOF");
+            }
+            end.resolve();
+            if (size === "mismatch") {
+                await assert.rejects(reader.read(), /UPSTREAM_SIZE_MISMATCH/);
+                assert.equal((await completion).error.errorCode, "UPSTREAM_SIZE_MISMATCH");
+            } else {
+                assert.equal((await reader.read()).done, true);
+                assert.equal((await completion).result.receivedBytes, 4);
+            }
+            await Promise.all(app.navigations[0].waitUntil);
+            assert.equal(fetches, 1);
+        } finally { end.resolve(); await app.client.close(); }
+    });
+}
 
 test("old resource binding keeps its own manifest and expiry without fabricating candidate identity", () => {
     const input = ordinaryItem({provider: "parsehub_generic", source_platform: "upstream",
