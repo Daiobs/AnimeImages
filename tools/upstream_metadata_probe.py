@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 MAX_BYTES = 128 * 1024
 MAX_REQUESTS = 2
+MAX_TOTAL_BYTES = MAX_BYTES * MAX_REQUESTS
 MAX_SECONDS = 5.0
 
 
@@ -94,7 +95,9 @@ def probe_iso_bmff_tracks(url, *, guarded_range_reader, deadline_monotonic):
         while result["requests"] < MAX_REQUESTS:
             if time.monotonic() >= deadline:
                 raise ProbeRejected("deadline")
-            length = min(MAX_BYTES, total - offset) if total else MAX_BYTES
+            length = min(MAX_BYTES, MAX_TOTAL_BYTES - result["bytes_read"])
+            if total is not None:
+                length = min(length, total - offset)
             if length <= 0:
                 raise ProbeRejected("moov_not_found")
             result["requests"] += 1
@@ -164,8 +167,13 @@ def probe_in_guarded_child(url, *, deadline_monotonic):
             return None
 
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    bytes_left = MAX_TOTAL_BYTES
+    expected_total = None
 
     def read(url, *, start, length, deadline_monotonic):
+        nonlocal bytes_left, expected_total
+        if start < 0 or not 0 < length <= min(MAX_BYTES, bytes_left):
+            raise ProbeRejected("range_rejected")
         validate_url(url)
         remaining = deadline_monotonic - time.monotonic()
         if remaining <= 0:
@@ -178,14 +186,28 @@ def probe_in_guarded_child(url, *, deadline_monotonic):
             error.close()
             raise ProbeRejected("range_rejected") from None
         with response:
-            match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", response.headers.get("Content-Range", ""))
+            match = re.fullmatch(r"bytes ([0-9]{1,20})-([0-9]{1,20})/([0-9]{1,20})",
+                                 response.headers.get("Content-Range", ""))
             if response.status != 206 or not match or response.geturl() != url:
                 raise ProbeRejected("range_rejected")
             first, last, total = map(int, match.groups())
-            if (first != start or last != min(start + length, total) - 1
+            size = last - first + 1
+            content_length = response.headers.get("Content-Length")
+            if (not 0 <= first <= last < total or first != start
+                    or last != min(start + length, total) - 1
+                    or not 0 < size <= min(length, bytes_left)
+                    or (expected_total is not None and total != expected_total)
+                    or (content_length is not None and (
+                        not re.fullmatch(r"[0-9]{1,20}", content_length) or int(content_length) != size))
                     or response.headers.get("Content-Encoding", "identity").lower() != "identity"):
                 raise ProbeRejected("range_rejected")
-            return RangeRead(first, total, response.read(last - first + 1))
+            if time.monotonic() >= deadline_monotonic:
+                raise ProbeRejected("deadline")
+            # Validate and reserve the positive body budget before stdlib read():
+            # HTTPResponse treats a negative amount as an unbounded read.
+            bytes_left -= size
+            expected_total = total
+            return RangeRead(first, total, response.read(size))
 
     def expired(signum, frame):
         raise ProbeRejected("deadline")

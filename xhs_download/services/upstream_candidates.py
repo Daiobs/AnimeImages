@@ -178,7 +178,8 @@ def issue_candidate(url, metadata, *, ordinal, provider, source_url, media_type,
                                  source_url=source_url, media_type=media_type, state=state, match=match)])[0]
 
 
-def resolve_candidate_record(token, candidate_id, *, display_only=False):
+def resolve_issued_candidate_record(token, candidate_id, *, display_only=False):
+    """Resolve immutable issuance facts, without selected-check display overlays."""
     try:
         payload = signing.loads(str(token), salt=SALT, max_age=TTL)
         if not isinstance(payload, dict) or payload.get('id') != str(candidate_id):
@@ -197,9 +198,21 @@ def resolve_candidate_record(token, candidate_id, *, display_only=False):
             validator = validate_douyin_media_url
         if not isinstance(record, dict) or not candidate_url(record.get('url'), validator=validator):
             raise ValueError()
-        if record.get('provider_id') == 'yt_dlp_generic':
-            from .ytdlp_format_check import apply_check_evidence
-            return apply_check_evidence(record)
+        expires_at = record.get('expires_at')
+        if (not isinstance(expires_at, (int, float)) or not math.isfinite(expires_at)
+                or expires_at <= time.time()):
+            raise ValueError()
         return record
     except (signing.BadSignature, ValueError, TypeError):
         raise XhsParseError('候选资源已失效，请重新解析。') from None
+
+
+def resolve_candidate_record(token, candidate_id, *, display_only=False):
+    record = resolve_issued_candidate_record(token, candidate_id, display_only=display_only)
+    try:
+        if record.get('provider_id') == 'yt_dlp_generic':
+            from .ytdlp_format_check import apply_check_evidence
+            return apply_check_evidence(record)
+    except (ValueError, TypeError):
+        raise XhsParseError('候选资源已失效，请重新解析。') from None
+    return record

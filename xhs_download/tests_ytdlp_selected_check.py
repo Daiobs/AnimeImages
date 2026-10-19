@@ -16,7 +16,7 @@ from .services.upstream_candidates import resolve_candidate_record
 from .services.ytdlp_selection import capability
 
 HTTP_BOOTSTRAP = r'''
-import io, runpy, socket, sys, time, urllib.request, urllib.error
+import http.client, io, runpy, socket, sys, time, urllib.request, urllib.error
 target, scenario = sys.argv[1:3]
 assert sys.flags.isolated and sys.flags.dont_write_bytecode
 assert 'tools.upstream_match_worker' not in sys.modules
@@ -32,15 +32,20 @@ def box(kind, body): return (8+len(body)).to_bytes(4,'big')+kind+body
 def track(kind): return box(b'trak',box(b'mdia',box(b'hdlr',b'\0'*8+kind+b'\0'*12)))
 data = box(b'moov', track(b'vide')+(b'' if scenario=='silent' else track(b'soun')))
 if scenario == 'missing': data = box(b'mdat',b'not a movie')
-if scenario == 'tail': data = box(b'mdat', b'x' * 262144) + data
+if scenario in {'tail', 'reversed'}: data = box(b'mdat', b'x' * 262144) + data
 calls = 0
-class Response(io.BytesIO):
-    def __init__(self, request, start, end):
-        super().__init__(data[start:end+1])
-        self.status = 200 if scenario=='ignored' else 206
-        self.headers = {'Content-Range':f'bytes {start}-{end}/{len(data)}'}
-        self.url = request.full_url
+bytes_read = 0
+class FixtureSocket:
+    def __init__(self, wire): self.wire = wire
+    def makefile(self, mode): return io.BytesIO(self.wire)
+class Response(http.client.HTTPResponse):
     def geturl(self): return self.url
+    def read(self, amount=None):
+        global bytes_read
+        assert amount is not None and 0 < amount <= min(131072, 262144 - bytes_read)
+        body = super().read(amount)
+        bytes_read += len(body)
+        return body
 def read(opener, request, timeout):
     global calls
     calls += 1
@@ -51,7 +56,19 @@ def read(opener, request, timeout):
     assert end-start+1 <= 131072
     if scenario == 'timeout': time.sleep(10)
     if scenario == 'denied': raise urllib.error.HTTPError(request.full_url,403,'private',{},io.BytesIO())
-    return Response(request,start,min(end,len(data)-1))
+    end = min(end,len(data)-1)
+    body = data[start:end+1]
+    interval = f'{start}-{end}/{len(data)}'
+    if scenario == 'reversed' and calls == 2:
+        body = b'x' * 1048576
+        interval = f'{start}-0/1'
+    status = 200 if scenario == 'ignored' else 206
+    wire = (f'HTTP/1.1 {status} Fixture\r\nContent-Range: bytes {interval}\r\n'
+            f'Content-Length: {len(body)}\r\n\r\n').encode() + body
+    response = Response(FixtureSocket(wire))
+    response.begin()
+    response.url = request.full_url
+    return response
 urllib.request.OpenerDirector.open = read
 sys.argv = [target]
 runpy.run_path(target,run_name='__main__')
@@ -145,6 +162,17 @@ class SelectedTrackCheckTests(SimpleTestCase):
                 response,calls=self.check(candidate)
                 self.assertEqual(response.status_code,status,response.content)
                 self.assertEqual(calls,[])
+
+    def test_reversed_second_range_real_worker_never_reads_oversized_body(self):
+        self.gates()
+        _, candidate = self.candidates()
+        response, calls = self.check(candidate, 'reversed')
+        self.assertEqual(response.status_code, 200, response.content)
+        evidence = response.json()['candidate']['selected_track_check']
+        self.assertEqual(evidence['reason'], 'range_rejected')
+        self.assertEqual((evidence['requests'], evidence['bytes_read']), (2, 131072))
+        self.assertFalse(response.json()['candidate']['can_download'])
+        self.assertEqual(calls.count('probe_tracks'), 1)
 
     def test_expired_or_denied_or_tampered_check_cannot_run(self):
         self.gates()

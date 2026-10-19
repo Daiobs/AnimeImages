@@ -1,0 +1,18 @@
+[
+  {"name":"missing_identity","metadata":{},"evidence":"unconfirmed"},
+  {"name":"false_identity","metadata":{"identity_confirmed":false},"evidence":"unconfirmed"},
+  {"name":"string_identity","metadata":{"identity_confirmed":"true"},"evidence":"unconfirmed"},
+  {"name":"confirmed_product","metadata":{"identity_confirmed":true},"evidence":"confirmed"},
+  {"name":"offline_replay","metadata":{"identity_confirmed":true,"evidence_kind":"offline_replay"},"evidence":"unconfirmed"},
+  {"name":"offline_conversion","metadata":{"identity_confirmed":true,"evidence_kind":"offline_conversion"},"evidence":"unconfirmed"},
+  {"name":"replay","metadata":{"identity_confirmed":true,"evidence_kind":"replay"},"evidence":"unconfirmed"},
+  {"name":"native_confirmed","status":"native_observed","metadata":{"identity_confirmed":true,"evidence_kind":"native_capture_replay","capture_status":"RETURNED"},"evidence":"confirmed"},
+  {"name":"native_unconfirmed","status":"native_observed","metadata":{"identity_confirmed":false,"evidence_kind":"native_capture_replay","capture_status":"RETURNED"},"evidence":"unconfirmed"},
+  {"name":"native_waiting","status":"native_observed","metadata":{"identity_confirmed":true,"evidence_kind":"native_capture_replay","capture_status":"RESERVED"},"evidence":"unconfirmed"},
+  {"name":"failed_no_media","state":"failed","status":"failed","metadata":{"identity_confirmed":true},"assets":[],"evidence":"none"},
+  {"name":"failed_confirmed_media","state":"failed","status":"failed","metadata":{"identity_confirmed":true},"evidence":"confirmed"},
+  {"name":"not_executed","executed":false,"metadata":{"identity_confirmed":true},"evidence":"unconfirmed"},
+  {"name":"unknown_outcome","client_status":"OUTCOME_UNKNOWN","metadata":{"identity_confirmed":true},"evidence":"unconfirmed"},
+  {"name":"not_authorized","status":"not_authorized","metadata":{"identity_confirmed":true},"evidence":"unconfirmed"},
+  {"name":"cover_only","metadata":{"identity_confirmed":true},"assets":[{"media_type":"image","role":"cover"}],"evidence":"none"}
+]

@@ -1,3 +1,5 @@
+import http.client
+import io
 import struct
 import time
 import unittest
@@ -182,6 +184,90 @@ class GuardedReaderTests(unittest.TestCase):
         self.assertEqual(result["reason"], "deadline")
         opener.open.assert_not_called()
         timer.assert_not_called()
+
+
+class HTTPResponseReaderTests(unittest.TestCase):
+    url = GuardedReaderTests.url
+    run_probe = GuardedReaderTests.run_probe
+
+    def response(self, interval, body, *, status=206, content_length=None):
+        reads = []
+
+        class FixtureSocket:
+            def makefile(self, mode):
+                return io.BytesIO(wire)
+
+        class Response(http.client.HTTPResponse):
+            def read(self, amount=None):
+                data = super().read(amount)
+                reads.append((amount, len(data)))
+                return data
+
+            def geturl(self):
+                return HTTPResponseReaderTests.url
+
+        length = str(len(body)) if content_length is None else content_length
+        wire = (f"HTTP/1.1 {status} Fixture\r\nContent-Range: bytes {interval}\r\n"
+                f"Content-Length: {length}\r\n\r\n").encode() + body
+        response = Response(FixtureSocket())
+        response.begin()
+        return response, reads
+
+    def test_reversed_second_range_rejected_before_stdlib_can_read_all(self):
+        moov = movie(b"vide", b"soun")
+        total = 2 * MAX_BYTES + len(moov)
+        first, first_reads = self.response(f"0-{MAX_BYTES - 1}/{total}",
+            (2 * MAX_BYTES).to_bytes(4, "big") + b"mdat" + b"x" * (MAX_BYTES - 8))
+        second, second_reads = self.response("262144-0/1", b"x" * (1024 * 1024))
+        result, opener, *_ = self.run_probe(error=[first, second])
+        self.assertEqual(result["reason"], "range_rejected")
+        self.assertEqual(first_reads, [(MAX_BYTES, MAX_BYTES)])
+        self.assertEqual(second_reads, [])
+        self.assertEqual(result["bytes_read"], MAX_BYTES)
+        self.assertEqual(opener.open.call_count, 2)
+
+    def test_invalid_headers_rejected_without_reading_body(self):
+        cases = [("0-0/0", None, 206), ("1-0/2", None, 206),
+                 ("-1-1/2", None, 206), ("0-2/2", None, 206),
+                 (f"0-{MAX_BYTES}/{MAX_BYTES + 1}", None, 206),
+                 ("0-0/" + "9" * 100, None, 206),
+                 ("0-7/8", "-1", 206), ("0-7/8", "invalid", 206),
+                 ("0-7/8", str(1024 * 1024), 206), ("0-7/8", None, 200)]
+        for interval, length, status in cases:
+            with self.subTest(interval=interval, length=length, status=status):
+                response, reads = self.response(interval, b"x" * 8,
+                                                status=status, content_length=length)
+                result, *_ = self.run_probe(response)
+                self.assertEqual(result["reason"], "range_rejected")
+                self.assertEqual(result["bytes_read"], 0)
+                self.assertEqual(reads, [])
+
+    def test_second_response_cannot_exceed_range_or_change_total(self):
+        for interval in ("131072-262144/262145", "131072-131175/131176"):
+            with self.subTest(interval=interval):
+                first, reads = self.response(f"0-{MAX_BYTES - 1}/{2 * MAX_BYTES}",
+                    box(b"mdat", b"x" * (MAX_BYTES - 8)))
+                second, second_reads = self.response(interval, b"x" * (MAX_BYTES + 1))
+                result, *_ = self.run_probe(error=[first, second])
+                self.assertEqual(result["reason"], "range_rejected")
+                self.assertEqual(second_reads, [])
+                self.assertEqual(reads, [(MAX_BYTES, MAX_BYTES)])
+
+    def test_valid_two_ranges_use_exact_cumulative_budget_and_short_body_is_rejected(self):
+        moov = movie(b"vide", b"soun")
+        for truncated in (False, True):
+            with self.subTest(truncated=truncated):
+                first, first_reads = self.response(f"0-{MAX_BYTES - 1}/{2 * MAX_BYTES}",
+                    box(b"mdat", b"x" * (MAX_BYTES - 8)))
+                tail = moov + box(b"free", b"x" * (MAX_BYTES - len(moov) - 8))
+                second, second_reads = self.response(f"{MAX_BYTES}-{2 * MAX_BYTES - 1}/{2 * MAX_BYTES}",
+                    tail[:-1] if truncated else tail, content_length=str(MAX_BYTES))
+                result, *_ = self.run_probe(error=[first, second])
+                self.assertEqual(result["reason"], "range_rejected" if truncated else "complete_track_table")
+                reads = first_reads + second_reads
+                self.assertTrue(all(0 < amount <= MAX_BYTES for amount, _ in reads))
+                self.assertEqual(result["bytes_read"], 2 * MAX_BYTES - int(truncated))
+                self.assertLessEqual(sum(size for _, size in reads), 256 * 1024)
 
 
 if __name__ == "__main__":

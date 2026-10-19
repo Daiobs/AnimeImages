@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const lab = require("../static/js/provider_lab.js");
 const {Node, documentFor} = require("./helpers/lab_dom.js");
+const evidenceCases = require("../xhs_download/fixtures/route_evidence_cases.json");
 
 function fixture(overrides = {}) {
     const root = new Node("main");
@@ -274,7 +275,7 @@ test("matrix uses newest nonempty title within exact source URL across sort mode
 
 test("host references deduplicate application copies but retain retests and truncated provenance", async () => {
     const f = fixture({hostPayload: {total: 201, returned: 3, truncated: true}});
-    const seed = {...f.executions[0], state: "returned", result: {status: "success", assets: [{media_type: "video"}]}};
+    const seed = {...f.executions[0], state: "returned", result: {status: "success", metadata: {identity_confirmed: true}, assets: [{media_type: "video"}]}};
     f.executions.splice(0, f.executions.length,
         {...seed, id: 10, origin: "lab"},
         {...seed, id: 20, origin: "scout", application_record_id: 10},
@@ -501,7 +502,7 @@ test("host route reference groups returned successes by content without ranking 
         {provider_id: "B", label: "Beta", available: true, route_selectable: true}]});
     const seed = {...f.executions[0], state: "returned"};
     const row = (id, provider, kind, changes = {}) => ({...seed, id, provider_id: provider, sample_key: `work-${id}`,
-        result: {status: "success", result_kind: kind, assets: [{media_type: kind === "gallery" ? "image" : "video", height: id * 1000}]}, ...changes});
+        result: {status: "success", metadata: {identity_confirmed: true}, result_kind: kind, assets: [{media_type: kind === "gallery" ? "image" : "video", height: id * 1000}]}, ...changes});
     f.executions.splice(0, f.executions.length,
         row(10, "A", "video"), row(20, "B", "video"), row(30, "A", "gallery"),
         row(40, "A", "article", {state: "sent"}), row(50, "A", "article", {result: {status: "failed", result_kind: "article"}}),
@@ -534,6 +535,36 @@ test("host route reference groups returned successes by content without ranking 
     f.workspace.destroy();
 });
 
+test("history references preserve the ledger evidence meaning for mixed product and offline observations", async () => {
+    const f = fixture();
+    const seed = f.executions[0];
+    const rows = evidenceCases.map((entry, index) => ({...seed, id: index + 1000,
+        sample_key: entry.name, state: entry.state || "returned",
+        result: {status: entry.status || "success", executed: entry.executed !== false,
+            metadata: entry.metadata, client_status: entry.client_status,
+            assets: entry.assets || [{media_type: "video", role: "primary"}]}}));
+    for (let index = 0; index < rows.length; index += 1) {
+        f.executions.splice(0, f.executions.length, rows[index]);
+        const original = JSON.stringify(f.executions);
+        await f.workspace.loadBatch(1);
+        await f.change(f.panel.querySelector("[data-history-host]"), "source.example");
+        const reference = f.panel.querySelector("[data-history-route-reference]");
+        const lines = reference.querySelectorAll("li").map((node) => node.textContent);
+        assert.equal(lines.some((line) => line.includes("唯一已验证参考")), evidenceCases[index].evidence === "confirmed", evidenceCases[index].name);
+        if (evidenceCases[index].name === "failed_confirmed_media") assert.match(lines.join(" "), /部分媒体.*执行未成功/);
+        assert.equal(JSON.stringify(f.executions), original);
+        assert.equal(f.panel.querySelectorAll("[data-history-inspect]").length, 1, "Unconfirmed and failed observations remain browsable");
+    }
+    f.executions.splice(0, f.executions.length, ...rows);
+    await f.workspace.loadBatch(1);
+    await f.change(f.panel.querySelector("[data-history-host]"), "source.example");
+    const line = f.panel.querySelector("[data-history-route-reference]").querySelector("li").textContent;
+    assert.match(line, /3 条，记录 #1003、#1007、#1011/);
+    assert.equal(f.retests.length, 0); assert.equal(f.drafts.length, 0);
+    assert.ok(f.calls.every(({options}) => !options.method));
+    f.workspace.destroy();
+});
+
 test("native route reference requires boolean confirmed identity and RETURNED capture", async () => {
     const f = fixture();
     const seed = {...f.executions[0], state: "returned"};
@@ -562,7 +593,7 @@ test("route reference separates Common and unknown evidence from executable rout
     const routeEditor = {invalidate() {}, restore() {}, route: {source_host: "source.example", applicable: false}};
     const f = fixture({routeEditor, descriptors: [{provider_id: "videodl_repo", execution_provider_id: "videodl_repo",
         available: true, route_selectable: true}]});
-    const seed = {...f.executions[0], state: "returned", provider_id: "videodl_repo", result: {status: "success", result_kind: "video", assets: [{media_type: "video"}]}};
+    const seed = {...f.executions[0], state: "returned", provider_id: "videodl_repo", result: {status: "success", metadata: {identity_confirmed: true}, result_kind: "video", assets: [{media_type: "video"}]}};
     f.executions.splice(0, f.executions.length,
         {...seed, id: 10, options: {mode: "common_only", backend_category: "common"}},
         {...seed, id: 20, options: null}, {...seed, id: 30, options: {mode: "dedicated_only"}},
@@ -620,14 +651,14 @@ test("success reference requires media evidence and explicit assets override cou
         {assets: [{media_type: "image", role: "thumbnail"}]}, {assets: null, asset_count: 9},
     ];
     f.executions.splice(0, f.executions.length, ...payloads.map((payload, index) => ({...seed, id: index + 100,
-        result: {status: "success", result_kind: "video", ...payload}})));
+        result: {status: "success", result_kind: "video", ...payload, metadata: {identity_confirmed: true, ...payload.metadata}}})));
     await f.workspace.loadBatch(1);
     await f.change(f.panel.querySelector("[data-history-host]"), "source.example");
     assert.equal(f.panel.querySelector("[data-history-route-reference]").querySelectorAll("li").length, 0);
     // A later batch with missing asset details may use a positive integer count, not a coerced value.
     f.executions.splice(0, f.executions.length,
-        {...seed, id: 201, result: {status: "success", metadata: {asset_count: 2}}},
-        {...seed, id: 202, result: {status: "success", assets: [{media_type: "video"}], asset_count: 0}});
+        {...seed, id: 201, result: {status: "success", metadata: {identity_confirmed: true, asset_count: 2}}},
+        {...seed, id: 202, result: {status: "success", metadata: {identity_confirmed: true}, assets: [{media_type: "video"}], asset_count: 0}});
     await f.workspace.loadBatch(1);
     const requests = f.calls.length;
     await f.change(f.panel.querySelector("[data-history-host]"), "source.example");
