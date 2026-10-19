@@ -1439,7 +1439,13 @@
             return response.json();
         }
 
-        async function continueDouyinParse(initialPayload, signal) {
+        function hasActiveResultDownload() {
+            return downloadInProgress || pickerDownloadInProgress
+                || Array.from(resultsRegion.querySelectorAll('[data-ytdlp-action="cancel"]'))
+                    .some((button) => !button.hidden);
+        }
+
+        async function continueDouyinParse(initialPayload, signal, isCurrent) {
             if (!douyinReliabilityApi) {
                 return {
                     status: "failed",
@@ -1459,7 +1465,7 @@
                     requestDouyinContinuation(token, pollContext.signal)
                 ),
                 onPending: (payload, attempt, maxPolls) => {
-                    if (!preserveRenderedResult) {
+                    if (isCurrent() && !preserveRenderedResult) {
                         showParseContinuationPending(
                             payload.message,
                             attempt,
@@ -2461,7 +2467,11 @@
 
             const currentRequestId = parseRequestId + 1;
             parseRequestId = currentRequestId;
-            activeParseController = new AbortController();
+            const parseController = new AbortController();
+            activeParseController = parseController;
+            const isCurrent = () => currentRequestId === parseRequestId
+                && activeParseController === parseController && !parseController.signal.aborted;
+            let renderedFallback = false;
             const formData = new FormData(searchForm);
             const params = new URLSearchParams(formData);
             params.delete("csrfmiddlewaretoken");
@@ -2477,9 +2487,12 @@
                         "X-Requested-With": "XMLHttpRequest",
                     },
                     cache: "no-store",
-                    signal: activeParseController.signal,
+                    signal: parseController.signal,
                 });
                 let payload = await parseSearchResponse(response);
+                if (!isCurrent()) {
+                    return;
+                }
 
                 if (!response.ok) {
                     const error = new Error(
@@ -2495,17 +2508,24 @@
                     throw error;
                 }
 
-                if (currentRequestId !== parseRequestId) {
-                    return;
-                }
                 if (payload.status === "continuation_pending") {
                     if (payload.has_results && payload.html) {
                         applyParsePayload(payload, currentSource);
+                        renderedFallback = true;
                     }
                     payload = await continueDouyinParse(
                         payload,
-                        activeParseController.signal,
+                        parseController.signal,
+                        isCurrent,
                     );
+                    // Keep the active download's DOM and captured selection intact.
+                    if (!isCurrent() || hasActiveResultDownload()) {
+                        return;
+                    }
+                    if (renderedFallback && payload.continuation_status) {
+                        applyContinuationNotice(payload, currentSource);
+                        return;
+                    }
                 }
                 if (
                     payload.status === "failed"
@@ -2524,7 +2544,7 @@
 
                 applyParsePayload(payload, currentSource);
             } catch (error) {
-                if (error && error.name === "AbortError") {
+                if (!isCurrent() || (error && error.name === "AbortError")) {
                     return;
                 }
                 console.warn(
@@ -2533,7 +2553,14 @@
                         ? error.errorCode
                         : "PARSE_FAILED",
                 );
-                if (currentRequestId === parseRequestId) {
+                if (renderedFallback) {
+                    if (!hasActiveResultDownload()) {
+                        applyContinuationNotice({
+                            continuation_message: "超高清解析暂未完成，仍可下载当前结果。",
+                            retry_after_seconds: error.retryAfter,
+                        }, currentSource);
+                    }
+                } else {
                     if (error.retryAfter) {
                         startUltraRetryCountdown(error.retryAfter, currentSource);
                     }

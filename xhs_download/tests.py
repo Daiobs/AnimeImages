@@ -6327,9 +6327,10 @@ class XhsDownloadViewTests(TestCase):
         setting.save(update_fields=["douyin_ultra_mode", "updated_at"])
         mock_parse.return_value = ParseResult(
             platform="douyin",
-            post_type="unknown",
+            post_type="video",
             base_filename="douyin",
-            assets=(),
+            assets=(MediaAsset(media_type="video", platform="douyin",
+                               url="https://v3-web.douyinvod.com/fixture.mp4"),),
         )
 
         response = Client().get("/results/", {"q": "https://www.douyin.com/video/123", "ultra_hd": "1"})
@@ -6365,7 +6366,8 @@ class XhsDownloadViewTests(TestCase):
             platform="douyin",
             post_type="video",
             base_filename="douyin",
-            assets=(),
+            assets=(MediaAsset(media_type="video", platform="douyin",
+                               url="https://v3-web.douyinvod.com/fixture.mp4"),),
             metadata={
                 "selected_provider": "native",
                 "fallback_reason": "kukutool_deadline",

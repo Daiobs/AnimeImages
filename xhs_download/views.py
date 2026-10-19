@@ -4260,7 +4260,7 @@ def apply_search_result_to_context(
                     "下载时将在服务端合并音频和视频。"
                 ),
             )
-    if prefer_ultra_hd and result.platform == "douyin":
+    if prefer_ultra_hd and result.platform == "douyin" and result.assets:
         context["ultra_retry_after_seconds"] = max(
             0,
             int(result_metadata.get("ultra_retry_after_seconds") or 0),

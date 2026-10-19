@@ -2360,6 +2360,8 @@ class DouyinKukuToolProvider:
                     selected_provider="native",
                     fallback_reason="kukutool_unavailable",
                 )
+            if upstream_finished and context.service_execution_policy == "tiantian_first":
+                return None  # Native is an independent peer in the fallback tier.
 
             sleep(min(poll_interval, max(0.0, deadline - monotonic())))
 

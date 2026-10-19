@@ -1104,6 +1104,7 @@ class DouyinAdapter(BasePlatformAdapter):
         elif outer_deadline:
             context.deadline_monotonic = outer_deadline
         context.client_country_code = client_country_code
+        context.outer_deadline_monotonic = outer_deadline
         context.prefer_ultra_hd = prefer_ultra_hd
         result_providers = tuple(self.get_result_providers(
             prefer_ultra_hd=prefer_ultra_hd,
@@ -1112,12 +1113,11 @@ class DouyinAdapter(BasePlatformAdapter):
         tiantian_first = any(getattr(provider, "name", "") == "tiantian_first" for provider in result_providers)
         context.allow_continuation = bool(
             allow_continuation and prefer_ultra_hd
-            and not tiantian_first
         )
         context.continuation_identity = str(continuation_identity or "")
         context.ultra_attempt_controller = ultra_attempt_controller
         if context.allow_continuation:
-            existing_task_id = find_active_douyin_continuation(
+            existing_task_id = "" if tiantian_first else find_active_douyin_continuation(
                 context.aweme_id,
                 context.continuation_identity,
             )
@@ -1134,6 +1134,10 @@ class DouyinAdapter(BasePlatformAdapter):
                 )
                 + DOUYIN_CONTINUATION_TTL_SECONDS
             )
+            if outer_deadline:
+                context.continuation_deadline_monotonic = min(
+                    context.continuation_deadline_monotonic, outer_deadline,
+                )
 
         last_timeout_error = None
         for provider in result_providers:

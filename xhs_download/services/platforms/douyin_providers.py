@@ -24,6 +24,7 @@ from ..candidates import MediaCandidate
 from ..common import XhsProviderTimeoutError, clean_filename, validate_external_url
 from ..diagnostics import select_best_media_candidate
 from ..douyin_continuation import (
+    DOUYIN_CONTINUATION_TTL_SECONDS,
     DouyinContinuationCoordinator,
     DouyinContinuationPendingError,
 )
@@ -302,6 +303,7 @@ class DouyinParseContext:
     direct_result: object | None = None
     direct_error: Exception | None = None
     deadline_monotonic: float = 0
+    outer_deadline_monotonic: float = 0
     client_country_code: str = ""
     allow_continuation: bool = False
     continuation_identity: str = ""
@@ -1398,78 +1400,201 @@ class DouyinTianTianFirstProvider(DouyinResultProvider):
         )
 
     def parse(self, adapter, context):
-        deadline = context.deadline_monotonic or (
-            monotonic() + max(0.1, self.provider_settings.ultra_total_timeout_seconds)
-        )
+        window = max(0.1, self.provider_settings.ultra_total_timeout_seconds)
+        primary_deadline = context.deadline_monotonic or (monotonic() + window)
+        outer_deadline = context.outer_deadline_monotonic
+
+        def bounded_deadline(deadline):
+            return min(deadline, outer_deadline) if outer_deadline else deadline
+
+        primary_deadline = bounded_deadline(primary_deadline)
+        if monotonic() >= primary_deadline:
+            raise XhsProviderTimeoutError("抖音首选等待期限已到")
         controller = context.ultra_attempt_controller
-        last_error = None
+        services = {
+            provider.name: provider for provider in self.providers
+            if self.provider_settings.provider_is_enabled(provider.name)
+        }
         empty_native = Future()
         empty_native.set_result(None)
-        stages = sorted(self.providers, key=lambda provider: provider.name != "tiantianjiexi")
-        for provider in stages:
-            if not self.provider_settings.provider_is_enabled(provider.name):
-                continue
-            remaining = deadline - monotonic()
-            if remaining <= 0:
-                break
-            if provider.name == "tiantianjiexi":
-                native_reserve = min(
-                    max(0.0, self.provider_settings.ultra_native_timeout_seconds),
-                    max(0.1, self.provider_settings.ultra_kukutool_grace_seconds),
-                )
-                service_reserve = (
-                    max(0.0, self.provider_settings.ultra_kukutool_grace_seconds)
-                    if any(item.name == "kukutool" and self.provider_settings.provider_is_enabled(item.name)
-                           for item in stages) else 0
-                )
-                reserve = min(
-                    service_reserve + native_reserve,
-                    remaining / 2,
-                )
-            else:
-                reserve = min(self.provider_settings.ultra_native_timeout_seconds, remaining / 2)
-            stage_deadline = deadline - max(0.0, reserve)
-            stage_context = replace(
-                context, deadline_monotonic=stage_deadline, allow_continuation=False,
-                continuation_deadline_monotonic=0, native_fallback_future=empty_native,
-                service_execution_policy=self.name,
+        primary_context = replace(
+            context, deadline_monotonic=primary_deadline,
+            continuation_deadline_monotonic=bounded_deadline(
+                min(context.continuation_deadline_monotonic, monotonic() + DOUYIN_CONTINUATION_TTL_SECONDS)
+                if context.continuation_deadline_monotonic else primary_deadline
+            ),
+            native_fallback_future=empty_native, service_execution_policy=self.name,
+        )
+        primary = services.get("tiantianjiexi")
+        if primary is not None:
+            cached_reader = getattr(primary, "cached_result", None)
+            if callable(cached_reader):
+                try:
+                    cached = cached_reader(adapter, primary_context)
+                except Exception as error:
+                    log_provider_failure(primary.name, primary_context, error)
+                    cached = None
+                if cached and cached.assets:
+                    return with_parse_metadata(cached, service_execution_policy=self.name)
+
+        continuation = None
+        scorer = DouyinUltraRaceProvider(self.provider_settings, providers=tuple(services.values()))
+        futures = {}
+
+        def accepted_result(result, stage_context):
+            deadline = (
+                stage_context.continuation_deadline_monotonic
+                if stage_context.allow_continuation else stage_context.deadline_monotonic
             )
+            if deadline and monotonic() > deadline:
+                raise XhsProviderTimeoutError("抖音结果超过本次执行期限")
+            return with_parse_metadata(result, service_execution_policy=self.name)
+
+        def capture(future, name, stage_context):
+            if continuation is not None:
+                future.add_done_callback(lambda done: continuation.capture_future(
+                    done, provider_name=name, score_result=scorer.result_score,
+                    # A fallback must not close the pending primary's continuation.
+                    is_strong_result=lambda result: (
+                        name == "tiantianjiexi" and scorer.result_is_strong_candidate(result)
+                    ),
+                    prepare_result=lambda result: accepted_result(result, stage_context),
+                ))
+
+        def submit_service(provider, stage_context):
             if controller is not None:
                 controller.configure_providers((provider.name,))
-            started_at = time()
-            future = None
+            future = submit_provider_task(
+                "douyin-service-sequential", 4, 8, provider.parse, adapter, stage_context,
+            )
+            if future is None:
+                if controller is not None:
+                    controller.skip_fresh_work(provider.name, reason="local_capacity_full")
+                future = Future()
+                future.set_result(None)
+            capture(future, provider.name, stage_context)
+            futures[future] = (provider.name, stage_context)
+            return future
+
+        def read_result(future):
+            name, stage_context = futures.pop(future)
             try:
-                cached_reader = getattr(provider, "cached_result", None)
-                if callable(cached_reader):
-                    cached = cached_reader(adapter, stage_context)
-                    if cached and cached.assets:
-                        return with_parse_metadata(cached, service_execution_policy=self.name)
-                future = submit_provider_task(
-                    "douyin-service-sequential", 4, 8, provider.parse, adapter, stage_context,
-                )
-                if future is None:
-                    if controller is not None:
-                        controller.skip_fresh_work(provider.name, reason="local_capacity_full")
-                    continue
-                result = future.result(timeout=max(0.0, stage_deadline - monotonic()))
-                if result and result.assets and monotonic() <= stage_deadline:
-                    return with_parse_metadata(result, service_execution_policy=self.name)
-            except FutureTimeoutError:
-                # Cancelling a local waiter does not cancel an already sent HTTP request.
-                cancelled = future.cancel() if future is not None else False
-                last_error = XhsProviderTimeoutError("抖音首选服务等待期限已到，进入既有兜底")
-                log_provider_event(
-                    "douyin_sequential_wait_deadline", provider.name, stage_context, started_at,
-                    local_cancelled=cancelled, upstream_may_be_running=not cancelled,
-                )
+                result = future.result()
+                if result and result.assets:
+                    return result if name == "native" else accepted_result(result, stage_context)
             except Exception as error:
-                last_error = error
-                log_provider_failure(provider.name, stage_context, error, started_at)
+                log_provider_failure(name, stage_context, error)
             finally:
                 context.record_ultra_retry_after(stage_context.ultra_retry_after_seconds)
-        if last_error is not None and deadline <= monotonic():
-            raise XhsProviderTimeoutError("抖音服务解析超过本次总期限") from last_error
-        return None
+            return None
+
+        def finish(result):
+            if continuation is not None:
+                if result is not None:
+                    continuation.retain_fallback_score(scorer.result_score(result))
+                continued, pending = continuation.snapshot_result_and_pending()
+                if pending:
+                    raise DouyinContinuationPendingError(
+                        continuation.task_id, fallback_result=result,
+                    )
+                if continued and (
+                    not result or scorer.result_score(continued) > scorer.result_score(result)
+                ):
+                    result = continued
+            return result
+
+        try:
+            if primary is not None:
+                primary_future = submit_service(primary, primary_context)
+                done, _ = wait((primary_future,), timeout=max(0, primary_deadline - monotonic()))
+                if done:
+                    result = read_result(primary_future)
+                    if result:
+                        if continuation is not None:
+                            continuation.abandon()
+                        return result
+                else:
+                    log_provider_event(
+                        "douyin_primary_wait_deadline", primary.name, primary_context,
+                        upstream_may_be_running=True,
+                    )
+
+            fallback = services.get("kukutool")
+            pending_services = len(futures) + int(fallback is not None)
+            if context.allow_continuation and pending_services:
+                continuation = DouyinContinuationCoordinator(
+                    # Each page keeps its own fallback/upgrade threshold. Shared
+                    # upstream work is deduplicated by the providers' single-flight.
+                    pending_services,
+                    client_identity=context.continuation_identity,
+                    retry_after_getter=lambda: getattr(controller, "cooldown_retry_after", 0),
+                )
+                for future, (name, stage_context) in futures.items():
+                    capture(future, name, stage_context)
+
+            # The fallback tier gets its own window. Only an explicit caller
+            # deadline (e.g. Batch) may shorten it; it is not primary leftovers.
+            fallback_deadline = bounded_deadline(monotonic() + window)
+            context.deadline_monotonic = fallback_deadline
+            context.service_execution_policy = self.name
+            if monotonic() >= fallback_deadline:
+                if continuation is not None:
+                    continuation.abandon()
+                raise XhsProviderTimeoutError("抖音解析超过调用方期限")
+            native_context = replace(
+                context, deadline_monotonic=min(
+                    fallback_deadline,
+                    monotonic() + max(0.1, self.provider_settings.ultra_native_timeout_seconds),
+                ), allow_continuation=False, native_fallback_future=None,
+            )
+            def parse_native():
+                result = DouyinNativeProvider().parse(adapter, native_context)
+                return accepted_result(result, native_context) if result and result.assets else None
+
+            native_future = submit_provider_task(
+                "douyin-native", self.provider_settings.native_executor_workers,
+                self.provider_settings.native_max_pending_tasks,
+                parse_native,
+            )
+            context.native_fallback_future = native_future or empty_native
+            if native_future is not None:
+                futures[native_future] = ("native", native_context)
+            if fallback is not None:
+                fallback_context = replace(
+                    context, deadline_monotonic=fallback_deadline,
+                    allow_continuation=False, continuation_deadline_monotonic=0,
+                    native_fallback_future=empty_native,
+                )
+                submit_service(fallback, fallback_context)
+            while futures:
+                remaining = fallback_deadline - monotonic()
+                if remaining <= 0:
+                    break
+                done, _ = wait(futures, timeout=remaining, return_when=FIRST_COMPLETED)
+                if not done:
+                    break
+                ready_results = []
+                for future in done:
+                    name = futures[future][0]
+                    result = read_result(future)
+                    if result:
+                        ready_results.append((name, result))
+                if ready_results:
+                    # Compare already-ready peers, without waiting for unfinished
+                    # work or letting a provider label beat higher-quality media.
+                    ready_primary = next((result for name, result in ready_results
+                                          if name == "tiantianjiexi"), None)
+                    best = ready_primary or max(
+                        (result for _name, result in ready_results), key=scorer.result_score,
+                    )
+                    return finish(best)
+            return finish(None)
+        except DouyinContinuationPendingError:
+            raise
+        except Exception:
+            if continuation is not None:
+                continuation.abandon()
+            raise
 
 
 class DouyinUltraRaceProvider(DouyinResultProvider):
@@ -2603,6 +2728,10 @@ class DouyinNativeProvider(DouyinResultProvider):
         ))
 
     def parse(self, adapter, context):
+        if context.service_execution_policy == "tiantian_first" and context.native_fallback_future is not None:
+            # The fallback tier already ran Native; never submit it a second time.
+            future = context.native_fallback_future
+            return future.result() if future.done() else None
         parse_started_at = time()
         external_call = False
         last_error = None

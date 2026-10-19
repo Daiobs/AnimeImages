@@ -92,7 +92,7 @@
         const outcomeStatus = String(outcome.status || "failed");
         if (
             hasFallback
-            && ["failed", "timeout", "error"].includes(outcomeStatus)
+            && ["failed", "timeout", "error", "unchanged"].includes(outcomeStatus)
         ) {
             return {
                 ...initial,
@@ -152,11 +152,17 @@
                 );
             }
             await wait(current.pollAfterMs, signal);
+            if (signal && signal.aborted) {
+                throw abortError();
+            }
             const responsePayload = await requestPoll(token, {
                 attempt: attempt + 1,
                 maxPolls,
                 signal,
             });
+            if (signal && signal.aborted) {
+                throw abortError();
+            }
             current = normalizeContinuationPayload(responsePayload);
             if (current.status !== "continuation_pending") {
                 return current.payload;

@@ -169,6 +169,7 @@ class PublicPresentationBoundaryTests(TestCase):
     def test_public_single_notice_hides_provider_while_staff_keeps_diagnostics(self):
         result = SimpleNamespace(
             platform="douyin",
+            assets=(object(),),
             metadata={"selected_provider": "tiantianjiexi"},
         )
         with patch(

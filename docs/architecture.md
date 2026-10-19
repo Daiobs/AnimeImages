@@ -170,8 +170,8 @@ Single Ultra 固定路线：
 
 ```text
 TianTian valid cache or fresh request
-  -> KuKuTool admitted fallback only after failure/unavailability/deadline
-  -> Native fallback
+  -> on failure/unavailability/foreground deadline:
+     KuKuTool + Native (same fallback tier)
 ```
 
 Batch Ultra 固定路线：
@@ -183,9 +183,9 @@ TianTian
 
 两条路线共享安全候选和下载契约，但预算、Provider 顺序与渐进协议各自固定。不要从 Single 配置推断 Batch 顺序。
 
-Single 的 `DouyinTianTianFirstProvider` 在天天合法结果返回后结束，不预热 Kukutool；天天缓存缺失/过期时，Kukutool 的有效缓存不能提前阻止天天请求。各阶段在原总期限中给后续兜底留出时间。既有竞速设施仍供其他明确场景使用，不代表本服务链继续竞速，也不意味着全站默认天天优先。
+Single 的 `DouyinTianTianFirstProvider` 在天天合法结果返回后结束，不预热 Kukutool 或 Native；天天缓存缺失/过期时，Kukutool 的有效缓存不能提前阻止天天请求。进入兜底档后，Kukutool 与 Native 同时启动，首个有效结果可先展示。首选前台等待和兜底各使用配置的 Ultra 窗口，Native 仍受自身超时约束，不再从首选窗口中预扣时间分给后续服务。调用方明确传入的整体 deadline（例如 Batch）仍是硬上限。既有竞速设施仍供其他明确场景使用，不意味着全站默认天天优先。
 
-结果层缓存不能延长首选资源的实际 TTL；本次响应中的标题/封面正常传递，不跨过期读取历史档案补齐。停止等待不证明远端终止，晚到结果不替换已交付资源。
+结果层缓存不能延长首选资源的实际 TTL；本次响应中的标题/封面正常传递，不跨过期读取历史档案补齐。异步 Single 复用有界 continuation：天天已发送的请求可在 Provider 阶段开始后最多 15 秒内完成，轮询只读同次任务，不重发解析。晚到结果可更新仍属于同次解析且没有活动下载的结果区；失败则保留兜底。停止本地等待不证明远端终止，已开始下载的资源不会被替换。Batch 不因此新增续查或未经准入的 Provider。
 
 Ultra Provider 工作有独立 foreground deadline、短期 payload/failure cache、single-flight 和请求级 attempt accounting。最终媒体 redirect 只接受 source-bound 的受审查 host policy。
 
