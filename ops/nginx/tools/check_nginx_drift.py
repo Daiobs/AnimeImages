@@ -24,6 +24,14 @@ SITE_PLACEHOLDER = "{{ANIMEIMAGES_SERVER_IP}}"
 PRODUCTION_MEDIA_INCLUDE = "/etc/nginx/snippets/animeimages-v1-media.conf"
 LOCAL_APP_UPSTREAM = "http://127.0.0.1:8000"
 TELEMETRY_PATH = "/media/browser-download-telemetry/"
+EXACT_MEDIA_PATHS = {
+    TELEMETRY_PATH,
+    "/media/upstream-candidate/",
+    "/media/xhs-livephoto-motion-descriptor/",
+    "/media/xhs-livephoto-pair-descriptor/",
+    "/media/ytdlp-selected-format/",
+    "/media/service-selected-format/",
+}
 SITE_LOCATION_ARGS = {
     ("/static/",),
     ("/media/proxy-image/",),
@@ -32,8 +40,7 @@ SITE_LOCATION_ARGS = {
     ("/media/",),
     ("/",),
 }
-SNIPPET_LOCATION_ARGS = {
-    ("=", TELEMETRY_PATH),
+SNIPPET_LOCATION_ARGS = {("=", path) for path in EXACT_MEDIA_PATHS} | {
     ("^~", "/media/douyin-continuation/"),
     ("^~", "/media/download-prepare/"),
     ("^~", "/media/download-status/"),
@@ -245,18 +252,15 @@ def validate_baseline(site_text: str, snippet_text: str) -> None:
     _validate_location_set(server.children or (), SITE_LOCATION_ARGS, "site")
     _validate_location_set(snippet, SNIPPET_LOCATION_ARGS, "media snippet")
 
-    telemetry = _single(
-        _locations(snippet, ("=", TELEMETRY_PATH)),
-        "exact browser telemetry location",
-    )
-    if not _has_directive(telemetry, "proxy_pass", (LOCAL_APP_UPSTREAM,)):
-        raise ConfigDriftError("telemetry location does not proxy to the Django upstream")
-    configured_headers = {
-        item.args
-        for item in direct_children(telemetry, "proxy_set_header")
-    }
-    if configured_headers != REQUIRED_PROXY_HEADERS:
-        raise ConfigDriftError("telemetry proxy headers differ from the baseline")
+    for path in sorted(EXACT_MEDIA_PATHS):
+        location = _single(_locations(snippet, ("=", path)), f"exact media location {path}")
+        if not _has_directive(location, "proxy_pass", (LOCAL_APP_UPSTREAM,)):
+            raise ConfigDriftError(f"{path} does not proxy to the Django upstream")
+        configured_headers = {
+            item.args for item in direct_children(location, "proxy_set_header")
+        }
+        if configured_headers != REQUIRED_PROXY_HEADERS:
+            raise ConfigDriftError(f"{path} proxy headers differ from the baseline")
 
     broad_media = _single(
         tuple(

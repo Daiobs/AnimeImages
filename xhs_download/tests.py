@@ -1193,13 +1193,19 @@ class XhsUtilityTests(SimpleTestCase):
         self.assertEqual(data["final_quality_params"]["qs"], "13")
         self.assertEqual(data["final_quality_params"]["cquery"], "106H")
 
-    @patch("xhs_download.services.common.requests.get")
-    def test_request_get_with_retry_rejects_bad_final_redirect_host(self, mock_get):
-        response = Mock()
-        response.status_code = 200
-        response.url = "http://127.0.0.1/private"
-        response.close = Mock()
-        mock_get.return_value = response
+    @patch(
+        "xhs_download.services.common.socket.getaddrinfo",
+        return_value=[(None, None, None, "", ("8.8.8.8", 443))],
+    )
+    @patch("requests.adapters.HTTPAdapter.send")
+    def test_request_get_with_retry_rejects_bad_final_redirect_host(self, mock_send, _mock_dns):
+        response = requests.Response()
+        response.status_code = 302
+        response.url = "https://ci.xiaohongshu.com/a"
+        response.headers["Location"] = "http://127.0.0.1/private"
+        response.raw = BytesIO(b"")
+        response.close = Mock(wraps=response.close)
+        mock_send.return_value = response
 
         with self.assertRaises(XhsSecurityError):
             request_get_with_retry(
@@ -1209,12 +1215,18 @@ class XhsUtilityTests(SimpleTestCase):
                 sleep_seconds=0,
             )
 
-        response.close.assert_called()
+        response.close.assert_called_once()
+        mock_send.assert_called_once()
+        self.assertEqual(mock_send.call_args.args[0].url, response.url)
 
+    @patch(
+        "xhs_download.services.common.socket.getaddrinfo",
+        return_value=[(None, None, None, "", ("8.8.8.8", 443))],
+    )
     @patch("xhs_download.services.common.time.sleep")
-    @patch("xhs_download.services.common.requests.get")
-    def test_request_get_with_retry_does_not_sleep_after_final_failure(self, mock_get, mock_sleep):
-        mock_get.side_effect = requests.Timeout("slow")
+    @patch("requests.adapters.HTTPAdapter.send")
+    def test_request_get_with_retry_does_not_sleep_after_final_failure(self, mock_send, mock_sleep, _mock_dns):
+        mock_send.side_effect = requests.Timeout("slow")
 
         with self.assertRaises(requests.Timeout):
             request_get_with_retry(
@@ -1223,6 +1235,7 @@ class XhsUtilityTests(SimpleTestCase):
             )
 
         mock_sleep.assert_not_called()
+        mock_send.assert_called_once()
 
 
 class RegionRoutingTests(SimpleTestCase):
@@ -1244,8 +1257,11 @@ class RegionRoutingTests(SimpleTestCase):
 
         self.assertEqual(get_client_ip(request), "203.0.113.8")
 
-    @override_settings(DOWNLOAD_TRUST_X_FORWARDED_FOR=True)
-    def test_client_ip_uses_first_trusted_forwarded_address(self):
+    @override_settings(
+        DOWNLOAD_TRUST_X_FORWARDED_FOR=True,
+        DOWNLOAD_TRUSTED_PROXY_CIDRS=("10.0.0.1/32", "10.0.0.2/32"),
+    )
+    def test_client_ip_resolves_explicit_trusted_proxy_chain(self):
         request = self.factory.get(
             "/",
             REMOTE_ADDR="10.0.0.2",

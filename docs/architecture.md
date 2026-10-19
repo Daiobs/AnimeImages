@@ -278,6 +278,26 @@ ordered image assets -> browser archive implementation -> ZIP -> disk
 
 客户端提交的任意媒体 URL 或文件系统路径不能直接获得服务器下载能力。
 
+### Request Boundaries
+
+限流、匿名灰度、GeoIP、观测及 IP 绑定授权共用
+`services/rate_limits.py::get_client_ip`。默认只使用连接对端；只有显式开启
+XFF 信任且对端处于配置的可信代理 CIDR 中，才从右向左解析到第一个不可信
+边界。UA、X-Real-IP 和 Forwarded 不参与匿名分桶。登录用户仍使用用户 ID，
+IP 灰度不是强鉴权；迁移及部署条件见 [部署说明](deployment.md#trusted-client-address)。
+
+`common.request_get_with_retry` 不自动跟随重定向。初始目标及每个后继目标
+在发送前校验协议、端口和 DNS 公共地址；短链的中间公共主机不直接套用
+最终主机名单，最终响应仍执行调用者的 allowlist。安全拒绝、循环和缺失
+Location 不重试；正常网络错误受同一总期限及重试上限约束。中间响应关闭，
+最终 stream 由调用者消费和关闭。跨 origin 清理 Cookie、Authorization、
+Referer 等上下文，不自动注入 `.netrc` 凭据；环境 CA、代理和 NO_PROXY 仍沿用
+Requests 行为。同步 DNS/I/O 不能被期限强制中断，但超时返回后不会继续下一跳。
+
+这些是请求前 DNS 校验，**不是连接 IP 固定**：DNS 校验与实际连接之间仍有
+重绑定窗口，部署出口代理/网络策略也需独立核验。本轮未重写 Provider 的
+签名请求客户端，亦未改变浏览器 SW/CDN 传输和播放。
+
 ## Batch
 
 Batch 使用 progressive token 和有界 item 调度：

@@ -5,6 +5,8 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
+from ops.nginx.tests.run_nginx_acceptance import REQUIRED_MEDIA_PATHS, without_exact_location
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = PROJECT_ROOT / "ops" / "nginx" / "tools" / "check_nginx_drift.py"
@@ -22,6 +24,37 @@ class NginxDriftTests(unittest.TestCase):
 
     def test_canonical_baseline_passes(self):
         drift.validate_baseline(self.site, self.snippet)
+
+    def test_deleting_any_required_exact_media_location_is_rejected(self):
+        for path in (*REQUIRED_MEDIA_PATHS, drift.TELEMETRY_PATH):
+            with self.subTest(path=path):
+                changed = without_exact_location(self.snippet, path)
+                self.assertNotIn(("=", path), {item.args for item in drift.parse_nginx(changed)})
+                with self.assertRaises(drift.ConfigDriftError):
+                    drift.validate_baseline(self.site, changed)
+
+    def test_new_media_locations_cannot_be_prefixes(self):
+        for path in REQUIRED_MEDIA_PATHS:
+            with self.subTest(path=path):
+                changed = self.snippet.replace(f"location = {path} {{", f"location ^~ {path} {{", 1)
+                with self.assertRaises(drift.ConfigDriftError):
+                    drift.validate_baseline(self.site, changed)
+
+    def test_each_new_media_location_requires_upstream_and_trusted_header_shape(self):
+        for path in REQUIRED_MEDIA_PATHS:
+            start = self.snippet.index(f"location = {path} {{")
+            end = self.snippet.index("}", start) + 1
+            block = self.snippet[start:end]
+            for original, replacement in (
+                ("proxy_pass http://127.0.0.1:8000;", ""),
+                ("proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;",
+                 "proxy_set_header X-Forwarded-For $http_x_forwarded_for;"),
+                ("proxy_set_header X-Request-ID $request_id;", ""),
+            ):
+                with self.subTest(path=path, directive=original):
+                    changed = self.snippet[:start] + block.replace(original, replacement, 1) + self.snippet[end:]
+                    with self.assertRaises(drift.ConfigDriftError):
+                        drift.validate_baseline(self.site, changed)
 
     def test_telemetry_location_must_be_exact(self):
         changed = self.snippet.replace(
@@ -51,7 +84,8 @@ location = /media/browser-download-telemetry/ {
             drift.validate_baseline(self.site, changed)
 
     def test_telemetry_proxy_headers_are_required(self):
-        changed = self.snippet.replace(
+        start = self.snippet.index("location = /media/browser-download-telemetry/ {")
+        changed = self.snippet[:start] + self.snippet[start:].replace(
             "    proxy_set_header X-Request-ID $request_id;\n",
             "",
             1,
@@ -60,7 +94,8 @@ location = /media/browser-download-telemetry/ {
             drift.validate_baseline(self.site, changed)
 
     def test_telemetry_proxy_header_values_are_exact(self):
-        changed = self.snippet.replace(
+        start = self.snippet.index("location = /media/browser-download-telemetry/ {")
+        changed = self.snippet[:start] + self.snippet[start:].replace(
             "proxy_set_header X-Request-ID $request_id;",
             "proxy_set_header X-Request-ID $http_x_request_id;",
             1,

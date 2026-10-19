@@ -1,4 +1,5 @@
 import hashlib
+import ipaddress
 import logging
 import time
 from dataclasses import dataclass
@@ -6,6 +7,7 @@ from dataclasses import dataclass
 from django.conf import settings
 from django.core.cache import cache
 
+from .env_config import runtime_list
 
 DAY_SECONDS = 24 * 60 * 60
 logger = logging.getLogger(__name__)
@@ -45,14 +47,58 @@ class FixedWindowReservation:
             logger.exception("fixed_window_reservation_release_failed")
 
 
+def _client_address(value):
+    value = str(value or "").strip()
+    if "%" in value:
+        return None
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return None
+    return getattr(address, "ipv4_mapped", None) or address
+
+
+def _trusted_proxy_networks():
+    try:
+        networks = tuple(
+            ipaddress.ip_network(value, strict=True)
+            for value in runtime_list("DOWNLOAD_TRUSTED_PROXY_CIDRS")
+        )
+    except (TypeError, ValueError):
+        return ()
+    # An invalid or universal trust configuration fails closed as a whole.
+    if any(network.prefixlen == 0 for network in networks):
+        return ()
+    return networks
+
+
 def get_client_ip(request):
-    remote_addr = (request.META.get("REMOTE_ADDR") or "unknown").strip()
-    if getattr(settings, "DOWNLOAD_TRUST_X_FORWARDED_FOR", False):
-        forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR", "")
-        first_forwarded = forwarded_for.split(",", 1)[0].strip()
-        if first_forwarded:
-            remote_addr = first_forwarded
-    return remote_addr
+    peer = _client_address(request.META.get("REMOTE_ADDR"))
+    if peer is None:
+        return "unknown"
+    if not getattr(settings, "DOWNLOAD_TRUST_X_FORWARDED_FOR", False):
+        return str(peer)
+    networks = _trusted_proxy_networks()
+    if not any(peer in network for network in networks):
+        return str(peer)
+    forwarded = str(request.META.get("HTTP_X_FORWARDED_FOR") or "")
+    if not forwarded:
+        return str(peer)
+    chain = forwarded.rsplit(",", 20)
+    current = peer
+    parsed_length = 0
+    # Each trusted proxy appends its peer. Never cross an untrusted/invalid boundary.
+    # Ignore untrusted prefixes before enforcing limits, so padding cannot change identity.
+    for index, value in enumerate(reversed(chain)):
+        if not any(current in network for network in networks):
+            break
+        parsed_length += len(value) + 1
+        if index >= 20 or parsed_length > 2048:
+            return str(peer)
+        current = _client_address(value)
+        if current is None:
+            return str(peer)
+    return str(current)
 
 
 def get_client_identity(request):
