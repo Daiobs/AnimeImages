@@ -368,7 +368,7 @@ def _normalize_videodl_candidates(payload, match, source):
 
 
 def _execute_service(provider, source, timeout_seconds, expected_match):
-    from .common import XhsProviderTimeoutError
+    from .common import XhsDNSResolutionError, XhsProviderTimeoutError
     from .upstream_candidates import MAX_CANDIDATES, candidate_url
     from .platforms.tiantianjiexi_generic import (TianTianJieXiGenericProvider,
         TianTianJieXiAuthError, TianTianJieXiRateLimitError, TianTianJieXiApiError,
@@ -378,7 +378,11 @@ def _execute_service(provider, source, timeout_seconds, expected_match):
     from .provider_reliability import ProviderResultInvalidError
     from .platforms.tiantian_serial import TianTianAdmissionDeferred
     match = _select_match([service_match(provider, source)], provider, expected_match)
-    if not candidate_url(source):
+    try:
+        valid_source = candidate_url(source, raise_dns_error=True)
+    except XhsDNSResolutionError:
+        raise ProviderLabError('PROVIDER_UPSTREAM_FAILED', detail='SERVICE_NETWORK_ERROR') from None
+    if not valid_source:
         raise ProviderLabError('PROVIDER_UNSUPPORTED')
     factory = (TianTianJieXiGenericProvider if provider == 'tiantianjiexi_generic'
                else KukutoolGenericProvider)

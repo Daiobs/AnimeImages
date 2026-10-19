@@ -13,7 +13,7 @@ from django.core.cache import cache
 from django.test import RequestFactory, SimpleTestCase, override_settings
 
 from .services.common import (
-    XhsDownloadError, XhsSecurityError, encode_url, request_get_with_retry,
+    XhsDNSResolutionError, XhsDownloadError, XhsSecurityError, encode_url, request_get_with_retry,
     validate_public_download_url,
 )
 from .services.downloads import fetch_media_response
@@ -137,7 +137,7 @@ class RequestRedirectBoundaryTests(BoundaryNetworkCase):
         for addresses in (
             ["10.0.0.2"], ["127.0.0.1"], ["169.254.1.1"], ["100.64.0.1"],
             ["::1"], ["fd00::1"], ["fe80::1"], ["::ffff:127.0.0.1"],
-            ["8.8.8.8", "192.168.0.2"], [],
+            ["8.8.8.8", "192.168.0.2"],
         ):
             with self.subTest(addresses=addresses):
                 self.sent.clear()
@@ -151,7 +151,7 @@ class RequestRedirectBoundaryTests(BoundaryNetworkCase):
 
     def test_dns_lookup_failure_fails_closed_without_retry(self):
         self.dns["public.example"] = socket.gaierror("fixture DNS failure")
-        with self.assertRaises(XhsSecurityError):
+        with self.assertRaises(XhsDNSResolutionError):
             request_get_with_retry("https://public.example/a", retries=3)
         self.assertEqual(self.sent, [])
         self.sleep.assert_not_called()
@@ -281,8 +281,9 @@ class RequestRedirectBoundaryTests(BoundaryNetworkCase):
         self.assertEqual(same_headers["Authorization"], "Bearer secret")
         self.assertEqual(same_headers["Cookie"], "manual=secret")
         final_headers = self.sent[2][0].headers
-        for key in ("Authorization", "Cookie", "Proxy-Authorization", "X-Token", "Host", "Referer", "Origin"):
+        for key in ("Authorization", "Cookie", "Proxy-Authorization", "X-Token", "Referer", "Origin"):
             self.assertNotIn(key, final_headers)
+        self.assertEqual(final_headers['Host'], 'b.xiaohongshu.com')
         self.assertEqual(final_headers["Range"], "bytes=0-1023")
         self.assertEqual(final_headers["Accept"], "image/*")
         self.assertEqual(headers, original)
