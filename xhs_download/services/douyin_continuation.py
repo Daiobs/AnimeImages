@@ -353,6 +353,7 @@ class DouyinContinuationCoordinator:
         self._candidate_ready_at = 0.0
         self._retry_at = 0.0
         self._retry_after_getter = retry_after_getter
+        self._fallback_score = None
         self._source_index_key = (
             build_douyin_continuation_source_key(
                 source_identity,
@@ -444,7 +445,10 @@ class DouyinContinuationCoordinator:
             self._best_is_strong
             or self._unresolved_count == 0
         ):
-            status = "success"
+            if self._fallback_score is not None and self._best_score <= self._fallback_score:
+                status = "unchanged" if self._unresolved_count == 0 else "pending"
+            else:
+                status = "success"
         elif self._unresolved_count == 0:
             status = "timeout" if self._timeout_count else "failed"
         record = {
@@ -606,6 +610,11 @@ class DouyinContinuationCoordinator:
             self._active = False
             self._delete_cache_state()
 
+    def retain_fallback_score(self, score):
+        with self._lock:
+            self._fallback_score = tuple(score)
+            self._write_record()
+
 
 def issue_douyin_continuation_token(
     *,
@@ -732,6 +741,15 @@ def poll_douyin_continuation(token, *, client_identity):
     retry_at = float(record.get("retry_at") or 0)
     retry_after = max(0, math.ceil(retry_at - time.time()))
     result_payload = record.get("result")
+    if status == "unchanged":
+        return (
+            DouyinContinuationOutcome(
+                status="unchanged",
+                message="已保留当前结果，未取得更高清资源。",
+                retry_after_seconds=retry_after,
+            ),
+            platform_key,
+        )
     if status == "success":
         try:
             result = deserialize_douyin_continuation_result(result_payload)

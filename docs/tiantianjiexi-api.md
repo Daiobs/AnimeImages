@@ -1,6 +1,9 @@
 # TianTianJieXi API Notes
 
-## Current local account policy (Human confirmed 2026-09-26)
+## Current local account policy
+
+Membership terms were confirmed by Human on 2026-09-26. The local execution
+policy below was updated on 2026-10-19 at Human's request.
 
 The configured TianTian account has lifetime membership, paid once; subsequent
 parses have no per-call fee. Authentication is still required. Kukutool has no
@@ -15,18 +18,26 @@ locking, independent of Django cache namespace and worker process. Queue wait
 is bounded to 30 seconds (or the remaining caller deadline), separate from
 execution time. Admission expiry is unexecuted, not a parse failure. An active
 HTTP call retains the slot until it exits even if a browser stops waiting.
-Interrupted/uncertain remote requests leave a persistent unknown marker and
-are not retried automatically. Reconcile that outcome before explicitly
-clearing the account marker under the same lock; do not delete live lock files.
-Normal completed responses, exceptions outside HTTP work and cancelled waiters
-release the OS lock. A process crash releases the OS lock but preserves the
-uncertain marker. This is not a cross-machine lock and cannot serialize website
+Timeouts and network failures are reported for that request, not automatically
+replayed or turned into a persistent account-wide block. Once the local call
+exits, a new explicit request may run subject to existing deadlines, quotas,
+rate limits, bounded failure cooldown and single-flight. Legacy unknown markers
+and event files remain historical evidence but no longer control admission.
+No new outcome markers are written and no manual recovery is required.
+`manage.py tiantian_account_state` is inspection-only and identifies legacy
+records separately from the current local lock state.
+
+Normal completion, exceptions and process exit release the OS lock; cancelled
+waiters never acquire it. The lock file itself is retained at the same inode.
+Local termination does not prove that a remote request has finished; a later
+explicit request can overlap unknown remote work. This is not a cross-machine
+lock and cannot serialize website
 operations, containers with separate temporary filesystems, or other OS users.
 The current local deployment is a single host/OS user. Do not claim account-wide
 serialization across those external environments.
 
 Batch keeps its configured worker count even when ultra quality is requested;
-only actual TianTian work enters the account guard. The legacy whole-batch
+only actual TianTian work enters the local account serialization lock. The legacy whole-batch
 TianTian worker cap no longer serializes unrelated provider rows.
 
 Kukutool retains existing execution concurrency, timeout and real rate-limit

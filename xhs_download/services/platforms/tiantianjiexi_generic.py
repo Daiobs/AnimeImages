@@ -42,7 +42,7 @@ from .kukutool_generic import (
     public_url_or_empty,
     source_key_for_url,
 )
-from .tiantian_serial import serialized, request_in_flight, TianTianAdmissionDeferred
+from .tiantian_serial import serialized, TianTianAdmissionDeferred
 
 
 logger = logging.getLogger(__name__)
@@ -379,7 +379,6 @@ class TianTianJieXiApiClient:
         if not api_configured():
             raise TianTianJieXiAuthError("天天解析账号未配置")
         timeout = float(timeout_seconds if timeout_seconds is not None else runtime_float("TIANTIANJIEXI_TIMEOUT_SECONDS", 15) or 15)
-        # Resolve configuration before marking a request as potentially sent.
         endpoint = self.base_url
         fields = {"phone": self.phone, "password": self.password, "link": url}
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
@@ -389,17 +388,14 @@ class TianTianJieXiApiClient:
             requests.Request("POST", endpoint, data=fields, headers=headers).prepare()
         except (requests.exceptions.InvalidURL, requests.exceptions.MissingSchema,
                 requests.exceptions.InvalidSchema) as error:
-            request_in_flight(False, "LOCAL_REQUEST_NOT_SENT")
             raise TianTianJieXiApiError("天天解析请求配置无效", diagnostic_detail="SERVICE_REQUEST_NOT_SENT") from error
         try:
-            request_in_flight(True)
             response = self.session.post(
                 endpoint,
                 data=fields,
                 headers=headers,
                 timeout=max(0.1, timeout),
             )
-            request_in_flight(False)
             response.raise_for_status()
             payload = response.json()
         except requests.Timeout as error:
@@ -409,8 +405,6 @@ class TianTianJieXiApiClient:
         except requests.exceptions.SSLError as error:
             raise TianTianJieXiUncertainError("天天解析 TLS 失败", diagnostic_detail="SERVICE_TLS_ERROR") from error
         except requests.HTTPError as error:
-            if error.response is not None:
-                request_in_flight(False)
             status = error.response.status_code if error.response is not None else 0
             detail = f"SERVICE_HTTP_{status}" if 400 <= status <= 599 else "SERVICE_RESPONSE_REJECTED"
             raise TianTianJieXiApiError("天天解析 HTTP 失败", diagnostic_detail=detail) from error
