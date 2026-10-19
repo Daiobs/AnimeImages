@@ -1410,10 +1410,16 @@
                 const hasMedia = Object.prototype.hasOwnProperty.call(result, "assets") ? media.length > 0
                     : Number.isSafeInteger(count) && count > 0;
                 const returned = String(e.state || "").toLowerCase();
-                const eligible = native ? metadata.identity_confirmed === true
-                    && String(metadata.capture_status ?? e.state ?? "").toUpperCase() === "RETURNED"
-                    : result.status === "success" && ["returned", "success"].includes(returned) && result.executed !== false
-                        && result.error_detail !== "SERVICE_PREVIOUS_OUTCOME_UNKNOWN" && result.client_status !== "OUTCOME_UNKNOWN";
+                const status = String(result.status || "").toLowerCase();
+                // Keep the ledger's confirmed-media rules, not merely a successful response.
+                const unexecuted = ["planned", "not_executed", "not_run", "skipped", "cancelled", "canceled",
+                    "not_configured", "not_authorized", "not_applicable", "inapplicable"];
+                const offline = ["offline_replay", "offline_conversion", "replay"].includes(metadata.evidence_kind);
+                const eligible = metadata.identity_confirmed === true && (native
+                    ? String(metadata.capture_status ?? e.state ?? "").toUpperCase() === "RETURNED"
+                    : !offline && !unexecuted.includes(returned) && !unexecuted.includes(status) && result.executed !== false
+                        && result.error_detail !== "SERVICE_PREVIOUS_OUTCOME_UNKNOWN" && result.client_status !== "OUTCOME_UNKNOWN"
+                        && (["returned", "failed"].includes(returned) || returned === "success" && status === "success"));
                 if (!eligible || !hasMedia || !e.provider_id) continue;
                 const types = new Set(media.map((asset) => asset.media_type));
                 const inferredKind = types.size > 1 ? "multimedia" : types.has("image")
@@ -1429,6 +1435,7 @@
                 entry.observations.add(`${e.source_url || sampleIdentity(e)}:${e.provider_id}:${e.application_record_id || e.id}`);
                 let note = "可供人工核对路线，非当前可执行保证";
                 if (native) note = "身份已确认的原生离线证据，不证明产品通道可执行";
+                else if (["failed", "timeout"].includes(status)) note = "已确认返回的部分媒体；执行未成功，不代表完整解析成功";
                 else if (!descriptor || descriptor.baseline || descriptor.route_selectable !== true || descriptor.available !== true)
                     note = "仅历史证据：未知、基线或当前不可选 Provider，不能视为可执行路线";
                 entry.notes.add(note);
@@ -1448,7 +1455,7 @@
                     ? "唯一已验证参考（限本批次该内容类型，不代表最佳或路线已验收）。"
                     : "多家记录不排名；不同作品不能直接比较，需同作品比较。"}`));
             }
-            reference.append(groups.size ? list : node("p", "暂无满足条件的选路参考；失败、未返回、身份未确认或缺少非封面媒体依据的记录不形成建议。"));
+            reference.append(groups.size ? list : node("p", "暂无满足条件的选路参考；未返回、身份未确认、普通离线回放或缺少非封面媒体依据的记录不形成建议。"));
             executionsNode.append(reference);
         }
         async function read(params) {
