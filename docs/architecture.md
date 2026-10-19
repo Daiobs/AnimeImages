@@ -189,6 +189,8 @@ Single 的 `DouyinTianTianFirstProvider` 在天天合法结果返回后结束，
 
 Ultra Provider 工作有独立 foreground deadline、短期 payload/failure cache、single-flight 和请求级 attempt accounting。最终媒体 redirect 只接受 source-bound 的受审查 host policy。
 
+天天沿用同主机、同 OS 用户的账号串行锁；移除的是历史未知结果造成的无限期账号阻断，不是超时、限流、请求上限、有限失败冷却或 single-flight。旧 marker/journal 保留但不参与新请求准入，超时不要求人工恢复，也不自动重放旧请求。本地调用退出不证明远端停止，串行锁不保证远端未知工作或其他机器的全局互斥。
+
 ## Bilibili
 
 正式路线保持 Native video-only：

@@ -28,7 +28,7 @@ from .services.platforms.tiantianjiexi_generic import (
     TianTianJieXiApiClient, TianTianJieXiGenericProvider,
     build_payload_cache_key, build_single_flight_key, source_key_for_request,
 )
-from .services.platforms.tiantian_serial import inspect_or_recover
+from .services.platforms.tiantian_serial import inspect_account_state
 from .services.provider_settings import ProviderSettings
 from .services.rate_limits import LimitResult
 from .services.registry import PlatformRegistry
@@ -305,17 +305,19 @@ class DouyinTianTianFirstTests(SimpleTestCase):
             self.parse_entry(controller=self.context().ultra_attempt_controller)
         self.case.session.post.assert_not_called(); self.runner.assert_not_called()
 
-    def test_real_timeout_marks_account_unknown_and_next_request_does_not_repeat(self):
+    @override_settings(TIANTIANJIEXI_RETRIES=3)
+    def test_real_timeout_falls_back_without_permanently_blocking_next_request(self):
         self.seed_kuku()
         self.case.session.post.side_effect = requests.Timeout("Controlled final HTTP timeout")
         first = self.coordinator.parse(self.adapter, self.context())
         self.assertEqual(first.metadata["selected_provider"], "kukutool")
-        before = inspect_or_recover()
-        self.assertEqual(before["marker"], "U")
-        second = self.coordinator.parse(self.adapter, self.context())
-        self.assertEqual(second.metadata["selected_provider"], "kukutool")
         self.case.session.post.assert_called_once()
-        self.assertEqual(inspect_or_recover()["state_fingerprint"], before["state_fingerprint"])
+        self.assertFalse(inspect_account_state()["unknown_outcome_blocks_requests"])
+        self.advance(30)
+        self.case.session.post.side_effect = self.post
+        second = self.coordinator.parse(self.adapter, self.context())
+        self.assertEqual(second.metadata["selected_provider"], "tiantianjiexi")
+        self.assertEqual(self.case.session.post.call_count, 2)
 
     def test_existing_single_flight_wait_does_not_send_or_clear_owner(self):
         self.seed_kuku()
