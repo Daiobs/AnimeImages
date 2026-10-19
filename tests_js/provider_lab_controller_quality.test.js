@@ -124,6 +124,116 @@ function routeFixture(canConfigure = true) {
     return {panel, doc: documentFor(panel)};
 }
 
+async function commonRouteFixture() {
+    const f = routeFixture();
+    f.calls = []; f.host = "source.example";
+    f.items = ["GVVideoClient", "AnyFetcherVideoClient", "OtherCommon"].map((backend_id) => ({backend_id,
+        backend_category: "common", controlled_available: true, external_sharing_required: true,
+        saved_route_selectable: backend_id !== "OtherCommon", saved_route_recipients: [`${backend_id.toLowerCase()}.example`],
+        saved_route_version: "videodl@pin"}));
+    f.items.push({backend_id: "DedicatedClient", backend_category: "dedicated", saved_route_selectable: true});
+    f.field = (name) => f.panel.querySelector(`[name="route_videodl_${name}"]`);
+    f.panel.append(new Node("select", {name: "route_videodl_category", value: "dedicated"}),
+        new Node("input", {name: "route_videodl_sharing_confirmed"}), new Node("div", {"data-route-sharing": ""}),
+        new Node("p", {"data-route-sharing-scope": ""}), new Node("button", {"data-route-cancel": ""}));
+    f.field("backend").options = [new Node("option", {value: ""}), ...f.items.map((item) => new Node("option",
+        {value: item.backend_id, "data-backend-category": item.backend_category}))];
+    f.confirm = f.panel.querySelector("[data-route-confirm]");
+    f.change = (name, value) => { const node = f.field(name); node.value = value; f.panel.listeners.change({target: node}); };
+    f.authorize = () => { f.field("sharing_confirmed").checked = true;
+        f.panel.listeners.change({target: f.field("sharing_confirmed")}); f.confirm.checked = true;
+        f.panel.listeners.change({target: f.confirm}); };
+    f.evidence = (id = "GVVideoClient") => ({id: 90, options: {mode: "specific_backend", backend_category: "common",
+        backend_id: id, external_sharing_confirmed: true, sharing_authorization: {stored: true}}});
+    f.editor = lab.createRouteEditor(f.doc, {url: "/routes", csrf: () => "csrf", getSource: () => f.host,
+        getHost: () => f.host, window: {location: {origin: "https://local.example"}}, videodlInventory: {items: f.items},
+        descriptors: [{provider_id: "videodl_repo", available: true, route_selectable: true}],
+        fetch: async (url, request) => { f.calls.push({url, request}); return {ok: true, json: async () => ({ok: true,
+            route: {...route, source_host: f.host, provider_order: ["videodl_repo"], allowed_provider_ids: ["videodl_repo"],
+                provider_options: {videodl_repo: {mode: "dedicated_only", sharing_authorization: {stored: true}}}}})}; }});
+    await f.editor.load();
+    return f;
+}
+
+test("exact Common saved route requires fresh sharing and general confirmation, sending only current contract", async () => {
+    for (const id of ["GVVideoClient", "AnyFetcherVideoClient"]) {
+        const f = await commonRouteFixture();
+        f.editor.selectProvider("videodl_repo", f.evidence(id));
+        assert.equal(f.field("category").value, "common"); assert.equal(f.field("backend").value, id);
+        assert.equal(f.field("sharing_confirmed").checked, false);
+        assert.match(f.panel.querySelector("[data-route-sharing-scope]").textContent, /接收方：.*\.example；范围：未来 source\.example 获准请求.*videodl@pin/);
+        f.confirm.checked = true; await f.editor.persist(false); assert.equal(f.calls.length, 1);
+        f.authorize(); f.confirm.checked = false; await f.editor.persist(false); assert.equal(f.calls.length, 1);
+        f.confirm.checked = true; await f.editor.persist(false);
+        assert.equal(f.calls.length, 2);
+        assert.deepEqual(JSON.parse(f.calls[1].request.body), {source_host: "source.example", expected_revision: 4,
+            provider_order: ["videodl_repo"], provider_options: {videodl_repo: {mode: "specific_backend", backend_category: "common", backend_id: id}},
+            format_preferences: {max_height: 1080}, reference_execution_id: 90, sharing_confirmation: {source_host: "source.example",
+                backend_category: "common", backend_id: id, recipients: [`${id.toLowerCase()}.example`], runtime_version: "videodl@pin",
+                scope: "future_admitted_requests"}});
+        assert.equal(f.field("sharing_confirmed").checked, false);
+    }
+});
+
+test("category, backend, mode, evidence and cancellation clear Common consent without requests", async () => {
+    const f = await commonRouteFixture();
+    const select = () => { f.editor.selectProvider("videodl_repo", f.evidence()); f.authorize(); };
+    select(); f.change("category", "dedicated");
+    assert.equal(f.field("backend").value, ""); assert.equal(f.field("sharing_confirmed").checked, false);
+    assert.equal(f.confirm.checked, false);
+    select(); f.change("backend", "AnyFetcherVideoClient");
+    assert.equal(f.field("backend").value, "AnyFetcherVideoClient"); assert.equal(f.field("sharing_confirmed").checked, false);
+    assert.equal(f.confirm.checked, false);
+    select(); f.change("mode", "dedicated_only");
+    assert.equal(f.field("backend").value, ""); assert.equal(f.field("sharing_confirmed").checked, false);
+    select(); f.editor.selectProvider("videodl_repo", f.evidence("AnyFetcherVideoClient"));
+    assert.equal(f.field("backend").value, "AnyFetcherVideoClient"); assert.equal(f.field("sharing_confirmed").checked, false);
+    select(); f.panel.listeners.click({target: f.panel.querySelector("[data-route-cancel]")});
+    assert.equal(f.field("backend").value, ""); assert.equal(f.field("sharing_confirmed").checked, false);
+    assert.equal(f.calls.length, 1, "Draft changes and cancel perform zero requests");
+});
+
+test("host changes never restore retained Backend or sharing consent", async () => {
+    const f = await commonRouteFixture();
+    f.editor.selectProvider("videodl_repo", f.evidence()); f.authorize();
+    f.editor.invalidate(); f.host = "other.example";
+    assert.equal(f.field("backend").value, ""); assert.equal(f.field("sharing_confirmed").checked, false);
+    await f.editor.load(); f.editor.invalidate(); f.host = "source.example"; await f.editor.load();
+    assert.equal(f.field("backend").value, ""); assert.equal(f.field("sharing_confirmed").checked, false);
+    assert.equal(f.confirm.checked, false); assert.equal(f.calls.every(({request}) => !request.method), true);
+});
+
+test("Common inventory policy blocks unselectable or incomplete descriptors even through direct persist", async () => {
+    for (const invalid of ["OtherCommon", "missing", "recipients", "version"]) {
+        const f = await commonRouteFixture();
+        f.editor.selectProvider("videodl_repo", f.evidence());
+        if (invalid === "recipients") f.items[0].saved_route_recipients = [];
+        else if (invalid === "version") delete f.items[0].saved_route_version;
+        else f.change("backend", invalid);
+        f.authorize(); await f.editor.persist(false);
+        assert.equal(f.calls.length, 1);
+        assert.equal(f.panel.querySelector("[data-route-save]").disabled, true);
+    }
+});
+
+test("aggregated history never guesses winner from first asset and old Dedicated history remains compatible", async () => {
+    const f = await commonRouteFixture();
+    for (const mode of ["common_only", "reviewed_auto"]) {
+        f.editor.selectProvider("videodl_repo", f.evidence()); f.authorize();
+        f.editor.selectProvider("videodl_repo", {id: 91, options: {mode, backend_category: "common", backend_ids: ["GVVideoClient"]},
+            result: {selected_backend: "GVVideoClient", assets: [{backend_id: "GVVideoClient"}]}});
+        assert.equal(f.field("backend").value, ""); assert.equal(f.field("mode").value, "");
+        assert.equal(f.field("sharing_confirmed").checked, false);
+        assert.match(f.panel.querySelector("[data-route-status]").textContent, /重新选择精确 Backend.*不从首个媒体/);
+    }
+    f.editor.selectProvider("videodl_repo", {id: 92, options: {mode: "specific_backend", backend_id: "DedicatedClient"}});
+    assert.equal(f.field("category").value, "dedicated"); assert.equal(f.field("backend").value, "DedicatedClient");
+    f.confirm.checked = true; await f.editor.persist(false);
+    const body = JSON.parse(f.calls.at(-1).request.body);
+    assert.deepEqual(body.provider_options.videodl_repo, {mode: "specific_backend", backend_id: "DedicatedClient"});
+    assert.equal(Object.hasOwn(body, "sharing_confirmation"), false);
+});
+
 test("shipped script retries initialization when interactive DOM has not mounted the Lab yet", async () => {
     const fs = require("node:fs"), vm = require("node:vm");
     const doc = documentFor(new Node("div")); doc.readyState = "interactive";

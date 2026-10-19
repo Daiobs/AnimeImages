@@ -123,17 +123,11 @@ def validate_preferences(provider_order, provider_options, format_preferences):
             continue
         if pid != "videodl_repo" or not isinstance(value, dict):
             raise UpstreamRouteError("INVALID_PROVIDER_OPTIONS")
-        if value == {"mode": "dedicated_only"}:
-            options[pid] = dict(value)
-            continue
-        if set(value) != {"mode", "backend_id"} or value["mode"] != "specific_backend":
-            raise UpstreamRouteError("INVALID_PROVIDER_OPTIONS")
-        from .provider_lab.videodl_policy import REVIEWED_DEDICATED_BACKEND_IDS, backend_policy
-        backend = value["backend_id"]
-        if (not isinstance(backend, str) or backend not in REVIEWED_DEDICATED_BACKEND_IDS
-                or backend_policy(backend, "dedicated", registry_present=True).controlled_state != "allowed"):
-            raise UpstreamRouteError("INVALID_BACKEND")
-        options[pid] = dict(value)
+        from .saved_videodl import normalize_saved_options
+        try:
+            options[pid] = normalize_saved_options(value)
+        except ValueError as error:
+            raise UpstreamRouteError(str(error)) from None
     if not isinstance(format_preferences, dict) or set(format_preferences) - {"max_height", "preferred_video_codec", "preferred_container"}:
         raise UpstreamRouteError("INVALID_FORMAT_PREFERENCES")
     for key, value in format_preferences.items():
@@ -149,7 +143,8 @@ def validate_preferences(provider_order, provider_options, format_preferences):
 
 
 def write_route(source_url=None, *, source_host=None, expected_revision, actor, provider_order=None,
-                provider_options=None, format_preferences=None, reset=False, reference_execution_id=None):
+                provider_options=None, format_preferences=None, reset=False, reference_execution_id=None,
+                sharing_confirmation=None):
     scope = source_scope(source_url, source_host=source_host)
     if not scope["applicable"]:
         raise UpstreamRouteError("ROUTE_NOT_APPLICABLE", 422)
@@ -159,6 +154,24 @@ def write_route(source_url=None, *, source_host=None, expected_revision, actor, 
         provider_order, provider_options if provider_options is not None else {},
         format_preferences if format_preferences is not None else {},
     )
+    selected = values[1].get("videodl_repo", {})
+    common = selected.get("backend_category") == "common"
+    if common:
+        from .saved_videodl import confirmation_scope, check_saved_runtime, VIDEODL_POLICY_REVISION
+        from .provider_lab.contracts import ProviderLabError
+        expected = confirmation_scope(scope["source_host"], selected)
+        if sharing_confirmation != expected:
+            raise UpstreamRouteError("COMMON_ROUTE_CONFIRMATION_REQUIRED", 403)
+        try:
+            check_saved_runtime(selected)
+        except ProviderLabError:
+            raise UpstreamRouteError("COMMON_ROUTE_RUNTIME_UNAVAILABLE", 422) from None
+        selected["sharing_authorization"] = {
+            **expected, "revision": expected_revision + 1, "policy_revision": VIDEODL_POLICY_REVISION,
+            "granted_at": timezone.now().isoformat(), "actor_id": getattr(actor, "pk", None),
+        }
+    elif sharing_confirmation is not None:
+        raise UpstreamRouteError("INVALID_SHARING_CONFIRMATION")
     reference = None
     if reference_execution_id is not None:
         if type(reference_execution_id) is not int:
@@ -254,7 +267,7 @@ def saved_service_matches(source_url):
 
 
 def saved_videodl_matches(source_url):
-    """Match the effective route against installed, reviewed dedicated backends."""
+    """Resolve reviewed Dedicated matches or an explicitly authorized fixed Common."""
     from .quality_execution import provider_available
     if not provider_available("videodl_repo"):
         return ()
@@ -275,20 +288,30 @@ def videodl_route_availability(source_url, route):
     unavailable = {"status": "unavailable", "reason": "PROVIDER_NOT_CONFIGURED", "matches": []}
     if not provider_available("videodl_repo"):
         return unavailable
+    options = route["provider_options"].get("videodl_repo") or {"mode": "dedicated_only"}
+    common = options.get("backend_category") == "common"
+    if common:
+        from .saved_videodl import authorized_common_options
+        try:
+            authorized_common_options(source_url, route["revision"], options.get("backend_id"))
+        except ProviderLabError:
+            return {**unavailable, "reason": "PROVIDER_POLICY_REJECTED"}
     identity = parse_cache_key(source_url, {**route, "cache_identity": route_cache_identity(route, ())}, "videodl_repo")
     key = f"{identity}:match:{VIDEODL_POLICY_REVISION}" if identity else None
     try:
         cached = cache.get(key) if key else None
     except Exception:
         cached = None
-    if cached is not None:
+    if cached is not None and not common:
         return cached
-    options = route["provider_options"].get("videodl_repo") or {"mode": "dedicated_only"}
     try:
-        matches = match_saved_videodl(source_url, options=options, timeout_seconds=5.0)
+        clean_options = {k: v for k, v in options.items() if k != "sharing_authorization"}
+        matches = match_saved_videodl(source_url, options=clean_options, timeout_seconds=5.0,
+                                     **({"route_revision": route["revision"]} if common else {}))
         matches = [match for match in matches if match.get("provider_id") == "videodl_repo"
                    and match.get("version") == f"videodl@{VIDEODL_POLICY_PIN}"
-                   and backend_policy(match.get("extractor_id"), "dedicated").controlled_state == "allowed"
+                   and backend_policy(match.get("extractor_id"), options.get("backend_category", "dedicated")).controlled_state
+                       in ({"allowed", "requires_sharing_confirmation"} if common else {"allowed"})
                    and (options.get("mode") != "specific_backend"
                         or match.get("extractor_id") == options.get("backend_id"))]
         status = {"status": "available" if matches else "unavailable",
@@ -325,6 +348,7 @@ def parse_cache_key(source_url, route, provider):
                                        else "provider_lab/runtime/workers/videodl_worker.py")]
             if provider == "videodl_repo":
                 paths.append(root / "xhs_download/services/provider_lab/videodl_policy.py")
+                paths.append(root / "xhs_download/services/saved_videodl.py")
             signature = [(str(path), path.stat().st_size, path.stat().st_mtime_ns) for path in paths]
         payload = [source_url, route["cache_identity"], provider, signature]
         return "upstream:parse:v1:" + sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()

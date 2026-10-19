@@ -557,8 +557,33 @@ Django check、迁移漂移、文档本地链接和 diff 检查通过。授权�
 尺寸、编码和码率是上游声明，未下载或目视比较时不宣称验证了最高画质。
 
 正式路线的范围是精确 hostname，不按内容类型持久化，也不自动合并短链或别名。
-既有成熟路线仍受保护。videodl Common/未知执行选项仅可作为采集证据，不能冒充
-Dedicated 路线；重新选择历史证据会重新核对执行选项，不继承先前草稿的不同 Backend。
+既有成熟路线仍受保护。未知或聚合执行选项不能从首个媒体推断固定 Backend；
+重新选择历史证据会重新核对执行选项，不继承先前草稿的不同 Backend 或共享授权。
+
+### 已审查 Common 固定路线 v1
+
+在固定 videodl `6cd1de0fe1209380b183b654c65e98a629637873` 下，首批仅接通
+`GVVideoClient`（接收方 `greenvideo.cc`）与 `AnyFetcherVideoClient`（接收方
+`anyfetcher.com`）。它们是两个具体 Backend，不代表所有 Common 或独立实现数量。
+其他 Common 仍保留原 Lab 比较资格，不能因本增量自动成为持久路线。
+
+保存选项为 `specific_backend`、`backend_category=common` 和唯一 `backend_id`。
+无类别的旧 Specific Backend 继续解释为 Dedicated。保存使用原 Staff/配置权限、
+CSRF、revision 和审计，另需明确确认精确 host、Backend、接收方、固定 Runtime
+以及未来该 host 的已获准请求共享范围。单次 Lab、历史导入及普通解析参数不授予未来共享权限。
+授权事实存于原 `provider_options` 并随审计记录；客户端不能提交或复制此授权事实。
+换 Backend/host、重新保存或撤销均需重新核对，重置会移除授权，不存在任意短 TTL。
+
+匹配不伪造 Dedicated 正则命中，而标为人工精确 host 授权；读取仍不发解析。
+执行前重读当前持久路线，核对 revision、策略、接收方和 Runtime，再映射到原受控 Worker
+的 Common 类别及单一 `backend_ids`。Common 不进入默认遍历，只使用明确配置的首选/备选。
+缓存身份包含路线授权、类别、Backend、版本；撤销、策略阻止或 Runtime 不符时拒绝执行，
+缓存故障不自动重发结果未知的远端操作。停止本地等待不等于远端已终止。
+
+此功能不扩大匿名准入、来源权限或下载授权，也不创建内容类型路由。
+保存对精确 host 的全部内容生效，不合并子域、短链或别名。实际新版本部署不属于此功能验收。
+回归通过独立数据库的正常保存 API、全新进程、普通首页/Batch和真实 Worker 协议验证；
+最终原生返回边界使用固定脱敏替身，不能写成新鲜服务成功或下载验收。
 
 2026-09-08 小节中的“服务通道只允许人工路线”是当时状态：当前六个已接入通道
 均可按实际配置、匹配和授权参与默认策略，人工路线仍优先且不被参考建议覆盖。

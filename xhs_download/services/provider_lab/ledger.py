@@ -171,16 +171,27 @@ def _observation(row):
     route_options = {}
     if options.get("mode") == "dedicated_only":
         route_options = {"mode": "dedicated_only"}
-    elif options.get("mode") == "specific_backend" and options.get("backend_category") == "dedicated":
+    elif (options.get("mode") == "specific_backend"
+          and isinstance(options.get("backend_category", "dedicated"), str)
+          and options.get("backend_category", "dedicated") in {"dedicated", "common"}):
         backend_ids = options.get("backend_ids")
-        backend = options.get("backend_id") or (backend_ids[0] if isinstance(backend_ids, list) and len(backend_ids) == 1 else None)
+        backend = options.get("backend_id")
+        if "backend_ids" in options:
+            if (isinstance(backend_ids, list) and len(backend_ids) == 1
+                    and isinstance(backend_ids[0], str)
+                    and (backend is None or backend == backend_ids[0])):
+                backend = backend_ids[0]
+            else:
+                backend = None
         route_options = {"mode": "specific_backend", "backend_id": backend}
+        if "backend_category" in options:
+            route_options["backend_category"] = options["backend_category"]
     try:
-        dedicated = bool(route_options)
-        if dedicated:
+        route_backend_supported = bool(route_options)
+        if route_backend_supported:
             validate_preferences(["videodl_repo"], {"videodl_repo": route_options}, {})
     except UpstreamRouteError:
-        dedicated = False
+        route_backend_supported = False
     observed = native or (not not_run and not offline and (r["executed"] is True
         or r["request_attempted"] is True or r["request_returned"] is True
         or state in {"returned", "success", "failed", "timeout", "sent", "running", "in_flight"}))
@@ -192,7 +203,7 @@ def _observation(row):
             "attempted": observed and not native and r["cache_hit"] is not True,
             "evidence": evidence, "success": success, "status": latest_status, "at": at,
             "error": _text(r["error_detail"] or r["error_code"], 160),
-            "partial": has_media and status in {"failed", "timeout"}, "dedicated": dedicated,
+            "partial": has_media and status in {"failed", "timeout"}, "route_backend_supported": route_backend_supported,
             "request_id": _text(r["request_id"], 200), "archive": _text(m["archive_sha256"], 80),
             "replay_of": _text(s["replay_of"], 200), "replay_batch_key": _text(s["replay_batch_key"], 200),
             "execution_key": _text(s["execution_key"], 200),
@@ -288,7 +299,7 @@ def _summarize(platform):
         latest = max(dated or p_rows, key=lambda r: (r["at"] or "", r["id"]))
         positives = [g for g in p_groups if any(r["evidence"] == "confirmed" for r in g)]
         draft = any(r["evidence"] == "confirmed" and not r["offline"]
-                    and (pid != "videodl_repo" or r["dedicated"]) for r in p_rows)
+                    and (pid != "videodl_repo" or r["route_backend_supported"]) for r in p_rows)
         selected = platform["current_route"]["active"] and pid in platform["current_route"]["provider_order"]
         adoptability = ("unknown_source" if platform["source_host"] == "unknown" else
                         "protected" if not platform["current_route"]["applicable"] else

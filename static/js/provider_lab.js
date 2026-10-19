@@ -813,6 +813,38 @@
         return body;
     }
 
+    function exactHistoryBackend(options) {
+        if (options?.mode !== "specific_backend") return null;
+        const category = Object.hasOwn(options, "backend_category") ? options.backend_category : "dedicated";
+        if (typeof category !== "string" || !["dedicated", "common"].includes(category)) return null;
+        const hasBackend = Object.hasOwn(options, "backend_id");
+        let backend = options.backend_id;
+        if (hasBackend && (typeof backend !== "string" || !backend.length)) return null;
+        if (Object.hasOwn(options, "backend_ids")) {
+            const ids = options.backend_ids;
+            if (!Array.isArray(ids) || ids.length !== 1 || typeof ids[0] !== "string" || !ids[0].length
+                    || (hasBackend && backend !== ids[0])) return null;
+            backend = ids[0];
+        }
+        return typeof backend === "string" && backend.length
+            ? {backend_id: backend, backend_category: category} : null;
+    }
+
+    function savedBackendSelectable(item) {
+        return Boolean(item && (item.saved_route_selectable === true || (item.saved_route_selectable === undefined
+            && item.backend_category === "dedicated" && item.controlled_available === true && !item.external_sharing_required)));
+    }
+
+    function savedRouteHistoryNote(options, inventory) {
+        if (options?.mode === "dedicated_only") return "Dedicated 历史证据，仍需核对当前 backend 与来源适用性";
+        const exact = exactHistoryBackend(options);
+        if (!exact) return "聚合或未知执行选项：请重新选择精确 Backend，不从首个媒体推断赢家";
+        const item = inventory?.items?.find((item) => item.backend_id === exact.backend_id && item.backend_category === exact.backend_category);
+        return `${exact.backend_category === "common" ? "Common" : "Dedicated"} · ${exact.backend_id}：${savedBackendSelectable(item)
+            ? exact.backend_category === "common" ? "可恢复草稿，须重新确认接收方与未来请求共享范围" : "可恢复草稿，仍需核对来源适用性"
+            : "当前 Backend 不可固定或能力未确认，请重新选择"}`;
+    }
+
     function createRouteEditor(documentObject, options) {
         const settings = options || {};
         const panel = documentObject.querySelector("[data-lab-route-editor]");
@@ -825,6 +857,8 @@
         const save = panel.querySelector("[data-route-save]");
         const reset = panel.querySelector("[data-route-reset]");
         const fields = panel.querySelector("[data-route-fields]");
+        const inventory = settings.videodlInventory || readVideodlInventory(documentObject);
+        const sharing = panel.querySelector('[name="route_videodl_sharing_confirmed"]');
         const anchor = documentObject.createElement("span");
         panel.parentNode.insertBefore(anchor, panel);
         const labels = {yt_dlp_generic: "yt-dlp", gallery_dl_generic: "gallery-dl", parsehub_generic: "ParseHub",
@@ -840,7 +874,7 @@
         let reference = null;
         const drafts = new Map();
         let sourceField = "source_url";
-        const draftFields = ["max_height", "preferred_video_codec", "preferred_container", "route_videodl_mode", "route_videodl_backend"];
+        const draftFields = ["max_height", "preferred_video_codec", "preferred_container", "route_videodl_mode", "route_videodl_category"];
         function retainDraft() {
             if (!route || busy) return;
             drafts.set(route.source_host, {revision: route.revision, order: [...order], reference,
@@ -849,9 +883,53 @@
         const canConfigure = panel.dataset.canConfigure === "true";
         const text = (value) => { if (message) message.textContent = value; };
         function field(name) { return panel.querySelector(`[name="${name}"]`); }
+        function clearConsent(clearBackend = false) {
+            if (sharing) sharing.checked = false;
+            if (confirm) confirm.checked = false;
+            if (clearBackend && field("route_videodl_backend")) field("route_videodl_backend").value = "";
+        }
+        function category() { return field("route_videodl_category")?.value || "dedicated"; }
+        function backendDescriptor(id = field("route_videodl_backend")?.value, kind = category()) {
+            const item = inventory?.items?.find((item) => item.backend_id === id && item.backend_category === kind);
+            if (item) return item;
+            if (inventory?.items?.length) return null;
+            const option = Array.from(field("route_videodl_backend")?.options || []).find((option) => option.value === id
+                && (option.dataset?.backendCategory || "dedicated") === kind && !option.disabled);
+            return option && kind === "dedicated" ? {backend_id: id, backend_category: kind, saved_route_selectable: true} : null;
+        }
+        function commonReady(item) {
+            return savedBackendSelectable(item) && Array.isArray(item.saved_route_recipients)
+                && item.saved_route_recipients.length > 0 && item.saved_route_recipients.every((host) => typeof host === "string" && host.length > 0)
+                && typeof item.saved_route_version === "string" && item.saved_route_version.length > 0;
+        }
+        function syncRouteBackend() {
+            const specific = field("route_videodl_mode")?.value === "specific_backend";
+            const backend = field("route_videodl_backend");
+            if (backend) {
+                backend.disabled = !specific;
+                Array.from(backend.options || []).forEach((option) => {
+                    if (!option.value) return;
+                    const kind = option.dataset?.backendCategory || "dedicated";
+                    option.hidden = kind !== category();
+                    option.disabled = option.hidden || !savedBackendSelectable(backendDescriptor(option.value, kind));
+                });
+            }
+            const common = order.includes("videodl_repo") && specific && category() === "common";
+            const container = panel.querySelector("[data-route-sharing]");
+            if (container) container.hidden = !common;
+            const item = backendDescriptor();
+            if (sharing) sharing.disabled = !common || !commonReady(item);
+            const summary = panel.querySelector("[data-route-sharing-scope]");
+            if (summary) summary.textContent = commonReady(item) && common
+                ? `接收方：${item.saved_route_recipients.join("、")}；范围：未来 ${route?.source_host || "当前 host"} 获准请求的来源链接；Backend：${item.backend_id}；运行版本：${item.saved_route_version}。不包含其他 host，也不是仅本次测试授权。`
+                : "请选择可固定的 Common Backend，核对接收方与未来本 host 获准请求范围。";
+        }
         function buttons() {
             if (fields) fields.disabled = busy || !canConfigure || !route?.applicable;
-            if (save) save.disabled = busy || !canConfigure || !route?.applicable || !confirm?.checked || !order.length;
+            const specific = order.includes("videodl_repo") && field("route_videodl_mode")?.value === "specific_backend";
+            const invalidBackend = specific && (!savedBackendSelectable(backendDescriptor())
+                || (category() === "common" && (!commonReady(backendDescriptor()) || !sharing?.checked)));
+            if (save) save.disabled = busy || !canConfigure || !route?.applicable || !confirm?.checked || !order.length || invalidBackend;
             if (reset) reset.disabled = busy || !canConfigure || !route?.applicable || !route.active;
         }
         function restore() { anchor.parentNode?.insertBefore(panel, anchor.nextSibling); }
@@ -869,7 +947,7 @@
             const preferences = ["max_height", "preferred_video_codec", "preferred_container"]
                 .filter((name) => field(name)?.value).map((name) => `${name}=${field(name).value}`).join("，") || "未指定";
             const execution = order.includes("videodl_repo")
-                ? `${field("route_videodl_mode")?.value || "未知，请显式设置"} ${field("route_videodl_backend")?.value || ""}` : "该上游标准模式";
+                ? `${field("route_videodl_mode")?.value || "未知，请显式设置"} ${category()} ${field("route_videodl_backend")?.value || ""}` : "该上游标准模式";
             node.textContent = `实际 hostname 范围：${route.source_host}（不区分内容类型，不自动合并别名或短链域名）；revision ${route.revision}；当前：${current}；拟固定：${order[0] ? providerName(order[0]) : "未选择"}；执行选项：${execution}；格式偏好：${preferences}；明确备选：${routeNames(order.slice(1)) || "无，首选失败即停止"}。`;
         }
         function renderOrder() {
@@ -903,6 +981,7 @@
             });
             const videodl = panel.querySelector("[data-route-videodl]");
             if (videodl) videodl.hidden = !order.includes("videodl_repo");
+            syncRouteBackend();
             showCurrent();
             buttons();
             draftSummary();
@@ -920,8 +999,10 @@
             const mode = field("route_videodl_mode");
             if (mode) mode.value = snapshot.provider_options?.videodl_repo?.mode || "dedicated_only";
             const backend = field("route_videodl_backend");
+            const kind = field("route_videodl_category");
+            if (kind) kind.value = snapshot.provider_options?.videodl_repo?.backend_category || "dedicated";
             if (backend) backend.value = snapshot.provider_options?.videodl_repo?.backend_id || "";
-            if (confirm) confirm.checked = false;
+            clearConsent();
             renderOrder();
         }
         async function load({preserveDraft = false} = {}) {
@@ -938,6 +1019,7 @@
                 } catch (_error) { /* The route endpoint remains the source validator. */ }
             }
             retainDraft();
+            clearConsent(true);
             const version = ++sequence;
             route = null; source = ""; order = []; reference = null;
             const referenceNode = panel.querySelector("[data-route-reference]");
@@ -958,6 +1040,7 @@
                 if (draft && draft.revision === route.revision) {
                     order = [...draft.order]; reference = draft.reference;
                     draftFields.forEach((name) => { if (field(name)) field(name).value = draft.values[name]; });
+                    clearConsent(true);
                     if (referenceNode) referenceNode.textContent = reference ? historyEvidence(reference) : "";
                     renderOrder();
                 } else if (draft) drafts.delete(route.source_host);
@@ -976,17 +1059,30 @@
                 if (value) preferences[name] = name === "max_height" ? Number(value) : value;
             }
             const providerOptions = {};
+            let sharingConfirmation;
             if (order.includes("videodl_repo")) {
                 if (!isReset && !field("route_videodl_mode")?.value) { text("历史 videodl 选项未知或不支持，请显式设置执行模式。"); return; }
                 providerOptions.videodl_repo = {mode: field("route_videodl_mode")?.value || "dedicated_only"};
                 if (providerOptions.videodl_repo.mode === "specific_backend") {
                     providerOptions.videodl_repo.backend_id = field("route_videodl_backend")?.value || "";
+                    const item = backendDescriptor();
+                    if (!isReset && !savedBackendSelectable(item)) { text("请选择当前可固定的精确 Backend。"); return; }
+                    if (category() === "common") {
+                        providerOptions.videodl_repo.backend_category = "common";
+                        if (!isReset && (!commonReady(item) || !sharing?.checked)) { text("请明确确认接收方及未来本 host 获准请求的共享范围。"); return; }
+                        if (!isReset) sharingConfirmation = {source_host: route.source_host, backend_category: "common",
+                            backend_id: item.backend_id, recipients: [...item.saved_route_recipients],
+                            runtime_version: item.saved_route_version, scope: "future_admitted_requests"};
+                    }
+                } else if (!isReset && (providerOptions.videodl_repo.mode !== "dedicated_only" || category() !== "dedicated")) {
+                    text("请重新选择精确 Backend；Common 固定路线仅支持 Specific Backend。"); return;
                 }
             }
             const body = routeRequestBody(source, route, {provider_order: order,
                 provider_options: providerOptions, format_preferences: preferences}, isReset);
             if (sourceField === "source_host") { delete body.source_url; body.source_host = source; }
             if (!isReset && reference) body.reference_execution_id = reference.id;
+            if (sharingConfirmation) body.sharing_confirmation = sharingConfirmation;
             const version = ++sequence;
             busy = true; buttons();
             try {
@@ -1015,6 +1111,7 @@
             finally { if (version === sequence) { busy = false; buttons(); } }
         }
         function selectProvider(providerId, evidence, position) {
+            clearConsent(true);
             const descriptor = settings.descriptors?.find((item) => item.provider_id === providerId);
             evidence = evidence || settings.getSelection?.()?.historyExecution;
             if (evidence && (!descriptor || descriptor.available !== true || descriptor.route_selectable !== true)) {
@@ -1044,26 +1141,30 @@
                 const recorded = reference.options?.videodl_repo || reference.options || {};
                 const mode = field("route_videodl_mode");
                 const backend = field("route_videodl_backend");
+                const kind = field("route_videodl_category");
+                if (kind) kind.value = "dedicated";
                 if (mode) mode.value = recorded.mode === "dedicated_only" ? "dedicated_only" : "";
                 if (backend) backend.value = "";
-                if (recorded.mode === "specific_backend" && recorded.backend_category === "dedicated") {
-                    const backendId = recorded.backend_id || (recorded.backend_ids?.length === 1 ? recorded.backend_ids[0] : "");
-                    if (backend && Array.from(backend.options || []).some((item) => item.value === backendId && !item.disabled)) {
-                        mode.value = "specific_backend"; backend.value = backendId;
+                const exact = exactHistoryBackend(recorded);
+                if (exact) {
+                    if (kind) kind.value = exact.backend_category;
+                    if (backend && savedBackendSelectable(backendDescriptor(exact.backend_id, exact.backend_category))) {
+                        mode.value = "specific_backend"; backend.value = exact.backend_id;
                     }
                 }
             }
             if (confirm) confirm.checked = false;
             renderOrder(); text(reference && id === "videodl_repo" && !field("route_videodl_mode")?.value
-                ? "历史 videodl 为 Common、未知或当前不支持的选项；已清空旧执行模式，不能沿用旧 Dedicated 配置，请显式设置；尚未保存。"
-                : reference && id === "videodl_repo" ? "已按所选历史重新设置 Dedicated 执行选项；尚未保存。" : "已调整路线草稿；尚未保存。");
+                ? "历史 videodl 为聚合、未知或当前不可固定的选项；已清空旧执行模式，请显式设置并重新选择精确 Backend，不从首个媒体推断赢家；尚未保存。"
+                : reference && id === "videodl_repo" ? "已按所选历史重新设置执行选项；共享授权未继承，尚未保存。" : "已调整路线草稿；尚未保存。");
         }
         panel.addEventListener("click", (event) => {
             if (event.target.closest?.("[data-route-cancel]")) {
                 if (route) drafts.delete(route.source_host);
                 reference = null;
                 const node = panel.querySelector("[data-route-reference]"); if (node) node.textContent = "";
-                if (route) apply(route); text("已取消草稿，平台路线未改变。"); return;
+                if (route) apply(route); clearConsent(true); syncRouteBackend(); buttons(); draftSummary();
+                text("已取消草稿，平台路线未改变。"); return;
             }
             if (event.target.closest?.("[data-route-load]")) { void load(); return; }
             if (event.target.closest?.("[data-route-save]")) { void persist(false); return; }
@@ -1073,6 +1174,7 @@
             if (!move || !canConfigure || !route?.applicable) return;
             const index = order.indexOf(move.dataset.providerId);
             if (index < 0) return;
+            clearConsent();
             if (move.dataset.routeMove === "remove") order.splice(index, 1);
             else {
                 const target = index + (move.dataset.routeMove === "up" ? -1 : 1);
@@ -1082,6 +1184,10 @@
             renderOrder();
         });
         panel.addEventListener("change", (event) => {
+            if ([field("route_videodl_category"), field("route_videodl_mode")].includes(event.target)) {
+                clearConsent(true);
+                if (event.target === field("route_videodl_category") && category() === "common") field("route_videodl_mode").value = "specific_backend";
+            } else if (event.target === field("route_videodl_backend")) clearConsent();
             if (event.target === addSelect && addSelect.value) {
                 if (canConfigure && !busy && route?.applicable && route.allowed_provider_ids.includes(addSelect.value)) {
                     order = Array.from(new Set([...order, addSelect.value]));
@@ -1089,13 +1195,14 @@
                 if (confirm) confirm.checked = false; renderOrder();
             }
             if (event.target !== confirm && confirm) confirm.checked = false;
+            syncRouteBackend();
             draftSummary();
             buttons();
         });
         buttons();
         return {load, persist, selectProvider, restore, mount(container) { container.append(panel); }, get route() { return route; },
             get currentSummary() { return panel.querySelector("[data-route-current]")?.textContent || ""; },
-            invalidate() { retainDraft(); sequence += 1; route = null; source = ""; reference = null; order = []; busy = false;
+            invalidate() { retainDraft(); clearConsent(true); sequence += 1; route = null; source = ""; reference = null; order = []; busy = false;
                 const node = panel.querySelector("[data-route-reference]"); if (node) node.textContent = "";
                 scope.textContent = "尚未读取来源范围";
                 const summary = panel.querySelector("[data-route-confirmation-summary]");
@@ -1334,11 +1441,7 @@
                 entry.notes.add(note);
                 if (id === "videodl_repo") {
                     const options = e.options?.videodl_repo || e.options || {};
-                    if (options.mode !== "dedicated_only" && !(options.mode === "specific_backend"
-                            && options.backend_category === "dedicated"
-                            && (options.backend_id || options.backend_ids?.length === 1)))
-                        note = "Common 或未知执行选项：仅采集证据，不可直接作为可执行路线";
-                    else note = "Dedicated 历史证据，仍需核对当前 backend 与来源适用性";
+                    note = savedRouteHistoryNote(options, settings.videodlInventory || readVideodlInventory(documentObject));
                     entry.notes.add(note);
                 }
             }
@@ -1820,7 +1923,7 @@
                 void platformWorkspace?.refresh();
             },
         });
-        const routeEditor = createRouteEditor(documentObject, {fetch: fetchImpl, window: windowObject,
+        const routeEditor = createRouteEditor(documentObject, {fetch: fetchImpl, window: windowObject, videodlInventory,
             url: root.dataset.routeUrl || "/provider-lab/routes/", csrf: () => csrfToken(form),
             getSource: () => platformWorkspace?.active ? platformWorkspace.host : historyWorkspace?.active ? historyWorkspace.source : String(form.elements.source?.value || "").trim(),
             getHost: () => platformWorkspace?.active ? platformWorkspace.host : "",
@@ -1849,7 +1952,7 @@
             if (controls) controls.hidden = execution.provider_id !== "videodl_repo";
             container.append(inputBand);
         }
-        historyWorkspace = createHistoryWorkspace(documentObject, {root, descriptors, routeEditor,
+        historyWorkspace = createHistoryWorkspace(documentObject, {root, descriptors, routeEditor, videodlInventory,
             fetch: fetchImpl, window: windowObject, url: root.dataset.historyUrl || "/admin/provider-lab/history/",
             onSelection: updateSelection,
             configureRetest: configureHistoryRetest,
@@ -1858,9 +1961,9 @@
                 return runOne(execution.provider_id, execution.source_url, csrfToken(form), null, undefined, execution.id);
             }});
         const ledgerApi = overrides?.ledgerApi || windowObject.AnimeImagesPlatformLedger;
-        platformWorkspace = ledgerApi?.createWorkspace(documentObject, {root, descriptors, routeEditor,
+        platformWorkspace = ledgerApi?.createWorkspace(documentObject, {root, descriptors, routeEditor, videodlInventory,
             fetch: fetchImpl, window: windowObject, url: root.dataset.historyUrl || "/admin/provider-lab/history/",
-            lab: {historyTime, historyEvidence, historyRelation, qualityOrder, metaFragment},
+            lab: {historyTime, historyEvidence, historyRelation, qualityOrder, metaFragment, savedRouteHistoryNote},
             openInstant(source, host) {
                 setView("instant");
                 form.elements.source.value = source;
@@ -2130,6 +2233,8 @@
         createController,
         createExecutionQueue,
         createRouteEditor,
+        exactHistoryBackend,
+        savedRouteHistoryNote,
         createHistoryWorkspace,
         historyRetestReason,
         historyEvidence,

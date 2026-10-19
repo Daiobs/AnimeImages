@@ -474,6 +474,9 @@
 .provider-lab-route li span { flex: 1; font-size: 13px; overflow-wrap: anywhere; }
 .provider-lab-route li button { width: 30px; height: 30px; padding: 0; border: 1px solid var(--lab-line); border-radius: 4px; background: #fff; }
 .provider-lab-route-confirm { display: flex; align-items: center; gap: 8px; margin: 18px 0; }
+.provider-lab-route-sharing { grid-column: 1 / -1; min-width: 0; border-left: 3px solid #8b6b16; padding-left: 12px; }
+.provider-lab-route-sharing p, .provider-lab-route-sharing span { overflow-wrap: anywhere; line-height: 1.65; }
+.provider-lab-route-sharing[hidden] { display: none; }
 .provider-lab-route input[type="number"], .provider-lab-route select { box-sizing: border-box; max-width: 100%; min-height: 38px; padding: 6px 8px; }
 .provider-lab-route [role="status"] { font-size: 13px; overflow-wrap: anywhere; }
 @media (max-width: 820px) { .provider-lab-route-grid { grid-template-columns: 1fr; } }

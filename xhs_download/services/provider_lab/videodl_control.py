@@ -65,6 +65,7 @@ class VideodlBackendDescriptor:
     display_label: str
 
     def as_dict(self) -> dict[str, Any]:
+        from ..saved_videodl import saved_backend_descriptor
         descriptions = {
             "EXACT_PIN_REVIEWED": "固定版本已审查",
             "OFFICIAL_ONLY_GUARDED_ADAPTER": "仅官方分支，聚合分支禁用",
@@ -80,7 +81,10 @@ class VideodlBackendDescriptor:
             "PROVIDER_DOWNLOADER_EXECUTION_BLOCKED": "解析路径调用下载器，尚未隔离",
             "TLS_VERIFICATION_DISABLED_BLOCKED": "不安全传输路径尚未受控适配",
         }
+        saved = saved_backend_descriptor(self.backend_id, self.backend_category)
+        saved["saved_route_selectable"] = saved["saved_route_selectable"] and self.controlled_available
         return {
+            **saved,
             "backend_id": self.backend_id,
             "backend_category": self.backend_category,
             "registry_available": self.registry_available,
@@ -426,7 +430,12 @@ def execute_controlled_videodl(
                 else 0
             )
             if (
-                not isinstance(result, dict)
+                not isinstance(payload.get("executed_backend"), dict)
+                or payload["executed_backend"] != {
+                    "backend_id": backend_id,
+                    "backend_category": category,
+                }
+                or not isinstance(result, dict)
                 or not isinstance(resources, list)
                 or not 1 <= candidate_count <= MAX_ASSETS
             ):
@@ -457,6 +466,7 @@ def execute_controlled_videodl(
                 external_sharing=descriptor.external_sharing_required,
             )
         )
+        result["native_selected_backend"] = result.get("selected_backend", "")
         result["selected_backend"] = backend_id
         result["warnings"] = list(result.get("warnings") or ()) + [
             f"controlled_mode_{options.mode}"

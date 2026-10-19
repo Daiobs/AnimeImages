@@ -603,7 +603,7 @@ test("route reference separates Common and unknown evidence from executable rout
     await f.change(f.panel.querySelector("[data-history-host]"), "source.example");
     const reference = f.panel.querySelector("[data-history-route-reference]");
     const line = reference.querySelector("li").textContent;
-    assert.match(line, /Common 或未知执行选项：仅采集证据，不可直接作为可执行路线/);
+    assert.match(line, /聚合或未知执行选项：请重新选择精确 Backend，不从首个媒体推断赢家/);
     assert.match(line, /Dedicated 历史证据，仍需核对当前 backend 与来源适用性/);
     assert.match(line, /unknown_provider.*不能视为可执行路线/);
     assert.match(reference.querySelector("[data-route-reference-scope]").textContent, /当前来源受既有路线保护，不适用通用路线保存/);
@@ -634,7 +634,7 @@ test("native reference infers media kinds without covers and independently label
     for (const [kind, id] of [["音频", 10], ["视频", 20], ["图集", 30], ["混合媒体", 40], ["内容类型未知", 50]]) {
         const line = lines.find((value) => value.startsWith(`${kind}：`));
         assert.ok(line, kind); assert.ok(line.includes(`#${id}`));
-        assert.match(line, /身份已确认的原生离线证据.*Common 或未知执行选项.*不可直接作为可执行路线/);
+        assert.match(line, /身份已确认的原生离线证据.*聚合或未知执行选项.*不从首个媒体推断赢家/);
     }
     assert.equal(lines.length, 5); assert.doesNotMatch(lines.join(" "), /#60/);
     assert.equal(f.calls.length, requests); assert.equal(f.drafts.length, 0); assert.equal(f.retests.length, 0);

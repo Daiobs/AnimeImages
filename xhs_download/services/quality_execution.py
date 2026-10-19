@@ -138,8 +138,8 @@ def provider_available(provider_id):
         return False
 
 
-def match_saved_videodl(source_url, options=None, *, timeout_seconds=5.0):
-    """Match an effective route using reviewed, isolated dedicated backends.
+def match_saved_videodl(source_url, options=None, *, timeout_seconds=5.0, route_revision=None):
+    """Resolve an effective route using reviewed, isolated backend identities.
 
     This is route execution capability, never download-host authorization.
     Configuration/policy failures are explicit; a supported empty match is ().
@@ -150,11 +150,20 @@ def match_saved_videodl(source_url, options=None, *, timeout_seconds=5.0):
     from .provider_lab.videodl_policy import VIDEODL_POLICY_PIN, backend_policy
     source = normalized_source(source_url)
     options = {'mode':'dedicated_only'} if options is None else options
-    if not isinstance(options, dict):
-        raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
+    from .saved_videodl import normalize_saved_options, authorized_common_options, check_saved_runtime
+    try:
+        options = normalize_saved_options(options)
+    except ValueError:
+        raise ProviderLabError('PROVIDER_POLICY_REJECTED') from None
+    if options.get('backend_category') == 'common':
+        authorized_common_options(source, route_revision, options['backend_id'])
+        check_saved_runtime(options, timeout_seconds=timeout_seconds)
+        return ({'provider_id': 'videodl_repo', 'extractor_id': options['backend_id'],
+                 'label': 'videodl manually selected Common', 'version': f'videodl@{VIDEODL_POLICY_PIN}',
+                 'backend_category': 'common', 'match_basis': 'saved_exact_host_authorization'},)
     selected = None
     if options != {'mode':'dedicated_only'}:
-        if (set(options) != {'mode','backend_id'} or options.get('mode') != 'specific_backend'
+        if (set(options) - {'mode','backend_id','backend_category'} or options.get('mode') != 'specific_backend'
                 or not isinstance(options.get('backend_id'),str)):
             raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
         selected = options['backend_id']
@@ -197,8 +206,8 @@ def _videodl_payload(source, *, backend=None, options=None, timeout_seconds=20.0
     if backend is not None and options is not None:
         raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
     if backend is not None:
-        # Saved noncommercial routes may select a reviewed dedicated backend;
-        # service-sharing confirmation remains a separate per-request decision.
+        # Legacy backend-only calls retain Dedicated semantics. Common calls
+        # require explicit Lab options or the persisted route authorization.
         if not isinstance(backend, str):
             raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
         options = VideodlExecutionOptions(mode='specific_backend', backend_ids=(backend,),
@@ -206,10 +215,11 @@ def _videodl_payload(source, *, backend=None, options=None, timeout_seconds=20.0
     if options is None or options == {'mode':'dedicated_only'}:
         options = VideodlExecutionOptions(mode='dedicated_only', backend_category='dedicated')
     elif isinstance(options, dict):
-        if set(options) != {'mode','backend_id'} or options.get('mode') != 'specific_backend':
-            raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
-        options = VideodlExecutionOptions(mode='specific_backend',
-            backend_ids=(options['backend_id'],), backend_category='dedicated')
+        from .saved_videodl import execution_options
+        try:
+            options = execution_options(options)
+        except ValueError:
+            raise ProviderLabError('PROVIDER_SCHEMA_INVALID') from None
     elif not isinstance(options, VideodlExecutionOptions):
         raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
     request_id = uuid4().hex
@@ -219,6 +229,8 @@ def _videodl_payload(source, *, backend=None, options=None, timeout_seconds=20.0
     if (result.get('provider_id') != 'videodl_repo' or result.get('request_id') != request_id
             or result.get('provider_version') != f'videodl@{VIDEODL_POLICY_PIN}'
             or result.get('status') != 'success'):
+        raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
+    if options.mode == 'specific_backend' and result.get('selected_backend') != options.backend_ids[0]:
         raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
     by_id = {resource.get('asset_id'): resource for resource in resources if isinstance(resource, dict)}
     if len(by_id) != len(resources):
@@ -447,7 +459,7 @@ def _execute_service(provider, source, timeout_seconds, expected_match):
 
 
 def execute_provider(provider_id, source_url, *, timeout_seconds=20.0, backend=None, options=None,
-                     expected_match=None, service_authorized=False):
+                     expected_match=None, service_authorized=False, saved_route_revision=None):
     """Execute only the requested provider, independent of saved route preference.
 
     Results are successful when candidates exist, including unknown/separate
@@ -465,6 +477,12 @@ def execute_provider(provider_id, source_url, *, timeout_seconds=20.0, backend=N
             raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
         payload, match, execution = _execute_service(provider, source, timeout_seconds, expected_match)
     elif provider == 'videodl_repo':
+        if saved_route_revision is not None:
+            from .saved_videodl import authorized_common_options
+            if options is not None or not isinstance(backend, str):
+                raise ProviderLabError('PROVIDER_SCHEMA_INVALID')
+            options = authorized_common_options(source, saved_route_revision, backend)
+            backend = None
         if expected_match is not None:
             from .provider_lab.videodl_policy import VIDEODL_POLICY_PIN
             _select_match([expected_match], provider, expected_match)

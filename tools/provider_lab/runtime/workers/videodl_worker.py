@@ -427,12 +427,19 @@ def main() -> int:
             client = build_client(str(Path.cwd() / "provider-work"))
             video_infos = client.parsefromurl(request["source"])
         result, resources = normalize_result(video_infos, request)
+        payload = {
+            "result": result,
+            "resources": resources,
+            "metrics": {"candidate_count": len(video_infos)},
+        }
+        if operation == "backend":
+            # Native source labels are not registry identities.
+            payload["executed_backend"] = {
+                "backend_id": request["backend_id"],
+                "backend_category": request["backend_category"],
+            }
         emit_message(
-            {
-                "result": result,
-                "resources": resources,
-                "metrics": {"candidate_count": len(video_infos)},
-            },
+            payload,
             max_output_bytes=request["max_output_bytes"],
         )
         return 0

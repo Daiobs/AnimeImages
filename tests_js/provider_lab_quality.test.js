@@ -141,6 +141,41 @@ test("bounded scope does not claim complete collection even with known truncatio
     assert.equal(lab.scopeMessage({}), "");
 });
 
+test("saved route evidence requires a unique explicit backend and reports per-backend adoption", () => {
+    const exact = {mode: "specific_backend", backend_category: "common", backend_id: "GVVideoClient"};
+    const inventory = {items: [{backend_category: "common", backend_id: "GVVideoClient", saved_route_selectable: true}]};
+    assert.deepEqual(lab.exactHistoryBackend(exact), {backend_category: "common", backend_id: "GVVideoClient"});
+    assert.deepEqual(lab.exactHistoryBackend({mode: "specific_backend", backend_ids: ["LegacyClient"]}),
+        {backend_category: "dedicated", backend_id: "LegacyClient"});
+    assert.deepEqual(lab.exactHistoryBackend({...exact, backend_ids: ["GVVideoClient"]}),
+        {backend_category: "common", backend_id: "GVVideoClient"});
+    assert.deepEqual(lab.exactHistoryBackend({mode: "specific_backend", backend_id: "LegacyClient"}),
+        {backend_category: "dedicated", backend_id: "LegacyClient"});
+    for (const options of [{...exact, backend_ids: ["OtherClient"]}, {...exact, backend_category: "unknown"},
+        {mode: "specific_backend"}, {...exact, mode: "common_only"}, {...exact, mode: "reviewed_auto"}]) {
+        assert.equal(lab.exactHistoryBackend(options), null);
+        assert.match(lab.savedRouteHistoryNote(options, inventory), /重新选择精确 Backend.*不从首个媒体/);
+    }
+    assert.match(lab.savedRouteHistoryNote(exact, inventory), /Common · GVVideoClient：可恢复草稿.*重新确认/);
+    assert.match(lab.savedRouteHistoryNote({...exact, backend_id: "OtherClient"}, inventory), /OtherClient：当前 Backend 不可固定/);
+    inventory.items[0].saved_route_selectable = false;
+    assert.match(lab.savedRouteHistoryNote(exact, inventory), /当前 Backend 不可固定/);
+});
+
+test("exact history backend rejects malformed fields and never deduplicates explicit backend lists", () => {
+    const exact = {mode: "specific_backend", backend_category: "common", backend_id: "GVVideoClient"};
+    for (const value of [undefined, null, false, 0, [], {}, ""]) {
+        assert.equal(lab.exactHistoryBackend({...exact, backend_category: value}), null);
+        assert.equal(lab.exactHistoryBackend({...exact, backend_id: value}), null);
+        assert.equal(lab.exactHistoryBackend({...exact, backend_id: value, backend_ids: ["GVVideoClient"]}), null);
+    }
+    for (const ids of [undefined, null, false, 0, "GVVideoClient", {}, [], [""], [null], [42], [{}], [[]],
+        ["GVVideoClient", "GVVideoClient"], ["GVVideoClient", "AnyFetcherVideoClient"]]) {
+        assert.equal(lab.exactHistoryBackend({...exact, backend_ids: ids}), null);
+        assert.equal(lab.exactHistoryBackend({mode: "specific_backend", backend_ids: ids}), null);
+    }
+});
+
 test("video quality order leaves image and audio positions in source order", () => {
     const rows = [{asset_id: "img1", media_type: "image", width: 100, height: 100},
         {asset_id: "low", media_type: "video", width: 1280, height: 720},

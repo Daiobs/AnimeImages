@@ -516,11 +516,13 @@ def _runtime_file_identity(path: str | Path) -> str:
 
 
 def videodl_inventory_cache_key(*, python: str, worker: str | Path) -> str:
+    from .. import saved_videodl
     identity = "|".join(
         (
             VIDEODL_PIN,
             VIDEODL_POLICY_REVISION,
             _runtime_file_identity(videodl_policy.__file__),
+            _runtime_file_identity(saved_videodl.__file__),
             _runtime_file_identity(python),
             _runtime_file_identity(worker),
         )

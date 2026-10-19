@@ -17,7 +17,7 @@
         reference_only: "有媒体参考，暂不可固定", comparable: "多家有正向证据，需核对同作品与质量字段",
         unique_positive: "唯一已验证候选，非最佳画质结论", unconfirmed_media: "有媒体返回，目标身份待核对", no_positive_evidence: "尚无已确认目标媒体"};
     const ADOPT = {unknown_source: "来源未知，无法进入路线草稿", protected: "沿用成熟路线，不适用通用路线保存", existing_route: "沿用既有人工路线", draft_candidate: "可进入草稿，保存前核对当前配置",
-        reference_only: "仅供参考，目标身份或执行选项需核对；Common / 未知选项暂不可固定", no_evidence: "暂无正向媒体参考"};
+        reference_only: "仅供参考，目标身份或执行选项需核对；能否固定以具体 Backend 当前能力为准", no_evidence: "暂无正向媒体参考"};
     const STATES = {success: "成功", failed: "失败", timeout: "超时", unsupported: "不支持", not_executed: "未执行",
         skipped: "未执行", planned: "未执行", running: "执行中", unknown: "未知", native_observed: "原生观察",
         partial: "失败含部分媒体", offline: "离线回放", returned: "已返回"};
@@ -247,6 +247,8 @@
                 source: e.origin, batch: e.batch, metadata: result.metadata, retention: result.retention || result.upstream_retention,
                 relationships: result.relationships, limitations: result.limitations, cache: result.cache_status ?? result.cache_hit}, null, 2)));
             container.append(metadata, n("p", "候选仅供比较，无资源授权；分辨率与格式是记录值，未据此验证实际画质或下载。"));
+            if (e.provider_id === "videodl_repo") container.append(n("p",
+                settings.lab.savedRouteHistoryNote(e.options?.videodl_repo || e.options || {}, settings.videodlInventory), "data-ledger-backend-adoption"));
             if (e.summary_truncated) container.append(n("p", "大记录轻量摘要：部分展示字段已省略，原始历史未修改。"));
             if (e.source_projection_omitted) container.append(n("p", "作品引用超出展示预算，未带入测试输入；保留的作品身份仍可用于比较。"));
             const descriptor = settings.descriptors.find((x) => x.provider_id === e.provider_id);
