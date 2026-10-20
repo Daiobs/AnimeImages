@@ -43,8 +43,10 @@
 ## Human 合并后启用
 
 1. 在仓库创建 `human-approved` 标签。后续 L2 PR 由 Human 审阅当前 Head 后添加；新提交须重新审阅。
-2. 为 main 开启分支保护，将 `contract-tests`、`protected-files` 和原有必要 CI 设为必需检查，开启 `Require branches to be up to date before merging`（`required_status_checks.strict=true`），并启用“不允许绕过上述设置”（包括管理员）、禁止强推与删除。`protected-files/human-approval/pr-N` 是 L2 批准事实，不单独设为所有 PR 的必需检查。不要把检查跳过或失败当作通过。
-3. 用实际 PR 核验：模板变更通过；`common.py` 变更未批准失败、Human 加标签后通过、新提交后标签被自动移除并失败；修改检查工作流的 PR 仍受 main 规则约束。确认检查针对当前 Head/base，失败时普通合并和管理员合并均不可用。
+2. 先用一个实际 PR 确认 `protected-files` 出现在该 PR 的检查列表中（挂在 PR 的 Head 上）：改到 L2 文件且未加标签时应为失败。若没有出现，不要把它设为必需检查，先修正检查的上报方式。
+3. 再为 main 开启分支保护：必须通过 PR 合并（必需审批数 0）；将 `protected-files`、`contract-tests`、`test`、`nginx-baseline`、`ytdlp-python312`、`protect-settings` 设为必需检查；启用“不允许绕过上述设置”（包括管理员），禁止强推与删除。`protected-files/human-approval/pr-N` 是 L2 批准事实，不单独设为所有 PR 的必需检查。不要把检查跳过或失败当作通过。
+4. `Require branches to be up to date before merging`（`required_status_checks.strict=true`）为可选。开启后，L2 PR 每次同步 main 都会产生新提交，标签被自动撤销，需要 Human 重新审阅；PR 较少时可以先不开。
+5. 用实际 PR 核验：模板变更通过；L2 变更未批准时失败、Human 加标签后通过、新提交后标签被自动移除并失败；修改检查工作流的 PR 仍受 main 规则约束。确认失败时普通合并和管理员合并均不可用。
 
 本轮 Agent 只提供代码与隔离回放，不创建标签、不改变仓库或分支保护设置、不执行合并。标签方案无法从同一个账号区分 Human 与 Agent，行为约束依照 G3；不在本轮新增机器账号。
 
