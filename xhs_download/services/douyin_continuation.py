@@ -334,6 +334,7 @@ class DouyinContinuationCoordinator:
         source_identity="",
         client_identity="",
         retry_after_getter=None,
+        first_upgrade_wins=False,
     ):
         self.task_id = uuid4().hex
         self.provider_count = max(1, int(provider_count or 1))
@@ -354,6 +355,8 @@ class DouyinContinuationCoordinator:
         self._retry_at = 0.0
         self._retry_after_getter = retry_after_getter
         self._fallback_score = None
+        self._first_upgrade_wins = bool(first_upgrade_wins)
+        self._upgrade_won = False
         self._source_index_key = (
             build_douyin_continuation_source_key(
                 source_identity,
@@ -541,6 +544,10 @@ class DouyinContinuationCoordinator:
             if not self._active:
                 return
             self._unresolved_count = max(0, self._unresolved_count - 1)
+            if self._upgrade_won:
+                # INV-01: the first upgrade ended the wait; later work no longer competes.
+                self._write_record()
+                return
             try:
                 result = future.result()
                 if not result or not result.assets:
@@ -564,6 +571,7 @@ class DouyinContinuationCoordinator:
                             if self._best_is_strong
                             else time.time() + self.settle_seconds
                         )
+                        self._settle_first_upgrade()
             except XhsProviderTimeoutError:
                 self._timeout_count += 1
             except Exception:
@@ -613,7 +621,13 @@ class DouyinContinuationCoordinator:
     def retain_fallback_score(self, score):
         with self._lock:
             self._fallback_score = tuple(score)
+            self._settle_first_upgrade()
             self._write_record()
+
+    def _settle_first_upgrade(self):
+        if (self._first_upgrade_wins and self._best_is_strong
+                and (self._fallback_score is None or self._best_score > self._fallback_score)):
+            self._upgrade_won = True
 
 
 def issue_douyin_continuation_token(

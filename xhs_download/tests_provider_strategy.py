@@ -2834,7 +2834,7 @@ class DouyinUltraRaceSettingsTests(SimpleTestCase):
         TIANTIANJIEXI_PASSWORD="password",
         KUKUTOOL_PROVIDER_ENABLED=True,
     )
-    def test_reverse_order_and_old_race_flag_cannot_restart_competition(self):
+    def test_reverse_order_is_kept_and_old_race_flag_cannot_restart_competition(self):
         providers = build_douyin_result_providers(
             ProviderSettings(
                 ultra_hd_enabled=True,
@@ -2844,7 +2844,8 @@ class DouyinUltraRaceSettingsTests(SimpleTestCase):
         )
 
         self.assertIsInstance(providers[0], DouyinTianTianFirstProvider)
-        self.assertEqual([p.name for p in providers[0].providers], ["tiantianjiexi", "kukutool"])
+        # A1: the configured order is kept, never re-ranked by the code.
+        self.assertEqual([p.name for p in providers[0].providers], ["kukutool", "tiantianjiexi"])
         self.assertIsInstance(providers[-1], DouyinNativeProvider)
 
     @override_settings(
