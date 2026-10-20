@@ -145,11 +145,18 @@ class BilibiliFallbackEntryTests(SimpleTestCase):
         self.assertEqual(context["platform"], "bilibili")
         self.assertEqual(context["base_filename"], "Service entry title")
         self.assertEqual({c["provider_id"] for c in context["upstream_candidates"]}, {PROVIDER})
-        self.assertEqual(len(context["video_items"]), 2)
+        self.assertEqual(len(context["video_items"]), 1)
         expected_urls = {MEDIA, MEDIA.replace("entry-video", "entry-large")}
-        self.assertEqual({item["url"] for item in context["video_items"]}, expected_urls)
+        self.assertEqual({item["url"] for item in context["video_items"]},
+                         {MEDIA.replace("entry-video", "entry-large")})
         self.assertEqual({item["download_strategy"] for item in context["video_items"]},
                          {"server_attachment"})
+        from .templatetags.ytdlp_picker import ytdlp_presentation
+        presentation = ytdlp_presentation(
+            context["upstream_candidates"], legacy_videos=context["video_items"])
+        self.assertEqual(presentation["video_resource_count"], 1)
+        self.assertEqual(presentation["legacy_video"]["url"],
+                         MEDIA.replace("entry-video", "entry-large"))
         self.assertEqual(self.events, ["native", "service"])
         self.post.assert_called_once()
         self.native.assert_called_once()

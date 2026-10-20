@@ -156,6 +156,8 @@ def build_service_result(payload, source_url):
         cover = ""
     source_key = source_key_for_url(source_url)
     assets = []
+    primary_assets = []
+    primary_groups = set()
     seen = set()
     for row in rows:
         url = row["url"]
@@ -180,10 +182,14 @@ def build_service_result(payload, source_url):
             size_bytes=row.get("size_bytes") or 0, size_is_estimate=bool(row.get("size_is_estimate")),
             headers=dict(BILIBILI_HEADERS), media_host_suffixes=BILIBILI_MEDIA_HOST_SUFFIXES,
             provider_manifest_token=token, **fields))
+        group = row.get("work_id") or fields["asset_id"]
+        if group not in primary_groups:
+            primary_groups.add(group)
+            primary_assets.append(assets[-1])
     if not assets:
         raise ValueError("bilibili_service_no_complete_video")
     result = ParseResult(
-        platform="bilibili", post_type="video", base_filename=title, assets=tuple(assets),
+        platform="bilibili", post_type="video", base_filename=title, assets=tuple(primary_assets),
         metadata={"source_platform": "bilibili", "source_provider": PROVIDER,
                   "selected_provider": PROVIDER, "canonical_source_url": source_url,
                   "bilibili_video_id": identity, "bilibili_page": 1,
@@ -191,4 +197,5 @@ def build_service_result(payload, source_url):
                   "description": normalized.get("description") or ""})
     filtered = ServiceFormatPayload({**normalized, "title": title, "cover": cover,
                                      "_service_format_rows": rows})
-    return attach_service_picker(result, payload=filtered, provider=PROVIDER, source_url=source_url)
+    return attach_service_picker(result, payload=filtered, provider=PROVIDER,
+                                 source_url=source_url, binding_assets=assets)

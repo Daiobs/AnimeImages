@@ -110,10 +110,10 @@ class BilibiliServiceResultTests(SimpleTestCase):
             {"url": MEDIA, "quality": "720P"},
             {"url": MEDIA.replace("video.mp4", "large.mp4"), "quality": "1080P"},
         ]}]})
-        self.assertEqual(len(result.video_assets), 2)
+        self.assertEqual(len(result.video_assets), 1)
         candidates = result.metadata["upstream_candidates"]
         self.assertEqual(len({c["work_id"] for c in candidates}), 1)
-        self.assertEqual(len({a.asset_id for a in result.video_assets}), 2)
+        self.assertEqual(len({c["legacy_asset_id"] for c in candidates}), 2)
         for candidate in candidates:
             record = self.record(candidate)
             item = selected_legacy_descriptor(record)
