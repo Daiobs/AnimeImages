@@ -46,6 +46,9 @@ jobs:
         run: test ! -e .env
       - name: Merge guard event replays
         run: python -m unittest discover -s scripts/tests -p 'test_merge_guards.py' -v
+      - name: Require Nginx for INV-08 contracts
+        # The real-Nginx INV-08 tests skip locally without Nginx; in CI a missing binary must fail.
+        run: command -v nginx
       - name: HTTP contracts
         run: python manage.py test contracts --noinput
       - name: Frontend controller contracts
