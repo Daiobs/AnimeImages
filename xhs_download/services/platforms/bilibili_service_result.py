@@ -8,7 +8,10 @@ from ..common import clean_filename, host_matches
 from ..provider_manifest import build_provider_manifest_token, provider_manifest_is_valid
 from .bilibili import BILIBILI_HEADERS, BILIBILI_MEDIA_HOST_SUFFIXES
 from .kukutool_generic import ServiceFormatPayload, source_key_for_url
-from .tiantianjiexi_generic import TianTianJieXiResultNormalizer, unwrap_api_payload
+from .tiantianjiexi_generic import (
+    SERVICE_FACTS_VERSION, TianTianJieXiResultNormalizer,
+    bilibili_identity_facts, unwrap_api_payload,
+)
 
 PROVIDER = "tiantianjiexi_generic"
 ASSET_PREFIX = "bilibili:service:"
@@ -39,47 +42,17 @@ def validate_media_url(url):
 
 def _identity_evidence(payload, expected):
     evidence = []
-
-    def check(value, depth=0, work_context=True):
-        if depth > 10:
+    for fact in bilibili_identity_facts(payload):
+        if fact.get("incomplete"):
             raise ValueError("bilibili_service_payload_too_deep")
-        if isinstance(value, (list, tuple)):
-            for child in value:
-                check(child, depth + 1, work_context=False)
-        elif isinstance(value, dict):
-            for key, child in value.items():
-                identity = ""
-                if key in {"bvid", "bv", "avid", "av", "aid", "video_id", "videoId"}:
-                    text = str(child or "")
-                    if key in {"aid", "avid", "av"} and text.isdigit():
-                        text = "av" + text
-                    if VIDEO_ID.fullmatch(text):
-                        identity = text
-                if work_context and key == "p" and str(child or "").isdigit():
-                    if int(child) != 1:
-                        raise ValueError("bilibili_service_page_mismatch")
-                    evidence.append("payload_page")
-                if key in {"source_url", "sourceUrl", "canonical_url", "canonicalUrl",
-                           "share_url", "shareUrl", "link", "url"} and isinstance(child, str):
-                    parsed = urlsplit(child)
-                    if host_matches(parsed.hostname, ("bilibili.com",)):
-                        match = re.fullmatch(r"/video/([^/]+)/?", parsed.path)
-                        if match:
-                            identity = match[1]
-                            if parse_qs(parsed.query).get("p", ["1"]) != ["1"]:
-                                raise ValueError("bilibili_service_page_mismatch")
-                if identity:
-                    # BV and AV can identify the same work. Without a verified
-                    # mapping, only a same-kind identity is comparable.
-                    if identity[:2] == expected[:2]:
-                        if identity != expected:
-                            raise ValueError("bilibili_service_identity_mismatch")
-                        evidence.append("payload_identity")
-                if isinstance(child, (dict, list, tuple)):
-                    check(child, depth + 1, work_context=(
-                        work_context and key in {"data", "result", "detail", "info"}))
-
-    check(payload)
+        if "p" in fact and int(fact["p"]) != 1:
+            raise ValueError("bilibili_service_page_mismatch")
+        identity = fact.get("video_id", "")
+        # BV and AV may identify the same work; compare only the same kind.
+        if identity and identity[:2] == expected[:2]:
+            if identity != expected:
+                raise ValueError("bilibili_service_identity_mismatch")
+            evidence.append("payload_identity")
     return "payload_identity" if "payload_identity" in evidence else "request_context"
 
 
@@ -135,6 +108,9 @@ def build_service_result(payload, source_url):
 
     identity = source_identity(source_url)
     source_url = f"https://www.bilibili.com/video/{identity}/"
+    if ("_service_format_rows" in payload
+            and payload.get("_service_facts_version") != SERVICE_FACTS_VERSION):
+        raise ValueError("bilibili_service_facts_refresh_required")
     identity_basis = _identity_evidence(payload, identity)
     normalizer = TianTianJieXiResultNormalizer(platform_id="bilibili")
     normalized = normalizer.normalize_payload(unwrap_api_payload(payload))

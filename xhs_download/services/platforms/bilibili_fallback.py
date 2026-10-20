@@ -16,6 +16,7 @@ from .tiantianjiexi_generic import TianTianJieXiGenericProvider, provider_config
 
 logger = logging.getLogger(__name__)
 PROVIDER = "tiantianjiexi_generic"
+PUBLIC_FALLBACK_RULE = "bilibili:tiantianjiexi_fallback"
 
 
 def canonical_video_source(value):
@@ -41,7 +42,7 @@ def authorized_services(request, source_url, *, reserve_limits=True):
     from ..env_config import runtime_default_int
     from ..provider_access import (
         PROVIDER_THIRD_PARTY, load_runtime_setting, provider_access_summary,
-        request_user_is_staff, third_party_platform_is_blocked,
+        parse_csv_values, request_user_is_staff, third_party_platform_is_blocked,
         upstream_match_is_blocked, upstream_match_is_public_allowed,
     )
     from ..rate_limits import consume_fixed_window, get_client_identity
@@ -54,9 +55,13 @@ def authorized_services(request, source_url, *, reserve_limits=True):
         return ()
     match = {"provider_id": PROVIDER, "extractor_id": PROVIDER}
     host = urlsplit(source).hostname
+    allowed_rules = parse_csv_values(config.third_party_allowed_public_platforms)
+    blocked_rules = parse_csv_values(config.third_party_blocked_platforms)
     if (third_party_platform_is_blocked("bilibili", host, config)
             or upstream_match_is_blocked(match, config)
+            or PUBLIC_FALLBACK_RULE in blocked_rules
             or not (request_user_is_staff(request)
+                    or PUBLIC_FALLBACK_RULE in allowed_rules
                     or upstream_match_is_public_allowed(match, host, config))):
         return ()
     if reserve_limits:

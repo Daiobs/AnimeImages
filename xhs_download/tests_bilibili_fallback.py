@@ -134,6 +134,43 @@ class BilibiliFallbackAccessTests(SimpleTestCase):
         self.access.return_value = {"request_allowed": False}
         self.assertEqual(subject.authorized_services(self.request, URL, reserve_limits=False), ())
 
+    def test_scoped_public_rule_only_allows_bilibili_first_part_fallback(self):
+        from .services.provider_access import upstream_match_is_public_allowed
+
+        self.config.third_party_allowed_public_platforms = subject.PUBLIC_FALLBACK_RULE
+        self.assertEqual(subject.authorized_services(self.request, URL), (PROVIDER,))
+        for source in (URL + "?p=2", "https://b23.tv/example",
+                       "https://www.douyin.com/video/123/",
+                       "https://www.bilibili.com/opus/123"):
+            with self.subTest(source=source):
+                self.assertEqual(subject.authorized_services(self.request, source), ())
+        # The fallback rule is not a generic Provider or host-wide grant.
+        for provider in (PROVIDER, "kukutool_generic", "yt_dlp_generic"):
+            for host in ("www.bilibili.com", "www.douyin.com"):
+                self.assertFalse(upstream_match_is_public_allowed(
+                    {"provider_id": provider, "extractor_id": provider}, host, self.config))
+        self.config.third_party_allowed_public_platforms = ""
+        self.assertEqual(subject.authorized_services(self.request, URL, reserve_limits=False), ())
+
+    def test_scoped_rule_obeys_existing_gates_and_explicit_blocks(self):
+        self.config.third_party_allowed_public_platforms = subject.PUBLIC_FALLBACK_RULE
+        for blocked in ("bilibili", "upstream", f"upstream:{PROVIDER}",
+                        subject.PUBLIC_FALLBACK_RULE):
+            with self.subTest(blocked=blocked):
+                self.config.third_party_blocked_platforms = blocked
+                self.assertEqual(subject.authorized_services(self.request, URL), ())
+        self.config.third_party_blocked_platforms = ""
+        self.config.third_party_blocked_hosts = "bilibili.com"
+        self.assertEqual(subject.authorized_services(self.request, URL), ())
+        self.config.third_party_blocked_hosts = ""
+        self.access.return_value = {"request_allowed": False}
+        self.assertEqual(subject.authorized_services(self.request, URL), ())
+        self.access.return_value = {"request_allowed": True}
+        with patch.object(subject, "provider_configured", return_value=False):
+            self.assertEqual(subject.authorized_services(self.request, URL), ())
+        self.limit.return_value = SimpleNamespace(allowed=False)
+        self.assertEqual(subject.authorized_services(self.request, URL), ())
+
     def test_staff_obeys_runtime_blocklist_and_limits(self):
         self.request.user = SimpleNamespace(is_active=True, is_authenticated=True, is_staff=True)
         self.assertEqual(subject.authorized_services(self.request, URL), (PROVIDER,))

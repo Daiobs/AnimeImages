@@ -52,6 +52,71 @@ PROVIDER_LABEL = "天天解析"
 ACCOUNT_STATUS_CACHE_KEY = "third-party:tiantianjiexi:account-status"
 FAILURE_HIT_COUNT_KEY = "third-party:tiantianjiexi:failure-hit-count"
 XHS_NOTE_ID_RE = re.compile(r"(?<![0-9a-f])([0-9a-f]{24})(?![0-9a-f])", re.IGNORECASE)
+BILIBILI_VIDEO_ID_RE = re.compile(r"(?:BV[0-9A-Za-z]{10}|av[1-9][0-9]*)")
+SERVICE_FACTS_VERSION = 1
+
+
+def bilibili_identity_facts(payload):
+    """Retain comparable IDs/pages, never source URLs or the native response."""
+    facts = []
+
+    def add(identity="", page=""):
+        fact = {}
+        if BILIBILI_VIDEO_ID_RE.fullmatch(identity):
+            fact["video_id"] = identity
+        if page:
+            fact["p"] = page
+        if fact and fact not in facts:
+            facts.append(fact)
+
+    def visit(value, depth=0, work_context=True):
+        if depth > 10:
+            if {"incomplete": True} not in facts:
+                facts.append({"incomplete": True})
+            return
+        if isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child, depth + 1, False)
+        elif isinstance(value, dict):
+            for key, child in value.items():
+                if key == "_bilibili_identity_facts":
+                    # Also survives a cache serializer's conversion to plain dict.
+                    if isinstance(child, (list, tuple)):
+                        for fact in child:
+                            if isinstance(fact, dict):
+                                if fact.get("incomplete") is True and {"incomplete": True} not in facts:
+                                    facts.append({"incomplete": True})
+                                page = str(fact.get("p", ""))
+                                add(str(fact.get("video_id") or ""),
+                                    page if page.isdigit() else "")
+                    continue
+                if key in {"bvid", "bv", "avid", "av", "aid", "video_id", "videoId"}:
+                    text = str(child or "")
+                    if key in {"aid", "avid", "av"} and text.isdigit():
+                        text = "av" + text
+                    add(identity=text)
+                if work_context and key == "p" and str(child).isdigit():
+                    add(page=str(child))
+                if key in {"source_url", "sourceUrl", "canonical_url", "canonicalUrl",
+                           "share_url", "shareUrl", "link", "url"} and isinstance(child, str):
+                    try:
+                        parsed = urlsplit(child)
+                    except ValueError:
+                        continue
+                    host = (parsed.hostname or "").lower()
+                    if host == "bilibili.com" or host.endswith(".bilibili.com"):
+                        match = re.fullmatch(r"/video/([^/]+)/?", parsed.path)
+                        if match:
+                            pages = parse_qs(parsed.query).get("p", ["1"])
+                            # Non-P1 URLs are a conflict, not a missing identity.
+                            page = pages[0] if len(pages) == 1 and pages[0].isdigit() else "0"
+                            add(match[1], page)
+                if isinstance(child, (dict, list, tuple)):
+                    visit(child, depth + 1, work_context and key in {
+                        "data", "result", "detail", "info"})
+
+    visit(payload)
+    return tuple(facts)
 
 
 class TianTianJieXiApiError(RuntimeError):
@@ -415,7 +480,12 @@ class TianTianJieXiApiClient:
         if self.observe is not None:
             self.observe(payload)
         ensure_api_success(payload)
-        return TianTianJieXiResultNormalizer.normalize_payload(unwrap_api_payload(payload))
+        normalized = TianTianJieXiResultNormalizer.normalize_payload(unwrap_api_payload(payload))
+        # Envelope identity can sit outside data; capture it before unwrapping.
+        facts = bilibili_identity_facts(payload)
+        if facts:
+            normalized["_bilibili_identity_facts"] = facts
+        return normalized
 
     def query_account_status(self):
         if not api_configured():
@@ -785,6 +855,18 @@ class TianTianJieXiGenericProvider:
 
         if not provider_configured():
             raise TianTianJieXiAuthError("天天解析 Provider 未启用或账号未配置")
+        source = urlsplit(url)
+        if ((source.hostname or "").lower() in {"bilibili.com", "www.bilibili.com"}
+                and re.fullmatch(r"/video/(?:BV[0-9A-Za-z]{10}|av[1-9][0-9]*)/?", source.path)):
+            previous_validator = payload_validator
+
+            def validate_current_facts(payload):
+                if payload.get("_service_facts_version") != SERVICE_FACTS_VERSION:
+                    return False
+                self.validate_payload(payload, previous_validator)
+                return True
+
+            payload_validator = validate_current_facts
         source_key = source_key_for_request(url, source_identity)
         cached, payload_age_ms = self.get_cached_payload_entry(
             source_key,
@@ -1160,6 +1242,13 @@ class TianTianJieXiResultNormalizer:
         identity_signals = cls.collect_source_identity_signals(payload)
         if identity_signals:
             normalized["_source_identity_signals"] = identity_signals
+        identity_facts = bilibili_identity_facts(payload)
+        if identity_facts:
+            normalized["_bilibili_identity_facts"] = identity_facts
+        # A pre-fix normalized cache cannot regain facts by normalization alone.
+        if ("_service_format_rows" not in payload
+                or payload.get("_service_facts_version") == SERVICE_FACTS_VERSION):
+            normalized["_service_facts_version"] = SERVICE_FACTS_VERSION
         return ServiceFormatPayload(normalized)
 
     @classmethod

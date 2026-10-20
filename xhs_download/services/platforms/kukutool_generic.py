@@ -223,6 +223,8 @@ def collect_service_video_resources(payload, *, nested_keys, infer_quality=None)
              "extension", "language", "bitrate", "tbr", "audio_tracks", "video_tracks",
              "requires_merge", "requires_cookie", "requires_context", "headers", "http_headers", "headers_present",
              "has_drm", "role", "upstream_role", "relationships", "audio_asset_present", "format_id")
+    inherited_fact_keys = ("vcodec", "acodec", "protocol", "ext", "extension",
+                           "audio_tracks", "video_tracks")
 
     def first(raw, keys):
         return next((raw[key] for key in keys if raw.get(key) not in (None, "")), None)
@@ -230,12 +232,14 @@ def collect_service_video_resources(payload, *, nested_keys, infer_quality=None)
     def items(value):
         return value if isinstance(value, (list, tuple)) else (() if value is None else (value,))
 
-    def add(raw, group_id="", group_index=None, depth=0, context=None):
+    def add(raw, group_id="", group_index=None, depth=0, context=None, media_facts=None):
         if depth > 8:
             return
         raw = {"url": raw} if isinstance(raw, str) else raw
         if not isinstance(raw, dict):
             return
+        media_facts = {**(media_facts or {}),
+                       **{key: raw[key] for key in inherited_fact_keys if key in raw}}
         context = service_context(raw, context)
         url = first(raw, url_keys)
         label = first(raw, label_keys)
@@ -260,7 +264,7 @@ def collect_service_video_resources(payload, *, nested_keys, infer_quality=None)
                         break
             inferred = infer_quality(url) if generic_label and infer_quality else ""
             label = str(label or inferred or "video")
-            resource = {**{key: raw[key] for key in facts if key in raw}, **context}
+            resource = {**media_facts, **{key: raw[key] for key in facts if key in raw}, **context}
             resource.update(url=url, quality=label, quality_label=label, size=size, size_bytes=size,
                             size_is_estimate=estimate, media_type=raw.get("media_type", "video"),
                             quality_label_source="unknown" if generic_label and not inferred else
@@ -274,7 +278,7 @@ def collect_service_video_resources(payload, *, nested_keys, infer_quality=None)
             resources.append(resource)
         for key in nested_keys:
             for child in items(raw.get(key)):
-                add(child, group_id, group_index, depth + 1, context)
+                add(child, group_id, group_index, depth + 1, context, media_facts)
 
     videos = items(payload.get("videos"))
     context = service_context(payload)
@@ -283,7 +287,12 @@ def collect_service_video_resources(payload, *, nested_keys, infer_quality=None)
         add(video, f"native-video-{index}", index, context=context)
     for key in ("video",):
         for index, video in enumerate(items(payload.get(key)), 1):
-            add(video, f"native-video-single-{index}", index, context=context)
+            # A scalar video is the parent's media. Object/list videos own their
+            # facts; a root file's codec or protocol must not leak to siblings.
+            parent_facts = ({key: payload[key] for key in inherited_fact_keys if key in payload}
+                            if isinstance(payload.get(key), str) else None)
+            add(video, f"native-video-single-{index}", index, context=context,
+                media_facts=parent_facts)
     root_group = ("native-video-root" if videos else "native-video-1") if (
         not videos or any(payload.get(key) for key in nested_keys)) else ""
     root_url = first(payload, url_keys)

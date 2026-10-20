@@ -212,6 +212,15 @@ Native 取得完整单文件时不调用服务。对于规范 BV/AV 视频第一
 
 服务结果必须包含合法完整视频；封面不算成功。保留真实服务身份、作品引用和每个资源的独立签名，经共用选择器进入既有 Bilibili 附件下载入口，保持原 Referer/UA 和地址校验。HTTP CDN 返回保留原协议，不强行改为 HTTPS，也不送入浏览器直连路径。展示、选择、签发动作及实际下载不复用 Native 授权；下载时重新核验当前服务准入。不同出口上的 Native 可用性不同，此兜底不代表解除上游风控或保证所有作品成功。
 
+访客只开放这一条兜底时，在现有 Provider 配置的“第三方访客允许平台”中追加
+`bilibili:tiantianjiexi_fallback`，不需要添加整站 Host 或开放所有天天来源。
+该选项仅作用于规范 BV/AV 第一页的 Native 失败后天天兜底，不开放通用解析、
+其他 Provider、短链或后续分 P；Native 成功仍不调用天天。第三方 public/public_gray
+模式及灰度、环境 capability、已配置账号、平台/Host/Provider 阻止规则和原请求限额
+仍需满足。将同一选项放入阻止平台列表可显式停用；撤销允许后，旧候选动作、
+下载准备及实际取流都会重新拒绝，不延长媒体或资源授权期限。
+这只是可配置能力，代码发布不会自动修改后台允许列表。
+
 历史 Provider Lab 的三个真实样本显示 Native、TianTian、videodl 与官方 DURL 的完整媒体字节一致。ParseHub 只增加格式元数据信号，未产生可交付媒体增量。该证据支持 Native 优先，不代表今天生产出口仍可访问，也不让 Lab 自动改写路线。
 
 Dynamic、Opus、Live Photo、member-only quality 和 DASH merge 仍是独立后续范围。

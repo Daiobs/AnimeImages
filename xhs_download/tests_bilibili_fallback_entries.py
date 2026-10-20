@@ -20,6 +20,7 @@ from django.urls import resolve, reverse
 from download_console.models import DownloadRuntimeSetting
 from .models import ProviderAccessMode, ProviderRuntimeSetting
 from .views import build_batch_result_row, build_search_results_context
+from .services.platforms.bilibili_fallback import PUBLIC_FALLBACK_RULE
 
 
 SOURCE = "https://www.bilibili.com/video/BV1J4JX6PEMV/"
@@ -63,7 +64,7 @@ class BilibiliFallbackEntryTests(TransactionTestCase):
         self.factory = RequestFactory()
         self.config = ProviderRuntimeSetting(
             third_party_mode=ProviderAccessMode.PUBLIC,
-            third_party_allowed_public_platforms="upstream:tiantianjiexi_generic",
+            third_party_allowed_public_platforms=PUBLIC_FALLBACK_RULE,
             third_party_blocked_platforms="",
         )
         self.stack.enter_context(patch.object(
