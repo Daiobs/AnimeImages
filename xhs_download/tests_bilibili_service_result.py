@@ -1,3 +1,4 @@
+import time
 from unittest.mock import Mock, patch
 
 from django.core.cache import cache
@@ -8,17 +9,29 @@ from .services.downloads import (
     get_media_headers, provider_manifest_allows_public_download,
     request_public_provider_get_with_retry, validate_provider_signed_download_url,
 )
-from .services.platforms.bilibili import BILIBILI_HEADERS
+from .services.platforms.bilibili import BILIBILI_HEADERS, BILIBILI_MEDIA_HOST_SUFFIXES
 from .services.platforms.bilibili_service_result import build_service_result, source_url_for_item
 from .services.platforms.third_party import GenericThirdPartyAdapter
 from .services.provider_strategy import build_download_strategy
+from .services.quality import QualityProbeResult
 from .services.service_format_selection import (
     capability, choice, selected_descriptor, selected_legacy_descriptor,
 )
 from .services.upstream_candidates import resolve_candidate_record
+from .services.ytdlp_selection import size_label, video_quality_label
 
 SOURCE = "https://www.bilibili.com/video/BV1xx411c7mD/"
 MEDIA = "https://upos-sz-mirrorcos.bilivideo.com/video.mp4"
+# Real TianTian response for BV1GJ411x7h7 (2026-10-20); only the CDN signature is replaced.
+REAL_SOURCE = "https://www.bilibili.com/video/BV1GJ411x7h7/"
+REAL_COVER = "http://i1.hdslb.com/bfs/archive/5242750857121e05146d5d5b13a47a2a6dd36e98.jpg"
+REAL_MEDIA = ("http://upos-sz-mirrorcos.bilivideo.com/upgcxcode/99/91/137649199/"
+              "137649199_da2-1-192.mp4?deadline=1760000000&upsig=fixture")
+REAL_RESPONSE = {"code": 200, "msg": "success", "data": {
+    "desc": "【官方 MV】Never Gonna Give You Up - Rick Astley",
+    "images": [REAL_COVER],
+    "videos": [{"url": REAL_MEDIA, "streams": []}],
+}}
 
 
 @override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
@@ -218,3 +231,90 @@ class BilibiliServiceResultTests(SimpleTestCase):
         self.assertEqual(strategy["download_strategy"], "browser_direct")
         self.assertEqual(strategy["fallback_strategy"], "server_attachment")
         self.assertIsNone(GenericThirdPartyAdapter().get_rule_for_url(SOURCE))
+
+
+@override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
+class BilibiliServiceDisplayTests(SimpleTestCase):
+    """A fallback card shows cover, size and a quality name like a Native one."""
+
+    def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+        guard = patch("socket.getaddrinfo", side_effect=AssertionError("network forbidden"))
+        guard.start()
+        self.addCleanup(guard.stop)
+        validator = patch("xhs_download.services.upstream_candidates.validate_public_download_url",
+                          side_effect=lambda url, *args, **kwargs: url)
+        validator.start()
+        self.addCleanup(validator.stop)
+        probe_class = patch("xhs_download.services.platforms.bilibili_service_result.QualityProbe")
+        self.probe_class = probe_class.start()
+        self.addCleanup(probe_class.stop)
+        self.probe = self.probe_class.return_value.probe
+        self.probe.return_value = QualityProbeResult(
+            url=REAL_MEDIA, reachable=True, size_bytes=52_034_560, method="RANGE")
+
+    def result(self, payload=REAL_RESPONSE, *, deadline=...):
+        deadline = time.monotonic() + 15 if deadline is ... else deadline
+        return build_service_result(payload, REAL_SOURCE, deadline_monotonic=deadline)
+
+    def candidate(self, result):
+        candidate, = result.metadata["upstream_candidates"]
+        return candidate
+
+    def test_real_response_shows_https_cover_probed_size_and_default_quality(self):
+        result = self.result()
+        cover = REAL_COVER.replace("http:", "https:")
+        asset = result.video_assets[0]
+        self.assertEqual((asset.cover_url, asset.cover_preview_url), (cover, cover))
+        self.assertEqual((asset.size_bytes, asset.size_is_estimate), (52_034_560, False))
+        self.assertEqual(asset.quality_label, "默认清晰度")
+        candidate = self.candidate(result)
+        self.assertTrue(candidate["work"]["cover_available"])
+        self.assertEqual(resolve_candidate_record(
+            candidate["resource_token"], candidate["candidate_id"])["work"]["cover_url"], cover)
+        self.assertEqual(size_label(candidate), "49.6 MiB")
+        self.assertEqual(video_quality_label(candidate), "默认清晰度")
+
+    def test_size_costs_one_bounded_range_request_with_bilibili_headers(self):
+        self.result()
+        self.probe_class.assert_called_once_with(BILIBILI_MEDIA_HOST_SUFFIXES)
+        self.probe.assert_called_once()
+        self.assertEqual(self.probe.call_args.args, (REAL_MEDIA,))
+        options = self.probe.call_args.kwargs
+        self.assertEqual(options["headers"], BILIBILI_HEADERS)
+        self.assertEqual((options["strategy"], options["allow_fallback"]), ("range_first", False))
+        self.assertLessEqual(options["timeout"], 2.0)
+        self.probe.reset_mock()
+        self.result(deadline=time.monotonic() + .5)
+        self.assertLessEqual(self.probe.call_args.kwargs["timeout"], .5)
+
+    def test_failed_probe_shows_unknown_size_without_failing_the_result(self):
+        for outcome in ({"return_value": QualityProbeResult(url=REAL_MEDIA, error="HTTP 403")},
+                        {"side_effect": RuntimeError("probe broke")}):
+            with self.subTest(outcome=outcome):
+                self.probe.reset_mock(return_value=True, side_effect=True)
+                self.probe.configure_mock(**outcome)
+                result = self.result()
+                self.assertEqual(result.video_assets[0].size_bytes, 0)
+                self.assertEqual(size_label(self.candidate(result)), "大小未知")
+                self.probe.assert_called_once()
+
+    def test_no_probe_without_parse_deadline_budget_or_missing_size(self):
+        sized = {"data": {**REAL_RESPONSE["data"], "videos": [{"url": REAL_MEDIA, "size": 12345}]}}
+        for payload, deadline in ((REAL_RESPONSE, None), (REAL_RESPONSE, time.monotonic() - 1),
+                                  (sized, ...)):
+            with self.subTest(deadline=deadline, sized=payload is sized):
+                result = self.result(payload, deadline=deadline)
+                self.assertEqual(result.video_assets[0].size_bytes, 12345 if payload is sized else 0)
+        self.probe.assert_not_called()
+
+    def test_height_names_unlabelled_files_and_upstream_labels_are_kept(self):
+        for row, label in (({"height": 720}, "720p"), ({"quality": "video", "height": "1080"}, "1080p"),
+                           ({"quality": "1080P"}, "1080P"), ({"height": "unknown"}, "默认清晰度")):
+            with self.subTest(row=row):
+                payload = {"data": {**REAL_RESPONSE["data"], "videos": [{"url": REAL_MEDIA, **row}]}}
+                result = self.result(payload)
+                self.assertEqual(result.video_assets[0].quality_label, label)
+                self.assertEqual(video_quality_label(self.candidate(result)), label.lower()
+                                 if label.endswith("P") else label)

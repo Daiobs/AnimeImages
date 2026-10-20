@@ -1,12 +1,14 @@
 """Bilibili-only service projection, independent of Native download authority."""
 from hashlib import sha256
 import re
+import time
 from urllib.parse import parse_qs, urlsplit
 
 from ..assets import MediaAsset, ParseResult
 from ..common import clean_filename, host_matches
 from ..provider_manifest import build_provider_manifest_token, provider_manifest_is_valid
-from .bilibili import BILIBILI_HEADERS, BILIBILI_MEDIA_HOST_SUFFIXES
+from ..quality import QualityProbe
+from .bilibili import BILIBILI_HEADERS, BILIBILI_MEDIA_HOST_SUFFIXES, normalize_bilibili_url
 from .kukutool_generic import ServiceFormatPayload, source_key_for_url
 from .tiantianjiexi_generic import (
     SERVICE_FACTS_VERSION, TianTianJieXiResultNormalizer,
@@ -16,6 +18,9 @@ from .tiantianjiexi_generic import (
 PROVIDER = "tiantianjiexi_generic"
 ASSET_PREFIX = "bilibili:service:"
 VIDEO_ID = re.compile(r"(?:BV[0-9A-Za-z]{10}|av[1-9][0-9]*)")
+SIZE_PROBE_TIMEOUT_SECONDS = 2.0
+DEFAULT_QUALITY_LABEL = "默认清晰度"
+GENERIC_QUALITY_LABELS = {"", "video", "third-party resource"}
 
 
 def source_identity(source_url):
@@ -103,7 +108,33 @@ def video_resource_is_complete(row):
         or (extension and extension not in VIDEO_EXTENSIONS))
 
 
-def build_service_result(payload, source_url):
+def display_quality(row):
+    """Name an unlabelled service file by its height, never by its media type."""
+    label = str(row.get("quality") or "")
+    if label.lower() in GENERIC_QUALITY_LABELS:
+        try:
+            height = int(float(row.get("height") or 0))
+        except (TypeError, ValueError, OverflowError):
+            height = 0
+        label = f"{height}p" if height > 0 else DEFAULT_QUALITY_LABEL
+    return {"quality": label, "quality_label": label}
+
+
+def probe_size(url, deadline_monotonic):
+    """One bounded Range request; a missing display fact never fails the result."""
+    timeout = min(SIZE_PROBE_TIMEOUT_SECONDS, deadline_monotonic - time.monotonic())
+    if timeout < .1:
+        return 0
+    try:
+        result = QualityProbe(BILIBILI_MEDIA_HOST_SUFFIXES).probe(
+            url, headers=dict(BILIBILI_HEADERS), timeout=timeout, expected_type="video",
+            strategy="range_first", allow_fallback=False)
+    except Exception:
+        return 0
+    return result.size_bytes if result.reachable else 0
+
+
+def build_service_result(payload, source_url, *, deadline_monotonic=None):
     from ..service_format_selection import attach_service_picker
 
     identity = source_identity(source_url)
@@ -123,11 +154,19 @@ def build_service_result(payload, source_url):
             validate_media_url(row.get("url"))
         except (TypeError, ValueError):
             continue
-        rows.append({**row, "work_label": title})
+        rows.append({**row, "work_label": title, **display_quality(row)})
     if not rows:
         raise ValueError("bilibili_service_no_video")
+    # Only the parse path passes a deadline; the default file is probed at most once.
+    primary = next((row for row in rows if video_resource_is_complete(row)), None)
+    if deadline_monotonic is not None and primary and not primary.get("size_bytes"):
+        size = probe_size(primary["url"], deadline_monotonic)
+        if size:
+            rows = [{**row, "size": size, "size_bytes": size, "size_is_estimate": False}
+                    if row["url"] == primary["url"] else row for row in rows]
+    images = normalized.get("images") or ("",)
     try:
-        cover = validate_media_url(normalized.get("cover"))
+        cover = validate_media_url(normalize_bilibili_url(normalized.get("cover") or images[0]))
     except (TypeError, ValueError):
         cover = ""
     source_key = source_key_for_url(source_url)
@@ -154,7 +193,7 @@ def build_service_result(payload, source_url):
         token = build_provider_manifest_token(**fields, url=url, media_type="video")
         assets.append(MediaAsset(
             media_type="video", platform="bilibili", url=url, cover_url=cover,
-            cover_preview_url=cover, quality_label=row.get("quality") or "video",
+            cover_preview_url=cover, quality_label=row["quality"],
             size_bytes=row.get("size_bytes") or 0, size_is_estimate=bool(row.get("size_is_estimate")),
             headers=dict(BILIBILI_HEADERS), media_host_suffixes=BILIBILI_MEDIA_HOST_SUFFIXES,
             provider_manifest_token=token, **fields))

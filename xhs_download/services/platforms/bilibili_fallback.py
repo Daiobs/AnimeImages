@@ -128,7 +128,7 @@ def parse_fallback(source_url, *, native_parse, authorize,
                 source, timeout_seconds=remaining, deadline_monotonic=deadline)
             if time.monotonic() >= deadline:
                 raise XhsProviderTimeoutError("哔哩哔哩解析超过时间限制")
-            result = build_service_result(payload, source)
+            result = build_service_result(payload, source, deadline_monotonic=deadline)
         except Exception as error:
             logger.info("bilibili_fallback_unavailable provider=%s error_type=%s",
                         PROVIDER, type(error).__name__)

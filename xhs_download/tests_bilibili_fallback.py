@@ -222,6 +222,24 @@ class BilibiliFallbackPipelineTests(SimpleTestCase):
         self.assertEqual(self.post.call_args.kwargs["data"]["link"], URL)
         self.assertEqual(native.call_args.kwargs["non_retry_statuses"], (412, 429))
 
+    def test_parse_deadline_bounds_the_single_size_probe(self):
+        from .services.quality import QualityProbeResult
+        self.post.return_value.json.return_value = {"code": 200, "data": {
+            "desc": "A Bilibili fixture", "images": ["http://i0.hdslb.com/cover.jpg"],
+            "videos": [{"url": "http://upos-sz-mirrorcos.bilivideo.com/video.mp4", "streams": []}],
+        }}
+        with patch("xhs_download.services.platforms.bilibili.request_get_with_retry",
+                   side_effect=HTTP_ERROR()), patch(
+                       "xhs_download.services.platforms.bilibili_service_result.QualityProbe") as probe:
+            probe.return_value.probe.return_value = QualityProbeResult(
+                url="", reachable=True, size_bytes=4096)
+            result = parse_media_page(URL, bilibili_service_authorizer=lambda: (PROVIDER,),
+                                      timeout_seconds=1)
+        asset = next(a for a in result.assets if a.media_type == "video")
+        self.assertEqual((asset.size_bytes, asset.cover_url), (4096, "https://i0.hdslb.com/cover.jpg"))
+        probe.return_value.probe.assert_called_once()
+        self.assertLessEqual(probe.return_value.probe.call_args.kwargs["timeout"], 1)
+
     def test_service_failure_preserves_native_error_without_second_service(self):
         error = HTTP_ERROR()
         self.post.side_effect = requests.Timeout("fixture")
