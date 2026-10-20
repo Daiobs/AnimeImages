@@ -1,3 +1,13 @@
+## 用户可见行为：之前 → 之后
+
+| 之前 | 之后 | 不变量编号 |
+| --- | --- | --- |
+| | | |
+
+风险等级以 `protected-files` 的路径判定为准。L0 提供单测，描述不超过一屏；
+L1 提供契约测试与一次真实验收；L2 由 Human 审阅当前 Head 并批准。
+Agent 不得添加或移除 `human-approved`，不得修改仓库设置或绕过检查。
+
 ## Summary
 
 - What does this PR change?

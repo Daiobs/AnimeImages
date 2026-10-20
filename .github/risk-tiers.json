@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "default_tier": "L1",
+  "tiers": {
+    "L0": {
+      "evidence": "展示改动有对应单测；PR 描述不超过一屏。",
+      "paths": [
+        "*.md",
+        "docs/**",
+        "templates/**",
+        "xhs_download/templates/**",
+        "static/css/**",
+        "static/img/**",
+        "static/images/**"
+      ]
+    },
+    "L1": {
+      "evidence": "契约测试及一次真实用户流程验收；记录具体入口和结果。",
+      "paths": [
+        "xhs_download/*.py",
+        "static/js/**",
+        "tools/**",
+        "tests_js/**",
+        "scripts/**"
+      ]
+    },
+    "L2": {
+      "evidence": "Human 审阅当前 Head；protected-files 检查要求 human-approved。",
+      "paths": [
+        "AGENTS.md",
+        "**/AGENTS.md",
+        "docs/product-invariants.md",
+        "contracts/**",
+        ".github/**",
+        "scripts/risk_tier.py",
+        "scripts/protected_files.py",
+        "scripts/tests/**",
+        "tests_js/helpers/**",
+        "scripts/*deploy*",
+        "scripts/*release*",
+        "ops/**",
+        "djangoProject/**",
+        "requirements*.txt",
+        "pyproject.toml",
+        ".env*",
+        "xhs_download/models.py",
+        "xhs_download/migrations/**",
+        "xhs_download/urls.py",
+        "xhs_download/*views.py",
+        "xhs_download/services/common.py",
+        "xhs_download/services/provider_access.py",
+        "xhs_download/services/rate_limits.py",
+        "xhs_download/services/provider_manifest.py",
+        "xhs_download/services/upstream_candidates.py",
+        "xhs_download/services/upstream_delivery.py",
+        "xhs_download/services/ytdlp_selection.py",
+        "xhs_download/services/service_format_selection.py",
+        "xhs_download/services/downloads.py",
+        "xhs_download/services/download_handoff.py",
+        "xhs_download/services/saved_videodl.py",
+        "xhs_download/services/env_config.py",
+        "xhs_download/services/release_management.py",
+        "xhs_download/services/platforms/tiantian_serial.py",
+        "xhs_download/services/platforms/xhs_image_download_authority.py",
+        "xhs_download/services/platforms/xhs_livephoto_browser_admission.py",
+        "xhs_download/services/platforms/douyin_media_policy.py",
+        "xhs_download/services/platforms/xhs_tiantian_media_policy.py",
+        "xhs_download/services/provider_lab/videodl_policy.py",
+        "tools/upstream_metadata_probe.py",
+        "tools/upstream_match_worker.py",
+        "static/js/result_url_safety.js",
+        "static/js/ordinary_media_download_sw.js",
+        "static/js/ordinary_media_streaming_protocol.js"
+      ]
+    }
+  }
+}
