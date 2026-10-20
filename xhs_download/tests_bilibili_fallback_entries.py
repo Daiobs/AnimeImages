@@ -173,6 +173,7 @@ class BilibiliFallbackEntryTests(SimpleTestCase):
         soup = BeautifulSoup(html, "html.parser")
         self.assertEqual(len(soup.select("[data-picker-radio]")), 2)
         self.assertEqual(len(soup.select('[data-can-legacy="true"]')), 2)
+        self.assertEqual(len(soup.select('[data-picker-radio][data-can-download="false"]')), 2)
         self.assertFalse(soup.select(
             '.asset-card[data-type="video"], [data-batch-download-item][data-type="video"]'))
         candidates = context["upstream_candidates"]
@@ -225,6 +226,10 @@ class BilibiliFallbackEntryTests(SimpleTestCase):
 
     def test_home_native_412_reaches_service_picker_and_actions(self):
         self.assert_service_components_and_actions("home")
+
+    def test_home_https_service_also_uses_its_existing_attachment_action(self):
+        with patch(__name__ + ".MEDIA", MEDIA.replace("http:", "https:")):
+            self.assert_service_components_and_actions("home")
 
     def test_batch_normal_native_412_reaches_service_picker_and_actions(self):
         self.assert_service_components_and_actions("batch")

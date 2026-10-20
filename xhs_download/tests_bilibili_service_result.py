@@ -13,7 +13,7 @@ from .services.platforms.bilibili_service_result import build_service_result, so
 from .services.platforms.third_party import GenericThirdPartyAdapter
 from .services.provider_strategy import build_download_strategy
 from .services.service_format_selection import (
-    capability, selected_descriptor, selected_legacy_descriptor,
+    capability, choice, selected_descriptor, selected_legacy_descriptor,
 )
 from .services.upstream_candidates import resolve_candidate_record
 
@@ -116,6 +116,9 @@ class BilibiliServiceResultTests(SimpleTestCase):
         self.assertEqual(len({c["legacy_asset_id"] for c in candidates}), 2)
         for candidate in candidates:
             record = self.record(candidate)
+            projected = choice(candidate)
+            self.assertFalse(projected["can_download"])
+            self.assertTrue(projected["can_legacy_download"])
             item = selected_legacy_descriptor(record)
             self.assertEqual(item["url"], record["url"])
             self.assertEqual(item["asset_id"], candidate["legacy_asset_id"])

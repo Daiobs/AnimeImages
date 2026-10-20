@@ -58,6 +58,11 @@ def capability(candidate):
                      and candidate.get('legacy_delivery') == 'existing_manifest')):
         result = {'can_download': False, 'can_preview': False, 'can_check': False,
                   'limitation': '此格式缺少有效下载授权，可复制原始资源链接。'}
+    elif candidate.get('service_manifest_required'):
+        # The existing picker uses can_legacy_download for this attachment.
+        # Advertising direct download would select an action the server rejects.
+        result = {'can_download': False, 'can_preview': False, 'can_check': False,
+                  'limitation': ''}
     # Service declarations do not borrow a yt-dlp runtime identity for probing.
     result['can_check'] = False
     result['can_open'] = picker.can_open_video(candidate)
