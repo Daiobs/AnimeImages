@@ -1,3 +1,4 @@
+{% if not ytdlp_picker or show_internal_diagnostics %}
 {% if ytdlp_picker %}<details class="ytdlp-technical"><summary>查看技术信息与全部原始候选</summary>{% endif %}
 {% if upstream_route %}
 <p class="upstream-route-status" data-upstream-route-status>
@@ -60,3 +61,4 @@
 </details>
 {% endif %}
 {% if ytdlp_picker %}</details>{% endif %}
+{% endif %}

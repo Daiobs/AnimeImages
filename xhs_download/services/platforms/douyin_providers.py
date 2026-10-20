@@ -1006,7 +1006,7 @@ def attach_douyin_service_picker(result, *, adapter, context, candidates, payloa
             provider_cache_key=main.provider_cache_key, url=candidate.url, media_type='video', source_platform='douyin')
         assets.setdefault(candidate.url, main if is_main else replace(main, url=candidate.url, asset_id=asset_id,
                           provider_manifest_token=token, quality_label=candidate.quality_label,
-                          size_bytes=candidate.size_bytes))
+                          size_bytes=candidate.size_bytes, filename=''))
         rows.append({**original, 'url': candidate.url, 'quality_label': candidate.quality_label,
                      'work_label': work_title,
                      'size_bytes': candidate.size_bytes or None, 'media_type': 'video',

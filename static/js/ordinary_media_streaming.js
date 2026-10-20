@@ -21,7 +21,6 @@
     const DEFAULT_START_TIMEOUT_MS = 8000;
     const DEFAULT_MESSAGE_TIMEOUT_MS = 4000;
     const DEFAULT_STATUS_POLL_MS = 1000;
-    const WORKER_UPDATE_MESSAGE = "下载服务正在更新，尚未开始下载。请等待本站其他下载完成，关闭所有本站标签页后重新打开；无需清除浏览器数据。";
     const DEFAULT_TELEMETRY_ENDPOINT = "/media/browser-download-telemetry/";
     const TELEMETRY_SCHEMA_VERSION = 1;
     const TERMINAL_STATES = new Set(["completed", "failed", "cancelled"]);
@@ -371,6 +370,7 @@
         const allListeners = new Set();
         const latestStatuses = new Map();
         const navigationFrames = new Map();
+        const cancelConfirmations = new Map();
         let registrationPromise = null;
         let currentRegistration = null;
         let messageListenerAttached = false;
@@ -402,6 +402,18 @@
                 || emitOptions.reportTelemetry !== false;
             const safe = protocol.safeSnapshot(status);
             const previous = latestStatuses.get(safe.downloadId);
+            if (cancelConfirmations.has(safe.downloadId) && TERMINAL_STATES.has(safe.state)) {
+                if (previous && TERMINAL_STATES.has(previous.state)) return previous;
+                // Legacy workers announce cancellation before their reader closes.
+                const pending = protocol.safeSnapshot({
+                    ...(previous || safe),
+                    state: previous ? previous.state : (safe.streamingStarted ? "fetching" : "prepared"),
+                    cancellationPending: true,
+                    errorCode: "",
+                });
+                latestStatuses.set(safe.downloadId, pending);
+                return pending;
+            }
             if (previous) {
                 const previousOrder = STATE_ORDER[previous.state] || 0;
                 const nextOrder = STATE_ORDER[safe.state] || 0;
@@ -521,9 +533,6 @@
                     return {registration: registered, active, controller};
                 })().catch((error) => {
                     registrationPromise = null;
-                    if (currentRegistration && (currentRegistration.waiting || currentRegistration.installing)) {
-                        throw streamingError("STREAMING_UPDATE_REQUIRED", WORKER_UPDATE_MESSAGE);
-                    }
                     throw error;
                 });
             }
@@ -583,62 +592,6 @@
                 } catch (error) {
                     finish(reject, error);
                 }
-            });
-        }
-
-        async function ensureSelectedWorker(signal, onUpdating) {
-            await registration();
-            const serviceWorker = navigatorObject.serviceWorker;
-            const compatible = async () => {
-                const controller = serviceWorker.controller;
-                const response = await postMessage({type: "GET_STREAMING_CAPABILITIES"});
-                return controller && controller === serviceWorker.controller
-                    && response.ok === true && response.protocolVersion === protocol.PROTOCOL_VERSION;
-            };
-            try {
-                if (await compatible()) return;
-            } catch (error) {
-                // A known pending update is not browser incapability, even when
-                // the old controller cannot answer our capability message.
-                if (!currentRegistration || !(currentRegistration.waiting || currentRegistration.installing)) throw error;
-            }
-            if (typeof onUpdating === "function") onUpdating(WORKER_UPDATE_MESSAGE);
-            // Legacy workers cannot atomically drain all tabs before skipWaiting.
-            // Observe normal takeover only; UNKNOWN_MESSAGE is not an idle proof.
-            await new Promise((resolve, reject) => {
-                let finished = false;
-                let checking = false;
-                let changedDuringCheck = false;
-                const finish = (callback, value) => {
-                    if (finished) return;
-                    finished = true;
-                    clearSchedule(timer);
-                    serviceWorker.removeEventListener("controllerchange", check);
-                    if (signal) signal.removeEventListener("abort", abort);
-                    callback(value);
-                };
-                const abort = () => finish(reject, streamingError("USER_CANCELLED", "已取消等待下载服务更新，未开始下载。"));
-                const check = async () => {
-                    if (finished) return;
-                    if (checking) { changedDuringCheck = true; return; }
-                    checking = true;
-                    try {
-                        if (await compatible()) finish(resolve);
-                    } catch (_) {
-                        // No download was registered. A failed/unknown handshake
-                        // stays in the bounded update wait, never a media retry.
-                    } finally {
-                        checking = false;
-                        if (changedDuringCheck) { changedDuringCheck = false; check(); }
-                    }
-                };
-                const timer = schedule(() => finish(reject, streamingError(
-                    "STREAMING_UPDATE_REQUIRED", WORKER_UPDATE_MESSAGE,
-                )), startTimeoutMs);
-                serviceWorker.addEventListener("controllerchange", check);
-                if (signal) signal.addEventListener("abort", abort, {once: true});
-                if (signal && signal.aborted) abort();
-                else check();
             });
         }
 
@@ -732,20 +685,30 @@
             }
         }
 
-        async function cancel(downloadId) {
-            const response = await postMessage({
-                type: "CANCEL_DOWNLOAD",
-                downloadId,
-            });
-            if (!response.ok || !response.status || response.status.cancellationPending
-                || !TERMINAL_STATES.has(response.status.state)) {
-                throw streamingError(
-                    "STREAMING_CANCEL_STATE_UNKNOWN",
-                    "尚未确认下载已停止，请检查浏览器下载列表。",
-                    {streamingStarted: Boolean(response.status && response.status.streamingStarted)},
-                );
-            }
-            return response.status ? protocol.safeSnapshot(response.status) : null;
+        function cancel(downloadId) {
+            const id = protocol.normalizeDownloadId(downloadId);
+            if (cancelConfirmations.has(id)) return cancelConfirmations.get(id);
+            const confirmation = (async () => {
+                try {
+                    const response = await postMessage({type: "CANCEL_DOWNLOAD", downloadId: id});
+                    if (!response.ok || !response.status || response.status.cancellationPending
+                        || !TERMINAL_STATES.has(response.status.state)) {
+                        throw new Error("Cancellation not confirmed");
+                    }
+                    cancelConfirmations.delete(id);
+                    return emit(response.status, {reportTelemetry: response.telemetryOwner !== false});
+                } catch (error) {
+                    throw streamingError(
+                        "STREAMING_CANCEL_STATE_UNKNOWN",
+                        "尚未确认下载已停止，请检查浏览器下载列表。",
+                        {streamingStarted: Boolean(latestStatuses.get(id)?.streamingStarted)},
+                    );
+                }
+            })();
+            cancelConfirmations.set(id, confirmation);
+            // An unconfirmed cancellation must not become a terminal status on a later poll.
+            confirmation.catch(() => {});
+            return confirmation;
         }
 
         async function deletePrepared(downloadId) {
@@ -780,6 +743,14 @@
                     callback(value);
                 };
                 const handleStatus = (status) => {
+                    const confirmation = cancelConfirmations.get(downloadId);
+                    if (confirmation) {
+                        confirmation.catch(error => finish(reject, error));
+                        return;
+                    }
+                    if (status.state === "completed" && status.receivedBytes === 0) {
+                        status = {...status, state: "failed", errorCode: "UPSTREAM_STREAM_FAILED"};
+                    }
                     if (typeof onProgress === "function") {
                         onProgress(status);
                     }
@@ -824,7 +795,7 @@
                 ? startOptions.onProgress
                 : (() => {});
             const downloadId = protocol.randomDownloadId(cryptoObject);
-            const descriptor = protocol.createDescriptor({
+            const source = Object.freeze({
                 ...item,
                 downloadId,
                 url: item && (item.url || item.video_url),
@@ -833,12 +804,14 @@
                 expectedBytes: item && item.size_is_estimate
                     ? 0
                     : (item && (item.size_bytes || item.sizeBytes)),
-            }, {
+            });
+            const descriptorOptions = {
                 allowLoopbackHttp: Boolean(
                     locationObject
                     && protocol.isLoopbackHostname(locationObject.hostname)
                 ),
-            });
+            };
+            let descriptor = protocol.createTransportDescriptor(source, descriptorOptions);
             let registered = false;
             let registrationDispatched = false;
             let registrationRejected = false;
@@ -962,17 +935,12 @@
 
             try {
                 if (cancelRequested) throw cancelledError();
-                if (descriptor.selectionBinding) {
-                    await ensureSelectedWorker(signal, startOptions.onUpdating);
-                    // Waiting never extends a signed candidate's original life.
-                    if (descriptor.selectionBinding.selection_expires_at <= Date.now()) {
-                        throw streamingError("DESCRIPTOR_EXPIRED", "当前资源授权已过期，请重新解析。");
-                    }
-                }
+                await registration();
                 if (cancelRequested) throw cancelledError();
+                // Recheck after browser setup, before registering any transfer.
+                descriptor = protocol.createTransportDescriptor(source, descriptorOptions);
                 const response = await postMessage({
                     type: "REGISTER_DOWNLOAD",
-                    protocolVersion: protocol.PROTOCOL_VERSION,
                     descriptor,
                 }, () => { registrationDispatched = true; });
                 if (response.ok !== true) {
@@ -986,10 +954,6 @@
                     );
                 }
                 registered = true;
-                if (descriptor.selectionBinding && (!response.status
-                    || response.status.protocolVersion !== protocol.PROTOCOL_VERSION)) {
-                    throw streamingError("STREAMING_PROTOCOL_UNSUPPORTED", "下载服务版本暂不兼容。");
-                }
                 if (cancelRequested) {
                     requestCancel();
                     await cancelPromise;
@@ -999,7 +963,12 @@
                 navigationAttempted = true;
                 launchNavigation(downloadId);
                 const startedStatus = await startWaiter;
-                const completion = waitForTerminal(downloadId, onProgress, cancellationFailure).finally(detachAbort);
+                const completion = waitForTerminal(downloadId, onProgress, cancellationFailure)
+                    .catch(async (error) => {
+                        // Older workers broadcast cancellation before their reader closes.
+                        if (cancelPromise) await cancelPromise;
+                        throw error;
+                    }).finally(detachAbort);
                 return {
                     downloadId,
                     transport: "browser_streaming",
@@ -1010,6 +979,9 @@
             } catch (error) {
                 stopStartWaiter();
                 detachAbort();
+                if (error && error.message === "DESCRIPTOR_EXPIRED" && !error.errorCode) {
+                    error = streamingError("DESCRIPTOR_EXPIRED", "当前资源授权已过期，请重新解析。");
+                }
                 const registrationUnknown = registrationDispatched && !registered && !registrationRejected;
                 if (cancelRequested && registrationDispatched && !registrationRejected) {
                     requestCancel();
@@ -1059,6 +1031,7 @@
             listeners.clear();
             allListeners.clear();
             latestStatuses.clear();
+            cancelConfirmations.clear();
             [...navigationFrames.keys()].forEach(cleanupNavigationFrame);
         }
 
@@ -1091,7 +1064,6 @@
         DEFAULT_TELEMETRY_ENDPOINT,
         DEFAULT_WORKER_SCOPE,
         DEFAULT_WORKER_URL,
-        WORKER_UPDATE_MESSAGE,
         TELEMETRY_SCHEMA_VERSION,
         TERMINAL_STATES,
         createTerminalTelemetryPayload,

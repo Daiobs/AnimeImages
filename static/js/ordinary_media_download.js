@@ -741,7 +741,7 @@
 
     function safeErrorMessage(error) {
         if (error && ["STREAMING_UPDATE_REQUIRED", "STREAMING_PROTOCOL_UNSUPPORTED"].includes(error.errorCode)) {
-            return streamingApi.WORKER_UPDATE_MESSAGE;
+            return "当前下载服务未能接受此任务，尚未开始下载。请重新打开页面后再试。";
         }
         const errorCode = String(error && error.errorCode || "");
         if (errorCode === "UPSTREAM_BROWSER_FETCH_FAILED") {
