@@ -460,7 +460,7 @@ async function streamDownload(state) {
         return errorResponse(502, "UPSTREAM_SIZE_MISMATCH");
     }
 
-    if (selected) state.filename = protocol.filenameFromContentType(state.filename, contentType);
+    state.filename = protocol.filenameFromContentType(state.filename, contentType);
     state.totalBytes = contentLength || state.expectedBytes;
     state.upstreamReader = upstream.body.getReader();
     const byteLimit = Math.min(state.totalBytes || state.maxBytes, state.maxBytes);

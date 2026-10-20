@@ -709,6 +709,32 @@
         });
     }
 
+    function createTransportDescriptor(input, options) {
+        const value = input && typeof input === "object" ? input : {};
+        const settings = options && typeof options === "object" ? options : {};
+        const now = positiveInteger(settings.nowEpochMs) || Date.now();
+        const binding = createSelectionBinding(value);
+        if (binding) {
+            const url = new URL(value.url);
+            if (!isSecureProviderUrl(url) || url.hash) throw new Error("INVALID_SELECTION_BINDING");
+            if (binding.selection_expires_at <= now) throw new Error("DESCRIPTOR_EXPIRED");
+        }
+        // Authorization is checked before handoff. The worker receives only the
+        // same bounded transfer request used by ordinary videos, never business tokens.
+        const descriptor = createDescriptor({
+            downloadId: value.downloadId,
+            url: value.url,
+            filename: value.filename,
+            expectedBytes: value.expectedBytes,
+            size_is_estimate: value.size_is_estimate,
+        }, settings);
+        return Object.freeze({
+            downloadId: descriptor.downloadId, url: descriptor.url,
+            filename: descriptor.filename, expectedBytes: descriptor.expectedBytes,
+            createdAt: descriptor.createdAt, expiresAt: descriptor.expiresAt,
+        });
+    }
+
     function downloadPath(downloadId, scopePath) {
         const id = normalizeDownloadId(downloadId);
         if (!id) {
@@ -871,6 +897,7 @@
         classifyObservedFinalHost,
         classifyResponseRejection,
         createDescriptor,
+        createTransportDescriptor,
         createSelectionBinding,
         filenameFromContentType,
         createProgressEstimator,

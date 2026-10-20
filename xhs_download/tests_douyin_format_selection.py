@@ -397,12 +397,20 @@ class DouyinFormatSelectionTests(SimpleTestCase):
         self.assertEqual(len({resolve_candidate_record(r['resource_token'], r['candidate_id'])['url'] for r in rows}), 2)
         self.session.post.assert_called_once()
         context = {**build_result_display_context(result, probe_missing_video_sizes=False), 'status': 'success'}
-        for template, data in (('partials/xhs_results_region.html', context),
-                               ('partials/batch_result_card.html', {'row': context})):
-            soup = BeautifulSoup(render_to_string(template, data), 'html.parser')
-            self.assertEqual(len(soup.select('[data-picker-radio]')), 3)
-            self.assertEqual(len(soup.select('[data-upstream-candidate]')), 3)
-            self.assertFalse(soup.select('.asset-card[data-type="video"]'))
+        self.assertEqual(context['upstream_candidates'], rows)
+        for staff in (False, True):
+            for template, data in (('partials/xhs_results_region.html', context),
+                                   ('partials/batch_result_card.html', {'row': context})):
+                with self.subTest(staff=staff, template=template):
+                    html = render_to_string(template, {**data, 'show_internal_diagnostics': staff})
+                    soup = BeautifulSoup(html, 'html.parser')
+                    self.assertEqual(len(soup.select('[data-picker-radio]')), 3)
+                    self.assertEqual(len(soup.select('[data-upstream-candidate]')), 3 if staff else 0)
+                    self.assertEqual(bool(soup.select_one('.ytdlp-technical')), staff)
+                    self.assertEqual(bool(soup.select_one('[data-upstream-candidates]')), staff)
+                    self.assertFalse(soup.select('.asset-card[data-type="video"]'))
+        self.assertEqual(len(result.metadata['upstream_candidates']), 3)
+        self.assertEqual(context['upstream_candidates'], rows)
         self.assertEqual(build_service_picker(rows)['selected']['candidate_id'], rows[0]['candidate_id'])
 
     def test_nonprimary_manifest_exact_identity_and_cache_roundtrip(self):

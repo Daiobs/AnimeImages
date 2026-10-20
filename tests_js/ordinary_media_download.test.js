@@ -854,7 +854,8 @@ test("worker upgrade is not browser incapability and never starts a Blob request
             handoffBlob: async () => {},
         }), error => error.errorCode === code);
         assert.equal(fetches, 0);
-        assert.match(ordinary.safeErrorMessage({errorCode: code}), /关闭所有本站标签页/);
+        assert.match(ordinary.safeErrorMessage({errorCode: code}), /尚未开始下载/);
+        assert.doesNotMatch(ordinary.safeErrorMessage({errorCode: code}), /其他下载|关闭所有/);
     }
 });
 

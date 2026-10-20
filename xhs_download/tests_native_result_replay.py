@@ -9,6 +9,7 @@ import subprocess
 import urllib.request
 from unittest.mock import patch
 
+from bs4 import BeautifulSoup
 from django.core.cache import cache
 from django.template.loader import render_to_string
 from django.test import RequestFactory, SimpleTestCase, override_settings
@@ -211,8 +212,12 @@ class NativeReplayTests(SimpleTestCase):
     def test_shared_display_context_and_both_real_templates(self):
         from .views import apply_search_result_to_context, build_result_display_context
         from .services.batch_parse.results import build_batch_result_row
-        for uid in ('b57196ed22696db0ca991f21','421dcc02aca139ef0727c86a',
-                    '1d723e3f60f5f7b7634cd84a','88e9b92a7c517fb33ce435a4'):
+        for uid, candidate_count, picker_count in (
+            ('b57196ed22696db0ca991f21', 30, 0),
+            ('421dcc02aca139ef0727c86a', 24, 24),
+            ('1d723e3f60f5f7b7634cd84a', 8, 7),
+            ('88e9b92a7c517fb33ce435a4', 1, 1),
+        ):
             result, lab, _ = self.run_fixture(uid)
             with offline_network():
                 context = {'page_platform_id':'', 'show_internal_diagnostics':False}
@@ -224,23 +229,49 @@ class NativeReplayTests(SimpleTestCase):
                     query_uses_third_party_provider_func=lambda source: False)
                 self.assertEqual(row['status'],'success')
                 self.assertEqual(row['upstream_candidates'],context['upstream_candidates'])
+                self.assertEqual(context['upstream_candidates'], result.metadata['upstream_candidates'])
+                self.assertEqual(len(context['upstream_candidates']), candidate_count)
                 # Test artifact must not contain usable resource actions or tokens.
                 context['upstream_candidates']=[{**c,'resource_token':''} for c in context['upstream_candidates']]
                 row['upstream_candidates']=context['upstream_candidates']
-                home = render_to_string('partials/xhs_results_region.html',context)
-                batch = render_to_string('partials/batch_result_card.html',{'row':row})
+                for staff in (False, True):
+                    home = render_to_string('partials/xhs_results_region.html',
+                                            {**context, 'show_internal_diagnostics': staff})
+                    batch = render_to_string('partials/batch_result_card.html',
+                                             {'row': row, 'show_internal_diagnostics': staff})
+                    for template, page in (('home', home), ('batch', batch)):
+                        with self.subTest(uid=uid, staff=staff, template=template):
+                            soup = BeautifulSoup(page, 'html.parser')
+                            self.assertEqual(bool(soup.select_one('[data-ytdlp-picker]')), bool(picker_count))
+                            self.assertEqual(len(soup.select('[data-picker-radio]')), picker_count)
+                            show_candidates = staff or not picker_count
+                            self.assertEqual(len(soup.select('[data-upstream-candidate]')),
+                                             candidate_count if show_candidates else 0)
+                            self.assertEqual(bool(soup.select_one('[data-upstream-candidates]')), show_candidates)
+                            self.assertEqual(bool(soup.select_one('.ytdlp-technical')), staff and bool(picker_count))
+                            candidate_actions = soup.select('[data-candidate-action]')
+                            self.assertEqual(len(candidate_actions), 2 * candidate_count if show_candidates else 0)
+                            self.assertTrue(all(action.has_attr('disabled') for action in candidate_actions))
+                            for node in soup.select('[data-token], [data-first-token], [data-resource-token]'):
+                                for attribute in ('data-token', 'data-first-token', 'data-resource-token'):
+                                    if node.has_attr(attribute):
+                                        self.assertEqual(node[attribute], '')
+                            self.assertNotIn('media.example', page)
+                            self.assertNotIn('<video', page)
+                            if show_candidates:
+                                self.assertIn('返回 '+str(result.metadata['returned_count']), page)
+                            else:
+                                self.assertNotIn('查看技术信息与全部原始候选', page)
+                            if uid.startswith('421') and show_candidates:
+                                self.assertIn('deu', page)
+                    if uid.startswith('88e9'):
+                        self.assertIn('data-post-type="audio"', batch)
+            self.assertEqual(len(result.metadata['upstream_candidates']), candidate_count)
             self.assertEqual(len(context['upstream_candidates']),len(lab['assets']))
             self.assertEqual(context['returned_count'],result.metadata['returned_count'])
             self.assertEqual(context['retained_count'],result.metadata['retained_count'])
-            for page in (home,batch):
-                self.assertEqual(page.count('data-upstream-candidate\n'),len(lab['assets']))
-                self.assertIn('disabled',page)
-                self.assertNotIn('media.example',page)
-                self.assertNotIn('<video',page)
-                self.assertIn('返回 '+str(result.metadata['returned_count']),page)
             if uid.startswith('421'):
-                self.assertIn('deu',home)
-                self.assertIn('deu',batch)
+                self.assertTrue(all(c['language'] == 'deu' for c in context['upstream_candidates']))
             if uid.startswith('88e9'):
                 self.assertEqual(context['post_type'], 'audio')
                 self.assertEqual(row['post_type'], 'audio')
@@ -248,7 +279,6 @@ class NativeReplayTests(SimpleTestCase):
                     self.assertNotIn('已保留可用图片', notice)
                     self.assertNotIn('另有视频', notice)
                     self.assertIn('候选', notice)
-                self.assertIn('data-post-type="audio"', batch)
 
     def test_synthetic_unknown_language_and_escaping_remain_safe(self):
         from .services.upstream_candidates import _candidate_record

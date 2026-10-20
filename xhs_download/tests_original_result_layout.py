@@ -50,16 +50,18 @@ class OriginalResultLayoutTests(SimpleTestCase):
                     self.assertIsNotNone(soup.select_one('.quality-preview-tile [data-picker-cover]'))
                     self.assertIsNone(soup.select_one('.ytdlp-work'))
                     self.assertNotIn('<h3>Video</h3>', html)
-                    self.assert_choices(soup)
+                    self.assert_choices(soup, staff=staff)
                     self.assert_absent_controls(html)
 
-    def assert_choices(self, soup):
+    def assert_choices(self, soup, *, staff):
         choices = soup.select('[data-picker-group="video"] [data-picker-radio]')
         self.assertEqual([row['data-label'] for row in choices], ['原画', '1080p', '720p', '540p'])
         self.assertEqual(choices[1]['data-size-label'], '2.7 MiB')
         self.assertTrue(choices[0].has_attr('checked'))
         self.assertTrue(all(not row.find_parent('details') for row in choices))
-        self.assertEqual(len(soup.select('[data-upstream-candidate]')), 5)
+        self.assertEqual(len(soup.select('[data-upstream-candidate]')), 5 if staff else 0)
+        self.assertEqual(bool(soup.select_one('.ytdlp-technical')), staff)
+        self.assertEqual(bool(soup.select_one('[data-upstream-candidates]')), staff)
         self.assertEqual(len({row['data-legacy-asset-id'] for row in choices}), 4)
 
     def assert_absent_controls(self, html):
@@ -81,8 +83,37 @@ class OriginalResultLayoutTests(SimpleTestCase):
             soup = BeautifulSoup(html, 'html.parser')
             self.assertIn('真实作品标题 #图文与视频', soup.select_one('.batch-result-title').get_text())
             self.assertIsNotNone(soup.select_one('[data-picker-download-all]'))
-            self.assert_choices(soup)
+            self.assert_choices(soup, staff=staff)
             self.assert_absent_controls(html)
+
+    def test_candidate_only_legacy_cards_remain_visible_without_picker(self):
+        for provider in ('yt_dlp_generic', 'tiantianjiexi', 'gallery_dl_generic'):
+            context = {
+                'status': 'success', 'image_items': [], 'video_items': [],
+                'base_filename': 'legacy-result',
+                'upstream_candidates': [{
+                    'candidate_id': 'legacy-candidate', 'resource_token': 'opaque-token',
+                    'provider_id': provider, 'media_type': 'video', 'format_label': '1080p',
+                }],
+            }
+            for staff in (False, True):
+                for template, values in (
+                    ('partials/xhs_results_region.html', context),
+                    ('partials/batch_result_card.html', {'row': context}),
+                ):
+                    with self.subTest(provider=provider, staff=staff, template=template):
+                        html = render_to_string(template, {**values, 'show_internal_diagnostics': staff})
+                        soup = BeautifulSoup(html, 'html.parser')
+                        self.assertIsNone(soup.select_one('[data-ytdlp-picker]'))
+                        self.assertIsNone(soup.select_one('.ytdlp-technical'))
+                        details = soup.select_one('[data-upstream-candidates]')
+                        self.assertIsNotNone(details)
+                        self.assertTrue(details.has_attr('open'))
+                        self.assertEqual(len(details.select('[data-upstream-candidate]')), 1)
+                        for action in ('copy', 'open'):
+                            button = details.select_one(f'[data-candidate-action="{action}"]')
+                            self.assertIsNotNone(button)
+                            self.assertFalse(button.has_attr('disabled'))
 
     def test_cached_candidate_placeholder_cannot_hide_existing_result_title(self):
         _, context = self.context()

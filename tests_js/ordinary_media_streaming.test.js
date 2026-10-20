@@ -1891,7 +1891,7 @@ test("Single and Batch use one shared ordinary download primitive", () => {
     assert.match(batchSource, /async function readBatchPhotoArchiveResponse\(/);
 });
 
-test("selected protocol keeps identity, expiry and the original 1 GiB bound without leaking tokens", () => {
+test("legacy bound messages retain their original validation for already-open pages", () => {
     for (const provider of ["tiantianjiexi", "kukutool"]) {
         const input = selectedItem(provider);
         const descriptor = selectedDescriptor(input, provider);
@@ -1911,6 +1911,25 @@ test("selected protocol keeps identity, expiry and the original 1 GiB bound with
         assert.throws(() => protocol.createDescriptor(descriptor, {nowEpochMs: descriptor.expiresAt}), /DESCRIPTOR_EXPIRED/);
     }
     assert.equal(protocol.createDescriptor({...ordinaryItem(), downloadId: "1".repeat(32)}).maxBytes, 2 * 1024 ** 3);
+});
+
+test("new transfer projection separates candidate authorization from the ordinary preparation window", () => {
+    const now = Date.now();
+    const input = {...selectedItem("tiantianjiexi", {selection_expires_at: now + 1000}),
+        downloadId: "1".repeat(32), expectedBytes: 1024 ** 3 + 1};
+    const transfer = protocol.createTransportDescriptor(input, {nowEpochMs: now});
+    assert.equal(transfer.expectedBytes, input.expectedBytes);
+    assert.equal(transfer.expiresAt, now + protocol.DEFAULT_STREAM_DESCRIPTOR_TTL_MS);
+    assert.equal(input.selection_expires_at, now + 1000);
+    for (const key of ["provider", "candidate_id", "provider_manifest_token", "selectionBinding", "protocolVersion"])
+        assert.equal(transfer[key], undefined);
+    assert.ok(Object.isFrozen(transfer));
+    assert.throws(() => protocol.createTransportDescriptor(input, {nowEpochMs: now + 1000}), /DESCRIPTOR_EXPIRED/);
+    assert.throws(() => protocol.createTransportDescriptor({...input, expectedBytes: 2 * 1024 ** 3 + 1}), /EXPECTED_SIZE_TOO_LARGE/);
+    assert.equal(protocol.createTransportDescriptor({...input, size_is_estimate: true}).expectedBytes, 0);
+    for (const changes of [{requires_cookie: true}, {requires_context: true}, {has_drm: true},
+        {type: "audio"}, {url: "https://unreviewed.example/video.mp4"}, {provider_manifest_token: ""}])
+        assert.throws(() => protocol.createTransportDescriptor({...input, ...changes}));
 });
 
 test("bound video variants retain strict admission without new domains, audio or context grants", () => {
@@ -2158,6 +2177,76 @@ test("real selected page signal cancels its worker task and waits for upstream c
     await app.client.close();
 });
 
+for (const entry of ["client", "handle", "signal"]) {
+    test(`legacy ${entry} cancellation shares one ACK and leaves parallel work independent`, async (t) => {
+        const app = createClientHarness({protocolVersion: 2, onNavigate: emitNavigationStarted});
+        t.after(() => app.client.close());
+        const controller = new AbortController();
+        const active = await app.client.start(selectedItem(), {signal: controller.signal});
+        const other = await app.client.start(ordinaryItem());
+        const notices = [];
+        app.client.subscribeAll(status => notices.push(status));
+        let settled = false;
+        const completion = active.completion.catch(error => { settled = true; return error; });
+        const dispatched = deferred();
+        const original = app.worker.postMessage.bind(app.worker);
+        let acknowledge;
+        app.worker.postMessage = (message, ports) => {
+            if (message.type !== "CANCEL_DOWNLOAD") return original(message, ports);
+            app.calls.push({type: "message", worker: "initial", message});
+            const status = {...app.statuses.get(message.downloadId), state: "cancelled", errorCode: "USER_CANCELLED"};
+            app.serviceWorker.emit(status);
+            acknowledge = () => ports[0].postMessage({ok: true, status});
+            dispatched.resolve();
+        };
+        if (entry === "client") app.client.cancel(active.downloadId);
+        else if (entry === "handle") active.cancel();
+        else controller.abort();
+        const confirmation = app.client.cancel(active.downloadId);
+        assert.equal(active.cancel(), confirmation);
+        controller.abort();
+        await dispatched.promise;
+        const pending = await app.client.getStatus(active.downloadId);
+        assert.equal(pending.state, "fetching");
+        assert.equal(pending.cancellationPending, true);
+        assert.equal(settled, false);
+        assert.equal(app.frames[0].removed, false);
+        assert.equal(workerMessages(app, "CANCEL_DOWNLOAD").length, 1);
+        assert.equal(notices.filter(status => status.downloadId === active.downloadId
+            && protocol.TERMINAL_STATES.includes(status.state)).length, 0);
+        await completeDownload(app, other);
+        assert.equal(app.frames[1].removed, true);
+        assert.equal(app.frames[0].removed, false);
+        acknowledge();
+        assert.equal((await confirmation).state, "cancelled");
+        assert.equal((await completion).errorCode, "USER_CANCELLED");
+        assert.equal(app.frames[0].removed, true);
+        assert.equal(notices.filter(status => status.downloadId === active.downloadId
+            && protocol.TERMINAL_STATES.includes(status.state)).length, 1);
+    });
+}
+
+test("unconfirmed legacy cancellation never publishes its early terminal status", async (t) => {
+    const app = createClientHarness({protocolVersion: 2, onNavigate: emitNavigationStarted});
+    t.after(() => app.client.close());
+    const active = await app.client.start(selectedItem());
+    const notices = [];
+    app.client.subscribeAll(status => notices.push(status));
+    const completion = active.completion.catch(error => error);
+    const original = app.worker.postMessage.bind(app.worker);
+    app.worker.postMessage = (message, ports) => {
+        if (message.type !== "CANCEL_DOWNLOAD") return original(message, ports);
+        const status = {...app.statuses.get(message.downloadId), state: "cancelled", errorCode: "USER_CANCELLED"};
+        app.serviceWorker.emit(status);
+        ports[0].postMessage({ok: false, status});
+    };
+    await assert.rejects(app.client.cancel(active.downloadId), error => error.errorCode === "STREAMING_CANCEL_STATE_UNKNOWN");
+    assert.equal((await completion).errorCode, "STREAMING_CANCEL_STATE_UNKNOWN");
+    assert.equal((await app.client.getStatus(active.downloadId)).state, "fetching");
+    assert.equal(app.frames[0].removed, false);
+    assert.equal(notices.some(status => protocol.TERMINAL_STATES.includes(status.state)), false);
+});
+
 test("unknown registration is cleaned but cannot fall back, and unknown cleanup never permits a retry", async () => {
     for (const dropMessages of [[], ["DELETE_DOWNLOAD"]]) {
         const app = createClientHarness({dropRegisterReply: true, dropMessages, messageTimeoutMs: 5});
@@ -2192,193 +2281,133 @@ function completeDownload(app, active) {
     return active.completion;
 }
 
-test("old active v2 with waiting v4 times out without REGISTER, Blob, skipWaiting or old-task cleanup", async (t) => {
-    for (const capabilitiesResponse of [
-        {ok: true, protocolVersion: 2},
-        {ok: false, code: "UNKNOWN_MESSAGE"},
-    ]) {
-        const app = createClientHarness({capabilitiesResponse, startTimeoutMs: 20,
-            waitingWorker: {capabilitiesResponse: {ok: true, protocolVersion: 4}}});
+test("old active worker serves selected transfers while a newer worker waits, without handshake or takeover", async (t) => {
+    for (const capabilitiesResponse of [{ok: true, protocolVersion: 2}, {ok: false, code: "UNKNOWN_MESSAGE"}]) {
+        const app = createClientHarness({capabilitiesResponse, waitingWorker: {protocolVersion: 4},
+            onNavigate: emitNavigationStarted});
         t.after(() => app.client.close());
-        const oldStatus = safeStatus({downloadId: "f".repeat(32), state: "fetching", streamingStarted: true});
-        app.statuses.set(oldStatus.downloadId, oldStatus);
-        let mediaFetches = 0;
-        let blobHandoffs = 0;
-        let fallbacks = 0;
-        let updating = 0;
-        const startedAt = performance.now();
-        await assert.rejects(ordinary.download(selectedItem(), {
-            streamingClient: app.client,
-            fetchImpl: async () => { mediaFetches += 1; return responseFor("1234567890"); },
-            async handoffBlob() { blobHandoffs += 1; },
-            onTransportFallback() { fallbacks += 1; },
-            onStage(stage) {
-                if (stage === "updating") {
-                    updating += 1;
-                    assertNoUpdateSideEffects(app);
-                }
-            },
-        }), error => {
-            assert.equal(error.errorCode, "STREAMING_UPDATE_REQUIRED");
-            assert.equal(error.safeToFallback, false);
-            assert.equal(error.streamingStarted, false);
-            assert.match(error.message, /等待.*其他下载完成/);
-            assert.match(error.message, /关闭所有本站标签页.*重新打开/);
-            return true;
-        });
-        assert.ok(performance.now() - startedAt >= 15, "must wait, not reject the first old handshake");
-        assert.equal(updating, 1);
-        assert.equal(mediaFetches, 0);
-        assert.equal(blobHandoffs, 0);
-        assert.equal(fallbacks, 0);
-        assertNoUpdateSideEffects(app);
-        assert.deepEqual(app.statuses.get(oldStatus.downloadId), oldStatus);
-        assert.equal(app.listeners.has("controllerchange"), false);
+        const existing = await app.client.start(ordinaryItem());
+        const oldFrame = app.frames[0];
+        const oldStatus = {...app.statuses.get(existing.downloadId)};
+        const input = selectedItem("tiantianjiexi", {filename: "selected-720p.mp4"});
+        const selected = await app.client.start(input);
+        input.url = "https://wrong.example/changed.mp4";
+        const registrations = workerMessages(app, "REGISTER_DOWNLOAD");
+        assert.equal(registrations.length, 2);
+        assert.equal(registrations[1].worker, "initial");
+        const transfer = registrations[1].message.descriptor;
+        assert.equal(transfer.filename, "selected-720p.mp4");
+        assert.equal(transfer.url, selectedItem().url);
+        assert.deepEqual(Object.keys(transfer).sort(),
+            ["createdAt", "downloadId", "expectedBytes", "expiresAt", "filename", "url"].sort());
+        assert.equal(registrations[1].message.protocolVersion, undefined);
+        assert.equal(workerMessages(app, "GET_STREAMING_CAPABILITIES").length, 0);
+        assert.equal(workerMessages(app, "LIST_ACTIVE_DOWNLOADS").length, 0);
         assert.equal(workerMessages(app).some(call => call.worker === "waiting"), false);
+        assert.equal(oldFrame.removed, false);
+        assert.deepEqual(app.statuses.get(existing.downloadId), oldStatus);
+        assert.equal(app.frames.length, 2);
+        assert.equal(workerMessages(app, "CANCEL_DOWNLOAD").length, 0);
+        await completeDownload(app, selected);
+        assert.equal(oldFrame.removed, false);
+        await completeDownload(app, existing);
     }
 });
 
-test("aborting the controller update wait never registers or cancels worker tasks, even after late takeover", async (t) => {
-    const app = createClientHarness({protocolVersion: 2, startTimeoutMs: 1000,
-        waitingWorker: {protocolVersion: 4}});
+test("cancellation before transfer registration never starts later after a controller change", async (t) => {
+    const app = createClientHarness({protocolVersion: 2, waitingWorker: {protocolVersion: 4}});
     t.after(() => app.client.close());
     const controller = new AbortController();
-    const updating = deferred();
-    const pending = app.client.start(selectedItem(), {
-        signal: controller.signal, onUpdating: updating.resolve,
-    });
-    const rejected = assert.rejects(pending, error => error.errorCode === "USER_CANCELLED"
-        && error.safeToFallback === false && error.streamingStarted === false);
-    await updating.promise;
     controller.abort();
-    await rejected;
-    assert.equal(app.listeners.has("controllerchange"), false);
+    await assert.rejects(app.client.start(selectedItem(), {signal: controller.signal}),
+        error => error.errorCode === "USER_CANCELLED" && error.safeToFallback === false);
     app.changeController(app.registration.waiting);
     await new Promise(resolve => setImmediate(resolve));
     assertNoUpdateSideEffects(app);
 });
 
-test("a late controller takeover after update timeout cannot revive the failed start", async (t) => {
-    const app = createClientHarness({protocolVersion: 2, startTimeoutMs: 10,
-        waitingWorker: {protocolVersion: 4}});
-    t.after(() => app.client.close());
-    await assert.rejects(app.client.start(selectedItem()), error =>
-        error.errorCode === "STREAMING_UPDATE_REQUIRED" && error.safeToFallback === false);
-    app.changeController(app.registration.waiting);
-    await new Promise(resolve => setImmediate(resolve));
-    assertNoUpdateSideEffects(app);
-    assert.equal(app.listeners.has("controllerchange"), false);
-});
-
-test("selected authorization expiring during the update wait is never extended or registered", async (t) => {
+test("authorization expires during browser registration without creating a transfer or renewing the candidate", async (t) => {
     let now = Date.now();
     t.mock.method(Date, "now", () => now);
-    const item = selectedItem("tiantianjiexi", {selection_expires_at: now + 1000});
-    const app = createClientHarness({protocolVersion: 2, startTimeoutMs: 1000,
-        waitingWorker: {protocolVersion: 4}});
+    const input = selectedItem("tiantianjiexi", {selection_expires_at: now + 1000});
+    const app = createClientHarness({protocolVersion: 2});
     t.after(() => app.client.close());
-    const updating = deferred();
-    const pending = app.client.start(item, {onUpdating: updating.resolve});
-    const rejected = assert.rejects(pending, error => error.errorCode === "DESCRIPTOR_EXPIRED"
-        && error.safeToFallback === false && error.streamingStarted === false);
-    await updating.promise;
-    now = item.selection_expires_at + 1;
-    app.changeController(app.registration.waiting);
-    await rejected;
+    const register = app.serviceWorker.register;
+    app.serviceWorker.register = async (...args) => {
+        now += 2000;
+        return register(...args);
+    };
+    await assert.rejects(app.client.start(input), error =>
+        error.errorCode === "DESCRIPTOR_EXPIRED" && error.safeToFallback === false);
     assertNoUpdateSideEffects(app);
-    assert.equal(workerMessages(app, "GET_STREAMING_CAPABILITIES").at(-1).worker, "waiting");
-    assert.equal(app.listeners.has("controllerchange"), false);
 });
 
-test("normal controller takeover re-handshakes the actual new worker and registers selected work exactly once", async (t) => {
-    const app = createClientHarness({protocolVersion: 2, startTimeoutMs: 1000,
-        waitingWorker: {protocolVersion: 4}, onNavigate: emitNavigationStarted});
-    t.after(() => app.client.close());
-    const updating = deferred();
-    const item = selectedItem();
-    const pending = app.client.start(item, {onUpdating: updating.resolve});
-    await updating.promise;
-    assertNoUpdateSideEffects(app);
-    const actualController = app.createWorker("actual-controller", {protocolVersion: 4});
-    app.changeController(actualController);
-    app.changeController(actualController);
-    const active = await pending;
-    await completeDownload(app, active);
-    const registrations = workerMessages(app, "REGISTER_DOWNLOAD");
-    assert.equal(registrations.length, 1);
-    assert.equal(registrations[0].worker, "actual-controller");
-    assert.equal(registrations[0].message.descriptor.selectionBinding.selection_expires_at, item.selection_expires_at);
-    const messages = workerMessages(app);
-    const registrationIndex = messages.indexOf(registrations[0]);
-    assert.ok(messages.slice(0, registrationIndex).some(call =>
-        call.worker === "actual-controller" && call.message.type === "GET_STREAMING_CAPABILITIES"));
-    assert.equal(messages.some(call => call.worker === "waiting"), false);
-    assert.equal(app.clicked.length, 1);
-    assert.equal(app.listeners.has("controllerchange"), false);
-    assert.equal(workerMessages(app, "CANCEL_DOWNLOAD").length, 0);
-    assert.equal(workerMessages(app, "DELETE_DOWNLOAD").length, 0);
-});
-
-test("cached registration messages follow the current controller without clearing an existing iframe", async (t) => {
-    const app = createClientHarness({protocolVersion: 2, startTimeoutMs: 1000,
-        waitingWorker: {protocolVersion: 4}, onNavigate: emitNavigationStarted});
+test("cached registration uses the current controller without replacing existing download frames", async (t) => {
+    const app = createClientHarness({onNavigate: emitNavigationStarted});
     t.after(() => app.client.close());
     const existing = await app.client.start(ordinaryItem());
     const oldFrame = app.frames[0];
-    const oldStatus = {...app.statuses.get(existing.downloadId)};
-    const updating = deferred();
-    const pending = app.client.start(selectedItem(), {onUpdating: updating.resolve});
-    await updating.promise;
+    const current = app.createWorker("current", {protocolVersion: 4});
+    app.changeController(current);
+    const selected = await app.client.start(selectedItem());
     assert.equal(oldFrame.removed, false);
-    assert.equal(app.frames.length, 1);
-    const newWorker = app.registration.waiting;
-    app.changeController(newWorker);
-    const selected = await pending;
-    assert.equal(oldFrame.removed, false);
-    assert.deepEqual(app.statuses.get(existing.downloadId), oldStatus);
-    assert.equal(app.frames.length, 2);
-    const messageCount = workerMessages(app).length;
-    await app.client.getStatus(existing.downloadId);
-    await app.client.listActiveDownloads();
-    assert.ok(workerMessages(app).slice(messageCount).every(call => call.worker === newWorker.name));
-    assert.equal(workerMessages(app, "REGISTER_DOWNLOAD").filter(call => call.worker === "initial").length, 1);
-    assert.equal(workerMessages(app, "REGISTER_DOWNLOAD").filter(call => call.worker === "waiting").length, 1);
-    assert.equal(workerMessages(app, "CANCEL_DOWNLOAD").length, 0);
-    assert.equal(workerMessages(app, "DELETE_DOWNLOAD").length, 0);
+    assert.equal(workerMessages(app, "REGISTER_DOWNLOAD").at(-1).worker, "current");
+    assert.equal(workerMessages(app, "GET_STREAMING_CAPABILITIES").length, 0);
     await completeDownload(app, existing);
     await completeDownload(app, selected);
-    assert.equal(oldFrame.removed, true);
 });
 
-test("update timeout and abort leave an already-running download and its iframe intact", async (t) => {
-    for (const abort of [false, true]) {
-        const app = createClientHarness({protocolVersion: 2, startTimeoutMs: 20,
-            waitingWorker: {protocolVersion: 4}, onNavigate: emitNavigationStarted});
-        t.after(() => app.client.close());
-        const active = await app.client.start(ordinaryItem());
-        const oldStatus = {...app.statuses.get(active.downloadId)};
-        const controller = new AbortController();
-        const updating = deferred();
-        const pending = app.client.start(selectedItem(), {
-            signal: controller.signal, onUpdating: updating.resolve,
-        });
-        const rejected = assert.rejects(pending, error =>
-            error.errorCode === (abort ? "USER_CANCELLED" : "STREAMING_UPDATE_REQUIRED")
-            && error.safeToFallback === false);
-        await updating.promise;
-        if (abort) controller.abort();
-        await rejected;
-        assert.equal(app.frames.length, 1);
-        assert.equal(app.frames[0].removed, false);
-        assert.equal(app.clicked.length, 1);
-        assert.deepEqual(app.statuses.get(active.downloadId), oldStatus);
-        assert.equal(workerMessages(app, "REGISTER_DOWNLOAD").length, 1);
-        assert.equal(workerMessages(app, "CANCEL_DOWNLOAD").length, 0);
-        assert.equal(workerMessages(app, "DELETE_DOWNLOAD").length, 0);
-        assert.equal(app.listeners.has("controllerchange"), false);
-        await completeDownload(app, active);
-        assert.equal(app.frames[0].removed, true);
-    }
+test("ordinary download uses the old controller without a media Blob fallback or update stage", async (t) => {
+    const app = createClientHarness({capabilitiesResponse: {ok: false, code: "UNKNOWN_MESSAGE"},
+        waitingWorker: {protocolVersion: 4}, onNavigate: emitNavigationStarted});
+    t.after(() => app.client.close());
+    const pending = ordinary.download(selectedItem(), {
+        streamingClient: app.client,
+        fetchImpl() { throw new Error("no page media fetch"); },
+        handoffBlob() { throw new Error("no Blob handoff"); },
+        onStage(stage) { assert.notEqual(stage, "updating"); },
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    const status = Array.from(app.statuses.values())[0];
+    assert.ok(status);
+    app.serviceWorker.emit({...status, state: "completed", receivedBytes: 10, streamingStarted: true});
+    await pending;
+    assert.equal(workerMessages(app, "REGISTER_DOWNLOAD").length, 1);
+    assert.equal(app.clicked.length, 1);
+});
+
+test("legacy worker zero-byte completion is not reported as a successful file", async (t) => {
+    const app = createClientHarness({protocolVersion: 2, onNavigate: emitNavigationStarted});
+    t.after(() => app.client.close());
+    const active = await app.client.start(selectedItem("tiantianjiexi", {size_bytes: 0}));
+    const rejected = assert.rejects(active.completion, error => error.errorCode === "UPSTREAM_STREAM_FAILED"
+        && error.streamingStarted === true);
+    app.serviceWorker.emit({...app.statuses.get(active.downloadId), state: "completed", receivedBytes: 0});
+    await rejected;
+    assert.equal(workerMessages(app, "REGISTER_DOWNLOAD").length, 1);
+});
+
+test("legacy cancellation broadcast waits for the reader cancellation acknowledgement", async (t) => {
+    const app = createClientHarness({protocolVersion: 2, onNavigate: emitNavigationStarted});
+    t.after(() => app.client.close());
+    const abort = new AbortController();
+    const active = await app.client.start(selectedItem(), {signal: abort.signal});
+    const postMessage = app.worker.postMessage;
+    let acknowledge;
+    app.worker.postMessage = function (message, ports) {
+        if (message.type !== "CANCEL_DOWNLOAD") return postMessage.call(this, message, ports);
+        const status = {...app.statuses.get(active.downloadId), state: "cancelled", errorCode: "USER_CANCELLED"};
+        app.serviceWorker.emit(status);
+        acknowledge = () => ports[0].postMessage({ok: true, status});
+    };
+    let finished = false;
+    const rejected = assert.rejects(active.completion, error => error.errorCode === "USER_CANCELLED")
+        .then(() => { finished = true; });
+    abort.abort();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(finished, false);
+    acknowledge();
+    await rejected;
 });
 
 test("selected worker rejects old protocol registration and enforces task ownership", async () => {

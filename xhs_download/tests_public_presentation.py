@@ -87,20 +87,20 @@ class PublicPresentationBoundaryTests(TestCase):
     def setUp(self):
         self.factory = RequestFactory()
 
-    def request(self, *, staff=False, path="/"):
+    def request(self, *, staff=False, authenticated=False, path="/"):
         request = self.factory.get(path)
-        if staff:
+        if staff or authenticated:
             request.user = SimpleNamespace(
                 is_active=True,
-                is_staff=True,
+                is_staff=staff,
                 is_authenticated=True,
             )
         else:
             request.user = AnonymousUser()
         return request
 
-    def single_context(self, *, staff=False):
-        request = self.request(staff=staff)
+    def single_context(self, *, staff=False, authenticated=False):
+        request = self.request(staff=staff, authenticated=authenticated)
         with (
             patch("xhs_download.views.ultra_hd_is_available", return_value=True),
             patch("xhs_download.views.youtube_merge_mode_is_available", return_value=True),
@@ -165,6 +165,44 @@ class PublicPresentationBoundaryTests(TestCase):
             "strategy_matrix": [],
             "proxy_image_url": "/media/proxy-image/",
         }
+
+    def test_picker_technical_details_require_staff_not_just_login(self):
+        for staff, authenticated in ((False, False), (False, True), (True, True)):
+            request, context = self.single_context(staff=staff, authenticated=authenticated)
+            self.assertEqual(context["show_internal_diagnostics"], staff)
+            for provider, schema in (
+                ("yt_dlp_generic", "ytdlp_selected_format_v1"),
+                ("tiantianjiexi", "service_selected_format_v1"),
+            ):
+                result = {
+                    **result_display_context(),
+                    "status": "success",
+                    "video_items": [],
+                    "upstream_route": {"mode": "default", "selected_provider": provider},
+                    "unexpanded_scope": {"bounded": True},
+                    "upstream_candidates": [{
+                        "candidate_id": "format-one", "resource_token": "opaque-token",
+                        "provider_id": provider, "work_id": "work-one",
+                        "work": {"schema": schema, "title": "展示边界测试"},
+                        "media_type": "video", "format_label": "1080p",
+                        "protocol": "https", "extension": "mp4", "delivery_state": "complete",
+                    }],
+                }
+                for template, values in (
+                    ("partials/xhs_results_region.html", {**context, **result}),
+                    ("partials/batch_result_card.html", {**context, "row": result}),
+                ):
+                    with self.subTest(staff=staff, authenticated=authenticated, provider=provider,
+                                      template=template):
+                        html = render_to_string(template, values, request=request)
+                        self.assertIn("data-ytdlp-picker", html)
+                        self.assertIn("data-picker-radio", html)
+                        for marker in (
+                            "查看技术信息与全部原始候选", 'class="ytdlp-technical"',
+                            "data-upstream-candidates", "data-upstream-route-status",
+                            "data-upstream-scope-status",
+                        ):
+                            self.assertEqual(marker in html, staff, marker)
 
     def test_public_single_notice_hides_provider_while_staff_keeps_diagnostics(self):
         result = SimpleNamespace(
