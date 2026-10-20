@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 from django.contrib.auth.models import AnonymousUser
 from django.core.cache import cache
 from django.template.loader import render_to_string
-from django.test import RequestFactory, TestCase, override_settings
+from django.test import RequestFactory, TransactionTestCase, override_settings
 from django.urls import resolve, reverse
 
 from download_console.models import DownloadRuntimeSetting
@@ -52,7 +52,8 @@ def json_response(url, payload, status=200):
     THIRD_PARTY_GLOBAL_REQUEST_LIMIT_PER_MINUTE=100,
     CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
 )
-class BilibiliFallbackEntryTests(TestCase):
+class BilibiliFallbackEntryTests(TransactionTestCase):
+    # Closing a real stream emits request_finished and can close DB connections.
     def setUp(self):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
