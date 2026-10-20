@@ -173,6 +173,9 @@
 
     function downloadStartDisposition(result) {
         const status = String(result && result.status || "");
+        if (["failed", "expired"].includes(status)) {
+            return "failed";
+        }
         if (result && result.streamStarted) {
             return "started";
         }
@@ -319,6 +322,9 @@
                 payload,
                 response.status,
             );
+            if (["failed", "expired"].includes(parsed.status)) {
+                return parsed;
+            }
             if (parsed.streamStarted) {
                 return {
                     ...parsed,

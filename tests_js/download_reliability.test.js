@@ -177,35 +177,58 @@ test("failed and expired statuses terminate polling with safe messages", async (
     assert.equal(expired.message, "下载链接已过期，请重新点击下载。");
 });
 
-test("a post-start disconnect still confirms browser download startup", async () => {
-    const failedPayload = reliability.parseDownloadStatusPayload({
-        ok: false,
-        status: "failed",
-        stream_started: true,
-        error_code: "UPSTREAM_CONNECTION_ERROR",
-    }, 200);
-    assert.equal(
-        reliability.downloadStartDisposition(failedPayload),
-        "started",
-    );
-
-    const result = await reliability.pollDownloadStatus({
-        statusUrl: "/media/download-status/ticket/",
-        fetchStatus: async () => fakeJsonResponse(200, {
+for (const [status, responseStatus, errorCode] of [
+    ["failed", 200, "UPSTREAM_CONNECTION_ERROR"],
+    ["expired", 410, "DOWNLOAD_HANDOFF_EXPIRED"],
+]) {
+    test(`${status} overrides stream_started and ends polling without another request`, async () => {
+        const payload = {
             ok: false,
-            status: "failed",
+            status,
             stream_started: true,
-            error_code: "UPSTREAM_CONNECTION_ERROR",
-        }),
-    });
+            upstream_attempt_count: 1,
+            error_code: errorCode,
+        };
+        const parsed = reliability.parseDownloadStatusPayload(payload, responseStatus);
+        assert.equal(reliability.downloadStartDisposition(parsed), "failed");
 
-    assert.equal(result.status, "streaming");
-    assert.equal(result.finalStatus, "failed");
-    assert.equal(result.streamStarted, true);
-    assert.equal(
-        reliability.downloadStartDisposition(result),
-        "started",
-    );
+        let calls = 0;
+        const result = await reliability.pollDownloadStatus({
+            statusUrl: "/media/download-status/ticket/",
+            wait: async () => assert.fail("terminal failure must not schedule another poll"),
+            fetchStatus: async (url, options) => {
+                calls += 1;
+                assert.equal(url, "/media/download-status/ticket/");
+                assert.equal(options.method, "GET");
+                return fakeJsonResponse(responseStatus, payload);
+            },
+        });
+
+        assert.equal(calls, 1);
+        assert.equal(result.ok, false);
+        assert.equal(result.status, status);
+        assert.equal(result.streamStarted, true);
+        assert.equal(result.upstreamAttemptCount, 1);
+        assert.equal(result.errorCode, errorCode);
+        assert.equal(reliability.downloadStartDisposition(result), "failed");
+    });
+}
+
+test("streaming and completed still confirm download startup", async () => {
+    for (const status of ["streaming", "completed"]) {
+        for (const streamStarted of [false, true]) {
+            const result = await reliability.pollDownloadStatus({
+                statusUrl: "/media/download-status/ticket/",
+                fetchStatus: async () => fakeJsonResponse(200, {
+                    ok: true,
+                    status,
+                    stream_started: streamStarted,
+                }),
+            });
+            assert.equal(result.status, status);
+            assert.equal(reliability.downloadStartDisposition(result), "started");
+        }
+    }
 });
 
 test("polling timeout is bounded and never remains pending", async () => {

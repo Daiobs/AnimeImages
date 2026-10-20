@@ -132,14 +132,17 @@ test("omitted poll budgets use documented defaults, not the minimum one-call bud
     assert.equal(observation.result.status, "streaming");
 });
 
-test("explicit download failures and post-start observations keep existing semantics", async () => {
+test("explicit download failures remain terminal after a stream has started", async () => {
     const failed = await runPoll([response(410, null, {ok: false, status: "expired"})]);
     assert.equal(failed.result.status, "expired");
-    const started = await runPoll([response(200, null, {
+    const disconnected = await runPoll([response(200, null, {
         ok: false, status: "failed", stream_started: true,
     })]);
-    assert.equal(started.result.status, "streaming");
-    assert.equal(started.result.finalStatus, "failed");
+    assert.equal(disconnected.result.status, "failed");
+    assert.equal(disconnected.result.streamStarted, true);
+    assert.equal(reliability.downloadStartDisposition(disconnected.result), "failed");
+    assert.deepEqual(disconnected.requests, [0]);
+    assert.deepEqual(disconnected.waits, []);
 });
 
 test("Blob size guidance explains a limit, not a refresh or server fallback", () => {
