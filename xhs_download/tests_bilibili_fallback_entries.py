@@ -2,6 +2,7 @@
 from contextlib import ExitStack
 from io import BytesIO
 import json
+import socket
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -74,8 +75,16 @@ class BilibiliFallbackEntryTests(TransactionTestCase):
         self.limits = self.stack.enter_context(patch(
             "xhs_download.services.rate_limits.consume_fixed_window",
             return_value=SimpleNamespace(allowed=True, retry_after=0)))
+        real_getaddrinfo = socket.getaddrinfo
+
+        def fixture_getaddrinfo(host, port, *args, **kwargs):
+            # PostgreSQL reconnects after stream close; do not mock its DNS.
+            if host in {"localhost", "127.0.0.1", "::1"}:
+                return real_getaddrinfo(host, port, *args, **kwargs)
+            return [(2, 1, 6, "", ("8.8.8.8", 443))]
+
         self.stack.enter_context(patch(
-            "socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]))
+            "socket.getaddrinfo", side_effect=fixture_getaddrinfo))
         self.stack.enter_context(patch(
             "socket.socket.connect", side_effect=AssertionError("real network forbidden")))
         directory = self.stack.enter_context(TemporaryDirectory())
