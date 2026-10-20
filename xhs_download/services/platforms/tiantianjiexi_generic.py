@@ -69,6 +69,14 @@ def bilibili_identity_facts(payload):
         if fact and fact not in facts:
             facts.append(fact)
 
+    def field_identity(key, value):
+        if key not in {"bvid", "bv", "avid", "av", "aid", "video_id", "videoId"}:
+            return ""
+        text = str(value or "")
+        if key in {"aid", "avid", "av"} and text.isdigit():
+            text = "av" + text
+        return text if BILIBILI_VIDEO_ID_RE.fullmatch(text) else ""
+
     def visit(value, depth=0, work_context=True):
         if depth > 10:
             if {"incomplete": True} not in facts:
@@ -78,6 +86,9 @@ def bilibili_identity_facts(payload):
             for child in value:
                 visit(child, depth + 1, False)
         elif isinstance(value, dict):
+            # An explicit work ID makes this object's p comparable even inside
+            # a video collection; bare format p/id fields are not work identity.
+            identified_work = any(field_identity(key, child) for key, child in value.items())
             for key, child in value.items():
                 if key == "_bilibili_identity_facts":
                     # Also survives a cache serializer's conversion to plain dict.
@@ -90,12 +101,10 @@ def bilibili_identity_facts(payload):
                                 add(str(fact.get("video_id") or ""),
                                     page if page.isdigit() else "")
                     continue
-                if key in {"bvid", "bv", "avid", "av", "aid", "video_id", "videoId"}:
-                    text = str(child or "")
-                    if key in {"aid", "avid", "av"} and text.isdigit():
-                        text = "av" + text
-                    add(identity=text)
-                if work_context and key == "p" and str(child).isdigit():
+                identity = field_identity(key, child)
+                if identity:
+                    add(identity=identity)
+                if (work_context or identified_work) and key == "p" and str(child).isdigit():
                     add(page=str(child))
                 if key in {"source_url", "sourceUrl", "canonical_url", "canonicalUrl",
                            "share_url", "shareUrl", "link", "url"} and isinstance(child, str):

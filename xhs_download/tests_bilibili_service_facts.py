@@ -88,6 +88,25 @@ class BilibiliServiceFactsTests(SimpleTestCase):
                 with self.assertRaises(ValueError):
                     build_service_result(self.cached_again(payload), SOURCE)
 
+    def test_identified_video_objects_keep_part_conflicts_through_client_and_cache(self):
+        for container in ("videos", "video"):
+            with self.subTest(container=container):
+                cache.clear()
+                self.post.reset_mock()
+                video = {"bvid": "BV1J4JX6PEMV", "p": 2, "url": MEDIA}
+                self.response.json.return_value = {"data": {
+                    container: [video] if container == "videos" else video}}
+                error = XhsDownloadError("HTTP 412", http_status=412)
+                with patch("xhs_download.services.platforms.bilibili.request_get_with_retry",
+                           side_effect=error), patch(
+                               "xhs_download.services.platforms.bilibili_service_result."
+                               "build_provider_manifest_token") as sign:
+                    for _ in range(2):
+                        with self.assertRaises(XhsDownloadError):
+                            parse_media_page(SOURCE, bilibili_service_authorizer=lambda: (PROVIDER,))
+                    sign.assert_not_called()
+                self.post.assert_called_once()
+
     def test_valid_identity_reaches_manifest_descriptor_and_handoff(self):
         for fields, source in (
             ({"bvid": "BV1J4JX6PEMV", "p": 1}, SOURCE),
