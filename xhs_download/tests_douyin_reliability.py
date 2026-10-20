@@ -9,7 +9,13 @@ import requests
 from django.core.cache import cache
 from django.http import HttpResponse
 from django.template.loader import render_to_string
-from django.test import Client, SimpleTestCase, TestCase, override_settings
+from django.test import (
+    Client,
+    SimpleTestCase,
+    TestCase,
+    TransactionTestCase,
+    override_settings,
+)
 
 from .models import DownloadRequestLog, ObservabilityStatus
 from .services.assets import MediaAsset, ParseResult
@@ -2680,7 +2686,8 @@ class DownloadStreamStartupDeadlineTests(SimpleTestCase):
         self.assertEqual(submitted_context.deadline_monotonic, deadline)
 
 
-class DownloadSingleConnectionStreamTests(TestCase):
+class DownloadSingleConnectionStreamTests(TransactionTestCase):
+    # Stream response.close() emits request_finished and may close DB connections.
     def setUp(self):
         cache.clear()
         self.client = Client()
