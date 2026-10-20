@@ -35,6 +35,35 @@ BVID_PATTERN = re.compile(r"(BV[0-9A-Za-z]{10})")
 AV_PATH_PATTERN = re.compile(r"/video/av(\d+)", re.IGNORECASE)
 
 
+class BilibiliIncompleteMediaError(XhsParseError):
+    def __init__(self, reason, formats):
+        self.delivery_reason = reason
+        self.formats = tuple(formats)
+        message = (
+            "已获取哔哩哔哩分离轨媒体，但当前路径未接通合流，暂不能保存为完整视频。"
+            if reason == "separate_tracks"
+            else "已获取哔哩哔哩分段视频，但当前路径未接通拼接，暂不能保存为完整视频。"
+        )
+        super().__init__(message)
+
+
+def play_quality_label(play_data, quality_id=None, *, height=0):
+    quality_id = play_data.get("quality") if quality_id is None else quality_id
+    for item in play_data.get("support_formats") or ():
+        if str(item.get("quality")) == str(quality_id):
+            label = item.get("new_description") or item.get("display_desc")
+            if label:
+                return str(label)
+    for value, label in zip(
+        play_data.get("accept_quality") or (), play_data.get("accept_description") or ()
+    ):
+        if str(value) == str(quality_id) and label:
+            return str(label)
+    if height:
+        return f"{height}p"
+    return f"清晰度编号 {quality_id}" if quality_id else "原始文件"
+
+
 def normalize_bilibili_url(url):
     url = normalize_text(url or "").strip()
     if url.startswith("//"):
@@ -95,10 +124,13 @@ def api_get_json(
             headers={**BILIBILI_HEADERS, "Referer": requote_uri(referer)},
             timeout=bilibili_request_timeout(deadline_monotonic, 15),
             retries=2,
+            non_retry_statuses=(412, 429),
             allowed_final_host_suffixes=("bilibili.com",),
             final_url_message="哔哩哔哩接口跳转到了不允许的域名",
             deadline_monotonic=deadline_monotonic,
         )
+    except requests.exceptions.SSLError:
+        raise
     except (requests.Timeout, requests.ConnectionError) as error:
         raise XhsProviderTimeoutError("哔哩哔哩接口请求超时，请稍后重试") from error
     try:
@@ -192,67 +224,47 @@ def build_dash_play_params(view_data, page, preferred_qn=80):
     return params
 
 
-def normalize_dash_urls(item):
-    urls = []
-    for key in ("baseUrl", "base_url", "url"):
-        url = normalize_bilibili_url(item.get(key) or "")
-        if url:
-            urls.append(url)
-    for key in ("backupUrl", "backup_url", "backup_url_list"):
-        value = item.get(key)
-        if isinstance(value, str):
-            value = [value]
-        for url in value or ():
-            normalized = normalize_bilibili_url(url or "")
-            if normalized:
-                urls.append(normalized)
-    return urls
-
-
-def get_dash_play_items(play_data):
+def describe_dash_formats(play_data):
+    """Retain track facts without issuing standalone video-download assets."""
     videos = ((play_data.get("dash") or {}).get("video")) or []
-    candidates = []
-    for index, item in enumerate(videos, start=1):
+    formats = []
+    for item in videos:
         if not isinstance(item, dict):
             continue
-        size = int(item.get("size") or 0)
-        width = int(item.get("width") or 0)
-        height = int(item.get("height") or 0)
-        bandwidth = int(item.get("bandwidth") or 0)
         quality_id = item.get("id") or item.get("quality")
-        quality_label = f"{quality_id}P DASH" if quality_id else "DASH 视频"
-        for url in normalize_dash_urls(item):
-            candidates.append(
-                MediaCandidate(
-                    url=url,
-                    size_bytes=size,
-                    width=width,
-                    height=height,
-                    bit_rate=bandwidth,
-                    priority=max(0, len(videos) - index),
-                    quality_label=quality_label,
-                    source="dash.video",
-                )
-            )
-    return [
-        {
-            "url": candidate.url,
-            "size_bytes": candidate.size_bytes,
-            "quality_label": candidate.quality_label,
-        }
-        for candidate in dedupe_candidates(
-            sorted(candidates, key=lambda item: item.score, reverse=True)
-        )
-    ]
+        formats.append({
+            "quality_id": quality_id,
+            "quality_label": play_quality_label(
+                play_data, quality_id, height=int(item.get("height") or 0)),
+            "width": int(item.get("width") or 0),
+            "height": int(item.get("height") or 0),
+            "size_bytes": int(item.get("size") or 0),
+            "codecs": str(item.get("codecs") or ""),
+            "protocol": "dash",
+            "requires_merge": True,
+            "separate_audio_count": len((play_data.get("dash") or {}).get("audio") or []),
+        })
+    return formats
 
 
 def get_play_items(play_data):
     durls = play_data.get("durl") or []
+    if len(durls) > 1:
+        raise BilibiliIncompleteMediaError("segmented_file", [{
+            "quality_label": play_quality_label(play_data),
+            "segment_count": len(durls),
+            "requires_merge": True,
+        }])
     items = []
     for item in durls:
         url = normalize_bilibili_url(item.get("url") or "")
         if not url:
             continue
+        if urlparse(url).path.lower().endswith((".m4s", ".mpd", ".m3u8")):
+            raise BilibiliIncompleteMediaError("segmented_file", [{
+                "quality_label": play_quality_label(play_data),
+                "requires_merge": True,
+            }])
         order = int(item.get("order") or len(items) + 1)
         size = int(item.get("size") or 0)
         items.append((order, url, size))
@@ -260,7 +272,9 @@ def get_play_items(play_data):
     items.sort(key=lambda item: item[0])
     candidates = []
     for _, url, size in items:
-        candidates.append(MediaCandidate(url=url, size_bytes=size, source="durl"))
+        candidates.append(MediaCandidate(
+            url=url, size_bytes=size, source="durl",
+            quality_label=play_quality_label(play_data)))
     if candidates:
         return [
             {
@@ -270,7 +284,10 @@ def get_play_items(play_data):
             }
             for candidate in dedupe_candidates(candidates)
         ]
-    return get_dash_play_items(play_data)
+    formats = describe_dash_formats(play_data)
+    if formats:
+        raise BilibiliIncompleteMediaError("separate_tracks", formats)
+    return []
 
 
 class BilibiliAdapter(BasePlatformAdapter):
@@ -353,7 +370,7 @@ class BilibiliAdapter(BasePlatformAdapter):
                     media_host_suffixes=self.media_host_suffixes,
                     quality_label=(
                         video_item.get("quality_label")
-                        or (f"{play_data.get('quality')}P" if play_data.get("quality") else "原始文件")
+                        or play_quality_label(play_data)
                     ),
                     size_bytes=video_item["size_bytes"],
                 )

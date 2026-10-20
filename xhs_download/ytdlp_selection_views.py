@@ -52,7 +52,10 @@ def _admitted(request, record, *, provider=PROVIDER, service=False):
     if service:
         from .services.provider_access import third_party_public_access_summary
         from .services.platforms.third_party import GenericThirdPartyAdapter
-        if XiaohongshuAdapter().supports_url(source):
+        from .services.platforms.bilibili_fallback import canonical_video_source, authorized_services as bilibili_services
+        if canonical_video_source(source):
+            allowed = provider in bilibili_services(request, source, reserve_limits=False)
+        elif XiaohongshuAdapter().supports_url(source):
             allowed = provider in authorized_services(request, source, reserve_limits=False)
         else:
             summary = third_party_public_access_summary(source, request, runtime)

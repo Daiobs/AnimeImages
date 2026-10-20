@@ -193,7 +193,7 @@ Ultra Provider 工作有独立 foreground deadline、短期 payload/failure cach
 
 ## Bilibili
 
-正式路线保持 Native video-only：
+默认先执行 Native video-only：
 
 - 识别 BV、AV 和 `b23.tv`；
 - 支持 `p=` part；
@@ -204,7 +204,24 @@ Ultra Provider 工作有独立 foreground deadline、短期 payload/failure cach
 - 优先完整 DURL 媒体；
 - 在没有 DURL 时才保留受限 DASH video candidate，不承诺音视频 merge 升级。
 
-Provider Lab 的三个真实样本显示 Native、TianTian、videodl 与官方 DURL 的完整媒体字节一致。ParseHub 只增加格式元数据信号，未产生可交付媒体增量。该证据支持保持 Native，而不是让 Lab 自动改写路线。
+Native 取得完整单文件时不调用服务。对于规范 BV/AV 视频第一页，Native 明确返回 HTTP 412/429、5xx 或连接/时间限制失败后，可以在本次总期限内使用已经配置且对当前请求获准的 `tiantianjiexi_generic`。仅有 DASH 分离轨或多段 `durl`、当前路径不能交付完整视频时，也可使用同一获准兜底；兜底失败保留具体合流/拼接原因，不把独立视频轨或单个分段当成完整视频。412/429 不原样重试。来源或证书安全失败、明确不存在/无权限、分 P 和短链仍保持 Native 行为，不尝试以服务绕过限制。服务阶段复用原串行、single-flight、限流和短期缓存，不启动 Kukutool，不修改正式路线或公开配置。
+
+`durl` 多项表示视频分段，不是同作品的多个清晰度。DASH 的视频轨、单独音频轨和质量事实保留为不完整结果诊断，不能伪装为可直接保存的 MP4。质量编号不直接拼成像素高度；优先使用上游质量描述或实际尺寸字段，没有这些字段就保留编号。本阶段不接入 B 站登录、会员清晰度或新的合流能力，第三方兜底用于可用性，不承诺画质提升。
+
+不为预留兜底而缩短 Native 原有期限。调用方提供的总 deadline 仍是硬上限，耗尽就不再启动服务；未指定总 deadline 的普通入口，仅在 Native 失败后使用既有 `TIANTIANJIEXI_TIMEOUT_SECONDS` 作为服务阶段预算，排队同样计入。
+
+服务结果必须包含合法完整视频；封面不算成功。保留真实服务身份、作品引用和每个资源的独立签名，经共用选择器进入既有 Bilibili 附件下载入口，保持原 Referer/UA 和地址校验。HTTP CDN 返回保留原协议，不强行改为 HTTPS，也不送入浏览器直连路径。展示、选择、签发动作及实际下载不复用 Native 授权；下载时重新核验当前服务准入。不同出口上的 Native 可用性不同，此兜底不代表解除上游风控或保证所有作品成功。
+
+访客只开放这一条兜底时，在现有 Provider 配置的“第三方访客允许平台”中追加
+`bilibili:tiantianjiexi_fallback`，不需要添加整站 Host 或开放所有天天来源。
+该选项仅作用于规范 BV/AV 第一页的 Native 失败后天天兜底，不开放通用解析、
+其他 Provider、短链或后续分 P；Native 成功仍不调用天天。第三方 public/public_gray
+模式及灰度、环境 capability、已配置账号、平台/Host/Provider 阻止规则和原请求限额
+仍需满足。将同一选项放入阻止平台列表可显式停用；撤销允许后，旧候选动作、
+下载准备及实际取流都会重新拒绝，不延长媒体或资源授权期限。
+这只是可配置能力，代码发布不会自动修改后台允许列表。
+
+历史 Provider Lab 的三个真实样本显示 Native、TianTian、videodl 与官方 DURL 的完整媒体字节一致。ParseHub 只增加格式元数据信号，未产生可交付媒体增量。该证据支持 Native 优先，不代表今天生产出口仍可访问，也不让 Lab 自动改写路线。
 
 Dynamic、Opus、Live Photo、member-only quality 和 DASH merge 仍是独立后续范围。
 

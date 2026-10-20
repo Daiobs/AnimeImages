@@ -136,6 +136,7 @@ from .services.downloads import (
     read_limited_response,
     response_chunk_looks_like_html,
     save_media_items_to_server,
+    validate_bilibili_video_completeness,
     validate_download_media_items,
     validate_response_content_type,
     write_limited_response,
@@ -2453,6 +2454,9 @@ def staff_can_bypass_single_download_limits(request, runtime_setting):
 
 
 def check_download_cost_preflight(request, media_items, runtime_setting):
+    service_guard = check_bilibili_service_download_access(request, media_items)
+    if service_guard:
+        return service_guard
     has_video = any(download_item_is_video(item) for item in media_items or ())
     if has_video and not is_staff_request(request) and not runtime_setting.visitor_video_download_enabled:
         return (
@@ -2484,6 +2488,19 @@ def check_download_cost_preflight(request, media_items, runtime_setting):
                 413,
             )
 
+    return None
+
+
+def check_bilibili_service_download_access(request, media_items):
+    for item in media_items or ():
+        if (isinstance(item, dict)
+                and str(item.get("asset_id") or "").startswith("bilibili:service:")):
+            from .services.platforms.bilibili_service_result import source_url_for_item
+            from .services.platforms.bilibili_fallback import authorized_services
+            source = source_url_for_item(item)
+            if not source or item.get("provider") not in authorized_services(
+                    request, source, reserve_limits=False):
+                return ("PROVIDER_ACCESS_DENIED", "当前无权使用此服务资源，请重新解析。", 403)
     return None
 
 
@@ -3026,6 +3043,7 @@ def open_single_attachment_upstream(
     url = item.get("url")
     if not url:
         raise XhsDownloadError("资源 URL 为空")
+    validate_bilibili_video_completeness(url, media_type)
 
     kukutool_recovery_enabled = bool(
         media_type == "video"
@@ -3059,6 +3077,7 @@ def open_single_attachment_upstream(
         candidate_url, candidate_provider_item, recovered = candidates.pop(0)
         if not candidate_url or candidate_url in attempted_urls:
             continue
+        validate_bilibili_video_completeness(candidate_url, media_type)
         if telemetry["upstream_attempt_count"] >= 2:
             break
         attempted_urls.add(candidate_url)
@@ -4652,6 +4671,10 @@ def build_search_results_context(request, platform_key="home"):
             xhs_services = authorized_services(request, query)
             if xhs_services:
                 parse_options["xhs_service_provider_ids"] = xhs_services
+        if query_platform_id == "bilibili":
+            from .services.platforms.bilibili_fallback import authorized_services as bilibili_services
+            if bilibili_services(request, query, reserve_limits=False):
+                parse_options["bilibili_service_authorizer"] = lambda: bilibili_services(request, query)
         if third_party_gate.get("platform_id") == "upstream":
             parse_options.update(
                 upstream_provider_ids=third_party_gate["upstream_provider_ids"],
@@ -5976,6 +5999,12 @@ def download_stream_view(request, token):
 
     item = handoff.item
     media_items = [item]
+    service_guard = check_bilibili_service_download_access(request, media_items)
+    if service_guard:
+        error_code, message, status_code = service_guard
+        update_download_status(handoff.ticket_id, "failed", error_code=error_code)
+        return download_guard_error_response(
+            message, status=status_code, error_code=error_code)
     telemetry = {
         "upstream_attempt_count": 0,
         "recovery_used": False,
@@ -6279,6 +6308,9 @@ def upstream_candidate_view(request):
             if XiaohongshuAdapter().supports_url(source)
             else third_party_public_access_allowed(source, request=request, runtime_setting=runtime)
         )
+        from .services.platforms.bilibili_fallback import canonical_video_source, authorized_services as bilibili_services
+        if canonical_video_source(source):
+            source_allowed = record["provider_id"] in bilibili_services(request, source, reserve_limits=False)
         allowed = (provider_is_enabled(record["provider_id"])
                    and not upstream_match_is_blocked(match, runtime)
                    and source_allowed)

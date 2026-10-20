@@ -54,6 +54,7 @@ class PlatformRegistry:
         upstream_provider_ids=None,
         upstream_matches=None,
         xhs_service_provider_ids=(),
+        bilibili_service_authorizer=None,
     ):
         url = extract_url_from_text(url)
         adapter = self.get_adapter_for_url(url)
@@ -87,6 +88,16 @@ class PlatformRegistry:
 
             return parse_independent(
                 url, native_parse=native_parse, provider_ids=xhs_service_provider_ids,
+                timeout_seconds=timeout_seconds, deadline_monotonic=deadline_monotonic,
+            )
+        if adapter.platform_id == "bilibili" and bilibili_service_authorizer is not None:
+            from .platforms.bilibili_fallback import parse_fallback
+
+            return parse_fallback(
+                url,
+                native_parse=lambda deadline: adapter.parse(
+                    url, **{**options, "deadline_monotonic": deadline}),
+                authorize=bilibili_service_authorizer,
                 timeout_seconds=timeout_seconds, deadline_monotonic=deadline_monotonic,
             )
         return adapter.parse(url, **options)
@@ -124,6 +135,7 @@ def parse_media_page(
     upstream_provider_ids=None,
     upstream_matches=None,
     xhs_service_provider_ids=(),
+    bilibili_service_authorizer=None,
 ):
     return default_registry.parse_url(
         url,
@@ -142,4 +154,5 @@ def parse_media_page(
         upstream_provider_ids=upstream_provider_ids,
         upstream_matches=upstream_matches,
         xhs_service_provider_ids=xhs_service_provider_ids,
+        bilibili_service_authorizer=bilibili_service_authorizer,
     )
