@@ -9,7 +9,10 @@ from django.core import signing
 from django.core.cache import cache
 
 from .common import validate_media_url
-from .downloads import provider_manifest_allows_public_download
+from .downloads import (
+    provider_manifest_allows_public_download,
+    validate_bilibili_video_completeness,
+)
 
 
 DOWNLOAD_HANDOFF_SALT = "xhs_download.download_handoff.stream.v2"
@@ -276,6 +279,10 @@ def sanitize_download_handoff_item(item):
         "type": media_type,
         "url": _bounded_handoff_text(item, "url", required=True),
     }
+    try:
+        validate_bilibili_video_completeness(sanitized["url"], media_type)
+    except ValueError as error:
+        raise _invalid_handoff_item(str(error)) from error
 
     for key in (
         "filename",

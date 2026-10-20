@@ -236,7 +236,9 @@ from .services.platforms.third_party import (
     get_third_party_rule,
     third_party_media_url_is_allowed,
 )
-from .services.platforms.bilibili import BILIBILI_HEADERS, resolve_video_page
+from .services.platforms.bilibili import (
+    BILIBILI_HEADERS, BilibiliIncompleteMediaError, resolve_video_page,
+)
 from .services.platforms.douyin import DOUYIN_HEADERS, extract_aweme_id, get_video_candidates
 from .services.platforms.xiaohongshu import is_xhs_note_image_candidate
 from .services.platforms.douyin_kukutool import (
@@ -3938,11 +3940,6 @@ class BilibiliAdapterTests(SimpleTestCase):
                 "quality": 80,
                 "durl": [
                     {
-                        "order": 2,
-                        "size": 100,
-                        "url": "https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/low.mp4",
-                    },
-                    {
                         "order": 1,
                         "size": 200,
                         "url": "https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/high.mp4",
@@ -3958,17 +3955,12 @@ class BilibiliAdapterTests(SimpleTestCase):
         self.assertEqual(result.platform, "bilibili")
         self.assertEqual(result.post_type, "video")
         self.assertEqual(result.base_filename, "作者_测试标题")
-        self.assertEqual(len(result.video_assets), 2)
+        self.assertEqual(len(result.video_assets), 1)
         self.assertEqual(
             result.video_assets[0].url,
             "https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/high.mp4",
         )
-        self.assertEqual(
-            result.video_assets[1].url,
-            "https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/low.mp4",
-        )
         self.assertEqual(result.video_assets[0].size_bytes, 200)
-        self.assertEqual(result.video_assets[1].size_bytes, 100)
         self.assertEqual(result.video_assets[0].cover_url, "https://i0.hdslb.com/bfs/archive/cover.jpg")
         self.assertIn("x/web-interface/view?bvid=BV1xx411c7mD", mock_get.call_args_list[0].args[0])
         self.assertIn("x/player/playurl?", mock_get.call_args_list[1].args[0])
@@ -4039,7 +4031,7 @@ class BilibiliAdapterTests(SimpleTestCase):
         self.assertIn("fnval=0", mock_get.call_args_list[1].args[0])
 
     @patch("xhs_download.services.platforms.bilibili.request_get_with_retry")
-    def test_parse_url_falls_back_to_dash_when_durl_is_missing(self, mock_get):
+    def test_parse_url_reports_dash_as_incomplete_when_durl_is_missing(self, mock_get):
         view_response = Mock()
         view_response.json.return_value = {
             "code": 0,
@@ -4094,14 +4086,13 @@ class BilibiliAdapterTests(SimpleTestCase):
         dash_play_response.close = Mock()
         mock_get.side_effect = [view_response, legacy_play_response, dash_play_response]
 
-        result = BilibiliAdapter().parse_url("https://www.bilibili.com/video/BV1xx411c7mD/")
-
-        self.assertEqual(
-            result.video_assets[0].url,
-            "https://upos-sz-mirrorcosov.bilivideo.cn/upgcxcode/high.m4s",
-        )
-        self.assertEqual(result.video_assets[0].quality_label, "80P DASH")
-        self.assertEqual(result.video_assets[0].size_bytes, 80_000_000)
+        with self.assertRaises(BilibiliIncompleteMediaError) as raised:
+            BilibiliAdapter().parse_url("https://www.bilibili.com/video/BV1xx411c7mD/")
+        self.assertEqual(raised.exception.delivery_reason, "separate_tracks")
+        self.assertEqual(len(raised.exception.formats), 2)
+        self.assertEqual(raised.exception.formats[1]["quality_label"], "1080p")
+        self.assertEqual(raised.exception.formats[1]["size_bytes"], 80_000_000)
+        self.assertTrue(raised.exception.formats[1]["requires_merge"])
         self.assertIn("fnval=0", mock_get.call_args_list[1].args[0])
         self.assertIn("fnval=16", mock_get.call_args_list[2].args[0])
 

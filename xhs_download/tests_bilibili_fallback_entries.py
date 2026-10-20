@@ -78,6 +78,7 @@ class BilibiliFallbackEntryTests(SimpleTestCase):
             return_value=Path(directory)))
         self.events = []
         self.native_success = False
+        self.native_incomplete = False
         self.native = self.stack.enter_context(patch(
             "xhs_download.services.common._SingleHopSession.request",
             side_effect=self.native_http))
@@ -90,7 +91,7 @@ class BilibiliFallbackEntryTests(SimpleTestCase):
         self.assertEqual(urlsplit(url).hostname, "api.bilibili.com")
         self.assertFalse(kwargs["allow_redirects"])
         self.events.append("native")
-        if not self.native_success:
+        if not self.native_success and not self.native_incomplete:
             return json_response(url, {"code": -412}, status=412)
         if urlsplit(url).path == "/x/web-interface/view":
             data = {
@@ -100,6 +101,12 @@ class BilibiliFallbackEntryTests(SimpleTestCase):
             }
         elif urlsplit(url).path == "/x/player/playurl":
             data = {"quality": 80, "durl": [{"url": MEDIA, "size": 12345}]}
+            if self.native_incomplete:
+                data = {"quality": 80, "dash": {
+                    "video": [{"id": 80, "height": 1080, "width": 1920,
+                               "baseUrl": MEDIA.replace(".mp4", ".m4s")}],
+                    "audio": [{"id": 30280, "baseUrl": MEDIA.replace(".mp4", "-audio.m4s")}],
+                }}
         else:
             raise AssertionError(f"Unexpected Native endpoint: {urlsplit(url).path}")
         return json_response(url, {"code": 0, "data": data})
@@ -157,9 +164,10 @@ class BilibiliFallbackEntryTests(SimpleTestCase):
         self.assertEqual(presentation["video_resource_count"], 1)
         self.assertEqual(presentation["legacy_video"]["url"],
                          MEDIA.replace("entry-video", "entry-large"))
-        self.assertEqual(self.events, ["native", "service"])
+        expected_events = ["native"] * (2 if self.native_incomplete else 1) + ["service"]
+        self.assertEqual(self.events, expected_events)
         self.post.assert_called_once()
-        self.native.assert_called_once()
+        self.assertEqual(self.native.call_count, expected_events.count("native"))
         self.assertEqual(
             [call.args[0] for call in self.limits.call_args_list],
             ["third-party-provider-minute-ip", "third-party-provider-minute-global"])
@@ -191,7 +199,7 @@ class BilibiliFallbackEntryTests(SimpleTestCase):
             cover = self.action(candidate, "cover")
             self.assertEqual(cover.status_code, 200, cover.content)
             self.assertEqual(cover.json()["url"], COVER)
-        self.assertEqual(self.events, ["native", "service"], "Actions must not reparse or fetch media")
+        self.assertEqual(self.events, expected_events, "Actions must not reparse or fetch media")
         self.config.third_party_allowed_public_platforms = ""
         for action in ("link", "legacy", "cover"):
             self.assertEqual(self.action(candidates[0], action).status_code, 403)
@@ -233,6 +241,31 @@ class BilibiliFallbackEntryTests(SimpleTestCase):
 
     def test_batch_normal_native_412_reaches_service_picker_and_actions(self):
         self.assert_service_components_and_actions("batch")
+
+    def test_home_dash_only_reaches_service_picker_and_actions(self):
+        self.native_incomplete = True
+        self.assert_service_components_and_actions("home")
+
+    def test_batch_dash_only_reaches_service_picker_and_actions(self):
+        self.native_incomplete = True
+        self.assert_service_components_and_actions("batch")
+
+    def test_dash_only_service_failure_preserves_specific_reason(self):
+        self.native_incomplete = True
+        self.post.side_effect = requests.Timeout("fixture")
+        context, status = self.consume("home")
+        self.assertEqual(status, 200)
+        self.assertIn("分离轨媒体", context["error_message"])
+        self.assertFalse(context.get("video_items"))
+        self.post.assert_called_once()
+
+    def test_dash_only_does_not_expand_anonymous_access(self):
+        self.native_incomplete = True
+        self.config.third_party_allowed_public_platforms = ""
+        context, _ = self.consume("home")
+        self.assertIn("分离轨媒体", context["error_message"])
+        self.assertFalse(context.get("video_items"))
+        self.post.assert_not_called()
 
     def test_home_native_success_never_starts_service(self):
         self.assert_native_without_service("home")

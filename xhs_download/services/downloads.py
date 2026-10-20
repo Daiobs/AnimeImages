@@ -139,6 +139,19 @@ def get_media_headers(url, platform=None):
     return HEADERS
 
 
+def validate_bilibili_video_completeness(url, media_type):
+    if str(media_type or "").strip().lower() != "video":
+        return
+    parsed = urlparse(url or "")
+    if (
+        host_matches(parsed.hostname, BILIBILI_MEDIA_HOST_SUFFIXES)
+        and parsed.path.lower().endswith((".m4s", ".mpd", ".m3u8"))
+    ):
+        raise XhsDownloadError(
+            "哔哩哔哩资源为分离轨或流媒体，暂不能保存为完整视频。"
+        )
+
+
 def normalize_save_format(save_format):
     save_format = (save_format or ORIGINAL_FORMAT).lower().strip()
     if save_format == "jpeg":
@@ -854,6 +867,7 @@ def fetch_to_temp_path(
     retries=3,
     provider_signed=False,
 ):
+    validate_bilibili_video_completeness(url, expected_type)
     response = fetch_media_response(
         url,
         headers=headers,
@@ -904,6 +918,7 @@ def fetch_item_to_temp_path(
     expected_type="",
 ):
     reject_upstream_server_download(item)
+    validate_bilibili_video_completeness(url or item.get("url"), item.get("type"))
     if (
         str(item.get("provider") or "") == YOUTUBE_MERGE_PROVIDER_ID
         and str(item.get("type") or "") == "video"
@@ -959,6 +974,7 @@ def fetch_item_to_temp_path(
         candidate_url, candidate_provider_item = candidates.pop(0)
         if not candidate_url or candidate_url in attempted_urls:
             continue
+        validate_bilibili_video_completeness(candidate_url, item.get("type"))
         attempted_urls.add(candidate_url)
         candidate_provider_signed = (
             candidate_provider_item
@@ -1058,6 +1074,7 @@ def fetch_binary(
     expected_type="",
     retries=3,
 ):
+    validate_bilibili_video_completeness(url, expected_type)
     response = fetch_media_response(
         url,
         headers=headers,

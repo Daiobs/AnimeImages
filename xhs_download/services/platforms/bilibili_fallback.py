@@ -11,6 +11,7 @@ import requests
 
 from ..common import XhsDownloadError, XhsProviderTimeoutError, extract_url_from_text
 from ..env_config import runtime_float
+from .bilibili import BilibiliIncompleteMediaError
 from .tiantianjiexi_generic import TianTianJieXiGenericProvider, provider_configured
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,8 @@ def authorized_services(request, source_url, *, reserve_limits=True):
 
 
 def eligible_failure(error):
+    if isinstance(error, BilibiliIncompleteMediaError):
+        return True
     if isinstance(error, requests.exceptions.SSLError):
         return False
     if isinstance(error, (XhsProviderTimeoutError, requests.Timeout, requests.ConnectionError)):
@@ -131,5 +134,7 @@ def parse_fallback(source_url, *, native_parse, authorize,
             "source_provider": PROVIDER,
             "bilibili_native_status": "unavailable",
             "bilibili_native_http_status": getattr(native_error, "http_status", None),
+            "bilibili_native_delivery_reason": getattr(native_error, "delivery_reason", ""),
+            "bilibili_native_formats": list(getattr(native_error, "formats", ())),
             "provider_fallback_count": 1,
         })

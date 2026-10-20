@@ -136,6 +136,7 @@ from .services.downloads import (
     read_limited_response,
     response_chunk_looks_like_html,
     save_media_items_to_server,
+    validate_bilibili_video_completeness,
     validate_download_media_items,
     validate_response_content_type,
     write_limited_response,
@@ -3042,6 +3043,7 @@ def open_single_attachment_upstream(
     url = item.get("url")
     if not url:
         raise XhsDownloadError("资源 URL 为空")
+    validate_bilibili_video_completeness(url, media_type)
 
     kukutool_recovery_enabled = bool(
         media_type == "video"
@@ -3075,6 +3077,7 @@ def open_single_attachment_upstream(
         candidate_url, candidate_provider_item, recovered = candidates.pop(0)
         if not candidate_url or candidate_url in attempted_urls:
             continue
+        validate_bilibili_video_completeness(candidate_url, media_type)
         if telemetry["upstream_attempt_count"] >= 2:
             break
         attempted_urls.add(candidate_url)

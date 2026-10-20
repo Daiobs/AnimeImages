@@ -25,6 +25,11 @@ _LEGACY_MESSAGES["扩展解析超时，请稍后再试。"] = UPSTREAM_PUBLIC_ME
 
 
 def public_upstream_error_message(error, *, is_upstream, fallback):
+    from .platforms.bilibili import BilibiliIncompleteMediaError
+
+    if isinstance(error, BilibiliIncompleteMediaError):
+        # This exception contains fixed product copy, not an upstream response.
+        return str(error)
     if not is_upstream:
         return fallback
     code = getattr(error, "error_code", None)
