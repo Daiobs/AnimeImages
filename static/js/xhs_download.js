@@ -1691,6 +1691,19 @@
                 ? await downloadReliabilityApi.pollDownloadStatus({
                     statusUrl,
                     pollAfterMs: prepared.pollAfterMs,
+                    onStreaming: () => {
+                        assertDownloadCurrent(operation);
+                        setProgressPending("传输中");
+                        const {progressBytes, progressSpeed, progressEta} = getProgressElements();
+                        if (progressBytes) progressBytes.innerText = "";
+                        if (progressSpeed) progressSpeed.innerText = "";
+                        if (progressEta) progressEta.innerText = "";
+                        setStatus(
+                            getStatusElement(),
+                            "资源正在传输，请查看浏览器下载栏；尚未确认文件保存完成。",
+                            "text-muted",
+                        );
+                    },
                     fetchStatus: async (url, init) => {
                         assertDownloadCurrent(operation);
                         const controller = new AbortController();
@@ -1725,17 +1738,19 @@
                     },
                 })
                 : {
-                    ok: true,
-                    status: "streaming",
+                    ok: false,
+                    status: "poll_timeout",
                     recovered: false,
+                    message: "下载请求已交给浏览器，无法查询传输状态，请查看浏览器下载栏。",
                 };
             assertDownloadCurrent(operation);
             const startDisposition = downloadReliabilityApi
                 ? downloadReliabilityApi.downloadStartDisposition(
                     statusResult,
                 )
-                : "started";
+                : "unconfirmed";
             if (startDisposition === "unconfirmed") {
+                hideDownloadProgress();
                 setStatus(
                     getStatusElement(),
                     `${statusResult.message}${routeWarningText(warnings)}`,
@@ -1756,10 +1771,10 @@
                 error.errorCode = statusResult.errorCode || "DOWNLOAD_FAILED";
                 throw error;
             }
-            setProgress(100);
+            hideDownloadProgress();
             setStatus(
                 getStatusElement(),
-                `${statusResult.recovered ? "资源已自动刷新，" : ""}浏览器已开始接收文件。请查看浏览器下载栏。${routeWarningText(warnings)}`,
+                `${statusResult.recovered ? "资源已自动刷新，" : ""}服务器传输已结束，请在浏览器下载栏确认文件保存结果。${routeWarningText(warnings)}`,
                 "text-success",
             );
             return {

@@ -1,6 +1,7 @@
 """Dedicated Douyin service -> real result consumers, no remote requests."""
 import json
 import tempfile
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from time import time
@@ -20,7 +21,7 @@ from .services.common import XhsDownloadError, XhsParseError
 from .services.douyin_continuation import serialize_douyin_continuation_result, deserialize_douyin_continuation_result
 from .services.platforms.douyin_providers import (
     DouyinParseContext, DouyinTianTianJieXiProvider,
-    attach_douyin_service_picker, build_external_parse_result,
+    attach_douyin_service_picker, build_external_parse_result, douyin_caption_presentation,
 )
 from .services.platforms.tiantianjiexi_generic import TianTianJieXiApiClient, TianTianJieXiGenericProvider
 from .services.service_format_selection import (
@@ -37,6 +38,54 @@ from .views import build_result_display_context
 
 AWEME = '7669858827638845160'
 BASE = 'https://v3-dy-o.zjcdn.com/fixture/'
+CAPTION_TITLE = '简单几分钟调出高光比通透感'
+CAPTION_DESCRIPTION = (
+    '丝毫不畏惧大晴天和阴天, 找到光就是拍, 1 原图构图和打光, '
+    '2 一级基础调色, 3 分离注入照片灵魂, 4 二级最终调色 5 AI辅助画面氛围'
+)
+CAPTION = f'{CAPTION_TITLE} {CAPTION_DESCRIPTION} #明日方舟 #摄影调色 #糕速出片指南'
+
+
+class DouyinCaptionPresentationTests(SimpleTestCase):
+    def test_combined_caption_keeps_description_topics_and_raw_text(self):
+        text = douyin_caption_presentation(CAPTION)
+        self.assertEqual(text['title'], CAPTION_TITLE)
+        self.assertEqual(text['description'], CAPTION_DESCRIPTION)
+        self.assertEqual(text['topics'], ['明日方舟', '摄影调色', '糕速出片指南'])
+        self.assertEqual(text['caption'], CAPTION)
+        self.assertTrue(text['title_derived'])
+
+    def test_independent_title_and_description_do_not_merge(self):
+        text = douyin_caption_presentation('独立的完整 标题', '另外的描述 #话题')
+        self.assertEqual(text['title'], '独立的完整 标题')
+        self.assertEqual(text['description'], '另外的描述')
+        self.assertEqual(text['topics'], ['话题'])
+        self.assertFalse(text['title_derived'])
+
+    def test_ordinary_titles_are_not_split_on_word_spaces(self):
+        for title in (
+            '中国国家地理 西藏特刊',
+            'How to make a beautiful photograph in bright sunlight with a simple camera',
+            'iPhone 17 Pro 拍摄体验',
+            'C#入门教程',
+        ):
+            with self.subTest(title=title):
+                text = douyin_caption_presentation(title + ' #摄影')
+                self.assertEqual(text['title'], title)
+                self.assertEqual(text['description'], '')
+        self.assertEqual(douyin_caption_presentation('原本的标题')['title'], '原本的标题')
+
+    def test_newline_description_and_duplicate_topics(self):
+        text = douyin_caption_presentation('标题\n第一段描述\n第二段描述 #摄影 #摄影')
+        self.assertEqual(text['title'], '标题')
+        self.assertEqual(text['description'], '第一段描述\n第二段描述')
+        self.assertEqual(text['topics'], ['摄影'])
+
+    def test_description_only_and_missing_titles(self):
+        self.assertEqual(douyin_caption_presentation('', CAPTION)['title'], CAPTION_TITLE)
+        for value in ('', 'https://media.example/video.mp4', '//media.example/video.mp4'):
+            self.assertEqual(douyin_caption_presentation(value)['title'], '')
+        self.assertEqual(douyin_caption_presentation('#只有话题')['topics'], ['只有话题'])
 
 
 @override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}})
@@ -92,6 +141,47 @@ class DouyinFormatSelectionTests(SimpleTestCase):
         self.assertEqual(result.metadata['ultra_race_winner'], 'tiantianjiexi')
         self.assertEqual(result.video_assets[0].url, BASE + 'high.mp4')
         self.assertEqual(len(result.metadata['upstream_candidates']), 3)
+        self.session.post.assert_called_once()
+
+    def test_topics_only_caption_does_not_become_download_filename(self):
+        self.session.post.return_value.json.return_value['data']['title'] = '#摄影 #日常'
+        result = self.result()
+        row = result.metadata['upstream_candidates'][0]
+        link = selected_link_descriptor(self.record(row))
+        self.assertTrue(link['filename'].startswith('media_'))
+        self.assertNotIn('#', link['filename'])
+        record = deepcopy(self.record(row))
+        record['service_legacy_item']['filename'] = '#摄影 #日常.mp4'
+        self.assertEqual(selected_link_descriptor(record)['filename'], 'media.mp4')
+        context = build_result_display_context(result, probe_missing_video_sizes=False)
+        self.assertEqual(context['base_filename'], 'douyin')
+        self.assertEqual(context['display_topics'], ['摄影', '日常'])
+
+    def test_caption_naming_preserves_cached_candidates_and_selected_authority(self):
+        self.session.post.return_value.json.return_value['data']['title'] = CAPTION
+        result = self.result()
+        original_metadata = deepcopy(result.metadata)
+        rows = result.metadata['upstream_candidates']
+        self.assertIn(CAPTION_TITLE, result.metadata['title'])
+        for row in rows[:2]:
+            with self.subTest(candidate=row['candidate_id']):
+                record = self.record(row)
+                saved_record = deepcopy(record)
+                link = selected_link_descriptor(record)
+                self.assertTrue(link['filename'].startswith(CAPTION_TITLE + '_'))
+                self.assertNotIn(CAPTION_DESCRIPTION[:10], link['filename'])
+                self.assertNotIn('#', link['filename'])
+                response = self.download_action(row)
+                self.assertEqual(response.status_code, 200, response.content)
+                item = response.json()['item']
+                self.assertEqual(item['filename'], link['filename'])
+                self.assertEqual(item['candidate_id'], row['candidate_id'])
+                self.assertEqual(item['url'], record['url'])
+                self.assertEqual(item['provider_manifest_token'],
+                                 record['service_legacy_item']['provider_manifest_token'])
+                self.assertEqual(item['selection_expires_at'], int(record['expires_at'] * 1000))
+                self.assertEqual(self.record(row), saved_record)
+        self.assertEqual(result.metadata, original_metadata)
         self.session.post.assert_called_once()
 
     def bridge_result(self, provider, candidates, *, payload=None, missing_manifest=False):

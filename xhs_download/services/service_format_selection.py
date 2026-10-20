@@ -291,6 +291,13 @@ def selected_link_descriptor(record):
     provider = record.get('provider_id')
     if provider not in PROVIDERS or record.get('public', {}).get('work', {}).get('schema') != SCHEMA:
         raise ValueError('service_selection_invalid')
+    if provider in DOUYIN_PROVIDERS:
+        from .platforms.douyin_providers import douyin_caption_presentation
+        public = record['public']
+        title = douyin_caption_presentation(public.get('work_label'))['title']
+        # Naming-only projection also handles still-valid cached candidates.
+        # Keep their resource identity, authorization and expiry untouched.
+        record = {**record, 'public': {**public, 'work_label': title}}
     link = picker.selected_link_descriptor(record, provider=provider, schema=SCHEMA)
     public = record['public']
     legacy = record.get('service_legacy_item') or {}
@@ -305,6 +312,9 @@ def selected_link_descriptor(record):
     filename = picker.clean_filename(legacy['filename']).strip(' .') if legacy.get('filename') else ''
     stem, _, suffix = filename.rpartition('.')
     if stem and suffix.lower() in picker.VIDEO_EXTENSIONS and (not extension or extension == suffix.lower()):
+        if provider in DOUYIN_PROVIDERS:
+            title = douyin_caption_presentation(stem)['title']
+            stem = picker.clean_filename(title) if title else 'media'
         link['filename'] = f'{stem[:160]}.{suffix}'
     elif provider in DOUYIN_PROVIDERS and not extension and link['filename'].endswith('.bin'):
         # Preserve the existing dedicated-video filename default, not a new

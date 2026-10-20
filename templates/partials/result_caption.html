@@ -1,0 +1,13 @@
+{% if display_description or display_topics %}
+<details class="result-caption" data-result-caption>
+    <summary>作品描述与话题</summary>
+    {% if display_description %}
+    <div class="result-caption-description">{{ display_description }}</div>
+    {% endif %}
+    {% if display_topics %}
+    <ul class="result-caption-topics" aria-label="话题">
+        {% for topic in display_topics %}<li>#{{ topic }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+</details>
+{% endif %}

@@ -166,6 +166,14 @@ class YtdlpSelectionTests(SimpleTestCase):
         self.assertNotIn('视频格式', html)
         self.assertIn('下载音频', html)
         self.assertNotIn('Hi-Res', html)
+        page = render_to_string('partials/xhs_results_region.html', {
+            'upstream_candidates': [candidate],
+            'post_type': 'audio',
+            'display_title': 'Audio work',
+            'base_filename': 'Audio work',
+        })
+        self.assertIn('音频作品', page)
+        self.assertNotIn('图片笔记', page)
 
     def test_streams_drm_insecure_context_and_unknown_are_not_downloadable(self):
         for changes in (
