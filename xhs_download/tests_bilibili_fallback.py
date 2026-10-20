@@ -48,6 +48,16 @@ class BilibiliFallbackControlTests(SimpleTestCase):
         authorize.assert_not_called()
         service.assert_not_called()
 
+    def test_native_keeps_original_deadline_without_reserving_service_time(self):
+        native = Mock(return_value=object())
+        with patch.object(subject.time, "monotonic", return_value=100):
+            subject.parse_fallback(URL, native_parse=native, authorize=Mock())
+            native.assert_called_once_with(None)
+            native.reset_mock()
+            subject.parse_fallback(URL, native_parse=native, authorize=Mock(),
+                                   timeout_seconds=30, deadline_monotonic=125)
+            native.assert_called_once_with(125)
+
     def test_only_availability_errors_are_eligible(self):
         for error in (HTTP_ERROR(), XhsDownloadError("HTTP 503", http_status=503),
                       requests.Timeout(), requests.ConnectionError()):

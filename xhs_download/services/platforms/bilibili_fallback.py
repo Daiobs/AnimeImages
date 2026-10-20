@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlsplit
 import requests
 
 from ..common import XhsDownloadError, XhsProviderTimeoutError, extract_url_from_text
+from ..env_config import runtime_float
 from .tiantianjiexi_generic import TianTianJieXiGenericProvider, provider_configured
 
 logger = logging.getLogger(__name__)
@@ -87,19 +88,25 @@ def parse_fallback(source_url, *, native_parse, authorize,
                    timeout_seconds=None, deadline_monotonic=None):
     source = canonical_video_source(source_url)
     now = time.monotonic()
-    budget = float(30 if timeout_seconds is None else timeout_seconds)
-    deadline = min(float(deadline_monotonic or now + budget), now + budget)
-    if not math.isfinite(deadline) or not math.isfinite(budget) or deadline <= now:
+    limits = []
+    if timeout_seconds is not None:
+        limits.append(now + float(timeout_seconds))
+    if deadline_monotonic is not None:
+        limits.append(float(deadline_monotonic))
+    deadline = min(limits) if limits else None
+    if any(not math.isfinite(limit) or limit <= now for limit in limits):
         raise XhsProviderTimeoutError("哔哩哔哩解析超过时间限制")
     if not source:
         return native_parse(deadline)
-    # Native remains first. Reserve at most 15 seconds for one authorized service,
-    # without extending the caller's deadline or starting a parallel request.
-    native_deadline = deadline - min(15, (deadline - now) / 2)
+    # Do not shorten Native's existing budget to reserve time for an optional service.
     try:
-        return native_parse(native_deadline)
+        return native_parse(deadline)
     except Exception as native_error:
         if not eligible_failure(native_error):
+            raise
+        if deadline is None:
+            deadline = time.monotonic() + runtime_float("TIANTIANJIEXI_TIMEOUT_SECONDS", 15)
+        if not math.isfinite(deadline):
             raise
         remaining = deadline - time.monotonic()
         if remaining < .1 or PROVIDER not in authorize():

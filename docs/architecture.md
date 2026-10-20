@@ -206,6 +206,8 @@ Ultra Provider 工作有独立 foreground deadline、短期 payload/failure cach
 
 Native 成功不调用服务。对于规范 BV/AV 视频第一页，Native 明确返回 HTTP 412/429、5xx 或连接/时间限制失败后，可以在本次总期限内使用已经配置且对当前请求获准的 `tiantianjiexi_generic`。412/429 不原样重试。来源或证书安全失败、明确不存在/无权限、分 P 和短链仍保持 Native 行为，不尝试以服务绕过限制。服务阶段复用原串行、single-flight、限流和短期缓存，不启动 Kukutool，不修改正式路线或公开配置。
 
+不为预留兜底而缩短 Native 原有期限。调用方提供的总 deadline 仍是硬上限，耗尽就不再启动服务；未指定总 deadline 的普通入口，仅在 Native 失败后使用既有 `TIANTIANJIEXI_TIMEOUT_SECONDS` 作为服务阶段预算，排队同样计入。
+
 服务结果必须包含合法完整视频；封面不算成功。保留真实服务身份、作品引用和每个资源的独立签名，经共用选择器进入既有 Bilibili 附件下载入口，保持原 Referer/UA 和地址校验。HTTP CDN 返回保留原协议，不强行改为 HTTPS，也不送入浏览器直连路径。展示、选择、签发动作及实际下载不复用 Native 授权；下载时重新核验当前服务准入。不同出口上的 Native 可用性不同，此兜底不代表解除上游风控或保证所有作品成功。
 
 历史 Provider Lab 的三个真实样本显示 Native、TianTian、videodl 与官方 DURL 的完整媒体字节一致。ParseHub 只增加格式元数据信号，未产生可交付媒体增量。该证据支持 Native 优先，不代表今天生产出口仍可访问，也不让 Lab 自动改写路线。
