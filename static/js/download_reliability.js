@@ -28,8 +28,8 @@
         "expired",
     ]);
     const DOWNLOAD_STATUS_POLL_TIMEOUT_MESSAGE =
-        "下载请求已交给浏览器，资源仍在连接；"
-        + "请查看浏览器下载栏，若未开始可重新尝试。";
+        "下载请求已交给浏览器，本次状态查询已结束，尚未确认传输完成；"
+        + "请查看浏览器下载栏，请勿重复点击下载。";
     const DEFAULT_STATUS_POLL_INTERVAL_MS = 500;
     const MAX_STATUS_POLL_INTERVAL_MS = 1000;
     const MAX_STATUS_POLL_DURATION_MS = 15000;
@@ -128,7 +128,7 @@
     }
 
     function isDownloadStartTerminal(status) {
-        return ["streaming", "completed", "failed", "expired"].includes(
+        return ["completed", "failed", "expired"].includes(
             String(status || ""),
         );
     }
@@ -176,14 +176,14 @@
         if (["failed", "expired"].includes(status)) {
             return "failed";
         }
+        if (status === "poll_timeout") {
+            return "unconfirmed";
+        }
         if (result && result.streamStarted) {
             return "started";
         }
         if (["streaming", "completed"].includes(status)) {
             return "started";
-        }
-        if (status === "poll_timeout") {
-            return "unconfirmed";
         }
         return "failed";
     }
@@ -192,21 +192,22 @@
         const controller = typeof AbortController === "function"
             ? new AbortController()
             : null;
-        return new Promise((resolve) => {
+        return new Promise((resolve, reject) => {
             let settled = false;
-            const finish = (value) => {
+            const finish = (value, error) => {
                 if (settled) {
                     return;
                 }
                 settled = true;
                 windowClearTimeout(timer);
-                resolve(value);
+                if (error && error.name === "AbortError") reject(error);
+                else resolve(value);
             };
             const timer = windowSetTimeout(() => {
+                finish(null);
                 if (controller) {
                     controller.abort();
                 }
-                finish(null);
             }, timeoutMs);
 
             Promise.resolve(fetchStatus(statusUrl, {
@@ -214,7 +215,10 @@
                 cache: "no-store",
                 credentials: "same-origin",
                 signal: controller ? controller.signal : undefined,
-            })).then(finish, () => finish(null));
+            })).then(async (response) => ({
+                response,
+                payload: [429, 503].includes(response.status) ? null : await response.json(),
+            })).then(finish, (error) => finish(null, error));
         });
     }
 
@@ -269,34 +273,42 @@
         let nextDelayMs = intervalMs;
         let busyCount = 0;
         let busyResult = null;
+        let lastStreaming = null;
+        const unfinishedResult = () => ({
+            ...(busyResult || statusPollTimeoutResult()),
+            streamStarted: Boolean(lastStreaming),
+            recovered: Boolean(lastStreaming && lastStreaming.recovered),
+            upstreamAttemptCount: lastStreaming ? lastStreaming.upstreamAttemptCount : 0,
+        });
 
         for (let attempt = 0; attempt < maxPolls; attempt += 1) {
             if (attempt > 0) {
                 const remainingMs = maxDurationMs - (now() - startedAt);
                 if (nextDelayMs >= remainingMs) {
-                    return busyResult || statusPollTimeoutResult();
+                    return unfinishedResult();
                 }
                 await wait(nextDelayMs);
             }
             if ((now() - startedAt) >= maxDurationMs) {
-                return busyResult || statusPollTimeoutResult();
+                return unfinishedResult();
             }
 
             const remainingDurationMs = Math.max(
                 1,
                 maxDurationMs - (now() - startedAt),
             );
-            const response = await fetchStatusWithTimeout(
+            const observation = await fetchStatusWithTimeout(
                 fetchStatus,
                 statusUrl,
                 Math.min(2000, remainingDurationMs),
             );
-            if (!response) {
+            if (!observation) {
                 if ((now() - startedAt) >= maxDurationMs) {
-                    return busyResult || statusPollTimeoutResult();
+                    return unfinishedResult();
                 }
                 continue;
             }
+            const {response, payload} = observation;
 
             if (response.status === 429 || response.status === 503) {
                 busyCount += 1;
@@ -311,31 +323,16 @@
             nextDelayMs = intervalMs;
             busyCount = 0;
             busyResult = null;
-            let payload = {};
-            try {
-                payload = await response.json();
-            } catch (error) {
-                payload = {};
-            }
+            // A broken status response is not evidence that the media transfer failed.
+            if (!payload || !DOWNLOAD_STATUS_STATES.includes(String(payload.status || "").toLowerCase())) continue;
 
             const parsed = parseDownloadStatusPayload(
                 payload,
                 response.status,
             );
+            if (parsed.status === "expired" && lastStreaming) return unfinishedResult();
             if (["failed", "expired"].includes(parsed.status)) {
                 return parsed;
-            }
-            if (parsed.streamStarted) {
-                return {
-                    ...parsed,
-                    ok: true,
-                    finalStatus: parsed.status,
-                    status: (
-                        parsed.status === "completed"
-                            ? "completed"
-                            : "streaming"
-                    ),
-                };
             }
             if (isDownloadStartTerminal(parsed.status)) {
                 return parsed;
@@ -347,8 +344,14 @@
                     status: response.status === 410 ? "expired" : "failed",
                 };
             }
+            if (parsed.streamStarted || parsed.status === "streaming") {
+                lastStreaming = {...parsed, streamStarted: true};
+                if (typeof settings.onStreaming === "function") {
+                    settings.onStreaming(lastStreaming);
+                }
+            }
         }
-        return busyResult || statusPollTimeoutResult();
+        return unfinishedResult();
     }
 
     return Object.freeze({

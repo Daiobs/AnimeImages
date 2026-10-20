@@ -2732,6 +2732,89 @@ class DownloadSingleConnectionStreamTests(TestCase):
             patch("xhs_download.views.release_concurrency"),
         )
 
+    def test_video_attachment_allows_same_origin_iframe_through_middleware(self):
+        item = {
+            "type": "video",
+            "url": "https://test.bilivideo.com/demo.mp4",
+            "size_bytes": 10,
+        }
+        tokens = self.issue(item)
+        upstream = self.build_upstream(
+            [b"first-", b"last"],
+            content_type="video/mp4",
+            url=item["url"],
+        )
+        fetch_patch, acquire_patch, bytes_patch, release_patch = (
+            self.stream_request_patches(upstream)
+        )
+        with (
+            fetch_patch as mock_fetch,
+            acquire_patch,
+            bytes_patch,
+            release_patch,
+        ):
+            response = self.client.get(
+                f"/media/download-stream/{tokens.stream_token}/"
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.streaming)
+            self.assertEqual(response["X-Frame-Options"], "SAMEORIGIN")
+            self.assertEqual(response["Content-Type"], "video/mp4")
+            self.assertEqual(
+                response["Content-Disposition"],
+                'attachment; filename="demo.mp4"',
+            )
+            self.assertEqual(response["Content-Length"], "10")
+            self.assertEqual(b"".join(response.streaming_content), b"first-last")
+            mock_fetch.assert_called_once()
+            upstream.close.assert_called_once_with()
+
+    def test_other_pages_and_status_keep_deny_through_middleware(self):
+        tokens = self.issue()
+        with patch("xhs_download.views.fetch_media_response") as mock_fetch:
+            for url in (
+                "/bilibili/",
+                f"/media/download-status/{tokens.status_token}/",
+            ):
+                with self.subTest(url=url):
+                    response = self.client.get(url)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response["X-Frame-Options"], "DENY")
+            mock_fetch.assert_not_called()
+
+    def test_same_origin_stream_still_requires_get_and_client_bound_token(self):
+        tokens = self.issue()
+        url = f"/media/download-stream/{tokens.stream_token}/"
+        with patch("xhs_download.views.fetch_media_response") as mock_fetch:
+            for method in ("post", "head"):
+                with self.subTest(method=method):
+                    response = getattr(self.client, method)(url)
+                    self.assertEqual(response.status_code, 405)
+                    self.assertEqual(response["Allow"], "GET")
+
+            tampered = self.client.get(
+                f"/media/download-stream/{tokens.stream_token}tampered/"
+            )
+            self.assertEqual(tampered.status_code, 403)
+            self.assertEqual(
+                tampered.json()["error_code"],
+                "DOWNLOAD_HANDOFF_INVALID",
+            )
+            other_client = self.client.get(url, REMOTE_ADDR="127.0.0.2")
+            self.assertEqual(other_client.status_code, 403)
+            self.assertEqual(
+                other_client.json()["error_code"],
+                "DOWNLOAD_HANDOFF_CLIENT_MISMATCH",
+            )
+            mock_fetch.assert_not_called()
+
+        handoff = load_download_handoff(
+            tokens.stream_token,
+            client_identity=self.client_identity,
+            consume=False,
+        )
+        self.assertEqual(handoff.item["url"], self.item["url"])
+
     def test_normal_stream_uses_one_connection_and_releases_after_completion(self):
         tokens = self.issue()
         upstream = self.build_upstream([b"first-", b"last"])

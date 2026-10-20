@@ -1771,7 +1771,7 @@ for (const batchPage of [false, true]) {
                         await pause("prepare-status-response");
                         return {ok: true, status: 200, json: async () => {
                             await pause("prepare-status-json");
-                            return {status: "streaming", stream_started: true};
+                            return {ok: true, status: "completed", stream_started: true};
                         }};
                     }
                     assert.equal(url, direct ? grant.url : "/download");
@@ -1819,6 +1819,55 @@ for (const batchPage of [false, true]) {
             }
         });
     }
+}
+
+for (const terminal of ["failed", "completed"]) {
+    test(`real home handoff observes streaming then ${terminal} without false 100 percent or a second media request`, async () => {
+        const root = selectablePicker("tiantianjiexi_generic");
+        Object.assign(radios(root)[1].dataset, {canDownload: "false", canLegacy: "true",
+            legacyAssetId: "third_party:source:video:low"});
+        let release, observed;
+        const gate = new Promise(resolve => { release = resolve; });
+        const streaming = new Promise(resolve => { observed = resolve; });
+        let polls = 0;
+        const app = originalLayoutController({roots: [root], configure({win, page}) {
+            page.dataset.downloadPrepareUrl = "/prepare";
+            win.AnimeImagesDownloadReliability = require("../static/js/download_reliability.js");
+            const wrap = el("div", {id: "download-progress-wrap"});
+            wrap.append(el("div", {role: "progressbar"}), el("div", {id: "download-progress-bar"}),
+                el("span", {id: "download-progress-percent"}), el("span", {id: "download-progress-bytes"}),
+                el("span", {id: "download-progress-speed"}));
+            page.querySelector("#parse-results-region").append(wrap);
+        }, fetchImpl: async (url) => {
+            if (url.includes("service-selected-format")) return jsonResponse({status: "success", item: legacyGrant("tiantianjiexi_generic", "low")});
+            if (url === "/download") return jsonResponse({status: "routed", route_type: "proxy", download_strategy: "server_single_attachment"});
+            if (url === "/prepare") return jsonResponse({ok: true, status: "issued", download_url: "/attachment", status_url: "/prepared-status"});
+            assert.equal(url, "/prepared-status");
+            if (++polls === 1) return jsonResponse({ok: true, status: "streaming", stream_started: true});
+            observed();
+            await gate;
+            return jsonResponse({ok: terminal === "completed", status: terminal, stream_started: true,
+                error_code: terminal === "failed" ? "UPSTREAM_CONNECTION_ERROR" : ""});
+        }});
+        choose(root, 1);
+        const pending = app.clickTarget(app.top);
+        await streaming;
+        const status = app.region.querySelector("#status");
+        assert.match(status.innerText, /尚未确认文件保存完成/);
+        assert.equal(app.region.querySelector("#download-progress-percent").innerText, "传输中");
+        assert.equal(app.region.querySelector("#download-progress-bytes").innerText, "");
+        assert.equal(app.region.querySelector("#download-progress-speed").innerText, "");
+        assert.equal(app.doc.getElementById("xhs-server-download-frame").src, "/attachment");
+        release();
+        await pending; await settle();
+        assert.doesNotMatch(status.innerText, /浏览器已开始接收文件/);
+        assert.notEqual(app.region.querySelector("#download-progress-percent").innerText, "100%");
+        assert.match(status.innerText, terminal === "failed" ? /资源暂时无法连接/ : /服务器传输已结束/);
+        assert.equal(app.calls.filter(call => call.url === "/prepare").length, 1);
+        assert.equal(app.calls.filter(call => call.url === "/prepared-status").length, 2);
+        assert.deepEqual(app.saved, []);
+        assert.equal(app.top.disabled, false);
+    });
 }
 
 test("home select-all counts media and old images independently without selecting formats", async () => {

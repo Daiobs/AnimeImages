@@ -119,7 +119,7 @@ function fakeJsonResponse(status, payload) {
     };
 }
 
-test("bounded status polling stops as soon as streaming is observable", async () => {
+test("bounded status polling observes streaming but waits for the terminal result", async () => {
     const payloads = [
         {ok: true, status: "issued", upstream_attempt_count: 0},
         {ok: true, status: "connecting", upstream_attempt_count: 1},
@@ -129,13 +129,16 @@ test("bounded status polling stops as soon as streaming is observable", async ()
             recovered: true,
             upstream_attempt_count: 2,
         },
+        {ok: true, status: "completed", stream_started: true, recovered: true, upstream_attempt_count: 2},
     ];
     let now = 0;
     let calls = 0;
+    const observed = [];
     const result = await reliability.pollDownloadStatus({
         statusUrl: "/media/download-status/ticket/",
         pollAfterMs: 500,
         now: () => now,
+        onStreaming: (state) => observed.push(state.status),
         wait: async (delay) => {
             now += delay;
         },
@@ -146,10 +149,25 @@ test("bounded status polling stops as soon as streaming is observable", async ()
         },
     });
 
-    assert.equal(result.status, "streaming");
+    assert.equal(result.status, "completed");
     assert.equal(result.recovered, true);
     assert.equal(result.upstreamAttemptCount, 2);
-    assert.equal(calls, 3);
+    assert.equal(calls, 4);
+    assert.deepEqual(observed, ["streaming"]);
+});
+
+test("streaming followed by downstream failure cannot remain a successful handoff", async () => {
+    let calls = 0;
+    const result = await reliability.pollDownloadStatus({
+        statusUrl: "/media/download-status/ticket/",
+        wait: async () => {},
+        fetchStatus: async () => fakeJsonResponse(200, ++calls === 1
+            ? {ok: true, status: "streaming", stream_started: true}
+            : {ok: false, status: "failed", stream_started: true, error_code: "UPSTREAM_CONNECTION_ERROR"}),
+    });
+    assert.equal(calls, 2);
+    assert.equal(result.status, "failed");
+    assert.equal(reliability.downloadStartDisposition(result), "failed");
 });
 
 test("failed and expired statuses terminate polling with safe messages", async () => {
@@ -214,19 +232,21 @@ for (const [status, responseStatus, errorCode] of [
     });
 }
 
-test("streaming and completed still confirm download startup", async () => {
+test("completed ends observation; streaming remains unconfirmed at the query limit", async () => {
     for (const status of ["streaming", "completed"]) {
         for (const streamStarted of [false, true]) {
             const result = await reliability.pollDownloadStatus({
                 statusUrl: "/media/download-status/ticket/",
+                maxPolls: 1,
                 fetchStatus: async () => fakeJsonResponse(200, {
                     ok: true,
                     status,
                     stream_started: streamStarted,
                 }),
             });
-            assert.equal(result.status, status);
-            assert.equal(reliability.downloadStartDisposition(result), "started");
+            assert.equal(result.status, status === "completed" ? "completed" : "poll_timeout");
+            assert.equal(reliability.downloadStartDisposition(result), status === "completed" ? "started" : "unconfirmed");
+            if (status === "streaming") assert.equal(result.streamStarted, true);
         }
     }
 });
@@ -309,13 +329,13 @@ test("temporary status rate limiting is retried within the bounded poll", async 
             }
             return fakeJsonResponse(200, {
                 ok: true,
-                status: "streaming",
+                status: "completed",
             });
         },
     });
 
     assert.equal(calls, 2);
-    assert.equal(result.status, "streaming");
+    assert.equal(result.status, "completed");
 });
 
 test("single-page code no longer submits an unobservable iframe POST", () => {
@@ -336,7 +356,7 @@ test("single-page code no longer submits an unobservable iframe POST", () => {
     assert.doesNotMatch(source, /console\.(?:warn|error)\([^)]*item\.url/s);
 });
 
-test("server handoff completes UI progress only after confirmed stream start", () => {
+test("server handoff never presents server startup as 100 percent saved", () => {
     const source = fs.readFileSync(
         path.join(__dirname, "../static/js/xhs_download.js"),
         "utf8",
@@ -361,7 +381,7 @@ test("server handoff completes UI progress only after confirmed stream start", (
 
     assert.ok(handoffIndex >= 0);
     assert.ok(pollIndex > handoffIndex);
-    assert.ok(completeProgressIndex > pollIndex);
+    assert.equal(completeProgressIndex, -1);
     assert.match(
         implementation.slice(0, pollIndex),
         /setProgressPending\("连接下载"\)/,
@@ -375,4 +395,71 @@ test("server handoff completes UI progress only after confirmed stream start", (
     assert.doesNotMatch(implementation, /response\.blob\(\)/);
     assert.doesNotMatch(implementation, /URL\.createObjectURL/);
     assert.doesNotMatch(implementation, /console\.(?:log|warn|error)/);
+    assert.match(implementation, /onStreaming:/);
+    assert.match(implementation, /hideDownloadProgress\(\)/);
+    assert.match(implementation, /服务器传输已结束.*确认文件保存结果/);
+});
+
+test("cancelling while observing a started stream stops queries without restarting media", async () => {
+    let calls = 0;
+    const cancelled = Object.assign(new Error("cancelled"), {name: "AbortError"});
+    await assert.rejects(reliability.pollDownloadStatus({
+        statusUrl: "/media/download-status/ticket/",
+        fetchStatus: async () => {
+            calls += 1;
+            return fakeJsonResponse(200, {ok: true, status: "streaming"});
+        },
+        wait: async () => { throw cancelled; },
+    }), {name: "AbortError"});
+    assert.equal(calls, 1);
+});
+
+for (const unavailable of ["expired", "invalid-json", "unknown-state", "busy"]) {
+    test(`status ${unavailable} after streaming does not claim the media failed or completed`, async () => {
+        let calls = 0;
+        const result = await reliability.pollDownloadStatus({
+            statusUrl: "/media/download-status/ticket/",
+            maxPolls: 2,
+            wait: async () => {},
+            fetchStatus: async () => {
+                if (++calls === 1) return fakeJsonResponse(200, {ok: true, status: "streaming"});
+                if (unavailable === "expired") return fakeJsonResponse(410, {ok: false, status: "expired"});
+                if (unavailable === "invalid-json") return {ok: false, status: 502, async json() { throw new Error("HTML"); }};
+                if (unavailable === "busy") return {ok: false, status: 429, headers: {get: () => "60"}};
+                return fakeJsonResponse(200, {status: "other"});
+            },
+        });
+        assert.equal(calls, 2);
+        assert.equal(result.status, "poll_timeout");
+        assert.equal(result.streamStarted, true);
+        assert.equal(reliability.downloadStartDisposition(result), "unconfirmed");
+    });
+}
+
+test("status body parsing is covered by the existing overall deadline", async () => {
+    let signal;
+    const start = Date.now();
+    const result = await reliability.pollDownloadStatus({
+        statusUrl: "/media/download-status/ticket/",
+        maxDurationMs: 50,
+        fetchStatus: async (_url, options) => {
+            signal = options.signal;
+            return {ok: true, status: 200, json: () => new Promise(() => {})};
+        },
+    });
+    assert.equal(result.status, "poll_timeout");
+    assert.equal(signal.aborted, true);
+    assert.ok(Date.now() - start < 500);
+});
+
+test("external cancellation during a status request does not schedule another poll", async () => {
+    let calls = 0;
+    await assert.rejects(reliability.pollDownloadStatus({
+        statusUrl: "/media/download-status/ticket/",
+        fetchStatus: async () => {
+            calls += 1;
+            throw Object.assign(new Error("cancelled"), {name: "AbortError"});
+        },
+    }), {name: "AbortError"});
+    assert.equal(calls, 1);
 });

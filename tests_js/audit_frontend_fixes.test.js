@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const reliability = require("../static/js/download_reliability.js");
 
-function response(status, retryAfter = null, payload = {ok: true, status: "streaming"}) {
+function response(status, retryAfter = null, payload = {ok: true, status: "completed"}) {
     return {
         ok: status >= 200 && status < 300,
         status,
@@ -44,14 +44,14 @@ for (const code of [429, 503]) {
     test(`${code} respects Retry-After seconds without starting another download`, async () => {
         const observation = await runPoll([response(code, "2"), response(200)]);
         assert.deepEqual(observation.requests, [0, 2000]);
-        assert.equal(observation.result.status, "streaming");
+        assert.equal(observation.result.status, "completed");
     });
 
     test(`${code} respects an HTTP-date`, async () => {
         const date = new Date(Date.UTC(2026, 0, 1, 0, 0, 3)).toUTCString();
         const observation = await runPoll([response(code, date), response(200)]);
         assert.deepEqual(observation.waits, [3000]);
-        assert.equal(observation.result.status, "streaming");
+        assert.equal(observation.result.status, "completed");
     });
 
     test(`${code} longer than budget stops as unconfirmed rather than retrying early`, async () => {
@@ -72,7 +72,7 @@ test("invalid/missing Retry-After uses bounded increasing backoff", async () => 
         response(429, "invalid"), response(503), response(429, "-5"), response(200),
     ]);
     assert.deepEqual(observation.waits, [1000, 2000, 4000]);
-    assert.equal(observation.result.status, "streaming");
+    assert.equal(observation.result.status, "completed");
 });
 
 test("valid ordinary response resets the busy backoff", async () => {
@@ -81,7 +81,7 @@ test("valid ordinary response resets the busy backoff", async () => {
         response(503), response(200),
     ], {pollAfterMs: 500});
     assert.deepEqual(observation.waits, [1000, 500, 1000]);
-    assert.equal(observation.result.status, "streaming");
+    assert.equal(observation.result.status, "completed");
 });
 
 test("repeated busy replies stay inside the original time and count limits", async () => {
@@ -129,7 +129,7 @@ test("omitted poll budgets use documented defaults, not the minimum one-call bud
         maxDurationMs: undefined, maxPolls: undefined,
     });
     assert.equal(observation.requests.length, 2);
-    assert.equal(observation.result.status, "streaming");
+    assert.equal(observation.result.status, "completed");
 });
 
 test("explicit download failures remain terminal after a stream has started", async () => {

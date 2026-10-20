@@ -19,6 +19,7 @@ from django.template.loader import render_to_string
 from django.utils import timezone
 from django.utils.http import content_disposition_header
 from django.urls import reverse
+from django.views.decorators.clickjacking import xframe_options_sameorigin
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_POST
 
@@ -5950,6 +5951,7 @@ def download_status_view(request, token):
 
 
 @require_GET
+@xframe_options_sameorigin
 def download_stream_view(request, token):
     started_at = time.monotonic()
     identity = get_client_identity(request)
