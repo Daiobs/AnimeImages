@@ -240,6 +240,10 @@ def single_video_can_server_proxy_download(item):
     provider = item_provider(item)
     if not provider:
         return True
+    from .platforms.bilibili_service_result import manifest_item_is_allowed
+
+    if manifest_item_is_allowed(item):
+        return True
     return (
         provider in SERVER_PROXY_VIDEO_PROVIDERS
         and provider_manifest_allows_public_download(item)

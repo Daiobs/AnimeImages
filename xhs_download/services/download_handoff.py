@@ -51,6 +51,7 @@ DOWNLOAD_HANDOFF_ITEM_STRING_LIMITS = {
     "provider_cache_key": 1024,
     "provider_manifest_token": 16384,
     "asset_id": 1024,
+    "source_platform": 64,
 }
 DOWNLOAD_HANDOFF_PROVIDER_FIELDS = frozenset(
     {
@@ -59,6 +60,7 @@ DOWNLOAD_HANDOFF_PROVIDER_FIELDS = frozenset(
         "provider_cache_key",
         "provider_manifest_token",
         "asset_id",
+        "source_platform",
     }
 )
 DOWNLOAD_HANDOFF_MAX_SIZE_BYTES = (1 << 63) - 1
@@ -291,6 +293,7 @@ def sanitize_download_handoff_item(item):
         "provider_cache_key",
         "provider_manifest_token",
         "asset_id",
+        "source_platform",
     ):
         value = _bounded_handoff_text(item, key)
         if value:

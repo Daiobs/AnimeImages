@@ -1,5 +1,6 @@
 """Offline entrypoint integration through registry, providers and templates."""
 from contextlib import ExitStack
+from io import BytesIO
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -12,8 +13,8 @@ from bs4 import BeautifulSoup
 from django.contrib.auth.models import AnonymousUser
 from django.core.cache import cache
 from django.template.loader import render_to_string
-from django.test import RequestFactory, SimpleTestCase, override_settings
-from django.urls import reverse
+from django.test import RequestFactory, TestCase, override_settings
+from django.urls import resolve, reverse
 
 from download_console.models import DownloadRuntimeSetting
 from .models import ProviderAccessMode, ProviderRuntimeSetting
@@ -25,6 +26,10 @@ MEDIA = "http://upos-sz-mirrorcos.bilivideo.com/entry-video.mp4"
 COVER = "https://i0.hdslb.com/entry-cover.jpg"
 SERVICE = "https://service.example.invalid/parse"
 PROVIDER = "tiantianjiexi_generic"
+MP4 = (
+    b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isommp42"
+    b"\x00\x00\x00\x0cmdat\x00\x00\x00\x00"
+)
 
 
 def json_response(url, payload, status=200):
@@ -47,7 +52,7 @@ def json_response(url, payload, status=200):
     THIRD_PARTY_GLOBAL_REQUEST_LIMIT_PER_MINUTE=100,
     CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
 )
-class BilibiliFallbackEntryTests(SimpleTestCase):
+class BilibiliFallbackEntryTests(TestCase):
     def setUp(self):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
@@ -85,6 +90,26 @@ class BilibiliFallbackEntryTests(SimpleTestCase):
         self.post = self.stack.enter_context(patch(
             "xhs_download.services.platforms.tiantianjiexi_generic.requests.post",
             side_effect=self.service_post))
+        self.media_get = self.stack.enter_context(patch(
+            "xhs_download.services.downloads.requests.get",
+            side_effect=self.media_http))
+
+    def media_http(self, url, **kwargs):
+        self.assertIn(url, {MEDIA, MEDIA.replace("entry-video", "entry-large")})
+        self.assertFalse(kwargs["allow_redirects"])
+        self.assertTrue(kwargs["stream"])
+        self.assertGreater(kwargs["timeout"], 0)
+        response = requests.Response()
+        response.status_code = 200
+        response.url = url
+        response.headers.update({
+            "Content-Type": "video/mp4",
+            "Content-Length": str(len(MP4)),
+        })
+        response.raw = BytesIO(MP4)
+        response.raw._connection = SimpleNamespace(
+            sock=SimpleNamespace(settimeout=lambda timeout: self.assertGreater(timeout, 0)))
+        return response
 
     def native_http(self, method, url, **kwargs):
         self.assertEqual(method.upper(), "GET")
@@ -278,3 +303,153 @@ class BilibiliFallbackEntryTests(SimpleTestCase):
 
     def test_batch_normal_anonymous_without_allowlist_never_starts_service(self):
         self.assert_unauthorized_failure_without_service("batch")
+
+    def selected_home_item(self):
+        context, status = self.consume("home")
+        self.assertEqual(status, 200, context)
+        default_url = context["video_items"][0]["url"]
+        selected = []
+        for candidate in context["upstream_candidates"]:
+            response = self.action(candidate, "legacy")
+            self.assertEqual(response.status_code, 200, response.content)
+            selected.append(response.json()["item"])
+        item = next(item for item in selected if item["url"] != default_url)
+        self.assertEqual(item["url"], MEDIA)
+        self.assertEqual(item["source_platform"], "bilibili")
+        self.assertEqual(item["selection_delivery"], "legacy_manifest")
+        self.media_get.assert_not_called()
+        return context, item
+
+    def download_payload(self, context, item, mode="browser"):
+        return {
+            "media_items": [item],
+            "base_filename": context["base_filename"],
+            "platform_key": context["platform"],
+            "download_mode": mode,
+            "route_only": True,
+        }
+
+    def prepare_selected_item(self, payload):
+        response = self.client.post(
+            reverse("media_download_prepare"), payload,
+            content_type="application/json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["status"], "issued")
+        self.media_get.assert_not_called()
+        return response.json()
+
+    def test_home_nondefault_legacy_candidate_routes_prepares_and_streams_mp4(self):
+        context, item = self.selected_home_item()
+        for mode in ("browser", "auto"):
+            with self.subTest(mode=mode):
+                self.media_get.reset_mock()
+                payload = self.download_payload(context, item, mode)
+                route = self.client.post(
+                    reverse("media_download_images_api"), payload,
+                    content_type="application/json")
+                self.assertEqual(route.status_code, 200, route.content)
+                self.assertEqual(route.json()["route_type"], "proxy")
+                self.assertEqual(
+                    route.json()["download_strategy"], "server_single_attachment")
+                self.assertTrue(route.json()["native_browser_download"])
+                prepared = self.prepare_selected_item(payload)
+                response = self.client.get(prepared["download_url"])
+                self.assertEqual(
+                    response.status_code, 200,
+                    None if response.streaming else response.content)
+                self.assertTrue(response.streaming)
+                self.assertEqual(response["Content-Type"], "video/mp4")
+                self.assertIn("attachment;", response["Content-Disposition"])
+                self.assertIn(".mp4", response["Content-Disposition"])
+                try:
+                    self.assertEqual(b"".join(response.streaming_content), MP4)
+                finally:
+                    response.close()
+                self.media_get.assert_called_once()
+                self.assertEqual(self.media_get.call_args.args[0], item["url"])
+                status = self.client.get(prepared["status_url"])
+                self.assertEqual(status.status_code, 200, status.content)
+                self.assertEqual(status.json()["status"], "completed")
+                self.assertTrue(status.json()["stream_started"])
+                self.assertEqual(status.json()["upstream_attempt_count"], 1)
+        self.assertEqual(self.events, ["native", "service"])
+        self.post.assert_called_once()
+
+    def test_selected_home_item_rejects_tampering_before_route_or_prepare(self):
+        context, item = self.selected_home_item()
+        missing_platform = dict(item)
+        missing_platform.pop("source_platform")
+        variants = {
+            "changed_url": {**item, "url": MEDIA.replace("entry-video", "entry-large")},
+            "bad_manifest": {**item, "provider_manifest_token": "invalid"},
+            "missing_platform": missing_platform,
+            "wrong_platform": {**item, "source_platform": "douyin"},
+        }
+        for label, invalid in variants.items():
+            for endpoint, mode in (
+                ("media_download_images_api", "browser"),
+                ("media_download_images_api", "auto"),
+                ("media_download_prepare", "server_single"),
+            ):
+                with self.subTest(variant=label, endpoint=endpoint, mode=mode):
+                    response = self.client.post(
+                        reverse(endpoint), self.download_payload(context, invalid, mode),
+                        content_type="application/json")
+                    self.assertEqual(response.status_code, 400, response.content)
+                    if endpoint == "media_download_prepare":
+                        self.assertEqual(
+                            response.json()["error_code"], "PROVIDER_MANIFEST_REJECTED")
+                    else:
+                        self.assertEqual(response.json(), {
+                            "status": "error", "message": "Provider 签名资源未通过校验",
+                        })
+                    self.assertNotIn("download_url", response.json())
+        self.media_get.assert_not_called()
+        self.post.assert_called_once()
+
+    def test_stream_revalidates_missing_or_wrong_cached_source_platform(self):
+        from .services import download_handoff
+
+        context, item = self.selected_home_item()
+        for platform in (None, "douyin"):
+            with self.subTest(source_platform=platform):
+                prepared = self.prepare_selected_item(self.download_payload(context, item))
+                token = resolve(prepared["download_url"]).kwargs["token"]
+                ticket = download_handoff._load_signed_ticket(
+                    token, salt=download_handoff.DOWNLOAD_HANDOFF_SALT)
+                key = download_handoff.build_download_handoff_cache_key(ticket)
+                record = cache.get(key)
+                self.assertEqual(record["item"]["source_platform"], "bilibili")
+                if platform is None:
+                    record["item"].pop("source_platform")
+                else:
+                    record["item"]["source_platform"] = platform
+                cache.set(key, record, timeout=60)
+                response = self.client.get(prepared["download_url"])
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertEqual(
+                    response.json()["error_code"], "PROVIDER_MANIFEST_REJECTED")
+        self.media_get.assert_not_called()
+
+    def test_public_service_permission_is_rechecked_at_route_prepare_and_stream(self):
+        context, item = self.selected_home_item()
+        payload = self.download_payload(context, item)
+        prepared = self.prepare_selected_item(payload)
+        self.config.third_party_allowed_public_platforms = ""
+        for endpoint, mode in (
+            ("media_download_images_api", "browser"),
+            ("media_download_images_api", "auto"),
+            ("media_download_prepare", "server_single"),
+        ):
+            with self.subTest(endpoint=endpoint, mode=mode):
+                response = self.client.post(
+                    reverse(endpoint), {**payload, "download_mode": mode},
+                    content_type="application/json")
+                self.assertEqual(response.status_code, 403, response.content)
+                self.assertEqual(response.json()["error_code"], "PROVIDER_ACCESS_DENIED")
+                self.assertNotIn("download_url", response.json())
+        response = self.client.get(prepared["download_url"])
+        self.assertEqual(response.status_code, 403, response.content)
+        self.assertEqual(response.json()["error_code"], "PROVIDER_ACCESS_DENIED")
+        self.media_get.assert_not_called()
+        self.post.assert_called_once()
