@@ -76,7 +76,8 @@ def legacy_item_for_asset(asset, result, provider, source_url):
     if (strategy['download_strategy'] not in ({'browser_streaming'} if provider in DOUYIN_PROVIDERS else {'server_attachment'})
             or not provider_manifest_allows_public_download(item)):
         return None
-    return {**item, 'size_bytes': asset.size_bytes, 'size_is_estimate': asset.size_is_estimate}
+    return {**item, 'size_bytes': asset.size_bytes, 'size_is_estimate': asset.size_is_estimate,
+            **({'filename': asset.filename} if asset.filename else {})}
 
 
 def source_identity_matches(provider, source_url, resource_id):
@@ -290,7 +291,26 @@ def selected_link_descriptor(record):
     provider = record.get('provider_id')
     if provider not in PROVIDERS or record.get('public', {}).get('work', {}).get('schema') != SCHEMA:
         raise ValueError('service_selection_invalid')
-    return picker.selected_link_descriptor(record, provider=provider, schema=SCHEMA)
+    link = picker.selected_link_descriptor(record, provider=provider, schema=SCHEMA)
+    public = record['public']
+    legacy = record.get('service_legacy_item') or {}
+    if (public.get('media_type') != 'video' or not capability(public)['can_download']
+            or public.get('legacy_delivery') != 'existing_manifest'
+            or not public.get('legacy_asset_id')
+            or legacy.get('asset_id') != public['legacy_asset_id']
+            or legacy.get('url') != link['url'] or legacy.get('provider') != provider
+            or legacy.get('type') != 'video'):
+        return link
+    extension = str(public.get('extension') or '').lower().lstrip('.')
+    filename = picker.clean_filename(legacy['filename']).strip(' .') if legacy.get('filename') else ''
+    stem, _, suffix = filename.rpartition('.')
+    if stem and suffix.lower() in picker.VIDEO_EXTENSIONS and (not extension or extension == suffix.lower()):
+        link['filename'] = f'{stem[:160]}.{suffix}'
+    elif provider in DOUYIN_PROVIDERS and not extension and link['filename'].endswith('.bin'):
+        # Preserve the existing dedicated-video filename default, not a new
+        # container/track fact. Download authorization is still checked below.
+        link['filename'] = link['filename'][:-4] + '.mp4'
+    return link
 
 
 def selected_open_descriptor(record):

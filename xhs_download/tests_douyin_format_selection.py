@@ -160,6 +160,60 @@ class DouyinFormatSelectionTests(SimpleTestCase):
         self.assertEqual(response.json()['item']['provider_manifest_token'],
                          record['service_legacy_item']['provider_manifest_token'])
 
+    def test_extensionless_selected_video_keeps_original_mp4_naming(self):
+        for provider in ('tiantianjiexi', 'kukutool'):
+            with self.subTest(provider=provider):
+                prefix = 'https://v26-default.365yg.com/s/7fffffff/video/tos/'
+                main = MediaCandidate(url=prefix + 'main/', quality_label='1080P', size_bytes=3000)
+                extra = replace(main, url=prefix + 'selected/', quality_label='540P', size_bytes=2000)
+                rows = self.bridge_result(provider, (main, extra)).metadata['upstream_candidates']
+                names = []
+                for row, candidate in zip(rows, (main, extra)):
+                    record = self.record(row)
+                    response = self.download_action(row)
+                    self.assertEqual(response.status_code, 200, response.content)
+                    item = response.json()['item']
+                    self.assertTrue(item['filename'].endswith('.mp4'), item['filename'])
+                    self.assertEqual(item['filename'], selected_link_descriptor(record)['filename'])
+                    self.assertEqual(item['filename'], selected_legacy_descriptor(record)['filename'])
+                    self.assertEqual(item['url'], candidate.url)
+                    self.assertEqual(item['provider_manifest_token'],
+                                     record['service_legacy_item']['provider_manifest_token'])
+                    self.assertEqual(item['size_bytes'], candidate.size_bytes)
+                    self.assertFalse(record['public'].get('extension'), 'Naming is not container evidence')
+                    names.append(item['filename'])
+                self.assertNotEqual(*names)
+
+    def test_explicit_video_extension_is_not_replaced_by_mp4_default(self):
+        for provider in ('tiantianjiexi', 'kukutool'):
+            for extension in ('mp4', 'webm', 'mov'):
+                with self.subTest(provider=provider, extension=extension):
+                    row = self.bridge_result(provider, (
+                        MediaCandidate(url='https://v26-default.365yg.com/s/7fffffff/video/tos/video.' + extension,
+                                       quality_label='720P', size_bytes=2000),
+                    )).metadata['upstream_candidates'][0]
+                    response = self.download_action(row)
+                    self.assertEqual(response.status_code, 200, response.content)
+                    self.assertTrue(response.json()['item']['filename'].endswith('.' + extension))
+
+    def test_selected_video_preserves_existing_asset_filename(self):
+        context = DouyinParseContext(url=f'https://www.douyin.com/video/{AWEME}', aweme_id=AWEME)
+        candidate = MediaCandidate(url=BASE + 'video/', quality_label='720P', size_bytes=2000)
+        main = build_external_parse_result(DouyinAdapter(), context, candidate, provider_name='tiantianjiexi')
+        main = replace(main, assets=(replace(main.video_assets[0], filename='Original title.mp4'),))
+        extra = replace(candidate, url=BASE + 'another/', quality_label='540P')
+        result = attach_douyin_service_picker(main, adapter=DouyinAdapter(), context=context, candidates=(candidate, extra))
+        row = result.metadata['upstream_candidates'][0]
+        response = self.download_action(row)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()['item']['filename'], 'Original title.mp4')
+        self.assertEqual(selected_link_descriptor(self.record(row))['filename'], 'Original title.mp4')
+        other = self.download_action(result.metadata['upstream_candidates'][1])
+        self.assertEqual(other.status_code, 200, other.content)
+        self.assertTrue(other.json()['item']['filename'].endswith('.mp4'))
+        self.assertNotEqual(other.json()['item']['filename'], 'Original title.mp4')
+        self.assertEqual(other.json()['item']['url'], extra.url)
+
     def test_download_expiry_is_bounded_by_known_cdn_expiry(self):
         expires_at = int(time()) + 90
         for provider in ('tiantianjiexi', 'kukutool'):

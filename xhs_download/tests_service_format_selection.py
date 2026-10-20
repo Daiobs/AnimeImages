@@ -217,6 +217,18 @@ class ServiceFormatSelectionTests(SimpleTestCase):
             'ytdlp_picker': build_service_picker(audio_only.metadata['upstream_candidates'])})
         self.assertEqual(len(BeautifulSoup(html, 'html.parser').select('details.ytdlp-audio-formats')), 0)
 
+    def test_dedicated_mp4_filename_default_does_not_relabel_generic_resources(self):
+        for payload, extension in (
+            ({'videos': [{'url': 'https://media.example/unknown/'}]}, '.bin'),
+            ({'videos': [{'url': 'https://media.example/video.webm'}]}, '.webm'),
+            ({'videos': [{'url': 'https://media.example/stream.m3u8'}]}, '.m3u8'),
+            ({'audios': [{'url': 'https://media.example/audio.m4a', 'extension': 'm4a'}]}, '.m4a'),
+        ):
+            with self.subTest(extension=extension):
+                row = self.result(payload=payload).metadata['upstream_candidates'][0]
+                record = resolve_candidate_record(row['resource_token'], row['candidate_id'])
+                self.assertTrue(selected_link_descriptor(record)['filename'].endswith(extension))
+
     def test_existing_manifest_delivery_keeps_its_original_home_and_batch_controls(self):
         result = self.result(payload={'videos': [{'url': 'http://media.example/original.mp4'}]})
         asset = result.video_assets[0]
