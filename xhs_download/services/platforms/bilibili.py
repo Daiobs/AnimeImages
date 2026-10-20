@@ -95,10 +95,13 @@ def api_get_json(
             headers={**BILIBILI_HEADERS, "Referer": requote_uri(referer)},
             timeout=bilibili_request_timeout(deadline_monotonic, 15),
             retries=2,
+            non_retry_statuses=(412, 429),
             allowed_final_host_suffixes=("bilibili.com",),
             final_url_message="哔哩哔哩接口跳转到了不允许的域名",
             deadline_monotonic=deadline_monotonic,
         )
+    except requests.exceptions.SSLError:
+        raise
     except (requests.Timeout, requests.ConnectionError) as error:
         raise XhsProviderTimeoutError("哔哩哔哩接口请求超时，请稍后重试") from error
     try:

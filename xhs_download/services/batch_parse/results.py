@@ -368,6 +368,10 @@ def build_batch_result_row(
             xhs_services = authorized_services(request, source_text)
             if xhs_services:
                 parser_kwargs["xhs_service_provider_ids"] = xhs_services
+        if batch_platform_for_source(source_text) == "bilibili":
+            from ..platforms.bilibili_fallback import authorized_services as bilibili_services
+            if bilibili_services(request, source_text, reserve_limits=False):
+                parser_kwargs["bilibili_service_authorizer"] = lambda: bilibili_services(request, source_text)
         if prefer_ultra_hd and batch_platform_for_source(source_text) == "xiaohongshu":
             parser_kwargs["ultra_attempt_controller"] = XhsUltraAttemptController(
                 client_identity=get_client_identity(request),

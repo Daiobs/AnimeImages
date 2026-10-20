@@ -33,6 +33,7 @@ def candidate_facts(metadata, url, kind):
         'same_resource_labels': metadata.get('_same_resource_labels') is True,
         'legacy_asset_id': legacy.get('asset_id', ''),
         'legacy_delivery': 'existing_manifest' if legacy else '',
+        'service_manifest_required': metadata.get('_service_manifest_required') is True,
     }
 
 
@@ -52,7 +53,7 @@ def capability(candidate):
                 picker.VIDEO_EXTENSIONS if candidate.get('media_type') == 'video' else picker.AUDIO_EXTENSIONS))
             and candidate.get('media_type') in {'video', 'audio'}):
         result = {'can_download': True, 'can_preview': False, 'can_check': False, 'limitation': ''}
-    if (candidate.get('provider_id') in DOUYIN_PROVIDERS
+    if ((candidate.get('provider_id') in DOUYIN_PROVIDERS or candidate.get('service_manifest_required'))
             and not (candidate.get('legacy_asset_id')
                      and candidate.get('legacy_delivery') == 'existing_manifest')):
         result = {'can_download': False, 'can_preview': False, 'can_check': False,
@@ -222,6 +223,9 @@ def attach_service_picker(result, *, payload, provider, source_url, match=None, 
         # Projection does not fetch media. Keep the dedicated CDN policy here;
         # link, cover and save actions still recheck public DNS before delivery.
         projection_validator = validate_douyin_media_url
+    elif result.platform == 'bilibili':
+        from .platforms.bilibili_service_result import validate_media_url
+        projection_validator = validate_media_url
     candidates = []
     counts = {}
     for row in rows:
@@ -246,12 +250,18 @@ def attach_service_picker(result, *, payload, provider, source_url, match=None, 
         if not url:
             continue
         metadata = {**row, '_service_picker_issued': True,
+                    '_service_manifest_required': result.platform == 'bilibili',
                     '_same_resource_labels': counts.get(row['url'], 0) > 1,
                     '_service_legacy_item': None}
         old_items = legacy_by_url.get(url, [])
         facts = candidate_facts(metadata, url, row.get('media_type'))
         protocol = str(row.get('protocol') or urlsplit(url).scheme)
+        complete_service_video = True
+        if result.platform == 'bilibili':
+            from .platforms.bilibili_service_result import video_resource_is_complete
+            complete_service_video = video_resource_is_complete(row)
         if (len(old_items) == 1 and len(work_ids_by_url.get(url, ())) == 1
+                and complete_service_video
                 and row.get('work_id') and row.get('media_type') == 'video'
                 and protocol in {'http', 'https'}
                 and not urlsplit(url).path.lower().endswith(('.m3u8', '.mpd'))
@@ -351,6 +361,8 @@ def selected_descriptor(record):
     from .upstream_delivery import safe_resource_url
     from .provider_strategy import browser_transport_hint
     public = record.get('public', {})
+    if public.get('service_manifest_required'):
+        raise ValueError('service_legacy_delivery_required')
     if (public.get('service_file_eligible') is not True or not capability(public)['can_download'] or picker.context_required(
             record.get('headers'), headers_present=record.get('headers_present'),
             requires_cookie=record.get('requires_cookie'))):

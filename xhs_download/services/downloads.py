@@ -463,6 +463,9 @@ def tiantianjiexi_douyin_manifest_is_allowed(item):
 def provider_manifest_allows_public_download(item):
     if not isinstance(item, dict):
         return False
+    if str(item.get("asset_id") or "").startswith("bilibili:service:"):
+        from .platforms.bilibili_service_result import manifest_item_is_allowed
+        return manifest_item_is_allowed(item)
     if ':format:' in str(item.get('asset_id') or '') and item.get('provider') in {'tiantianjiexi', 'kukutool'}:
         from .provider_manifest import douyin_format_manifest_is_valid
         return douyin_format_manifest_is_valid(item)
@@ -593,7 +596,10 @@ def validate_provider_signed_download_url(provider_item, url, message):
         **provider_item,
         "url": url,
     }
-    if provider == YOUTUBE_MERGE_PROVIDER_ID:
+    if str(provider_item.get("asset_id") or "").startswith("bilibili:service:"):
+        from .platforms.bilibili_service_result import manifest_item_is_allowed
+        allowed = manifest_item_is_allowed(signed_url_item)
+    elif provider == YOUTUBE_MERGE_PROVIDER_ID:
         allowed = youtube_merge_manifest_item_is_allowed(signed_url_item)
     elif provider == YTDLP_MERGE_PROVIDER_ID:
         allowed = ytdlp_merge_manifest_item_is_allowed(signed_url_item)

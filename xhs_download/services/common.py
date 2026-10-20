@@ -67,7 +67,9 @@ class XhsProviderTimeoutError(XhsParseError):
 
 
 class XhsDownloadError(XhsError):
-    pass
+    def __init__(self, message, *, http_status=None):
+        super().__init__(message)
+        self.http_status = http_status
 
 
 class XhsDNSResolutionError(XhsDownloadError):
@@ -341,6 +343,7 @@ def request_get_with_retry(
     final_url_message="请求跳转到了不允许的 URL",
     deadline_monotonic=None,
     max_redirects=5,
+    non_retry_statuses=(),
 ):
     return _request_with_retry(
         url, headers=headers or HEADERS, timeout=timeout, retries=retries,
@@ -348,6 +351,7 @@ def request_get_with_retry(
         allowed_final_host_suffixes=allowed_final_host_suffixes,
         final_url_message=final_url_message, deadline_monotonic=deadline_monotonic,
         max_redirects=max_redirects,
+        non_retry_statuses=non_retry_statuses,
     )
 
 
@@ -367,6 +371,7 @@ def _request_with_retry(
     allowed_final_host_suffixes=None, final_url_message="请求跳转到了不允许的 URL",
     deadline_monotonic=None, max_redirects=5, *, method="GET", accepted_statuses=(200,),
     allowed_hop_host_suffixes=None, redirect_budget=None,
+    non_retry_statuses=(),
 ):
     """Validate each hop and pin direct connections to an admitted address.
 
@@ -483,7 +488,9 @@ def _request_with_retry(
                         result, response = response, None
                         return result
 
-                    last_error = XhsDownloadError(f"HTTP {response.status_code}")
+                    last_error = XhsDownloadError(
+                        f"HTTP {response.status_code}", http_status=response.status_code
+                    )
                 except XhsDNSResolutionError as error:
                     if not error.temporary:
                         raise
@@ -499,6 +506,8 @@ def _request_with_retry(
                         response.close()
                 break
 
+        if getattr(last_error, "http_status", None) in non_retry_statuses:
+            raise last_error
         if attempt < retries - 1:
             retry_delay = sleep_seconds * (attempt + 1)
             if retry_delay >= remaining_budget():
