@@ -293,6 +293,7 @@ from .services.browser_streaming_telemetry import (
     BrowserStreamingTelemetryValidationError,
     DEFAULT_MAX_PAYLOAD_BYTES,
     DEFAULT_RATE_LIMIT_PER_MINUTE,
+    get_protocol_version_distribution,
     log_browser_streaming_telemetry,
     validate_browser_streaming_telemetry,
 )
@@ -1888,6 +1889,7 @@ def ops_dashboard_view(request):
         "download_type_top": top_values(recent_download, "download_type"),
         "hourly_parse": hourly_parse,
         "seven_day_parse_count": seven_day_parse.count(),
+        "protocol_version_distribution": get_protocol_version_distribution(now=now),
         "recent_audit_logs": [
             {
                 "actor_username": item.actor_username,

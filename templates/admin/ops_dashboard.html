@@ -88,6 +88,10 @@
         word-break: break-word;
     }
     .ops-table th { color: #6b7280; font-weight: 800; }
+    .ops-protocol { margin-top: 24px; padding-top: 18px; border-top: 1px solid #e5e7eb; }
+    .ops-protocol h2 { margin: 0 0 12px; font-size: 18px; }
+    .ops-protocol p { color: #6b7280; line-height: 1.7; }
+    .ops-protocol-version { display: inline-block; margin-right: 12px; }
     @media (max-width: 980px) {
         .ops-grid,
         .ops-panels { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -195,6 +199,35 @@
                     </tbody>
                 </table>
             </div>
+        </section>
+        <section class="ops-protocol" aria-labelledby="ops-protocol-title">
+            <h2 id="ops-protocol-title">客户端 protocol_version：最近 14 个 UTC 日</h2>
+            <p>按服务端接收日期统计已通过校验的失败/取消遥测事件次数，包含今日（尚未结束），不是独立客户端数。
+                版本由客户端上报，来自页面协议常量，不等同于活跃 Worker 版本，不用于授权；不覆盖成功下载或未上报客户端，不能据此判定旧 Worker 已消失。</p>
+            <p>仅保留当前缓存中的样本，不回填历史日志；缓存重启、淘汰或不可用可能导致缺失。14 天数据有缺口，不等于旧版本为零；无样本不代表当日没有旧版本客户端。</p>
+            {% if protocol_version_distribution.available %}
+                <p>有样本日期：{{ protocol_version_distribution.sample_days }}/14；接收事件：{{ protocol_version_distribution.total }}。</p>
+                <table class="ops-table">
+                    <thead><tr><th scope="col">日期（UTC）</th><th scope="col">采样量（事件）</th><th scope="col">版本分布</th></tr></thead>
+                    <tbody>
+                    {% for row in protocol_version_distribution.days %}
+                        <tr>
+                            <td>{{ row.date }}</td>
+                            <td>{{ row.total }}</td>
+                            <td>
+                                {% for item in row.versions %}
+                                    <span class="ops-protocol-version">v{{ item.version }}：{{ item.count }}</span>
+                                {% empty %}
+                                    无样本
+                                {% endfor %}
+                            </td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <p role="status">协议版本遥测缓存暂不可用，无法读取分布。</p>
+            {% endif %}
         </section>
     </div>
 </div>

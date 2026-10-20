@@ -2,8 +2,12 @@ import ipaddress
 import json
 import logging
 import re
+from datetime import datetime, time, timedelta, timezone as datetime_timezone
+from math import ceil
 
 from django.conf import settings
+from django.core.cache import cache
+from django.utils import timezone
 
 from .platforms.douyin_media_policy import DOUYIN_REVIEWED_EXACT_MEDIA_HOSTS
 from .platforms.xhs_tiantian_media_policy import XHS_TIANTIAN_VIDEO_HOSTS
@@ -16,6 +20,8 @@ from .platforms.xiaohongshu import (
 logger = logging.getLogger("xhs_download.browser_streaming_telemetry")
 
 SCHEMA_VERSION = 1
+MAX_PROTOCOL_VERSION = 100
+PROTOCOL_DISTRIBUTION_DAYS = 14
 DEFAULT_MAX_PAYLOAD_BYTES = 8192
 DEFAULT_RATE_LIMIT_PER_MINUTE = 30
 MAX_MEDIA_BYTES = 2 * 1024 * 1024 * 1024
@@ -369,7 +375,7 @@ def validate_browser_streaming_telemetry(payload):
         ),
         "worker_waiting": _boolean(payload["worker_waiting"]),
         "worker_installing": _boolean(payload["worker_installing"]),
-        "protocol_version": _bounded_integer(payload["protocol_version"], 100),
+        "protocol_version": _bounded_integer(payload["protocol_version"], MAX_PROTOCOL_VERSION),
         "browser_family": _fixed_string(payload["browser_family"], ALLOWED_BROWSER_FAMILIES),
     }
     if optional_fields:
@@ -435,6 +441,77 @@ def validate_browser_streaming_telemetry(payload):
     return normalized
 
 
+def _protocol_version_key(day, version):
+    return f"browser-streaming:protocol-version:{day.isoformat()}:{version}"
+
+
+def record_protocol_version(protocol_version):
+    if type(protocol_version) is not int or not 1 <= protocol_version <= MAX_PROTOCOL_VERSION:
+        return
+    now = timezone.now().astimezone(datetime_timezone.utc)
+    day = now.date()
+    expires_at = datetime.combine(
+        day + timedelta(days=PROTOCOL_DISTRIBUTION_DAYS),
+        time.min,
+        tzinfo=datetime_timezone.utc,
+    )
+    timeout = max(1, ceil((expires_at - now).total_seconds()))
+    key = _protocol_version_key(day, protocol_version)
+    try:
+        for attempt in range(2):
+            if cache.add(key, 1, timeout=timeout):
+                return
+            try:
+                cache.incr(key)
+                return
+            except ValueError:
+                # Retry once if eviction occurred between add and incr.
+                if attempt:
+                    raise
+    except Exception:
+        logger.warning(
+            "browser_streaming_protocol_count_unavailable",
+            extra={"event": "browser_streaming_protocol_count_unavailable"},
+        )
+
+
+def get_protocol_version_distribution(*, now=None):
+    today = (now or timezone.now()).astimezone(datetime_timezone.utc).date()
+    days = [today - timedelta(days=offset) for offset in range(PROTOCOL_DISTRIBUTION_DAYS)]
+    keys = [
+        _protocol_version_key(day, version)
+        for day in days
+        for version in range(1, MAX_PROTOCOL_VERSION + 1)
+    ]
+    try:
+        counts = cache.get_many(keys)
+    except Exception:
+        logger.warning(
+            "browser_streaming_protocol_distribution_unavailable",
+            extra={"event": "browser_streaming_protocol_distribution_unavailable"},
+        )
+        return {"available": False, "days": [], "sample_days": 0, "total": 0}
+
+    rows = []
+    for day in days:
+        versions = []
+        for version in range(1, MAX_PROTOCOL_VERSION + 1):
+            count = counts.get(_protocol_version_key(day, version), 0)
+            if type(count) is int and count > 0:
+                versions.append({"version": version, "count": count})
+        rows.append({
+            "date": day.isoformat(),
+            "versions": versions,
+            "total": sum(item["count"] for item in versions),
+        })
+    return {
+        "available": True,
+        "days": rows,
+        "sample_days": sum(bool(row["total"]) for row in rows),
+        "total": sum(row["total"] for row in rows),
+    }
+
+
 def log_browser_streaming_telemetry(payload):
     event = {"client_observed": True, **payload}
     serialized = json.dumps(event, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
@@ -449,3 +526,4 @@ def log_browser_streaming_telemetry(payload):
             "error_type": payload["failure_class"],
         },
     )
+    record_protocol_version(payload["protocol_version"])

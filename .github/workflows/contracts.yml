@@ -1,0 +1,52 @@
+name: Product Contracts
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: product-contracts-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DJANGO_ENV: development
+      DJANGO_SECRET_KEY: isolated-contract-tests-not-for-production
+      DJANGO_DATABASE_URL: "sqlite::memory:"
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,testserver
+      DJANGO_SECURE_SSL_REDIRECT: "False"
+      THIRD_PARTY_PROVIDER_ENABLED: "False"
+      THIRD_PARTY_PUBLIC_ACCESS_ENABLED: "False"
+      ULTRA_HD_PROVIDER_ENABLED: "False"
+      KUKUTOOL_PROVIDER_ENABLED: "False"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install existing application dependencies and isolated Nginx
+        run: |
+          python -m pip install -r requirements.txt
+          sudo apt-get update
+          sudo apt-get install --yes nginx
+      - name: Ensure no local environment is loaded
+        run: test ! -e .env
+      - name: Merge guard event replays
+        run: python -m unittest discover -s scripts/tests -p 'test_merge_guards.py' -v
+      - name: HTTP contracts
+        run: python manage.py test contracts --noinput
+      - name: Frontend controller contracts
+        run: node --test contracts/*.test.js

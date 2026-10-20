@@ -1,0 +1,26 @@
+name: Protected Files
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled, unlabeled, edited, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+
+jobs:
+  protected-files:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Read only trusted main rules
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: main
+          persist-credentials: false
+      - name: Classify paths and enforce Human approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/protected_files.py
