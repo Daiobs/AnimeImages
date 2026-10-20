@@ -107,6 +107,8 @@
                     {% if row.image_items %}<span>图片 {{ row.image_items|length }}</span>{% endif %}
                 </div>
 
+                {% include "partials/result_caption.html" with display_description=row.display_description display_topics=row.display_topics only %}
+
                 {% if row.provider_notice %}
                     <div class="alert alert-info mb-3" data-batch-provider-notice>
                         <i class="bi bi-info-circle me-1"></i>

@@ -458,6 +458,40 @@ body {
     overflow-wrap: anywhere;
 }
 
+.result-caption {
+    min-width: 0;
+    margin-bottom: 16px;
+    color: var(--text-muted);
+    font-size: .9rem;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+}
+
+.result-caption > summary {
+    width: fit-content;
+    max-width: 100%;
+    cursor: pointer;
+}
+
+.result-caption-description {
+    margin-top: 8px;
+    white-space: pre-wrap;
+}
+
+.result-caption-topics {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    margin: 8px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.result-caption-topics > li {
+    min-width: 0;
+    max-width: 100%;
+}
+
 .download-actions {
     min-width: max-content;
 }

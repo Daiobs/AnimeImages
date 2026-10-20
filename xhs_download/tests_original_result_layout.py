@@ -30,6 +30,7 @@ class OriginalResultLayoutTests(SimpleTestCase):
 
     def test_real_provider_title_raw_evidence_and_original_header(self):
         result, context = self.context()
+        self.assertEqual(result.metadata['title'], '真实作品标题 #图文与视频')
         self.assertEqual(len(result.metadata['upstream_candidates']), 5)
         self.assertEqual(len(result.video_assets), 1)
         self.assertEqual(result.video_assets[0].url, BASE + 'original.mp4')
@@ -42,7 +43,9 @@ class OriginalResultLayoutTests(SimpleTestCase):
                     })
                     soup = BeautifulSoup(html, 'html.parser')
                     header = soup.select_one('.result-card-header')
-                    self.assertIn('真实作品标题 #图文与视频', header.get_text())
+                    self.assertIn('真实作品标题', header.get_text())
+                    self.assertNotIn('#图文与视频', header.get_text())
+                    self.assertEqual(soup.select_one('.result-caption-topics li').get_text(), '#图文与视频')
                     self.assertIn('抖音', header.get_text())
                     self.assertIn('1 个视频资源', header.get_text())
                     self.assertIsNotNone(header.select_one('#download-btn'))
@@ -81,7 +84,8 @@ class OriginalResultLayoutTests(SimpleTestCase):
                 'batch_download_allowed': True, 'batch_raw_links_allowed': staff,
             })
             soup = BeautifulSoup(html, 'html.parser')
-            self.assertIn('真实作品标题 #图文与视频', soup.select_one('.batch-result-title').get_text())
+            self.assertEqual(soup.select_one('.batch-result-title').get_text(), '真实作品标题')
+            self.assertEqual(soup.select_one('.result-caption-topics li').get_text(), '#图文与视频')
             self.assertIsNotNone(soup.select_one('[data-picker-download-all]'))
             self.assert_choices(soup, staff=staff)
             self.assert_absent_controls(html)
@@ -122,7 +126,9 @@ class OriginalResultLayoutTests(SimpleTestCase):
             candidate['work_label'] = 'Video'
         html = render_to_string('partials/xhs_results_region.html', context)
         soup = BeautifulSoup(html, 'html.parser')
-        self.assertIn('真实作品标题 #图文与视频', soup.select_one('.result-title').get_text())
+        self.assertIn('真实作品标题', soup.select_one('.result-title').get_text())
+        self.assertNotIn('#图文与视频', soup.select_one('.result-title').get_text())
+        self.assertEqual(soup.select_one('.result-caption-topics li').get_text(), '#图文与视频')
         self.assertIsNone(soup.select_one('.ytdlp-work'))
         self.assertEqual(len(soup.select('[data-picker-radio]')), 4)
 

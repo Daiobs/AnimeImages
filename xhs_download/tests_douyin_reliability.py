@@ -1143,7 +1143,11 @@ class DouyinDisplayMetadataTests(SimpleTestCase):
                 self.assertEqual(result.base_filename, f"douyin_{AWEME_ID}")
                 self.assertEqual(
                     build_result_display_context(result)["display_title"],
-                    "",
+                    result.base_filename,
+                )
+                self.assertEqual(
+                    build_result_display_context(result)["base_filename"],
+                    result.base_filename,
                 )
 
     def test_title_is_bounded_and_template_escaped_for_single_and_batch(self):

@@ -150,7 +150,7 @@ from .services.platforms.kukutool_generic import KukutoolGenericProvider
 from .services.platforms.douyin import DouyinAdapter
 from .services.platforms.douyin_providers import (
     DouyinTianTianJieXiProvider,
-    normalize_douyin_display_title,
+    douyin_caption_presentation,
 )
 from .services.platforms.xhs_preview import (
     XHS_PREVIEW_TOTAL_TIMEOUT_SECONDS,
@@ -3743,12 +3743,21 @@ def build_result_display_context(
     display_title = (
         " ".join(str(result_metadata.get("title") or "").split())[:200]
         if is_xhs_result
-        else (
-            normalize_douyin_display_title(result_metadata.get("title"))
-            if result.platform == "douyin"
-            else ""
-        )
+        else ""
     )
+    base_filename = result.base_filename
+    display_description = ""
+    display_topics = []
+    if result.platform == "douyin":
+        presentation = douyin_caption_presentation(
+            result_metadata.get("title") or result.base_filename,
+            result_metadata.get("description") or "",
+        )
+        display_title = presentation["title"]
+        display_description = presentation["description"]
+        display_topics = presentation["topics"]
+        if presentation["title_derived"] or display_topics:
+            base_filename = clean_filename(display_title) if display_title else "douyin"
     display_author = (
         " ".join(str(result_metadata.get("author_name") or "").split())[:80]
         if is_xhs_result
@@ -3782,8 +3791,10 @@ def build_result_display_context(
             result_metadata,
         ),
         "post_type": result.post_type,
-        "base_filename": result.base_filename,
+        "base_filename": base_filename,
         "display_title": display_title,
+        "display_description": display_description,
+        "display_topics": display_topics,
         "display_author": display_author,
         "note_id": note_id,
         "metadata_source": metadata_source,
@@ -4337,6 +4348,8 @@ def apply_search_result_to_context(
     context["post_type"] = display_context["post_type"]
     context["base_filename"] = display_context["base_filename"]
     context["display_title"] = display_context["display_title"]
+    context["display_description"] = display_context.get("display_description", "")
+    context["display_topics"] = display_context.get("display_topics", [])
     context["display_author"] = display_context["display_author"]
     context["note_id"] = display_context["note_id"]
     context["metadata_source"] = display_context["metadata_source"]
@@ -4433,6 +4446,8 @@ def build_search_results_context(request, platform_key="home"):
         "error_message": None,
         "base_filename": "",
         "display_title": "",
+        "display_description": "",
+        "display_topics": [],
         "display_author": "",
         "note_id": "",
         "metadata_source": "",

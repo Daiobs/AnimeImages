@@ -94,6 +94,7 @@
         </div>
 
         <div class="card-body note-preview-bg">
+            {% include "partials/result_caption.html" %}
             {% if ytdlp_picker %}{% include "partials/ytdlp_result_picker.html" %}{% endif %}
             {% include "partials/upstream_candidates.html" %}
             {% if is_mobile_request %}
