@@ -3919,9 +3919,16 @@ class DouyinAdapterTests(SimpleTestCase):
 
 
 class BilibiliAdapterTests(SimpleTestCase):
+    def setUp(self):
+        self.bootstrap_response = requests.Response()
+        self.bootstrap_response.status_code = 200
+        self.bootstrap_response.url = "https://www.bilibili.com/"
+        self.bootstrap_response._content = b""
+        self.bootstrap_response._content_consumed = True
+
     @patch("xhs_download.services.platforms.bilibili.request_get_with_retry")
     def test_parse_url_returns_video_asset_from_public_apis(self, mock_get):
-        view_response = Mock()
+        view_response = Mock(cookies=requests.cookies.RequestsCookieJar(), raw=None)
         view_response.json.return_value = {
             "code": 0,
             "data": {
@@ -3935,7 +3942,7 @@ class BilibiliAdapterTests(SimpleTestCase):
         }
         view_response.close = Mock()
 
-        play_response = Mock()
+        play_response = Mock(cookies=requests.cookies.RequestsCookieJar(), raw=None)
         play_response.json.return_value = {
             "code": 0,
             "data": {
@@ -3950,7 +3957,7 @@ class BilibiliAdapterTests(SimpleTestCase):
             },
         }
         play_response.close = Mock()
-        mock_get.side_effect = [view_response, play_response]
+        mock_get.side_effect = [self.bootstrap_response, view_response, play_response]
 
         result = BilibiliAdapter().parse_url("https://www.bilibili.com/video/BV1xx411c7mD/")
 
@@ -3964,12 +3971,12 @@ class BilibiliAdapterTests(SimpleTestCase):
         )
         self.assertEqual(result.video_assets[0].size_bytes, 200)
         self.assertEqual(result.video_assets[0].cover_url, "https://i0.hdslb.com/bfs/archive/cover.jpg")
-        self.assertIn("x/web-interface/view?bvid=BV1xx411c7mD", mock_get.call_args_list[0].args[0])
-        self.assertIn("x/player/playurl?", mock_get.call_args_list[1].args[0])
+        self.assertIn("x/web-interface/view?bvid=BV1xx411c7mD", mock_get.call_args_list[1].args[0])
+        self.assertIn("x/player/playurl?", mock_get.call_args_list[2].args[0])
 
     @patch("xhs_download.services.platforms.bilibili.requests.get")
     def test_resolve_video_page_follows_b23_redirect_without_fetching_body(self, mock_get):
-        resolve_response = Mock()
+        resolve_response = Mock(cookies=requests.cookies.RequestsCookieJar())
         resolve_response.status_code = 302
         resolve_response.url = "https://b23.tv/abc123"
         resolve_response.headers = {
@@ -3988,14 +3995,14 @@ class BilibiliAdapterTests(SimpleTestCase):
         resolve_response.close.assert_called_once()
 
     def test_parse_url_resolves_b23_short_link(self):
-        resolve_response = Mock()
+        resolve_response = Mock(cookies=requests.cookies.RequestsCookieJar())
         resolve_response.status_code = 302
         resolve_response.url = "https://b23.tv/abc123"
         resolve_response.headers = {
             "Location": "https://www.bilibili.com/video/BV1xx411c7mD/?p=1",
         }
         resolve_response.close = Mock()
-        view_response = Mock()
+        view_response = Mock(cookies=requests.cookies.RequestsCookieJar(), raw=None)
         view_response.json.return_value = {
             "code": 0,
             "data": {
@@ -4009,7 +4016,7 @@ class BilibiliAdapterTests(SimpleTestCase):
         }
         view_response.close = Mock()
 
-        play_response = Mock()
+        play_response = Mock(cookies=requests.cookies.RequestsCookieJar(), raw=None)
         play_response.json.return_value = {
             "code": 0,
             "data": {
@@ -4023,18 +4030,18 @@ class BilibiliAdapterTests(SimpleTestCase):
             patch("xhs_download.services.platforms.bilibili.requests.get", return_value=resolve_response) as mock_redirect_get,
             patch("xhs_download.services.platforms.bilibili.request_get_with_retry") as mock_get,
         ):
-            mock_get.side_effect = [view_response, play_response]
+            mock_get.side_effect = [self.bootstrap_response, view_response, play_response]
             result = BilibiliAdapter().parse_url("https://b23.tv/abc123")
 
         self.assertEqual(result.video_assets[0].url, "https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/video.mp4")
         self.assertEqual(result.video_assets[0].cover_url, "https://i0.hdslb.com/bfs/archive/cover.jpg")
         self.assertEqual(mock_redirect_get.call_args.args[0], "https://b23.tv/abc123")
-        self.assertIn("x/web-interface/view?bvid=BV1xx411c7mD", mock_get.call_args_list[0].args[0])
-        self.assertIn("fnval=0", mock_get.call_args_list[1].args[0])
+        self.assertIn("x/web-interface/view?bvid=BV1xx411c7mD", mock_get.call_args_list[1].args[0])
+        self.assertIn("fnval=0", mock_get.call_args_list[2].args[0])
 
     @patch("xhs_download.services.platforms.bilibili.request_get_with_retry")
     def test_parse_url_reports_dash_as_incomplete_when_durl_is_missing(self, mock_get):
-        view_response = Mock()
+        view_response = Mock(cookies=requests.cookies.RequestsCookieJar(), raw=None)
         view_response.json.return_value = {
             "code": 0,
             "data": {
@@ -4048,7 +4055,7 @@ class BilibiliAdapterTests(SimpleTestCase):
         }
         view_response.close = Mock()
 
-        legacy_play_response = Mock()
+        legacy_play_response = Mock(cookies=requests.cookies.RequestsCookieJar(), raw=None)
         legacy_play_response.json.return_value = {
             "code": 0,
             "data": {
@@ -4058,7 +4065,7 @@ class BilibiliAdapterTests(SimpleTestCase):
         }
         legacy_play_response.close = Mock()
 
-        dash_play_response = Mock()
+        dash_play_response = Mock(cookies=requests.cookies.RequestsCookieJar(), raw=None)
         dash_play_response.json.return_value = {
             "code": 0,
             "data": {
@@ -4086,7 +4093,7 @@ class BilibiliAdapterTests(SimpleTestCase):
             },
         }
         dash_play_response.close = Mock()
-        mock_get.side_effect = [view_response, legacy_play_response, dash_play_response]
+        mock_get.side_effect = [self.bootstrap_response, view_response, legacy_play_response, dash_play_response]
 
         with self.assertRaises(BilibiliIncompleteMediaError) as raised:
             BilibiliAdapter().parse_url("https://www.bilibili.com/video/BV1xx411c7mD/")
@@ -4095,12 +4102,12 @@ class BilibiliAdapterTests(SimpleTestCase):
         self.assertEqual(raised.exception.formats[1]["quality_label"], "1080p")
         self.assertEqual(raised.exception.formats[1]["size_bytes"], 80_000_000)
         self.assertTrue(raised.exception.formats[1]["requires_merge"])
-        self.assertIn("fnval=0", mock_get.call_args_list[1].args[0])
-        self.assertIn("fnval=16", mock_get.call_args_list[2].args[0])
+        self.assertIn("fnval=0", mock_get.call_args_list[2].args[0])
+        self.assertIn("fnval=16", mock_get.call_args_list[3].args[0])
 
     @patch("xhs_download.services.platforms.bilibili.request_get_with_retry")
     def test_parse_url_reports_api_timeout_as_provider_timeout(self, mock_get):
-        mock_get.side_effect = requests.ReadTimeout("slow")
+        mock_get.side_effect = [self.bootstrap_response, requests.ReadTimeout("slow")]
 
         with self.assertRaises(XhsProviderTimeoutError) as error:
             BilibiliAdapter().parse_url("https://www.bilibili.com/video/BV1xx411c7mD/")
@@ -4109,7 +4116,7 @@ class BilibiliAdapterTests(SimpleTestCase):
 
     @patch("xhs_download.services.platforms.bilibili.request_get_with_retry")
     def test_parse_url_encodes_unicode_referer_for_api_headers(self, mock_get):
-        view_response = Mock()
+        view_response = Mock(cookies=requests.cookies.RequestsCookieJar(), raw=None)
         view_response.json.return_value = {
             "code": 0,
             "data": {
@@ -4123,7 +4130,7 @@ class BilibiliAdapterTests(SimpleTestCase):
         }
         view_response.close = Mock()
 
-        play_response = Mock()
+        play_response = Mock(cookies=requests.cookies.RequestsCookieJar(), raw=None)
         play_response.json.return_value = {
             "code": 0,
             "data": {
@@ -4137,17 +4144,17 @@ class BilibiliAdapterTests(SimpleTestCase):
             },
         }
         play_response.close = Mock()
-        mock_get.side_effect = [view_response, play_response]
+        mock_get.side_effect = [self.bootstrap_response, view_response, play_response]
 
         BilibiliAdapter().parse_url(
             "https://www.bilibili.com/video/BV1REjd6xEZf/?title_encode=智能体副业还能做吗？2026 年真实情况"
         )
 
-        for call in mock_get.call_args_list:
+        for call in mock_get.call_args_list[1:]:
             referer = call.kwargs["headers"]["Referer"]
             self.assertNotIn("智能体", referer)
             referer.encode("latin-1")
-        self.assertIn("%E6%99%BA%E8%83%BD%E4%BD%93", mock_get.call_args_list[0].kwargs["headers"]["Referer"])
+        self.assertIn("%E6%99%BA%E8%83%BD%E4%BD%93", mock_get.call_args_list[1].kwargs["headers"]["Referer"])
 
     def test_get_media_headers_uses_bilibili_headers_for_bilibili_media(self):
         self.assertIs(

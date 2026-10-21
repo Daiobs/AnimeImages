@@ -1,3 +1,4 @@
+import logging
 import re
 import time
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
@@ -8,6 +9,7 @@ from requests.utils import requote_uri
 from ..assets import MediaAsset, ParseResult
 from ..candidates import MediaCandidate, dedupe_candidates
 from ..common import (
+    XhsDownloadError,
     XhsParseError,
     XhsProviderTimeoutError,
     clean_filename,
@@ -20,6 +22,8 @@ from .base import BasePlatformAdapter, PlatformCapabilities, ProviderPolicy
 
 BILIBILI_PAGE_HOST_SUFFIXES = ("bilibili.com", "b23.tv")
 BILIBILI_MEDIA_HOST_SUFFIXES = ("bilivideo.com", "bilivideo.cn", "hdslb.com")
+ANONYMOUS_COOKIE_NAMES = frozenset({"buvid3", "buvid4", "b_nut"})
+logger = logging.getLogger(__name__)
 BILIBILI_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -109,21 +113,76 @@ def bilibili_request_timeout(deadline_monotonic, fallback):
     return min(float(fallback), max(0.001, remaining))
 
 
+def retain_anonymous_cookies(response, cookies):
+    updated = cookies.copy()
+    # Apply Set-Cookie deletion semantics, which response.cookies omits.
+    requests.cookies.extract_cookies_to_jar(updated, response.request, response.raw)
+    updated.update(response.cookies)
+    cookies.clear()
+    for cookie in updated:
+        if (cookie.name in ANONYMOUS_COOKIE_NAMES
+                and cookie.domain.lstrip(".").lower() in {
+                    "bilibili.com", "www.bilibili.com", "api.bilibili.com"}
+                and len(cookie.value or "") <= 4096):
+            cookies.set_cookie(cookie)
+    cookies.clear_expired_cookies()
+
+
+def anonymous_cookie_context(*, deadline_monotonic=None):
+    cookies = requests.cookies.RequestsCookieJar()
+    try:
+        response = request_get_with_retry(
+            "https://www.bilibili.com/",
+            headers={**BILIBILI_HEADERS, "Accept": "text/html"},
+            timeout=bilibili_request_timeout(deadline_monotonic, 3),
+            retries=1,
+            stream=True,
+            max_redirects=0,
+            non_retry_statuses=(412, 429),
+            allowed_final_host_suffixes=("bilibili.com",),
+            final_url_message="哔哩哔哩匿名初始化跳转到了不允许的域名",
+            deadline_monotonic=deadline_monotonic,
+        )
+    except requests.exceptions.SSLError:
+        raise
+    except (XhsDownloadError, requests.Timeout, requests.ConnectionError,
+            requests.TooManyRedirects) as error:
+        # Optional initialization must not remove the existing cookie-free path.
+        logger.info("bilibili_anonymous_context_unavailable error_type=%s http_status=%s",
+                    type(error).__name__, getattr(error, "http_status", None))
+        return cookies
+    try:
+        retain_anonymous_cookies(response, cookies)
+    finally:
+        response.close()
+    logger.info("bilibili_anonymous_context_ready cookie_count=%s", len(cookies))
+    return cookies
+
+
 def api_get_json(
     url,
     params,
     referer="https://www.bilibili.com/",
     *,
     deadline_monotonic=None,
+    cookies=None,
 ):
     query = urlencode({key: value for key, value in params.items() if value is not None})
     request_url = f"{url}?{query}" if query else url
+    headers = {**BILIBILI_HEADERS, "Referer": requote_uri(referer)}
+    if cookies is not None:
+        cookie_header = requests.cookies.get_cookie_header(
+            cookies, requests.Request("GET", request_url).prepare())
+        if cookie_header:
+            headers["Cookie"] = cookie_header
     try:
         response = request_get_with_retry(
             request_url,
-            headers={**BILIBILI_HEADERS, "Referer": requote_uri(referer)},
+            headers=headers,
             timeout=bilibili_request_timeout(deadline_monotonic, 15),
             retries=2,
+            # An explicit Cookie header is scoped to this exact API request.
+            max_redirects=0 if "Cookie" in headers else 5,
             non_retry_statuses=(412, 429),
             allowed_final_host_suffixes=("bilibili.com",),
             final_url_message="哔哩哔哩接口跳转到了不允许的域名",
@@ -131,9 +190,16 @@ def api_get_json(
         )
     except requests.exceptions.SSLError:
         raise
+    except XhsDownloadError as error:
+        stage = "view" if url.endswith("/view") else "playurl" if url.endswith("/playurl") else "api"
+        logger.info("bilibili_native_http_failure stage=%s http_status=%s",
+                    stage, getattr(error, "http_status", None))
+        raise
     except (requests.Timeout, requests.ConnectionError) as error:
         raise XhsProviderTimeoutError("哔哩哔哩接口请求超时，请稍后重试") from error
     try:
+        if cookies is not None:
+            retain_anonymous_cookies(response, cookies)
         data = response.json()
     finally:
         response.close()
@@ -320,11 +386,14 @@ class BilibiliAdapter(BasePlatformAdapter):
         bvid = extract_bvid(page_url)
         aid = extract_aid(page_url)
         page_number = extract_page_number(page_url)
+        # Per-parse anonymous context; it is never attached to media or cached.
+        cookies = anonymous_cookie_context(deadline_monotonic=deadline or None)
         view_data = api_get_json(
             "https://api.bilibili.com/x/web-interface/view",
             build_view_params(bvid, aid),
             referer=page_url,
             deadline_monotonic=deadline or None,
+            cookies=cookies,
         )
         page = choose_page(view_data, page_number)
         if not page.get("cid"):
@@ -335,6 +404,7 @@ class BilibiliAdapter(BasePlatformAdapter):
             build_play_params(view_data, page),
             referer=page_url,
             deadline_monotonic=deadline or None,
+            cookies=cookies,
         )
         video_items = get_play_items(play_data)
         if not video_items:
@@ -343,6 +413,7 @@ class BilibiliAdapter(BasePlatformAdapter):
                 build_dash_play_params(view_data, page),
                 referer=page_url,
                 deadline_monotonic=deadline or None,
+                cookies=cookies,
             )
             video_items = get_play_items(play_data)
         if not video_items:

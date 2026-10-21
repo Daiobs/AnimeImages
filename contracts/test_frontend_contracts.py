@@ -64,6 +64,9 @@ class FrontendHttpContracts(TransactionTestCase):
                 ]}],
             }}).encode()
             response.headers["Content-Type"] = "application/json"
+        elif request.url == "https://www.bilibili.com/":
+            body = b""
+            response.headers["Content-Type"] = "text/html"
         elif parsed.path == "/x/web-interface/view":
             body = json.dumps({"code": 0, "data": {
                 "bvid": "BV1xx411c7mD", "aid": 170001, "title": "Contract short title",
