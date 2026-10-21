@@ -112,6 +112,8 @@ class ProductionShapeTransport:
 }})
 class BilibiliWbiPublicEntryTests(TestCase):
     def setUp(self):
+        bilibili.clear_anonymous_context_cache()
+        self.addCleanup(bilibili.clear_anonymous_context_cache)
         cache.clear()
         self.addCleanup(cache.clear)
 
@@ -145,6 +147,7 @@ class BilibiliWbiPublicEntryTests(TestCase):
             [],
         ):
             with self.subTest(payload=payload):
+                bilibili.clear_anonymous_context_cache()
                 transport = ProductionShapeTransport()
                 transport.nav_payload = payload
                 transport.legacy_status = 200
@@ -188,6 +191,7 @@ class BilibiliWbiPublicEntryTests(TestCase):
     def test_wbi_failure_never_retries_legacy_or_accepts_nav_only_code(self):
         for status, code, error in ((412, -412, XhsDownloadError), (200, -101, XhsParseError)):
             with self.subTest(status=status, code=code):
+                bilibili.clear_anonymous_context_cache()
                 transport = ProductionShapeTransport()
                 transport.wbi_status, transport.wbi_code = status, code
                 with offline_requests(transport.send), self.assertRaises(error):
