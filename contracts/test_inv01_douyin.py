@@ -275,3 +275,20 @@ class DouyinUltraHTTPContracts(TransactionTestCase):
         self.assertTrue(body["has_results"])
         self.assertIn(NATIVE_TITLE, body["html"])
         self.assertEqual(self.transport.services(), [])
+
+    def test_inv01_kukutool_env_switch_keeps_ultra_on_configured_tiantian(self):
+        # A1: KUKUTOOL_PROVIDER_ENABLED=False turns off KuKuTool alone (Human decision 2026-10-20).
+        with override_settings(KUKUTOOL_PROVIDER_ENABLED=False):
+            offered = self.douyin_page_offers_ultra()
+            body, _ = self.parse()
+        self.assertTrue(offered, "A1: the KuKuTool switch does not withdraw ultra while TianTian can run")
+        self.assertIn(ULTRA_TITLE, body["html"], "A1: a Douyin link still runs the configured order")
+        self.assertEqual(self.transport.services(), ["tiantianjiexi"])
+
+    def test_inv01_kukutool_env_switch_skips_kukutool_in_the_configured_order(self):
+        with override_settings(KUKUTOOL_PROVIDER_ENABLED=False,
+                               DOUYIN_ULTRA_PROVIDER_ORDER="kukutool,tiantianjiexi,native"):
+            body, _ = self.parse()
+        self.assertEqual(self.transport.services(), ["tiantianjiexi"],
+                         "a switched-off KuKuTool is never asked; the next configured service runs")
+        self.assertIn(ULTRA_TITLE, body["html"])

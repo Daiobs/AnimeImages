@@ -3,8 +3,9 @@
 The confirmed text is in [product-invariants.md](../docs/product-invariants.md).
 These tests protect INV-01 through INV-09. Base for the recorded counterchecks:
 `5afbab0d5a1dff19aa3b3a71e7a2b94ec7f3b0ae`; INV-01 (added by T12) used
-`f918b598a671c8715d519c4103b14cae28502dee`, and its ultra-entry cases used
-`4877818ca02a43006d61ba46022f0e17b709bdf3`.
+`f918b598a671c8715d519c4103b14cae28502dee`, its ultra-entry cases used
+`4877818ca02a43006d61ba46022f0e17b709bdf3`, and its KuKuTool-switch cases used
+`ddf2f80f39130d9ea634b8fa9d41982b16240061`.
 
 Use the existing application interpreter, in a checkout without `.env`:
 
@@ -34,8 +35,9 @@ in CI is a failure. `CONTRACT_NGINX_BINARY` can point to an existing executable.
 - INV-01 also checks the ultra entry on the public Douyin page and a Douyin parse:
   with KuKuTool switched off in admin, ultra stays offered while TianTian in the
   configured order is enabled, and is not offered when no configured service is.
-  The `KUKUTOOL_PROVIDER_ENABLED` environment switch is still part of the Douyin
-  ultra capability gate in `provider_access.py`; that gate is not covered here.
+  The `KUKUTOOL_PROVIDER_ENABLED` environment switch turns off KuKuTool only: with
+  it off, the page still offers ultra and the parse asks TianTian, and KuKuTool is
+  never asked, even when it is first in the configured order.
 - INV-02 uses TianTian through the Bilibili fallback as the representative recovery
   path. Timeout/disconnect are simulated after a POST send; they do not prove a remote
   terminal state. Recovery uses natural, bounded expiry without admin intervention.
@@ -62,6 +64,7 @@ not syntax/import errors. The Nginx countercheck is also an executable CI test.
 | --- | --- | --- |
 | INV-01 | Unchanged `f918b59` (Native after the preferred window; order rewritten) | Native first asked at 1.15 s, after the 1.0 s budget; order `kukutool,tiantianjiexi` called only TianTian |
 | INV-01 (ultra entry) | Unchanged `4877818` (ultra entry follows KuKuTool health only) | KuKuTool off in admin, TianTian configured: Douyin page `data-ultra-hd-available="false"`; `ultra_hd=1` parse showed only Native and never asked TianTian |
+| INV-01 (KuKuTool switch) | Unchanged `ddf2f80` (`KUKUTOOL_PROVIDER_ENABLED` inside the Douyin ultra capability gate) | Switch off, TianTian configured: Douyin page did not offer ultra; with order `kukutool,tiantianjiexi,native` the `ultra_hd=1` parse asked no service (`[]`) |
 | INV-02 | Failure cache retained for 24 hours | Failure, timeout and disconnect could not recover into usable public HTML |
 | INV-03 | Choose lowest default; force bound selections to Blob; require Worker v4 | Wrong default; no SW navigation; incompatible legacy registration |
 | INV-04 | Premature saved copy; attachment `DENY` instead of `SAMEORIGIN` | Controller rejects premature completion; both UA response checks reject framing |
