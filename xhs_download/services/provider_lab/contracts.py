@@ -109,7 +109,7 @@ def safe_error_detail(detail):
     if not isinstance(detail, str):
         return ""
     if detail in ERROR_DETAILS or re.fullmatch(
-        r"SERVICE_BUSINESS_CODE_-?\d{1,3}|"
+        r"SERVICE_BUSINESS_CODE_-?[0-9]{1,5}|"
         r"SERVICE_JSON_(?:AUTH|PARSE|UNKNOWN)_HTTP_(?:[1-5]\d{2}|UNKNOWN)_TYPE_(?:JSON|HTML|TEXT|OTHER|MISSING)",
         detail, flags=re.ASCII,
     ):

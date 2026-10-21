@@ -336,9 +336,11 @@ class BilibiliFallbackDiagnosticHTTPTests(TestCase):
             pk=1, third_party_mode="public",
             third_party_allowed_public_platforms=subject.PUBLIC_FALLBACK_RULE,
         )
-        for kind, expected in (("http", "SERVICE_HTTP_503"),
-                               ("json", "SERVICE_INVALID_JSON"),
-                               ("business", "SERVICE_BUSINESS_CODE_502")):
+        for kind, code, expected in (("http", 502, "SERVICE_HTTP_503"),
+                                     ("json", 502, "SERVICE_INVALID_JSON"),
+                                     ("business", 502, "SERVICE_BUSINESS_CODE_502"),
+                                     ("business", 1001, "SERVICE_BUSINESS_CODE_1001"),
+                                     ("business", -99999, "SERVICE_BUSINESS_CODE_-99999")):
             with self.subTest(kind=kind), TemporaryDirectory() as directory:
                 cache.clear()
                 transport = OfflineTransport()
@@ -349,7 +351,7 @@ class BilibiliFallbackDiagnosticHTTPTests(TestCase):
                         return transport.send(request, **kwargs)
                     service_calls.append(request.method)
                     response = json_response(request, {
-                        "code": 502, "message": "private-response token=never-log-this",
+                        "code": code, "message": "private-response token=never-log-this",
                     }, status=503 if kind == "http" else 200)
                     if kind == "json":
                         response._content = b"<html>private-response token=never-log-this</html>"

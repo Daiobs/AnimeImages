@@ -309,7 +309,7 @@ def ensure_api_success(payload):
         raise TianTianJieXiRateLimitError("天天解析调用额度或频率受限")
     code = str(status_value) if type(status_value) in (int, str) else ""
     detail = (f"SERVICE_BUSINESS_CODE_{int(code)}"
-              if re.fullmatch(r"-?[0-9]{1,3}", code)
+              if re.fullmatch(r"-?[0-9]{1,5}", code)
               else "SERVICE_BUSINESS_CODE_UNKNOWN")
     raise TianTianJieXiApiError(message or "天天解析未返回可用媒体资源", diagnostic_detail=detail)
 
