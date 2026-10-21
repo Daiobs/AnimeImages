@@ -152,6 +152,7 @@ from .services.platforms.kukutool_generic import KukutoolGenericProvider
 from .services.platforms.douyin import DouyinAdapter
 from .services.platforms.douyin_providers import (
     DouyinTianTianJieXiProvider,
+    configured_douyin_services,
     douyin_caption_presentation,
 )
 from .services.platforms.xhs_preview import (
@@ -194,6 +195,7 @@ from .services.provider_strategy import (
     build_download_strategy_matrix,
 )
 from .services.provider_runtime_config import runtime_float
+from .services.provider_settings import get_platform_provider_settings
 from .services.provider_health_tests import (
     PROVIDER_HEALTH_TESTS,
     provider_health_context_from_request,
@@ -523,6 +525,19 @@ def request_flag(value):
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def douyin_ultra_service_is_usable():
+    # A1: ultra is offered while any service in the configured order can run,
+    # not only while KuKuTool is healthy; Native runs beside it (INV-01).
+    provider_settings = get_platform_provider_settings("douyin")
+    for name in configured_douyin_services(provider_settings.provider_order):
+        if name == "kukutool":
+            if get_kukutool_provider_health()["available"]:
+                return True
+        elif provider_settings.provider_is_enabled(name):
+            return True
+    return False
+
+
 def ultra_hd_is_available(request=None, platform_id=""):
     normalized_platform_id = str(platform_id or "").strip().lower()
     douyin_access_allowed = provider_is_allowed_for_request(
@@ -543,8 +558,7 @@ def ultra_hd_is_available(request=None, platform_id=""):
         return xhs_available
     if not douyin_access_allowed:
         return xhs_available if not normalized_platform_id else False
-    health = get_kukutool_provider_health()
-    douyin_available = bool(health["available"])
+    douyin_available = douyin_ultra_service_is_usable()
     if normalized_platform_id in {"douyin", "tiktok"}:
         return douyin_available
     return bool(douyin_available or xhs_available)

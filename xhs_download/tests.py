@@ -244,6 +244,8 @@ from .services.platforms.xiaohongshu import is_xhs_note_image_candidate
 from .services.platforms.douyin_kukutool import (
     DouyinKukuToolProvider,
     build_kukutool_cache_key,
+    build_kukutool_circuit_open_key,
+    get_kukutool_provider_health,
 )
 from .services.platforms.kukutool_generic import (
     build_failure_cache_key as build_generic_kukutool_failure_cache_key,
@@ -11399,6 +11401,71 @@ class ProviderSettingsAdminViewTests(TestCase):
 
         request.user = Mock(is_active=True, is_staff=True)
         self.assertTrue(ultra_hd_is_available(request))
+
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        ULTRA_HD_PUBLIC_ACCESS_ENABLED=False,
+        KUKUTOOL_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="fixture-phone",
+        TIANTIANJIEXI_PASSWORD="fixture-password",
+    )
+    @patch("xhs_download.views.get_kukutool_provider_health")
+    def test_douyin_ultra_follows_the_configured_services_not_kukutool_alone(self, mock_health):
+        setting = ProviderRuntimeSetting.load()
+        setting.douyin_ultra_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["douyin_ultra_mode", "updated_at"])
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=True, is_staff=True)
+
+        # (configured order, TianTian enabled, KuKuTool healthy, ultra offered)
+        for order, tiantian, kukutool, offered in (
+            ("tiantianjiexi,kukutool,native", True, False, True),
+            ("tiantianjiexi,kukutool,native", False, True, True),
+            ("tiantianjiexi,kukutool,native", False, False, False),
+            # A1: only services in the configured order count.
+            ("kukutool,native", True, False, False),
+            ("ultra_race,native", True, False, True),
+        ):
+            mock_health.return_value = {"available": kukutool}
+            with self.subTest(order=order, tiantian=tiantian, kukutool=kukutool), override_settings(
+                DOUYIN_ULTRA_PROVIDER_ORDER=order, TIANTIANJIEXI_PROVIDER_ENABLED=tiantian,
+            ):
+                self.assertIs(ultra_hd_is_available(request, "douyin"), offered)
+
+        # The access gate in front of the services is unchanged.
+        request.user = Mock(is_active=False, is_staff=False)
+        with override_settings(TIANTIANJIEXI_PROVIDER_ENABLED=True):
+            self.assertFalse(ultra_hd_is_available(request, "douyin"))
+
+    @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        ULTRA_HD_PUBLIC_ACCESS_ENABLED=False,
+        KUKUTOOL_PROVIDER_ENABLED=True,
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="fixture-phone",
+        TIANTIANJIEXI_PASSWORD="fixture-password",
+    )
+    def test_open_kukutool_circuit_keeps_douyin_ultra_on_configured_tiantian(self):
+        setting = ProviderRuntimeSetting.load()
+        setting.douyin_ultra_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["douyin_ultra_mode", "updated_at"])
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=True, is_staff=True)
+        cache.set(build_kukutool_circuit_open_key(), int(time.time()) + 120, timeout=120)
+        self.addCleanup(cache.delete, build_kukutool_circuit_open_key())
+
+        with patch.dict(
+            "xhs_download.services.platforms.douyin_kukutool.KUKUTOOL_RUNTIME_STATE",
+            checked=True, available=True, node_binary="/fixture/node", error="",
+        ):
+            health = get_kukutool_provider_health()
+            self.assertTrue(health["circuit"]["open"])
+            self.assertFalse(health["available"])
+            self.assertTrue(ultra_hd_is_available(request, "douyin"))
+            with override_settings(TIANTIANJIEXI_PROVIDER_ENABLED=False):
+                self.assertFalse(ultra_hd_is_available(request, "douyin"))
 
     @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,

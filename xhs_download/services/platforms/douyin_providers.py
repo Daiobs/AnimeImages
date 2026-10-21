@@ -1434,6 +1434,15 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
 DOUYIN_ORDERED_SERVICES = ("tiantianjiexi", "kukutool")
 
 
+def configured_douyin_services(configured_order):
+    # Services keep the configured order (A1). The retired race/tier names
+    # carry no order of their own, so they stand for the default chain.
+    service_names = tuple(name for name in configured_order if name in DOUYIN_ORDERED_SERVICES)
+    if not service_names and {"ultra_race", "tiantian_first"} & set(configured_order):
+        service_names = DOUYIN_ORDERED_SERVICES
+    return service_names
+
+
 class DouyinTianTianFirstProvider(DouyinResultProvider):
     # The policy name is historical; the configured order decides which service goes first.
     name = "tiantian_first"
@@ -2939,11 +2948,7 @@ def build_douyin_result_providers(
         )
     else:
         configured_order = tuple(provider_settings.provider_order or ())
-        # Services keep the configured order (A1). The retired race/tier names
-        # carry no order of their own, so they stand for the default chain.
-        service_names = tuple(name for name in configured_order if name in DOUYIN_ORDERED_SERVICES)
-        if not service_names and {"ultra_race", "tiantian_first"} & set(configured_order):
-            service_names = DOUYIN_ORDERED_SERVICES
+        service_names = configured_douyin_services(configured_order)
         if service_names:
             provider_settings = replace(
                 provider_settings,

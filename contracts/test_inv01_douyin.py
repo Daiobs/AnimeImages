@@ -2,7 +2,7 @@
 
     python manage.py test contracts.test_inv01_douyin --verbosity 2
 
-The public homepage parse and continuation routes are real. Only upstream
+The public Douyin page, homepage parse and continuation routes are real. Only upstream
 HTTP/DNS, the TianTian account lock directory and the local KuKuTool Node
 runtime are replaced. The runtime is a subprocess outside the HTTP boundary,
 so it is declared absent and can never reach the real network. Each upstream
@@ -217,6 +217,11 @@ class DouyinUltraHTTPContracts(TransactionTestCase):
             time.sleep(0.2)
         self.fail("INV-01: the continuation never settled")
 
+    def douyin_page_offers_ultra(self):
+        response = self.client.get("/tiktok/")
+        self.assertEqual(response.status_code, 200)
+        return 'data-ultra-hd-available="true"' in response.content.decode()
+
     def test_inv01_preferred_ultra_result_within_budget_is_shown_directly(self):
         body, elapsed = self.parse()
         self.assertNotEqual(body.get("status"), "continuation_pending", body)
@@ -251,3 +256,22 @@ class DouyinUltraHTTPContracts(TransactionTestCase):
                          "INV-01: the configured order decides which provider goes first")
         self.assertTrue(body["has_results"])
         self.assertIn(ULTRA_TITLE, body["html"])
+
+    def test_inv01_ultra_stays_offered_while_a_configured_service_is_usable(self):
+        # A1: KuKuTool switched off in admin must not withdraw ultra while TianTian, first in the order, can run.
+        ProviderRuntimeSetting.objects.filter(pk=1).update(kukutool_disabled=True)
+        offered = self.douyin_page_offers_ultra()
+        body, _ = self.parse()
+        self.assertTrue(offered, "A1: the Douyin page offers ultra while a configured service can run")
+        self.assertIn(ULTRA_TITLE, body["html"], "A1: a Douyin link runs the configured order")
+        self.assertEqual(self.transport.services(), ["tiantianjiexi"])
+
+    def test_inv01_ultra_is_not_offered_without_a_usable_configured_service(self):
+        ProviderRuntimeSetting.objects.filter(pk=1).update(kukutool_disabled=True)
+        with override_settings(TIANTIANJIEXI_PROVIDER_ENABLED=False):
+            offered = self.douyin_page_offers_ultra()
+            body, _ = self.parse()
+        self.assertFalse(offered, "the Douyin page does not offer ultra that no service can run")
+        self.assertTrue(body["has_results"])
+        self.assertIn(NATIVE_TITLE, body["html"])
+        self.assertEqual(self.transport.services(), [])
