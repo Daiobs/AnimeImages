@@ -123,3 +123,21 @@
 ## 进度日志
 
 （由执行者追加）
+
+[2026-10-21 09:18 UTC] M0 准备 | Human 确认次数按每个固定样本各 1 次解析、1 次完整保存计算；小红书图文与视频分别计算，图文保存整组并核验 ZIP；计划正文不改 | 待首轮冒烟 | 否
+
+固定样本（M0 选定，后续不更换）：
+
+- 小红书图文：<https://xhslink.cn/o/4FAHoHJEYmd>
+- 小红书视频：<https://xhslink.cn/o/1TuINFpX7Sz>
+- 抖音视频：<https://www.douyin.com/video/7680195272341982066>
+- B 站视频：<https://www.bilibili.com/video/BV1J4JX6PEMV/>
+- YouTube 视频：<https://www.youtube.com/watch?v=jNQXAC9IVRw>（生产匿名首页 `data-youtube-merge-available=true`，因此纳入。）
+
+[2026-10-21 09:18 UTC] M0 只读核实 | 生产 HEAD `5afbab0d5a1dff19aa3b3a71e7a2b94ec7f3b0ae`，工作树干净；www-data 服务 active/running、NRestarts=0；无 pending/running 发布任务。环境文件 KuKuTool/超清/天天/YouTube 开关均开启，后台 `kukutool_disabled=false`，抖音及 YouTube 模式均为 public，抖音前台预算为 6 秒；匿名首页实际提供超清和 YouTube。故“KuKuTool 被关闭”仍是未证实推测，不据此改配置 | 冒烟脚本与首轮解析/下载尚未执行，M0 未完成 | 否
+
+[2026-10-21 09:44 UTC] M0 范围澄清 | YouTube 的首页能力标记不等于作品公开准入：本次匿名请求返回 HTTP 403，生产日志为 `THIRD_PARTY_PLATFORM_NOT_ALLOWLISTED`，上游未执行。Human 确认按计划的条件记为当前未公开开放，不改配置、不纳入后续两轮必过样本；上述固定链接及本次拒绝证据保留，不换样本。后续脚本显式使用 `--youtube-not-public`，不得把其他 403 自动视为通过 | 必过样本为小红书图文、小红书视频、抖音和 B 站 | 否
+
+[2026-10-21 09:44 UTC] M0 完成 | 09:38:38–09:39:20 UTC 匿名公开 HTTP 冒烟：小红书图文 4/4 张 WEBP 完整、ZIP CRC 通过；小红书视频 29,143,890 字节 HEVC/AAC 2160×2880；抖音默认原画 72,993,146 字节 H264/AAC 1920×1080；各文件实收长度与声明一致，共 102,691,704 媒体字节。B 站 Native HTTP 412 后天天兜底 `TianTianJieXiApiError`，无结果、未下载；未重试。共 5 次解析（含不再纳入必过项的 YouTube 拒绝）、6 次媒体 HTTP 接收；这是 HTTP/文件证据，不是新的浏览器 SW 或页面自动替换验收 | 基线必过样本 3/4；M1 发布后检查 B 站，其余不能退化 | 否
+
+[2026-10-21 09:44 UTC] M1 准备 | 发布前 `5afbab0` 代码/静态私有备份逐文件核对通过；33 表、1,446 行一致快照在独立数据库恢复后数据/结构/索引一致，演练实例已停止，未写生产库。固定工具 `6f28bce`、原受管服务权限、恢复目录可写、无并行发布已核对；无待执行迁移、无依赖安装变化，原配置不变。当前 main `a56b1f7` CI 全绿，本地 HTTP 契约 20 通过/2 项 Nginx 缺失跳过（CI 实际执行通过），前端契约 5 通过 | 待冒烟工具 PR 的实际风险分级、CI、合并及新 main CI，然后固定版本发布 | 否
