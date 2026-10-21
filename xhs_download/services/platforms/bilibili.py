@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import re
 import time
@@ -12,6 +13,7 @@ from ..common import (
     XhsDownloadError,
     XhsParseError,
     XhsProviderTimeoutError,
+    XhsSecurityError,
     clean_filename,
     normalize_text,
     request_get_with_retry,
@@ -23,6 +25,12 @@ from .base import BasePlatformAdapter, PlatformCapabilities, ProviderPolicy
 BILIBILI_PAGE_HOST_SUFFIXES = ("bilibili.com", "b23.tv")
 BILIBILI_MEDIA_HOST_SUFFIXES = ("bilivideo.com", "bilivideo.cn", "hdslb.com")
 ANONYMOUS_COOKIE_NAMES = frozenset({"buvid3", "buvid4", "b_nut"})
+WBI_MIXIN_ORDER = (
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
+    27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
+    37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30,
+    4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
+)
 logger = logging.getLogger(__name__)
 BILIBILI_HEADERS = {
     "User-Agent": (
@@ -138,6 +146,7 @@ def anonymous_cookie_context(*, deadline_monotonic=None):
             retries=1,
             stream=True,
             max_redirects=0,
+            return_redirect_response=True,
             non_retry_statuses=(412, 429),
             allowed_final_host_suffixes=("bilibili.com",),
             final_url_message="哔哩哔哩匿名初始化跳转到了不允许的域名",
@@ -155,6 +164,24 @@ def anonymous_cookie_context(*, deadline_monotonic=None):
         retain_anonymous_cookies(response, cookies)
     finally:
         response.close()
+    spi_url = "https://api.bilibili.com/x/frontend/finger/spi"
+    cookie_header = requests.cookies.get_cookie_header(
+        cookies, requests.Request("GET", spi_url).prepare())
+    if cookie_header and not re.search(r"(?:^|;\s*)buvid4=", cookie_header):
+        try:
+            data = api_get_json(
+                spi_url, {}, cookies=cookies, deadline_monotonic=deadline_monotonic,
+                retries=1, timeout_seconds=3,
+            )
+            buvid4 = data.get("b_4") if isinstance(data, dict) else None
+            if (isinstance(buvid4, str) and 0 < len(buvid4) <= 4096
+                    and not re.search(r"[\x00-\x20\x7f;]", buvid4)):
+                cookies.set("buvid4", buvid4, domain=".bilibili.com", path="/", secure=True)
+        except (XhsSecurityError, requests.exceptions.SSLError):
+            raise
+        except (XhsDownloadError, XhsParseError, requests.Timeout, requests.ConnectionError,
+                requests.TooManyRedirects, ValueError) as error:
+            logger.info("bilibili_anonymous_buvid4_unavailable error_type=%s", type(error).__name__)
     logger.info("bilibili_anonymous_context_ready cookie_count=%s", len(cookies))
     return cookies
 
@@ -166,6 +193,9 @@ def api_get_json(
     *,
     deadline_monotonic=None,
     cookies=None,
+    accepted_codes=(0,),
+    retries=2,
+    timeout_seconds=15,
 ):
     query = urlencode({key: value for key, value in params.items() if value is not None})
     request_url = f"{url}?{query}" if query else url
@@ -179,8 +209,8 @@ def api_get_json(
         response = request_get_with_retry(
             request_url,
             headers=headers,
-            timeout=bilibili_request_timeout(deadline_monotonic, 15),
-            retries=2,
+            timeout=bilibili_request_timeout(deadline_monotonic, timeout_seconds),
+            retries=retries,
             # An explicit Cookie header is scoped to this exact API request.
             max_redirects=0 if "Cookie" in headers else 5,
             non_retry_statuses=(412, 429),
@@ -204,10 +234,52 @@ def api_get_json(
     finally:
         response.close()
 
-    if data.get("code") != 0:
+    if not isinstance(data, dict):
+        raise XhsParseError("哔哩哔哩接口返回格式错误")
+    if data.get("code") not in accepted_codes:
         message = data.get("message") or "接口返回异常"
         raise XhsParseError(f"哔哩哔哩解析失败：{message}")
     return data.get("data") or {}
+
+
+def signed_view_params(params, cookies, *, deadline_monotonic=None):
+    nav_url = "https://api.bilibili.com/x/web-interface/nav"
+    if not requests.cookies.get_cookie_header(cookies, requests.Request("GET", nav_url).prepare()):
+        return None
+    try:
+        # Anonymous nav returns -101 but still supplies the public signing material.
+        data = api_get_json(
+            nav_url, {}, cookies=cookies, accepted_codes=(0, -101),
+            deadline_monotonic=deadline_monotonic, retries=1, timeout_seconds=3,
+        )
+        view_request = requests.Request("GET", "https://api.bilibili.com/x/web-interface/wbi/view").prepare()
+        if not requests.cookies.get_cookie_header(cookies, view_request):
+            return None
+        wbi = data.get("wbi_img") if isinstance(data, dict) else None
+        if not isinstance(wbi, dict):
+            return None
+        keys = []
+        for name in ("img_url", "sub_url"):
+            value = wbi.get(name)
+            key = urlparse(value).path.rsplit("/", 1)[-1].split(".", 1)[0] if isinstance(value, str) else ""
+            if not re.fullmatch(r"[0-9a-fA-F]{32}", key):
+                return None
+            keys.append(key)
+    except (XhsSecurityError, requests.exceptions.SSLError):
+        raise
+    except (XhsDownloadError, XhsParseError, requests.Timeout, requests.ConnectionError,
+            requests.TooManyRedirects, ValueError) as error:
+        logger.info("bilibili_wbi_context_unavailable error_type=%s", type(error).__name__)
+        return None
+    lookup = "".join(keys)
+    mixin = "".join(lookup[index] for index in WBI_MIXIN_ORDER)[:32]
+    signed = {
+        key: "".join(char for char in str(value) if char not in "!'()*")
+        for key, value in sorted({**params, "wts": round(time.time())}.items())
+        if value is not None
+    }
+    signed["w_rid"] = hashlib.md5((urlencode(signed) + mixin).encode()).hexdigest()
+    return signed
 
 
 def resolve_video_page(url, *, deadline_monotonic=None):
@@ -388,9 +460,12 @@ class BilibiliAdapter(BasePlatformAdapter):
         page_number = extract_page_number(page_url)
         # Per-parse anonymous context; it is never attached to media or cached.
         cookies = anonymous_cookie_context(deadline_monotonic=deadline or None)
+        view_params = build_view_params(bvid, aid)
+        signed_params = signed_view_params(view_params, cookies, deadline_monotonic=deadline or None)
         view_data = api_get_json(
-            "https://api.bilibili.com/x/web-interface/view",
-            build_view_params(bvid, aid),
+            "https://api.bilibili.com/x/web-interface/wbi/view" if signed_params is not None
+            else "https://api.bilibili.com/x/web-interface/view",
+            signed_params if signed_params is not None else view_params,
             referer=page_url,
             deadline_monotonic=deadline or None,
             cookies=cookies,

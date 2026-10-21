@@ -344,6 +344,7 @@ def request_get_with_retry(
     deadline_monotonic=None,
     max_redirects=5,
     non_retry_statuses=(),
+    return_redirect_response=False,
 ):
     return _request_with_retry(
         url, headers=headers or HEADERS, timeout=timeout, retries=retries,
@@ -352,6 +353,7 @@ def request_get_with_retry(
         final_url_message=final_url_message, deadline_monotonic=deadline_monotonic,
         max_redirects=max_redirects,
         non_retry_statuses=non_retry_statuses,
+        return_redirect_response=return_redirect_response,
     )
 
 
@@ -372,6 +374,7 @@ def _request_with_retry(
     deadline_monotonic=None, max_redirects=5, *, method="GET", accepted_statuses=(200,),
     allowed_hop_host_suffixes=None, redirect_budget=None,
     non_retry_statuses=(),
+    return_redirect_response=False,
 ):
     """Validate each hop and pin direct connections to an admitted address.
 
@@ -379,6 +382,7 @@ def _request_with_retry(
     the final-host allowlist is intentionally applied only to the final response.
     Configured proxies retain their existing, independently resolved egress.
     The deadline covers fetching the response, not consumption of a returned stream.
+    Explicit redirect inspection returns the validated response without visiting Location.
     """
     retries = max(1, int(retries))
     max_redirects = max(0, int(max_redirects))
@@ -440,7 +444,8 @@ def _request_with_retry(
                         stream=True,
                     )
                     remaining_budget()
-                    if response.status_code in {301, 302, 303, 307, 308}:
+                    is_redirect = response.status_code in {301, 302, 303, 307, 308}
+                    if is_redirect and not return_redirect_response:
                         location = response.headers.get("Location")
                         if not location or not location.strip():
                             raise XhsDownloadError("请求跳转缺少 Location")
@@ -467,7 +472,8 @@ def _request_with_retry(
                         current_url = next_url
                         continue
 
-                    if accepted_statuses is None or response.status_code in accepted_statuses:
+                    if (accepted_statuses is None or response.status_code in accepted_statuses
+                            or (is_redirect and return_redirect_response)):
                         final_url = response.url or current_url
                         if final_url != current_url:
                             _validate_request_target(final_url, final_url_message)
