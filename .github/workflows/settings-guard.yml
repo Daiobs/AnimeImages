@@ -2,9 +2,10 @@ name: Settings Guard
 
 on:
   pull_request:
-  push:
-    branches-ignore:
-      - main
+
+concurrency:
+  group: settings-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   protect-settings:

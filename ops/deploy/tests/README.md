@@ -7,6 +7,11 @@ docker build -t animeimages-deploy-permission-tests -f ops/deploy/tests/Dockerfi
 docker run --rm --network none -v "$PWD:/source:ro" animeimages-deploy-permission-tests
 ```
 
+In CI this runs in the `Deploy Acceptance` workflow, not the required `test` job:
+when deploy/release scripts, `ops/deploy` or `ops/managed-release`, the Django
+project entry (`djangoProject/`, `manage.py`) or requirements change, weekly, and
+on demand (Actions → Deploy Acceptance → Run workflow) before a release.
+
 Use `--counterexample-only` after the image name to reproduce the old behavior:
 outer `umask 077`, Git reset/archive output `0600`, actual web UID denied.
 This test passes only when that negative control is observed.
