@@ -119,3 +119,7 @@
 ## 进度日志
 
 （由执行者追加）
+
+[2026-10-21 14:43 UTC] 准备与 M0 第 1 项完成 | 已读取 AGENTS.md、产品不变量及契约说明；协调人计划原样入库，提交时 cmp 和 SHA-256 一致，正文未改写。按 Human 授权与上一目标的 12 行最终进度合并为 [PR #122](https://github.com/Daiobs/AnimeImages/pull/122)，实际 protected-files 判定 L0，Head `d9365dd` 六项检查全绿后正常 Squash Merge；main `733e3680cd79cf5a3ed8b0756bd4f622eb27ed97` 的父节点、两份文档差异及 tree `ec1c9f7d3912153a6c0a2fd2bb24fe7115fef1ce` 均核验，main Django 与 Product Contracts CI 通过 | 本行先保留本地，后续检查点一并提交；未开始 M0 第 2/3 项或 M1–M3，未访问生产、未触发 Daily、未改变本地 8000，等待 Human 的 /goal 指令 | 否，准备完成，目标尚未启动
+
+[2026-10-21 14:55 UTC] M0 第 2 项本地验证完成 | /goal 已启动；解析器与 safe_error_detail 同步接受最多 5 位 ASCII 业务码，正负 1001/99999 可到达 Lab 和公开 B站失败日志，六位、非数字、全角数字及附加私密文本仍拒绝。3 项反例在旧代码产生 4 个预期断言失败；修复后相关 69 项（含公开 HTTP 契约）和 Django check 通过。首次扩展测试因未指定已有 ParseHub 测试解释器失败，指定原有 Runtime 后通过，未安装依赖或改变日常 Runtime。使用原本地配置的隔离数据库副本，经匿名 /results/ 真实解析固定抖音样本一次，天天 SUCCESS_FRESH、4 个候选、约 1.6 秒；并行 Native 最后超时，未改变已返回结果，未启动 Kukutool。仅真实解析，不保存媒体；1001 错误展示是离线边界回放，不冒充本次上游失败 | 待同一问题的 L1 PR 实际检查与合并；未改路由、下载、生产或日常 8000，M0 第 3 项尚未实现 | 否

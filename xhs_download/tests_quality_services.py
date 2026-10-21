@@ -31,13 +31,30 @@ class SharedServiceExecutionTests(SimpleTestCase):
     def test_business_codes_are_bounded_and_not_http_statuses(self):
         from .services.platforms.tiantianjiexi_generic import ensure_api_success, TianTianJieXiApiError
         for value, expected in [(403, '403'), (-2, '-2'), ('502', '502'),
+                                (1001, '1001'), ('-1001', '-1001'),
+                                (99999, '99999'), ('-99999', '-99999'),
                                 ('secret-value', 'UNKNOWN'), (123456789, 'UNKNOWN'),
+                                (100000, 'UNKNOWN'), ('-100000', 'UNKNOWN'),
                                 (None, 'UNKNOWN'), ('４０３', 'UNKNOWN')]:
             with self.assertRaises(TianTianJieXiApiError) as caught:
                 ensure_api_success({'code': value, 'message': 'private upstream text'})
             self.assertEqual(caught.exception.diagnostic_detail, 'SERVICE_BUSINESS_CODE_' + expected)
         # The diagnostic change must not turn accepted business responses into failures.
         ensure_api_success({'code': 200})
+
+    def test_five_digit_business_code_reaches_safe_lab_detail(self):
+        from .services.platforms.tiantianjiexi_generic import ensure_api_success, TianTianJieXiApiError
+        from .services.provider_lab.providers import _failure_result
+        for code in (1001, -1001, 99999, -99999):
+            with self.subTest(code=code), self.assertRaises(TianTianJieXiApiError) as caught:
+                ensure_api_success({'code': code, 'data': '', 'msg': 'upstream failure'})
+            detail = caught.exception.diagnostic_detail
+            result = _failure_result(
+                descriptor=PROVIDER_REGISTRY['tiantian_existing'], request_id='safe',
+                elapsed_ms=1, executed=True,
+                error=ProviderLabError('PROVIDER_UPSTREAM_FAILED', detail=detail),
+            )
+            self.assertEqual(result['error_detail'], f'SERVICE_BUSINESS_CODE_{code}')
 
     def test_json_phase_details_are_allowlisted_through_helper_and_lab(self):
         from .services.platforms.douyin_kukutool import kukutool_failure_detail
@@ -48,6 +65,8 @@ class SharedServiceExecutionTests(SimpleTestCase):
             elapsed_ms=1, executed=True, error=ProviderLabError('PROVIDER_UPSTREAM_FAILED', detail=detail))
         self.assertEqual(result['error_detail'], detail)
         for bad in [detail + '\nsecret', 'SERVICE_BUSINESS_CODE_1234567',
+                    'SERVICE_BUSINESS_CODE_100000', 'SERVICE_BUSINESS_CODE_-100000',
+                    'SERVICE_BUSINESS_CODE_１００１', 'SERVICE_BUSINESS_CODE_1001\nsecret',
                     'SERVICE_JSON_AUTH_HTTP_200_TYPE_text/html', {'secret': 'value'}]:
             self.assertEqual(ProviderLabError('PROVIDER_UPSTREAM_FAILED', detail=bad).detail, '')
 
