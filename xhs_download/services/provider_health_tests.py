@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import Future
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -30,7 +31,7 @@ from .common import (
 from .observability import sanitize_observability_text
 from .platforms.bilibili import BILIBILI_PAGE_HOST_SUFFIXES
 from .platforms.douyin import DouyinAdapter
-from .platforms.douyin_kukutool import get_kukutool_provider_health
+from .platforms.douyin_kukutool import DouyinKukuToolProvider, get_kukutool_provider_health
 from .platforms.douyin_providers import DouyinTianTianJieXiProvider
 from .platforms.gallerydl_generic import GalleryDlGenericProvider
 from .platforms.tiantianjiexi_generic import (
@@ -108,8 +109,8 @@ PROVIDER_HEALTH_TESTS = (
     },
     {
         "key": "douyin_kukutool_ultra",
-        "name": "抖音 KuKuTool 超清",
-        "description": "开启 prefer_ultra_hd=True 测试抖音超清链路。",
+        "name": "抖音 KuKuTool 超清（仅 KuKuTool）",
+        "description": "只调用 KuKuTool 解析抖音测试 URL，不调用天天解析或 Native；整条超清链路的健康见“抖音超清”汇总行。",
         "provider": "kukutool",
         "provider_access_id": PROVIDER_DOUYIN_ULTRA,
         "url_field": "douyin_url",
@@ -604,10 +605,26 @@ def execute_provider_health_test(context, item):
             health = get_kukutool_provider_health()
             if not health.get("available"):
                 return record(ProviderHealthTestStatus.UNAVAILABLE, "ProviderUnavailable", "PROVIDER_UNAVAILABLE", json.dumps(health, ensure_ascii=False))
-            result = parse_media_page(test_url, prefer_ultra_hd=True)
-            return record(ProviderHealthTestStatus.SUCCESS) if result.assets else record(
-                ProviderHealthTestStatus.UNAVAILABLE, "NoAssets", "NO_ASSETS", "未解析到超清资源"
+            adapter = DouyinAdapter()
+            deadline = time.monotonic() + 10.0
+            parse_context = adapter.build_parse_context(
+                test_url,
+                fetch_direct_page=not bool(adapter.supports_url(test_url)),
+                fast_short_link=True,
+                request_deadline=deadline,
             )
+            # Only KuKuTool is measured: a resolved empty future stops the
+            # provider from submitting Native, and no TianTian call is made.
+            empty_native = Future()
+            empty_native.set_result(None)
+            parse_context.native_fallback_future = empty_native
+            result = DouyinKukuToolProvider().parse(adapter, parse_context)
+            error = provider_asset_manifest_validation_error(result, {"kukutool"}, require_video=True)
+            metadata = result.metadata or {} if result else {}
+            selected = metadata.get("selected_provider") or metadata.get("source_provider")
+            if not error and selected == "kukutool":
+                return record(ProviderHealthTestStatus.SUCCESS)
+            return record(ProviderHealthTestStatus.UNAVAILABLE, "InvalidParseResult", "INVALID_PARSE_RESULT", error or "Provider mismatch")
 
         if key == "douyin_tiantianjiexi_ultra":
             if not (
