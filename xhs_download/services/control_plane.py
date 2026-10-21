@@ -25,6 +25,7 @@ from ..models import (
     ProviderRuntimeSetting,
     SelfHealingEvent,
 )
+from .douyin_ultra_services import DOUYIN_ULTRA_NAME, douyin_ultra_summary
 from .policy_constants import GOVERNANCE_VERSION
 from .provider_access import (
     PROVIDER_DOUYIN_ULTRA,
@@ -47,10 +48,9 @@ OBSERVABILITY_PERMISSIONS = (
 )
 PROVIDER_ROWS = (
     {
+        # The configured Douyin services fill in health and logs per request (A1).
         "provider_id": PROVIDER_DOUYIN_ULTRA,
-        "name": "抖音 KuKuTool 超清",
-        "test_keys": ("douyin_kukutool_ultra",),
-        "log_providers": ("kukutool", "kukutool_generic"),
+        "name": DOUYIN_ULTRA_NAME,
     },
     {
         "provider_id": PROVIDER_YOUTUBE_MERGE,
@@ -256,8 +256,18 @@ def provider_log_stats(provider_names):
 
 def build_provider_status(request):
     runtime = get_provider_runtime_setting_readonly()
+    douyin_ultra = douyin_ultra_summary()
     rows = []
     for item in PROVIDER_ROWS:
+        if item["provider_id"] == PROVIDER_DOUYIN_ULTRA:
+            item = {
+                **item,
+                "test_keys": douyin_ultra.health_keys,
+                "log_providers": douyin_ultra.provider_names,
+            }
+            last_run, health_details = douyin_ultra.health_run, douyin_ultra.health_details
+        else:
+            last_run, health_details = latest_health_for(item["test_keys"]), ""
         if runtime is not None:
             access = provider_access_summary(item["provider_id"], request, runtime)
         else:
@@ -269,7 +279,6 @@ def build_provider_status(request):
                 "hard_enabled": hard_enabled,
                 "access_reason": "ProviderRuntimeSetting 未初始化。",
             }
-        last_run = latest_health_for(item["test_keys"])
         stats = provider_log_stats(item["log_providers"])
         rows.append({
             **item,
@@ -282,6 +291,7 @@ def build_provider_status(request):
             "last_health_status": last_run.status if last_run else "",
             "last_health_status_label": last_run.get_status_display() if last_run else "暂无数据",
             "last_health_at": timezone.localtime(last_run.created_at).strftime("%Y-%m-%d %H:%M:%S") if last_run else "",
+            "health_details": health_details,
             "success_rate_24h": stats["success_rate"],
             "average_duration_ms_24h": stats["average_duration_ms"],
             "recent_failure": stats["recent_failure"] or "暂无数据",

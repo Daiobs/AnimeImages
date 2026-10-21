@@ -199,7 +199,7 @@
                             <td>{{ row.name }}</td>
                             <td>{{ row.runtime_label }} / {{ row.rollout_percent }}%</td>
                             <td>{% if row.hard_enabled %}<span class="badge badge-success">enabled</span>{% else %}<span class="badge badge-warning">disabled</span>{% endif %}</td>
-                            <td><span class="badge badge-{{ row.last_health_status|default:'skipped' }}">{{ row.last_health_status_label }}</span><br><span class="control-muted">{{ row.last_health_at|default:"暂无数据" }}</span></td>
+                            <td><span class="badge badge-{{ row.last_health_status|default:'skipped' }}">{{ row.last_health_status_label }}</span><br><span class="control-muted">{{ row.last_health_at|default:"暂无数据" }}</span>{% if row.health_details %}<br><span class="control-muted">{{ row.health_details }}</span>{% endif %}</td>
                             <td>{{ row.success_rate_24h }}%</td>
                             <td>{{ row.average_duration_ms_24h }}ms</td>
                             <td>{{ row.recent_failure }}</td>

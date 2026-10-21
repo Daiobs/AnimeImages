@@ -38,7 +38,7 @@ Rollout Guard 不会：
 
 页面覆盖三个现有 Provider 维度：
 
-- 抖音 KuKuTool 超高清：`douyin_ultra`
+- 抖音超清：`douyin_ultra`。按配置顺序（`DOUYIN_ULTRA_PROVIDER_ORDER`）里的服务汇总：任一已开启服务最近一次健康测试成功即为健康；已关闭的服务不计入，只在明细里显示为「已关闭」。控制平面的同名行用同一规则。
 - YouTube 高清合并：`youtube_merge`
 - 通用第三方 Provider：`third_party`
 

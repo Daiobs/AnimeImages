@@ -11944,6 +11944,24 @@ class ProviderHealthTestPanelTests(TestCase):
         self.assertEqual(response["Location"], "/admin/provider-health-tests/")
 
 
+def douyin_ultra_services_settings(**changes):
+    # Both Douyin ultra services switched on in the default order, then the test's changes.
+    return override_settings(**{
+        "ULTRA_HD_PROVIDER_ENABLED": True,
+        "KUKUTOOL_PROVIDER_ENABLED": True,
+        "THIRD_PARTY_PROVIDER_ENABLED": True,
+        "TIANTIANJIEXI_PROVIDER_ENABLED": True,
+        "TIANTIANJIEXI_PHONE": "admin-rows-fixture",
+        "TIANTIANJIEXI_PASSWORD": "admin-rows-fixture",
+        "DOUYIN_ULTRA_PROVIDER_ORDER": "tiantianjiexi,kukutool,native",
+        **changes,
+    })
+
+
+def douyin_ultra_row(rows):
+    return next(row for row in rows if row["provider_id"] == PROVIDER_DOUYIN_ULTRA)
+
+
 class ProductionControlPlaneTests(TestCase):
     def setUp(self):
         cache.clear()
@@ -12138,7 +12156,7 @@ class ProductionControlPlaneTests(TestCase):
         self.assertContains(response, "zip")
         self.assertContains(response, "blocked")
         self.assertContains(response, "SINGLE_VIDEO_SIZE_LIMIT")
-        self.assertContains(response, "抖音 KuKuTool 超清")
+        self.assertContains(response, "抖音超清")
         self.assertContains(response, "成功")
 
     @patch("xhs_download.services.control_plane.cache.set", side_effect=RuntimeError("cache down"))
@@ -12222,6 +12240,174 @@ class ProductionControlPlaneTests(TestCase):
         response = client.get("/admin/control-plane/")
 
         self.assertContains(response, "系统状态正常")
+
+    @douyin_ultra_services_settings(KUKUTOOL_PROVIDER_ENABLED=False)
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_control_plane_douyin_ultra_row_follows_tiantian_when_kukutool_is_off(self, _mock_readiness):
+        ProviderHealthTestRun.objects.create(
+            request_id="health-control-tiantian",
+            test_key="douyin_tiantianjiexi_ultra",
+            status=ProviderHealthTestStatus.SUCCESS,
+            provider="tiantianjiexi",
+        )
+        ProviderHealthTestRun.objects.create(
+            request_id="health-control-kukutool-off",
+            test_key="douyin_kukutool_ultra",
+            status=ProviderHealthTestStatus.UNAVAILABLE,
+            provider="kukutool",
+            error_type="CapabilityDisabled",
+        )
+        DownloadRequestLog.objects.create(
+            request_id="download-control-tiantian",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="video",
+            provider="tiantianjiexi",
+            source_platform="douyin",
+        )
+        # The general third-party KuKuTool belongs to the third-party row.
+        DownloadRequestLog.objects.create(
+            request_id="download-control-third-party-kukutool",
+            status=ObservabilityStatus.FAILED,
+            download_type="video",
+            provider="kukutool_generic",
+            source_platform="third_party",
+            error_code="PROVIDER_FAILED",
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        row = douyin_ultra_row(response.context["provider_status"]["rows"])
+        self.assertEqual(row["name"], "抖音超清")
+        self.assertTrue(row["hard_enabled"])
+        self.assertEqual(row["last_health_status"], ProviderHealthTestStatus.SUCCESS)
+        self.assertEqual(row["health_details"], "天天解析:success；KuKuTool:已关闭")
+        self.assertEqual(row["success_rate_24h"], 100.0)
+        self.assertContains(response, "天天解析:success；KuKuTool:已关闭")
+        self.assertNotContains(response, "最近健康测试异常")
+
+    @douyin_ultra_services_settings(DOUYIN_ULTRA_PROVIDER_ORDER="kukutool,native")
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_control_plane_douyin_ultra_row_follows_kukutool_alone(self, _mock_readiness):
+        ProviderHealthTestRun.objects.create(
+            request_id="health-control-kukutool",
+            test_key="douyin_kukutool_ultra",
+            status=ProviderHealthTestStatus.SUCCESS,
+            provider="kukutool",
+        )
+        # TianTian is switched on but not in the configured order.
+        ProviderHealthTestRun.objects.create(
+            request_id="health-control-tiantian-unconfigured",
+            test_key="douyin_tiantianjiexi_ultra",
+            status=ProviderHealthTestStatus.FAILED,
+            provider="tiantianjiexi",
+        )
+        DownloadRequestLog.objects.create(
+            request_id="download-control-kukutool",
+            status=ObservabilityStatus.SUCCESS,
+            download_type="video",
+            provider="kukutool",
+            source_platform="douyin",
+        )
+        DownloadRequestLog.objects.create(
+            request_id="download-control-tiantian-unconfigured",
+            status=ObservabilityStatus.FAILED,
+            download_type="video",
+            provider="tiantianjiexi",
+            source_platform="douyin",
+            error_code="PROVIDER_FAILED",
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        row = douyin_ultra_row(response.context["provider_status"]["rows"])
+        self.assertEqual(row["name"], "抖音超清")
+        self.assertEqual(row["last_health_status"], ProviderHealthTestStatus.SUCCESS)
+        self.assertEqual(row["health_details"], "KuKuTool:success")
+        self.assertEqual(row["success_rate_24h"], 100.0)
+        self.assertNotContains(response, "最近健康测试异常")
+
+    @douyin_ultra_services_settings()
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_control_plane_douyin_ultra_is_healthy_while_any_switched_on_service_is_usable(self, _mock_readiness):
+        ProviderHealthTestRun.objects.create(
+            request_id="health-control-tiantian-ok",
+            test_key="douyin_tiantianjiexi_ultra",
+            status=ProviderHealthTestStatus.SUCCESS,
+            provider="tiantianjiexi",
+        )
+        ProviderHealthTestRun.objects.create(
+            request_id="health-control-kukutool-failed",
+            test_key="douyin_kukutool_ultra",
+            status=ProviderHealthTestStatus.FAILED,
+            provider="kukutool",
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        row = douyin_ultra_row(response.context["provider_status"]["rows"])
+        self.assertEqual(row["last_health_status"], ProviderHealthTestStatus.SUCCESS)
+        self.assertEqual(row["health_details"], "天天解析:success；KuKuTool:failed")
+        self.assertNotContains(response, "最近健康测试异常")
+
+    @douyin_ultra_services_settings(KUKUTOOL_PROVIDER_ENABLED=False)
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    def test_control_plane_douyin_ultra_warns_only_when_no_switched_on_service_is_usable(self, _mock_readiness):
+        ProviderHealthTestRun.objects.create(
+            request_id="health-control-kukutool-before-off",
+            test_key="douyin_kukutool_ultra",
+            status=ProviderHealthTestStatus.SUCCESS,
+            provider="kukutool",
+        )
+        ProviderHealthTestRun.objects.create(
+            request_id="health-control-kukutool-off",
+            test_key="douyin_kukutool_ultra",
+            status=ProviderHealthTestStatus.UNAVAILABLE,
+            provider="kukutool",
+            error_type="CapabilityDisabled",
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        response = client.get("/admin/control-plane/")
+
+        row = douyin_ultra_row(response.context["provider_status"]["rows"])
+        self.assertEqual(row["last_health_status"], "")
+        self.assertEqual(row["health_details"], "天天解析:暂无记录；KuKuTool:已关闭")
+        self.assertNotContains(response, "最近健康测试异常")
+
+        ProviderHealthTestRun.objects.create(
+            request_id="health-control-tiantian-failed",
+            test_key="douyin_tiantianjiexi_ultra",
+            status=ProviderHealthTestStatus.FAILED,
+            provider="tiantianjiexi",
+        )
+        # The control plane serves its context from a 45 s cache.
+        cache.clear()
+
+        response = client.get("/admin/control-plane/")
+
+        row = douyin_ultra_row(response.context["provider_status"]["rows"])
+        self.assertEqual(row["last_health_status"], ProviderHealthTestStatus.FAILED)
+        self.assertEqual(row["health_details"], "天天解析:failed；KuKuTool:已关闭")
+        self.assertContains(response, "抖音超清 最近健康测试异常")
 
     def test_admin_shell_renders_collapsible_sidebar_and_topbar(self):
         client = Client()
@@ -13961,7 +14147,7 @@ class AdminObservabilityMvpTests(TestCase):
         response = client.get("/admin/rollout-guard/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "抖音 KuKuTool 超高清")
+        self.assertContains(response, "抖音超清")
         self.assertContains(response, "YouTube 高清合并")
         self.assertContains(response, "通用第三方 Provider")
         self.assertContains(response, "谨慎，建议继续观察")
@@ -14003,6 +14189,134 @@ class AdminObservabilityMvpTests(TestCase):
         self.assertEqual(capabilities(), [True, True, True, True])
         with override_settings(ULTRA_HD_PROVIDER_ENABLED=False):
             self.assertEqual(capabilities(), [False, False, False, False])
+
+    def create_douyin_ultra_parses(self, provider, count=5):
+        for index in range(count):
+            ParseRequestLog.objects.create(
+                request_id=f"rid-douyin-ultra-{provider}-{index}",
+                status=ObservabilityStatus.SUCCESS,
+                source_platform="douyin",
+                selected_provider=provider,
+                prefer_ultra_hd=True,
+                duration_ms=500,
+            )
+
+    @douyin_ultra_services_settings(KUKUTOOL_PROVIDER_ENABLED=False)
+    def test_rollout_guard_douyin_ultra_follows_tiantian_when_kukutool_is_off(self):
+        ProviderHealthTestRun.objects.create(
+            request_id="rid-health-kukutool-off",
+            test_key="douyin_kukutool_ultra",
+            status=ProviderHealthTestStatus.UNAVAILABLE,
+            provider="kukutool",
+            error_type="CapabilityDisabled",
+        )
+        self.create_douyin_ultra_parses("tiantianjiexi")
+        # The general third-party KuKuTool belongs to the third-party row.
+        ParseRequestLog.objects.create(
+            request_id="rid-third-party-kukutool-failed",
+            status=ObservabilityStatus.FAILED,
+            source_platform="third_party",
+            selected_provider="kukutool_generic",
+            error_code="PROVIDER_FAILED",
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        row = douyin_ultra_row(client.get("/admin/rollout-guard/").context["provider_rows"])
+
+        self.assertEqual(row["name"], "抖音超清")
+        self.assertEqual(row["health_status"], "none")
+        self.assertEqual(row["health_details"], "天天解析:暂无记录；KuKuTool:已关闭")
+        self.assertEqual(row["parse_total_24h"], 5)
+        self.assertEqual(row["recommendation"], "safe_for_staff")
+
+        ProviderHealthTestRun.objects.create(
+            request_id="rid-health-tiantian",
+            test_key="douyin_tiantianjiexi_ultra",
+            status=ProviderHealthTestStatus.SUCCESS,
+            provider="tiantianjiexi",
+        )
+
+        row = douyin_ultra_row(client.get("/admin/rollout-guard/").context["provider_rows"])
+
+        self.assertEqual(row["health_status"], "success")
+        self.assertEqual(row["health_details"], "天天解析:success；KuKuTool:已关闭")
+        self.assertEqual(row["recommendation"], "safe_for_1_percent_gray")
+
+    @douyin_ultra_services_settings(DOUYIN_ULTRA_PROVIDER_ORDER="kukutool,native")
+    def test_rollout_guard_douyin_ultra_follows_kukutool_alone(self):
+        ProviderHealthTestRun.objects.create(
+            request_id="rid-health-kukutool",
+            test_key="douyin_kukutool_ultra",
+            status=ProviderHealthTestStatus.SUCCESS,
+            provider="kukutool",
+        )
+        # TianTian is switched on but not in the configured order.
+        ProviderHealthTestRun.objects.create(
+            request_id="rid-health-tiantian-unconfigured",
+            test_key="douyin_tiantianjiexi_ultra",
+            status=ProviderHealthTestStatus.FAILED,
+            provider="tiantianjiexi",
+        )
+        self.create_douyin_ultra_parses("kukutool")
+        client = Client()
+        client.force_login(self.superuser)
+
+        row = douyin_ultra_row(client.get("/admin/rollout-guard/").context["provider_rows"])
+
+        self.assertEqual(row["name"], "抖音超清")
+        self.assertEqual(row["health_status"], "success")
+        self.assertEqual(row["health_details"], "KuKuTool:success")
+        self.assertEqual(row["parse_total_24h"], 5)
+        self.assertEqual(row["recommendation"], "safe_for_1_percent_gray")
+
+    @douyin_ultra_services_settings()
+    def test_rollout_guard_douyin_ultra_is_healthy_while_any_switched_on_service_is_usable(self):
+        ProviderHealthTestRun.objects.create(
+            request_id="rid-health-tiantian-ok",
+            test_key="douyin_tiantianjiexi_ultra",
+            status=ProviderHealthTestStatus.SUCCESS,
+            provider="tiantianjiexi",
+        )
+        ProviderHealthTestRun.objects.create(
+            request_id="rid-health-kukutool-failed",
+            test_key="douyin_kukutool_ultra",
+            status=ProviderHealthTestStatus.FAILED,
+            provider="kukutool",
+        )
+        self.create_douyin_ultra_parses("tiantianjiexi")
+        client = Client()
+        client.force_login(self.superuser)
+
+        row = douyin_ultra_row(client.get("/admin/rollout-guard/").context["provider_rows"])
+
+        self.assertEqual(row["health_status"], "success")
+        self.assertEqual(row["health_details"], "天天解析:success；KuKuTool:failed")
+        self.assertEqual(row["recommendation"], "safe_for_1_percent_gray")
+
+    @douyin_ultra_services_settings(KUKUTOOL_PROVIDER_ENABLED=False)
+    def test_rollout_guard_douyin_ultra_is_do_not_public_when_no_switched_on_service_is_usable(self):
+        ProviderHealthTestRun.objects.create(
+            request_id="rid-health-kukutool-before-off",
+            test_key="douyin_kukutool_ultra",
+            status=ProviderHealthTestStatus.SUCCESS,
+            provider="kukutool",
+        )
+        ProviderHealthTestRun.objects.create(
+            request_id="rid-health-tiantian-failed",
+            test_key="douyin_tiantianjiexi_ultra",
+            status=ProviderHealthTestStatus.FAILED,
+            provider="tiantianjiexi",
+        )
+        client = Client()
+        client.force_login(self.superuser)
+
+        row = douyin_ultra_row(client.get("/admin/rollout-guard/").context["provider_rows"])
+
+        self.assertEqual(row["health_status"], "failed")
+        self.assertEqual(row["health_details"], "天天解析:failed；KuKuTool:已关闭")
+        self.assertEqual(row["recommendation"], "do_not_public")
+        self.assertEqual(row["reasons"], ["最近健康测试失败 / 不可用"])
 
     @override_settings(YOUTUBE_MERGE_PROVIDER_ENABLED=True)
     def test_rollout_guard_health_failed_is_do_not_public(self):
