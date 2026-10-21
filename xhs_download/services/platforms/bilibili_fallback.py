@@ -11,6 +11,7 @@ import requests
 
 from ..common import XhsDownloadError, XhsProviderTimeoutError, extract_url_from_text
 from ..env_config import runtime_float
+from ..provider_lab.contracts import safe_error_detail
 from .bilibili import BilibiliIncompleteMediaError
 from .tiantianjiexi_generic import TianTianJieXiGenericProvider, provider_configured
 
@@ -130,8 +131,11 @@ def parse_fallback(source_url, *, native_parse, authorize,
                 raise XhsProviderTimeoutError("哔哩哔哩解析超过时间限制")
             result = build_service_result(payload, source, deadline_monotonic=deadline)
         except Exception as error:
-            logger.info("bilibili_fallback_unavailable provider=%s error_type=%s",
-                        PROVIDER, type(error).__name__)
+            logger.info(
+                "bilibili_fallback_unavailable provider=%s error_type=%s diagnostic_detail=%s",
+                PROVIDER, type(error).__name__,
+                safe_error_detail(getattr(error, "diagnostic_detail", "")) or "UNAVAILABLE",
+            )
             raise native_error from None
         return replace(result, metadata={
             **result.metadata,

@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 import requests
 from django.core.cache import cache
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
 from .models import ProviderRuntimeSetting
@@ -318,3 +318,75 @@ class BilibiliFallbackPipelineTests(SimpleTestCase):
             self.assertIsNone(check_bilibili_service_download_access(
                 request, [{"type": "video", "asset_id": "bilibili:native"}]))
         self.post.assert_called_once()
+
+
+@override_settings(
+    THIRD_PARTY_PROVIDER_ENABLED=True, TIANTIANJIEXI_PROVIDER_ENABLED=True,
+    TIANTIANJIEXI_PHONE="isolated-fixture", TIANTIANJIEXI_PASSWORD="fixture",
+    TIANTIANJIEXI_API_BASE_URL="https://provider.contract.invalid/parse",
+    TIANTIANJIEXI_RETRIES=2, TIANTIANJIEXI_HEALTH_QUERY_ACCOUNT_STATUS_ENABLED=False,
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+)
+class BilibiliFallbackDiagnosticHTTPTests(TestCase):
+    def test_public_failure_retains_only_safe_service_diagnostic_in_log(self):
+        from contracts.network import offline_requests
+        from contracts.test_backend_contracts import OfflineTransport, SERVICE, json_response
+
+        ProviderRuntimeSetting.objects.create(
+            pk=1, third_party_mode="public",
+            third_party_allowed_public_platforms=subject.PUBLIC_FALLBACK_RULE,
+        )
+        for kind, expected in (("http", "SERVICE_HTTP_503"),
+                               ("json", "SERVICE_INVALID_JSON"),
+                               ("business", "SERVICE_BUSINESS_CODE_502")):
+            with self.subTest(kind=kind), TemporaryDirectory() as directory:
+                cache.clear()
+                transport = OfflineTransport()
+                service_calls = []
+
+                def send(request, **kwargs):
+                    if request.url != SERVICE:
+                        return transport.send(request, **kwargs)
+                    service_calls.append(request.method)
+                    response = json_response(request, {
+                        "code": 502, "message": "private-response token=never-log-this",
+                    }, status=503 if kind == "http" else 200)
+                    if kind == "json":
+                        response._content = b"<html>private-response token=never-log-this</html>"
+                    return response
+
+                with offline_requests(send), patch(
+                    "xhs_download.services.platforms.tiantian_serial.lock_root",
+                    return_value=Path(directory),
+                ), self.assertLogs(subject.logger, level="INFO") as captured:
+                    response = self.client.get(reverse("bilibili_results"), {"q": URL})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(service_calls, ["POST", "POST"])
+                self.assertEqual(transport.events, ["native"])
+                text = "\n".join(captured.output)
+                self.assertIn("error_type=TianTianJieXiApiError", text)
+                self.assertIn("diagnostic_detail=" + expected, text)
+                self.assertNotIn("private-response", text)
+                self.assertNotIn("never-log-this", text)
+                self.assertNotIn(URL, text)
+                self.assertNotIn(expected.encode(), response.content)
+                self.assertNotIn(b"private-response", response.content)
+        cache.clear()
+
+    def test_unrecognized_diagnostic_and_exception_message_are_not_logged(self):
+        from .services.platforms.tiantianjiexi_generic import TianTianJieXiApiError
+
+        service_error = TianTianJieXiApiError(
+            "secret raw response", diagnostic_detail="https://secret.invalid/?token=private")
+        native_error = HTTP_ERROR()
+        with patch.object(subject, "TianTianJieXiGenericProvider") as service, \
+                self.assertLogs(subject.logger, level="INFO") as captured:
+            service.return_value.parse.side_effect = service_error
+            with self.assertRaises(XhsDownloadError) as raised:
+                subject.parse_fallback(URL, native_parse=Mock(side_effect=native_error),
+                                       authorize=lambda: (PROVIDER,))
+        self.assertIs(raised.exception, native_error)
+        text = "\n".join(captured.output)
+        self.assertIn("diagnostic_detail=UNAVAILABLE", text)
+        self.assertNotIn("secret", text)
+        self.assertNotIn("token", text)
