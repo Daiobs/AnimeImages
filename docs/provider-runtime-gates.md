@@ -175,6 +175,6 @@ governance, and cleanup are documented in [Provider Lab](provider-lab.md).
 
 Douyin KuKuTool ultra-HD is riskier than the regular yt-dlp/gallery-dl capability because it depends on a third-party upstream, dynamic profile behavior, and anti-abuse conditions.
 
-The default production posture is operational: keep KuKuTool capability prepared when dependencies exist, but keep `douyin_ultra_mode=disabled` in admin until staff smoke is complete. If a server must fully remove this capability, set `KUKUTOOL_PROVIDER_ENABLED=False` or `ULTRA_HD_PROVIDER_ENABLED=False`.
+The default production posture is operational: keep KuKuTool capability prepared when dependencies exist, but keep `douyin_ultra_mode=disabled` in admin until staff smoke is complete. If a server must fully remove this capability, set `KUKUTOOL_PROVIDER_ENABLED=False`. That switch turns off KuKuTool only; Douyin ultra-HD stays available through the other services in the configured order, such as TianTian. `ULTRA_HD_PROVIDER_ENABLED=False` removes all Douyin and XHS ultra-HD.
 
 Admin runtime mode remains the daily switch for staff/public access. Missing Node/sidecar dependencies should appear as health readiness failures, not as routine public access switches.

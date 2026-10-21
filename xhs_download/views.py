@@ -530,38 +530,25 @@ def douyin_ultra_service_is_usable():
     # not only while KuKuTool is healthy; Native runs beside it (INV-01).
     provider_settings = get_platform_provider_settings("douyin")
     for name in configured_douyin_services(provider_settings.provider_order):
-        if name == "kukutool":
-            if get_kukutool_provider_health()["available"]:
-                return True
-        elif provider_settings.provider_is_enabled(name):
+        # A switched-off service is skipped before any health probe.
+        if not provider_settings.provider_is_enabled(name):
+            continue
+        if name != "kukutool" or get_kukutool_provider_health()["available"]:
             return True
     return False
 
 
 def ultra_hd_is_available(request=None, platform_id=""):
+    # One access gate for Douyin and XHS ultra; the KuKuTool switch is not part of it.
+    if not provider_is_allowed_for_request(PROVIDER_DOUYIN_ULTRA, request):
+        return False
     normalized_platform_id = str(platform_id or "").strip().lower()
-    douyin_access_allowed = provider_is_allowed_for_request(
-        PROVIDER_DOUYIN_ULTRA,
-        request,
-    )
-    xhs_access_allowed = provider_access_summary(
-        PROVIDER_DOUYIN_ULTRA,
-        request,
-        hard_enabled_override=bool(
-            getattr(settings, "ULTRA_HD_PROVIDER_ENABLED", False)
-        ),
-    )["request_allowed"]
-    xhs_available = bool(
-        xhs_access_allowed and xhs_tiantian_provider_is_available()
-    )
     if normalized_platform_id == "xiaohongshu":
-        return xhs_available
-    if not douyin_access_allowed:
-        return xhs_available if not normalized_platform_id else False
+        return bool(xhs_tiantian_provider_is_available())
     douyin_available = douyin_ultra_service_is_usable()
     if normalized_platform_id in {"douyin", "tiktok"}:
         return douyin_available
-    return bool(douyin_available or xhs_available)
+    return bool(douyin_available or xhs_tiantian_provider_is_available())
 
 
 def youtube_merge_mode_is_available(request):

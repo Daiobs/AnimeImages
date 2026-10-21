@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 from django.core import signing
 from django.core.cache import cache
 from django.template.loader import render_to_string
-from django.test import SimpleTestCase, override_settings
+from django.test import RequestFactory, SimpleTestCase, override_settings
 from django.urls import reverse
 
 from .services.platforms.douyin import DouyinAdapter
@@ -603,3 +603,19 @@ class DouyinFormatSelectionTests(SimpleTestCase):
             cache.clear()
             self.assertEqual(self.client.post(reverse('service_selected_format'), {**body, 'action': 'link'}, content_type='application/json').status_code, 403)
         self.session.post.assert_called_once()
+
+    @override_settings(ULTRA_HD_PROVIDER_ENABLED=True, KUKUTOOL_PROVIDER_ENABLED=False,
+                       THIRD_PARTY_PROVIDER_ENABLED=True, TIANTIANJIEXI_PROVIDER_ENABLED=True,
+                       TIANTIANJIEXI_PHONE='fixture', TIANTIANJIEXI_PASSWORD='fixture')
+    def test_kukutool_switch_refuses_only_kukutool_service_candidates(self):
+        from .ytdlp_selection_views import _admitted
+        runtime = SimpleNamespace(douyin_ultra_mode='public', douyin_ultra_rollout_percent=100,
+                                  douyin_ultra_disabled_reason='')
+        with patch('xhs_download.services.provider_access.load_runtime_setting', return_value=runtime):
+            for provider, admitted in (('tiantianjiexi', True), ('kukutool', False)):
+                record = {'source_url': f'https://www.douyin.com/video/{AWEME}', 'provider_id': provider,
+                          'dedicated_resource_id': AWEME,
+                          'match': {'provider_id': provider, 'extractor_id': 'douyin:' + provider}}
+                with self.subTest(provider=provider):
+                    self.assertIs(_admitted(RequestFactory().post('/'), record, provider=provider, service=True),
+                                  admitted)

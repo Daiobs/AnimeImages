@@ -11468,6 +11468,40 @@ class ProviderSettingsAdminViewTests(TestCase):
                 self.assertFalse(ultra_hd_is_available(request, "douyin"))
 
     @override_settings(
+        ULTRA_HD_PROVIDER_ENABLED=True,
+        ULTRA_HD_PUBLIC_ACCESS_ENABLED=False,
+        KUKUTOOL_PROVIDER_ENABLED=False,
+        THIRD_PARTY_PROVIDER_ENABLED=True,
+        TIANTIANJIEXI_PHONE="fixture-phone",
+        TIANTIANJIEXI_PASSWORD="fixture-password",
+    )
+    @patch("xhs_download.views.get_kukutool_provider_health", return_value={"available": True})
+    def test_kukutool_env_switch_turns_off_only_kukutool(self, mock_health):
+        setting = ProviderRuntimeSetting.load()
+        setting.douyin_ultra_mode = ProviderAccessMode.STAFF
+        setting.save(update_fields=["douyin_ultra_mode", "updated_at"])
+        request = RequestFactory().get("/")
+        request.user = Mock(is_active=True, is_staff=True)
+
+        # (configured order, TianTian enabled, ultra offered)
+        for order, tiantian, offered in (
+            ("tiantianjiexi,kukutool,native", True, True),
+            ("kukutool,tiantianjiexi,native", True, True),
+            ("tiantianjiexi,kukutool,native", False, False),
+            ("kukutool,native", True, False),
+        ):
+            with self.subTest(order=order, tiantian=tiantian), override_settings(
+                DOUYIN_ULTRA_PROVIDER_ORDER=order, TIANTIANJIEXI_PROVIDER_ENABLED=tiantian,
+            ):
+                self.assertIs(ultra_hd_is_available(request, "douyin"), offered)
+        # A switched-off KuKuTool is never probed, even if it would report healthy.
+        mock_health.assert_not_called()
+
+        # ULTRA_HD_PROVIDER_ENABLED stays the capability gate.
+        with override_settings(ULTRA_HD_PROVIDER_ENABLED=False, TIANTIANJIEXI_PROVIDER_ENABLED=True):
+            self.assertFalse(ultra_hd_is_available(request, "douyin"))
+
+    @override_settings(
         THIRD_PARTY_PROVIDER_ENABLED=True,
         THIRD_PARTY_PUBLIC_ACCESS_ENABLED=False,
         THIRD_PARTY_STAFF_ONLY=True,
@@ -13941,6 +13975,34 @@ class AdminObservabilityMvpTests(TestCase):
 
         self.assertContains(response, "环境 capability gate 未开启")
         self.assertContains(response, "不建议公开")
+
+    @override_settings(ULTRA_HD_PROVIDER_ENABLED=True, KUKUTOOL_PROVIDER_ENABLED=False)
+    @patch(
+        "xhs_download.services.control_plane.get_runtime_readiness",
+        return_value={"ready": True, "components": {"database": True, "cache": True}},
+    )
+    # Every control-plane read is rebuilt instead of served from its 45 s context cache.
+    @patch("xhs_download.services.control_plane.cache_get", return_value=None)
+    def test_kukutool_switch_alone_keeps_douyin_ultra_capability_on_admin_pages(self, _mock_cache, _mock_readiness):
+        from .services.provider_health_tests import PROVIDER_HEALTH_TESTS, provider_test_runtime_info
+
+        client = Client()
+        client.force_login(self.superuser)
+        tiantian_test = next(item for item in PROVIDER_HEALTH_TESTS if item["key"] == "douyin_tiantianjiexi_ultra")
+
+        def douyin_ultra(rows):
+            return next(row for row in rows if row["provider_id"] == PROVIDER_DOUYIN_ULTRA)["hard_enabled"]
+
+        def capabilities():
+            ProviderRuntimeSetting.objects.all().delete()
+            uninitialized = douyin_ultra(client.get("/admin/control-plane/").context["provider_status"]["rows"])
+            rollout = douyin_ultra(client.get("/admin/rollout-guard/").context["provider_rows"])
+            control = douyin_ultra(client.get("/admin/control-plane/").context["provider_status"]["rows"])
+            return [uninitialized, rollout, control, provider_test_runtime_info(tiantian_test)["hard_enabled"]]
+
+        self.assertEqual(capabilities(), [True, True, True, True])
+        with override_settings(ULTRA_HD_PROVIDER_ENABLED=False):
+            self.assertEqual(capabilities(), [False, False, False, False])
 
     @override_settings(YOUTUBE_MERGE_PROVIDER_ENABLED=True)
     def test_rollout_guard_health_failed_is_do_not_public(self):

@@ -87,10 +87,9 @@ def configured_mode_for_provider(provider_id, runtime_setting=None):
 
 def hard_enabled_for_provider(provider_id):
     if provider_id == PROVIDER_DOUYIN_ULTRA:
-        return bool(
-            getattr(settings, "ULTRA_HD_PROVIDER_ENABLED", False)
-            and getattr(settings, "KUKUTOOL_PROVIDER_ENABLED", False)
-        )
+        # KUKUTOOL_PROVIDER_ENABLED switches off KuKuTool alone; KuKuTool's own
+        # enabled and health checks read it, so other services keep ultra.
+        return bool(getattr(settings, "ULTRA_HD_PROVIDER_ENABLED", False))
     if provider_id == PROVIDER_YOUTUBE_MERGE:
         return bool(getattr(settings, "YOUTUBE_MERGE_PROVIDER_ENABLED", False))
     if provider_id == PROVIDER_THIRD_PARTY:

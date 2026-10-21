@@ -376,17 +376,16 @@ class XhsTianTianAdapterContractTests(SimpleTestCase):
         return_value=True,
     )
     @patch(
-        "xhs_download.views.provider_access_summary",
-        return_value={"request_allowed": True},
-    )
-    @patch(
-        "xhs_download.views.provider_is_allowed_for_request",
-        return_value=False,
+        "xhs_download.services.provider_access.load_runtime_setting",
+        return_value=SimpleNamespace(
+            douyin_ultra_mode="public",
+            douyin_ultra_rollout_percent=100,
+            douyin_ultra_disabled_reason="",
+        ),
     )
     def test_xhs_ultra_availability_does_not_require_kukutool(
         self,
-        _douyin_access,
-        _xhs_access,
+        _runtime_setting,
         _xhs_provider,
     ):
         self.assertTrue(
@@ -400,25 +399,25 @@ class XhsTianTianAdapterContractTests(SimpleTestCase):
         ULTRA_HD_PROVIDER_ENABLED=True,
         KUKUTOOL_PROVIDER_ENABLED=False,
     )
-    def test_access_mode_can_be_reused_with_xhs_capability_gate(self):
+    def test_kukutool_switch_is_not_part_of_the_ultra_access_gate(self):
         runtime_setting = SimpleNamespace(
             douyin_ultra_mode="public",
             douyin_ultra_rollout_percent=100,
             douyin_ultra_disabled_reason="",
         )
-        self.assertFalse(
-            provider_access_summary(
-                PROVIDER_DOUYIN_ULTRA,
-                runtime_setting=runtime_setting,
-            )["request_allowed"]
-        )
         self.assertTrue(
             provider_access_summary(
                 PROVIDER_DOUYIN_ULTRA,
                 runtime_setting=runtime_setting,
-                hard_enabled_override=True,
             )["request_allowed"]
         )
+        with override_settings(ULTRA_HD_PROVIDER_ENABLED=False):
+            self.assertFalse(
+                provider_access_summary(
+                    PROVIDER_DOUYIN_ULTRA,
+                    runtime_setting=runtime_setting,
+                )["request_allowed"]
+            )
 
 
 class XhsTianTianPayloadTests(SimpleTestCase):
