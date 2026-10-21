@@ -1,8 +1,9 @@
 # Product Contracts
 
 The confirmed text is in [product-invariants.md](../docs/product-invariants.md).
-These tests protect INV-02 through INV-09. INV-01 belongs to T12, not this change.
-Base for the recorded counterchecks: `5afbab0d5a1dff19aa3b3a71e7a2b94ec7f3b0ae`.
+These tests protect INV-01 through INV-09. Base for the recorded counterchecks:
+`5afbab0d5a1dff19aa3b3a71e7a2b94ec7f3b0ae`; INV-01 (added by T12) used
+`f918b598a671c8715d519c4103b14cae28502dee`.
 
 Use the existing application interpreter, in a checkout without `.env`:
 
@@ -23,6 +24,12 @@ in CI is a failure. `CONTRACT_NGINX_BINARY` can point to an existing executable.
 - Real HTTP routes, admission, scheduling, candidates, templates, download consumers
   and frontend controllers are retained. Only upstream HTTP/DNS, isolated lock storage,
   and browser platform boundaries are replaced. Local database connections remain real.
+- INV-01 drives the anonymous homepage parse and the continuation poll in real time:
+  the admin budget is 1.0 s (its minimum) and the fake Native answers after 0.8 s.
+  Native, TianTian and the KuKuTool sidecar are faked at the HTTP boundary. The local
+  KuKuTool Node runtime is declared absent, because that subprocess would bypass the
+  boundary and reach the real network. The provider order is read from
+  `DOUYIN_ULTRA_PROVIDER_ORDER`; there is no admin control for it yet.
 - INV-02 uses TianTian through the Bilibili fallback as the representative recovery
   path. Timeout/disconnect are simulated after a POST send; they do not prove a remote
   terminal state. Recovery uses natural, bounded expiry without admin intervention.
@@ -47,6 +54,7 @@ not syntax/import errors. The Nginx countercheck is also an executable CI test.
 
 | Contract | Isolated mutation | Observed failure |
 | --- | --- | --- |
+| INV-01 | Unchanged `f918b59` (Native after the preferred window; order rewritten) | Native first asked at 1.15 s, after the 1.0 s budget; order `kukutool,tiantianjiexi` called only TianTian |
 | INV-02 | Failure cache retained for 24 hours | Failure, timeout and disconnect could not recover into usable public HTML |
 | INV-03 | Choose lowest default; force bound selections to Blob; require Worker v4 | Wrong default; no SW navigation; incompatible legacy registration |
 | INV-04 | Premature saved copy; attachment `DENY` instead of `SAMEORIGIN` | Controller rejects premature completion; both UA response checks reject framing |

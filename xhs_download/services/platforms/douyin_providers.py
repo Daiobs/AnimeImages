@@ -1431,66 +1431,71 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
         return result
 
 
+DOUYIN_ORDERED_SERVICES = ("tiantianjiexi", "kukutool")
+
+
 class DouyinTianTianFirstProvider(DouyinResultProvider):
+    # The policy name is historical; the configured order decides which service goes first.
     name = "tiantian_first"
 
-    def __init__(self, provider_settings=None, providers=None, provider_names=("tiantianjiexi", "kukutool")):
+    def __init__(self, provider_settings=None, providers=None, provider_names=DOUYIN_ORDERED_SERVICES):
         self.provider_settings = provider_settings or get_platform_provider_settings("douyin")
-        available = (
-            DouyinTianTianJieXiProvider(
+        available = {
+            "tiantianjiexi": lambda: DouyinTianTianJieXiProvider(
                 self.provider_settings, reserve_fallback_grace=False,
                 use_reference_metadata=False,
             ),
-            DouyinKukuToolProvider(replace(
+            "kukutool": lambda: DouyinKukuToolProvider(replace(
                 self.provider_settings, ultra_kukutool_grace_seconds=0,
                 kukutool_reference_wait_seconds=0,
             )),
-        )
+        }
         self.providers = tuple(providers) if providers is not None else tuple(
-            provider for provider in available if provider.name in provider_names
+            available[name]() for name in provider_names if name in available
         )
 
     def parse(self, adapter, context):
         window = max(0.1, self.provider_settings.ultra_total_timeout_seconds)
-        primary_deadline = context.deadline_monotonic or (monotonic() + window)
+        budget_deadline = context.deadline_monotonic or (monotonic() + window)
         outer_deadline = context.outer_deadline_monotonic
 
         def bounded_deadline(deadline):
             return min(deadline, outer_deadline) if outer_deadline else deadline
 
-        primary_deadline = bounded_deadline(primary_deadline)
-        if monotonic() >= primary_deadline:
+        budget_deadline = bounded_deadline(budget_deadline)
+        if monotonic() >= budget_deadline:
             raise XhsProviderTimeoutError("抖音首选等待期限已到")
         controller = context.ultra_attempt_controller
-        services = {
-            provider.name: provider for provider in self.providers
+        services = [
+            provider for provider in self.providers
             if self.provider_settings.provider_is_enabled(provider.name)
-        }
+        ]
         empty_native = Future()
         empty_native.set_result(None)
-        primary_context = replace(
-            context, deadline_monotonic=primary_deadline,
-            continuation_deadline_monotonic=bounded_deadline(
-                min(context.continuation_deadline_monotonic, monotonic() + DOUYIN_CONTINUATION_TTL_SECONDS)
-                if context.continuation_deadline_monotonic else primary_deadline
-            ),
+        continuation_deadline = bounded_deadline(
+            min(context.continuation_deadline_monotonic, monotonic() + DOUYIN_CONTINUATION_TTL_SECONDS)
+            if context.continuation_deadline_monotonic else budget_deadline
+        )
+        service_context = replace(
+            context, deadline_monotonic=budget_deadline,
+            continuation_deadline_monotonic=continuation_deadline,
             native_fallback_future=empty_native, service_execution_policy=self.name,
         )
-        primary = services.get("tiantianjiexi")
-        if primary is not None:
-            cached_reader = getattr(primary, "cached_result", None)
+        if services:
+            cached_reader = getattr(services[0], "cached_result", None)
             if callable(cached_reader):
                 try:
-                    cached = cached_reader(adapter, primary_context)
+                    cached = cached_reader(adapter, service_context)
                 except Exception as error:
-                    log_provider_failure(primary.name, primary_context, error)
+                    log_provider_failure(services[0].name, service_context, error)
                     cached = None
                 if cached and cached.assets:
                     return with_parse_metadata(cached, service_execution_policy=self.name)
 
         continuation = None
-        scorer = DouyinUltraRaceProvider(self.provider_settings, providers=tuple(services.values()))
+        scorer = DouyinUltraRaceProvider(self.provider_settings, providers=tuple(services))
         futures = {}
+        waiting = list(services)
 
         def accepted_result(result, stage_context):
             deadline = (
@@ -1505,10 +1510,8 @@ class DouyinTianTianFirstProvider(DouyinResultProvider):
             if continuation is not None:
                 future.add_done_callback(lambda done: continuation.capture_future(
                     done, provider_name=name, score_result=scorer.result_score,
-                    # A fallback must not close the pending primary's continuation.
-                    is_strong_result=lambda result: (
-                        name == "tiantianjiexi" and scorer.result_is_strong_candidate(result)
-                    ),
+                    # INV-01: any service result may end the wait; none is ranked against another.
+                    is_strong_result=lambda result: True,
                     prepare_result=lambda result: accepted_result(result, stage_context),
                 ))
 
@@ -1523,9 +1526,25 @@ class DouyinTianTianFirstProvider(DouyinResultProvider):
                     controller.skip_fresh_work(provider.name, reason="local_capacity_full")
                 future = Future()
                 future.set_result(None)
-            capture(future, provider.name, stage_context)
             futures[future] = (provider.name, stage_context)
             return future
+
+        def start_next(stage_context):
+            if waiting:
+                submit_service(waiting.pop(0), stage_context)
+
+        def running_services():
+            return [future for future, (name, _context) in futures.items() if name != "native"]
+
+        def ready_results(done):
+            # Native first: it is the floor a service result has to beat.
+            for future in sorted(done, key=lambda future: futures[future][0] != "native"):
+                name = futures[future][0]
+                yield name, read_result(future)
+
+        def upgrades_native(result):
+            # Services are never ranked against each other, only against Native.
+            return native_result is None or scorer.result_score(result) > scorer.result_score(native_result)
 
         def read_result(future):
             name, stage_context = futures.pop(future)
@@ -1554,92 +1573,79 @@ class DouyinTianTianFirstProvider(DouyinResultProvider):
                     result = continued
             return result
 
+        # INV-01: Native runs from the start, beside the first configured service.
+        native_context = replace(
+            context, deadline_monotonic=bounded_deadline(
+                monotonic() + max(0.1, self.provider_settings.ultra_native_timeout_seconds),
+            ), allow_continuation=False, native_fallback_future=None,
+        )
+
+        def parse_native():
+            result = DouyinNativeProvider().parse(adapter, native_context)
+            return accepted_result(result, native_context) if result and result.assets else None
+
+        native_future = submit_provider_task(
+            "douyin-native", self.provider_settings.native_executor_workers,
+            self.provider_settings.native_max_pending_tasks,
+            parse_native,
+        )
+        context.native_fallback_future = native_future or empty_native
+        context.service_execution_policy = self.name
+        if native_future is not None:
+            futures[native_future] = ("native", native_context)
+        native_result = None
         try:
-            if primary is not None:
-                primary_future = submit_service(primary, primary_context)
-                done, _ = wait((primary_future,), timeout=max(0, primary_deadline - monotonic()))
-                if done:
-                    result = read_result(primary_future)
-                    if result:
-                        if continuation is not None:
-                            continuation.abandon()
-                        return result
-                else:
-                    log_provider_event(
-                        "douyin_primary_wait_deadline", primary.name, primary_context,
-                        upstream_may_be_running=True,
-                    )
-
-            fallback = services.get("kukutool")
-            pending_services = len(futures) + int(fallback is not None)
-            if context.allow_continuation and pending_services:
-                continuation = DouyinContinuationCoordinator(
-                    # Each page keeps its own fallback/upgrade threshold. Shared
-                    # upstream work is deduplicated by the providers' single-flight.
-                    pending_services,
-                    client_identity=context.continuation_identity,
-                    retry_after_getter=lambda: getattr(controller, "cooldown_retry_after", 0),
-                )
-                for future, (name, stage_context) in futures.items():
-                    capture(future, name, stage_context)
-
-            # The fallback tier gets its own window. Only an explicit caller
-            # deadline (e.g. Batch) may shorten it; it is not primary leftovers.
-            fallback_deadline = bounded_deadline(monotonic() + window)
-            context.deadline_monotonic = fallback_deadline
-            context.service_execution_policy = self.name
-            if monotonic() >= fallback_deadline:
-                if continuation is not None:
-                    continuation.abandon()
-                raise XhsProviderTimeoutError("抖音解析超过调用方期限")
-            native_context = replace(
-                context, deadline_monotonic=min(
-                    fallback_deadline,
-                    monotonic() + max(0.1, self.provider_settings.ultra_native_timeout_seconds),
-                ), allow_continuation=False, native_fallback_future=None,
-            )
-            def parse_native():
-                result = DouyinNativeProvider().parse(adapter, native_context)
-                return accepted_result(result, native_context) if result and result.assets else None
-
-            native_future = submit_provider_task(
-                "douyin-native", self.provider_settings.native_executor_workers,
-                self.provider_settings.native_max_pending_tasks,
-                parse_native,
-            )
-            context.native_fallback_future = native_future or empty_native
-            if native_future is not None:
-                futures[native_future] = ("native", native_context)
-            if fallback is not None:
-                fallback_context = replace(
-                    context, deadline_monotonic=fallback_deadline,
-                    allow_continuation=False, continuation_deadline_monotonic=0,
-                    native_fallback_future=empty_native,
-                )
-                submit_service(fallback, fallback_context)
-            while futures:
-                remaining = fallback_deadline - monotonic()
+            start_next(service_context)
+            # Inside the budget a service result is shown at once; a failed
+            # service hands over to the next one in the configured order.
+            while running_services():
+                remaining = budget_deadline - monotonic()
                 if remaining <= 0:
                     break
                 done, _ = wait(futures, timeout=remaining, return_when=FIRST_COMPLETED)
-                if not done:
+                for name, result in ready_results(done):
+                    if name == "native":
+                        native_result = result
+                    elif result and upgrades_native(result):
+                        return result
+                    elif monotonic() < budget_deadline:
+                        start_next(service_context)
+            for future in running_services():
+                log_provider_event(
+                    "douyin_primary_wait_deadline", futures[future][0], service_context,
+                    upstream_may_be_running=True,
+                )
+            # Without a service result, Native is shown as soon as it is ready.
+            while native_future in futures:
+                remaining = native_context.deadline_monotonic - monotonic()
+                if remaining <= 0:
                     break
-                ready_results = []
-                for future in done:
-                    name = futures[future][0]
-                    result = read_result(future)
-                    if result:
-                        ready_results.append((name, result))
-                if ready_results:
-                    # Compare already-ready peers, without waiting for unfinished
-                    # work or letting a provider label beat higher-quality media.
-                    ready_primary = next((result for name, result in ready_results
-                                          if name == "tiantianjiexi"), None)
-                    best = ready_primary or max(
-                        (result for _name, result in ready_results), key=scorer.result_score,
-                    )
-                    return finish(best)
-            return finish(None)
+                done, _ = wait(futures, timeout=remaining, return_when=FIRST_COMPLETED)
+                for name, result in ready_results(done):
+                    if name == "native":
+                        native_result = result
+                    elif result and upgrades_native(result):
+                        return result
+            if context.allow_continuation:
+                # Only once the page settles for Native does the rest of the order start.
+                later_context = replace(service_context, deadline_monotonic=continuation_deadline)
+                while waiting:
+                    start_next(later_context)
+            pending = running_services()
+            if context.allow_continuation and pending:
+                continuation = DouyinContinuationCoordinator(
+                    # Each page keeps its own fallback/upgrade threshold. Shared
+                    # upstream work is deduplicated by the providers' single-flight.
+                    len(pending),
+                    client_identity=context.continuation_identity,
+                    retry_after_getter=lambda: getattr(controller, "cooldown_retry_after", 0),
+                    first_upgrade_wins=True,
+                )
+                if native_result is not None:
+                    continuation.retain_fallback_score(scorer.result_score(native_result))
+                for future in pending:
+                    capture(future, *futures[future])
+            return finish(native_result)
         except DouyinContinuationPendingError:
             raise
         except Exception:
@@ -2933,16 +2939,17 @@ def build_douyin_result_providers(
         )
     else:
         configured_order = tuple(provider_settings.provider_order or ())
-        service_names = tuple(
-            name for name in ("tiantianjiexi", "kukutool")
-            if name in configured_order or "ultra_race" in configured_order
-        )
+        # Services keep the configured order (A1). The retired race/tier names
+        # carry no order of their own, so they stand for the default chain.
+        service_names = tuple(name for name in configured_order if name in DOUYIN_ORDERED_SERVICES)
+        if not service_names and {"ultra_race", "tiantian_first"} & set(configured_order):
+            service_names = DOUYIN_ORDERED_SERVICES
         if service_names:
             provider_settings = replace(
                 provider_settings,
                 provider_order=("tiantian_first", *(
                     name for name in configured_order
-                    if name not in {"tiantianjiexi", "kukutool", "ultra_race", "tiantian_first"}
+                    if name not in {*DOUYIN_ORDERED_SERVICES, "ultra_race", "tiantian_first"}
                 )),
             )
 

@@ -1,5 +1,10 @@
-"""Two-tier Douyin policy through real providers and isolated boundaries."""
-from concurrent.futures import ThreadPoolExecutor, wait
+"""INV-01 Douyin policy through real providers and isolated boundaries.
+
+Native runs from the start of the parse beside the configured services. Inside
+the admin budget a service result that beats Native is shown at once; when the
+budget ends Native is shown and the first later upgrade replaces it.
+"""
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import replace
 from threading import BoundedSemaphore, Event
 import time
@@ -14,7 +19,7 @@ from .services.assets import MediaAsset, ParseResult
 from .services.common import XhsProviderTimeoutError
 from .services.douyin_ultra_attempts import DouyinUltraAttemptController, DouyinUltraAttemptRateLimitedError
 from .services.douyin_continuation import (
-    DouyinContinuationPendingError, issue_douyin_continuation_token,
+    DouyinContinuationCoordinator, DouyinContinuationPendingError, issue_douyin_continuation_token,
     poll_douyin_continuation, find_active_douyin_continuation,
 )
 from .services.platforms.douyin import DouyinAdapter
@@ -175,15 +180,17 @@ class DouyinTianTianFirstTests(SimpleTestCase):
                 ultra_attempt_controller=controller,
             )
 
-    def test_real_builder_selects_sequence_and_success_starts_only_tian(self):
+    def test_real_builder_runs_native_beside_tian_and_shows_tian_success(self):
         result = self.coordinator.parse(self.adapter, self.context())
         self.assertEqual(result.metadata["selected_provider"], "tiantianjiexi")
         self.assertEqual(len(result.metadata["upstream_candidates"]), 3)
         self.assertNotIn("ultra_race_winner", result.metadata)
         self.assertEqual(self.events, ["tiantianjiexi"])
         self.runner.assert_not_called()
-        self.adapter.fetch_mobile_feed_result.assert_not_called()
         self.consume.assert_called_once()
+        # INV-01: Native starts with the parse, even when the preferred service wins.
+        self.finish_tasks()
+        self.adapter.fetch_mobile_feed_result.assert_called_once()
 
     def test_low_quality_success_does_not_trigger_fallback_or_native_enrichment(self):
         data = self.response.json.return_value["data"]
@@ -193,7 +200,7 @@ class DouyinTianTianFirstTests(SimpleTestCase):
             result = self.coordinator.parse(self.adapter, self.context())
         self.assertEqual(result.metadata["selected_provider"], "tiantianjiexi")
         self.assertEqual(self.events, ["tiantianjiexi"])
-        self.adapter.fetch_mobile_feed_result.assert_not_called()
+        self.runner.assert_not_called()
 
     def test_valid_tian_media_with_malformed_title_does_not_trigger_fallback(self):
         self.response.json.return_value["data"]["title"] = "https://[broken"
@@ -202,8 +209,6 @@ class DouyinTianTianFirstTests(SimpleTestCase):
         self.assertEqual(result.metadata["selected_provider"], "tiantianjiexi")
         self.assertEqual(self.events, ["tiantianjiexi"])
         self.runner.assert_not_called()
-        self.adapter.fetch_mobile_feed_result.assert_not_called()
-        self.adapter.fetch_mobile_share_result.assert_not_called()
 
     def test_tian_cache_is_zero_external_and_read_does_not_renew_ttl(self):
         self.seed_tian(ttl=2)
@@ -244,8 +249,9 @@ class DouyinTianTianFirstTests(SimpleTestCase):
         self.assertEqual(second.metadata["selected_provider"], "tiantianjiexi")
         self.assertEqual(self.events, ["tiantianjiexi"])
         self.runner.assert_not_called()
-        self.adapter.fetch_mobile_feed_result.assert_not_called()
-        self.adapter.fetch_mobile_share_result.assert_not_called()
+        # The cached first parse is zero-external; only the fresh one starts Native.
+        self.finish_tasks()
+        self.adapter.fetch_mobile_feed_result.assert_called_once()
 
     def test_failure_uses_kuku_cache_only_after_tian_attempt(self):
         self.seed_kuku(); self.fail_tian()
@@ -326,8 +332,11 @@ class DouyinTianTianFirstTests(SimpleTestCase):
         def advance_wait(seconds):
             self.advance(seconds)
         with patch("xhs_download.services.platforms.tiantianjiexi_generic.time.sleep", side_effect=advance_wait):
-            result = self.coordinator.parse(self.adapter, self.context())
-        self.assertEqual(result.metadata["selected_provider"], "kukutool")
+            try:
+                self.coordinator.parse(self.adapter, self.context())
+            except DouyinContinuationPendingError:
+                pass
+            self.finish_tasks()
         self.case.session.post.assert_not_called()
         self.assertEqual(cache.get(key), "existing-owner")
 
@@ -348,7 +357,7 @@ class DouyinTianTianFirstTests(SimpleTestCase):
         self.assertTrue(all(r.metadata["selected_provider"] == "tiantianjiexi" for r in results))
         self.case.session.post.assert_called_once(); self.runner.assert_not_called()
 
-    def test_primary_and_fallback_have_independent_bounded_windows(self):
+    def test_budget_is_not_renewed_for_the_next_service(self):
         captured = {}
         def tian_timeout(*args, **kwargs):
             captured["tian_timeout"] = kwargs["timeout"]
@@ -356,15 +365,21 @@ class DouyinTianTianFirstTests(SimpleTestCase):
             raise requests.Timeout("Controlled Tian stage timeout")
         def kuku_timeout(*args, **kwargs):
             captured["kuku_timeout"] = kwargs["timeout_seconds"]
-            self.advance(1)
             raise RuntimeError("Controlled Kuku failure")
         self.case.session.post.side_effect = tian_timeout
         self.runner.side_effect = kuku_timeout
         context = self.context()
-        self.coordinator.parse(self.adapter, context)
+        budget_deadline = context.deadline_monotonic
+        try:
+            self.coordinator.parse(self.adapter, context)
+        except DouyinContinuationPendingError:
+            pass
+        self.finish_tasks()
         self.assertAlmostEqual(captured["tian_timeout"], 15, delta=0.1)
-        self.assertAlmostEqual(captured["kuku_timeout"], 5, delta=0.1)
-        self.assertGreater(context.deadline_monotonic - self.clock(), 3.8)
+        # INV-01: no second front-end window. A service that starts after the
+        # budget only feeds the page's continuation, within its remaining time.
+        self.assertEqual(context.deadline_monotonic, budget_deadline)
+        self.assertLessEqual(captured["kuku_timeout"], 10.1)
 
     def test_kuku_task_dequeued_after_deadline_does_not_reserve_or_send(self):
         context = replace(self.context(), deadline_monotonic=self.clock() + 0.5)
@@ -458,7 +473,8 @@ class DouyinTianTianFirstTests(SimpleTestCase):
         for order, expected in (
             (("tiantianjiexi", "native"), ["tiantianjiexi"]),
             (("kukutool", "native"), ["kukutool"]),
-            (("kukutool", "tiantianjiexi", "native"), ["tiantianjiexi", "kukutool"]),
+            # A1: the configured order is kept, never re-ranked by the code.
+            (("kukutool", "tiantianjiexi", "native"), ["kukutool", "tiantianjiexi"]),
             (("ultra_race", "native"), ["tiantianjiexi", "kukutool"]),
         ):
             with self.subTest(order=order):
@@ -466,27 +482,25 @@ class DouyinTianTianFirstTests(SimpleTestCase):
                 self.assertIsInstance(providers[0], DouyinTianTianFirstProvider)
                 self.assertEqual([p.name for p in providers[0].providers], expected)
 
-    def test_late_tian_updates_via_existing_continuation_without_reparse(self):
-        self.settings = replace(self.settings, ultra_total_timeout_seconds=0.2,
-                                ultra_kukutool_grace_seconds=0.1)
+    def test_late_tian_replaces_native_through_continuation_without_reparse(self):
+        self.settings = replace(self.settings, ultra_total_timeout_seconds=0.2)
         self.coordinator.provider_settings = self.settings
         entered = Event()
         def delayed_post(*args, **kwargs):
             entered.set(); self.release.wait(1)
             return self.response
         self.case.session.post.side_effect = delayed_post
-        # Same input, but the primary has genuinely higher declared quality.
+        self.runner.side_effect = RuntimeError("Controlled fallback failure")
+        self.adapter.fetch_mobile_feed_result.return_value = self.native("720P", 1_000_000)
         self.response.json.return_value["data"]["videos"][0]["streams"][0]["qualityLabel"] = "4K"
         with self.assertRaises(DouyinContinuationPendingError) as raised:
             self.coordinator.parse(self.adapter, self.context())
+        # INV-01: when the budget ends Native is shown; the late ultra result replaces it.
         result = raised.exception.fallback_result
         self.assertTrue(entered.is_set())
-        self.assertEqual(result.metadata["selected_provider"], "kukutool")
-        selected = result.video_assets[0].url
-        self.release.set(); self.finish_tasks()
-        self.assertEqual(result.video_assets[0].url, selected)
-        self.assertEqual(result.metadata["selected_provider"], "kukutool")
+        self.assertEqual(result.metadata["selected_provider"], "mobile_feed")
         self.assertEqual(result.metadata["service_execution_policy"], "tiantian_first")
+        self.release.set(); self.finish_tasks()
         token = issue_douyin_continuation_token(
             task_id=raised.exception.task_id, client_identity="fixture", platform_key="home",
         )
@@ -497,9 +511,11 @@ class DouyinTianTianFirstTests(SimpleTestCase):
         self.assertEqual(len(outcome.result.metadata["upstream_candidates"]), 3)
         self.assertEqual(find_active_douyin_continuation(AWEME, "fixture"), "")
         self.case.session.post.assert_called_once()
-        self.runner.assert_called_once()
+        self.adapter.fetch_mobile_feed_result.assert_called_once()
 
-    def test_native_returns_while_kuku_is_still_running_in_same_tier(self):
+    def test_next_service_gets_remaining_budget_and_native_is_shown_when_it_ends(self):
+        self.settings = replace(self.settings, ultra_total_timeout_seconds=0.2)
+        self.coordinator.provider_settings = self.settings
         self.fail_tian()
         entered = Event()
         def blocked_kuku(*args, **kwargs):
@@ -507,25 +523,20 @@ class DouyinTianTianFirstTests(SimpleTestCase):
             entered.set()
             self.release.wait(2)
             return {"videos": [{"video_fullinfo": [resource("1080P")]}]}
-        def native(*args, **kwargs):
-            self.assertTrue(entered.wait(1), "Kukutool and Native must be started together")
-            self.assertEqual(self.events[0], "tiantianjiexi")
-            return ParseResult(
-                platform="douyin", post_type="video", base_filename="Native fallback",
-                assets=(MediaAsset(media_type="video", platform="douyin",
-                                   url=resource("native")["url"]),),
-            )
         self.runner.side_effect = blocked_kuku
-        self.adapter.fetch_mobile_feed_result.side_effect = native
+        self.adapter.fetch_mobile_feed_result.return_value = self.native("540p", 1000)
         with self.assertRaises(DouyinContinuationPendingError) as raised:
             self.parse_entry(controller=self.context().ultra_attempt_controller)
         fallback = raised.exception.fallback_result
         self.assertEqual(fallback.metadata["selected_provider"], "mobile_feed")
+        # The failed preferred service hands over at once, inside the same budget.
+        self.assertTrue(entered.is_set())
+        self.assertEqual(self.events, ["tiantianjiexi", "kukutool"])
         self.assertFalse(self.release.is_set())
-        self.adapter.fetch_mobile_feed_result.assert_called_once()
         self.release.set(); self.finish_tasks()
         self.case.session.post.assert_called_once()
         self.runner.assert_called_once()
+        self.adapter.fetch_mobile_feed_result.assert_called_once()
 
     def test_result_after_execution_deadline_cannot_upgrade_delivered_fallback(self):
         self.settings = replace(self.settings, ultra_total_timeout_seconds=0.05)
@@ -534,9 +545,11 @@ class DouyinTianTianFirstTests(SimpleTestCase):
             self.release.wait(2)
             return self.response
         self.case.session.post.side_effect = delayed_post
+        self.runner.side_effect = RuntimeError("Controlled fallback failure")
+        self.adapter.fetch_mobile_feed_result.return_value = self.native("540p", 1000)
         with self.assertRaises(DouyinContinuationPendingError) as raised:
             self.coordinator.parse(self.adapter, self.context())
-        self.assertEqual(raised.exception.fallback_result.metadata["selected_provider"], "kukutool")
+        self.assertEqual(raised.exception.fallback_result.metadata["selected_provider"], "mobile_feed")
         self.advance(16)
         self.release.set(); self.finish_tasks()
         token = issue_douyin_continuation_token(
@@ -544,7 +557,7 @@ class DouyinTianTianFirstTests(SimpleTestCase):
         )
         outcome, _ = poll_douyin_continuation(token, client_identity="fixture")
         if outcome.result is not None:
-            self.assertEqual(outcome.result.metadata["selected_provider"], "kukutool")
+            self.assertNotEqual(outcome.result.metadata["selected_provider"], "tiantianjiexi")
         else:
             self.assertIn(outcome.status, ("timeout", "failed", "unchanged"))
         self.case.session.post.assert_called_once()
@@ -582,15 +595,20 @@ class DouyinTianTianFirstTests(SimpleTestCase):
         self.adapter.fetch_mobile_feed_result.assert_called_once()
         self.adapter.fetch_mobile_share_result.assert_called_once()
 
-    def high_native(self):
+    def native(self, label, size):
         return ParseResult(
-            platform="douyin", post_type="video", base_filename="Native 4K",
+            platform="douyin", post_type="video", base_filename=f"Native {label}",
             assets=(MediaAsset(media_type="video", platform="douyin",
-                               url=resource("native")["url"], quality_label="4K",
-                               size_bytes=60 * 1024 * 1024),),
+                               url=resource("native")["url"], quality_label=label,
+                               size_bytes=size),),
         )
 
+    def high_native(self):
+        return self.native("4K", 60 * 1024 * 1024)
+
     def test_late_lower_quality_fallback_does_not_downgrade_displayed_native(self):
+        self.settings = replace(self.settings, ultra_total_timeout_seconds=0.2)
+        self.coordinator.provider_settings = self.settings
         self.fail_tian()
         context = self.context()
         context.ultra_attempt_controller.record_cooldown("tiantianjiexi", 8)
@@ -617,7 +635,7 @@ class DouyinTianTianFirstTests(SimpleTestCase):
         self.assertEqual(outcome.retry_after_seconds, 8)
         self.assertEqual(find_active_douyin_continuation(AWEME, "fixture"), "")
 
-    def test_already_ready_fallback_peers_are_compared_without_provider_preference(self):
+    def test_service_result_that_does_not_beat_ready_native_is_not_shown(self):
         self.fail_tian()
         self.adapter.fetch_mobile_feed_result.return_value = self.high_native()
         def both_ready(futures, timeout=None, **kwargs):
@@ -668,7 +686,7 @@ class DouyinTierPageTests(TestCase):
                               return_value=(self.case.coordinator, DouyinNativeProvider()))
         active.start(); self.addCleanup(active.stop)
 
-    def test_homepage_real_controller_returns_fallback_then_renders_late_primary(self):
+    def test_homepage_real_controller_returns_native_then_renders_late_primary(self):
         case = self.case
         case.settings = replace(case.settings, ultra_total_timeout_seconds=0.05)
         case.coordinator.provider_settings = case.settings
@@ -678,13 +696,15 @@ class DouyinTierPageTests(TestCase):
             case.release.wait(2)
             return case.response
         case.case.session.post.side_effect = delayed_post
+        case.runner.side_effect = RuntimeError("Controlled fallback failure")
+        case.adapter.fetch_mobile_feed_result.return_value = case.native("540p", 1000)
         response = self.client.get("/results/", {"q": case.source, "ultra_hd": "1"},
                                    HTTP_X_REQUESTED_WITH="XMLHttpRequest")
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["status"], "continuation_pending")
         self.assertTrue(body["has_results"])
-        self.assertIn("1080", body["html"])
+        self.assertIn("540p", body["html"])
         case.release.set(); case.finish_tasks()
         response = self.client.post("/media/douyin-continuation/", {
             "continuation_token": body["continuation_token"],
@@ -697,6 +717,8 @@ class DouyinTierPageTests(TestCase):
 
     def test_repeat_page_keeps_own_fallback_and_shares_upstream_single_flight(self):
         case = self.case
+        case.settings = replace(case.settings, ultra_total_timeout_seconds=0.2)
+        case.coordinator.provider_settings = case.settings
         case.fail_tian()
         entered = Event()
 
@@ -751,3 +773,46 @@ class DouyinTierPageTests(TestCase):
         body = response.json()
         self.assertFalse(body["has_results"])
         self.assertNotIn("已返回可用清晰度", body["html"])
+
+
+@override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
+class DouyinFirstUpgradeTests(SimpleTestCase):
+    """INV-01: the first service result that beats the shown one ends the wait."""
+
+    def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+        # Only the upgrade rule is under test; provider manifests are covered elsewhere.
+        serialize = patch("xhs_download.services.douyin_continuation.serialize_douyin_continuation_result",
+                          side_effect=lambda result: {"work": result.base_filename})
+        serialize.start()
+        self.addCleanup(serialize.stop)
+
+    def capture(self, coordinator, name, score):
+        future = Future()
+        future.set_result(ParseResult(
+            platform="douyin", post_type="video", base_filename=name,
+            assets=(MediaAsset(media_type="video", platform="douyin", url=resource(name)["url"]),),
+        ))
+        coordinator.capture_future(
+            future, provider_name=name, score_result=lambda result: score,
+            is_strong_result=lambda result: True, prepare_result=lambda result: result,
+        )
+
+    def test_first_upgrade_ends_the_wait_and_later_services_are_not_ranked(self):
+        coordinator = DouyinContinuationCoordinator(2, first_upgrade_wins=True)
+        coordinator.retain_fallback_score((300, 0))
+        self.capture(coordinator, "kukutool", (400, 0))
+        self.capture(coordinator, "tiantianjiexi", (600, 0))
+        best, pending = coordinator.snapshot_result_and_pending()
+        self.assertEqual(best.base_filename, "kukutool")
+        self.assertFalse(pending)
+
+    def test_result_that_does_not_beat_the_shown_one_does_not_end_the_wait(self):
+        coordinator = DouyinContinuationCoordinator(2, first_upgrade_wins=True)
+        coordinator.retain_fallback_score((500, 0))
+        self.capture(coordinator, "kukutool", (400, 0))
+        self.assertTrue(coordinator.has_pending_work())
+        self.capture(coordinator, "tiantianjiexi", (600, 0))
+        best, _pending = coordinator.snapshot_result_and_pending()
+        self.assertEqual(best.base_filename, "tiantianjiexi")
