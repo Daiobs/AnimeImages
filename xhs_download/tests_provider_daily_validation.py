@@ -79,6 +79,10 @@ NEW_HEALTH_TEST_KEYS = (
     "bilibili_native_parse",
     "videodl_policy_inventory",
     "videodl_specific_backend",
+    "download_smoke_xhs_gallery",
+    "download_smoke_xhs_video",
+    "download_smoke_douyin",
+    "download_smoke_bilibili",
 )
 PUBLIC_DNS_RESULT = (
     (2, 1, 6, "", ("93.184.216.34", 443)),
@@ -121,8 +125,8 @@ class ProviderHealthRegistryV1Tests(TestCase):
                 provider_health_test_by_key(key),
             )
 
-    def test_registry_preserves_nine_checks_and_adds_five(self):
-        self.assertEqual(len(PROVIDER_HEALTH_TESTS), 14)
+    def test_registry_preserves_original_checks_and_adds_optional_smokes(self):
+        self.assertEqual(len(PROVIDER_HEALTH_TESTS), 18)
         self.assertEqual(provider_health_test_keys()[:9], ORIGINAL_HEALTH_TEST_KEYS)
         self.assertEqual(provider_health_test_keys()[9:], NEW_HEALTH_TEST_KEYS)
 
@@ -1216,7 +1220,7 @@ class ProviderValidationAdminTests(TestCase):
             data={"action": "run_all_tests"},
         )
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(ProviderHealthTestRun.objects.count(), 14)
+        self.assertEqual(ProviderHealthTestRun.objects.count(), len(PROVIDER_HEALTH_TESTS))
         self.assertEqual(len(mail.outbox), 0)
 
     def test_read_only_log_admins_cannot_forge_rows(self):

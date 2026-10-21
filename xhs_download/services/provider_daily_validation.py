@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from ipaddress import ip_address
+import re
 import time
 from typing import Any, Callable, Iterable
 from urllib.parse import urlparse
@@ -323,6 +325,80 @@ def _notification_subject(events) -> str:
     return subject[:180]
 
 
+def _smoke_text(value, pattern) -> str:
+    return value if isinstance(value, str) and re.fullmatch(pattern, value) else "-"
+
+
+def _smoke_number(value, *, minimum=0, maximum=2**63 - 1) -> str:
+    return str(value) if type(value) is int and minimum <= value <= maximum else "-"
+
+
+def _smoke_boolean(value) -> str:
+    return "yes" if value is True else "no" if value is False else "-"
+
+
+def _smoke_host(value) -> str:
+    if not isinstance(value, str) or not value or len(value) > 253 or "%" in value:
+        return "-"
+    try:
+        return str(ip_address(value))
+    except ValueError:
+        return _smoke_text(
+            value,
+            r"(?=.{1,253}\Z)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+            r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?",
+        )
+
+
+def download_smoke_report_lines(details) -> tuple[str, ...]:
+    """Render only bounded schema-v1 observations, never raw upstream payloads."""
+    if not isinstance(details, dict) or type(details.get("schema_version")) is not int:
+        return ()
+    if details["schema_version"] != 1:
+        return ()
+    fields = details.get("fields")
+    fields = fields if isinstance(fields, dict) else {}
+    download = details.get("download")
+    download = download if isinstance(download, dict) else {}
+    platform = _smoke_text(details.get("platform"), r"[a-z][a-z0-9_]{0,31}")
+    provider = _smoke_text(details.get("provider"), r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}")
+    status = _smoke_text(download.get("status"), r"success|failed|not_run")
+    error_code = _smoke_text(download.get("error_code"), r"[A-Z][A-Z0-9_]{0,79}")
+    access_scope = (
+        " access_scope=" + _smoke_text(details["access_scope"], r"anonymous_policy|staff")
+        if "access_scope" in details else ""
+    )
+    stage = (
+        " stage=" + _smoke_text(details["stage"], r"parse|selection|admission|download")
+        if "stage" in details else ""
+    )
+    error_type = (
+        " error_type=" + _smoke_text(details["error_type"], r"[A-Za-z][A-Za-z0-9_]{0,119}")
+        if "error_type" in details else ""
+    )
+    content_type = _smoke_text(
+        download.get("content_type"),
+        r"[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,63}/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,63}",
+    )
+    return (
+        f"download_smoke: platform={platform} provider={provider}{access_scope}{stage}",
+        "fields: " + " ".join(
+            f"{name}={_smoke_boolean(fields.get(name))}"
+            for name in ("title", "cover", "quality", "size")
+        ),
+        f"download: status={status} error_code={error_code} "
+        f"http_status={_smoke_number(download.get('http_status'), minimum=100, maximum=599)}{error_type}",
+        f"media: final_host={_smoke_host(download.get('final_host'))} "
+        f"final_port={_smoke_number(download.get('final_port'), minimum=1, maximum=65535)} "
+        f"redirect_count={_smoke_number(download.get('redirect_count'))} "
+        f"referer_lost={_smoke_boolean(download.get('referer_lost'))}",
+        f"transfer: content_type={content_type} "
+        f"range_supported={_smoke_boolean(download.get('range_supported'))} "
+        f"bytes_received={_smoke_number(download.get('bytes_received'))} "
+        f"request_count={_smoke_number(download.get('request_count'))}",
+    )
+
+
 def _notification_body(suite, events) -> str:
     names = {
         item["key"]: item["name"]
@@ -353,9 +429,10 @@ def _notification_body(suite, events) -> str:
                 f"consecutive_unhealthy: {event.consecutive_unhealthy}",
                 f"event: {event.event}",
                 f"test_host: {run.test_url_host or '-'}",
-                "",
             )
         )
+        lines.extend(run.download_smoke_report_lines)
+        lines.append("")
     report_url = runtime_str("PROVIDER_VALIDATION_ADMIN_REPORT_URL", "")
     parsed_report_url = urlparse(report_url) if report_url else None
     if (
@@ -645,6 +722,7 @@ def test_daily_state(test_key, *, selected=False) -> dict[str, Any]:
         "display_name": (provider_health_test_by_key(test_key) or {}).get("name", test_key),
         "selected": selected,
         "latest": latest,
+        "download_smoke_report_lines": latest.download_smoke_report_lines if latest else (),
         "last_success_at": getattr(last_success, "created_at", None),
         "last_unhealthy_at": getattr(last_unhealthy, "created_at", None),
         "consecutive_unhealthy": consecutive,
@@ -702,6 +780,7 @@ __all__ = [
     "DailyValidationOutcome",
     "build_daily_validation_report",
     "deliver_notifications",
+    "download_smoke_report_lines",
     "email_delivery_configuration",
     "NON_DELIVERY_EMAIL_BACKENDS",
     "provider_validation_email_backend_is_delivering",

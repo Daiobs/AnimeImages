@@ -312,6 +312,7 @@ class DouyinParseContext:
     ultra_retry_after_seconds: int = 0
     continuation_deadline_monotonic: float = 0
     service_execution_policy: str = ""
+    probe_media_metadata: bool = True
 
     def __post_init__(self):
         self.raw_url = self.raw_url or self.url
@@ -2745,7 +2746,7 @@ class DouyinMobileFeedProvider(DouyinResultProvider):
         if not context.aweme_id:
             return None
         request_options = {
-            "probe_video_candidates": bool(context.prefer_ultra_hd),
+            "probe_video_candidates": bool(context.prefer_ultra_hd and context.probe_media_metadata),
         }
         if context.deadline_monotonic:
             remaining = context.deadline_monotonic - monotonic()
@@ -2768,7 +2769,7 @@ class DouyinMobileShareProvider(DouyinResultProvider):
         if not context.aweme_id:
             return None
         request_options = {
-            "probe_video_candidates": bool(context.prefer_ultra_hd),
+            "probe_video_candidates": bool(context.prefer_ultra_hd and context.probe_media_metadata),
         }
         if context.deadline_monotonic:
             remaining = context.deadline_monotonic - monotonic()
@@ -2889,7 +2890,7 @@ class DouyinNativeEnhancedProvider(DouyinResultProvider):
             ):
                 started_at = time()
                 try:
-                    request_options = {"probe_video_candidates": True}
+                    request_options = {"probe_video_candidates": context.probe_media_metadata}
                     if context.deadline_monotonic:
                         remaining = context.deadline_monotonic - monotonic()
                         if remaining <= 0:
@@ -2914,7 +2915,7 @@ class DouyinNativeEnhancedProvider(DouyinResultProvider):
             result = adapter.parse_html(
                 context.html,
                 source_url=context.final_url,
-                probe_video_candidates=True,
+                probe_video_candidates=context.probe_media_metadata,
             )
             if result and result.assets:
                 results.append(result)

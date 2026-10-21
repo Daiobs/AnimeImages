@@ -11604,7 +11604,7 @@ class ProviderHealthTestPanelTests(TestCase):
         response = client.post("/admin/provider-health-tests/", data={"action": "run_all_tests"})
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(ProviderHealthTestRun.objects.count(), 14)
+        self.assertEqual(ProviderHealthTestRun.objects.count(), 18)
         statuses = dict(
             ProviderHealthTestRun.objects.values_list("test_key", "status")
         )
@@ -11622,6 +11622,9 @@ class ProviderHealthTestPanelTests(TestCase):
         self.assertEqual(statuses["bilibili_native_parse"], ProviderHealthTestStatus.SKIPPED)
         self.assertEqual(statuses["videodl_policy_inventory"], ProviderHealthTestStatus.UNAVAILABLE)
         self.assertEqual(statuses["videodl_specific_backend"], ProviderHealthTestStatus.SKIPPED)
+        for key in ("download_smoke_xhs_gallery", "download_smoke_xhs_video",
+                    "download_smoke_douyin", "download_smoke_bilibili"):
+            self.assertEqual(statuses[key], ProviderHealthTestStatus.SKIPPED)
 
     @patch("xhs_download.services.provider_health_tests.get_runtime_readiness", return_value={"ready": True, "components": {"database": True, "cache": True}})
     def test_provider_health_tests_ajax_post_renders_panel_without_redirect(self, _mock_readiness):
@@ -11654,7 +11657,7 @@ class ProviderHealthTestPanelTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("Location", response)
         self.assertContains(response, "Provider 一键测试完成")
-        self.assertEqual(ProviderHealthTestRun.objects.count(), 14)
+        self.assertEqual(ProviderHealthTestRun.objects.count(), 18)
 
     def test_provider_health_test_empty_url_returns_skipped(self):
         client = Client()

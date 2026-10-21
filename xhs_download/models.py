@@ -898,6 +898,7 @@ class ProviderHealthTestRun(models.Model):
         db_index=True,
     )
     notified_at = models.DateTimeField(null=True, blank=True)
+    download_smoke_details = models.JSONField(null=True, blank=True, default=None)
 
     class Meta:
         ordering = ("-created_at",)
@@ -912,6 +913,12 @@ class ProviderHealthTestRun(models.Model):
 
     def __str__(self):
         return f"{local_datetime_label(self.created_at)} {self.test_key} {self.status}"
+
+    @property
+    def download_smoke_report_lines(self):
+        from .services.provider_daily_validation import download_smoke_report_lines
+
+        return download_smoke_report_lines(self.download_smoke_details)
 
 
 class ProviderHealthTestSetting(models.Model):

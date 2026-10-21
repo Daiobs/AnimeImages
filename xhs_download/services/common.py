@@ -315,7 +315,98 @@ class _PinnedAddressAdapter(requests.adapters.HTTPAdapter):
         return super().send(request, **kwargs)
 
 
-class _SingleHopSession(requests.Session):
+class _MediaRequestObservation:
+    """Safe transport facts only; never retain URLs, headers or response bodies."""
+
+    def __init__(self):
+        self.values = {
+            "http_status": None,
+            "final_host": "",
+            "final_port": None,
+            "redirect_count": 0,
+            "referer_lost": False,
+            "content_type": "",
+            "range_supported": False,
+            "request_count": 0,
+        }
+        self.port_denied = False
+        self._previous_origin = None
+        self._previous_referer = False
+        self._range_end = None
+
+    def target(self, url):
+        try:
+            parsed = urlparse(url or "")
+            host = parsed.hostname or ""
+            self.values["final_host"] = (
+                host if re.fullmatch(r"[a-zA-Z0-9.:-]{1,253}", host) else ""
+            )
+            self.values["final_port"] = parsed.port if parsed.port is not None else (
+                443 if parsed.scheme == "https" else 80 if parsed.scheme == "http" else None
+            )
+            self.port_denied = parsed.port is not None and parsed.port not in {80, 443}
+        except (TypeError, ValueError):
+            self.values["final_port"] = None
+
+    def sent(self, request):
+        self.target(request.url)
+        origin = _request_origin(urlparse(request.url))
+        has_referer = bool(request.headers.get("Referer"))
+        if self._previous_origin is not None and origin != self._previous_origin:
+            self.values["referer_lost"] |= self._previous_referer and not has_referer
+        self._previous_origin = origin
+        self._previous_referer = has_referer
+        requested_range = re.fullmatch(r"bytes=0-([0-9]{1,20})", request.headers.get("Range", ""))
+        self._range_end = int(requested_range[1]) if requested_range else None
+        self.values["request_count"] += 1
+
+    def received(self, response):
+        self.values["http_status"] = response.status_code
+        if response.url:
+            self.target(response.url)
+        content_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        self.values["content_type"] = (
+            content_type if re.fullmatch(r"[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+", content_type)
+            and len(content_type) <= 127 else ""
+        )
+        content_range = re.fullmatch(
+            r"bytes 0-([0-9]{1,20})/([0-9]{1,20}|\*)",
+            str(response.headers.get("Content-Range") or "").strip(),
+        )
+        self.values["range_supported"] = bool(
+            response.status_code == 206 and content_range and self._range_end is not None
+            and int(content_range[1]) <= self._range_end
+            and (content_range[2] == "*" or int(content_range[1]) < int(content_range[2]))
+        )
+        if response.status_code in {301, 302, 303, 307, 308}:
+            self.values["redirect_count"] += 1
+
+
+class _ObservedSingleHopSession(requests.Session):
+    def __init__(self, observation=None):
+        super().__init__()
+        self.observation = observation
+
+    def send(self, request, **kwargs):
+        if self.observation is not None:
+            self.observation.sent(request)
+        try:
+            response = super().send(request, **kwargs)
+        except requests.RequestException as error:
+            if self.observation is not None and error.response is not None:
+                self.observation.received(error.response)
+            raise
+        if self.observation is not None:
+            self.observation.received(response)
+        return response
+
+    def resolve_redirects(self, *args, **kwargs):
+        # Requests otherwise drains redirect bodies to prepare Response.next,
+        # even with allow_redirects=False and stream=True.
+        return iter(())
+
+
+class _SingleHopSession(_ObservedSingleHopSession):
     def prepare_request(self, request):
         # Suppress only .netrc injection; normal environment CA/proxy/NO_PROXY
         # handling in Session.request and Session.send remains enabled.
@@ -325,11 +416,6 @@ class _SingleHopSession(requests.Session):
             return super().prepare_request(request)
         finally:
             self.trust_env = trust_env
-
-    def resolve_redirects(self, *args, **kwargs):
-        # Requests otherwise drains redirect bodies to prepare Response.next,
-        # even with allow_redirects=False and stream=True.
-        return iter(())
 
 
 def request_get_with_retry(
@@ -345,6 +431,8 @@ def request_get_with_retry(
     max_redirects=5,
     non_retry_statuses=(),
     return_redirect_response=False,
+    accepted_statuses=(200,),
+    observation=None,
 ):
     return _request_with_retry(
         url, headers=headers or HEADERS, timeout=timeout, retries=retries,
@@ -354,6 +442,8 @@ def request_get_with_retry(
         max_redirects=max_redirects,
         non_retry_statuses=non_retry_statuses,
         return_redirect_response=return_redirect_response,
+        accepted_statuses=accepted_statuses,
+        observation=observation,
     )
 
 
@@ -375,6 +465,7 @@ def _request_with_retry(
     allowed_hop_host_suffixes=None, redirect_budget=None,
     non_retry_statuses=(),
     return_redirect_response=False,
+    observation=None,
 ):
     """Validate each hop and pin direct connections to an admitted address.
 
@@ -416,8 +507,10 @@ def _request_with_retry(
             raise XhsSecurityError("不允许请求该 URL") from error
         current_headers = dict(HEADERS if headers is None else headers)
         visited = set()
-        with _SingleHopSession() as session:
+        with _SingleHopSession(observation=observation) as session:
             for hop in range(max_redirects + 1):
+                if observation is not None:
+                    observation.target(current_url)
                 remaining_budget()
                 if current_url in visited:
                     raise requests.TooManyRedirects("请求出现循环跳转")

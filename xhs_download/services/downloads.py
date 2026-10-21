@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import re
 import shutil
@@ -13,11 +14,16 @@ import requests
 from django.conf import settings
 from django.core.cache import cache
 from PIL import Image
+from urllib3.exceptions import ReadTimeoutError
 
 from .common import (
     HEADERS,
     MEDIA_HOST_SUFFIXES,
+    XhsDNSResolutionError,
     XhsDownloadError,
+    XhsSecurityError,
+    _MediaRequestObservation,
+    _ObservedSingleHopSession,
     clean_filename,
     host_matches,
     request_get_with_retry,
@@ -740,20 +746,28 @@ def request_public_provider_get_with_retry(
     max_redirects=5,
     provider_item=None,
     deadline_monotonic=None,
+    accepted_statuses=(200,),
+    observation=None,
+    single_fetch=False,
 ):
+    if observation is not None:
+        observation.target(url)
     reject_upstream_server_download(provider_item)
     if provider_item is not None and not provider_manifest_allows_public_download(provider_item):
         raise XhsDownloadError("Provider 签名资源未通过校验")
 
     last_error = None
-    for candidate_url, candidate_item in iter_provider_signed_request_candidates(
-        url,
-        provider_item,
-    ):
-        for _ in range(max(1, int(retries or 1))):
+    candidates = (
+        ((url, provider_item),) if single_fetch
+        else iter_provider_signed_request_candidates(url, provider_item)
+    )
+    for candidate_url, candidate_item in candidates:
+        for _ in range(1 if single_fetch else max(1, int(retries or 1))):
             current_url = candidate_url
             try:
                 for _ in range(max_redirects + 1):
+                    if observation is not None:
+                        observation.target(current_url)
                     request_timeout = timeout
                     if deadline_monotonic is not None:
                         remaining = float(deadline_monotonic) - time.monotonic()
@@ -775,19 +789,27 @@ def request_public_provider_get_with_retry(
                         current_url,
                         "Provider URL 不允许请求",
                     )
-                    response = requests.get(
-                        current_url,
-                        headers=headers or get_media_headers(current_url),
-                        timeout=request_timeout,
-                        allow_redirects=False,
-                        stream=stream,
-                    )
+                    request_options = {
+                        "headers": headers or get_media_headers(current_url),
+                        "timeout": request_timeout,
+                        "allow_redirects": False,
+                        "stream": stream,
+                    }
+                    if single_fetch or observation is not None:
+                        # A fresh session per hop preserves requests.get's header
+                        # and cookie behavior, without Requests draining redirects.
+                        with _ObservedSingleHopSession(observation) as session:
+                            response = session.get(current_url, **request_options)
+                    else:
+                        response = requests.get(current_url, **request_options)
                     if response.status_code in {301, 302, 303, 307, 308}:
                         location = response.headers.get("Location")
                         response.close()
                         if not location:
                             raise XhsDownloadError(f"HTTP {response.status_code}")
                         next_url = urljoin(current_url, location)
+                        if observation is not None:
+                            observation.target(next_url)
                         validate_provider_signed_download_url(
                             candidate_item,
                             next_url,
@@ -795,7 +817,7 @@ def request_public_provider_get_with_retry(
                         )
                         current_url = next_url
                         continue
-                    if response.status_code == 200:
+                    if response.status_code in accepted_statuses:
                         try:
                             validate_provider_signed_download_url(
                                 candidate_item,
@@ -806,12 +828,16 @@ def request_public_provider_get_with_retry(
                             response.close()
                             raise
                         return response
-                    last_error = XhsDownloadError(f"HTTP {response.status_code}")
+                    last_error = XhsDownloadError(
+                        f"HTTP {response.status_code}", http_status=response.status_code
+                    )
                     response.close()
                     break
                 else:
                     last_error = XhsDownloadError("Provider URL 重定向次数过多")
             except Exception as error:
+                if isinstance(error, requests.RequestException) and error.response is not None:
+                    error.response.close()
                 last_error = error
 
     raise last_error
@@ -824,7 +850,19 @@ def fetch_media_response(
     retries=3,
     provider_signed=False,
     deadline_monotonic=None,
+    accepted_statuses=(200,),
+    observation=None,
+    single_fetch=False,
 ):
+    if observation is not None:
+        observation.target(url)
+    extra_options = {}
+    if accepted_statuses != (200,):
+        extra_options["accepted_statuses"] = accepted_statuses
+    if observation is not None:
+        extra_options["observation"] = observation
+    if single_fetch:
+        retries = 1
     if provider_signed:
         if not isinstance(provider_signed, dict):
             raise XhsDownloadError("Provider signed request is missing manifest context")
@@ -837,7 +875,9 @@ def fetch_media_response(
         }
         if deadline_monotonic is not None:
             request_options["deadline_monotonic"] = deadline_monotonic
-        return request_public_provider_get_with_retry(url, **request_options)
+        if single_fetch:
+            request_options["single_fetch"] = True
+        return request_public_provider_get_with_retry(url, **request_options, **extra_options)
     validate_media_url(url)
     request_options = {
         "headers": headers or get_media_headers(url),
@@ -849,7 +889,104 @@ def fetch_media_response(
     }
     if deadline_monotonic is not None:
         request_options["deadline_monotonic"] = deadline_monotonic
-    return request_get_with_retry(url, **request_options)
+    return request_get_with_retry(url, **request_options, **extra_options)
+
+
+def probe_media_prefix(item, *, max_bytes=1024, timeout=10):
+    """One fetch with controlled redirects, no recovery, and at most 1 KiB read.
+
+    HTTP status is the last received status; the final host/port is the last
+    considered target (including a denied redirect). Redirect count includes
+    every redirect response, even if its destination is rejected. Request count
+    includes sends that time out, but excludes targets rejected before sending.
+    bytes_received counts application-read body octets, not TCP traffic or
+    transport buffering. Range support requires a valid matching Content-Range.
+    """
+    observation = _MediaRequestObservation()
+    result = {"status": "failed", "error_code": "INVALID_INPUT", "bytes_received": 0}
+    response = None
+    try:
+        limit = min(1024, int(max_bytes))
+        timeout = float(timeout)
+        if limit <= 0 or not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("invalid prefix budget")
+        if not isinstance(item, dict) or item.get("type") not in {"image", "video"}:
+            raise ValueError("invalid media item")
+        url = item.get("url")
+        observation.target(url)
+        if not isinstance(url, str) or not url:
+            raise ValueError("missing media URL")
+        deadline = time.monotonic() + timeout
+        result["error_code"] = "MEDIA_POLICY_DENIED"
+        reject_upstream_server_download(item)
+        validate_bilibili_video_completeness(url, item["type"])
+        provider_item = item if provider_manifest_allows_public_download(item) else None
+        if provider_item is None and any(item.get(key) for key in (
+            "provider", "provider_manifest_token",
+            "provider_resource_id", "provider_cache_key",
+        )):
+            result["error_code"] = "MANIFEST_REJECTED"
+            raise XhsDownloadError("invalid provider manifest")
+        result["error_code"] = "FETCH_FAILED"
+        response = fetch_media_response(
+            url,
+            headers={**get_media_headers(url), "Range": f"bytes=0-{limit - 1}"},
+            timeout=timeout,
+            retries=1,
+            provider_signed=provider_item,
+            deadline_monotonic=deadline,
+            accepted_statuses=(200, 206),
+            observation=observation,
+            single_fetch=True,
+        )
+        result["error_code"] = "CONTENT_TYPE_MISMATCH"
+        validate_response_content_type(response.headers.get("Content-Type", ""), item["type"])
+        # Reading compressed data through urllib3's decoder can consume more
+        # than the requested prefix. Do not decode or claim such a body is media.
+        if str(response.headers.get("Content-Encoding") or "identity").strip().lower() != "identity":
+            result["error_code"] = "UNSUPPORTED_CONTENT_ENCODING"
+            raise XhsDownloadError("encoded media prefix")
+        result["error_code"] = "BODY_READ_FAILED"
+        response.raw.decode_content = False
+        prefix = bytearray()
+        while len(prefix) < limit:
+            if time.monotonic() >= deadline:
+                raise requests.Timeout("media prefix deadline")
+            # Single-octet reads also retain an exact count if a later read
+            # times out, without urllib3 buffering a partially fulfilled read.
+            chunk = response.raw.read(1)
+            if not chunk:
+                break
+            prefix.extend(chunk)
+            result["bytes_received"] += len(chunk)
+        if time.monotonic() >= deadline:
+            raise requests.Timeout("media prefix deadline")
+        if not prefix:
+            result["error_code"] = "EMPTY_BODY"
+            raise XhsDownloadError("empty media prefix")
+        if response_chunk_looks_like_html(prefix):
+            result["error_code"] = "HTML_RESPONSE"
+            raise XhsDownloadError("HTML media prefix")
+        result.update(status="success", error_code="")
+    except Exception as error:
+        if observation.port_denied:
+            result["error_code"] = "PORT_POLICY_DENIED"
+        elif isinstance(error, (requests.Timeout, ReadTimeoutError)):
+            result["error_code"] = "TIMEOUT"
+        elif isinstance(error, XhsDNSResolutionError):
+            result["error_code"] = "DNS_ERROR"
+        elif isinstance(error, XhsSecurityError):
+            result["error_code"] = "URL_POLICY_DENIED"
+        elif isinstance(error, requests.TooManyRedirects):
+            result["error_code"] = "REDIRECT_LIMIT"
+        elif isinstance(error, requests.RequestException):
+            result["error_code"] = "TRANSPORT_ERROR"
+        elif getattr(error, "http_status", None) is not None:
+            result["error_code"] = f"HTTP_{int(error.http_status)}"
+    finally:
+        if response is not None:
+            response.close()
+    return {**result, **observation.values}
 
 
 def probe_media_size(url, headers=None, timeout=6):
